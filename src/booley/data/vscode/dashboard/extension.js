@@ -73,7 +73,7 @@ class AttachController {
         // The automatic open in flight, so the command never races it into a second terminal.
         this.opening = undefined;
         this.recheck = undefined;
-        // The terminal in front as last reported, and the terminal that just opened with when.
+        // The terminal in front as last reported, and the lifecycle terminal that just opened with when.
         this.front = vscode.window.activeTerminal;
         this.opened = undefined;
         context.subscriptions.push(this.output, this,
@@ -82,23 +82,25 @@ class AttachController {
             vscode.workspace.onDidChangeConfiguration(event => {
                 if (event.affectsConfiguration(PROTOCOL)) { void this.open(); }
             }),
-            vscode.window.onDidOpenTerminal(terminal => { this.opened = { terminal, at: Date.now() }; }),
+            vscode.window.onDidOpenTerminal(terminal => {
+                if (isLifecycleTerminal(terminal)) { this.opened = { terminal, at: Date.now() }; }
+            }),
             vscode.window.onDidChangeActiveTerminal(next => this.fronted(next)),
             vscode.window.onDidCloseTerminal(closed => this.closed(closed)));
     }
 
     // A Codespaces lifecycle terminal that takes the front from the Dashboard as
     // it opens (a reconnect re-runs postAttachCommand) gives it back. Only then:
-    // the first change of the terminal in front after an open ends that open, so
-    // a lifecycle terminal the user selects later, or any other terminal that
-    // was in front before it, stays in front.
+    // the first time that terminal takes the front ends its opening, so one the
+    // user selects later, or any other terminal that was in front before it,
+    // stays in front.
     fronted(next) {
         const before = this.front;
         const opened = this.opened;
         this.front = next;
+        if (!next || next !== opened?.terminal) { return; }
         this.opened = undefined;
-        if (!next || next !== opened?.terminal || Date.now() - opened.at > OPENING_MS) { return; }
-        if (before && before === this.shownDashboard() && isLifecycleTerminal(next)) { before.show(true); }
+        if (Date.now() - opened.at <= OPENING_MS && before && before === this.shownDashboard()) { before.show(true); }
     }
 
     // The Sandbox Project root this window may show the Dashboard for, or the

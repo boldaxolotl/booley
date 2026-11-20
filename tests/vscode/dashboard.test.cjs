@@ -489,7 +489,7 @@ test('a terminal nobody has used does not hold the Dashboard back', async () => 
 });
 
 test('a terminal the user has used keeps the panel; the Dashboard waits behind a notification', async () => {
-    // The unused terminal comes first: any used terminal counts, not just the first.
+    // The unused terminal comes first: the used terminal in front counts, not just the first.
     const f = fixture({ idleTerminal: true, userTerminal: true });
     await tick();
     assert.equal(f.terminals.length, 1, 'the Dashboard still starts');
@@ -511,40 +511,50 @@ test('a Codespaces lifecycle terminal does not hold the Dashboard back', async (
     const lines = f.log.filter(line => line.includes('created as'));
     assert.equal(lines.length, 1);
     assert.match(lines[0], /created as 'Codespaces: python -m booley\.runtime\.incontainer_live_preview/);
-    assert.match(lines[0], /interacted: true, in front: (true|false), not in use/);
+    assert.match(lines[0], /interacted: true, in front: true, not in use/);
 });
 
+const lifecycleTerminal = () => ({ name: LIFECYCLE_NAME, creationOptions: { name: LIFECYCLE_NAME },
+    state: { isInteractedWith: true } });
+
+async function dashboardInFront(options = {}) {
+    const f = fixture({ remote: 'codespaces', ...options });
+    await tick();
+    return [f, f.terminals[0]];
+}
+
 test('a lifecycle terminal that opens over the Dashboard gives the front back', async () => {
-    const lifecycle = () => ({ name: LIFECYCLE_NAME, creationOptions: { name: LIFECYCLE_NAME },
-        state: { isInteractedWith: true } });
-    const front = async () => {
-        const f = fixture({ remote: 'codespaces' });
-        await tick();
-        return [f, f.terminals[0]];
-    };
-    let [f, dashboard] = await front();
-    const first = lifecycle();
-    f.records.openOver(first);
+    const [f, dashboard] = await dashboardInFront();
+    const lifecycle = lifecycleTerminal();
+    f.records.openOver(lifecycle);
     assert.equal(dashboard.shows, 2, 'the Dashboard takes the front back');
     assert.equal(dashboard.preserveFocus, true);
-    f.listeners.active(first);
+    f.listeners.active(lifecycle);
     assert.equal(dashboard.shows, 2, 'a lifecycle terminal the user selects keeps the front');
-    // The Dashboard is behind a used terminal: nothing takes the front from it.
-    f = fixture({ remote: 'codespaces', userTerminal: true });
+});
+
+test('another terminal opening between the lifecycle terminal and its activation does not stop the give-back',
+    async () => {
+        const [f, dashboard] = await dashboardInFront();
+        const lifecycle = lifecycleTerminal();
+        f.listeners.open(lifecycle);
+        f.listeners.open({ name: 'sh', creationOptions: {}, state: { isInteractedWith: true } });
+        f.listeners.active(lifecycle);
+        assert.equal(dashboard.shows, 2);
+    });
+
+test('a lifecycle terminal over a used terminal in front leaves that terminal alone', async () => {
+    const f = fixture({ remote: 'codespaces', userTerminal: true });
     await tick();
-    f.records.openOver(lifecycle());
+    f.records.openOver(lifecycleTerminal());
     assert.equal(f.terminals[0].shows, 0);
-    // Opened in the background and selected after the Dashboard was selected.
-    [f, dashboard] = await front();
-    const background = lifecycle();
-    f.listeners.open?.(background);
-    f.listeners.active(dashboard);
-    f.listeners.active(background);
-    assert.equal(dashboard.shows, 1);
-    // Opened in the background and selected after OPENING_MS.
-    [f, dashboard] = await front();
+});
+
+test('a lifecycle terminal selected after its opening window keeps the front', async () => {
+    const [f, dashboard] = await dashboardInFront();
+    const background = lifecycleTerminal();
     f.records.now = 0;
-    f.listeners.open?.(background);
+    f.listeners.open(background);
     f.records.now = 3001;
     f.listeners.active(background);
     assert.equal(dashboard.shows, 1);
