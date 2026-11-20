@@ -2038,17 +2038,33 @@ def _build_mcp_catalog(
 
 
 def build_mcp_probe_payload() -> dict[str, Any]:
-    """Build the real Sandbox catalog and return Doctor's payload."""
-    _maybe_configure_interactive_logs_dir()
+    """Build the real Sandbox catalog and return Doctor's payload, creating nothing.
+
+    The log location is resolved and checked, not made.
+    """
     _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
+    logs_dir = os.environ.get("BOOLEY_LOGS_DIR") or str(_interactive_logs_dir() or "")
     return {
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
         "logs_dir_ok": _logs_dir_in_own_booley_dir(logs_dir),
+        "logs_dir_writable": _logs_dir_writable(logs_dir),
     }
+
+
+def _logs_dir_writable(logs_dir: str) -> bool:
+    """Whether *logs_dir* could be created and written, checked without creating it."""
+    from booley.flows.endpoint_cli import ReportDirError, require_usable_report_dir
+
+    if not logs_dir:
+        return False
+    try:
+        require_usable_report_dir(logs_dir)
+    except ReportDirError:
+        return False
+    return True
 
 
 def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
@@ -2357,6 +2373,30 @@ def _interactive_session_id() -> str:
     return f"pid{os.getpid()}"
 
 
+def _interactive_logs_dir() -> Path | None:
+    """The Sandbox's per-session logs directory under the Main Booley Directory, unmade.
+
+    The Sandbox is detected by a Project resolving from the server's environment
+    and CWD; ``None`` means there is no Project or no usable Booley Directory.
+    """
+    try:
+        selected = resolve_booley_dir()
+        booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        return None
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Interactive logs directory unavailable: %s", exc)
+        return None
+    if not booley_dir.is_dir():
+        return None
+    session_id = _interactive_session_id()
+    if selected.resolve() != resolve_common_booley_dir().resolve():
+        # Host servers of different checkouts share a hostname: keep their Job
+        # records, reports and Specialist sessions apart in the shared directory.
+        session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
+    return booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
+
+
 def _maybe_configure_interactive_logs_dir() -> None:
     """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
@@ -2365,10 +2405,6 @@ def _maybe_configure_interactive_logs_dir() -> None:
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.
 
-    The Sandbox is detected by:
-      - ``BOOLEY_LOGS_DIR`` not already set;
-      - a Project resolving from the server's environment and CWD.
-
     Logs accumulate at ``<Main Booley Directory>/.interactive_logs/<session-id>/``
     (gitignored — see the template emitted by ``booley init``), whichever
     checkout the server runs in, so the Dashboard and handle pruning, which
@@ -2376,28 +2412,15 @@ def _maybe_configure_interactive_logs_dir() -> None:
     """
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
-    try:
-        selected = resolve_booley_dir()
-        booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
-    except (FileNotFoundError, SourceCheckoutProjectError):
+    logs_dir = _interactive_logs_dir()
+    if logs_dir is None:
         return
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("Interactive logs directory unavailable: %s", exc)
-        return
-    if not booley_dir.is_dir():
-        return
-    session_id = _interactive_session_id()
-    if selected.resolve() != resolve_common_booley_dir().resolve():
-        # Host servers of different checkouts share a hostname: keep their Job
-        # records, reports and Specialist sessions apart in the shared directory.
-        session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
-    logs_dir = booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
         "MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)",
         logs_dir,
-        session_id,
+        logs_dir.name,
     )
 
 

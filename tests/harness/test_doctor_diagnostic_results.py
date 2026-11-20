@@ -76,6 +76,9 @@ def _canonical_host_installation():
 
 def _use_real_host_checks(monkeypatch, root, booley_dir, bootstrap_result):
     """Run Doctor with the real host checks over a stubbed Bootstrap result."""
+    # init_cmd binds reconcile_bootstrap at import; a first import under the patch below would
+    # keep the stub for every later test in the process.
+    importlib.import_module("booley.harness.init_cmd")
     inspect_host = host_diagnostics.inspect_host
     calls = _patch_environment(monkeypatch, root, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
@@ -373,12 +376,11 @@ def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, val
     assert not (tmp_path / "AGENTS.md").exists()
 
 
-# Doctor's own evidence, scratch output, and probe logs stay writable; nothing else may change.
+# Doctor's own evidence and scratch output stay writable; nothing else may change.
 _DOCTOR_WRITABLE_PREFIXES = (
     ".git/",
     ".booley/runtime/",
     ".booley/tmp/",
-    ".booley/.interactive_logs/",
 )
 
 
