@@ -193,7 +193,7 @@ def _render_forgotten(
     if purged is not None and any(item.reason == "in-use" for item in left):
         print(
             "in-use: kept because a container still uses it; rerun `booley projects "
-            f"forget --purge {quote_arg(str(forgotten))}` once that container is removed"
+            f"forget --purge {quote_arg(str(forgotten))}` once no container uses it"
         )
     if purged is None and any(item.reason == "unused" for item in left):
         print(

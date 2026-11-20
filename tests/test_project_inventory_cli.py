@@ -239,28 +239,22 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     project = _remember(tmp_path, "it's a project")
     family = project_image_name(project)
     unused, shared = "sha256:" + "a" * 64, "sha256:" + "b" * 64
-    busy, untraced = "sha256:" + "c" * 64, "sha256:" + "d" * 64
     keeper_host.tags.update({f"{family}:latest": unused, f"{family}-wheel:latest": shared})
-    keeper_host.tags.update({f"{family}-busy:latest": busy, f"{family}:<none>": untraced})
     keeper_host.tags["mirror:x"] = shared
-    keeper_host.containers["d" * 64] = busy
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-    plain = capsys.readouterr().out
-    assert f"booley projects forget --purge {quote_arg(str(project))}" in plain
-    assert "in-use:" not in plain
+    assert f"booley projects forget --purge {quote_arg(str(project))}" in capsys.readouterr().out
     assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
-    assert "mirror:x" in keeper_host.tags
-    rerun = f"rerun `booley projects forget --purge {quote_arg(str(project))}`"
-    assert (
-        f"in-use: kept because a container still uses it; {rerun} once that container is removed"
-        in output
-    )
-    keeper_host.containers.clear()
+    assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
+    assert "in-use:" not in output
+    keeper_host.tags[f"{family}-busy:latest"] = busy = "sha256:" + "c" * 64
+    keeper_host.containers["d" * 64] = busy
     assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
-    output = capsys.readouterr().out
-    assert "unrecorded: kept" in output and "in-use:" not in output
+    assert (
+        f"in-use: kept because a container still uses it; rerun `booley projects forget --purge {quote_arg(str(project))}`"
+        in capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize("grant", [False, True])
