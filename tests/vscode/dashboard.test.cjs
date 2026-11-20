@@ -56,13 +56,13 @@ function fakeEditor(options, records, settings) {
     const front = options.userTerminal ? open.find(t => t.state.isInteractedWith)
         : options.front === 'lifecycle' ? open.find(t => t.name === LIFECYCLE_NAME) : open.at(-1);
     let active = front;
-    const makeActive = terminal => { active = terminal; records.listeners.active?.(terminal); };
+    const makeActive = terminal => { active = terminal; records.listeners.active(terminal); };
     for (const terminal of open) { terminal.show = function () { makeActive(this); }; }
     // Another extension opens a terminal that takes the front.
     records.openOver = terminal => {
         terminal.show = function () { makeActive(this); };
         open.push(terminal);
-        records.listeners.open?.(terminal);
+        records.listeners.open(terminal);
         makeActive(terminal);
     };
     const root = { fsPath: '/work' };
