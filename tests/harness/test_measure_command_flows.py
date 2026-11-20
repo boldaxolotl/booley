@@ -61,12 +61,20 @@ TARGETS = ("metrics_ok", "metrics_b", "crash", "linger")
 ONE_AT_A_TIME = ""
 
 
-def metrics_project(make_world: WorldBuilder, metrics: str, config: str = ONE_AT_A_TIME) -> World:
+def metrics_project(
+    make_world: WorldBuilder,
+    metrics: str,
+    config: str = ONE_AT_A_TIME,
+    symlinks: dict[str, str] | None = None,
+) -> World:
     """A committed Project with the Targets above and *metrics* as its ``metrics.toml``."""
     files = {f"{name}.core": CORE.format(name=name) for name in TARGETS}
     files["top.v"] = "module top; endmodule\n"
     files[".booley/metrics.toml"] = metrics
-    return make_world(files=files, config=config)
+    return make_world(files=files, symlinks=symlinks, config=config)
+
+
+LINKED_HOOK = {".booley/hooks/post-setup.sh": "{live}/hook.sh"}
 
 
 @pytest.fixture(autouse=True)
@@ -120,12 +128,77 @@ def test_a_met_commit_exits_zero_stores_one_run_and_is_measured(
     assert stored.run_id == record.run_id
     assert store_of(world).measured(key) == stored
     assert stored.path.with_suffix(".md").is_file()  # the Markdown report
-    assert "Measurement Report" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "Measurement Report" in captured.out
+    assert "post-setup" not in captured.err  # no hook, nothing runs or is logged
+    assert not list(standalone_log_root(world.main).rglob("post-setup.log"))
     # Each child's text reports are stored beside the document.
     (kept,) = [d["reports"] for d in stored_documents(world)]
     assert any(report["name"] == "report.json" for report in kept)  # type: ignore[union-attr]
     for report in kept:  # type: ignore[union-attr]
         assert (stored.path.parent / report["path"]).is_file()
+
+
+@linux_only
+def test_a_hook_built_input_is_built_in_the_checkout_and_measured(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook builds an ignored file in the checkout, in the measurement environment."""
+    hook = (
+        "! git --version >/dev/null 2>&1 && "
+        '[ "$BOOLEY_PROJECT_ROOT" = "$(pwd -P)" ] && printf "module gen; endmodule\\n" > gen.v\n'
+    )
+    world = make_world(
+        files={
+            "metrics_gen.core": CORE.format(name="metrics_gen").replace(
+                "[top.v]", "[top.v, gen.v]"
+            ),
+            "top.v": "module top; endmodule\n",
+            ".gitignore": "gen.v\n",
+            ".booley/hooks/post-setup.sh": hook,
+            ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
+        }
+    )
+
+    assert measure(monkeypatch, world) == 0
+
+    assert len(stored_documents(world)) == 1
+    assert not (world.live / "gen.v").exists()
+
+
+@linux_only
+def test_a_hook_built_core_defines_a_target_the_rules_name(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook runs before the rules are read, so a core it writes can hold a Target."""
+    core = CORE.format(name="metrics_gen").replace("\n", "\\n")
+    hook = f'printf "{core}" > metrics_gen.core\n'
+    world = make_world(
+        files={
+            "top.v": "module top; endmodule\n",
+            ".booley/hooks/post-setup.sh": hook,
+            ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
+        }
+    )
+
+    assert measure(monkeypatch, world) == 0
+
+    assert len(stored_documents(world)) == 1
+
+
+@linux_only
+def test_a_post_setup_hook_linked_into_the_live_tree_never_runs(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = metrics_project(
+        make_world, "[metrics_ok.checkout_stub]\nmarker_max = 10\n", symlinks=LINKED_HOOK
+    )
+    (world.live / "hook.sh").write_bytes(f"touch {world.ctl / 'hook-ran'}\n".encode())
+
+    assert measure(monkeypatch, world) == 2
+
+    assert "links to" in capsys.readouterr().err
+    assert not (world.ctl / "hook-ran").exists()
 
 
 @linux_only
