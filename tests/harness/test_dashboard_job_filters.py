@@ -338,13 +338,14 @@ async def test_jobs_tab_counts_unfinished_jobs():
     app = DashboardApp(lambda: box[0])
     async with app.run_test(size=(100, 24)) as pilot:
         # An orphaned Job's process is known dead: it is not counted.
-        assert "Jobs 2▶" in bar_text(app)
+        assert "Jobs 1▶ 1 queued" in bar_text(app)
         await pilot.press("right")
-        assert "Jobs 2▶" in bar_text(app)
+        assert "Jobs 1▶ 1 queued" in bar_text(app)
         box[0] = world([job("c", "completed"), job("d", "orphaned")])
         await app.refresh_snapshot()
         await pilot.pause()
         assert "▶" not in bar_text(app)
+        assert "queued" not in bar_text(app)
         assert "Jobs" in bar_text(app)
         await pilot.press("left")
         assert "▶" not in bar_text(app)
