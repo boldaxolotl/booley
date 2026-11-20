@@ -34,6 +34,7 @@ _LINE_POINT = (
 )
 
 
+_START = {"hook": "start", "sequence": 1, "success": True}
 _SOURCES = (CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),)
 
 
@@ -214,13 +215,15 @@ class _StagedSourceExecution(_PresenceExecution):
 
 
 class _HookFailureExecution(_GeneratedMainExecution):
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(self, events: list[dict[str, object]] | None) -> None:
         self.events = events
 
     def run(self, request) -> SimulationRunResult:
         assert request.hook_evidence_path is not None
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+        if self.events is None:
+            return SimulationRunResult(verdict="pass")
         request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
         request.hook_evidence_path.write_text(
             json.dumps(
@@ -236,7 +239,7 @@ class _HookFailureExecution(_GeneratedMainExecution):
 
 
 class _HookAndRawFailureExecution(_HookFailureExecution):
-    def __init__(self, events: list[dict[str, object]], raw_payload: str | None) -> None:
+    def __init__(self, events: list[dict[str, object]] | None, raw_payload: str | None) -> None:
         super().__init__(events)
         self.raw_payload = raw_payload
 
@@ -516,15 +519,16 @@ def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None
 def test_missing_raw_database_is_a_collector_error_without_losing_simulation_truth(
     tmp_path: Path,
 ) -> None:
-    request = _request(tmp_path, "reset", sources=())
+    request = _request(tmp_path, "reset", sources=(), harness="custom_main", hooks=("write_hook",))
+    events = [{"hook": "write", "sequence": 1, "success": True}]
 
-    result = collect(request, _MissingRawExecution())
+    result = collect(request, _HookAndRawFailureExecution(events, None))
 
     assert result.status == "collector_error"
     assert [(run.simulation_verdict, run.collection) for run in result.runs] == [
         ("pass", "collector_error")
     ]
-    assert result.artifacts == ()
+    assert [artifact.kind for artifact in result.artifacts] == ["coverage_hook_evidence"]
     assert result.merge.status == "not_run"
     assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_MISSING"]
 
@@ -548,8 +552,14 @@ def test_unsafe_raw_database_is_reported_as_unsafe(
     assert result.artifacts == ()
 
 
-def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: Path) -> None:
-    request = _request(tmp_path, "wrap")
+@pytest.mark.parametrize(
+    ("expected_code", "reset_included"),
+    [("COV_RAW_FILE_STALE", True), ("COV_WINDOW_HOOK_MISSING", False)],
+)
+def test_stale_raw_database_is_retained_but_excluded_from_collection(
+    tmp_path: Path, expected_code: str, reset_included: bool
+) -> None:
+    request = _request(tmp_path, "wrap", reset_included=reset_included)
 
     raw = request.artifact_root / "native" / "raw" / "001-wrap.dat"
     raw.parent.mkdir(parents=True)
@@ -562,7 +572,7 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
     assert result.runs[0].collection == "collector_error"
     assert [artifact.state for artifact in result.artifacts] == ["stale"]
     assert result.points == ()
-    assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_STALE"]
+    assert [finding.code for finding in result.findings] == [expected_code]
 
 
 @pytest.mark.parametrize(
@@ -961,13 +971,19 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
             "COV_WRITE_HOOK_DUPLICATE",
             True,
         ),
+        ([_START], "COV_WRITE_HOOK_MISSING", False),
+        ([_START, _START], "COV_WINDOW_HOOK_DUPLICATE", False),
+        (None, "COV_WINDOW_HOOK_MISSING", False),
+        (None, "COV_WRITE_HOOK_MISSING", True),
     ],
 )
+@pytest.mark.parametrize("raw_payload", [_HEADER + _LINE_POINT, None], ids=["raw", "no_raw"])
 def test_post_reset_custom_main_hook_event_precedence(
     tmp_path: Path,
-    events: list[dict[str, object]],
+    events: list[dict[str, object]] | None,
     expected_code: str,
     reset_included: bool,
+    raw_payload: str | None,
 ) -> None:
     request = _request(
         tmp_path,
@@ -977,7 +993,7 @@ def test_post_reset_custom_main_hook_event_precedence(
         reset_included=reset_included,
     )
 
-    result = collect(request, _HookFailureExecution(events))
+    result = collect(request, _HookAndRawFailureExecution(events, raw_payload))
 
     assert result.status == "collector_error"
     assert [finding.code for finding in result.findings] == [expected_code]
