@@ -70,8 +70,8 @@ each Flow supports.
 
 ### An Agentic Development Environment
 
-An IDE is built around a person editing code; directing agents from one leaves
-you switching among terminals, logs, the waveform viewer, and the editor. An
+An IDE is built around a person editing code; directing agents with separate
+terminals, logs, and a waveform viewer leaves you switching among them. An
 ADE is built around a person directing agents that edit code. Booley is the
 second kind, for hardware: the Developer Agent writes RTL and testbenches and
 runs the EDA tools, and you set the direction, answer its questions, and judge
@@ -104,9 +104,9 @@ direction is Booley as a **standalone ADE**.
 
 ### LLM Backend Selection
 
-Teams settle on different coding agents, and per-token API billing adds up in
+Teams settle on different Agent CLIs, and per-token API billing adds up in
 a token-hungry workflow like RTL development. Booley works with either
-Developer Agent client: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic).
+Agent CLI: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic).
 `booley.toml [agent] default` picks the one the Developer Agent runs on, and
 `[agent] clis` can list both so a Specialist runs on the other CLI when its
 model needs it ([details](CONFIG.md#agent-clis-agent)). Each platform brings
@@ -184,13 +184,13 @@ Start several Developer Agents and they soon run many EDA tools at once.
 Together those tools can need more memory than the Sandbox has, and the kernel
 then kills one of them for running out of memory (an OOM kill), losing the run.
 
-Booley avoids most of those kills by admitting work against a Memory Budget:
+Booley guards against those kills by admitting work against a Memory Budget:
 the Sandbox's memory limit (`[sandbox].memory`) less a reserve for the agents.
 Every Booley Flow and Specialist run is a Job, and a Job starts when its
 estimated memory fits what the budget has left.
 
-- **Measured, not guessed.** Booley reserves the peak memory the same step
-  used on earlier runs, so nobody guesses how much each EDA tool needs.
+- **Measured, not guessed.** Booley reserves the peak memory the same kind
+  of run used before, so nobody guesses what each EDA tool needs.
   `booley resources` shows those peaks.
 - **Waits instead of failing.** A Job that doesn't fit waits until memory frees
   up. A running Job is never interrupted to make room.
@@ -215,7 +215,7 @@ Settings are in [Jobs](CONFIG.md#jobs--concurrency-jobs); the reasoning is in
 
 Several Developer Agents working in one checkout overwrite each other's edits
 and builds. Run each session in its own linked worktree and branch inside the
-Sandbox instead; the Dashboard shows the sessions and their Jobs side by side,
+Sandbox instead; the Dashboard shows the sessions and their Jobs,
 and [Job Admission](#job-admission) decides how many of their Jobs run at once.
 
 ### Code Coverage
@@ -238,7 +238,7 @@ Coverage needs Verilator; Icarus Targets aren't supported. See
 ### Independent Specialists
 
 A Developer Agent reviewing its own work tends to confirm it. Specialists (the
-Reviewer and Coverage Analyst) are separate LLM agents that Booley runs to
+Reviewer and Coverage Analyst) are separate runs that Booley starts to
 check the Developer Agent's work. A Specialist didn't write the code and has no
 memory of the reasoning behind it, so it judges what is actually there rather
 than what was intended. Each Specialist also starts from a fresh context, free
@@ -354,7 +354,7 @@ Developer Agents with permission prompts off inside the Sandbox, which keeps
 that safe: each Developer Agent runs as a non-root user inside a Docker
 container that sees only the project workspace, not the rest of your machine.
 Internet access is limited to the LLM API through a Booley proxy, so a
-prompt-injection payload has nowhere else to reach. The Sandbox image comes
+prompt-injection payload has nowhere else to reach. The Sandbox Image comes
 with the open-source EDA tools and both Claude Code and Codex preinstalled, and
 you can extend it with your own.
 
@@ -386,7 +386,7 @@ config authoring gate-free from there. See [SETUP.md](SETUP.md).
 
 ### Extensible Toolkit
 
-Many projects need checks no built-in Booley Flow covers: formal verification,
+Many projects need steps no built-in Booley Flow covers: formal verification,
 logic equivalence checking, DFT insertion, custom lint rules, power analysis.
 Add them as project MCP tools in `.booley/mcp_tools/`; the Developer Agent
 discovers and calls them like the built-in ones. See [Custom MCP
