@@ -481,6 +481,12 @@ class StreamingConversion:
                 self._keepalive_fd = None
         self._remove_fifo_if_ours()
 
+    def link_pipe_to(self, path: Path) -> None:
+        """Give the pipe the name *path* without replacing anything there, then drop its old name."""
+        os.link(self.fifo_path, path)
+        self.fifo_path.unlink(missing_ok=True)
+        self.fifo_path = path
+
     def _remove_fifo_if_ours(self) -> None:
         """Unlink the pipe unless it was unlinked or replaced since ``mkfifo``."""
         try:
@@ -528,6 +534,27 @@ def _streaming_failure_kind(return_code: int, inspection: StoreInspection, timed
     return "timed_out" if timed_out else "conversion_failed"
 
 
+def _open_pipe_ends(
+    fifo_path: Path, stderr_path: Path
+) -> tuple[os.stat_result, int, int, IO[str]]:
+    """Open the keepalive and reader ends of *fifo_path* and the converter's stderr file."""
+    import fcntl
+
+    opened: list[int] = []
+    try:
+        fifo_status = fifo_path.lstat()
+        keepalive_fd = os.open(str(fifo_path), os.O_RDWR)
+        opened.append(keepalive_fd)
+        read_fd = os.open(str(fifo_path), os.O_RDONLY | os.O_NONBLOCK)
+        opened.append(read_fd)
+        fcntl.fcntl(read_fd, fcntl.F_SETFL, fcntl.fcntl(read_fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+        return fifo_status, keepalive_fd, read_fd, stderr_path.open("w")
+    except OSError:
+        for descriptor in opened:
+            os.close(descriptor)
+        raise
+
+
 def start_streaming_conversion(
     fifo_path: Path,
     store_path: Path,
@@ -547,8 +574,6 @@ def start_streaming_conversion(
     binary = native_bwave_binary()
     if not binary:
         return None
-    import fcntl
-
     make_directories(store_path.parent)
     if replace_existing:
         fifo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -559,14 +584,14 @@ def start_streaming_conversion(
         if replace_existing:
             raise
         return None
-    fifo_status = fifo_path.lstat()
-    keepalive_fd = os.open(str(fifo_path), os.O_RDWR)
-    read_fd = os.open(str(fifo_path), os.O_RDONLY | os.O_NONBLOCK)
-    fcntl.fcntl(read_fd, fcntl.F_SETFL, fcntl.fcntl(read_fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+    try:
+        fifo_status, keepalive_fd, read_fd, stderr_file = _open_pipe_ends(fifo_path, stderr_path)
+    except OSError:
+        fifo_path.unlink(missing_ok=True)
+        raise
     command = [binary, "build", "-o", str(store_path)]
     if scope:
         command.extend(["--scope", scope])
-    stderr_file = stderr_path.open("w")
     try:
         try:
             process = subprocess.Popen(

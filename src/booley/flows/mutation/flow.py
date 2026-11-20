@@ -311,6 +311,7 @@ def _mutant_work(
         build_dir=pinned.rel,
         run_cwd=resolve_run_cwd(work_dir),
         trace_files=tuple(resolve_trace_files(work_dir)),
+        booley_dir=str(resolve_checkout_booley_dir(work_dir)),
         timeout_s=timeout,
         plusargs=tuple(plusargs),
         runtime_inputs=pinned.runtime_inputs,
