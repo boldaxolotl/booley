@@ -19,8 +19,9 @@ from booley.fusesoc.core_projection import (
     registry_issues,
     render_private_mirror,
 )
+from booley.fusesoc.fusesoc_registry import read_core
 from tests.conftest import symlink_or_skip
-from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.fusesoc_test_support import INHERITED_CORE_TEXT, symlinked_booley_dir
 
 _CORE = "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n"
 
@@ -151,6 +152,19 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
     assert any(path in text for path in (str(root / "rtl"), (root / "rtl").as_posix()))
     assert "native.core" not in text
     assert core.read_text(encoding="utf-8").startswith("CAPI=2:\nname: booley::demo:0")
+
+
+def test_isolated_registry_keeps_inherited_flow_options(tmp_path: Path) -> None:
+    root, core = _project(tmp_path)
+    core.write_text(INHERITED_CORE_TEXT, encoding="utf-8")  # #5077
+    (root / ".booley" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+
+    generated = reconcile_isolated_registry(root).written[0]
+
+    options = read_core(generated)["targets"]["synth_child"]["flow_options"]
+    assert options.get("frontend") == "slang"
 
 
 def test_isolated_registry_resolves_fileset_symlink_but_preserves_file_parameter(

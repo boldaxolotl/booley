@@ -38,6 +38,7 @@ import yaml
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict, as_str
+from booley.fusesoc import fusesoc_registry
 
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
 from .record_reports import simulation_booley_dir
@@ -289,7 +290,7 @@ def capture_core_closure(
             )
             if not core_file.is_relative_to(root) or not core_file.is_file():
                 return None
-            if has_generated_core_behavior(yaml.safe_load(core_file.read_text(encoding="utf-8"))):
+            if has_generated_core_behavior(fusesoc_registry.read_core(core_file)):
                 return None
             relative = (
                 generation_neutral_core_path(core_file, project_root, generation)
@@ -297,7 +298,7 @@ def capture_core_closure(
             )
             closure[str(name)] = f"{relative}:{hash_file(core_file)}"
         return closure
-    except (OSError, UnicodeError, yaml.YAMLError):
+    except (OSError, UnicodeError, yaml.YAMLError, fusesoc_registry.FuseSocError):
         return None
 
 

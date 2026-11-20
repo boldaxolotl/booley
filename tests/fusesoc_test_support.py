@@ -40,6 +40,35 @@ CORE_TEXT = textwrap.dedent(
     """
 )
 
+# #5077: children merge a base with ``<<:`` and add their own ``flow_options`` keys.
+INHERITED_CORE_TEXT = textwrap.dedent(
+    """\
+    CAPI=2:
+    name: booley::inherit:0
+    filesets:
+      rtl:
+        files: [rtl/top.sv]
+    targets:
+      synth_base: &synth_base
+        flow: generic
+        filesets: [rtl]
+        flow_options:
+          synth_mode: logical
+          frontend: slang
+          booley: {doctor: [synth]}
+      synth_child:
+        <<: *synth_base
+        flow_options: {tool: yosys, arch: xilinx}
+      sim_base: &sim_base
+        flow: sim
+        filesets: [rtl]
+        flow_options: {cocotb_module: test_top, verilator_options: [--timing]}
+      sim_child:
+        <<: *sim_base
+        flow_options: {tool: verilator}
+    """
+)
+
 
 def touch_declared_sources(core: Path) -> None:
     """Create empty files for every literal fileset path *core* declares."""
