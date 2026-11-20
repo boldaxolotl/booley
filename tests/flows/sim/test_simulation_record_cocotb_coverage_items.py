@@ -252,7 +252,7 @@ class _RuntimeCheckingExecution(NativeExecution):
     ) -> None:
         super().bind_authenticated_attempt(bundle_root, evidence_root, run_cwd, verify_bundle)
         assert (run_cwd / "data/stimulus.bin").read_bytes() == (b"authenticated runtime input")
-        assert self.lease_retained
+        assert self.lease_open
         self.bound = True
 
     def run(self, request):

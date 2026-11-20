@@ -51,7 +51,6 @@ class NativeExecution:
         self.verify_bundle = None
         self.evidence_root = None
         self.lease_open = False
-        self.lease_retained = False
 
     @contextmanager
     def retaining_build_lease(self):
@@ -61,7 +60,6 @@ class NativeExecution:
             yield
         finally:
             self.lease_open = False
-            self.lease_retained = True
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
