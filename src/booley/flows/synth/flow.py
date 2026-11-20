@@ -112,7 +112,7 @@ from booley.flows.synth.timing import (
     parse_perclock,
     parse_unconstrained_timing,
 )
-from booley.flows.synth.warnings import WarningSummary
+from booley.flows.synth.warnings import REMOVED_ALLOWANCE_KEYS, WarningSummary
 from booley.flows.terminal_progress import ProgressText
 from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
@@ -1347,7 +1347,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement, verdict, and report "
         "policy such as enabled, timeout_ms, expected_latches, "
-        "expected_comb_loops, fail_on_timing_violation, and timing_report_paths."
+        "expected_comb_loops, expected_removed_comb_loops, "
+        "expected_removed_multi_driven, fail_on_timing_violation, and "
+        "timing_report_paths."
     )
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
@@ -1862,6 +1864,10 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             result.returncode,
             stdout=result.stdout,
             is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
+            expected_removed={
+                category: expected_count("synth", self.args.work_dir, key)
+                for category, key in REMOVED_ALLOWANCE_KEYS.items()
+            },
         )
         output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
         return outcome, output
@@ -2730,11 +2736,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             lines.append(self._format_critical_line(tgt, cur))
         if cur.warning_summary.total_warnings:
             lines.append(self._format_warning_line(tgt, cur))
-            lines.extend(
-                note_line(tgt, "WARNING", f"{group.message} {group.rationale}")
-                for group in cur.warning_summary.representatives
-                if group.category == "combinational_loop" and group.disposition == "advisory"
-            )
+            lines.extend(self._removed_warning_lines(tgt, cur))
         if cur.openroad_reuse:
             lines.append(self._format_reuse_line(tgt, cur.openroad_reuse))
         if cur.failure_output:
@@ -3079,6 +3081,19 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
         return note_line(tgt, "CRITICAL", ", ".join(parts))
+
+    @staticmethod
+    def _removed_warning_lines(tgt: str, cur: SynthMetrics) -> list[str]:
+        """Show each earlier-pass loop or driver warning that optimization removed, with its reason."""
+        return [
+            note_line(
+                tgt,
+                "NOTE" if group.disposition == "informational" else "WARNING",
+                f"{group.message} {group.rationale}",
+            )
+            for group in cur.warning_summary.representatives
+            if group.removed
+        ]
 
     @staticmethod
     def _format_warning_line(tgt: str, cur: SynthMetrics) -> str:

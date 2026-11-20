@@ -128,6 +128,9 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
         ("trace_convert_timeout_ms", "sim", "lint", 1_800_000),
         ("fail_on_timing_violation", "synth", "lint", True),
         ("timing_report_paths", "synth", "lint", 10),
+        # Only synth has the warning inventory these reviewed counts apply to.
+        ("expected_removed_comb_loops", "synth", "fpga", 1),
+        ("expected_removed_multi_driven", "synth", "fpga", 1),
         ("warnings_as_errors", "lint", "sim", False),
         # trace_files declares the TB's own dump path; only simulate reads it.
         ("trace_files", "sim", "lint", ["fpu.vcd"]),

@@ -9,6 +9,10 @@ Structural counts come from two Yosys ``check`` passes: the pre-mapping check
 because mapped library cells are black boxes to ``check``; the reported loop
 count is the larger of the two. The final check owns multi-driven nets after
 mapping.
+
+A loop or driver warning from an earlier pass that the completed checks no
+longer find was removed by optimization, not reviewed: it stays actionable
+until the Project declares its count (``REMOVED_ALLOWANCE_KEYS``).
 """
 
 from __future__ import annotations
@@ -24,6 +28,18 @@ WarningDisposition = Literal["benign", "advisory", "structural", "informational"
 # Identity of one warning group: the `_WarningRecord` fields `_warning_summary` counts by
 # (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
 _GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
+
+# Structural category -> the ``[flows.synth]`` key declaring how many earlier-pass
+# warnings of that category the Project reviewed.
+REMOVED_ALLOWANCE_KEYS: dict[str, str] = {
+    "combinational_loop": "expected_removed_comb_loops",
+    "multi_driver": "expected_removed_multi_driven",
+}
+# Only the final check counts multi-driven nets, so its rationale names that check.
+_REMOVED_EVIDENCE = {
+    "combinational_loop": "the completed structural checks find no combinational loops",
+    "multi_driver": "the completed final check finds no multi-driven nets",
+}
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
@@ -76,6 +92,11 @@ class WarningGroup:
     truncated: bool
     count: int
     rationale: str | None = None
+
+    @property
+    def removed(self) -> bool:
+        """True for an earlier-pass loop or driver warning the completed checks no longer find."""
+        return self.rationale is not None and self.category in REMOVED_ALLOWANCE_KEYS
 
     def to_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -285,7 +306,58 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
     return result
 
 
-def _records(sources: Mapping[str, str], structural: StructuralConditions) -> list[_WarningRecord]:
+def _removed_rationale(category: str, seen: int, declared: int) -> str:
+    key = REMOVED_ALLOWANCE_KEYS[category]
+    verdict = (
+        "Declared as reviewed"
+        if seen <= declared
+        else "Removed is not reviewed: check the RTL, then fix it or declare the count"
+    )
+    return (
+        f"An earlier synthesis pass reported this; {_REMOVED_EVIDENCE[category]}, "
+        f"so optimization removed it. {verdict}: "
+        f"[flows.synth].{key} (this run {seen}, declared {declared})."
+    )
+
+
+def _annotate_removed(
+    records: list[_WarningRecord],
+    structural: StructuralConditions,
+    expected_removed: Mapping[str, int],
+) -> list[_WarningRecord]:
+    """Mark earlier-pass loop and driver warnings the completed checks no longer find.
+
+    They stay actionable unless the Project declared at least their count, so
+    one more than declared warns again.
+    """
+    if not structural.complete:
+        return records
+    remaining = {
+        "combinational_loop": structural.comb_loops,
+        "multi_driver": structural.multi_driven,
+    }
+    seen = Counter(item.category for item in records)
+    result: list[_WarningRecord] = []
+    for item in records:
+        if remaining.get(item.category, 1):
+            result.append(item)
+            continue
+        declared = expected_removed.get(item.category, 0)
+        result.append(
+            replace(
+                item,
+                disposition="informational" if seen[item.category] <= declared else "advisory",
+                rationale=_removed_rationale(item.category, seen[item.category], declared),
+            )
+        )
+    return result
+
+
+def _records(
+    sources: Mapping[str, str],
+    structural: StructuralConditions,
+    expected_removed: Mapping[str, int],
+) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
         text = sources.get(source, "")
@@ -295,21 +367,10 @@ def _records(sources: Mapping[str, str], structural: StructuralConditions) -> li
             records.extend(_openroad_records(text))
         elif source == "sv2v":
             records.extend(_sv2v_records(text))
+        elif source == "final_check":
+            records.extend(_yosys_records(text))
         else:
-            parsed = _yosys_records(text)
-            if source != "final_check" and structural.complete and structural.comb_loops == 0:
-                parsed = [
-                    replace(
-                        item,
-                        disposition="advisory",
-                        rationale="Earlier synthesis pass reported this loop; the completed "
-                        "post-optimisation check reports no combinational loops.",
-                    )
-                    if item.category == "combinational_loop"
-                    else item
-                    for item in parsed
-                ]
-            records.extend(parsed)
+            records.extend(_annotate_removed(_yosys_records(text), structural, expected_removed))
     return records
 
 
@@ -352,7 +413,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     ]
     groups.sort(
         key=lambda item: (
-            not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            not item.removed,
             item.disposition == "informational",
             item.tool,
             item.code or "",
@@ -399,10 +460,15 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
     )
 
 
-def parse_synth_diagnostics(sources: Mapping[str, str]) -> SynthDiagnostics:
-    """Parse fresh stage text into bounded warnings and structural conditions."""
+def parse_synth_diagnostics(
+    sources: Mapping[str, str], expected_removed: Mapping[str, int] | None = None
+) -> SynthDiagnostics:
+    """Parse fresh stage text into bounded warnings and structural conditions.
+
+    ``expected_removed`` maps a ``REMOVED_ALLOWANCE_KEYS`` category to its declared count.
+    """
     structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources, structural)),
+        warnings=_warning_summary(_records(sources, structural, expected_removed or {})),
         structural=structural,
     )

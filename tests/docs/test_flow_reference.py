@@ -126,6 +126,8 @@ def test_synth_help_lists_live_policy_keys():
         "timeout_ms",
         "expected_latches",
         "expected_comb_loops",
+        "expected_removed_comb_loops",
+        "expected_removed_multi_driven",
         "fail_on_timing_violation",
         "timing_report_paths",
     ):
@@ -138,7 +140,12 @@ def test_synth_help_lists_live_policy_keys():
 def test_structural_allowance_knobs_documented_per_flow() -> None:
     """Each Flow's user page documents its own allowance keys in ``## Configuration``."""
     expected = {
-        "FLOW-SYNTH.md": ("expected_latches", "expected_comb_loops"),
+        "FLOW-SYNTH.md": (
+            "expected_latches",
+            "expected_comb_loops",
+            "expected_removed_comb_loops",
+            "expected_removed_multi_driven",
+        ),
         "FLOW-FPGA.md": ("expected_latches", "expected_comb_loops"),
     }
     for page, keys in expected.items():

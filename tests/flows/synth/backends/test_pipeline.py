@@ -513,7 +513,7 @@ class TestBoundaryOutput:
             if group.category == "combinational_loop"
         )
         assert "\\feedback" in loop.message
-        assert "completed post-optimisation check" in loop.rationale
+        assert "completed structural checks find no combinational loops" in loop.rationale
         # Both checks reach run.log, the pre-mapping one first.
         assert outcome.text.index("--- premap_check_dut.txt ---") < outcome.text.index(
             "--- check_dut.txt ---"

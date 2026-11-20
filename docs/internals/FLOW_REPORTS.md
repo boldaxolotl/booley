@@ -223,6 +223,12 @@ Actionable warnings (dispositions `advisory` and `structural`) set
 `implementation.status.grade` to `warn` but keep `passed: true`. Located
 frontend warnings are counted too and never set `warn`.
 
+A loop or multi-driven warning from an earlier pass that the completed
+structural checks no longer find carries a `rationale` and is `advisory`:
+optimization removed the structure, which is not a review of the RTL. It is
+`informational` only while its count is within
+`[flows.synth].expected_removed_comb_loops` or `expected_removed_multi_driven`.
+
 ## `fpga`
 
 `fpga_<slug>.json`, also published as `fpga/<N>/targets/<slug>.json`, is the

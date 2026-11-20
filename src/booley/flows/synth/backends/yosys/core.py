@@ -449,8 +449,8 @@ def _build_yosys_script(
     # artifact gives result interpretation an exact final count without
     # duplicating it in yosys.log. The final check supplies multi-driven nets
     # and completeness after mapping; loops through mapped black-box cells are
-    # invisible to it, so the pre-mapping check supplies the loop count. Loops seen
-    # only by ``synth``'s first check (removed by optimization) remain advisory.
+    # invisible to it, so the pre-mapping check supplies the loop count. A warning
+    # only ``synth``'s own checks report stays actionable: removed is not reviewed.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
     final_check = (
         "select -assert-none =A:booley_check_library=1; "
