@@ -488,7 +488,7 @@ def test_declared_stream_monitor_stops_with_the_run(
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     session = TraceSession(tmp_path / "work")
-    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run_dir, tmp_path / ".booley")
     before = set(threading.enumerate())
 
     try:

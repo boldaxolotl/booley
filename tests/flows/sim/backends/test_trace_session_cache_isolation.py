@@ -176,7 +176,8 @@ def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path,
     run_dir.mkdir()
     raw_vcd = run_dir / "dump.vcd"
     raw_vcd.write_text("$date\n$end\n", encoding="utf-8")
-    leaked_diagnostic = run_dir / "trace.fst.stderr"
+    beside_vcd = run_dir / "trace.fst.stderr"
+    beside_vcd.write_text("mine\n", encoding="utf-8")
 
     def _fail(_vcd_path: Path, bwave_path: Path, **_kwargs):
         from booley.bwave.waveform_store import ConversionResult
@@ -199,5 +200,5 @@ def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path,
 
         assert not raw_vcd.exists()
         assert (work / "trace.vcd").is_file()
-        assert not leaked_diagnostic.exists()
+        assert beside_vcd.read_text(encoding="utf-8") == "mine\n"
         assert session.persisted_stderr_path.read_text(encoding="utf-8") == ("conversion failed\n")

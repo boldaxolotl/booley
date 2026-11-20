@@ -481,6 +481,12 @@ class StreamingConversion:
                 self._keepalive_fd = None
         self._remove_fifo_if_ours()
 
+    def link_pipe_to(self, path: Path) -> None:
+        """Give the pipe the name *path* without replacing anything there, then drop its old name."""
+        os.link(self.fifo_path, path)
+        self.fifo_path.unlink(missing_ok=True)
+        self.fifo_path = path
+
     def _remove_fifo_if_ours(self) -> None:
         """Unlink the pipe unless it was unlinked or replaced since ``mkfifo``."""
         try:

@@ -887,6 +887,7 @@ def test_mutant_launch_forwards_the_project_sim_settings(tmp_path: Path, monkeyp
     assert work.pass_sentinels == ("Correct operation validated.",)
     assert work.fail_sentinels == ("ERROR!",)
     assert work.trace_files == ("fpu.vcd",)
+    assert work.booley_dir == str(tmp_path / ".booley")
 
 
 @pytest.mark.parametrize("outcome", ["detected", "survived", "inconclusive"])
