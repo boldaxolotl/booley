@@ -105,7 +105,7 @@ def input_findings(checkout: Path, roots: Sequence[LiveRoot]) -> list[str]:
     """Findings for committed symlinks and authored files of *checkout* that reach a live root."""
     config_dir = in_checkout_booley_dir(checkout)
     # Of the Booley Directory, only what a checkout run reads: the Project configuration
-    # in use, the Tests and the Target Metrics. No Flow reads another file there, and a
+    # in use, ``tests.toml`` and ``metrics.toml``. No Flow reads another file there, and a
     # Doctor waiver's subject (``doctor-waivers.toml``) may be a path in the live tree.
     configuration = [checkout / "booley.toml", checkout / "fusesoc.conf", resolve_toml(config_dir)]
     configuration += [config_dir / "tests.toml", config_dir / "metrics.toml"]
