@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -1088,6 +1089,7 @@ def _interrupt_coverage_collection(
     boundary=None,
     no_waivers=False,
     signalled=False,
+    report_dir=None,
 ):
     """Interrupt a coverage run before its collection records a result.
 
@@ -1098,6 +1100,7 @@ def _interrupt_coverage_collection(
     SIGTERM does: only the handler's progress abort runs.
     """
     reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
+    reports = report_dir or reports
 
     class Interrupted(NativeExecution):
         def run(self, request):
@@ -1402,23 +1405,56 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     assert result.outcome.detail[state] == list(getattr(observed, state))
 
 
-@pytest.mark.parametrize("no_waivers", [True, False], ids=["repeats", "omits-by-default"])
-def test_resume_refusal_hint_repeats_no_waivers_only_when_requested(
-    tmp_path, monkeypatch, no_waivers
+@pytest.mark.parametrize(
+    ("selected", "no_waivers", "root", "expected"),
+    [
+        pytest.param(("reset",), False, None, ["--test=reset@1", "--coverage"], id="subset"),
+        pytest.param(
+            None,
+            True,
+            "my reports",
+            ["--coverage", "--no-waivers", "--report-dir"],
+            id="default-suite",
+        ),
+        pytest.param(
+            ("wrap@7", "reset"),
+            False,
+            "my reports",
+            ["--test=reset@1", "--test=wrap@7", "--coverage", "--report-dir"],
+            id="seeded",
+        ),
+    ],
+)
+def test_resume_refusal_command_repeats_the_record(
+    tmp_path, monkeypatch, selected, no_waivers, root, expected
 ):
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    report_root = tmp_path / (root or ".booley/flow-reports")
     reports, _request = _interrupt_coverage_collection(
-        tmp_path, monkeypatch, no_waivers=no_waivers
+        tmp_path, monkeypatch, selected=selected, no_waivers=no_waivers, report_dir=report_root
     )
-    result = _coverage(
-        tmp_path,
-        resume_from=reports / "sim/1/targets/sim_0/record/manifest.json",
-    )
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    texts = {
+        _coverage(tmp_path, resume_from=manifest, dry_run=dry_run).outcome.report_text
+        for dry_run in (False, True)
+    }
+    assert len(texts) == 1
+    text = texts.pop()
+    line = next(line for line in text.splitlines() if "booley flow sim" in line)
+    if expected[-1] == "--report-dir":
+        expected = [*expected, str(report_root)]
+    assert shlex.split(line) == ["booley", "flow", "sim", "--target", "sim_0", *expected]
+    assert "Add the original" not in text
+    argv = shlex.split(line)[3:]
+    request = SimulateFlow().parse_args(["--work-dir", str(tmp_path), *argv])
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(request)
+    assert result.exit_code == 0
 
-    assert result.exit_code == 2
-    hint = next(
-        line for line in result.outcome.report_text.splitlines() if "booley flow sim" in line
-    )
-    assert hint.endswith("--coverage --no-waivers" if no_waivers else "--coverage")
+    def frozen(root_dir, number):
+        path = root_dir / f"sim/{number}/targets/sim_0/record/manifest.json"
+        return json.loads(path.read_text())["work_items"][0]["test_runs"]
+
+    assert frozen(report_root, 2) == frozen(report_root, 1)
 
 
 def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):
