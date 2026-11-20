@@ -270,17 +270,20 @@ def require_usable_report_dir(report_dir: str | os.PathLike[str]) -> None:
     raise ReportDirError(f"argument --report-dir: cannot write reports to '{given}': {reason}")
 
 
+def runtime_report_root(endpoint_kind: str) -> Path | None:
+    """Report root under ``BOOLEY_RUNTIME_DIR``, or None when the variable is unset."""
+    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
+    if not runtime_env:
+        return None
+    return Path(runtime_env) / ("flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports")
+
+
 def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
     # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
     # report-dir: CLI flag wins, then env var, then None
     if args.report_dir is None:
-        runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-        report_leaf = "flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports"
-        if runtime_env:
-            args.report_dir = Path(runtime_env) / report_leaf
-        else:
-            args.report_dir = None
+        args.report_dir = runtime_report_root(endpoint_kind)
     else:
         require_usable_report_dir(args.report_dir)
