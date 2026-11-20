@@ -318,10 +318,13 @@ a delivered field from the request or config. A missing report limits the claim
 without blocking post-gate reporting.
 
 Before scratch cleanup, snapshot the cited reports and required linked artifacts
-in a run-owned evidence subtree under the resolved Booley Directory, recording
-original path, source digest and cited field paths. Cite the retained copies in the
-report and summary, keeping original paths as provenance. Keep the snapshots
-outside the run's scratch root so Step 7 does not remove them.
+into `.booley/setup-evidence/<run-id>/` (`setup-evidence/<run-id>/` in the
+resolved Booley Directory; `<run-id>` is the run ID in the plan's §3 Execution
+ledger), recording original path, source digest and cited field paths. The
+Booley Directory's ignore rules exclude `setup-evidence/`, so Git ignores the
+copies. Cite the retained copies in the report and summary, keeping original
+paths as provenance. That directory lies outside the run's scratch root, so
+Step 7 does not remove it.
 
 After each setup-owned Feedback render, Step 6 adds or replaces one Delivered Flow
 results section at its returned path; the final summary quotes the same evidence

@@ -170,7 +170,10 @@ Call synthetic evidence synthetic and sanitized, never guaranteed anonymous.
 The CLI withholds `unknown`, `project`, and findings missing required evidence;
 explain omissions without inventing evidence or changing ownership to pass export.
 If nothing exports or a useful unresolved observation is withheld, write a separate
-sanitized Markdown report in the feedback storage directory described above.
+sanitized Markdown report to `tmp/feedback/MANUAL-FEEDBACK.md` in the feedback
+storage directory described above, where Git ignores it: in a Project the Booley
+Directory's `tmp/` rule covers it, and a Booley source checkout keeps that
+directory in Git's own metadata.
 Label it manually prepared; include only reviewed facts, expectations, available
 versions, workaround status, and explicit unknowns, with no private reproduction.
 Inspect it as above.
