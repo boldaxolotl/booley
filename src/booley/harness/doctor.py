@@ -287,7 +287,7 @@ class _DoctorFlowRuntime:
             raise self.startup_error
         if self.container_name is None:
             try:
-                self.container_name = session_runtime.up(self.project_root)
+                self.container_name = session_runtime.up_without_recovery(self.project_root)
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
@@ -850,6 +850,8 @@ def run_doctor_result(
     report_progress("host/project checks")
     docker_exe, project = _run_project_phase(project_root, reporter)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
+    if flow_runtime is not None:
+        _check_sandbox_recovery(flow_runtime, reporter)
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
     _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
@@ -861,6 +863,26 @@ def run_doctor_result(
     if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.common_booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
+
+
+def _check_sandbox_recovery(flow_runtime: _DoctorFlowRuntime, reporter: _Reporter) -> None:
+    """Warn, before any Sandbox entry, when a lifecycle command must complete recovery."""
+    if flow_runtime.inside:
+        return
+    try:
+        pending = session_runtime.recovery_pending()
+    except session_runtime.SessionError as exc:
+        flow_runtime.startup_error = exc
+        return
+    if pending:
+        flow_runtime.startup_error = session_runtime.RecoveryPendingError()
+        reporter.warn_(
+            warning(
+                "host.sandbox-recovery-pending",
+                f"{flow_runtime.startup_error}; Doctor skips the checks that need the Sandbox",
+            ),
+            "run `booley session up`, which completes the recovery, then rerun `booley doctor`",
+        )
 
 
 def _report_deep_currency(
@@ -5713,6 +5735,9 @@ def _prepare_selftest_invocation(
             test_override=case.test,
             doctor_selftest_kind=kind,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        _skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
@@ -6244,6 +6269,9 @@ def _doctor_flow_command(
             dry_run=dry_run,
             flow_runtime=flow_runtime,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",
