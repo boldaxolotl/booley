@@ -52,10 +52,10 @@ from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
     _validated_resume,
+    as_if_the_sandbox_restarted,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
-from tests.flows.sim.test_staged_input_ledger import as_if_the_sandbox_restarted
 from tests.time_budget import hang_guard_s
 
 _DURABLE_BOUNDARIES = (

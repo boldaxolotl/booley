@@ -35,7 +35,7 @@ from tests.flows.mutation.test_flow import (
     _prepare_scope_files,
 )
 from tests.flows.sim.launched_work import launched_work
-from tests.flows.sim.test_staged_input_ledger import as_if_the_sandbox_restarted
+from tests.flows.sim.simulation_record_test_support import as_if_the_sandbox_restarted
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="stand-in V<top> is a POSIX shell script")
 

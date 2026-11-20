@@ -40,16 +40,12 @@ def _dead_owner() -> dict[str, object]:
     return identity.to_payload()
 
 
+# A namespace scope parses only with a Linux identity kind, which Windows owners lack.
+_FOREIGN_SCOPE = {"identity_kind": "linux-procfs-start"}
+
+
 def _refuse_locks(*_args: object, **_kwargs: object) -> None:
     raise OSError(errno.ENOLCK, "no locks")
-
-
-def as_if_the_sandbox_restarted(booley_dir: Path) -> None:
-    """Rewrite each record as one from an earlier Sandbox lifetime looks from the new one."""
-    for record in (booley_dir / ".runtime/staged-runtime-inputs").glob("*.json"):
-        document = json.loads(record.read_text(encoding="utf-8"))
-        document["owner"]["identity_scope"] = "pid:[earlier-lifetime]"
-        record.write_text(json.dumps(document), encoding="utf-8")
 
 
 class _Case:
@@ -84,7 +80,10 @@ class _Case:
     def die(self, scope: str | None = None, *, locked: bool = True) -> None:
         """Leave what a killed owner leaves: the record, and its lock released."""
         document = json.loads(self.record.read_text(encoding="utf-8"))
-        document["owner"] = {**_dead_owner(), **({"identity_scope": scope} if scope else {})}
+        document["owner"] = {
+            **_dead_owner(),
+            **({**_FOREIGN_SCOPE, "identity_scope": scope} if scope else {}),
+        }
         if not locked:
             document["version"] = 1
         self.ledger.discard()
@@ -143,11 +142,12 @@ def test_a_live_or_foreign_owner_is_never_acted_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locked: bool
 ) -> None:
     if not locked:
+        # No public entry point makes a filesystem refuse locks.
         monkeypatch.setattr(staged_input_ledger, "acquire_file_lock", _refuse_locks)
     case = _Case(tmp_path)
     assert case.lock.exists() is locked
     assert sweep_cancelled_run_inputs(case.booley) == frozenset()
-    case.set_owner({**_dead_owner(), "identity_scope": "pid:[foreign]"})
+    case.set_owner({**_dead_owner(), **_FOREIGN_SCOPE, "identity_scope": "pid:[foreign]"})
     assert sweep_cancelled_run_inputs(case.booley) == frozenset()
     assert (case.run / case.file).exists() and (case.run / case.link).is_symlink()
     assert case.record.exists()
