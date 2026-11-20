@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -324,7 +325,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     assert command == (
         "booley flow sim --target sim_0 "
         + " ".join(f"--test={name}" for name in names)
-        + " --coverage"
+        + f" --coverage --report-dir {shlex.quote(str(reports))}"
     )
     # The named command resolves to exactly the frozen Test Runs: nothing is drawn.
     replayed = load_target_test_plan(
