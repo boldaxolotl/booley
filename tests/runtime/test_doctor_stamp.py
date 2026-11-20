@@ -9,15 +9,6 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import doctor_stamp
-from booley.runtime.booley_dir import reset_cache
-
-
-@pytest.fixture(autouse=True)
-def isolate_project_cache():
-    """Environment monkeypatch restoration must also release the resolver's cached Project."""
-    reset_cache()
-    yield
-    reset_cache()
 
 
 def _write_project(root: Path) -> Path:
