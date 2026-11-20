@@ -132,6 +132,7 @@ def test_uninspectable_projections_are_not_current(tmp_path, monkeypatch):
     def broken(_root):
         raise core_projection.CoreProjectionError("conflict")
 
+    # Patched: no public entry point makes Booley's own projection inspection raise.
     monkeypatch.setattr(core_projection, "projection_enabled", lambda _root: True)
     monkeypatch.setattr(core_projection, "projection_issues", broken)
     assert not readiness.stealth_projections_current(project)

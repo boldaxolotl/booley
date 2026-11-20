@@ -124,11 +124,6 @@ def check_guidance(project: ProjectAudit) -> DiagnosticReport:
     return report.report()
 
 
-def _stealth_enabled(project: ProjectAudit) -> bool:
-    stealth = project.booley_toml.get("stealth")
-    return isinstance(stealth, Mapping) and stealth.get("enabled") is True
-
-
 def stealth_projections_current(project: ProjectAudit) -> bool:
     """Whether resolving a Target would leave the root-level core projections as they are."""
     if not core_projection.projection_enabled(project.project_root):
@@ -142,9 +137,9 @@ def stealth_projections_current(project: ProjectAudit) -> bool:
 def check_stealth_cores(project: ProjectAudit) -> DiagnosticReport:
     """Grade authored cores and inspect generated projections; never repairs."""
     report = Findings()
-    _check_stealth_cores(
-        project.project_root, project.booley_dir, report, stealth_enabled=_stealth_enabled(project)
-    )
+    stealth = project.booley_toml.get("stealth")
+    enabled = isinstance(stealth, Mapping) and stealth.get("enabled") is True
+    _check_stealth_cores(project.project_root, project.booley_dir, report, stealth_enabled=enabled)
     return report.report()
 
 

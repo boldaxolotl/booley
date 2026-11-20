@@ -114,23 +114,25 @@ def test_project_initialization_runs_without_docker_or_host_private_state(
         project, project / ".booley", {"stealth": {"enabled": True}}, {}, ""
     )
 
-    def readiness_findings() -> list[tuple[str | None, str]]:
+    def readiness_findings(*, ignore_exclude: bool) -> list[tuple[str | None, str]]:
         reports = (readiness.check_guidance(audit), readiness.check_stealth_cores(audit))
         return [
             (finding.check_id, finding.fix)
             for report in reports
             for finding in report.findings
             if finding.severity in {Severity.WARN, Severity.FAIL}
-            and "not excluded" not in finding.message
+            and not (ignore_exclude and "not excluded" in finding.message)
         ]
 
-    before = readiness_findings()
+    before = readiness_findings(ignore_exclude=True)
     assert [check_id for check_id, _fix in before] == ["guidance.links-unhealthy", None]
     assert all("booley init" in fix for _check_id, fix in before)
 
     results = _initialize(project, agent=CLAUDE)
 
-    assert readiness_findings() == []  # the named command cleared both findings
+    assert (
+        readiness_findings(ignore_exclude=False) == []
+    )  # the named command cleared both findings
     assert [result for result in results if result.status == "err"] == []
     assert len(list(project.glob(PROJECTED_CORE_GLOB))) == 1  # the Stealth core was projected
     assert (project / "AGENTS.md").exists()  # the guidance link was created

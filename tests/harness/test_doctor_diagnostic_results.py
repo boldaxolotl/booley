@@ -419,16 +419,17 @@ def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, m
     assert "booley init" in links.fix
     assert "booley init" in stale.fix
     assert [
-        (f["severity"], f["check_id"], f["message"])
+        (f["severity"], f["check_id"], f["message"], f["fix"])
         for f in automatic["findings"]
         if f["severity"] in {"warn", "fail"}
-    ] == [(f.severity, f.check_id, f.message) for f in graded]
+    ] == [(f.severity, f.check_id, f.message, f.fix) for f in graded]
     assert {k: automatic["counts"][k] for k in ("warn", "fail")} == {
         k: manual.counts[k] for k in ("warn", "fail")
     }
     messages = [f.message for f in manual.findings]
     skip = "skipped - stealth core projections are not current"
     assert f"Flow dry-runs {skip}" in messages
+    assert f"Flow dry-runs {skip}" in [f["message"] for f in automatic["findings"]]
     if deep:
         assert f"deep checks {skip}" in messages
         assert manual.deep_status is not None

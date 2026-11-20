@@ -164,25 +164,6 @@ class TestStealthCoresCheck:
 
         assert any("stealth mode is disabled" in msg for msg in rec.fails())
 
-    def test_missing_projection_is_reported_without_creating_it(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (booley_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-
-        assert any("projections are not current" in message for message in rec.fails())
-        assert not (root / ".booley-projected-s.core").exists()
-
 
 _SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
 
