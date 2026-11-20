@@ -19,6 +19,7 @@ from booley.config.gateway import (
 )
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
+from booley.core.boundary import as_dict
 from booley.core.config_paths import resolve_toml
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
@@ -170,9 +171,8 @@ def required_agent_clis(default_cli: str, models: object) -> frozenset[str]:
     is the raw ``[models]`` value, read fail-soft: a non-table, a non-string pin, or an
     unknown model prefix adds nothing (``agent.backend-health`` reports an invalid one).
     """
-    if not isinstance(models, dict):
-        return frozenset({default_cli})
-    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
+    pins = as_dict(models, default={}).values()
+    pinned = (cli_for_model(pin.strip()) for pin in pins if isinstance(pin, str))
     return frozenset({default_cli, *(cli for cli in pinned if cli)})
 
 

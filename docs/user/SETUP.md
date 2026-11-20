@@ -117,7 +117,7 @@ Initialization walks through:
 
 1. Creates `.booley/` with starter config files
 2. Records your default Agent CLI and auth policy
-3. Checks credentials for each Agent CLI in `clis`
+3. Checks credentials for each Agent CLI the Project allows
 4. Prepares the Project's Sandbox Image: the Docker image your agent and EDA
    tools run in, built on top of Booley's base image
 5. Installs Booley's Git hooks
