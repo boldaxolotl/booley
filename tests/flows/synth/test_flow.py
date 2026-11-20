@@ -3298,7 +3298,7 @@ class TestFileBasedInterpretation:
         for evidence in (
             "$add$rtl.sv:7$1",
             "\\feedback",
-            "completed post-optimisation check reports no combinational loops",
+            "completed structural checks find no combinational loops",
         ):
             assert evidence in result.report_text
         target = result.detail["lite"]
@@ -5961,7 +5961,7 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
         EXIT_SUCCESS if clean else EXIT_FAILURE if available else EXIT_ERROR
     )
     assert (
-        "completed post-optimisation check reports no combinational loops" in result.report_text
+        "completed structural checks find no combinational loops" in result.report_text
     ) is clean
     if clean:
         assert report["implementation"]["status"]["grade"] == "warn"
@@ -6000,9 +6000,34 @@ def test_captured_comb_loop_cases_reach_verdict(
     else:
         assert report["passed"] is True
         assert report["implementation"]["status"]["grade"] == "warn"
-        assert "completed post-optimisation check reports no combinational loops" in (
-            result.report_text
-        )
+        assert "completed structural checks find no combinational loops" in (result.report_text)
+
+
+@pytest.mark.parametrize(
+    ("declared", "grade", "label"), [(8, "pass", "NOTE"), (7, "warn", "WARNING")]
+)
+def test_declared_removed_loops_pass_and_one_more_warns(
+    flow_and_state, tmp_path, declared, grade, label
+):
+    # The captured transient loop (#1417) is 8 earlier-pass warnings. Declaring
+    # all 8 with expected_comb_loops ends PASS with notes; 7 still warns (#4866).
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "cell": "NAND2",
+            "extra_toml": f"expected_comb_loops = {declared}\n",
+            "artifacts": load_capture("transient_loop_yosys_0_70.txt"),
+        },
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert report["implementation"]["status"]["grade"] == grade
+    assert f"RESULT: {grade.upper()}" in result.report_text
+    loop_lines = [line for line in result.report_text.splitlines() if "found logic loop" in line]
+    assert loop_lines
+    assert all(f"{label} --" in line for line in loop_lines)
+    assert all(f"(this run 8, declared {declared})" in line for line in loop_lines)
 
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
@@ -6036,7 +6061,7 @@ def test_earlier_loop_report_survives_representative_saturation(
     assert "RESULT: WARN" in result.report_text
     assert "CRITICAL" not in result.report_text
     assert "$add$rtl.sv:7$1" in result.report_text
-    assert "completed post-optimisation check reports no combinational loops" in result.report_text
+    assert "completed structural checks find no combinational loops" in result.report_text
     assert str(raw) in result.report_text
     groups = result.detail["lite"]["warning_summary"]["representatives"]
     assert len(groups) == 8

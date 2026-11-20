@@ -751,6 +751,7 @@ def boundary_output(
     *,
     is_stale: Callable[[Path], bool],
     stdout: str = "",
+    expected_comb_loops: int = 0,
     project_paths: ProjectSourcePaths | None = None,
 ) -> BoundaryOutcome:
     """Rebuild synthesis output from freshness-gated make artifacts.
@@ -775,21 +776,14 @@ def boundary_output(
         stage = failure_stage
         stage_log = fresh_text(f"{stage}.log") or ""
         stage_marker = stage
-    parts.append(
-        _missing_output_marker(
-            plan,
-            fresh_text,
-            returncode,
-            stat_text,
-            diagnostic_sources.get("premap_check"),
-            diagnostic_sources.get("final_check"),
-        )
-        or ""
-    )
+    checks = (diagnostic_sources.get("premap_check"), diagnostic_sources.get("final_check"))
+    parts.append(_missing_output_marker(plan, fresh_text, returncode, stat_text, *checks) or "")
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
-        diagnostics=parse_synth_diagnostics(diagnostic_sources, paths.project_text),
+        diagnostics=parse_synth_diagnostics(
+            diagnostic_sources, paths.project_text, expected_comb_loops=expected_comb_loops
+        ),
         forced_failure=forced_failure,
         yosys_complete=_yosys_complete(plan, fresh_text),
         attempt_token=plan.attempt_token,
