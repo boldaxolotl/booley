@@ -161,6 +161,15 @@ def test_unavailable_runtime_skips(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_pending_recovery_skips(tmp_path):
+    def refusing_builder(_argv):
+        raise session_runtime.RecoveryPendingError
+
+    assert _summary(_inspect(tmp_path, command=refusing_builder)) == [
+        (Severity.SKIP, f"{_LABEL} skipped - Sandbox recovery is pending on this host", "")
+    ]
+
+
 def test_probe_error_fails(tmp_path, monkeypatch):
     """A Sandbox start failure or an OS error is a probe-error FAIL, cut to 500 characters."""
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)

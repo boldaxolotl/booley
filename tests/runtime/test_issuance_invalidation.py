@@ -211,7 +211,7 @@ def _make_invalidation_store_unsafe(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-@pytest.mark.parametrize("operation", ["up", "status", "validate"])
+@pytest.mark.parametrize("operation", ["up", "up_without_recovery", "status", "validate"])
 def test_public_session_runtime_translates_unsafe_invalidation_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

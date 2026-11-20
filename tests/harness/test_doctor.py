@@ -314,7 +314,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
         doctor.session_runtime,
-        "up",
+        "up_without_recovery",
         lambda _root: "booley-session-test",
     )
     monkeypatch.setattr(
@@ -585,7 +585,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    real_up = session_runtime.up
+    real_up = session_runtime.up_without_recovery
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
@@ -594,7 +594,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     issuance_invalidation.cancel(str(tmp_path.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
-    monkeypatch.setattr(doctor.session_runtime, "up", real_up)
+    monkeypatch.setattr(doctor.session_runtime, "up_without_recovery", real_up)
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1052,9 +1052,11 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
     starts: list[Path] = []
-    issue_session = doctor.session_runtime.up
+    issue_session = doctor.session_runtime.up_without_recovery
     monkeypatch.setattr(
-        doctor.session_runtime, "up", lambda root: starts.append(root) or issue_session(root)
+        doctor.session_runtime,
+        "up_without_recovery",
+        lambda root: starts.append(root) or issue_session(root),
     )
     launches = _script_flow(monkeypatch, "sim", lambda _argv, _env: None)
 
@@ -1377,7 +1379,7 @@ def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     def fail_up(_root):
         raise doctor.session_runtime.SessionError(error)
 
-    monkeypatch.setattr(doctor.session_runtime, "up", fail_up)
+    monkeypatch.setattr(doctor.session_runtime, "up_without_recovery", fail_up)
 
     result = _doctor_run(tmp_path, deep=True)
 
