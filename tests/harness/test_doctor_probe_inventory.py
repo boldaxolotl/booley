@@ -62,6 +62,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_image_bakes_current_booley",
             "_check_image_freshness",
             "_check_riscv_toolchain",
+            "_check_sandbox_image_provenance",
             "_run_container_tool_checks",
         }
     ),

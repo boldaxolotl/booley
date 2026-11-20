@@ -1246,6 +1246,8 @@ def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> st
 
     if isinstance(exc, runtime_spec.HostPolicyError):
         return f"fix {exc.path} on the host, then start the Sandbox again"
+    if isinstance(exc, runtime_spec.ProjectConfigError):
+        return f"fix {exc.location}, then start the Sandbox again"
     if vscode:
         return _owner_steps(workspace, Attachment.VSCODE, refreshable=False)
     return sandbox_remedy(workspace)

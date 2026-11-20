@@ -578,6 +578,8 @@ class AgentSelection:
     write_default: bool = False
     #: One policy for every CLI, an ``[agent.auth]`` table, or ``None`` to leave it as recorded.
     auth_record: str | dict[str, str] | None = None
+    #: The other allowed Agent CLIs with their policies, in ``[agent] clis`` order.
+    others: tuple[tuple[str, str], ...] = ()
 
 
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
@@ -775,7 +777,10 @@ def _resolve_agent_selection(
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
     policies, record = resolved
-    return AgentSelection(provider, policies.get(provider, DEFAULT_AUTH), write_default, record)
+    others = tuple((cli, policy) for cli, policy in policies.items() if cli != provider)
+    return AgentSelection(
+        provider, policies.get(provider, DEFAULT_AUTH), write_default, record, others
+    )
 
 
 def _insert_agent_fields(content: str, fields: Mapping[str, str | dict[str, str]]) -> str:
@@ -893,23 +898,29 @@ def _step_auth(
         skip("credential check skipped by --skip-credentials")
         ctx.record("auth", "skip", "credential check skipped")
         return
-    mode = _detect_auth_mode(selection.provider, selection.auth)
+    pieces = [
+        _report_cli_auth(cli, policy)
+        for cli, policy in ((selection.provider, selection.auth), *selection.others)
+    ]
+    unavailable = any(piece.endswith(" unavailable") for piece in pieces)
+    detail = "; ".join(pieces)
+    if unavailable:
+        ctx.record("auth", "warn", detail)
+    else:
+        ctx.record("auth", "ok", f"{'checked authentication: ' if ctx.check_only else ''}{detail}")
+
+
+def _report_cli_auth(cli: str, policy: str) -> str:
+    """Report one allowed CLI's credential; the record piece for it."""
+    mode = _detect_auth_mode(cli, policy)
     if mode:
-        ok(f"detected {mode} auth for {selection.provider}")
-        _check_provider_creds(selection.provider, mode, selection.auth)
-        ctx.record(
-            "auth",
-            "ok",
-            f"{'checked authentication: ' if ctx.check_only else ''}{selection.provider}/{mode}",
-        )
-        return
-    key_var = "ANTHROPIC_API_KEY" if selection.provider == "claude" else "OPENAI_API_KEY"
-    login = "claude login" if selection.provider == "claude" else "codex login"
-    warn(
-        f"no {selection.auth} auth available for {selection.provider} — "
-        f"set {key_var} or run '{login}' as appropriate"
-    )
-    ctx.record("auth", "warn", f"{selection.provider}/{selection.auth} unavailable")
+        ok(f"detected {mode} auth for {cli}")
+        _check_provider_creds(cli, mode, policy)
+        return f"{cli}/{mode}"
+    key_var = "ANTHROPIC_API_KEY" if cli == "claude" else "OPENAI_API_KEY"
+    login = "claude login" if cli == "claude" else "codex login"
+    warn(f"no {policy} auth available for {cli} — set {key_var} or run '{login}' as appropriate")
+    return f"{cli}/{policy} unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -2514,15 +2525,14 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
     return parse_git_version(result.stdout) if result.returncode == 0 else None
 
 
-def _step_worktree_policies(
-    ctx: InitContext, sandbox_git_version: tuple[int, int, int] | None
-) -> None:
+def _step_worktree_policies(ctx: InitContext, facts: ProjectFacts) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
     booley_dir = booley_dir_for_init(ctx.project_root)
     _step_worktree_prune_guard(ctx, booley_dir=booley_dir)
     _step_worktree_link_policy(
         ctx,
-        sandbox_git_version=sandbox_git_version,
+        sandbox_git_version=facts.sandbox_git_version,
+        sandbox_image_pending=facts.sandbox_image_pending,
         booley_dir=booley_dir,
     )
 
@@ -2555,6 +2565,9 @@ class ProjectFacts:
 
     #: Git version inside the Sandbox Image; ``None`` when unknown.
     sandbox_git_version: tuple[int, int, int] | None
+    #: Check-only found the Sandbox Image stale, so ``sandbox_git_version`` is not
+    #: yet known: init would rebuild the image before probing it.
+    sandbox_image_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -2586,7 +2599,7 @@ def initialize_project(ctx: InitContext, request: ProjectInitialization) -> bool
     facts = request.host_facts()
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
-    _step_worktree_policies(ctx, facts.sandbox_git_version)
+    _step_worktree_policies(ctx, facts)
     _step_line_endings_and_guidance(ctx, request.guidance_plan, request.line_ending_baseline)
     if request.reconcile_interactive_files:
         _step_sandbox_files(ctx)
@@ -2634,7 +2647,14 @@ class _HostPreparation:
         self.pdk_root = nangate_pdk.cache_root()
         self.image_result = _reconcile_initialized_image(self.ctx)
         self.runtime_image_id = _selected_runtime_image_id(self.image_result)
-        return ProjectFacts(_sandbox_git_version(self.runtime_image_id))
+        pending = (
+            self.ctx.check_only
+            and self.image_result is not None
+            and self.image_result.status is ImageLifecycleStatus.STALE
+        )
+        return ProjectFacts(
+            _sandbox_git_version(self.runtime_image_id), sandbox_image_pending=pending
+        )
 
 
 def _run_project_init_steps(

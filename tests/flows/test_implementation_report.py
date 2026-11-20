@@ -150,16 +150,33 @@ def test_fpga_cache_separates_producer_and_consumer_provenance() -> None:
     assert report["provenance"]["consumer_run_id"] == "consumer-run"
 
 
-def test_synthesis_fatal_timing_is_persisted_as_failure() -> None:
-    report = build_synth_implementation_report(
-        _context(),
-        SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.2),
-        None,
-        fatal_timing=True,
-    )
+@pytest.mark.parametrize(
+    ("metrics", "reasons"),
+    [
+        (SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.2), ["setup slack -0.200 ns"]),
+        (
+            SynthMetrics(
+                area_kge=1.0,
+                cells=10,
+                wns_ns=-0.2,
+                returncode=1,
+                termination="design_failure",
+                failure_output=(
+                    "unmapped generic cell: [ERROR ORD-2013] instance flop LEF master "
+                    "$_DFF_P_ not found."
+                ),
+            ),
+            ["unmapped generic cell", "setup slack -0.200 ns"],
+        ),
+    ],
+)
+def test_synthesis_fatal_timing_is_persisted_as_failure(
+    metrics: SynthMetrics, reasons: list[str]
+) -> None:
+    report = build_synth_implementation_report(_context(), metrics, None, fatal_timing=True)
 
     assert report.grade == "fail"
-    assert report.canonical["status"]["failure_reasons"] == ["setup slack -0.200 ns"]
+    assert report.canonical["status"]["failure_reasons"] == reasons
 
 
 def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) -> None:

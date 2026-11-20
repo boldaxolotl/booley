@@ -521,27 +521,103 @@ def test_reporting_policy_matrix(clean_env, monkeypatch, capsys, app, policy, ke
         assert "refreshing subscription login" in output
 
 
-def test_auth_status_uses_the_requested_cli_policy(clean_env, monkeypatch, capsys):
-    """`auth --status --cli codex` grades Codex under Codex's policy, not the default CLI's."""
+_PROJECT_NOTE = "credentials come from the environment this command inherited"
+
+
+@pytest.mark.parametrize(
+    ("app", "in_project", "broken", "notes", "code"),
+    [
+        pytest.param(
+            None,
+            True,
+            False,
+            [
+                f"codex: auth policy 'subscription'; {_PROJECT_NOTE}",
+                f"claude: auth policy 'api_key'; {_PROJECT_NOTE}",
+            ],
+            0,
+            id="every-cli",
+        ),
+        pytest.param(
+            "codex",
+            True,
+            False,
+            [f"codex: auth policy 'subscription'; {_PROJECT_NOTE}"],
+            1,
+            id="filter-codex",
+        ),
+        pytest.param(
+            "claude",
+            True,
+            False,
+            [f"claude: auth policy 'api_key'; {_PROJECT_NOTE}"],
+            0,
+            id="filter-claude",
+        ),
+        pytest.param(
+            None,
+            True,
+            True,
+            [
+                f"codex: auth policy 'subscription'; {_PROJECT_NOTE}",
+                f"claude: auth policy 'api_key'; {_PROJECT_NOTE}",
+            ],
+            0,
+            id="one-cli-broken",
+        ),
+        pytest.param(
+            None,
+            False,
+            False,
+            [f"auth policy 'subscription'; {_PROJECT_NOTE}"],
+            1,
+            id="outside-project",
+        ),
+    ],
+)
+def test_auth_status_reports_each_project_cli_under_its_policy(
+    clean_env, monkeypatch, capsys, app, in_project, broken, notes, code
+):
+    """In a Project `auth --status` reports every allowed CLI, default first, each under
+    its own policy; `--cli` filters; one CLI's unplannable credential hides no other."""
     import argparse
 
     from booley.harness import auth_cmd
+    from booley.presentation import colors
 
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     root = clean_env / "project"
     data = root / ".booley"
     data.mkdir(parents=True)
     (data / "booley.toml").write_text(
-        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
-        '[agent.auth]\nclaude = "subscription"\ncodex = "api_key"\n'
+        '[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n'
+        '[agent.auth]\nclaude = "api_key"\ncodex = "subscription"\n',
+        encoding="utf-8",
     )
-    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_API_KEY")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_API_KEY")
+    if broken:
+        login = auth_token.subscription_creds_path("codex")
+        login.parent.mkdir(parents=True, exist_ok=True)
+        login.write_text('{"tokens":{"access_token":"SYNTHETIC"}}', encoding="utf-8")
+        (Path.home() / ".claude.json").write_text(
+            '{"primaryApiKey": "SYNTHETIC"}', encoding="utf-8"
+        )
 
-    code = auth_cmd.run_auth(argparse.Namespace(status=True, app="codex"), root)
+    result = auth_cmd.run_auth(
+        argparse.Namespace(status=True, app=app), root if in_project else None
+    )
 
-    output = capsys.readouterr().out
-    assert code == 0
-    assert "auth policy 'api_key'" in output
-    assert "codex: agents run on" in output
+    captured = capsys.readouterr()
+    lines = (captured.out + captured.err).splitlines()
+    assert [line.split("  ", 2)[-1] for line in lines if "auth policy '" in line] == notes
+    assert result == code
+    if app == "codex":
+        assert "claude:" not in captured.out + captured.err
+    if broken:
+        assert any(
+            line.split("  ", 2)[-1].startswith("claude: Claude config seed contains ambiguous")
+            for line in lines
+        )
 
 
 @pytest.mark.parametrize(

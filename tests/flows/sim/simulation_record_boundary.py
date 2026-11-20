@@ -97,6 +97,8 @@ class SimulationRecordSimRun:
     flow: SimulateFlow
     # Every simulator launch, in order.
     launches: list[Launch]
+    # Calls of the faked FuseSoC configure, the one stand-in for ``prepare_build``.
+    configures: int = 0
 
     @property
     def launched(self) -> list[tuple[str, tuple[str, ...]]]:
@@ -152,15 +154,16 @@ def run_simulation_record_sim(
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     launches: list[Launch] = []
+    configured: list[None] = []
     flow = flow or SimulateFlow()
     if report_dir is _DEFAULT_REPORT_DIR:
         report_dir = tmp_path / "reports"
     # Undo the fakes before returning: an autouse fixture may have patched the same
     # class attributes, and a test-long undo would restore its patch after it exits.
     with monkeypatch.context() as scoped:
-        _install_fakes(scoped, process, build, launches)
+        _install_fakes(scoped, process, build, launches, configured)
         result = flow.execute(SimRequest(work_dir=tmp_path, report_dir=report_dir, **request))
-    return SimulationRecordSimRun(result, flow, launches)
+    return SimulationRecordSimRun(result, flow, launches, len(configured))
 
 
 def _install_fakes(
@@ -168,8 +171,10 @@ def _install_fakes(
     process: SubprocessResult | ProcessFactory,
     build: SubprocessResult | None,
     launches: list[Launch],
+    configured: list[None],
 ) -> None:
     def prepare_build(self: SimulationExecution, handle: Any) -> Any:
+        configured.append(None)
         assert self._build_session is not None  # Private: the execution's own session
         work_root = self._build_session.new_generation()
         build_root = work_root / "build"
@@ -340,33 +345,35 @@ _TRACE_OK_PATTERN = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
 _TRACE_METADATA_PATTERN = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
 
 
-def _trace_metadata_fields(output: str) -> tuple[str, int, int]:
-    """``(top_scope, signal_count, total_ticks)`` from the last ``TRACE_METADATA:`` JSON."""
+def _trace_metadata_fields(output: str) -> tuple[str, int, int, tuple[str, ...]]:
+    """``(top_scope, signal_count, total_ticks, warnings)`` from the last ``TRACE_METADATA:`` JSON."""
     matches = _TRACE_METADATA_PATTERN.findall(output)
     if not matches:
-        return "", 0, 0
+        return "", 0, 0, ()
     try:
         data = json.loads(matches[-1])
         return (
             str(data["top_scope"]).strip(),
             int(data["signal_count"]),
             int(data["total_ticks"]),
+            tuple(data.get("warnings", ())),
         )
     except (ValueError, KeyError, TypeError):
-        return "", 0, 0
+        return "", 0, 0, ()
 
 
 def _test_trace_result(output: str) -> AdapterTraceResult | None:
     paths = _TRACE_OK_PATTERN.findall(output)
     if not paths:
         return None
-    top_scope, signal_count, total_ticks = _trace_metadata_fields(output)
+    top_scope, signal_count, total_ticks, warnings = _trace_metadata_fields(output)
     return AdapterTraceResult(
         "ok",
         path=paths[-1],
         top_scope=top_scope,
         signal_count=signal_count,
         total_ticks=total_ticks,
+        warnings=warnings,
     )
 
 

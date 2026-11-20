@@ -250,7 +250,6 @@ class EndpointState(ABC):
                 tb_top = tb_top_for_target(
                     target,
                     getattr(self.args, "work_dir", None),
-                    resolved=None,
                 )
                 if tb_top:
                     self.args.tb_top = tb_top

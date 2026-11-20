@@ -192,8 +192,8 @@ def _reference_projection(
 
 
 STEALTH_SOURCE_LIMITATION = (
-    "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
-    "report evidence only and no Waiver Candidate is ready for human review."
+    "Stealth Mode: no verified source snapshot is available, so analysis uses "
+    "normalized report evidence only and no Waiver Candidate is ready for human review."
 )
 
 

@@ -103,6 +103,7 @@ from booley.fusesoc.core_projection import STATE_CORES_SUBDIR
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
+    image_lifecycle,
     sandbox_git_identity,
     upgrade_cli,
     upgrade_review,
@@ -150,7 +151,10 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.image_provenance import is_local_image_id
+from booley.runtime.image_lifecycle import ImageLifecycleError, ProjectImageScope
+from booley.runtime.image_lifecycle import Intent as ImageLifecycleIntent
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
+from booley.runtime.image_provenance import ImageProvenanceError, is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
@@ -968,7 +972,7 @@ def _run_project_phase(
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
-    host = host_diagnostics.inspect_host()
+    host = host_diagnostics.inspect_host(project_root)
     reporter.diagnostics(host.report)
     docker_exe = host.docker_exe
     loaded = readiness.load_project(project_root)
@@ -2317,6 +2321,41 @@ def _image_stale_remedy(project: ProjectAudit | None) -> str:
     return session_runtime.sandbox_remedy(project.project_root)
 
 
+def _check_sandbox_image_provenance(
+    project: ProjectAudit | None, image: str, _pass: Check, _warn: Check, _skip: Check
+) -> None:
+    """Judge the Sandbox Image with the lifecycle CHECK that `booley init --check-only` runs."""
+    if project is None:
+        return
+    _warn = _warning_sink(_warn, "sandbox.image-stale", subject=image, dedupe=image)
+    try:
+        result = image_lifecycle.reconcile_planned(
+            ProjectImageScope(project.project_root), ImageLifecycleIntent.CHECK
+        )
+        # CHECK reuses a compatible image under another tag; `booley init` would retag.
+        unadopted = result.status is ImageLifecycleStatus.CURRENT and (
+            idk.image_id(result.selected_reference) != result.selected_id
+        )
+    except (
+        ImageLifecycleError,
+        ImageProvenanceError,
+        idk.ImageInspectError,
+        OSError,
+        ValueError,
+    ) as exc:
+        _skip(f"Sandbox Image provenance check could not run: {exc}")
+        return
+    if result.status is ImageLifecycleStatus.STALE or unadopted:
+        reasons = ", ".join(dict.fromkeys(item.message for item in result.diagnostics))
+        _warn(
+            f"Sandbox Image '{image}' provenance is stale: "
+            f"{reasons or 'the selected image is built but this Project has not adopted it'}. "
+            f"Recreate the Sandbox: {_image_stale_remedy(project)}."
+        )
+    elif result.status is ImageLifecycleStatus.CURRENT:
+        _pass(f"Sandbox Image '{image}' provenance matches the current settings")
+
+
 def _check_image_freshness(
     project: ProjectAudit | None,
     docker_exe: str | None,
@@ -2624,13 +2663,15 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
-    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
+    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it
+    or installs a credential helper."""
     if project is None:
         _skip("Sandbox Git identity checks skipped - project config invalid")
         return
     for result in (
         sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
         sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
+        sandbox_git_identity.inspect_credential_helpers(project.project_root),
     ):
         if result.warning is not None:
             _warn(result.warning, result.fix)
@@ -2738,6 +2779,7 @@ def _run_container_checks(
         _fail(f"{image} image missing", "booley init or build the configured sandbox image")
         return
 
+    _check_sandbox_image_provenance(project, image, _pass, _warn, _skip)
     _check_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_derived_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)

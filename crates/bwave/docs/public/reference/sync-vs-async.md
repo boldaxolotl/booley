@@ -14,6 +14,14 @@ selected clock:
 - Each later cycle is one period further on, whether or not the clock rose
   there. Cycle distances stay proportional to elapsed time, even across a
   clock stop.
+- Cycle 0 is not a grid point. It reads strictly before the reset
+  deassertion tick and before cycle 1's read, in both sample modes. Cycle 0
+  is omitted when no such tick exists: the start tick is tick 0 (no reset
+  was found, `--with-reset` is set, or reset deasserts at tick 0), or a
+  pre-edge read of cycle 1 already sits on tick 0. `wave` then
+  starts at cycle 1, and `value --at 0` returns `x` with a null
+  `sample_tick`. Cycle 0 is not an edge, so `rising`, `falling` and
+  `change` skip it and `find` reports only level matches there.
 
 ### Clock selection
 
@@ -135,9 +143,6 @@ Pre-edge details:
   read as `sample_tick`.
 - An edge at tick 0 has nothing before it: values are unknown and
   `sample_tick` is null.
-- Cycle 0 is a snapshot taken before the reset-dependent start tick, not a
-  grid edge. The first pre-edge read can precede reset deassertion by one
-  tick.
 - Pre-edge needs a usable clock. `--sample-mode` is rejected with `--async`
   and by `list`, `overview`, and `stuck`.
 
@@ -156,10 +161,13 @@ rather than initialisation.
   `reset_b` and `rst_l` are active-low, also with a suffix such as
   `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
   are active-high.
-- **Deassertion**: the first transition to the inactive
-  value. A reset that starts at X or Z stays asserted
-  until then, and one that never deasserts skips
-  nothing.
+- **Deassertion**: the end of the reset's first
+  assertion, its first inactive value after it asserted.
+  A reset that starts at X or Z counts as asserted until
+  then. One that starts inactive and pulses deasserts
+  where that first pulse ends, and later pulses do not
+  move it. One that never asserts or never deasserts
+  skips nothing.
 - **Header**: every sync query prints one line on stderr
   and `overview` prints it on stdout. Async output has
   none.
@@ -169,11 +177,15 @@ rather than initialisation.
   ```
 
   Without a reset it reads
-  `# reset: none detected; no cycles skipped`.
+  `# reset: none detected; no cycles skipped`; a reset
+  that never asserts reads
+  `# reset: tb.rst (active-high by name, auto) never asserts; no cycles skipped`.
 - **JSON**: `--format json` adds a `reset` object with the
-  same facts.
-- **`--with-reset`** keeps the reset phase; the header
-  then says so and `skipped_cycles` is 0.
+  same facts; `deassert_tick` is null when the reset
+  never asserts or never deasserts.
+- **`--with-reset`** keeps the reset phase; when one
+  would have been skipped, the header then says so and
+  `skipped_cycles` is 0.
 - **Bad `--reset`**: a glob that does not compile or
   matches no 1-bit signal exits 2 naming the pattern.
 

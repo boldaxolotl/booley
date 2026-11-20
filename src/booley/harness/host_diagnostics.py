@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import os
-import shlex
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.core.host_shell import quote_arg
 from booley.core.private_store import ProjectStore, ProjectStoreEntry
 from booley.harness import bootstrap
 from booley.projects import inventory
 from booley.runtime import (
+    image_keepers,
     issuance_invalidation,
     runtime_context,
     session_admission,
@@ -31,7 +30,7 @@ from booley.runtime.host_install import (
 )
 from booley.runtime.image_lifecycle import Intent
 from booley.runtime.paths import skills_dir
-from booley.runtime.platform_paths import run_captured_bounded
+from booley.runtime.platform_paths import run_captured_bounded, same_host_path
 
 MIN_PY = (3, 11)
 
@@ -44,9 +43,11 @@ class HostDiagnosticResult:
     docker_exe: str | None
 
 
-def inspect_host() -> HostDiagnosticResult:
+def inspect_host(project_root: Path) -> HostDiagnosticResult:
     """Probe health without installing or repairing host capabilities.
 
+    *project_root* is the Project Doctor runs for: a Sandbox or Session stamp of that
+    Project gates, while the same state of another Project is only a NOTE.
     Inside a Sandbox, host preparation and clock probes are skipped.
     Environment probes retain their bounded process/network timeouts.
     """
@@ -76,90 +77,90 @@ def inspect_host() -> HostDiagnosticResult:
         )
         docker_exe = shutil.which("docker") if docker_ready else None
         if result.policy is not None:
-            _inspect_sandbox_egress(result.policy.egress, docker_ready, report)
+            _inspect_sandbox_egress(result.policy.egress, docker_ready, project_root, report)
         _add_environment(host_environment.probe_host_clock(), report)
-        _inspect_session_stores(report)
+        _inspect_session_stores(project_root, report)
     return HostDiagnosticResult(report.report(), docker_exe)
 
 
-def _inspect_session_stores(report: Findings) -> None:
+_STORE_REPAIR = (
+    "apply the repair in the message, in order (a misnamed file: run any Docker "
+    "commands it names, then remove the file and reissue with `booley init --seed`); "
+    "when the message names no repair, remove the file it names; then rerun "
+    "`booley doctor`; Doctor names one file per store, so rerun until it passes"
+)
+
+
+def _inspect_session_stores(project_root: Path, report: Findings) -> None:
     """Scan each per-Project Session store read-only for files that fail closed at use."""
     stamp_store = session_issuance.stamp_store()
-    stores: tuple[ProjectStore, ...] = (
-        stamp_store,
-        session_admission.claim_store(),
-        issuance_invalidation.journal_store(),
-    )
-    count = 0
     healthy = True
+    count = 0
     stamps: tuple[ProjectStoreEntry, ...] = ()  # stays empty when the stamp scan fails
-    for store in stores:
+    try:
+        stamps, bad_stamps = stamp_store.scan_each()
+        count += len(stamps)
+        healthy = _report_bad_stamps(stamp_store, bad_stamps, project_root, report)
+    except stamp_store.private.error_type as exc:
+        report.fail(f"Session store check: {exc}", _STORE_REPAIR)
+        healthy = False
+    # The claim and journal stores are scanned host-wide at use, so a bad file of any
+    # Project fails this Project's commands too.
+    for store in (session_admission.claim_store(), issuance_invalidation.journal_store()):
         try:
-            entries = store.scan()
-            count += len(entries)
-            if store is stamp_store:
-                stamps = entries
+            count += len(store.scan())
         except store.private.error_type as exc:
-            # The message carries its own repair (reissue, chmod, or the stray path).
-            report.fail(
-                f"Session store check: {exc}",
-                "apply the repair in the message, in order (a misnamed file: run any Docker "
-                "commands it names, then remove the file and reissue with `booley init --seed`); "
-                "when the message names no repair, remove the file it names; then rerun "
-                "`booley doctor`; Doctor names one file per store, so rerun until it passes",
-            )
+            report.fail(f"Session store check: {exc}", _STORE_REPAIR)
             healthy = False
     if healthy:
         report.pass_(f"Session stores: {count} per-Project file(s) match their Project Roots")
     if stamps:  # a failing sibling store must not hide stamps that scanned cleanly
-        _inspect_forgotten_stamps(stamp_store, stamps, report)
+        _inspect_forgotten_stamps(stamps, report)
 
 
-def _inspect_forgotten_stamps(
-    store: ProjectStore, stamps: tuple[ProjectStoreEntry, ...], report: Findings
-) -> None:
-    """WARN once about stamps of deleted Projects that the Project Inventory no longer holds.
+def _report_bad_stamps(
+    store: ProjectStore,
+    bad_stamps: tuple[tuple[Path, RuntimeError], ...],
+    project_root: Path,
+    report: Findings,
+) -> bool:
+    """FAIL for a bad stamp file named for this Project; NOTE for any other Project's."""
+    own = {path.name for path in store.paths(str(project_root.resolve()))}
+    for path, exc in bad_stamps:
+        if path.name in own:
+            report.fail(f"Session store check: {exc}", _STORE_REPAIR)
+        else:
+            report.note(
+                f"another Project's Sandbox issuance stamp is unusable: {exc}; "
+                "only that Project's Sandbox starts are refused",
+                _STORE_REPAIR,
+            )
+    return not bad_stamps
 
-    Roots that still exist stay quiet: ``booley init --seed`` worktrees and Projects
-    initialized before the inventory existed hold live stamps without being remembered.
-    """
+
+def _inspect_forgotten_stamps(stamps: tuple[ProjectStoreEntry, ...], report: Findings) -> None:
+    """NOTE once about stamps of deleted Projects that the Project Inventory no longer holds."""
     try:
-        known = {store.filename(root) for root in inventory.known_roots()}
+        orphans = image_keepers.orphan_stamp_roots(stamps, inventory.known_roots())
     except inventory.ProjectInventoryError as exc:
         report.skip(f"forgotten-Project stamp check skipped: {exc}")
         return
-    orphans = sorted(
-        entry.project_root
-        for entry in stamps
-        if store.filename(entry.project_root) not in known and _root_is_gone(entry.project_root)
-    )
     if orphans:
-        report.warn(
+        command = " ".join(quote_arg(root) for root in orphans)
+        report.note(
             f"{len(orphans)} Sandbox issuance stamp(s) belong to deleted Projects "
             "not in the Project Inventory",
-            "; ".join(_forget_purge_command(root) for root in orphans),
-            check_id="host.forgotten-project-stamps",
+            "if these folders are deleted (not on an unmounted drive), remove the stamps with "
+            f"`booley projects prune-stamps {command}`, which keeps those Projects' images "
+            "and state volumes; `booley projects forget --purge <root>` also removes those",
         )
+        for root in orphans:
+            report.detail(f"    {root}", verbose_only=False)
 
 
-def _root_is_gone(root: str) -> bool:
-    """Return whether *root* is positively absent; an unreadable path is not proof it is gone."""
-    try:
-        Path(root).stat()
-    except (FileNotFoundError, NotADirectoryError):
-        return True
-    except OSError:
-        return False  # EACCES, ESTALE, an unmounted drive: the Project may still exist
-    return False
-
-
-def _forget_purge_command(root: str) -> str:
-    """Quote the remedy for the host shell so a root with spaces stays copyable."""
-    argv = ["booley", "projects", "forget", "--purge", root]
-    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
-
-
-def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findings) -> None:
+def _inspect_sandbox_egress(
+    host_egress: str, docker_ready: bool, project_root: Path, report: Findings
+) -> None:
     """Report the host egress mode and each running Sandbox issued for the other mode."""
     report.pass_(f"host Sandbox egress mode: {host_egress}")
     if not docker_ready:
@@ -176,13 +177,17 @@ def _inspect_sandbox_egress(host_egress: str, docker_ready: bool, report: Findin
         return
     mismatched = [item for item in sandboxes if item.egress != host_egress]
     for item in mismatched:
-        report.warn(
+        message = (
             f"Sandbox {item.name} (Project {item.project_root}) runs with egress "
-            f"'{item.egress}' but host [sandbox] egress = '{host_egress}'",
-            session_admission.recreate_remedy(item),
-            check_id="host.sandbox-egress-mismatch",
-            subject=item.project_root,
+            f"'{item.egress}' but host [sandbox] egress = '{host_egress}'"
         )
+        fix = session_admission.recreate_remedy(item)
+        if same_host_path(item.project_root, str(project_root)):
+            report.warn(
+                message, fix, check_id="host.sandbox-egress-mismatch", subject=item.project_root
+            )
+        else:  # another Project's Sandbox cannot make this Project's commands fail
+            report.note(message, fix)
     if not mismatched:
         report.pass_(
             f"{len(sandboxes)} running Booley Sandbox(es) match host egress mode {host_egress}"

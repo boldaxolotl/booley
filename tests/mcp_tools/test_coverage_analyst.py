@@ -283,12 +283,31 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_eviden
     assert "point_references" not in report["analysis_scope"]
 
 
-def test_model_short_references_resolve_to_exact_report_point_ids(
-    tmp_path, monkeypatch, fresh_evidence_session
+@pytest.mark.parametrize(
+    ("stealth", "limitation"),
+    [
+        pytest.param(
+            False,
+            "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only.",
+            id="report-only",
+        ),
+        pytest.param(
+            True,
+            "Stealth Mode: no verified source snapshot is available, so analysis uses "
+            "normalized report evidence only and no Waiver Candidate is ready for human review.",
+            id="stealth",
+        ),
+    ],
+)
+def test_cli_resolves_short_references_and_prints_the_analysis(
+    tmp_path, monkeypatch, fresh_evidence_session, capsys, stealth, limitation
 ):
     from booley.mcp import coverage_evidence
 
     path = persist_coverage_record(tmp_path)
+    if stealth:
+        (tmp_path / ".booley").mkdir(exist_ok=True)
+        (tmp_path / ".booley" / "booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
     canonical_id = _valid_document()["points"][0]["id"]
 
     def referencing_model(params):
@@ -311,13 +330,40 @@ def test_model_short_references_resolve_to_exact_report_point_ids(
 
     report = (
         CoverageAnalystSpecialist(model=referencing_model)
-        .execute_cli(["--work-dir", str(tmp_path), "--record", str(path)])
+        .execute_cli(
+            [
+                "--work-dir",
+                str(tmp_path),
+                "--record",
+                str(path),
+                "--report-dir",
+                str(tmp_path / "analysis-reports"),
+            ]
+        )
         .outcome.detail
     )
 
     assert report["hypotheses"][0]["point_ids"] == [canonical_id]
     assert report["recommendations"][0]["point_ids"] == [canonical_id]
     assert "point_references" not in report["analysis_scope"]
+    status = "Coverage advisory: ungated_no_recommendation (eligible, report_only)"
+    report_path = (
+        tmp_path / "analysis-reports" / "coverage_analyst" / "1" / "report.json"
+    ).resolve()
+    assert capsys.readouterr().out.splitlines() == [
+        status,
+        "Hypotheses:",
+        "  - Observed gap",
+        "Recommendations:",
+        "  - Exercise the gap",
+        "Limitations:",
+        f"  - {limitation}",
+        f"Report: {report_path}",
+    ]
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["report_text"] == status
+    assert set(persisted["detail"]) == _REPORT_KEYS
+    assert persisted["detail"]["hypotheses"] == report["hypotheses"]
 
 
 def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
@@ -520,8 +566,8 @@ def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     assert report["source_access"] == "report_only"
     assert json.loads(model.calls[0].prompt)["source_access"] == "report_only"
     assert report["limitations"] == [
-        "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
-        "report evidence only and no Waiver Candidate is ready for human review."
+        "Stealth Mode: no verified source snapshot is available, so analysis uses "
+        "normalized report evidence only and no Waiver Candidate is ready for human review."
     ]
     assert report["$schema"] == "booley.coverage-analysis/v4"
     assert set(report) == _REPORT_KEYS

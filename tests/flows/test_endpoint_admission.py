@@ -39,6 +39,7 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+from tests.memory_budget_support import fail_budget
 from tests.oom_priority_support import (
     PROC_PATH,
     FakeProc,
@@ -467,7 +468,9 @@ def _target_selection(
     handles = tuple(make_target_handle(work_dir, n, drivable_by=(drivable_by,)) for n in names)
     # Private seam: Target selection reads the Flow's parsed request, and preparing it through
     # execute needs a resolved FuseSoC core.
-    flow._args = SimpleNamespace(work_dir=work_dir, target=",".join(names))
+    flow._args = SimpleNamespace(
+        work_dir=work_dir, target=",".join(names), baseline=None, frontend=None
+    )
     selection = SimpleNamespace(handles=handles, matches=lambda *_args: True)
     return _prepared_for(TargetSelectionInvocation(flow, selection, flow._run))  # type: ignore[arg-type]
 
@@ -589,10 +592,7 @@ def test_memory_admission_survives_a_budget_it_cannot_compute(
     memory_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An unreadable MemTotal serializes the Job; it never refuses."""
-    monkeypatch.setattr(
-        "booley.flows.memory_admission.compute_memory_budget",
-        lambda: (_ for _ in ()).throw(OSError("MemTotal unreadable")),
-    )
+    fail_budget(monkeypatch)
 
     with AdmissionGate(AsicSynthesizeFlow()).enter() as context:
         (holder,) = _held(memory_runtime, job_slots.CLASS_MEMORY)

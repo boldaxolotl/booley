@@ -72,6 +72,27 @@ def test_auth_status_follows_the_start_choice_without_a_pin(sandbox, monkeypatch
     assert "claude" not in text
 
 
+def test_auth_status_in_a_project_reports_every_listed_cli_under_auto(
+    sandbox, monkeypatch, capsys
+):
+    """The start choice only names an undeclared set; a declared `clis` is reported whole."""
+    _give("codex-api-key", sandbox.home, monkeypatch)
+    _start(capsys)
+    capsys.readouterr()
+    booley_dir = sandbox.project / ".booley"
+    booley_dir.mkdir(parents=True, exist_ok=True)
+    (booley_dir / "booley.toml").write_bytes(
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n'
+    )
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app=None), sandbox.project)
+
+    output = capsys.readouterr()
+    text = output.out + output.err
+    assert code == 0
+    assert text.index("codex: auth policy") < text.index("claude: auth policy")
+
+
 def test_no_credential_value_reaches_the_record_or_the_status_line(sandbox, monkeypatch, capsys):
     for kind in ("both", "gateway", "claude-oauth-token"):
         _give(kind, sandbox.home, monkeypatch)

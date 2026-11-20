@@ -154,7 +154,8 @@ bill each CLI differently. All values are in
 `"auto"`, naming the value init would record. Set it in `booley.toml`, or re-run
 `booley init` to record it for you.
 
-To see which login Booley is using, run `booley auth --status` on the host.
+To see which login each Agent CLI your Project allows would use, run `booley auth --status`
+on the host; add `--cli <name>` to see one.
 
 Where each credential comes from:
 
@@ -177,7 +178,7 @@ Specialist in the middle of a run.
 | App | Login that doesn't expire | How |
 |---|---|---|
 | Claude | a one-year token | `booley auth` (it runs `claude setup-token` for you) |
-| Codex | an API key | `booley auth --cli codex`, then paste the key |
+| Codex | an API key | `booley auth --cli codex` and paste the key; set [`[agent.auth] codex = "api_key"`](CONFIG.md#pinning-what-bills-agent-auth), then `booley session refresh` |
 
 Codex has no long-lived subscription token, so for Codex this means paying per
 token instead of using your subscription.
@@ -367,11 +368,12 @@ marks each one `present`, `missing`, or `uninitialized`.
 It stops at each Project it finds, so it doesn't crawl that Project's RTL and
 build trees; to import a Project nested inside another, name its path directly.
 
-`forget` lists what the Project still holds in Docker, with sizes: images,
-agent state volumes (a copy of the agent's login and history), containers, and
-networks. It removes none of them unless you add `--purge`, which removes the
-unused ones, even for a Project already forgotten or deleted. To use a
-forgotten Project again, run `booley init` in it.
+`forget` releases the Project's Sandbox Image tag and cleans up its older
+unused Sandbox Images. It then lists what the Project still holds in Docker,
+with sizes: images, agent state volumes (a copy of the agent's login and
+history), containers, and networks. These stay until you add `--purge`, which
+removes the unused ones, even for a Project already forgotten or deleted.
+To use a forgotten Project again, run `booley init` in it.
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>
@@ -385,6 +387,12 @@ For images left over from earlier forgets, run `booley projects prune-keepers`,
 then rerun it with the `--confirm <digest>` it prints. Images marked
 `unrecorded` are kept; remove one with `docker image rm <id>` once no other
 Project uses it.
+
+A deleted Project that Booley no longer remembers can leave a Sandbox record
+on this machine; `booley doctor` shows it as a note. `booley projects
+prune-stamps` lists them; add the deleted folders, `booley projects
+prune-stamps <root>...`, to remove them. The images and state volumes stay
+(`forget --purge` is the choice that removes them too).
 
 ## Project files
 

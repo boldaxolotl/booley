@@ -17,6 +17,8 @@ from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 from booley.flows.synth.timing import StaTimingConfig
 
 from .reporting import (
+    constraint_check_tcl,
+    path_clocks_tcl,
     perclock_timing_tcl,
     reg2reg_timing_tcl,
     top_paths_report_tcl,
@@ -29,6 +31,9 @@ _SIGNAL_LAYER = "metal3"
 _CLOCK_LAYER = "metal6"
 _PIN_HOR_LAYER = "metal3"
 _PIN_VER_LAYER = "metal2"
+_INSTANCE_COUNT_LINE = (
+    'puts [format "OPENROAD_INSTANCE_COUNT: %d" [llength [[ord::get_db_block] getInsts]]]\n'
+)
 _DONT_USE = "CLKBUF_* AOI211_X1 OAI211_X1"
 # Per-cell global-placement padding (sites each side).  Kept at 1 (not the
 # ORFS-typical 2): padding inflates the placed utilization above the floorplan
@@ -191,6 +196,7 @@ def write_openroad_script(
     reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix(), report_paths=count)
     final_report_block = top_paths_report_tcl("slacks", count, rpt)
     perclock_block = perclock_timing_tcl()
+    worst_clocks_block = path_clocks_tcl("STA_WORST_CLOCKS", "[lindex $paths 0]")
 
     repair_timing_line = _repair_timing_tcl(config)
     pre_rpt = (report_dir / "pre_repair.rpt").as_posix()
@@ -210,7 +216,6 @@ read_verilog {{{sta_netlist.as_posix()}}}
 link_design {design_name}
 {read_sdc}
 if {{[llength [all_clocks]] == 0}} {{ error "{error_message}" }}
-foreach _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }}
 puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 \\
   -core_space {{{_CORE_SPACE}}} \\
@@ -238,7 +243,7 @@ detailed_placement
 estimate_parasitics -placement
 {pre_repair_block}{repair_timing_line}puts "BOOLEY_STAGE: sta_report"
 report_design_area
-write_verilog {{{out_verilog}}}
+{_INSTANCE_COUNT_LINE}write_verilog {{{out_verilog}}}
 set paths [find_timing_paths -path_delay max -sort_by_slack -group_path_count {count}]
 set csv_out [open {{{csv}}} w]
 set slacks {{}}
@@ -252,8 +257,8 @@ foreach path [lrange $paths 0 {count - 1}] {{
 close $csv_out
 if {{[llength $slacks] > 0}} {{
   puts [format "STA_WORST_SLACK_NS: %.6f" [lindex $slacks 0]]
-}}
-{final_report_block}{perclock_block}{reg2reg_block}""".lstrip()
+{worst_clocks_block}}}
+{final_report_block}{perclock_block}{reg2reg_block}{constraint_check_tcl(report_dir)}""".lstrip()
     script_path.write_text(script, encoding="utf-8")
     return script_path
 

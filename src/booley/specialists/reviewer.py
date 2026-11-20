@@ -72,6 +72,7 @@ from .review_change import ReviewChange, ReviewChangeError, resolve_review_chang
 from .review_contract import (
     ReviewContractError,
     ReviewScopeContract,
+    accepted_scope_kinds,
     resolve_review_scope,
 )
 from .review_recheck import (
@@ -1046,7 +1047,14 @@ class ReviewerSpecialist(Specialist):
         return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--scope", default=None, help="Comma-separated review files")
+        parser.add_argument(
+            "--scope",
+            default=None,
+            help=(
+                "Comma-separated review files. "
+                f"RTL: {accepted_scope_kinds('rtl')}. TB: {accepted_scope_kinds('tb')}."
+            ),
+        )
         parser.add_argument(
             "--base",
             default=None,

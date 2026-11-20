@@ -301,7 +301,7 @@ _SANDBOX_PARSE = f"{_AGENT}::_parse_sandbox_config"
 _RETIRED_MODELS = f"{_AGENT}::_retired_models_error"
 _UNKNOWN_MODELS = f"{_AGENT}::unknown_models_key_message"
 _RETIRED_OPTION = f"{_RECIPE}::retired_option_message"
-_YOSYS_TIMING = f"{_YOSYS}::_load_and_validate_timing_config"
+_YOSYS_TIMING = f"{_YOSYS}::load_timing_config"
 _RETIRED_CONFIG = "src/booley/config/retired.py::refuse_retired_config"
 
 # A new member of one of these production mappings gets a case with no edit to the cases
@@ -700,6 +700,9 @@ NOT_A_KEY: dict[str, str] = {
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
     "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
+    "src/booley/flows/mutation/flow.py::<module>": (
+        "a report note that duplicate Mutants are removed, not configuration"
+    ),
     "src/booley/runtime/filesystem_utils.py::RemovedDirectoryError.__init__": (
         "refuses to recreate a removed checkout, not configuration"
     ),

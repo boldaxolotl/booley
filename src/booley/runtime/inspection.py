@@ -290,7 +290,9 @@ def _credential_policy_inspectable(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
         # Called only for its errors: a policy that cannot be planned cannot be seeded.
-        auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
+        # Every listed CLI is planned, as init plans them.
+        for cli in found.clis if app in found.clis else (app,):
+            auth_token.credential_plan(cli, found.policies.get(cli, found.policies[found.default]))
     except (
         BackendConfigError,
         BooleyLayoutError,
@@ -414,10 +416,12 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
-        report.fail(
-            f"Sandbox host issuance is invalid: {exc}",
-            request.remedy,
+        remedy = (
+            f"fix {exc.location}, then rerun `booley doctor`"
+            if isinstance(exc, runtime_spec.ProjectConfigError)
+            else request.remedy
         )
+        report.fail(f"Sandbox host issuance is invalid: {exc}", remedy)
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
 

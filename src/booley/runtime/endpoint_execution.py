@@ -67,6 +67,9 @@ class EndpointOutcome:
     # Whether the OOM killer took a process of one of this Job's own commands.
     # Set by ``execute_endpoint``; an endpoint never sets it itself.
     oom_killed: bool = False
+    # The endpoint refused the Job before any of its work: a
+    # memory-admission warning says the Job ran, so a refused Job carries none.
+    refused: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,14 +344,19 @@ def _host_killed(outcome: EndpointOutcome, attempt: _JobAttempt) -> list[str]:
     return names
 
 
+def host_oom_kill_explanation(subjects: str, verb: str = "is") -> str:
+    """Why *subjects*, killed by the host's OOM killer, are not retried, and the remedy."""
+    return (
+        "the host ran out of memory while the Sandbox stayed within its [sandbox].memory "
+        f"limit, so {subjects} {verb} not retried. Free memory on the host, or lower "
+        "[sandbox].memory and recreate the Sandbox, then run it again."
+    )
+
+
 def _host_oom_line(names: list[str]) -> str:
     subjects = ", ".join(name if name == "the Job" else f"work item {name}" for name in names)
     verb = "is" if len(names) == 1 else "are"
-    return (
-        f"{HOST_OOM_KILL_NOTE}: the host ran out of memory while the Sandbox stayed within its "
-        f"[sandbox].memory limit, so {subjects} {verb} not retried. Free memory on the host, "
-        "or lower [sandbox].memory and recreate the Sandbox, then run it again."
-    )
+    return f"{HOST_OOM_KILL_NOTE}: {host_oom_kill_explanation(subjects, verb)}"
 
 
 def _killed_for_oom(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:

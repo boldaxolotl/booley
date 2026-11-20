@@ -905,9 +905,16 @@ def _recorded_keys(
     ("flow_class", "method", "phase", "flow_name", "split"),
     [
         # Private seam: each method is the Flow's run step; see _label_seen.
-        (LintFlow, "_run_linter", "lint", "lint", None),
-        (FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None),
-        (AsicSynthesizeFlow, "_run_synth_make", "synth", "synth", job_resources.SYNTH_PHASES),
+        pytest.param(LintFlow, "_run_linter", "lint", "lint", None, id="lint"),
+        pytest.param(FpgaImplFlow, "_run_vivado", "fpga_impl", "fpga", None, id="fpga"),
+        pytest.param(
+            AsicSynthesizeFlow,
+            "_run_synth_make",
+            "synth",
+            "synth",
+            job_resources.SYNTH_PHASES,
+            id="synth",
+        ),
     ],
 )
 def test_flows_label_their_commands_and_requests_map_to_their_keys(
@@ -922,10 +929,15 @@ def test_flows_label_their_commands_and_requests_map_to_their_keys(
     assert label == job_resources.ResourceLabel("core", phase, split=split, source_bytes=4096)
     assert job_resources.current_label() is None
 
-    # Synthesis also records a split tool row; the request lists only the whole command.
+    # Synthesis also records a split tool row; a request plans the whole command or the tools.
     recorded = _recorded_keys(label, {"yosys": job_resources.Usage()} if split else None)
     assert list(phase_keys(JobRequest(flow_name, "core"))) == recorded[:1]
     assert [key.phase for key in recorded[1:]] == (["yosys"] if split else [])
+    if split:
+        assert (
+            list(phase_keys(JobRequest(flow_name, "core", split_phases=("yosys",))))
+            == (recorded[1:])
+        )
 
 
 @linux_only
@@ -988,6 +1000,91 @@ def test_repeated_commands_record_only_failures(flow, tmp_path):
     assert record["returncode"] == 3
 
 
+@pytest.mark.parametrize(
+    ("judged", "records"),
+    [(None, 0), (True, 0), (False, 1)],
+    ids=["unjudged", "judged-success", "judged-failure"],
+)
+def test_a_judged_repeat_is_recorded_only_when_the_flow_fails_it(tmp_path, judged, records):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with job_resources.repeated_commands(), job_resources.judged_commands() as commands:
+        job_resources.record_command("flow", label, (), measurement, process)
+        if judged is not None:
+            commands.judge(judged)
+
+    assert [record["outcome"] for record in _history(tmp_path)] == ["exit_nonzero"] * records
+
+
+def test_a_joinable_block_has_the_last_word_on_a_nested_judgment(tmp_path):
+    label = job_resources.ResourceLabel("test", "echo_tool")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    with (
+        pytest.raises(RuntimeError),
+        job_resources.judged_commands_failing_on_error(joinable=True),
+    ):
+        with job_resources.judged_commands_failing_on_error() as inner:
+            job_resources.record_command("flow", label, (), measurement, process)
+            inner.judge(True)
+        assert _history(tmp_path) == []  # the outer block still holds it
+        raise RuntimeError("refused after the nested block")
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == ("exit_nonzero", 0)
+
+
+def test_a_run_the_bundle_check_refuses_after_exit_records_a_failure(tmp_path, monkeypatch):
+    """The simulator exited zero and passed, but its bundle changed: the Flow refuses the run (#4964)."""
+    from booley.flows.sim.record import serial_execution
+
+    label = job_resources.ResourceLabel("test", "sim_run")
+    process = SimpleNamespace(
+        returncode=0, timed_out=False, oom_killed=False, host_oom_kill=False, duration_s=1.0
+    )
+    measurement = job_resources.JobMeasurement(0.25, job_resources.Usage(), {}, None, None, None)
+
+    class _Group:
+        def launch_bundle(self, *_paths: Path) -> None:
+            with job_resources.judged_commands_failing_on_error() as commands:
+                job_resources.record_command("flow", label, (), measurement, process)
+                commands.judge(True)
+
+    checks: list[str] = []
+
+    def verify(*_args: object) -> str:
+        checks.append("verified")
+        if len(checks) > 1:
+            raise RuntimeError("bundle artifact changed")
+        return "digest"
+
+    monkeypatch.setattr(serial_execution, "verify_bundle_in_place", verify)
+    request = SimpleNamespace(attempt_directory=tmp_path / "attempt")
+
+    with pytest.raises(RuntimeError, match="bundle artifact changed"):
+        serial_execution._launch_bundle(
+            request,  # type: ignore[arg-type]
+            tmp_path,
+            None,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            _Group(),
+            tmp_path,
+            (),
+            0.0,
+            lambda _boundary: None,
+        )
+
+    (record,) = _history(tmp_path)
+    assert (record["outcome"], record["returncode"]) == ("exit_nonzero", 0)
+
+
 def test_history_keeps_twenty_per_key_and_every_key(tmp_path):
     keys, per_key = 120, 21
     resource_history.append_records(
@@ -1023,6 +1120,34 @@ def test_history_counts_and_keeps_jobs_not_records(tmp_path):
         "k": 20,
         "old": 1,
     }
+
+    # One synthesis run writes a whole-command record and one per tool, and counts once
+    # for each planned key (#4535).
+    from booley.flows.job_estimates import JobRequest, phase_keys
+
+    tools = ("sv2v", "yosys", "openroad")
+    label = job_resources.ResourceLabel("core", "synth", split=job_resources.SYNTH_PHASES)
+    result = SimpleNamespace(returncode=0, timed_out=False, duration_s=1.0, oom_killed=False)
+    measurement = job_resources.JobMeasurement(
+        0.25,
+        job_resources.Usage(),
+        {tool: job_resources.Usage() for tool in tools},
+        None,
+        None,
+        None,
+    )
+    synth_records = job_resources.history_records("flow", label, (), measurement, result)
+    resource_history.append_records(
+        tmp_path, [{**record, "job": "900"} for record in synth_records]
+    )
+    planned = phase_keys(JobRequest("synth", "core", split_phases=tools))
+    counted = {
+        resource_history.history_key(entry): entry["runs"]
+        for entry in resource_history.summarize(_history(tmp_path))
+        if entry["key"]["target"] == "core"
+    }
+    assert [counted[key] for key in planned] == [1, 1, 1]
+    assert counted[resource_history.HistoryKey("core", "synth", (), "")] == 1
 
 
 @pytest.mark.parametrize(

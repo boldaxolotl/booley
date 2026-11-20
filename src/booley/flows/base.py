@@ -95,7 +95,7 @@ class SubprocessResult:
         return self.oom_killed
 
 
-def _blame_own_oom_kill(
+def blame_own_oom_kill(
     measurement: job_resources.JobMeasurement,
     result: SubprocessResult,
     scope: Any,
@@ -105,8 +105,9 @@ def _blame_own_oom_kill(
 ) -> None:
     """Mark a command whose own process the OOM killer took, and which kind it was.
 
-    A kill also counts for the whole Job, which the requeue reads for a kill at
-    the Sandbox's limit but not for a host kill (ADR 0087).
+    A kill also counts for the current attempt, the Job's or a Simulation Record
+    work item's, which the requeue reads for a kill at the Sandbox's limit but
+    not for a host kill (ADR 0087).
     """
     cancelled = scope is not None and scope.cancelled()
     result.oom_killed = job_resources.own_oom_kill(
@@ -281,6 +282,7 @@ class FlowMechanics:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text="No command to execute",
+                refused=True,
             )
         proc_result = self._execute(cmd)
         return self._interpret_result(proc_result)
@@ -373,9 +375,7 @@ class FlowMechanics:
             return SubprocessResult(returncode=-1)
         result.peak_rss_mb = measurement.peak_rss_mb
         result.oom_kill_delta = measurement.oom_kill_delta or 0
-        _blame_own_oom_kill(
-            measurement, result, scope, kill_logs=label.kill_logs, since=dispatched
-        )
+        blame_own_oom_kill(measurement, result, scope, kill_logs=label.kill_logs, since=dispatched)
         job_resources.record_command(flow, label, self._resource_flags(), measurement, result)
         return result
 

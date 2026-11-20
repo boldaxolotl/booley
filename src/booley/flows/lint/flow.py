@@ -57,6 +57,7 @@ from booley.flows.plan import (
 from booley.flows.run_log import write_run_log
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.terminal_progress import ProgressText
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -69,7 +70,12 @@ from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, MissingTargetToplevelError, TargetHandle
+from booley.targets.domain import (
+    LINT_EDA_TOOL_FAMILIES,
+    MissingTargetToplevelError,
+    TargetHandle,
+    TargetInspection,
+)
 from booley.targets.flow_names import config_section
 
 from .. import artifacts
@@ -342,9 +348,14 @@ def parse_verible_warnings(output: str, target: str) -> list[LintWarning]:
     return warnings
 
 
+def _linter_tag(result: LintConfigResult) -> str:
+    """``" [<linter>]"`` for a Target whose linter is known, else ``""``."""
+    return f" [{result.eda_tool}]" if result.eda_tool else ""
+
+
 def _target_errors_text(errored: list[LintConfigResult]) -> str:
-    """Join each errored Target's message as ``target: error`` for a RESULT line."""
-    return "; ".join(f"{cr.target}: {cr.error}" for cr in errored)
+    """Join each errored Target's message as ``target [linter]: error`` for a RESULT line."""
+    return "; ".join(f"{cr.target}{_linter_tag(cr)}: {cr.error}" for cr in errored)
 
 
 def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
@@ -470,6 +481,38 @@ def filter_by_scope(warnings: list[LintWarning], scope: str) -> list[LintWarning
     return [w for w in warnings if any(sp in w.file for sp in scope_paths)]
 
 
+def _vacuous_toplevel_error(toplevel: str, hdl_sources: int) -> str:
+    """Name a lint toplevel that no fileset file declares."""
+    return (
+        f"lint toplevel '{toplevel}' is not declared by any "
+        f"fileset file ({hdl_sources} HDL sources) — lint "
+        "would be vacuous. Fix the Target's `toplevel` or add the "
+        "declaring file to its filesets."
+    )
+
+
+def _require_declared_toplevel(inspection: TargetInspection, project_root: Path) -> None:
+    """Raise when the sources FuseSoC setup lists never declare the toplevel.
+
+    Skipped when the Target has no toplevel or setup may generate or retype sources
+    (``setup_inputs`` is None); the post-setup check then judges the resolved sources.
+    """
+    if not inspection.toplevel or inspection.setup_inputs is None:
+        return
+    hdl_files = [
+        resolved
+        for resolved in (
+            fusesoc_registry.ResolvedFile(
+                name=item.path, file_type=item.file_type, is_include=item.is_include
+            )
+            for item in inspection.setup_inputs
+        )
+        if resolved.is_hdl and not resolved.is_include
+    ]
+    if not _toplevel_declared(hdl_files, project_root, inspection.toplevel):
+        raise ValueError(_vacuous_toplevel_error(inspection.toplevel, len(hdl_files)))
+
+
 def _toplevel_declared(
     hdl_files: list[Any],
     build_root: Path,
@@ -523,10 +566,17 @@ def _lint_warnings_as_errors(work_dir: Path) -> bool:
 _MAX_ECHOED_WARNINGS = 5
 
 
+def _echoed_finding(w: LintWarning) -> str:
+    """One finding in the form its retained Target's linter prints it."""
+    if dict(w.eda_tools)[w.target] == "verible":
+        return f"{w.file}:{w.line}:{w.col}: {w.message} [{w.rule}]"
+    return f"%Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}"
+
+
 def _echo_warnings(unique: list[LintWarning], report_path: Path | None = None) -> None:
-    """Print the first few warnings with file:line so they are actionable."""
+    """Print the first few warnings with file:line, each in its linter's form."""
     for w in unique[:_MAX_ECHOED_WARNINGS]:
-        print(f"[lint]   %Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}")
+        print(f"[lint]   {_echoed_finding(w)}")
     if len(unique) > _MAX_ECHOED_WARNINGS:
         suffix = f" (see {report_path})" if report_path is not None else ""
         print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more{suffix}")
@@ -537,7 +587,7 @@ def _target_summary_line(result: LintConfigResult) -> str:
     wcount = len(result.warnings)
     label = "warning" if wcount == 1 else "warnings"
     if result.error:
-        return f"[lint] {result.target:<12} ERROR: {result.error}"
+        return f"[lint] {result.target:<12}{_linter_tag(result)} ERROR: {result.error}"
     files = f", {result.files_linted} files" if result.files_linted >= 0 else ""
     prefix = (
         f"[lint] {result.target:<12} [{result.eda_tool}] {wcount} {label} (target total){files}, "
@@ -737,6 +787,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             target,
             build_root=build_root,
             library_plan=fusesoc_registry.build_library_plan(target.project_root, build_root),
+            runner=setup_runner(self.name, target.selector, "lint_prepare"),
         )
         declared_family = _lint_eda_tool_family(target.eda_tool)
         configured_family = _lint_eda_tool_family(resolved.configured_eda_tool)
@@ -829,6 +880,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _lint_work_unit(self, target: TargetHandle) -> WorkUnitPlan:
         """Normalize one selected lint Target into the shared plan model."""
         inspection = self._lint_plan_inspection(target)
+        if inspection is not None:
+            _require_declared_toplevel(inspection, target.project_root)
         command = self._lint_plan_command(target)
         inputs = inspection.inputs if inspection is not None else ()
         sources, constraints = normalize_plan_inputs(inputs, self.args.work_dir)
@@ -1048,12 +1101,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 resolved.toplevel,
             )
         if not result.toplevel_linted:
-            result.error = (
-                f"lint toplevel '{resolved.toplevel}' is not declared by any "
-                f"fileset file ({result.files_linted} HDL sources) — lint "
-                "would be vacuous. Fix the Target's `toplevel` or add the "
-                "declaring file to its filesets."
-            )
+            result.error = _vacuous_toplevel_error(resolved.toplevel, result.files_linted)
             result.error_is_eda_tool_failure = True
             return False
         return True
@@ -1298,10 +1346,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             )
         # Resolve enablement before running any target.
         if not self._flow_enabled():
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="lint is disabled ([flows.lint].enabled = false).",
-            )
+            message = "lint is disabled ([flows.lint].enabled = false)."
+            return EndpointOutcome(exit_code=EXIT_ERROR, report_text=message, refused=True)
         plan = self._plan_lint(targets)
         self._flow_plan = plan
         if self.args.dry_run:
