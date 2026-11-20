@@ -872,5 +872,5 @@ def test_replacement_made_while_creating_is_never_deleted(
             ledger.create_file(Path("x.core"), b"content\n")
     else:
         ledger.create_file(Path("x.core"), b"content\n")
-        ledger.remove_created()
+    ledger.remove_created()
     assert (tmp_path / "x.core").read_bytes() == b"mine\n"

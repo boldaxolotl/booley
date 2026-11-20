@@ -8,7 +8,9 @@ inputs it staged would stay behind and break the next run.  Each staging
 context therefore records, before it creates a destination, what it is about to
 create and who owns the run; it confirms the entry with the created object's
 ``(st_dev, st_ino)`` right after.  A later start sweeps the records whose owner
-is observably gone and removes only the very object a confirmed entry names.
+is observably gone, or whose lock file beside it is free (the owner holds it
+while it runs, so a later Sandbox can tell a dead owner from a live one), and
+removes only the very object a confirmed entry names.
 Anything else is left in place and stays recorded, so the next run can say a
 cancelled Booley run left it there.
 """
@@ -22,11 +24,13 @@ import logging
 import os
 import stat
 import uuid
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.file_lock import acquire_file_lock
 from booley.core.process_identity import ProcessIdentity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import make_directories
@@ -35,7 +39,8 @@ from booley.runtime.pid import DEAD_PROCESS_STATES, capture_process_identity, ob
 logger = logging.getLogger(__name__)
 
 RECORD_KIND = "booley-staged-runtime-inputs"
-RECORD_VERSION = 1
+RECORD_VERSION = 2
+_LOCKLESS_VERSION = 1
 _MAX_RECORD_BYTES = 1024 * 1024
 _ENTRY_KINDS = frozenset({"file", "link", "directory", "new-file", "pipe"})
 
@@ -80,10 +85,16 @@ class _Entry:
         return cls(path, kind, identity, (created[0], created[1]) if created else None)
 
 
-def _publish(record: Path, owner: ProcessIdentity, run_dir: Path, entries: list[_Entry]) -> None:
+def _lock_path(record: Path) -> Path:
+    return record.with_suffix(".lock")
+
+
+def _publish(
+    record: Path, owner: ProcessIdentity, run_dir: Path, entries: list[_Entry], version: int
+) -> None:
     document = {
         "kind": RECORD_KIND,
-        "version": RECORD_VERSION,
+        "version": version,
         "owner": owner.to_payload(),
         "run_directory": str(run_dir),
         "entries": [entry.to_payload() for entry in entries],
@@ -114,6 +125,8 @@ class StagedInputLedger:
         self._owner = capture_process_identity(os.getpid())
         self._record = _record_root(booley_dir) / f"{uuid.uuid4().hex}.json"
         self._entries: list[_Entry] = []
+        self._lock_release: Callable[[], object] | None = None
+        self._version: int | None = None
         self._retained = sweep_cancelled_run_inputs(booley_dir)
 
     def will_create(self, relative: Path, *, kind: str, identity: str | None) -> None:
@@ -143,7 +156,31 @@ class StagedInputLedger:
         if self._owner is None:
             return
         make_directories(self._record.parent)
-        _publish(self._record, self._owner, self._run_dir, self._entries)
+        if self._version is None:
+            self._version = RECORD_VERSION if self._take_lock() else _LOCKLESS_VERSION
+        _publish(self._record, self._owner, self._run_dir, self._entries, self._version)
+
+    def _take_lock(self) -> bool:
+        lock_path = _lock_path(self._record)
+        try:
+            handle = lock_path.open("x+b")
+        except OSError:
+            return False
+        try:
+            acquire_file_lock(handle)
+        except OSError:
+            handle.close()
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+            return False
+        # A ledger dropped with its record still published must not leak the open handle.
+        self._lock_release = weakref.finalize(self, handle.close)
+        return True
+
+    def _release_lock(self) -> None:
+        if self._lock_release is not None:
+            self._lock_release()
+            self._lock_release = None
 
     def create_file(self, relative: Path, content: bytes) -> None:
         """Create *relative* holding *content*; ``FileExistsError`` when the path is taken."""
@@ -190,6 +227,7 @@ class StagedInputLedger:
         if failed:
             self._entries = [entry for entry in self._entries if entry.created is not None]
             self._publish_entries()
+            self._release_lock()
         else:
             self.discard()
 
@@ -200,6 +238,9 @@ class StagedInputLedger:
     def discard(self) -> None:
         """Delete this ledger's record after a normal unwind removed everything."""
         self._record.unlink(missing_ok=True)
+        self._release_lock()
+        with contextlib.suppress(OSError):
+            _lock_path(self._record).unlink(missing_ok=True)
 
 
 def sweep_cancelled_run_inputs(booley_dir: Path) -> frozenset[Path]:
@@ -220,7 +261,7 @@ def sweep_cancelled_run_inputs(booley_dir: Path) -> frozenset[Path]:
     return frozenset(retained)
 
 
-def _read_record(record: Path) -> tuple[ProcessIdentity, Path, list[_Entry]] | None:
+def _read_record(record: Path) -> tuple[int, ProcessIdentity, Path, list[_Entry]] | None:
     status = record.lstat()
     if not stat.S_ISREG(status.st_mode) or status.st_size > _MAX_RECORD_BYTES:
         return None
@@ -231,7 +272,7 @@ def _read_record(record: Path) -> tuple[ProcessIdentity, Path, list[_Entry]] | N
     if (
         not isinstance(data, dict)
         or data.get("kind") != RECORD_KIND
-        or data.get("version") != RECORD_VERSION
+        or data.get("version") not in (RECORD_VERSION, _LOCKLESS_VERSION)
         or not isinstance(data.get("run_directory"), str)
         or not isinstance(data.get("entries"), list)
     ):
@@ -243,7 +284,7 @@ def _read_record(record: Path) -> tuple[ProcessIdentity, Path, list[_Entry]] | N
     run_dir = Path(data["run_directory"])
     if not run_dir.is_absolute():
         return None
-    return owner, run_dir, [entry for entry in parsed if entry is not None]
+    return data["version"], owner, run_dir, [entry for entry in parsed if entry is not None]
 
 
 def _sweep_record(record: Path, scope: str) -> set[Path]:
@@ -253,9 +294,44 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
         return set()
     if parsed is None:
         return set()
-    owner, run_dir, entries = parsed
-    # A PID from another PID namespace reads as dead whether or not it runs.
-    if owner.identity_scope != scope or observe_process(owner).state not in DEAD_PROCESS_STATES:
+    if parsed[0] == _LOCKLESS_VERSION:
+        return _sweep_parsed(record, scope, parsed)
+    return _sweep_locked_record(record, scope)
+
+
+def _sweep_locked_record(record: Path, scope: str) -> set[Path]:
+    lock_path = _lock_path(record)
+    try:
+        handle = lock_path.open("r+b")
+    except OSError:
+        return set()
+    retained: set[Path] = set()
+    try:
+        try:
+            acquire_file_lock(handle, preserve_contents=True)
+            parsed = _read_record(record)
+        except OSError:
+            parsed = None
+        if parsed is not None:
+            retained = _sweep_parsed(record, scope, parsed)
+    finally:
+        handle.close()
+    if not record.exists():
+        with contextlib.suppress(OSError):
+            lock_path.unlink(missing_ok=True)
+    return retained
+
+
+def _sweep_parsed(
+    record: Path, scope: str, parsed: tuple[int, ProcessIdentity, Path, list[_Entry]]
+) -> set[Path]:
+    version, owner, run_dir, entries = parsed
+    # A PID from another PID namespace reads as dead whether or not it runs; only
+    # a free owner lock proves such an owner gone.
+    if owner.identity_scope != scope:
+        if version == _LOCKLESS_VERSION:
+            return set()
+    elif observe_process(owner).state not in DEAD_PROCESS_STATES:
         return set()
     # An entry whose staged pipe could not be unlinked stays recorded for the next sweep.
     stuck = {
@@ -269,7 +345,7 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
         # Retire before the unlink: a crash then leaves an unrecorded leftover and
         # never a record that could later authorize deleting a user's new object.
         live[:] = [other for other in live if other is not entry]
-        _publish(record, owner, run_dir, live)
+        _publish(record, owner, run_dir, live, version)
 
     kept: list[_Entry] = []
     retained: set[Path] = set()
@@ -286,7 +362,7 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
             kept.append(entry)
     kept.reverse()
     if kept:
-        _publish(record, owner, run_dir, kept)
+        _publish(record, owner, run_dir, kept, version)
     else:
         record.unlink(missing_ok=True)
     return retained
