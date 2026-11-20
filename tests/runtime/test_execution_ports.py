@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from tests.claude_cli_fake import write_claude_cli
 from tests.subprocess_budget import run_bounded_child
 
 from booley.core.models import AgentArtifactPaths, AgentCallParams
@@ -120,17 +121,25 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
 def fake_limit_query(monkeypatch, resets_at):
     """Make every Claude query yield one rejected limit event; return (queries, sleep mock)."""
     queries: list[str] = []
+    opened: list[object] = []
+    closed: list[object] = []
 
     async def query(*, prompt, options):
         queries.append(prompt)
-        yield rejected_seven_day(resets_at)
+        opened.append(asyncio.current_task())
+        try:
+            yield rejected_seven_day(resets_at)
+        finally:
+            closed.append(asyncio.current_task())
+            if closed[-1] is not opened[-1]:
+                raise RuntimeError("closed outside the task that opened it")
 
     monkeypatch.setattr(claude, "RateLimitEvent", _RateLimit)
     monkeypatch.setattr(claude, "query", query)
     monkeypatch.setattr(claude, "wall_clock", lambda: _NOW)
     sleep = AsyncMock()
     monkeypatch.setattr(claude.anyio, "sleep", sleep)
-    return queries, sleep
+    return queries, sleep, (opened, closed)
 
 
 def _limit_params(tmp_path):
@@ -139,8 +148,11 @@ def _limit_params(tmp_path):
     )
 
 
-def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_path, monkeypatch):
-    queries, sleep = fake_limit_query(monkeypatch, _FAR_RESET)
+def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(
+    tmp_path, monkeypatch, caplog
+):
+    queries, sleep, (opened, closed) = fake_limit_query(monkeypatch, _FAR_RESET)
+    caplog.set_level("DEBUG")
 
     with pytest.raises(UsageLimitError) as raised:
         asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
@@ -148,10 +160,13 @@ def test_claude_usage_limit_beyond_the_call_timeout_fails_without_sleeping(tmp_p
     assert str(raised.value) == FAR_RESET_MESSAGE
     assert queries == ["work"]
     sleep.assert_not_awaited()
+    assert closed == opened
+    assert not [r for r in caplog.records if r.levelno >= 30]
+    assert any("Crash context: 0 turns completed" in note for note in raised.value.__notes__)
 
 
-def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeypatch):
-    queries, _sleep = fake_limit_query(monkeypatch, _NOW + 5)
+def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeypatch, caplog):
+    queries, _sleep, (opened, closed) = fake_limit_query(monkeypatch, _NOW + 5)
 
     with pytest.raises(UsageLimitError) as raised:
         asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(_limit_params(tmp_path)))
@@ -161,6 +176,69 @@ def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeyp
         " still limited after 5 attempts"
     )
     assert len(queries) == 5
+    assert closed == opened
+    assert not [r for r in caplog.records if r.levelno >= 30 and "Crash context" in r.getMessage()]
+    assert any("Crash context" in note for note in raised.value.__cause__.__notes__)
+
+
+_SDK_STOP_SCRIPT = """
+import asyncio, json, logging, sys
+from pathlib import Path
+import claude_agent_sdk
+from booley.core.models import AgentCallParams
+from booley.runtime import _claude_backend as claude
+from booley.runtime.agent_errors import UsageLimitError
+
+records = []
+class Handler(logging.Handler):
+    def emit(self, record):
+        if record.levelno >= logging.WARNING:
+            records.append(record.name + ": " + record.getMessage())
+logging.getLogger().addHandler(Handler())
+
+def sdk_query(*, prompt, options):
+    options.cli_path = sys.argv[1]
+    return claude_agent_sdk.query(prompt=prompt, options=options)
+
+claude.query = sdk_query
+claude.wall_clock = lambda: int(sys.argv[2])
+params = AgentCallParams(
+    prompt="work", model="m", cwd=Path(sys.argv[3]), timeout_seconds=300, label="reviewer"
+)
+try:
+    asyncio.run(claude.ClaudeSDKBackend(auth_mode="visitor").call(params))
+except UsageLimitError as error:
+    print(json.dumps({"message": str(error), "notes": error.__notes__, "records": records}))
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in CLI is a POSIX script")
+def test_claude_usage_limit_stop_through_the_sdk_is_quiet(tmp_path):
+    event = {
+        "type": "rate_limit_event",
+        "uuid": "u1",
+        "session_id": "s1",
+        "rate_limit_info": {
+            "status": "rejected",
+            "resetsAt": _FAR_RESET,
+            "rateLimitType": "seven_day",
+        },
+    }
+    cli = write_claude_cli(tmp_path, [event])
+    source = Path(__file__).resolve().parents[2] / "src"
+
+    # A fresh interpreter: harness conftests stub the SDK module in the test process.
+    result = run_bounded_child(
+        [sys.executable, "-c", _SDK_STOP_SCRIPT, str(cli), str(_NOW), str(tmp_path)],
+        env={**os.environ, "PYTHONPATH": str(source)},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["message"] == FAR_RESET_MESSAGE
+    assert outcome["records"] == []
+    assert any("Crash context" in note for note in outcome["notes"])
+    assert "asynchronous generator" not in result.stderr
 
 
 def test_claude_limit_event_after_the_result_keeps_the_result(tmp_path, monkeypatch):

@@ -79,11 +79,15 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
 
     failure = RuntimeError("provider exploded")
     caplog.set_level("DEBUG")
-    with (
-        patch.object(cb, "_dump_crash_context"),
-        pytest.raises(RuntimeError, match="provider exploded"),
-    ):
+    with pytest.raises(RuntimeError, match="provider exploded"):
         cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
+
+    assert any(
+        record.levelname == "WARNING"
+        and record.getMessage()
+        == "Crash context: 0 turns completed before exception: RuntimeError (attempt 1)"
+        for record in caplog.records
+    )
 
     ordinary = [
         record
@@ -95,7 +99,7 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
     assert any(record.levelname == "DEBUG" and record.exc_info for record in caplog.records)
 
 
-def test_result_error_classification_uses_terminal_text() -> None:
+def test_result_error_classification_uses_terminal_text(caplog) -> None:
     from claude_agent_sdk import ResultError
 
     from booley.runtime import _claude_backend as cb
@@ -105,8 +109,12 @@ def test_result_error_classification_uses_terminal_text() -> None:
     failure.result = "You've hit your usage limit"
     failure.errors = []
 
-    with patch.object(cb, "_dump_crash_context"), pytest.raises(UsageLimitError):
+    caplog.set_level("DEBUG")
+    with pytest.raises(UsageLimitError) as raised:
         cb._handle_stream_exception(failure, False, deque(), deque(), 0, 1, None, model="test")
+
+    assert not [r for r in caplog.records if r.levelno >= 30]
+    assert any("Crash context: 0 turns completed" in note for note in raised.value.__notes__)
 
 
 class TestClaudeSdkLaunchContract:
