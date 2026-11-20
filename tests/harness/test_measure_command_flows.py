@@ -244,6 +244,22 @@ def test_a_goals_section_in_the_commit_does_not_stop_its_measurement(
 
 
 @linux_only
+def test_live_paths_in_files_no_flow_reads_do_not_stop_the_measurement(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Files no checkout run reads; a waiver's subject is copied from the warning ID (DOCTOR.md).
+    waiver = 'version = 1\n[[waiver]]\ncheck = "interactive.devcontainer-drift"\nreason = "ok"\n'
+    waiver += 'subject = "{live}/.devcontainer/devcontainer.json"\npermanent = true\n'
+    names = ("doctor-waivers", "configs", "criteria", "reviews", "pipeline", "notes")
+    files = {f".booley/{name}.toml": waiver for name in names}
+    files[".booley/metrics.toml"] = "[metrics_ok.checkout_stub]\nmarker_max = 10\n"
+    files.update({f"{name}.core": CORE.format(name=name) for name in TARGETS})
+    files["top.v"] = "module top; endmodule\n"
+
+    assert measure(monkeypatch, make_world(files=files)) == 0
+
+
+@linux_only
 def test_a_target_run_measures_one_target_and_keeps_its_reports_with_the_job(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> None:

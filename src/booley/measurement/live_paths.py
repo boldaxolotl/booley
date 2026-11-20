@@ -5,7 +5,7 @@ uncommitted work. Two checks find the ways an input can still point there:
 
 * :func:`input_findings` reads the checkout without running anything: committed
   symlinks into a live root, and absolute paths in ``.core`` files, ``fusesoc.conf``
-  and the Booley configuration.
+  and the Booley Directory files a checkout run reads.
 * :func:`resolved_findings` judges what FuseSoC resolved for the Target: every file
   and core file inside a live root, and the text of core files generated outside the
   checkout.
@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.booley_dir import in_checkout_booley_dir
+from booley.core.config_paths import resolve_toml
 from booley.runtime import booley_dir
 
 # Characters after which a path token may start: whitespace, quotes, and the separators of
@@ -102,10 +103,12 @@ def _read(path: Path) -> str:
 
 def input_findings(checkout: Path, roots: Sequence[LiveRoot]) -> list[str]:
     """Findings for committed symlinks and authored files of *checkout* that reach a live root."""
-    configuration = [checkout / "booley.toml", checkout / "fusesoc.conf"]
     config_dir = in_checkout_booley_dir(checkout)
-    if config_dir.is_dir():
-        configuration.extend(sorted(config_dir.glob("*.toml")))
+    # Of the Booley Directory, only what a checkout run reads: the Project configuration
+    # in use, the Tests and the Target Metrics. No Flow reads another file there, and a
+    # Doctor waiver's subject (``doctor-waivers.toml``) may be a path in the live tree.
+    configuration = [checkout / "booley.toml", checkout / "fusesoc.conf", resolve_toml(config_dir)]
+    configuration += [config_dir / "tests.toml", config_dir / "metrics.toml"]
     findings: list[str] = []
     # Read through links: a configuration file or directory linked inside the checkout is
     # still read by the Flow, and the walk below does not follow links.
