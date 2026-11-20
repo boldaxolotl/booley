@@ -306,7 +306,7 @@ class TestWriteTraceOverlay:
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         overlay.cleanup()
         assert not overlay.core_file.exists()
-        assert not list((tmp_path / ".booley/.runtime/staged-runtime-inputs").glob("*.json"))
+        assert not list(tmp_path.rglob("staged-runtime-inputs/*.json"))
         overlay.cleanup()  # second call must not raise
 
     def test_rejects_unknown_target(self, tmp_path: Path):
@@ -569,12 +569,14 @@ class TestWriteTraceOverlay:
             real_created = StagedInputLedger.created
             calls: list[Path] = []
 
-            def fail_second_confirmation(ledger: StagedInputLedger, relative: Path) -> None:
+            def fail_second_confirmation(
+                ledger: StagedInputLedger, relative: Path, *rest: object
+            ) -> None:
                 # No public entry point reaches a failure between create and confirm.
                 calls.append(relative)
                 if len(calls) == 2:
                     raise OSError("injected failure")
-                real_created(ledger, relative)
+                real_created(ledger, relative, *rest)
 
             monkeypatch.setattr(StagedInputLedger, "created", fail_second_confirmation)
         else:
@@ -656,9 +658,6 @@ def test_dump_module_added_by_filesets_append_is_not_injected_again(tmp_path: Pa
         overlay.cleanup()
 
 
-# --- Cancelled runs leave nothing behind (#5235) ---------------------------------------------
-
-
 def _needs_kill(test):
     test = pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")(test)
     return pytest.mark.skipif(
@@ -698,8 +697,8 @@ def _die_writing(write, trace: Path, *, before_content: bool = False) -> None:
         if before_content:
             real = StagedInputLedger.created
 
-            def dying(ledger: StagedInputLedger, relative: Path) -> None:
-                real(ledger, relative)
+            def dying(ledger: StagedInputLedger, relative: Path, *rest: object) -> None:
+                real(ledger, relative, *rest)
                 if relative.name.endswith(".core"):
                     # No public entry point stops between the confirmation and the content.
                     os._exit(_KILLED)
@@ -840,3 +839,30 @@ def test_swept_stealth_overlay_loses_its_projection(tmp_path: Path) -> None:
 
     (cores / "broken.core").write_text("not a core\n", encoding="utf-8")
     sweep_cancelled_run_leftovers(project, project / ".booley")  # reports nothing, raises nothing
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_replacement_made_while_creating_is_never_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    """A file swapped in at the path after the exclusive create is not Booley's to remove."""
+    ledger = StagedInputLedger(tmp_path / ".booley", tmp_path)
+    real = StagedInputLedger.created
+
+    def swapped(self: StagedInputLedger, relative: Path, *rest: object) -> None:
+        # No public entry point runs between the exclusive create and its confirmation.
+        stranger = tmp_path / "stranger"
+        stranger.write_bytes(b"mine\n")
+        stranger.replace(tmp_path / relative)
+        if fail:
+            raise OSError("boom")
+        real(self, relative, *rest)
+
+    monkeypatch.setattr(StagedInputLedger, "created", swapped)
+    if fail:
+        with pytest.raises(OSError, match="boom"):
+            ledger.create_file(Path("x.core"), b"content\n")
+    else:
+        ledger.create_file(Path("x.core"), b"content\n")
+        ledger.remove_created()
+    assert (tmp_path / "x.core").read_bytes() == b"mine\n"

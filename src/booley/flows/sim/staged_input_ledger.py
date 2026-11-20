@@ -14,6 +14,7 @@ cancelled Booley run left it there.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -119,10 +120,14 @@ class StagedInputLedger:
         self._entries.append(_Entry(relative.as_posix(), kind, identity))
         self._publish_entries()
 
-    def created(self, relative: Path) -> None:
-        """Confirm the pending entry with the identity of the object just created."""
+    def created(self, relative: Path, status: os.stat_result | None = None) -> None:
+        """Confirm the pending entry with the identity of the object just created.
+
+        *status* is the creator's own handle of the object; without it the path is read.
+        """
         destination = self._run_dir / relative
-        status = os.lstat(destination)
+        if status is None:
+            status = os.lstat(destination)
         for entry in reversed(self._entries):
             if entry.path == relative.as_posix() and entry.created is None:
                 entry.created = (status.st_dev, status.st_ino)
@@ -146,15 +151,20 @@ class StagedInputLedger:
         self.will_create(relative, kind="new-file", identity=digest)
         # Mode "x" never replaces a file this call did not create.
         with destination.open("xb", buffering=0) as stream:
+            made = os.fstat(stream.fileno())
             try:
                 # Confirmed before the content: a kill from here on leaves an
                 # empty or complete file, which the sweep removes.
-                self.created(relative)
+                self.created(relative, made)
                 if stream.write(content) != len(content):
                     raise OSError(f"short write to {destination}")
             except BaseException:
                 stream.close()
-                destination.unlink(missing_ok=True)
+                # Only the file this call created: a replacement at the path is not ours.
+                with contextlib.suppress(FileNotFoundError):
+                    now = os.lstat(destination)
+                    if (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino):
+                        destination.unlink()
                 raise
 
     def remove_created(self) -> None:
