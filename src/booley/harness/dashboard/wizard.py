@@ -235,8 +235,7 @@ class RunWizard(ModalScreen[str | None]):
         self._form: RunForm | SpecialistForm | None = None
         # The one build whose result counts.
         self._form_worker: Worker[RunForm | SpecialistForm] | None = None
-        self._building = False
-        self._form_error = ""
+        self._building, self._form_error = False, ""
         self._values: dict[str, str] = {}
         self._picked: dict[str, tuple[str, ...]] = {}  # the Test Runs chosen, in pick order
         # The worktree's Targets and the chosen Target's Test Runs; None while being read.
