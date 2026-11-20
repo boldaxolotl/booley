@@ -187,9 +187,11 @@ across runs, and grouping of related failures are on the
 
 ### Job Admission
 
-Start several Developer Agents and they soon run many EDA tools at once.
-Together those tools can need more memory than the Sandbox has, and the kernel
-then kills one of them for running out of memory (an OOM kill), losing the run.
+Start several Developer Agents and they soon run many EDA tools at once. No
+agent knows what the others have started, so together the tools can need more
+memory than the machine has. The kernel then kills one of them for running out
+of memory (an OOM kill), losing the run. Any setup with parallel agents hits
+this, sandboxed or not.
 
 Booley guards against those kills by admitting work against a Memory Budget:
 the Sandbox's memory limit (`[sandbox].memory`) less a reserve for the agents.
