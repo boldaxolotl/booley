@@ -250,11 +250,13 @@ class CurrentRunTraces:
         patterns: tuple[str, ...] = (),
         roots: tuple[Path, ...] = (),
         stream_from: Path | None = None,
+        booley_dir: Path | None = None,
     ) -> CurrentRunTraces:
         """Clear Booley-owned outputs, snapshot declared files in every root, then stream.
 
-        With *stream_from* (the run directory) eligible declared VCDs become
-        pipes, started after the snapshot so freshness evidence is unchanged.
+        With *stream_from* (the run directory) and *booley_dir* (whose ownership
+        record names each pipe) eligible declared VCDs become pipes, started
+        after the snapshot so freshness evidence is unchanged.
         """
         session.reset_for_run(raw_trace_paths)
         before: TraceFileSnapshot = {}
@@ -263,8 +265,8 @@ class CurrentRunTraces:
             if stamp is not None:
                 before[match.resolve()] = stamp
         streams = (
-            DeclaredTraceStreams.start(session, patterns, stream_from)
-            if stream_from is not None
+            DeclaredTraceStreams.start(session, patterns, stream_from, booley_dir)
+            if stream_from is not None and booley_dir is not None
             else None
         )
         return cls(session, patterns, roots, before, streams)

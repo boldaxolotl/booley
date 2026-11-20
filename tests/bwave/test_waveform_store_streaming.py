@@ -94,7 +94,7 @@ def test_declared_stream_builds_queryable_store(tmp_path) -> None:
     run.mkdir()
     session = TraceSession(tmp_path / "work")
     session.start_conversion_budget(2 * hang_guard_s())
-    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run)
+    streams = DeclaredTraceStreams.start(session, ("fpu.vcd",), run, tmp_path / ".booley")
 
     _write_fifo(run / "fpu.vcd", MINIMAL_VCD.encode())
     streams.close_inputs()

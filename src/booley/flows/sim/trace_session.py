@@ -686,9 +686,8 @@ class TraceSession:
             if success:
                 self.publish_bwave(self.bwave_path)
             elif result.detail:
-                (vcd_path.parent / "trace.fst.stderr").write_text(
-                    result.detail + "\n", encoding="utf-8"
-                )
+                make_directories(self._work_dir)
+                self.persisted_stderr_path.write_text(result.detail + "\n", encoding="utf-8")
         finally:
             self._settle_postprocess_artifacts(vcd_path, success=success)
         status = "success" if success else "vcd_only"
@@ -702,21 +701,15 @@ class TraceSession:
     def _settle_postprocess_artifacts(self, vcd_path: Path, *, success: bool) -> None:
         """Keep raw fallback artifacts inside the managed simulation directory."""
         make_directories(self._work_dir)
-        source_stderr = vcd_path.parent / "trace.fst.stderr"
 
         if success:
             vcd_path.unlink(missing_ok=True)
-            if source_stderr != self.persisted_stderr_path:
-                source_stderr.unlink(missing_ok=True)
             return
 
         managed_vcd = self._work_dir / "trace.vcd"
         if vcd_path.exists() and vcd_path != managed_vcd:
             managed_vcd.unlink(missing_ok=True)
             shutil.move(vcd_path, managed_vcd)
-        if source_stderr.exists() and source_stderr != self.persisted_stderr_path:
-            self.persisted_stderr_path.unlink(missing_ok=True)
-            shutil.move(source_stderr, self.persisted_stderr_path)
 
     def note_conversion(self, result: ConversionResult) -> None:
         """Remember the warnings of the store a successful conversion wrote."""

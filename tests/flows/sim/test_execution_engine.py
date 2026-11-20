@@ -2777,6 +2777,7 @@ def test_trace_declarations_are_frozen_at_planning(tmp_path: Path) -> None:
     assert outcome.verdict == "pass"
     (work,) = (launched_work(command) for command in launches)
     assert work.trace_files == ("../first/*.fst",)
+    assert work.booley_dir == str(tmp_path / ".booley")
     assert (work.timeout_s, work.trace_convert_timeout_s) == (1, 7)
     # simulation timeout + conversion budget + the fixed 90 s margin
     assert launch_timeouts == [1 + 7 + 90]

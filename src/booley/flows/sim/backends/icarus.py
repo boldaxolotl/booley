@@ -129,10 +129,11 @@ def _prepare_icarus_run(
     build_dir: Path,
     run_cwd: Path | None,
     work_dir: Path | None,
-    plusargs: list[str],
+    plusargs: list[str] | None,
     vcd: bool,
     trace_scope: str | None,
-    trace_files: list[str],
+    trace_files: list[str] | None,
+    booley_dir: Path | None = None,
 ) -> _IcarusRun | str:
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
@@ -141,6 +142,7 @@ def _prepare_icarus_run(
     image = find_icarus_image(build)
     if image is None:
         return f"ERROR: no vvp image (*.scr) found in {build}"
+    plusargs = list(plusargs or [])
     if vcd and not any(value.lstrip("+") == "trace" for value in plusargs):
         plusargs.append("+trace")
     command = _build_vvp_cmd(_find_vvp(), build, image, plusargs)
@@ -149,9 +151,10 @@ def _prepare_icarus_run(
         CurrentRunTraces.begin(
             trace,
             raw_trace_paths=(run / _DEFAULT_VCD_NAME,),
-            patterns=tuple(trace_files),
+            patterns=tuple(trace_files or ()),
             roots=tuple(_trace_roots(run, work, build)),
             stream_from=run,
+            booley_dir=booley_dir,
         )
         if trace is not None
         else None
@@ -223,16 +226,11 @@ def run_icarus_image(
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
     trace_convert_timeout: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S,
+    booley_dir: Path | None = None,
 ) -> NativeRun:
     """Run an edalize-built vvp image once and return its output and verdict."""
     run = _prepare_icarus_run(
-        build_dir,
-        run_cwd,
-        work_dir,
-        list(plusargs or []),
-        vcd,
-        trace_scope,
-        list(trace_files or []),
+        build_dir, run_cwd, work_dir, plusargs, vcd, trace_scope, trace_files, booley_dir
     )
     if isinstance(run, str):
         return _icarus_setup_failure(run, transport, pass_sentinels, fail_sentinels)
@@ -283,7 +281,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
     from booley.flows.sim.run_guard import install_parent_death_guard
 
     install_parent_death_guard()
-    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
+    clear_stale_pipes(work.booley_dir)
     run = run_icarus_image(
         build_dir=Path(work.build_dir),
         run_cwd=Path(work.run_cwd) if work.run_cwd else None,
@@ -298,6 +296,7 @@ def _run_work(work: PreparedSimulationWork) -> int:
         runtime_inputs=work.runtime_inputs,
         transport=work_transport_identity(work),
         trace_convert_timeout=work.trace_convert_timeout_s,
+        booley_dir=Path(work.booley_dir) if work.booley_dir else None,
     )
     return run.exit_code
 

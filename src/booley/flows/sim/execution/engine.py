@@ -1486,6 +1486,7 @@ def _project_run_fields(root: Path) -> dict[str, Any]:
         "max_rundir_bytes": resolve_max_rundir_bytes(root),
         "trace_args": tuple(resolve_trace_args(root)),
         "trace_files": tuple(resolve_trace_files(root)),
+        "booley_dir": str(resolve_checkout_booley_dir(root)),
         "pass_sentinels": tuple(passes),
         "fail_sentinels": tuple(fails),
         "sim_time_grace_s": resolve_sim_time_grace_s(root),

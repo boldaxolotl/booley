@@ -50,6 +50,8 @@ class PreparedSimulationWork:
     trace_scope: str = ""
     trace_args: tuple[str, ...] = ()
     trace_files: tuple[str, ...] = ()
+    #: Booley Directory whose ownership record this launch writes and sweeps.
+    booley_dir: str = ""
     #: Budget of every post-run trace conversion in this attempt (seconds).
     trace_convert_timeout_s: int = DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
     runtime_inputs: tuple[str, ...] = ()
