@@ -177,7 +177,12 @@ def test_claude_rejections_on_every_attempt_end_as_usage_limit(tmp_path, monkeyp
     )
     assert len(queries) == 5
     assert closed == opened
-    assert not [r for r in caplog.records if r.levelno >= 30 and "Crash context" in r.getMessage()]
+    noisy = ("Crash context", "SDK CLI stderr")
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelno >= 30 and (r.name == "asyncio" or r.getMessage().startswith(noisy))
+    ]
     assert any("Crash context" in note for note in raised.value.__cause__.__notes__)
 
 
