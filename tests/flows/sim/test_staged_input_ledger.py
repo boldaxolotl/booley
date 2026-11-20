@@ -176,6 +176,7 @@ def test_nothing_is_recorded_without_a_process_identity(tmp_path: Path, monkeypa
     monkeypatch.setattr(staged_input_ledger, "capture_process_identity", lambda _pid: None)
     ledger = StagedInputLedger(tmp_path / ".booley", tmp_path)
     ledger.will_create(Path("x"), kind="file", identity="sha256:0")
+    (tmp_path / "x").write_bytes(b"")
     ledger.created(Path("x"))
 
     assert sweep_cancelled_run_inputs(tmp_path / ".booley") == frozenset()

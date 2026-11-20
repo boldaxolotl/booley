@@ -1,5 +1,7 @@
 """Durable ownership record for runtime inputs a run stages into a run directory.
 
+The record also covers the overlay files a run writes beside a Target's core.
+
 A run that is killed or interrupted cannot unwind its ``finally`` blocks, so the
 inputs it staged would stay behind and break the next run.  Each staging
 context therefore records, before it creates a destination, what it is about to
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 RECORD_KIND = "booley-staged-runtime-inputs"
 RECORD_VERSION = 1
 _MAX_RECORD_BYTES = 1024 * 1024
-_ENTRY_KINDS = frozenset({"file", "link", "directory"})
+_ENTRY_KINDS = frozenset({"file", "link", "directory", "new-file"})
 
 
 def _record_root(booley_dir: Path) -> Path:
@@ -114,16 +116,11 @@ class StagedInputLedger:
 
     def will_create(self, relative: Path, *, kind: str, identity: str | None) -> None:
         """Publish a pending entry before the destination is created."""
-        if self._owner is None:
-            return
-        make_directories(self._record.parent)
         self._entries.append(_Entry(relative.as_posix(), kind, identity))
-        _publish(self._record, self._owner, self._run_dir, self._entries)
+        self._publish_entries()
 
     def created(self, relative: Path) -> None:
         """Confirm the pending entry with the identity of the object just created."""
-        if self._owner is None:
-            return
         destination = self._run_dir / relative
         status = os.lstat(destination)
         for entry in reversed(self._entries):
@@ -133,7 +130,57 @@ class StagedInputLedger:
                     # The OS may spell an absolute target differently from the request.
                     entry.identity = str(destination.readlink())
                 break
+        self._publish_entries()
+
+    def _publish_entries(self) -> None:
+        # Without a process identity nothing can be published; entries stay in memory.
+        if self._owner is None:
+            return
+        make_directories(self._record.parent)
         _publish(self._record, self._owner, self._run_dir, self._entries)
+
+    def create_file(self, relative: Path, content: bytes) -> None:
+        """Create *relative* holding *content*; ``FileExistsError`` when the path is taken."""
+        destination = self._run_dir / relative
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        self.will_create(relative, kind="new-file", identity=digest)
+        # Mode "x" never replaces a file this call did not create.
+        with destination.open("xb", buffering=0) as stream:
+            try:
+                # Confirmed before the content: a kill from here on leaves an
+                # empty or complete file, which the sweep removes.
+                self.created(relative)
+                if stream.write(content) != len(content):
+                    raise OSError(f"short write to {destination}")
+            except BaseException:
+                stream.close()
+                destination.unlink(missing_ok=True)
+                raise
+
+    def remove_created(self) -> None:
+        """Remove each file this ledger created that is still that object, then the record."""
+        failed = False
+        for entry in self._entries:
+            if entry.created is None:
+                continue
+            destination = self._run_dir / entry.path
+            try:
+                status = os.lstat(destination)
+                if (status.st_dev, status.st_ino) == entry.created:
+                    destination.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logger.warning("Could not remove %s: %s", destination, exc)
+                failed = True
+                continue
+            # A repeated call must not remove a successor that reuses the inode number.
+            entry.created = None
+        if failed:
+            self._entries = [entry for entry in self._entries if entry.created is not None]
+            self._publish_entries()
+        else:
+            self.discard()
 
     def is_leftover(self, relative: Path) -> bool:
         """Whether *relative* holds a retained leftover of a cancelled run."""
@@ -257,6 +304,11 @@ def _still_created(entry: _Entry, destination: Path, status: os.stat_result) -> 
         return False
     if entry.kind == "file":
         return stat.S_ISREG(status.st_mode) and _sha256(destination) == entry.identity
+    if entry.kind == "new-file":
+        # Empty is what a kill between creation and content leaves.
+        return stat.S_ISREG(status.st_mode) and (
+            status.st_size == 0 or _sha256(destination) == entry.identity
+        )
     if entry.kind == "link":
         return stat.S_ISLNK(status.st_mode) and str(destination.readlink()) == entry.identity
     return stat.S_ISDIR(status.st_mode)
