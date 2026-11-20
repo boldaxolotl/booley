@@ -171,7 +171,7 @@ def required_agent_clis(default_cli: str, models: object) -> frozenset[str]:
     is the raw ``[models]`` value, read fail-soft: a non-table, a non-string pin, or an
     unknown model prefix adds nothing (``agent.backend-health`` reports an invalid one).
     """
-    pins = as_dict(models, default={}).values()
+    pins = (as_dict(models) or {}).values()
     pinned = (cli_for_model(pin.strip()) for pin in pins if isinstance(pin, str))
     return frozenset({default_cli, *(cli for cli in pinned if cli)})
 
