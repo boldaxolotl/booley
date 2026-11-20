@@ -63,6 +63,7 @@ from booley.config.agent import (
     AGENT_CLIS,
     DEFAULT_AUTH,
     RETIRED_AUTH,
+    VISITOR_AUTH,
     DeclaredAgent,
     SandboxConfig,
     encode_cli_policies,
@@ -716,16 +717,20 @@ def _resolve_auth(
     clis: tuple[str, ...],
     declared: str | Mapping[str, str] | None,
     requested: str | None,
+    *,
+    keep_visitor: bool,
 ) -> tuple[dict[str, str], str | dict[str, str] | None] | None:
     """Resolve each CLI's policy and the ``[agent] auth`` value to write, if any.
 
-    A recorded value other than the retired ``auto`` is kept; ``auto`` or a missing entry takes the
+    A recorded value is kept, except the retired ``auto`` and, unless *keep_visitor* (a
+    Sandbox set up by hand), ``visitor``; those and a missing entry take the
     ``--auth`` flag, else the policy detected from the CLI's credentials. The record is
     one string when every CLI agrees, else an ``[agent.auth]`` table in ``clis`` order;
     it is ``None`` when nothing changes. ``None`` overall: a conflict or aborted prompt.
     """
     recorded = _recorded_auth(declared, clis)
-    kept = {cli: policy for cli, policy in recorded.items() if policy != RETIRED_AUTH}
+    dropped = (RETIRED_AUTH,) if keep_visitor else (RETIRED_AUTH, VISITOR_AUTH)
+    kept = {cli: policy for cli, policy in recorded.items() if policy not in dropped}
     if requested is not None and any(policy != requested for policy in kept.values()):
         err(
             f"--auth={requested} conflicts with booley.toml [agent] "
@@ -751,7 +756,10 @@ def _resolve_agent_selection(
     args: argparse.Namespace,
     config_path: Path,
 ) -> AgentSelection | None:
-    """Resolve flags, config, prompts, detected credentials, and documented defaults."""
+    """Resolve flags, config, prompts, detected credentials, and documented defaults.
+
+    On the host a recorded ``visitor`` is replaced like a missing ``auth``.
+    """
     try:
         declared = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
@@ -771,7 +779,11 @@ def _resolve_agent_selection(
         ctx.record("agent_config", "err", "agent selection aborted")
         return None
     resolved = _resolve_auth(
-        ctx, declared.clis or (provider,), declared.auth, getattr(args, "auth", None)
+        ctx,
+        declared.clis or (provider,),
+        declared.auth,
+        getattr(args, "auth", None),
+        keep_visitor=False,
     )
     if resolved is None:
         ctx.record("agent_config", "err", "agent selection aborted")
@@ -2948,7 +2960,8 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
     ``BOOLEY_AGENT_APP`` of ``claude`` or ``codex`` is recorded as the default.
     ``auto`` is not resolved here: the registrar publishes its choice per start,
     after ``onCreateCommand``, and pinning one start's choice would defeat ``auto``.
-    A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
+    A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds;
+    a recorded ``visitor`` is kept.
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
     declared = _read_agent_selection(config_path)
@@ -2958,7 +2971,9 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
         if app not in AGENT_CLIS:
             return None
         provider = app
-    resolved = _resolve_auth(ctx, declared.clis or (provider,), declared.auth, None)
+    resolved = _resolve_auth(
+        ctx, declared.clis or (provider,), declared.auth, None, keep_visitor=True
+    )
     if resolved is None:
         return None
     policies, record = resolved

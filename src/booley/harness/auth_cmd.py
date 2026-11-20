@@ -131,7 +131,12 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     reported CLI has a usable credential.
     """
     from booley.config import agent_app
-    from booley.config.agent import missing_auth_policy, project_cli_policies
+    from booley.config.agent import (
+        DEFAULT_AUTH,
+        VALID_AUTH_MODES,
+        env_auth_handoff,
+        project_cli_policies,
+    )
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
@@ -140,7 +145,11 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
     chosen = app or agent_app.resolved_app(None)
     if project_root is None or not resolve_authoritative_booley_dir(project_root).is_dir():
         apps = (chosen,) if chosen else tuple(auth_token.CREDENTIALS)
-        return 0 if _report_policy(apps, missing_auth_policy(), label=None) else 1
+        handoff = env_auth_handoff()
+        fallback = (
+            handoff if handoff in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH) else DEFAULT_AUTH
+        )
+        return 0 if _report_policy(apps, fallback, label=None) else 1
     usable = 0
     # Only --cli filters; the auto choice only names an undeclared set.
     for cli, policy in project_cli_policies(project_root, cli=app, selected=chosen):

@@ -222,15 +222,15 @@ auth = "subscription"   # "subscription" or "api_key"
 - **`subscription`**: Booley removes API keys from the agents' environment so
   the subscription pays.
 - **`api_key`**: the API key pays.
+- **`visitor`**: the visitor mode, for a Sandbox set up by hand rather than by
+  `booley init`, such as the demo Codespace. Each Agent CLI uses the credential
+  you sign in with or export, or the gateway the spec provides when you have
+  none. Anywhere else, `visitor` bills the subscription and `booley doctor`
+  fails on it.
 
-Leave `auth` out and the subscription pays, whatever API key is exported.
-`booley doctor` still fails on a missing `auth`, so the choice is on record.
-
-The exception is a Sandbox set up by hand rather than by `booley init`, such as
-the demo Codespace. There a missing `auth` means the visitor mode: each Agent
-CLI uses the credential you sign in with or export, or the gateway the spec
-provides when you have none, and `booley doctor` does not fail on the missing
-`auth`.
+Leave `auth` out and the subscription pays, whatever API key is exported, in a
+Sandbox set up by hand too. `booley doctor` still fails on a missing `auth`, so
+the choice is on record.
 
 A single value applies to every CLI in `clis`. To bill each CLI differently,
 use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
@@ -250,16 +250,18 @@ A table may name only CLIs listed in `clis`.
 `booley doctor` checks that the credential you picked exists, so Booley never
 quietly bills the other one:
 
-- **Any CLI in `clis`** whose `auth` is missing or `"auto"`: fails, naming the
-  value `booley init` would record (`subscription` with a login, `api_key` with
-  only a key). Set it under `[agent]` or `[agent.auth]`, or re-run `booley init`.
+- **Any CLI in `clis`** whose `auth` is missing, `"auto"`, or `"visitor"`
+  outside a Sandbox set up by hand: fails, naming the value `booley init` would
+  record (`subscription` with a login, `api_key` with only a key). Set it under
+  `[agent]` or `[agent.auth]`, or re-run `booley init`.
 - **Default CLI**, with `subscription` or `api_key`: a missing credential fails.
 - **Another CLI in `clis`**: a missing credential warns. If a `[models]` entry
   runs a Specialist on that CLI, it fails whatever `auth` says.
 
 `booley init` records the policy it detects for each CLI in `clis`: one string
 when they agree, an `[agent.auth]` table when they differ. It keeps an explicit
-value; `booley init --auth api-key` (with a hyphen) records
+value, except that on the host it replaces `visitor`;
+`booley init --auth api-key` (with a hyphen) records
 `api_key` without detection. Why to pick one:
 [Sign-in and billing](SETUP.md#sign-in-and-billing).
 

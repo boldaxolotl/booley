@@ -48,10 +48,11 @@ _DEFAULT_PROVIDER = "claude"
 #                  check fails loud when the key is absent instead of letting
 #                  agents silently fall back to (and bill) the subscription.
 #
-# ``auto`` is retired: ``booley.toml`` rejects it. ``visitor`` is the Sandbox's reading of
-# ``BOOLEY_PRIMARY_AUTH=auto`` and of an issued ``cli=auto`` record (``RETIRED_AUTH`` is
-# that wire spelling): the visitor's own credential, else the sponsored gateway. It is
-# environment-only, so ``booley.toml`` rejects it too.
+# ``auto`` is retired: ``booley.toml`` rejects it. ``visitor`` (the visitor's own
+# credential, else the sponsored gateway) may be recorded; it runs only in a hand-written
+# Sandbox (:func:`visitor_mode_honoured`) and reads as ``subscription`` elsewhere. It is
+# also the Sandbox's reading of ``BOOLEY_PRIMARY_AUTH=auto`` and of an issued ``cli=auto``
+# record (``RETIRED_AUTH`` is that wire spelling).
 #
 # ``gateway`` routes Codex only. It is honored inside a Sandbox: set by the
 # ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off of a hand-written spec (plus BOOLEY_GATEWAY_URL /
@@ -59,7 +60,7 @@ _DEFAULT_PROVIDER = "claude"
 # forwards the gateway settings and records the policy in ``BOOLEY_AGENT_CLIS``).
 RETIRED_AUTH = "auto"
 VALID_AUTH_MODES = ("subscription", "api_key")
-_ENV_AUTH_MODES = (*VALID_AUTH_MODES, GATEWAY_AUTH)
+_ENV_AUTH_MODES = (*VALID_AUTH_MODES, GATEWAY_AUTH, VISITOR_AUTH)
 DEFAULT_AUTH = "subscription"
 
 # remoteEnv key of a Booley-issued Sandbox spec recording its allowed Agent CLIs and
@@ -441,23 +442,30 @@ def resolve_default_cli(declared: DeclaredAgent | None) -> tuple[str, str] | Non
     return (app, "BOOLEY_AGENT_APP") if app in AGENT_CLIS else None
 
 
-def missing_auth_policy() -> str:
-    """The policy of a CLI whose ``booley.toml`` ``auth`` is missing.
+def visitor_mode_honoured() -> bool:
+    """Whether a recorded ``visitor`` runs the visitor mode here.
 
-    ``subscription``, except inside a hand-written Sandbox (a container with no
-    decodable ``BOOLEY_AGENT_CLIS`` record whose spec sets ``BOOLEY_AGENT_APP`` or
-    ``BOOLEY_PRIMARY_AUTH``), where it is the env-only ``visitor`` mode: such a spec
-    keeps resolving exactly as it did when ``auto`` was a policy. Any other container
-    (a CI runner, a hand-made devcontainer) reads as the host does.
+    True in a hand-written Sandbox: a container with no decodable ``BOOLEY_AGENT_CLIS``
+    record whose spec sets ``BOOLEY_AGENT_APP`` or ``BOOLEY_PRIMARY_AUTH``. Elsewhere (the
+    host, an issued Sandbox, a CI runner) ``visitor`` reads as ``subscription``.
     """
     handoff = os.environ.get("BOOLEY_AGENT_APP") or os.environ.get("BOOLEY_PRIMARY_AUTH")
-    if _inside_container() and not _recorded_cli_policies() and (handoff or "").strip():
-        return VISITOR_AUTH
-    return DEFAULT_AUTH
+    return _inside_container() and not _recorded_cli_policies() and bool((handoff or "").strip())
+
+
+def policy_in_force(recorded: str | None) -> str:
+    """The policy a CLI runs under for its ``booley.toml`` value.
+
+    A missing value is ``subscription``, and so is ``visitor`` where
+    :func:`visitor_mode_honoured` is false.
+    """
+    if recorded is None or (recorded == VISITOR_AUTH and not visitor_mode_honoured()):
+        return DEFAULT_AUTH
+    return recorded
 
 
 def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[str, str]:
-    """One declared policy per listed CLI: ``[agent] auth``, else :func:`missing_auth_policy`."""
+    """One declared policy per listed CLI: ``[agent] auth``, else ``subscription``."""
     auth = declared.auth
     if isinstance(auth, str):
         if auth == GATEWAY_AUTH and "claude" in clis:
@@ -465,12 +473,11 @@ def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[s
                 "booley.toml [agent] auth='gateway' routes Codex only but claude is listed; "
                 "use an [agent.auth] table: codex = 'gateway'"
             )
-        return dict.fromkeys(clis, auth)
+        return dict.fromkeys(clis, policy_in_force(auth))
     unlisted = [cli for cli in auth or {} if cli not in clis]
     if unlisted:
         raise BackendConfigError(f"booley.toml [agent.auth] {unlisted[0]} is not in [agent] clis")
-    missing = missing_auth_policy()
-    return {cli: (auth or {}).get(cli, missing) for cli in clis}
+    return {cli: policy_in_force((auth or {}).get(cli)) for cli in clis}
 
 
 def _auth_policies(
@@ -864,9 +871,7 @@ def _env_auth() -> str:
     ``gateway`` on a host (outside a container) is treated as unknown.
     """
     raw = env_auth_handoff() or VISITOR_AUTH
-    if raw not in (*_ENV_AUTH_MODES, VISITOR_AUTH) or (
-        raw == GATEWAY_AUTH and not _inside_container()
-    ):
+    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not _inside_container()):
         logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, VISITOR_AUTH)
         return VISITOR_AUTH
     return raw
@@ -886,7 +891,8 @@ def project_credential_policies(
 ) -> ProjectCredentialPolicies:
     """The allowed CLI set with each CLI's declared policy at an already-selected root.
 
-    Reads booley.toml only (no environment) and fails closed on invalid input. With no
+    Reads booley.toml, and the environment only to tell where ``visitor`` runs
+    (:func:`policy_in_force`), and fails closed on invalid input. With no
     ``[agent]`` CLI declared the set is *selected* when that names a CLI, else Claude.
     """
     import tomllib
@@ -934,4 +940,4 @@ def project_cli_policies(
         project_root, booley_dir=booley_dir, selected=selected or cli
     )
     clis = (cli,) if cli else (found.default, *(c for c in found.clis if c != found.default))
-    return tuple((name, found.policies.get(name, missing_auth_policy())) for name in clis)
+    return tuple((name, found.policies.get(name, DEFAULT_AUTH)) for name in clis)

@@ -3029,49 +3029,33 @@ def _recorded_auth_fix(
 def _check_auth_recorded(
     project: ProjectAudit, clis: tuple[str, ...], reporter: _Reporter
 ) -> None:
-    """FAIL each Project CLI whose ``[agent] auth`` is missing or the retired ``auto``.
+    """FAIL each Project CLI whose ``[agent] auth`` is missing, ``auto``, or a stray ``visitor``.
+
+    ``visitor`` is stray outside a Sandbox set up by hand.
 
     A Project records its billing choice. The finding names the value ``booley init``
-    would record. Where a missing ``auth`` is the visitor mode (a hand-written Sandbox,
-    see ``missing_auth_policy``) no value can be recorded, so it does not FAIL; one NOTE
-    names the CLIs audited under that mode.
+    would record. ``visitor`` runs only where ``visitor_mode_honoured`` holds.
     """
-    from booley.config.agent import (
-        RETIRED_AUTH,
-        VALID_AUTH_MODES,
-        env_auth_handoff,
-        missing_auth_policy,
-    )
+    from booley.config.agent import RETIRED_AUTH, visitor_mode_honoured
     from booley.harness import init_cmd
 
     declared = _declared_agent(project)
-    visitor = missing_auth_policy() == auth_token.VISITOR_AUTH
-    default_cli = _configured_provider(project)
-    unset: list[str] = []
     for cli in clis:
         recorded = _recorded_auth(declared, cli)
-        if recorded not in (None, RETIRED_AUTH):
+        if recorded not in (None, RETIRED_AUTH, auth_token.VISITOR_AUTH):
             continue
-        # A subscription or api_key hand-off sets the default CLI's policy at runtime.
-        handed_off = cli == default_cli and env_auth_handoff() in VALID_AUTH_MODES
-        if recorded is None and visitor and not handed_off:
-            # A gateway hand-off outranks the visitor reading, so it is not named for that CLI.
-            if _configured_auth_policy(project, cli) == auth_token.VISITOR_AUTH:
-                unset.append(cli)
+        if recorded == auth_token.VISITOR_AUTH and visitor_mode_honoured():
             continue
         value = init_cmd.detected_auth_policy(cli)
-        state = "is not set" if recorded is None else f"{RETIRED_AUTH!r} is retired"
+        state = {
+            None: "is not set",
+            RETIRED_AUTH: f"{RETIRED_AUTH!r} is retired",
+        }.get(recorded, f"{recorded!r} applies only in a Sandbox set up by hand")
         reporter.fail_(
             f"{cli}: booley.toml [agent] auth {state}; detected: {value}",
             _recorded_auth_fix(declared, clis, cli, value),
             check_id="agent.credential-policy",
             subject=cli,
-        )
-    if unset:
-        reporter.note_(
-            f"{', '.join(unset)}: booley.toml [agent] auth is not set; this hand-written "
-            "Sandbox uses the visitor mode (the credential you sign in with or export, or the "
-            "spec's gateway)"
         )
 
 
@@ -3380,7 +3364,7 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
         _inside_container,
         env_auth_handoff,
         gateway_handoff_active,
-        missing_auth_policy,
+        policy_in_force,
     )
 
     default_cli = _configured_provider(project)
@@ -3394,19 +3378,15 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
     env_auth = env_auth_handoff() or ""
     if project is None:
         return (
-            env_auth
-            if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH)
-            else missing_auth_policy()
+            env_auth if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH) else DEFAULT_AUTH
         )
     declared = _declared_agent(project)
     if declared is None:
-        return missing_auth_policy()
+        return DEFAULT_AUTH
     policy = _recorded_auth(declared, cli)
     if policy == GATEWAY_AUTH and not _inside_container():
         return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
-    if policy is None or policy == RETIRED_AUTH:
-        return missing_auth_policy()
-    return policy
+    return DEFAULT_AUTH if policy == RETIRED_AUTH else policy_in_force(policy)
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}

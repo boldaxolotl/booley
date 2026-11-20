@@ -62,6 +62,12 @@ The coding-agent program an agent runs on: Claude Code (`claude`) or Codex
 **Specialist** runs on the Agent CLI its model implies.
 _Avoid_: agent app, provider (in user-facing text)
 
+**Visitor mode**:
+The billing policy under which an **Agent CLI** in a hand-written **Sandbox**
+uses the credential the person in it signs in with or exports, else the gateway
+the spec provides. A Project selects it by recording `visitor` in `[agent] auth`.
+_Avoid_: auto
+
 **Sandbox**:
 The isolated environment, one per opened project folder, where all Booley work
 executes: file access, shell, git, EDA subprocesses, MCP servers, logs, and
