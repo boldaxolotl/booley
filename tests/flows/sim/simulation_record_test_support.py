@@ -2012,3 +2012,14 @@ def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, 
         }
         for item in cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
     ]
+
+
+def as_if_the_sandbox_restarted(booley_dir: Path) -> None:
+    """Rewrite each staged-input record as one from an earlier Sandbox lifetime looks from the new one."""
+    for record in (booley_dir / ".runtime/staged-runtime-inputs").glob("*.json"):
+        document = json.loads(record.read_text(encoding="utf-8"))
+        # A namespace scope parses only with a Linux identity kind, which Windows owners lack.
+        document["owner"].update(
+            identity_kind="linux-procfs-start", identity_scope="pid:[earlier-lifetime]"
+        )
+        record.write_text(json.dumps(document), encoding="utf-8")
