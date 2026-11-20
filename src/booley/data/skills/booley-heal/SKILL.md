@@ -67,12 +67,17 @@ Never describe one of those partial outcomes as healed.
    context-aware, so do not assume a host result proves the Sandbox or
    vice versa.
 2. Run plain `booley doctor` and retain its complete output. Doctor changes no
-   Project file. Repair `guidance.links-unhealthy` and stale stealth core
-   projections with the command their `→` hint names (`booley init`; as an
-   external action when the hint says "on the host"), include the repair in the
-   evidence, and rerun before diagnosing remaining rows. A `Flow dry-runs
-   skipped - stealth core projections are not current` row clears with the same
-   repair.
+   Project file. Repair `guidance.links-unhealthy` with the command its `→` hint
+   names (`booley init`; as an external action when the hint says "on the
+   host"). Refresh `stealth.projections-not-current` (missing or stale root
+   copies of stealth cores) by running any Booley Flow in place, for example a
+   lint of one Target, never by handing it to the user. The `✗` projection rows
+   need the action their hint names: ask the user before moving or deleting a
+   foreign file, fix an authored core that cannot be read, and hand the Git
+   exclusion (`booley init` on the host) to the user in an issued Sandbox.
+   Include each repair in the evidence and rerun before diagnosing remaining
+   rows. The `Flow dry-runs skipped` and `.core audit skipped` rows clear once
+   no projection row remains.
    Then check the Project's guidance for the measuring pointer: when the
    canonical `<booley_dir>/AGENTS.md` exists and does not contain
    `booley cheat --metrics`, add this bullet (the `booley-setup` template's

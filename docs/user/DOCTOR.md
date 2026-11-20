@@ -73,6 +73,16 @@ To fix a problem yourself, follow the `→` hint under it.
 | `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
 | `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
+<details markdown>
+<summary>In stealth mode</summary>
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `stealth.projections-not-current` | `!` | A root copy of a core in `.booley/cores/` is missing or out of date. Any Flow run refreshes it; so does `booley init` on the host. Until then Doctor skips the Flow dry-runs, the `.core` audit and the deep checks. |
+| none | `✗` | A foreign file sits where Booley writes a copy: move or delete it. Or a core in `.booley/cores/` cannot be read or lacks its leading `CAPI=2:` line: fix the core, then run any Flow. Or the copies are not excluded from Git status: run `booley init` on the host. |
+
+</details>
+
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the
