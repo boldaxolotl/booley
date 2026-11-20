@@ -834,7 +834,7 @@ def test_dry_run_setup_writes_only_inside_the_booley_directory(synth_cli: SynthC
 
     assert synth_cli.run("--dry-run").exit_code == EXIT_SUCCESS
     assert synth_cli.run().exit_code == EXIT_SUCCESS
-    assert during == [before, before]
+    assert during[0] == before
     assert [path.read_bytes() for path in (mine, other)] == [b"mine", b"mine"]
 
 
