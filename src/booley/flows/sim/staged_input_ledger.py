@@ -8,7 +8,9 @@ inputs it staged would stay behind and break the next run.  Each staging
 context therefore records, before it creates a destination, what it is about to
 create and who owns the run; it confirms the entry with the created object's
 ``(st_dev, st_ino)`` right after.  A later start sweeps the records whose owner
-is observably gone and removes only the very object a confirmed entry names.
+is observably gone, or whose lock file beside it is free (the owner holds it
+while it runs, so a later Sandbox can tell a dead owner from a live one), and
+removes only the very object a confirmed entry names.
 Anything else is left in place and stays recorded, so the next run can say a
 cancelled Booley run left it there.
 """
