@@ -33,6 +33,18 @@ class FakeHost:
         self.fail_volume_rm = False
         self.removals: list[str] = []
 
+    def image_ids(self) -> frozenset[str]:
+        """The lifecycle port's read of every image on the host."""
+        return frozenset(image for image, _reference, _size in self.images)
+
+    def image_references(self) -> tuple[image_lifecycle.ImageReference, ...]:
+        """The lifecycle port's read of every tag, from the same state as the CLI answers."""
+        return tuple(
+            image_lifecycle.ImageReference(reference, image)
+            for image, reference, _size in self.images
+            if not reference.endswith("<none>")
+        )
+
     def __call__(self, args: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args, 0, self._answer(args), "")
 
@@ -90,6 +102,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     fake = FakeHost()
     monkeypatch.setattr(host_docker, "_run_docker", fake)
+    monkeypatch.setattr(image_lifecycle, "_docker_adapter", lambda: fake)
     return fake
 
 
@@ -234,6 +247,33 @@ def test_purge_removes_only_unused_resources_proven_to_be_the_projects(
         (f"booley-codex-state-{project_name_id(root)}", "in-use"),
         ("c" * 64, "labelled"),
     ]
+
+
+def test_purge_disowns_an_image_another_project_still_tags(tmp_path: Path, host: FakeHost) -> None:
+    root, other = str(tmp_path / "chip"), str(tmp_path / "other")
+    family, other_family = (project_image_name_for_identity(r) for r in (root, other))
+    host.images = [
+        (_id("8"), f"{family}:latest", "1GB"),
+        (_id("8"), f"{other_family}:latest", "1GB"),
+        (_id("9"), f"{family}-wheel:latest", "1GB"),
+    ]
+    host.containers = {"c" * 64: (_id("9"), (), project_label_id(root))}
+    image_lifecycle.OwnedImages(root).record({}, (_id("8"), _id("9")))
+    image_lifecycle.OwnedImages(other).record({}, (_id("8"),))
+
+    project_resources.purge(root)
+
+    # The shared image is another tag's bytes now; the one a container uses stays recorded.
+    assert image_lifecycle.OwnedImages(root).ids == [_id("9")]
+    assert image_lifecycle.OwnedImages(other).ids == [_id("8")]
+
+    host.containers.clear()
+    project_resources.purge(root)
+    project_resources.purge(other)
+
+    assert host.images == []
+    records = tmp_path / "config" / "eda" / "refresh-image-ownership"
+    assert not records.exists() or list(records.glob("*.json")) == []
 
 
 def test_purge_failure_names_progress_and_a_rerun_finishes(
