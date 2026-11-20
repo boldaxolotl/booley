@@ -280,8 +280,8 @@ def _inject_runtime_dump_trace(
 
 def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
     """Serialize *overlay_doc* to *overlay_path* as a CAPI2 ``.core`` file."""
-    # A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; safe_load parses
-    # that marker into a harmless ``CAPI=2`` key on read (read_core), so re-emit it
+    # A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; read_core parses
+    # that marker into a harmless ``CAPI=2`` key on read, so re-emit it
     # explicitly and drop the round-tripped key from the body.
     body = {k: v for k, v in overlay_doc.items() if k != "CAPI=2"}
     try:

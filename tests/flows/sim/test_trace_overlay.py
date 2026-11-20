@@ -43,7 +43,7 @@ from booley.fusesoc.fusesoc_registry import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import UnknownTargetError
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
-from tests.fusesoc_test_support import symlinked_booley_dir
+from tests.fusesoc_test_support import INHERITED_CORE_TEXT, symlinked_booley_dir
 from tests.fusesoc_test_support import write_core as _write_core
 
 
@@ -183,6 +183,15 @@ class TestWriteTraceOverlay:
             assert "--trace" not in read_core(base)["targets"]["sim"].get("flow_options", {}).get(
                 "verilator_options", []
             )
+        finally:
+            overlay.cleanup()
+
+    def test_overlay_keeps_inherited_verilator_options(self, tmp_path: Path):
+        _write_core(tmp_path / "ip", INHERITED_CORE_TEXT)  # #5077
+        overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim_child"))
+        try:
+            opts = read_core(overlay.core_file)["targets"]["sim_child"]["flow_options"]
+            assert opts["verilator_options"][0] == "--timing"
         finally:
             overlay.cleanup()
 

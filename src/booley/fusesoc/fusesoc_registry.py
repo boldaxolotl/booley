@@ -48,6 +48,7 @@ import yaml
 from fusesoc.capi2 import exprs as _fusesoc_exprs
 from fusesoc.capi2.coreparser import Core2Parser
 from fusesoc.core import Core as FuseSocCore
+from fusesoc.utils import yaml_read as fusesoc_yaml_read
 from fusesoc.vlnv import Vlnv
 
 from booley.core.booley_dir import (
@@ -579,17 +580,28 @@ def _scan_core_root(root: Path, skip: Path | None = None) -> list[Path]:
 
 
 def read_core(core_file: Path | str) -> dict[str, Any]:
-    """Parse a ``.core`` (CAPI2) into a dict.
+    """Parse a ``.core`` (CAPI2) into a dict, resolving ``<<:`` inheritance as FuseSoC does.
 
-    A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; ``safe_load``
-    parses it as an ordinary mapping (the marker becomes a harmless ``CAPI=2``
-    key), so no special stripping is needed.
+    A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; it parses as an
+    ordinary mapping (the marker becomes a harmless ``CAPI=2`` key), so no
+    special stripping is needed. Merge keys are deep-merged by FuseSoC's own
+    reader, so a child Target's ``flow_options`` read here match what FuseSoC
+    builds from it (#5077). FuseSoC's schema validation is not run.
     """
     path = Path(core_file)
     try:
-        with path.open("r", encoding="utf-8") as f:
-            doc = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError) as exc:
+        # SyntaxError: FuseSoC's verdict on a non-mapping merge value, and its wrapper
+        # of YAML parser errors. TypeError/AttributeError: merge_dict meeting a mapping
+        # and a non-mapping under one key. RecursionError: a cyclic merge.
+        doc = fusesoc_yaml_read(path.read_text(encoding="utf-8"))
+    except (
+        OSError,
+        yaml.YAMLError,
+        SyntaxError,
+        TypeError,
+        AttributeError,
+        RecursionError,
+    ) as exc:
         raise FuseSocError(f"could not read .core {path}: {exc}") from exc
     if not isinstance(doc, Mapping):
         raise FuseSocError(f".core {path} is not a YAML mapping")
@@ -597,7 +609,7 @@ def read_core(core_file: Path | str) -> dict[str, Any]:
 
 
 # CAPI2 fields FuseSoC's schema requires to be YAML sequences (arrays). Booley's
-# own reader (``yaml.safe_load``) is more permissive than the FuseSoC pinned in
+# own reader (``read_core``) is more permissive than the FuseSoC pinned in
 # the sandbox image, so a scalar — or a bare ``depend:`` that parses to ``None`` —
 # where an array belongs passes Booley's cheap host-side audit and only explodes
 # at ``--deep`` resolution with FuseSoC's ``... must be array`` verdict. These
@@ -621,7 +633,7 @@ _CAPI2_TARGET_ARRAY_FIELDS = (
 # ``{path: {attrs}}`` file entry. Verbatim from fusesoc 2.4.6's authoritative
 # json_schema.py (the ``files`` ``$def`` — ``additionalProperties: false``), so
 # any other key makes real fusesoc reject the whole core at schema validation.
-# Booley's tolerant ``yaml.safe_load`` swallows a stray key (e.g. ``vendored``)
+# Booley's tolerant ``read_core`` swallows a stray key (e.g. ``vendored``)
 # and greenlights a core that only explodes under ``--deep``; this set lets the
 # cheap host-side pass reproduce fusesoc's ``additionalProperties`` verdict.
 _CAPI2_FILE_ATTR_KEYS = frozenset(
@@ -751,7 +763,7 @@ def core_schema_errors(core_file: Path | str) -> list[str]:
     """Return the CAPI2 array-field schema violations in a single ``.core``.
 
     A host-side subset of FuseSoC's capi2 schema, focused on the ``must be array``
-    class of error that Booley's tolerant ``yaml.safe_load`` silently accepts but
+    class of error that Booley's tolerant ``read_core`` silently accepts but
     the pinned FuseSoC rejects at resolution (decision 6). Messages mirror
     FuseSoC's own phrasing (``filesets.<name>.depend must be array``) so the cheap
     pass fails with the same reason the deep resolve would. Empty list = clean.

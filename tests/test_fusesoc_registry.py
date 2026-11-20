@@ -62,6 +62,7 @@ from booley.targets.target_surface import surface_payload as _surface_payload
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.fusesoc_test_support import CORE_TEXT as _CORE_TEXT
 from tests.fusesoc_test_support import (
+    INHERITED_CORE_TEXT,
     fusesoc_setup_runner,
     relocated_project,
     symlinked_booley_dir,
@@ -228,9 +229,23 @@ class TestDiscovery:
         assert doc["name"] == "::demo_core:0"
         assert set(doc["targets"]) == {"default", "sim"}
 
-    def test_read_core_rejects_non_mapping(self, tmp_path: Path):
+    def test_read_core_resolves_inheritance_like_fusesoc(self, tmp_path: Path):
+        core = _write_core(tmp_path, INHERITED_CORE_TEXT)  # #5077
+        fusesoc_doc = fusesoc_registry.fusesoc_core_parser().read(str(core))
+        assert read_core(core)["targets"]["synth_child"] == fusesoc_doc["targets"]["synth_child"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "- just\n- a\n- list\n",
+            "CAPI=2:\na: &a [x]\nb: {<<: *a}\n",
+            "CAPI=2:\na: &a {k: s}\nb: {<<: *a, k: {z: 1}}\n",
+            "CAPI=2:\ntargets: {sim: &sim {<<: *sim}}\n",
+        ],
+    )
+    def test_read_core_rejects_non_mapping(self, tmp_path: Path, text: str):
         bad = tmp_path / "bad.core"
-        bad.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        bad.write_text(text, encoding="utf-8")
         with pytest.raises(FuseSocError):
             read_core(bad)
 

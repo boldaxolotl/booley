@@ -12,6 +12,7 @@ import pytest
 from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
 from booley.presentation import colors
+from tests.fusesoc_test_support import INHERITED_CORE_TEXT
 
 _CORE = textwrap.dedent(
     """\
@@ -192,6 +193,16 @@ class TestTargetsListing:
         assert rows["sim"]["synth_mode"] is None
         assert rows["sim"]["frontend"] is None
         assert rows["sim"]["eda_tools"] is None
+
+    def test_json_listing_reads_inherited_flow_options(self, project: Path, capsys):
+        (project / "inherit.core").write_text(INHERITED_CORE_TEXT, encoding="utf-8")  # #5077
+        assert _run(project, "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert rows["synth_child"]["synth_mode"] == "logical"
+        assert rows["synth_child"]["frontend"] == "slang"
+        assert rows["synth_child"]["doctor_flows"] == ["synth"]
+        assert rows["sim_child"]["cocotb_module"] == "test_top"
 
     def test_listing_names_each_synth_targets_eda_tools(self, project: Path, capsys):
         (project / "modes.core").write_text(_SYNTH_CORE, encoding="utf-8")

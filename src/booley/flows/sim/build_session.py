@@ -460,7 +460,7 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     )
     if core_path.is_symlink() or not core_file.is_relative_to(project_root.resolve()):
         return None
-    core_data = yaml.safe_load(core_file.read_text(encoding="utf-8"))
+    core_data = fusesoc_registry.read_core(core_file)
     if (
         build_reuse.has_generated_core_behavior(core_data)
         or _has_unsupported_source(prepared, core_file)
@@ -526,6 +526,7 @@ def _reuse_input_key(
         KeyError,
         UnicodeError,
         yaml.YAMLError,
+        fusesoc_registry.FuseSocError,
         importlib.metadata.PackageNotFoundError,
     ):
         return None
