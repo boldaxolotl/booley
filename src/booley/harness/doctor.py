@@ -2995,14 +2995,16 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
     _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
-    specialist_clis = _specialist_clis(project)
+    from booley.config.agent import required_agent_clis
+
+    required = required_agent_clis(default_cli, project.booley_toml.get("models"))
     for cli in allowed:
         _check_cli_credentials(
             project,
             cli,
             reporter,
             is_default=cli == default_cli,
-            runs_specialist=cli in specialist_clis,
+            required=cli in required,
             auto_choice=auto_choice,
         )
 
@@ -3082,39 +3084,22 @@ def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple
     return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
-def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
-    """The Agent CLIs that the Project's ``[models]`` pins run a Specialist on.
-
-    Fail-soft like :func:`_declared_agent`: a non-table ``[models]``, a non-string
-    pin, or an unknown model prefix contributes nothing (``agent.backend-health``
-    already reports an invalid ``[models]``).
-    """
-    from booley.config.agent import cli_for_model
-
-    models = project.booley_toml.get("models") if project is not None else None
-    if not isinstance(models, dict):
-        return frozenset()
-    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
-    return frozenset(cli for cli in pinned if cli)
-
-
 def _check_cli_credentials(
     project: ProjectAudit | None,
     cli: str,
     reporter: _Reporter,
     *,
     is_default: bool,
-    runs_specialist: bool,
+    required: bool,
     auto_choice: AgentAppChoice | None,
 ) -> None:
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    the visitor mode). Another allowed CLI WARNs for a missing credential unless a
-    ``[models]`` pin runs a Specialist on it: then it FAILs under every policy,
+    the visitor mode). Another allowed CLI WARNs for a missing credential unless it is
+    *required* (:func:`booley.config.agent.required_agent_clis`): then it FAILs under every policy,
     because that Specialist's calls would fail. Every CLI's row carries its own login fix.
     """
-    required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
         # A Claude session has no gateway values by design; only a shell that kept them can grade it.
@@ -3147,7 +3132,7 @@ def _check_cli_credentials(
         ),
         missing_fix=auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
-        missing_fails=runs_specialist and not is_default,
+        missing_fails=required and not is_default,
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate

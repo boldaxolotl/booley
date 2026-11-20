@@ -67,6 +67,7 @@ from booley.config.agent import (
     SandboxConfig,
     encode_cli_policies,
     parse_agent_section,
+    required_agent_clis,
 )
 from booley.config.gateway import GATEWAY_AUTH, GatewayConfigError, gateway_forwarded_keys
 from booley.config.host_config import retired_project_policy_message
@@ -580,6 +581,8 @@ class AgentSelection:
     auth_record: str | dict[str, str] | None = None
     #: The other allowed Agent CLIs with their policies, in ``[agent] clis`` order.
     others: tuple[tuple[str, str], ...] = ()
+    #: The raw ``[models]`` table; its Specialist pins make another CLI required.
+    models: object = None
 
 
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
@@ -593,15 +596,15 @@ def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
     return booley_dir / "booley.toml"
 
 
-def _read_agent_selection(path: Path) -> DeclaredAgent:
-    """Read declared selection fields, failing loud on malformed configuration."""
+def _read_agent_selection(path: Path) -> tuple[DeclaredAgent, object]:
+    """Read the declared selection fields and the raw ``[models]``, failing loud on bad config."""
     if not path.is_file():
-        return DeclaredAgent()
+        return DeclaredAgent(), None
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
     agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
     # A retired ``auth = "auto"`` is read, not refused: init replaces it.
-    return parse_agent_section(agent, keep_retired_auth=True)
+    return parse_agent_section(agent, keep_retired_auth=True), data.get("models")
 
 
 def _prompt_agent_choice(
@@ -753,7 +756,7 @@ def _resolve_agent_selection(
 ) -> AgentSelection | None:
     """Resolve flags, config, prompts, detected credentials, and documented defaults."""
     try:
-        declared = _read_agent_selection(config_path)
+        declared, models = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         err(f"cannot select an agent from {config_path}: {exc}")
         ctx.record("agent_config", "err", "invalid booley.toml")
@@ -779,7 +782,7 @@ def _resolve_agent_selection(
     policies, record = resolved
     others = tuple((cli, policy) for cli, policy in policies.items() if cli != provider)
     return AgentSelection(
-        provider, policies.get(provider, DEFAULT_AUTH), write_default, record, others
+        provider, policies.get(provider, DEFAULT_AUTH), write_default, record, others, models
     )
 
 
@@ -898,12 +901,16 @@ def _step_auth(
         skip("credential check skipped by --skip-credentials")
         ctx.record("auth", "skip", "credential check skipped")
         return
-    pieces = [
-        _report_cli_auth(cli, policy)
+    pieces = {
+        cli: _report_cli_auth(cli, policy)
         for cli, policy in ((selection.provider, selection.auth), *selection.others)
-    ]
-    unavailable = any(piece.endswith(" unavailable") for piece in pieces)
-    detail = "; ".join(pieces)
+    }
+    required = required_agent_clis(selection.provider, selection.models)
+    unavailable = any(
+        piece.endswith(" unavailable") and (cli in required or not ctx.check_only)
+        for cli, piece in pieces.items()
+    )
+    detail = "; ".join(pieces.values())
     if unavailable:
         ctx.record("auth", "warn", detail)
     else:
@@ -2951,7 +2958,7 @@ def _sandbox_agent_selection(ctx: InitContext, config_path: Path) -> AgentSelect
     A missing or retired ``auto`` ``auth`` is recorded from the credentials this Sandbox holds.
     Raises what :func:`_read_agent_selection` raises for an unreadable ``[agent]``.
     """
-    declared = _read_agent_selection(config_path)
+    declared, _models = _read_agent_selection(config_path)
     provider = declared.default
     if provider is None:
         app = (os.environ.get(agent_app.AGENT_APP_ENV) or "").strip()
