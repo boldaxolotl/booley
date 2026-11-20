@@ -73,12 +73,6 @@ To fix a problem yourself, follow the `→` hint under it.
 | `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
 | `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
 
-### Agent billing policy
-
-| Check ID | Level | Meaning and fix |
-|---|---|---|
-| `agent.credential-policy` | `✗` | A CLI in `clis` has no `[agent] auth`, has `"auto"`, or has `"visitor"` outside a Sandbox set up by hand. Set the value the hint names, or re-run `booley init`. |
-
 ## Automatic checks
 
 Booley runs plain Doctor in the background when the Sandbox starts, if the
