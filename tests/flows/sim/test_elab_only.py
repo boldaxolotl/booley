@@ -34,6 +34,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.pid import capture_process_identity
 from booley.targets.catalog import TargetCatalog
 from tests.memory_budget_support import fail_budget
 from tests.subprocess_budget import run_bounded_child
@@ -871,3 +872,33 @@ def test_elab_only_lease_wait_is_bounded_by_the_build_timeout(
     assert seen == []
     # A loose upper bound on a real 1 s wait; the old fixed wait was 60 s.
     assert waited < 30
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.skipif(
+    capture_process_identity(os.getpid()) is None, reason="needs a process identity"
+)
+def test_elab_only_run_sweeps_a_cancelled_runs_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every Simulation Flow invocation, elaboration-only included, sweeps first."""
+    from booley.flows.sim.trace_overlay import write_trace_overlay
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _write_core(tmp_path, ["sim"])
+    (tmp_path / ".booley").mkdir()
+    handle = TargetCatalog.build(tmp_path).select("sim")
+
+    def worker() -> None:
+        write_trace_overlay(handle)
+        os._exit(_KILLED)
+
+    _run_killed(worker, tmp_path / "trace.txt")
+    assert (tmp_path / "sim.booleytrace.core").exists()
+
+    result, _seen = elab_cli(tmp_path, monkeypatch, {"sim": _PASS})
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "sim.booleytrace.core").exists()
