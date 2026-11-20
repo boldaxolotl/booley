@@ -363,31 +363,43 @@ def test_recorded_subscription_passes_with_an_exported_api_key(home, tmp_path, m
     ]
 
 
+_VISITOR_STATE = "'visitor' applies only in a Sandbox set up by hand"
+
+
 @pytest.mark.parametrize(
-    ("env", "failed", "noted"),
+    ("inside", "env", "auth", "failed", "state"),
     [
-        ({}, [], ["codex, claude"]),
-        ({"BOOLEY_PRIMARY_AUTH": "gateway"}, [], ["claude"]),
-        ({"BOOLEY_PRIMARY_AUTH": "api_key"}, ["codex"], ["claude"]),
-        ({"BOOLEY_AGENT_CLIS": "codex=subscription,claude=subscription"}, ["codex", "claude"], []),
+        (True, {}, {}, ["codex", "claude"], "is not set"),
+        (True, {"BOOLEY_PRIMARY_AUTH": "api_key"}, {}, ["codex", "claude"], "is not set"),
+        (True, {}, {"auth": "visitor"}, [], ""),
+        (
+            True,
+            {"BOOLEY_AGENT_CLIS": "codex=subscription,claude=subscription"},
+            {"auth": "visitor"},
+            ["codex", "claude"],
+            _VISITOR_STATE,
+        ),
+        (False, {}, {"auth": "visitor"}, ["codex", "claude"], _VISITOR_STATE),
     ],
-    ids=["hand-written", "hand-written-gateway", "hand-written-api-key", "issued-record"],
+    ids=[
+        "hand-written-missing",
+        "hand-written-api-key",
+        "hand-written-visitor",
+        "issued-visitor",
+        "host-visitor",
+    ],
 )
-def test_missing_auth_in_a_sandbox_fails_only_under_an_issued_record(
-    home, tmp_path, monkeypatch, env, failed, noted
+def test_auth_check_accepts_visitor_only_in_a_hand_written_sandbox(
+    home, tmp_path, monkeypatch, inside, env, auth, failed, state
 ):
-    """A hand-written spec reads a missing ``auth`` as the visitor mode, which
-    booley.toml cannot record; an issued spec's CLI policy record keeps the FAIL."""
-    monkeypatch.setattr(config_agent, "_inside_container", lambda: True)
+    """Only a recorded ``visitor`` in a hand-written Sandbox passes; a missing ``auth`` fails."""
+    monkeypatch.setattr(config_agent, "_inside_container", lambda: inside)
     for name, value in {"BOOLEY_AGENT_APP": "codex", "BOOLEY_AGENT_CLIS": "", **env}.items():
         monkeypatch.setenv(name, value)
 
-    findings = _findings(tmp_path, clis=["codex", "claude"], default="codex")
+    findings = _findings(tmp_path, clis=["codex", "claude"], default="codex", **auth)
 
     assert [f.message for f in _pin_fails(findings)] == [
-        f"{cli}: booley.toml [agent] auth is not set; detected: subscription" for cli in failed
+        f"{cli}: booley.toml [agent] auth {state}; detected: subscription" for cli in failed
     ]
-    notes = [f for f in findings if "visitor mode" in f.message]
-    assert [(f.severity, f.message.split(":")[0]) for f in notes] == [
-        (Severity.NOTE, clis) for clis in noted
-    ]
+    assert not [f for f in findings if "visitor mode" in f.message]

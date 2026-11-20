@@ -14,6 +14,7 @@ from tests.runtime.test_agent_app_auto import (
     _codex_config,
     _give,
     _read,
+    _record_auth,
     _refusal,
     _restart_with,
     _start,
@@ -60,6 +61,7 @@ def test_a_login_file_with_more_than_the_key_still_counts(sandbox, monkeypatch, 
 
 @pytest.mark.parametrize("kind", ["codex-api-key", "gateway"])
 def test_auth_status_follows_the_start_choice_without_a_pin(sandbox, monkeypatch, capsys, kind):
+    _record_auth(sandbox, monkeypatch)
     _give(kind, sandbox.home, monkeypatch)
     _start(capsys)
     capsys.readouterr()
@@ -82,7 +84,7 @@ def test_auth_status_in_a_project_reports_every_listed_cli_under_auto(
     booley_dir = sandbox.project / ".booley"
     booley_dir.mkdir(parents=True, exist_ok=True)
     (booley_dir / "booley.toml").write_bytes(
-        b'[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\n'
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\nauth = "visitor"\n'
     )
 
     code = auth_cmd.run_auth(argparse.Namespace(status=True, app=None), sandbox.project)
@@ -109,6 +111,7 @@ def test_no_credential_value_reaches_the_record_or_the_status_line(sandbox, monk
 
 
 def test_a_claude_credential_beats_the_gateway_policy_hand_off(sandbox, monkeypatch, capsys):
+    _record_auth(sandbox, monkeypatch)
     _give("gateway", sandbox.home, monkeypatch)
     _give("claude-api-key", sandbox.home, monkeypatch)
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")

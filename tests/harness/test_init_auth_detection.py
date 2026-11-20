@@ -167,9 +167,23 @@ _RERUN_BASE = _BOTH
             {"claude": "subscription", "codex": "api_key"},
             id="explicit-entry-kept",
         ),
+        pytest.param(
+            b'[agent]\ndefault = "claude"\nauth = "visitor"\n',
+            (),
+            ("claude",),
+            "api_key",
+            id="visitor-string",
+        ),
+        pytest.param(
+            _RERUN_BASE + b'\n[agent.auth]\nclaude = "api_key"\ncodex = "visitor"\n',
+            ("codex",),
+            (),
+            {"claude": "api_key", "codex": "subscription"},
+            id="visitor-table-entry",
+        ),
     ],
 )
-def test_rerun_replaces_recorded_auto(
+def test_rerun_replaces_recorded_auto_and_visitor(
     tmp_path: Path,
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -178,7 +192,7 @@ def test_rerun_replaces_recorded_auto(
     keys: tuple[str, ...],
     expected: str | dict[str, str],
 ) -> None:
-    """An explicit entry survives although its CLI now has a key; ``auto`` is filled."""
+    """An explicit entry survives although its CLI now has a key; ``auto``/``visitor`` is filled."""
     for cli in logins:
         login(home, cli)
     for cli in keys:
@@ -188,7 +202,9 @@ def test_rerun_replaces_recorded_auto(
     seed_init(tmp_path)
 
     assert _agent(config)["auth"] == expected
-    assert "auto" not in config.read_text(encoding="utf-8")
+    text = config.read_text(encoding="utf-8")
+    assert "auto" not in text
+    assert "visitor" not in text
 
 
 def test_preserved_tracked_config_reports_the_pending_table(

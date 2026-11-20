@@ -479,7 +479,7 @@ CREDENTIAL_SCHEMA = "1"
 def defers_to_cli(policy: str) -> bool:
     """Whether *policy* leaves the credential choice to the CLI's own precedence.
 
-    Only the env-only ``visitor`` mode does; ``auto`` is retired and defers to nothing.
+    Only the ``visitor`` mode does; ``auto`` is retired and defers to nothing.
     """
     return policy == VISITOR_AUTH
 

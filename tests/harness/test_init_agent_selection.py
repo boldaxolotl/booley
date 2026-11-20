@@ -517,6 +517,13 @@ _DEFAULT_CLAUDE = b'[agent]\ndefault = "claude"\nauth = "%s"\n'
             ("login", "key"), ("", "api-key"), 2, _DEFAULT_CLAUDE % b"api_key", id="auth-api-key"
         ),
         pytest.param(("login", "key"), ("",), 2, None, id="auth-aborted"),
+        pytest.param(
+            ("login", "key"),
+            ("", "visitor", ""),
+            3,
+            _DEFAULT_CLAUDE % b"subscription",
+            id="auth-visitor-refused",
+        ),
         pytest.param(("key",), ("",), 1, _DEFAULT_CLAUDE % b"api_key", id="single-credential"),
     ],
 )
@@ -534,13 +541,14 @@ def test_terminal_prompts_resolve_or_abort(
     assert len(asked) == prompts
     if len(asked) == 2:
         assert "auth for claude" in asked[1]
+    assert not [prompt for prompt in asked if "visitor" in prompt]
     config = tmp_path / ".booley" / "booley.toml"
     if written is None:
         assert "agent_config — agent selection aborted" in output
         assert not config.exists()
     else:
         assert config.read_bytes() == written
-    if len(answers) == 3:
+    if written is None and len(answers) == 3:
         assert "agent provider selection aborted after 3 invalid answers" in output
 
 

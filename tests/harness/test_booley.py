@@ -101,6 +101,7 @@ def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
         (["init", "--sim-tool", "verilator"], "--sim-tool is retired; use --sim-eda-tool"),
         (["init", "--lint-tool", "verilator"], "--lint-tool is retired; use --lint-eda-tool"),
         (["init", "--provider", "codex", "--auth", "auto"], "choose subscription or api-key"),
+        (["init", "--provider", "codex", "--auth", "visitor"], "choose subscription or api-key"),
         (["bootstrap", "--check-only", "--force"], "not allowed with argument"),
         (["bootstrap", "--with-qa-skills", "--without-qa-skills"], "not allowed with argument"),
         (["bootstrap", "--egress", "open"], "invalid choice"),
