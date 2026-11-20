@@ -534,7 +534,7 @@ def _step_core_projections(ctx: InitContext) -> None:
             ctx.record("core_projections", "err", str(exc))
             return
         if issues:
-            warn(f"would reconcile projected cores: {', '.join(issues)}")
+            warn(f"would reconcile projected cores: {', '.join(map(str, issues))}")
             ctx.record("core_projections", "warn", f"{len(issues)} change(s)")
         else:
             current("stealth core projections already reconciled")
