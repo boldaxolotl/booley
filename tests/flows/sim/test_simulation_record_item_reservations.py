@@ -1306,15 +1306,16 @@ def test_item_thread_count_stays_fixed_while_holders_change(
         tmp_path, monkeypatch, **_sized(names, 100.0, EIGHT_CORES), held_at_admission=1
     ) as scenario:
         counts: list[int | None] = []
-        released = threading.Event()
+        counted, released = threading.Event(), threading.Event()
 
-        def release_the_early_holder() -> None:
+        def release_the_early_holder_once_t01_counted() -> None:
+            assert counted.wait(_PARALLEL_SYNC_TIMEOUT_S)
             for token in scenario.early_holders:
                 scenario.store.release(token)
             released.set()
 
         def watch_the_count() -> None:
-            # The items run in parallel: count only once the early holder is gone.
+            counted.set()
             assert released.wait(_PARALLEL_SYNC_TIMEOUT_S)
             counts.append(job_thread_count())
             foreign = scenario.store.acquire(
@@ -1327,18 +1328,16 @@ def test_item_thread_count_stays_fixed_while_holders_change(
             scenario.store.release(foreign)
             counts.append(job_thread_count())
 
-        scenario.hooks["t00"] = release_the_early_holder
+        scenario.hooks["t00"] = release_the_early_holder_once_t01_counted
         scenario.hooks["t01"] = watch_the_count
         outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
 
     assert outcome.complete is True
-    # Under the Flow's claim the early holder was counted: half the cores.
+    # The Flow's zero claim is never counted. t00 counts the early holder and its own claim; t01,
+    # admitted before t00 lets the holder go, counts both and its own, and keeps that count.
     assert scenario.threads["t00"] == EIGHT_CORES // 2
-    # The items run in parallel, so t01 may share the cores with t00's claim; whatever it was
-    # given at its start, the foreign holder neither shrinks nor grows it.
     assert scenario.holds_own["t01"]
-    assert counts == [scenario.threads["t01"]] * 3
-    assert scenario.threads["t01"] in (EIGHT_CORES // 2, EIGHT_CORES)
+    assert [scenario.threads["t01"], *counts] == [EIGHT_CORES // 3] * 4
 
 
 def test_failed_item_thread_count_releases_the_item_claim(
