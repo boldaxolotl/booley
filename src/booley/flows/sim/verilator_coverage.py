@@ -849,7 +849,11 @@ def _run_failure(
 
 
 def _hook_error_precedes(hook_error: _HookEvidenceError, raw_failure: _CollectedRun) -> bool:
-    """Whether the hook error, not the raw-database failure, is the run's diagnostic."""
+    """Whether the hook error, not the raw-database failure, is the run's diagnostic.
+
+    A missing or stale database is explained by a hook that did not run correctly; an unsafe,
+    incompatible, or unreadable one exists and is wrong for a reason no hook call explains.
+    """
     if hook_error.code == "COV_WRITE_HOOK_FAILED":
         return True
     return raw_failure.findings[0].code in {"COV_RAW_FILE_MISSING", "COV_RAW_FILE_STALE"}
