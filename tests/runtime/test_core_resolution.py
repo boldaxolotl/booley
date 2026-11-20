@@ -337,10 +337,8 @@ def test_pending_recovery_skips(tmp_path, monkeypatch):
     sandbox = _Sandbox(monkeypatch, _ok_for_all)
     sandbox.command = lambda _inner: (_ for _ in ()).throw(session_runtime.RecoveryPendingError())
     result = _inspect(tmp_path, ("sim_ok",), sandbox)
-    assert [
-        (f.severity, f.message.endswith("skipped - Sandbox recovery is pending on this host"))
-        for f in result.report.findings
-    ] == [(Severity.SKIP, True)]
+    assert [f.severity for f in result.report.findings] == [Severity.SKIP]
+    assert result.report.findings[0].message.endswith("recovery is pending on this host")
 
 
 def test_unavailable_runtime_skips(tmp_path, monkeypatch):

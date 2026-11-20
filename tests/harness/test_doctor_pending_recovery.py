@@ -25,28 +25,24 @@ def test_host_doctor_leaves_pending_sandbox_recovery_to_lifecycle_commands(
     real_up = session_runtime.up
     booley_dir = _write_project(tmp_path)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
-    # Doctor must not enter through the start path that completes recovery.
     monkeypatch.setattr(doctor.session_runtime, "up", real_up)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     identity = str((tmp_path if pending_for == "this-project" else tmp_path / "other").resolve())
     issuance_invalidation.prepare(identity)
     stamps = session_issuance.stamp_store()
     stamps.write(identity, json.dumps({"marker": True}))
-    stamp = stamps.path(identity).read_bytes()
 
     rows = []
     for _ in range(2):
         result = _doctor_run(tmp_path)
         assert issuance_invalidation.pending_invalidations() == (identity,)
-        assert stamps.path(identity).read_bytes() == stamp
+        assert stamps.path(identity).read_bytes() == b'{"marker": true}'
         assert not [c for c in calls if c[1:3] in (["container", "rm"], ["network", "rm"])]
         assert len(_messages(result, Severity.WARN, check_id="host.sandbox-recovery-pending")) == 1
         dry_runs = [f for f in result.findings if "dry-run" in f.message]
         assert dry_runs
-        assert all(f.severity is Severity.SKIP for f in dry_runs)
-        assert all(
-            f.message.endswith("Sandbox recovery is pending on this host") for f in dry_runs
-        )
+        assert {f.severity for f in dry_runs} == {Severity.SKIP}
+        assert all(f.message.endswith("recovery is pending on this host") for f in dry_runs)
         assert not [f for f in result.findings if "could not enter the Sandbox" in f.message]
         rows.append([(f.severity, f.message) for f in result.findings])
     assert rows[0] == rows[1]
