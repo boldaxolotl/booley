@@ -87,14 +87,8 @@ if "claude_agent_sdk" not in sys.modules:
 @pytest.fixture(autouse=True)
 def _set_booley_dir(tmp_path, monkeypatch):
     """Prevent resolve_booley_dir() from failing in harness tests."""
-    from booley.runtime.booley_dir import reset_cache
-
-    reset_cache()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-    yield
-    # The selection cached during the test names this tmp_path; never leave it for a later test.
-    reset_cache()
 
 
 TICKETS_REL = Path(".booley") / "tickets"
