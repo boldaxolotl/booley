@@ -28,6 +28,7 @@ from booley.flows.sim.build_session import simulation_build_slot
 from booley.flows.sim.coverage_overlay import CoverageOverlay
 from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.record.coverage_execution import _coverage_observation
+from booley.flows.sim.staged_input_ledger import StagedInputLedger
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -806,7 +807,10 @@ def _execution_fixture(
 def _fake_overlay(tmp_path: Path):
     def fake_overlay(*args, **kwargs):
         return CoverageOverlay(
-            tmp_path / "missing-overlay.core", "::coverage:0", TraceMode.VCD_FIFO
+            tmp_path / "missing-overlay.core",
+            "::coverage:0",
+            TraceMode.VCD_FIFO,
+            StagedInputLedger(tmp_path / ".booley", tmp_path),
         )
 
     return fake_overlay

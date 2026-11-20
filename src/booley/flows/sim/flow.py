@@ -845,7 +845,20 @@ class SimulateFlow(
         return result
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
-        return super()._pre_state_gate()
+        if (rejection := super()._pre_state_gate()) is not None:
+            return rejection
+        from booley.flows.sim.trace_overlay import sweep_cancelled_run_leftovers
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
+
+        # Before Target resolution: a leftover stealth overlay core would otherwise
+        # be projected again there.
+        checkout = Path(self.args.work_dir)
+        try:
+            booley_dir = resolve_checkout_booley_dir(checkout)
+        except (OSError, RuntimeError, ValueError):
+            return None  # nothing can be recorded; the Flow reports the Project problem
+        sweep_cancelled_run_leftovers(checkout, booley_dir)
+        return None
 
     def _prepare_coverage(self) -> EndpointOutcome | None:
         from booley.flows.sim.coverage_flow_context import coverage_project_context
