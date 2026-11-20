@@ -1416,6 +1416,7 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
             ["--coverage", "--no-waivers", "--report-dir"],
             id="default-suite",
         ),
+        pytest.param(None, False, "RUNTIME", ["--coverage"], id="runtime-default-root"),
         pytest.param(
             ("wrap@7", "reset"),
             False,
@@ -1430,6 +1431,9 @@ def test_resume_refusal_command_repeats_the_record(
 ):
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     report_root = tmp_path / (root or ".booley/flow-reports")
+    if root == "RUNTIME":
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+        report_root = tmp_path / "runtime/flow-reports"
     reports, _request = _interrupt_coverage_collection(
         tmp_path, monkeypatch, selected=selected, no_waivers=no_waivers, report_dir=report_root
     )
