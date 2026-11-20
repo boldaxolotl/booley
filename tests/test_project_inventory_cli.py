@@ -1305,11 +1305,13 @@ def test_purge_and_refused_prune_sweep_records_of_absent_images(
     command: str,
 ) -> None:
     from booley.runtime import image_lifecycle
-    from tests.harness.test_image_lifecycle import FakeDocker as LifecycleDocker
+    from tests.harness.image_lifecycle_support import FakeDocker as LifecycleDocker
 
     gone, present = "sha256:" + "d" * 64, "sha256:" + "a" * 64
     lifecycle_docker = LifecycleDocker({"present:latest": (present, {})})
-    monkeypatch.setattr(image_lifecycle, "_docker_adapter", lambda: lifecycle_docker)
+    monkeypatch.setattr(
+        image_lifecycle, "_docker_adapter", lambda: lifecycle_docker
+    )  # the lifecycle's Docker port
     _nothing_eligible_host(tmp_path, keeper_host)
     registered = image_lifecycle.OwnedImages(tmp_path / "project")
     registered.record({}, (gone,))

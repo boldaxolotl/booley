@@ -102,6 +102,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeHost:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     fake = FakeHost()
     monkeypatch.setattr(host_docker, "_run_docker", fake)
+    # The lifecycle's Docker port must read the same image state as the CLI answers above.
     monkeypatch.setattr(image_lifecycle, "_docker_adapter", lambda: fake)
     return fake
 
@@ -265,6 +266,7 @@ def test_purge_disowns_an_image_another_project_still_tags(tmp_path: Path, host:
 
     # The shared image is another tag's bytes now; the one a container uses stays recorded.
     assert image_lifecycle.OwnedImages(root).ids == [_id("9")]
+    assert _id("8") not in [item.name for item in project_resources.leftovers(root)]
     assert image_lifecycle.OwnedImages(other).ids == [_id("8")]
 
     host.containers.clear()
