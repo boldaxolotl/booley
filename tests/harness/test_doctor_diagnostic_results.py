@@ -373,12 +373,11 @@ def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, val
     assert not (tmp_path / "AGENTS.md").exists()
 
 
-# Doctor's own evidence, scratch output, and probe logs stay writable; nothing else may change.
+# Doctor's own evidence and scratch output stay writable; nothing else may change.
 _DOCTOR_WRITABLE_PREFIXES = (
     ".git/",
     ".booley/runtime/",
     ".booley/tmp/",
-    ".booley/.interactive_logs/",
 )
 
 
