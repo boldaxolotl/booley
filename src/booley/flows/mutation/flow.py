@@ -124,6 +124,7 @@ from booley.flows.sim.runtime_inputs import (
     materialize_runtime_inputs,
 )
 from booley.flows.simulator_family import matching_eda_tool, normalize_eda_tool
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -150,7 +151,7 @@ from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetInspection
+from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.selection import TargetSectionConflictError
 
 
@@ -939,6 +940,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
     _claims: CampaignClaims = CampaignClaims()
+    #: The Target handle and resolved Target of the baseline build this run prepared.
+    _baseline_sources: tuple[TargetHandle, fusesoc_registry.ResolvedTarget] | None = None
 
     # ------------------------------------------------------------------
     # Scope / DUT helpers
@@ -1594,9 +1597,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if (run_cwd_error := self._baseline_run_cwd_error(plan)) is not None:
             return run_cwd_error
         build_path = workspace.baseline_build_dir()
+        self._baseline_sources = None
         elab, oom_kill = self._run_elab(plan.target, plan.work_dir, build_path)
         if elab.returncode != 0:
-            return _baseline_build_error(plan, elab, oom_kill)
+            return self._baseline_build_error(plan, elab, oom_kill)
 
         cpp, version = self._baseline_verilator_build(plan.work_dir, build_path)
         runs = self._run_target_test_suite(
@@ -1778,6 +1782,44 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return JobRequest("sim", handle.selector, test_runs=())
 
+    def _baseline_build_error(
+        self, plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
+    ) -> EndpointOutcome:
+        """The error that ends the run when the pristine source's build failed or was OOM-killed.
+
+        The tail names each source by Project path; the raw output is kept in a log.
+        """
+        output = (elab.stdout or "") + (elab.stderr or "")
+        log = self._persist_capped_log(
+            workspace.baseline_build_log_path(), output, "baseline build"
+        )
+        # Built here, not before the build: it reads every core of the Target's closure.
+        paths = (
+            ProjectSourcePaths.for_target(*self._baseline_sources)
+            if self._baseline_sources is not None
+            else ProjectSourcePaths()
+        )
+        log_tail = tail(paths.project_text(output), 50)
+        if oom_kill:
+            # A killed build says nothing about the source.
+            reason = f"pristine source build was {oom_kill}"
+            headline = f"mutation baseline: {reason}"
+        else:
+            reason = "pristine source did not elaborate"
+            headline = "mutation baseline did not elaborate from pristine source"
+        detail = _failure_detail(
+            phase="baseline_elaboration",
+            reason=reason,
+            specs=[],
+            work_dir=plan.work_dir,
+            log_tail=log_tail,
+        )
+        if log:
+            _artifacts.merge_artifacts(detail, {"baseline_build_log": log})
+        return _error_outcome(
+            "elaboration", reason, report_text=f"{headline}\n{log_tail}", detail=detail
+        )
+
     def _build_elab(
         self,
         target: str,
@@ -1786,7 +1828,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         mutation: tuple[MutationVariantPlan, int] | None,
     ) -> subprocess.CompletedProcess:
         try:
-            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
+            handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1796,6 +1838,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 stdout="",
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
+        if mutation is None:
+            self._baseline_sources = (handle, prepared.resolved)
         configured_tool = prepared.eda_tool
         self.record_eda_tool(target, configured_tool)
         _record_build_markers(build_path, prepared, work_dir)
@@ -3093,32 +3137,6 @@ def _no_site_hint(plan: MutationRunPlan) -> str:
 def _names_or_none(names: Sequence[str]) -> str:
     """*names* comma-joined, or ``none``."""
     return ", ".join(names) or "none"
-
-
-def _baseline_build_error(
-    plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
-) -> EndpointOutcome:
-    """The error that ends the run when the pristine source's build failed or was OOM-killed."""
-    log_tail = tail((elab.stdout or "") + (elab.stderr or ""), 50)
-    if oom_kill:
-        # A killed build says nothing about the source.
-        reason = f"pristine source build was {oom_kill}"
-        headline = f"mutation baseline: {reason}"
-    else:
-        reason = "pristine source did not elaborate"
-        headline = "mutation baseline did not elaborate from pristine source"
-    return _error_outcome(
-        "elaboration",
-        reason,
-        report_text=f"{headline}\n{log_tail}",
-        detail=_failure_detail(
-            phase="baseline_elaboration",
-            reason=reason,
-            specs=[],
-            work_dir=plan.work_dir,
-            log_tail=log_tail,
-        ),
-    )
 
 
 def _error_outcome(
