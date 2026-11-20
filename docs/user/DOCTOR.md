@@ -80,7 +80,8 @@ To fix a problem yourself, follow the `→` hint under it.
 | `stealth.projections-not-current` | `!` | A root copy of a core in `.booley/cores/` is missing or out of date. Any Flow run refreshes it; so does `booley init`, where its hint says to run it. |
 | none | `✗` | A foreign file sits where Booley writes a copy: move or delete it. Or a core in `.booley/cores/` cannot be read or lacks its leading `CAPI=2:` line: fix the core, then run any Flow. Or the copies are not excluded from Git status: run `booley init` on the host. |
 
-While a copy is missing, out of date or blocked, Doctor skips the Flow dry-runs, the `.core` audit and the deep checks.
+While a copy is missing, out of date or blocked, Doctor skips the Flow
+dry-runs, the `.core` audit and the deep checks.
 
 ## Automatic checks
 
