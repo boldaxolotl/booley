@@ -78,8 +78,7 @@ Start with no metrics and add them as the design settles. A Project with no
     with slack outside the range you saw: a `_max` bound above the highest
     value, a `_min` bound below the lowest. There is no tolerance setting;
     the slack is the number you write. The slack stops at the metric's valid
-    range (see [Write `metrics.toml`](#write-metricstoml)): no `_min` below 0,
-    no percentage above 100.
+    range (see [Write `metrics.toml`](#write-metricstoml)).
 
 The `booley-setup` skill asks "Enable metrics now or later?" during
 [Project Setup](SETUP.md). `booley init` itself writes only the two default
