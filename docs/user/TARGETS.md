@@ -81,9 +81,12 @@ Points worth knowing in that example:
 - **`file_type: user` with `copyto:`** puts a data file (a `$readmemh` image,
   a vectors file) at the path the testbench opens. Booley places it in the
   simulation's working directory ([`run_cwd`](FLOW-SIM.md#sim-working-directory-flowssimrun_cwd))
-  for the run and removes it afterwards. If a *different* file already sits at
-  that path, the run fails rather than overwrite it, and Doctor warns ahead of
-  time: rename the `copyto` destination or remove the checked-in copy.
+  for the run and removes it afterwards. When a run is cancelled before it
+  removes the file, the next Simulation or Mutation Flow run removes it, also
+  when the Sandbox was stopped or restarted in between. If a *different* file
+  already sits at that path, the run fails rather than overwrite it, and
+  Doctor warns ahead of time: rename the `copyto` destination or remove the
+  checked-in copy.
 
 ### Fileset file types
 

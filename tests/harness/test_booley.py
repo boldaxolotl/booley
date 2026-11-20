@@ -324,7 +324,7 @@ def _fail_doctor(monkeypatch, failure):
         doctor._DoctorFlowRuntime(Path("/project"), "docker").command(["true"])
 
     monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
-    monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
+    monkeypatch.setattr(session_runtime, "up_without_recovery", MagicMock(side_effect=failure))
 
 
 def _fail_auth(monkeypatch, failure):

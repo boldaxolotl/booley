@@ -362,7 +362,8 @@ toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
 `post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
 Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
 and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git.
+outputs ignored by Git. `booley measure` runs the same hook in its checkout of
+the commit; see [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 ### Git submodules (`[submodules]`)
 

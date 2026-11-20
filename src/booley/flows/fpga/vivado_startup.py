@@ -45,6 +45,9 @@ def inspect_vivado_startup(request: FlowRuntimeInspectionRequest) -> DiagnosticR
             "check Sandbox transport and Vivado startup",
         )
         return findings.report()
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return findings.report()
     except (session_runtime.SessionError, subprocess.SubprocessError, OSError) as exc:
         findings.fail(
             f"{label}: runtime/probe error: {str(exc)[:500]}",

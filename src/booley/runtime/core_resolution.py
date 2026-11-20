@@ -132,6 +132,9 @@ def _execute(
             timeout=_CORE_RESOLVE_TIMEOUT_S,
             check=False,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f".core resolvability skipped - {exc}")
+        return ()
     except (OSError, subprocess.SubprocessError, session_runtime.SessionError) as exc:
         findings.fail(
             f".core resolvability could not complete in the Sandbox: {exc}", "check the Sandbox"

@@ -17,6 +17,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -43,6 +44,30 @@ _PENDING = "pending.json"
 
 class CoreProjectionError(RuntimeError):
     """A projected core could not be created without risking user data."""
+
+
+class ProjectionDrift(Enum):
+    """How an expected projection differs on disk."""
+
+    MISSING = "missing"
+    STALE = "stale"
+    FOREIGN = "foreign file blocks"
+
+
+@dataclass(frozen=True)
+class ProjectionIssue:
+    """One projection a refresh would write or remove; a foreign file blocks the refresh."""
+
+    drift: ProjectionDrift
+    name: str
+
+    @property
+    def refreshable(self) -> bool:
+        """Whether reconciling clears it: only a foreign file needs a person."""
+        return self.drift is not ProjectionDrift.FOREIGN
+
+    def __str__(self) -> str:
+        return f"{self.drift.value} {self.name}"
 
 
 @dataclass(frozen=True)
@@ -205,15 +230,15 @@ def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
     return ProjectionResult(tuple(sorted(written)), tuple(sorted(removed)))
 
 
-def projection_issues(project_root: Path | str) -> tuple[str, ...]:
+def projection_issues(project_root: Path | str) -> tuple[ProjectionIssue, ...]:
     """Describe missing, stale, foreign, or disabled projections without writes."""
     root = Path(project_root)
     expected = _expected_projections(root) if projection_enabled(root) else {}
     issues = _projection_drift(expected)
     for candidate in root.glob(PROJECTED_CORE_GLOB):
         if candidate not in expected and _is_owned_projection(candidate):
-            issues.append(f"stale {candidate.name}")
-    return tuple(sorted(issues))
+            issues.append(ProjectionIssue(ProjectionDrift.STALE, candidate.name))
+    return tuple(sorted(issues, key=str))
 
 
 def registry_issues(project_root: Path | str) -> tuple[str, ...]:
@@ -229,7 +254,7 @@ def registry_issues(project_root: Path | str) -> tuple[str, ...]:
     if not registry.is_dir():
         return ("missing private registry",)
     expected = _expected_isolated_cores(root)
-    issues = _projection_drift(expected)
+    issues = [str(issue) for issue in _projection_drift(expected)]
     issues += [
         f"stale {candidate.name}"
         if _is_owned_projection(candidate)
@@ -242,16 +267,16 @@ def registry_issues(project_root: Path | str) -> tuple[str, ...]:
     return tuple(sorted(issues))
 
 
-def _projection_drift(expected: Mapping[Path, str]) -> list[str]:
+def _projection_drift(expected: Mapping[Path, str]) -> list[ProjectionIssue]:
     """Expected projections that are missing, foreign or stale on disk."""
-    issues: list[str] = []
+    issues: list[ProjectionIssue] = []
     for destination, content in expected.items():
         if not destination.exists():
-            issues.append(f"missing {destination.name}")
+            issues.append(ProjectionIssue(ProjectionDrift.MISSING, destination.name))
         elif not _is_owned_projection(destination):
-            issues.append(f"foreign file blocks {destination.name}")
+            issues.append(ProjectionIssue(ProjectionDrift.FOREIGN, destination.name))
         elif destination.read_text(encoding="utf-8") != content:
-            issues.append(f"stale {destination.name}")
+            issues.append(ProjectionIssue(ProjectionDrift.STALE, destination.name))
     return issues
 
 

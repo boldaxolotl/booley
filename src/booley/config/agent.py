@@ -19,6 +19,7 @@ from booley.config.gateway import (
 )
 from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
+from booley.core.boundary import as_dict
 from booley.core.config_paths import resolve_toml
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
@@ -162,6 +163,18 @@ def _inside_container() -> bool:
 def cli_for_model(model: str) -> str | None:
     """The Agent CLI a model ID implies (``claude-*`` or ``gpt-*``), else ``None``."""
     return next((cli for prefix, cli in _MODEL_PREFIX_CLI if model.startswith(prefix)), None)
+
+
+def required_agent_clis(default_cli: str, models: object) -> frozenset[str]:
+    """The Agent CLIs a Project cannot run without.
+
+    The default CLI, and each CLI a ``[models]`` pin runs a Specialist on. *models*
+    is the raw ``[models]`` value, read fail-soft: a non-table, a non-string pin, or an
+    unknown model prefix adds nothing (``agent.backend-health`` reports an invalid one).
+    """
+    pins = (as_dict(models) or {}).values()
+    pinned = (cli_for_model(pin.strip()) for pin in pins if isinstance(pin, str))
+    return frozenset({default_cli, *(cli for cli in pinned if cli)})
 
 
 @dataclass(frozen=True, slots=True)

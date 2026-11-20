@@ -14,7 +14,9 @@ Doctor checks what it can see from where it runs, so it gives a different view
 from each side:
 
 - **Host terminal:** the Booley install, Docker, the Sandbox Image, and the
-  Project configuration.
+  Project configuration. Doctor starts the Sandbox for its Flow dry-runs. It
+  never completes pending Sandbox recovery: it warns and skips the checks that
+  need the Sandbox until `booley session up` completes it.
 - **Sandbox terminal** (a VS Code terminal in the devcontainer, or
   `booley session enter`): the same configuration plus the tools, MCP server,
   and agent setup inside the Sandbox.
@@ -72,6 +74,16 @@ To fix a problem yourself, follow the `→` hint under it.
 |---|---|---|
 | `config.retired-goals` | `✗` | `booley.toml` has a `[goals]` section. Delete its tables, or ask the Developer Agent to run `/booley-heal`. |
 | `goals.leftover` | `!` | A `goals/` or `goalsets/` directory is still there. Booley does not read or delete it; delete it once you do not need its records. |
+
+### Stealth Mode core copies
+
+| Check ID | Level | Meaning and fix |
+|---|---|---|
+| `stealth.projections-not-current` | `!` | A root copy of a core in `.booley/cores/` is missing or out of date. Any Flow run refreshes it; so does `booley init`, where its hint says to run it. |
+| none | `✗` | A foreign file sits where Booley writes a copy: move or delete it. Or a core in `.booley/cores/` cannot be read or lacks its leading `CAPI=2:` line: fix the core, then run any Flow. Or the copies are not excluded from Git status: run `booley init` on the host. |
+
+While a copy is missing, out of date or blocked, Doctor skips the Flow
+dry-runs, the `.core` audit and the deep checks.
 
 ## Automatic checks
 

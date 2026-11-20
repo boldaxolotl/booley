@@ -287,7 +287,7 @@ class _DoctorFlowRuntime:
             raise self.startup_error
         if self.container_name is None:
             try:
-                self.container_name = session_runtime.up(self.project_root)
+                self.container_name = session_runtime.up_without_recovery(self.project_root)
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
@@ -850,6 +850,8 @@ def run_doctor_result(
     report_progress("host/project checks")
     docker_exe, project = _run_project_phase(project_root, reporter)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
+    if flow_runtime is not None:
+        _check_sandbox_recovery(flow_runtime, reporter)
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
     _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
@@ -861,6 +863,26 @@ def run_doctor_result(
     if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.common_booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
+
+
+def _check_sandbox_recovery(flow_runtime: _DoctorFlowRuntime, reporter: _Reporter) -> None:
+    """Warn, before any Sandbox entry, when a lifecycle command must complete recovery."""
+    if flow_runtime.inside:
+        return
+    try:
+        pending = session_runtime.recovery_pending()
+    except session_runtime.SessionError as exc:
+        flow_runtime.startup_error = exc
+        return
+    if pending:
+        flow_runtime.startup_error = session_runtime.RecoveryPendingError()
+        reporter.warn_(
+            warning(
+                "host.sandbox-recovery-pending",
+                f"{flow_runtime.startup_error}; Doctor skips the checks that need the Sandbox",
+            ),
+            "run `booley session up`, which completes the recovery, then rerun `booley doctor`",
+        )
 
 
 def _report_deep_currency(
@@ -2995,14 +3017,16 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
     _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
-    specialist_clis = _specialist_clis(project)
+    from booley.config.agent import required_agent_clis
+
+    required = required_agent_clis(default_cli, project.booley_toml.get("models"))
     for cli in allowed:
         _check_cli_credentials(
             project,
             cli,
             reporter,
             is_default=cli == default_cli,
-            runs_specialist=cli in specialist_clis,
+            required=cli in required,
             auto_choice=auto_choice,
         )
 
@@ -3066,39 +3090,22 @@ def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple
     return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
-def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
-    """The Agent CLIs that the Project's ``[models]`` pins run a Specialist on.
-
-    Fail-soft like :func:`_declared_agent`: a non-table ``[models]``, a non-string
-    pin, or an unknown model prefix contributes nothing (``agent.backend-health``
-    already reports an invalid ``[models]``).
-    """
-    from booley.config.agent import cli_for_model
-
-    models = project.booley_toml.get("models") if project is not None else None
-    if not isinstance(models, dict):
-        return frozenset()
-    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
-    return frozenset(cli for cli in pinned if cli)
-
-
 def _check_cli_credentials(
     project: ProjectAudit | None,
     cli: str,
     reporter: _Reporter,
     *,
     is_default: bool,
-    runs_specialist: bool,
+    required: bool,
     auto_choice: AgentAppChoice | None,
 ) -> None:
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    the visitor mode). Another allowed CLI WARNs for a missing credential unless a
-    ``[models]`` pin runs a Specialist on it: then it FAILs under every policy,
+    the visitor mode). Another allowed CLI WARNs for a missing credential unless it is
+    *required* (:func:`booley.config.agent.required_agent_clis`): then it FAILs under every policy,
     because that Specialist's calls would fail. Every CLI's row carries its own login fix.
     """
-    required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
         # A Claude session has no gateway values by design; only a shell that kept them can grade it.
@@ -3131,7 +3138,7 @@ def _check_cli_credentials(
         ),
         missing_fix=auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
-        missing_fails=runs_specialist and not is_default,
+        missing_fails=required and not is_default,
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate
@@ -5708,6 +5715,9 @@ def _prepare_selftest_invocation(
             test_override=case.test,
             doctor_selftest_kind=kind,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        _skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
@@ -6239,6 +6249,9 @@ def _doctor_flow_command(
             dry_run=dry_run,
             flow_runtime=flow_runtime,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",

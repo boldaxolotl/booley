@@ -17,7 +17,7 @@ import pytest
 
 from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
-from booley.runtime import runtime_context
+from booley.runtime import runtime_context, session_runtime
 from tests.diagnostic_helpers import _require_doctor_warning
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 
@@ -169,6 +169,17 @@ def test_builtin_selftest_runs(tmp_path, monkeypatch):
     rec = _run(monkeypatch, _audit(tmp_path), {"good": 0, "bad": 1})
     assert not rec.fails()
     assert any("correctly graded a failure" in m for _, m in rec.events)
+
+
+def test_pending_recovery_skips_selftests(tmp_path, monkeypatch):
+    _set_venue(monkeypatch, False)
+    project = _audit(tmp_path)
+    runtime = _runtime(project, "docker")
+    runtime.startup_error = session_runtime.RecoveryPendingError()
+    rec = _Rec()
+    doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
+    assert not rec.fails()
+    assert sum("Sandbox recovery is pending" in m for kind, m in rec.events if kind == "skip") == 2
 
 
 def test_builtin_false_pass_is_caught(tmp_path, monkeypatch):

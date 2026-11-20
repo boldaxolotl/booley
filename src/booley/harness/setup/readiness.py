@@ -788,24 +788,44 @@ def _check_scaffold_root_cores(project_root: Path, booley_dir: Path, report: Fin
 
 def _check_core_projections(project_root: Path, report: Findings) -> None:
     """Audit the derived root-level core copies."""
-    failed = False
     try:
         issues = core_projection.projection_issues(project_root)
     except (core_projection.CoreProjectionError, OSError) as exc:
         report.fail(
             f"could not inspect stealth core projections: {exc}",
-            f"fix the core and run {runtime_context.booley_init_hint()}",
+            f"fix the authored core, then run any Booley Flow to refresh the projections{_init_alternative()}",
         )
-        failed = True
-        issues = ()
-    if issues:
-        report.fail(
-            f"stealth core projections are not current: {', '.join(issues)}",
-            f"run {runtime_context.booley_init_hint()} to reconcile the ignored root-level projections",
-        )
-    elif not failed:
-        report.pass_("stealth core projections match .booley/cores/")
+    else:
+        _report_projection_issues(issues, report)
     _check_projection_exclude(project_root, report)
+
+
+def _report_projection_issues(
+    issues: tuple[core_projection.ProjectionIssue, ...], report: Findings
+) -> None:
+    """WARN for copies a Flow run refreshes; FAIL for a foreign file only a person can move."""
+    refreshable = [issue for issue in issues if issue.refreshable]
+    foreign = [issue.name for issue in issues if not issue.refreshable]
+    if refreshable:
+        report.warn(
+            f"stealth core projections are missing or stale: {', '.join(map(str, refreshable))}",
+            f"run any Booley Flow to refresh them{_init_alternative()}",
+            check_id="stealth.projections-not-current",
+        )
+    if foreign:
+        report.fail(
+            f"foreign files block stealth core projections: {', '.join(foreign)}",
+            "move or delete each listed file; Booley writes its projection there on the next Flow run",
+        )
+    if not issues:
+        report.pass_("stealth core projections match .booley/cores/")
+
+
+def _init_alternative() -> str:
+    """Name `booley init` beside a Flow run, except where Init is refused."""
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        return ""
+    return f", or run {runtime_context.booley_init_hint()}"
 
 
 def _check_projection_exclude(project_root: Path, report: Findings) -> None:

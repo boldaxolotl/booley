@@ -34,7 +34,7 @@ from booley.audit.diagnostic_results import (
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.synth.flow import AsicSynthesizeFlow
-from booley.fusesoc import selftest_overlay, target_inspection
+from booley.fusesoc import core_projection, selftest_overlay, target_inspection
 from booley.harness import (
     activity_hooks,
     developer_probe,
@@ -314,7 +314,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
         doctor.session_runtime,
-        "up",
+        "up_without_recovery",
         lambda _root: "booley-session-test",
     )
     monkeypatch.setattr(
@@ -585,7 +585,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    real_up = session_runtime.up
+    real_up = session_runtime.up_without_recovery
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
@@ -594,7 +594,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     issuance_invalidation.cancel(str(tmp_path.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
-    monkeypatch.setattr(doctor.session_runtime, "up", real_up)
+    monkeypatch.setattr(doctor.session_runtime, "up_without_recovery", real_up)
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1052,9 +1052,11 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
     starts: list[Path] = []
-    issue_session = doctor.session_runtime.up
+    issue_session = doctor.session_runtime.up_without_recovery
     monkeypatch.setattr(
-        doctor.session_runtime, "up", lambda root: starts.append(root) or issue_session(root)
+        doctor.session_runtime,
+        "up_without_recovery",
+        lambda root: starts.append(root) or issue_session(root),
     )
     launches = _script_flow(monkeypatch, "sim", lambda _argv, _env: None)
 
@@ -1377,7 +1379,7 @@ def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     def fail_up(_root):
         raise doctor.session_runtime.SessionError(error)
 
-    monkeypatch.setattr(doctor.session_runtime, "up", fail_up)
+    monkeypatch.setattr(doctor.session_runtime, "up_without_recovery", fail_up)
 
     result = _doctor_run(tmp_path, deep=True)
 
@@ -5482,21 +5484,26 @@ def test_invalid_endpoint_config_is_left_to_the_endpoint_check(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("location", "where"),
+    ("location", "where", "refresh"),
     [
-        ("HOST", "booley init"),
-        ("HAND_WRITTEN_SANDBOX", "booley init in this Sandbox"),
-        ("ISSUED_SANDBOX", "booley init on the host"),
+        ("HOST", "booley init", ", or run booley init"),
+        (
+            "HAND_WRITTEN_SANDBOX",
+            "booley init in this Sandbox",
+            ", or run booley init in this Sandbox",
+        ),
+        ("ISSUED_SANDBOX", "booley init on the host", ""),
     ],
+    ids=["host", "hand-written", "issued"],
 )
 def test_init_fix_hints_name_where_to_run_init(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str, where: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str, where: str, refresh: str
 ) -> None:
     """Plain `booley init` fix hints follow the runtime location, in Doctor and readiness."""
     _core_project(
         tmp_path,
         monkeypatch,
-        {".booley/.gitignore": None},
+        {".booley/.gitignore": None, ".booley/cores/hidden.core": "CAPI=2:\nname: ::hidden:0\n"},
         toml="\n[stealth]\nenabled = true\n",
     )
     kind = runtime_context.RuntimeLocation[location]
@@ -5507,9 +5514,117 @@ def test_init_fix_hints_name_where_to_run_init(
     missing = ".booley/.gitignore missing; transient Booley state may be tracked"
     assert _warnings(result, "project.gitignore") == {"None": missing}
     assert _fixes(result, missing) == [where]
+    assert _warnings(result, "stealth.projections-not-current") == {
+        "None": "stealth core projections are missing or stale: missing .booley-projected-hidden.core"
+    }
+    assert _fixes(result, "missing or stale") == [f"run any Booley Flow to refresh them{refresh}"]
     projection = "stealth core projections are not excluded from host git status"
     assert _fixes(result, projection) == [
         f"run {where} to add the generated projection pattern to .git/info/exclude"
+    ]
+
+
+_REFRESH = "run any Booley Flow to refresh them, or run booley init"
+_STALE_ROW = (
+    "warn",
+    "stealth.projections-not-current",
+    "stealth core projections are missing or stale: missing .booley-projected-b.core, "
+    "stale .booley-projected-a.core, stale .booley-projected-c.core",
+    _REFRESH,
+)
+_FOREIGN_ROW = (
+    "fail",
+    None,
+    "foreign files block stealth core projections: .booley-projected-b.core",
+    "move or delete each listed file; Booley writes its projection there on the next Flow run",
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "rows", "exit_code"),
+    [
+        ("drift", [_STALE_ROW], 0),
+        ("waived", [("waived", *_STALE_ROW[1:3], "Accepted for the #5252 regression test.")], 0),
+        (
+            "foreign",
+            [
+                (
+                    "warn",
+                    "stealth.projections-not-current",
+                    "stealth core projections are missing or stale: stale .booley-projected-a.core",
+                    _REFRESH,
+                ),
+                _FOREIGN_ROW,
+            ],
+            1,
+        ),
+        (
+            "unrenderable",
+            [
+                (
+                    "fail",
+                    None,
+                    "could not inspect stealth core projections: authoritative core lacks "
+                    "leading CAPI=2: marker: {core}",
+                    "fix the authored core, then run any Booley Flow to refresh the "
+                    "projections, or run booley init",
+                )
+            ],
+            1,
+        ),
+    ],
+    ids=["drift", "waived", "foreign", "unrenderable"],
+)
+def test_stealth_projection_rows_split_refreshable_from_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    rows: list[tuple[str, str | None, str, str]],
+    exit_code: int,
+) -> None:
+    """Missing or stale copies WARN (waivable); a foreign file or bad core still FAILs."""
+    names = ("a", "b", "c")
+    cores = {f".booley/cores/{n}.core": f"CAPI=2:\nname: ::{n}:0\n" for n in names}
+    booley_dir = _core_project(tmp_path, monkeypatch, cores, toml="\n[stealth]\nenabled = true\n")
+    core_projection.reconcile_projected_cores(tmp_path)
+    _git_init(tmp_path)
+    exclude = tmp_path / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.write_text(f"/{core_projection.PROJECTED_CORE_GLOB}\n", encoding="utf-8")
+    body = "CAPI=2:\nname: ::a:1\n" if case != "unrenderable" else "name: ::a:1\n"
+    (booley_dir / "cores" / "a.core").write_text(body, encoding="utf-8")
+    projected_b = tmp_path / ".booley-projected-b.core"
+    if case == "foreign":
+        projected_b.write_text("CAPI=2:\nname: ::b:0\n", encoding="utf-8")
+    elif case != "unrenderable":
+        projected_b.unlink()
+    if case in {"drift", "waived"}:
+        (booley_dir / "cores" / "c.core").unlink()
+    if case == "waived":
+        (booley_dir / "doctor-waivers.toml").write_text(
+            'version = 1\n[[waiver]]\ncheck = "stealth.projections-not-current"\n'
+            'reason = "Accepted for the #5252 regression test."\npermanent = true\n',
+            encoding="utf-8",
+        )
+
+    result = _doctor_run(tmp_path)
+
+    shown = [
+        (f.severity.value, f.check_id, f.message, f.fix)
+        for f in result.findings
+        if "stealth core projections" in f.message
+        and f.severity is not Severity.SKIP
+        and "excluded" not in f.message
+    ]
+    assert shown == [
+        (sev, cid, msg.replace("{core}", str(booley_dir / "cores" / "a.core")), fix)
+        for sev, cid, msg, fix in rows
+    ]
+    assert result.exit_code == exit_code
+    skip = "skipped - stealth core projections are not current"
+    assert [m for m in _messages(result) if m.endswith(skip)] == [
+        f"Flow dry-runs {skip}",
+        f".core audit {skip}",
     ]
 
 
