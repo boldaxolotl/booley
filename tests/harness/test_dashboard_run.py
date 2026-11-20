@@ -499,7 +499,7 @@ async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
 
 
 @pytest.mark.asyncio
-async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
+async def test_flow_step_lists_every_enabled_builtin_flow_with_its_blurb(checkout):
     app = make_app(checkout, real_launcher(checkout / ".booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await start_run(app, pilot)
@@ -516,6 +516,20 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         ]
         assert all(len(line.split(" — ", 1)[1]) > 10 for line in flows)
         assert lines[3].startswith("sim — Run RTL simulation")
+        # A Flow turned off in booley.toml is not listed once the worktree is picked again.
+        for config, expected in [
+            ("[flows.fpga]\nenabled = false\n", ["lint", "mutation", "sim", "synth"]),
+            ("[flows.fpga]\nenabled = true\n", ["fpga", "lint", "mutation", "sim", "synth"]),
+        ]:
+            await pilot.press("escape")
+            write_config(checkout, config)
+            await pilot.press("enter")
+            options = wizard.query_one("#run-flows", OptionList)
+            names = [
+                str(options.get_option_at_index(i).prompt).split(" — ")[0]
+                for i in range(len(expected))
+            ]
+            assert names == expected
 
 
 # --- AC2 ---------------------------------------------------------------------

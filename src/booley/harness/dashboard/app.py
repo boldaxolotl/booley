@@ -46,7 +46,6 @@ from booley.harness.dashboard.targets import (
     WorktreeChoice,
     WorktreeList,
     first_line,
-    launchable_flows,
     order_worktrees,
 )
 from booley.harness.dashboard.topbar import (
@@ -1753,7 +1752,7 @@ class DashboardApp(App[None]):
             or detail.selector != self.navigation.selected
         ):
             return ()
-        return launchable_flows(detail.row.flows)
+        return detail.launchable
 
     def _fill_flow_list(self) -> None:
         """List the open Target's Flows; a refresh of the same list keeps the highlight."""
