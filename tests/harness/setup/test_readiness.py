@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from booley.audit.diagnostic_results import Severity
+from booley.fusesoc import core_projection
 from booley.harness.setup import readiness
+from booley.harness.setup.guidance_links import ensure_guidance_links
 from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import platform_paths
@@ -68,11 +71,11 @@ class TestStealthCoresCheck:
             "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
         )
         (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        core_projection.reconcile_projected_cores(root)
         rec = _Rec()
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
             failed=rec.f,
@@ -88,7 +91,6 @@ class TestStealthCoresCheck:
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-                mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
             failed=rec.f,
@@ -108,7 +110,6 @@ class TestStealthCoresCheck:
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-                mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
             failed=rec.f,
@@ -125,7 +126,6 @@ class TestStealthCoresCheck:
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-                mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
             failed=rec.f,
@@ -141,7 +141,6 @@ class TestStealthCoresCheck:
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-                mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
             failed=rec.f,
@@ -158,33 +157,12 @@ class TestStealthCoresCheck:
         _record_report(
             readiness.check_stealth_cores(
                 readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-                mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
             failed=rec.f,
         )
 
         assert any("stealth mode is disabled" in msg for msg in rec.fails())
-
-    def test_stealth_projection_is_repaired(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (booley_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-
-        assert rec.fails() == []
-        assert (root / ".booley-projected-s.core").is_file()
 
 
 _SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
@@ -201,7 +179,7 @@ def _commit_all(root: Path) -> None:
 
 def _scaffold_core_findings(root: Path):
     audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, {}, "")
-    report = readiness.check_stealth_cores(audit, mode=readiness.ReadinessMode.INSPECT)
+    report = readiness.check_stealth_cores(audit)
     return [f for f in report.findings if f.check_id == _SCAFFOLD_CHECK]
 
 
@@ -305,12 +283,14 @@ class TestGuidanceVenueNote:
     file tells a host-side agent to call MCP tools that do not exist there.
     """
 
-    def _canon(self, tmp_path: Path, body: str) -> Path:
+    def _canon(self, tmp_path: Path, body: str, *, links: bool = True) -> Path:
         if tmp_path.name != ".booley":
             tmp_path = tmp_path / ".booley"
             tmp_path.mkdir()
         canon = tmp_path / "AGENTS.md"
         canon.write_text(body, encoding="utf-8")
+        if links:
+            ensure_guidance_links(tmp_path.parent, tmp_path)
         return canon
 
     @pytest.mark.parametrize("location", ("inside the Sandbox", "Session Runtime"))
@@ -324,7 +304,6 @@ class TestGuidanceVenueNote:
         _record_report(
             readiness.check_guidance(
                 readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
             warned=rec.w,
@@ -337,7 +316,6 @@ class TestGuidanceVenueNote:
         _record_report(
             readiness.check_guidance(
                 readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
             warned=rec.w,
@@ -352,7 +330,6 @@ class TestGuidanceVenueNote:
         _record_report(
             readiness.check_guidance(
                 readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
             warned=rec.w,
@@ -370,58 +347,26 @@ class TestGuidanceVenueNote:
         _record_report(
             readiness.check_guidance(
                 readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-                mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
             warned=rec.w,
         )
         assert rec.kinds() == {"pass"}
 
-    def test_automatic_profile_reports_missing_links_without_creating_them(
-        self, tmp_path, monkeypatch
-    ):
+    def test_missing_links_are_reported_without_creating_them(self, tmp_path):
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
-        self._canon(booley_dir, "# Project guidance\n")
+        self._canon(booley_dir, "# Project guidance\n", links=False)
         project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
-        monkeypatch.setattr(
-            readiness,
-            "ensure_guidance_links",
-            lambda *_a, **_kw: pytest.fail("read-only Doctor repaired links"),
-        )
-        rec = _Rec()
 
-        _record_report(
-            readiness.check_guidance(project, mode=readiness.ReadinessMode.INSPECT),
-            passed=rec.p,
-            warned=rec.w,
-        )
+        report = readiness.check_guidance(project)
 
-        assert rec.kinds() == {"warn"}
+        assert [(f.severity, f.check_id) for f in report.findings] == [
+            (Severity.WARN, "guidance.links-unhealthy")
+        ]
+        assert "booley init" in report.findings[0].fix
         assert not (tmp_path / "AGENTS.md").exists()
         assert not (tmp_path / "CLAUDE.md").exists()
-
-    def test_manual_profile_repairs_guidance_links(self, tmp_path, monkeypatch):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        self._canon(booley_dir, "# Project guidance\n")
-        project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
-        calls = []
-        monkeypatch.setattr(
-            readiness,
-            "ensure_guidance_links",
-            lambda root, data: calls.append((root, data)),
-        )
-        rec = _Rec()
-
-        _record_report(
-            readiness.check_guidance(project, mode=readiness.ReadinessMode.RECONCILE),
-            passed=rec.p,
-            warned=rec.w,
-        )
-
-        assert calls == [(tmp_path, booley_dir)]
-        assert any("root links ensured" in message for _kind, message in rec.events)
 
 
 def test_project_audit_reports_a_missing_booley_directory(tmp_path, monkeypatch):
