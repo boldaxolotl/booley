@@ -813,7 +813,29 @@ def test_dry_run_plans_every_selected_target(synth_cli: SynthCli) -> None:
     assert outcome.exit_code == EXIT_SUCCESS
     assert "Dry run" in outcome.report_text
     assert [unit["selector"] for unit in outcome.detail["work_units"]] == ["lite", "full"]
-    assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
+    assert list((synth_cli.project / _SYNTH_ROOT).parent.glob(".plan-*")) == []
+
+
+def test_dry_run_setup_writes_only_inside_the_booley_directory(synth_cli: SynthCli) -> None:
+    mine = synth_cli.project / ".booley-synth-plan-mine" / "notes.txt"
+    other = (synth_cli.project / _SYNTH_ROOT).parent / ".plan-other" / "notes.txt"
+    for path in (mine, other):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"mine")
+    before = sorted(os.listdir(synth_cli.project))
+    during: list[list[str]] = []
+    resolve = synth_cli.resolution.resolve
+
+    def watch(*args, **kwargs):
+        during.append(sorted(os.listdir(synth_cli.project)))
+        return resolve(*args, **kwargs)
+
+    synth_cli.resolution.resolve = watch
+
+    assert synth_cli.run("--dry-run").exit_code == EXIT_SUCCESS
+    assert synth_cli.run().exit_code == EXIT_SUCCESS
+    assert during == [before, before]
+    assert [path.read_bytes() for path in (mine, other)] == [b"mine", b"mine"]
 
 
 def test_dry_and_real_runs_plan_the_same_work(synth_cli: SynthCli) -> None:
@@ -1120,7 +1142,7 @@ def test_invalid_recipe_fails_planning(synth_cli: SynthCli, config: str, message
     for outcome in (synth_cli.run("--dry-run"), synth_cli.run()):
         assert outcome.exit_code == EXIT_ERROR
         assert re.search(message, outcome.report_text), outcome.report_text
-    assert list(synth_cli.project.glob(".booley-synth-plan-*")) == []
+    assert list((synth_cli.project / _SYNTH_ROOT).parent.glob(".plan-*")) == []
 
 
 def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli) -> None:
