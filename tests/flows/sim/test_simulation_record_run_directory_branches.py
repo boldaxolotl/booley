@@ -67,6 +67,27 @@ def test_lock_wait_timeout_closes_handle_and_raises(
     assert rd.cleanup_interrupted_run_directory(run, identity=identity) is False
 
 
+def test_recovery_leaves_a_run_still_creating_its_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, identity = _run(tmp_path)
+    monkeypatch.setattr(rd, "_LOCK_TIMEOUT_S", scaled(0.05))
+    real_write = Path.write_bytes
+    seen: list[bool] = []
+
+    def probing(self: Path, data: bytes) -> int:
+        if self.name == ".booley-simulation-attempt.json":
+            with pytest.raises(LockTimeoutError):
+                rd.cleanup_interrupted_run_directory(run, identity=identity)
+            seen.append(run.path.is_dir())
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", probing)
+    with rd.claimed_run_directory(run, identity=identity):
+        pass
+    assert seen == [True]
+
+
 def test_lock_that_never_stays_current_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
