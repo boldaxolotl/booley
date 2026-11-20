@@ -226,6 +226,12 @@ auth = "subscription"   # "subscription" or "api_key"
 Leave `auth` out and the subscription pays, whatever API key is exported.
 `booley doctor` still fails on a missing `auth`, so the choice is on record.
 
+The exception is a Sandbox set up by hand rather than by `booley init`, such as
+the demo Codespace. There a missing `auth` means the visitor mode: each Agent
+CLI uses the credential you sign in with or export, or the gateway the spec
+provides when you have none, and `booley doctor` does not fail on the missing
+`auth`.
+
 A single value applies to every CLI in `clis`. To bill each CLI differently,
 use a table with one entry per CLI; `booley doctor` fails for a CLI you leave
 out:
