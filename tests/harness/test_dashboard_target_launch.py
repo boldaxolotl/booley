@@ -129,7 +129,7 @@ async def launch_from_detail(app: DashboardApp, pilot, selector: str) -> RunWiza
 
 
 @pytest.mark.asyncio
-async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
+async def test_target_detail_lists_exactly_the_enabled_flows_that_drive_it(checkout):
     # A Simulation Target also offers the Mutation Flow, which runs one Simulation Target.
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(130, 40)) as pilot:
@@ -150,6 +150,24 @@ async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
         assert flow_ids(app) == []
         assert not app.query_one("#target-flows").display
         assert FLOWS_LABEL not in detail_text(app)
+        await pilot.press("escape")
+        # Flows turned off in booley.toml are left out; Mutation needs an enabled Simulation Flow.
+        config = worktree_a(checkout) / ".booley" / "booley.toml"
+        for text, expected in [
+            (
+                "[project]\n[flows.fpga]\nenabled = false\n[flows.sim]\nenabled = false\n",
+                {"fpga_fifo": [], "sim_fifo": [], "dual_target": ["lint"]},
+            ),
+            ("[project]\n[flows.mutation]\nenabled = false\n", {"sim_fifo": ["sim"]}),
+            ("[project]\n[flows.fpga]\nenabled = true\n", {"fpga_fifo": ["fpga"]}),
+        ]:
+            config.write_bytes(text.encode())
+            for selector, flows in expected.items():
+                await open_detail(app, pilot, selector)
+                assert flow_ids(app) == flows
+                assert app.query_one("#target-flows").display is bool(flows)
+                assert (FLOWS_LABEL in detail_text(app)) is bool(flows)
+                await pilot.press("escape")
 
 
 # --- AC2 ---------------------------------------------------------------------
