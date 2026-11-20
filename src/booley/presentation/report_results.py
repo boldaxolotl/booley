@@ -422,17 +422,64 @@ def _implementation(endpoint: str, detail: Mapping[str, object]) -> tuple[str, l
     )
 
 
+_NO_LINT_MESSAGE = "error message not in report"
+
+
+def _lint_error(detail: Mapping[str, object], target: str) -> str | None:
+    """The Target's first error message, or None when the report shows it has no error."""
+    metrics = _mapping(_mapping(detail.get("metrics")).get(target))
+    errors = [
+        row
+        for row in (_mapping(item) for item in _sequence(detail.get("findings")))
+        if row.get("severity") == "error" and literal(row.get("target")) == literal(target)
+    ]
+    messages = [
+        metrics.get("unavailable"),
+        *_sequence(_mapping(metrics.get("counted_items")).get("errors")),
+        *(row.get("message") for row in errors),
+    ]
+    message = next((literal(item) for item in messages if literal(item)), "")
+    counts = (
+        _mapping(metrics.get("plain")).get("errors"),
+        _mapping(_mapping(detail.get("findings_by_target")).get(target)).get("errors"),
+    )
+    if message or errors or "unavailable" in metrics or any((as_int(n) or 0) > 0 for n in counts):
+        return message or _NO_LINT_MESSAGE
+    return None
+
+
+def _lint_targets(detail: Mapping[str, object], tools: Mapping[str, object]) -> list[ResultLine]:
+    targets: _Targets = []
+    for name, tool in tools.items():
+        error = _lint_error(detail, name)
+        targets.append(
+            (literal(name), {"eda_tool": tool} | ({} if error is None else {"error": error}))
+        )
+    listed = _listed(targets, lambda row: "error" in row)
+    rows: list[ResultLine] = []
+    for name, row in listed:
+        failed = "error" in row
+        if literal(row["eda_tool"]) or failed:
+            rows.append(_row(f"  {name}", row["eda_tool"], "fail" if failed else ""))
+    rows.extend(_more_targets(targets, listed))
+    for name, row in listed:
+        if "error" in row:
+            label = f"  {name} · Error" if len(targets) > 1 else "  Error"
+            rows.append(_row(label, row["error"], "fail"))
+    return rows
+
+
 def _lint(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
+    if "plan" in detail:  # preparation failed: no EDA tool ran, so each Target shows "unavailable"
+        return "", _lint_targets(
+            detail, dict.fromkeys(_mapping(detail.get("metrics")), "unavailable")
+        )
     warnings = as_int(detail.get("total_warnings"))
     headline = (
         f"Lint: {warnings} warnings" if warnings is not None else "Lint: warning count unavailable"
     )
     tools = _mapping(detail.get("eda_tools"))
-    rows = [
-        _row(f"  {literal(target)}", tool)
-        for target, tool in list(tools.items())[:_ITEM_LIMIT]
-        if literal(tool)
-    ]
+    rows = _lint_targets(detail, tools)
     rows.extend(_fields(detail, {"total_warnings": "Warnings"}))
     if not tools:
         rows.extend(
