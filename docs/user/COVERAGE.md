@@ -269,15 +269,6 @@ booley specialist coverage_analyst --record <path to coverage.json>
 It prints its hypotheses, recommendations and limitations, then the path of
 the report it saved.
 
-<details markdown>
-<summary>In stealth mode</summary>
-
-In Stealth Mode the Coverage Analyst reads your sources as it does with Stealth
-Mode off, so it can propose Waiver Candidates ready for human review. See
-[Stealth Mode](STEALTH.md).
-
-</details>
-
 ## Disk space
 
 Coverage runs are large: each one keeps a raw Verilator database per Test Run
