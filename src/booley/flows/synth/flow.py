@@ -1893,6 +1893,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             result.returncode,
             stdout=result.stdout,
             is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
+            expected_comb_loops=expected_count("synth", self.args.work_dir, "expected_comb_loops"),
             project_paths=project_paths,
         )
         output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
@@ -2775,11 +2776,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             lines.append(self._format_critical_line(tgt, cur))
         if cur.warning_summary.total_warnings:
             lines.append(self._format_warning_line(tgt, cur))
-            lines.extend(
-                note_line(tgt, "WARNING", f"{group.message} {group.rationale}")
-                for group in cur.warning_summary.representatives
-                if group.category == "combinational_loop" and group.disposition == "advisory"
-            )
+            lines.extend(self._removed_warning_lines(tgt, cur))
         if cur.openroad_reuse:
             lines.append(self._format_reuse_line(tgt, cur.openroad_reuse))
         if cur.failure_output:
@@ -3124,6 +3121,19 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if cur.multi_driven:
             parts.append(f"{cur.multi_driven} multi-driven")
         return note_line(tgt, "CRITICAL", ", ".join(parts))
+
+    @staticmethod
+    def _removed_warning_lines(tgt: str, cur: SynthMetrics) -> list[str]:
+        """Show each earlier-pass loop or driver warning that optimization removed, with its reason."""
+        return [
+            note_line(
+                tgt,
+                "NOTE" if group.disposition == "informational" else "WARNING",
+                f"{group.message} {group.rationale}",
+            )
+            for group in cur.warning_summary.representatives
+            if group.removed
+        ]
 
     @staticmethod
     def _format_warning_line(tgt: str, cur: SynthMetrics) -> str:

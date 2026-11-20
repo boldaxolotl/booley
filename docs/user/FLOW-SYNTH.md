@@ -131,6 +131,14 @@ warning is still checked and can fail the run. A loop within
 `expected_comb_loops` doesn't fail the run, but Yosys still prints its
 warning, so the run ends `WARN` rather than `PASS`.
 
+Optimization can remove a combinational loop or a multi-driven net before the
+final netlist. Its warning still ends the run `WARN`: the tool dropped the
+logic, and nobody has checked that the RTL means what was kept. Review the RTL
+the warning names and fix it. For a removed loop you accept, declare its
+warnings with
+[`expected_comb_loops`](#configuration-flowssynth): they are then listed as
+notes and don't cause `WARN`.
+
 ## Synthesis Target
 
 A synthesis Target selects the RTL plus an SDC timing-constraints fileset. The
@@ -384,6 +392,11 @@ structures the design contains on purpose, such as the latch inside a
 standard-cell clock gater. The run reports the actual count and fails only on
 the excess, so one more than declared still fails. A negative, boolean, or
 non-integer value counts as `0`. Multi-driven nets have no allowance.
+
+`expected_comb_loops` also covers the warnings for loops that optimization
+removed. When the final netlist has no loop, the run compares the number of
+those warnings, which the report prints (`this run N`), with the declared
+count: within it they are notes, and one more ends the run `WARN` again.
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step that reads only the

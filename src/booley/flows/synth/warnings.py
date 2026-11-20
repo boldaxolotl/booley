@@ -9,6 +9,10 @@ Structural counts come from two Yosys ``check`` passes: the pre-mapping check
 because mapped library cells are black boxes to ``check``; the reported loop
 count is the larger of the two. The final check owns multi-driven nets after
 mapping.
+
+A loop or driver warning from an earlier pass that the completed checks no
+longer find was removed by optimization, not reviewed: it stays actionable
+unless it is a loop the Project declared with ``expected_comb_loops``.
 """
 
 from __future__ import annotations
@@ -24,6 +28,13 @@ WarningDisposition = Literal["benign", "advisory", "structural", "informational"
 # Identity of one warning group: the `_WarningRecord` fields `_warning_summary` counts by
 # (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
 _GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
+
+# Earlier-pass structural category -> what shows that optimization removed it.
+# Only the final check counts multi-driven nets, so its rationale names that check.
+_REMOVED_EVIDENCE = {
+    "combinational_loop": "the completed structural checks find no combinational loops",
+    "multi_driver": "the completed final check finds no multi-driven nets",
+}
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
@@ -76,6 +87,11 @@ class WarningGroup:
     truncated: bool
     count: int
     rationale: str | None = None
+
+    @property
+    def removed(self) -> bool:
+        """True for an earlier-pass loop or driver warning the completed checks no longer find."""
+        return self.rationale is not None and self.category in _REMOVED_EVIDENCE
 
     def to_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -302,10 +318,67 @@ def _openroad_records(text: str, project_text: Callable[[str], str]) -> list[_Wa
     return result
 
 
+def _removed_rationale(category: str, seen: int, expected_comb_loops: int) -> str:
+    """Say why a removed structure still matters; only loops have an allowance to declare."""
+    if category != "combinational_loop":
+        verdict = "Removed is not reviewed: check the RTL and fix it."
+    else:
+        verdict = (
+            (
+                "Declared as intentional"
+                if seen <= expected_comb_loops
+                else "Removed is not reviewed: check the RTL, then fix it or declare the count"
+            )
+            + f": [flows.synth].expected_comb_loops (this run {seen}, declared {expected_comb_loops})."
+        )
+    return (
+        f"An earlier synthesis pass reported this; {_REMOVED_EVIDENCE[category]}, "
+        f"so optimization removed it. {verdict}"
+    )
+
+
+def _annotate_removed(
+    records: list[_WarningRecord],
+    structural: StructuralConditions,
+    expected_comb_loops: int,
+) -> list[_WarningRecord]:
+    """Mark earlier-pass loop and driver warnings the completed checks no longer find.
+
+    They stay actionable, except loops within ``expected_comb_loops``: one more
+    than declared warns again. Multi-driven nets have no allowance.
+    """
+    if not structural.complete:
+        return records
+    remaining = {
+        "combinational_loop": structural.comb_loops,
+        "multi_driver": structural.multi_driven,
+    }
+    seen = Counter(item.category for item in records)
+    result: list[_WarningRecord] = []
+    for item in records:
+        if remaining.get(item.category, 1):
+            result.append(item)
+            continue
+        declared = (
+            item.category == "combinational_loop" and seen[item.category] <= expected_comb_loops
+        )
+        result.append(
+            replace(
+                item,
+                disposition="informational" if declared else "advisory",
+                rationale=_removed_rationale(
+                    item.category, seen[item.category], expected_comb_loops
+                ),
+            )
+        )
+    return result
+
+
 def _records(
     sources: Mapping[str, str],
     structural: StructuralConditions,
     project_text: Callable[[str], str],
+    expected_comb_loops: int,
 ) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
@@ -316,21 +389,14 @@ def _records(
             records.extend(_openroad_records(text, project_text))
         elif source == "sv2v":
             records.extend(_sv2v_records(text, project_text))
+        elif source == "final_check":
+            records.extend(_yosys_records(text, project_text))
         else:
-            parsed = _yosys_records(text, project_text)
-            if source != "final_check" and structural.complete and structural.comb_loops == 0:
-                parsed = [
-                    replace(
-                        item,
-                        disposition="advisory",
-                        rationale="Earlier synthesis pass reported this loop; the completed "
-                        "post-optimisation check reports no combinational loops.",
-                    )
-                    if item.category == "combinational_loop"
-                    else item
-                    for item in parsed
-                ]
-            records.extend(parsed)
+            records.extend(
+                _annotate_removed(
+                    _yosys_records(text, project_text), structural, expected_comb_loops
+                )
+            )
     return records
 
 
@@ -373,7 +439,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     ]
     groups.sort(
         key=lambda item: (
-            not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            not item.removed,
             item.disposition == "informational",
             item.tool,
             item.code or "",
@@ -421,15 +487,22 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
 
 
 def parse_synth_diagnostics(
-    sources: Mapping[str, str], project_text: Callable[[str], str] = _as_printed
+    sources: Mapping[str, str],
+    project_text: Callable[[str], str] = _as_printed,
+    *,
+    expected_comb_loops: int = 0,
 ) -> SynthDiagnostics:
     """Parse fresh stage text into bounded warnings and structural conditions.
 
     *project_text* renames the source files a warning message names before
     warnings are grouped; classification reads the message as printed.
+    ``expected_comb_loops`` is the Project's declared loop count, which also
+    covers earlier-pass loop warnings that optimization removed.
     """
     structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources, structural, project_text)),
+        warnings=_warning_summary(
+            _records(sources, structural, project_text, expected_comb_loops)
+        ),
         structural=structural,
     )
