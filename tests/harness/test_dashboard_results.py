@@ -785,6 +785,10 @@ def test_lint_errored_targets_show_their_first_error():
             ),
             [("  t0", "verilator", "fail"), ("  Error", nomsg[1], "fail")],
         ),
+        (
+            lint_detail(findings=[{"severity": "error", "target": "t1", "message": "\x1b[0m"}]),
+            [t1[0], nomsg],
+        ),
         (lint_detail(5, metrics=clean, findings=warnings, findings_by_target=clean), []),
     ]
     for detail, expected in cases:
@@ -798,6 +802,17 @@ def test_lint_errored_targets_show_their_first_error():
         ("  t1", "verible"),
         ("Warnings", "3"),
     ]
+
+
+def test_lint_long_target_name_keeps_its_error():
+    name = "t" * 200
+    detail = {
+        "total_warnings": 0,
+        "eda_tools": {f"t{i}": "verilator" for i in range(6)} | {name: "verilator"},
+        "metrics": {name: {"unavailable": "no verilator"}},
+    }
+    rows = present_report({"flow": "lint", "detail": detail}).result_rows
+    assert ("no verilator", "fail") in [(row.value, row.semantic) for row in rows]
 
 
 def test_lint_preparation_failure_shows_the_failed_target():

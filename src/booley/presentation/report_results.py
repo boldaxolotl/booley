@@ -428,22 +428,22 @@ _NO_LINT_MESSAGE = "error message not in report"
 def _lint_error(detail: Mapping[str, object], target: str) -> str | None:
     """The Target's first error message, or None when the report shows it has no error."""
     metrics = _mapping(_mapping(detail.get("metrics")).get(target))
-    findings = [_mapping(item) for item in _sequence(detail.get("findings"))]
+    errors = [
+        row
+        for row in (_mapping(item) for item in _sequence(detail.get("findings")))
+        if row.get("severity") == "error" and literal(row.get("target")) == literal(target)
+    ]
     messages = [
         metrics.get("unavailable"),
         *_sequence(_mapping(metrics.get("counted_items")).get("errors")),
-        *(
-            row.get("message")
-            for row in findings
-            if row.get("severity") == "error" and literal(row.get("target")) == target
-        ),
+        *(row.get("message") for row in errors),
     ]
     message = next((literal(item) for item in messages if literal(item)), "")
     counts = (
         _mapping(metrics.get("plain")).get("errors"),
         _mapping(_mapping(detail.get("findings_by_target")).get(target)).get("errors"),
     )
-    if message or "unavailable" in metrics or any((as_int(n) or 0) > 0 for n in counts):
+    if message or errors or "unavailable" in metrics or any((as_int(n) or 0) > 0 for n in counts):
         return message or _NO_LINT_MESSAGE
     return None
 
@@ -451,7 +451,7 @@ def _lint_error(detail: Mapping[str, object], target: str) -> str | None:
 def _lint_targets(detail: Mapping[str, object], tools: Mapping[str, object]) -> list[ResultLine]:
     targets: _Targets = []
     for name, tool in tools.items():
-        error = _lint_error(detail, literal(name))
+        error = _lint_error(detail, name)
         targets.append(
             (literal(name), {"eda_tool": tool} | ({} if error is None else {"error": error}))
         )
