@@ -1131,7 +1131,7 @@ def run_cocotb_sim(
 
 def _run_work(work: PreparedSimulationWork) -> int:
     """Run the prepared *work* as this process's one Cocotb launch."""
-    clear_stale_pipes(work.trace_files, Path(work.run_cwd or work.build_dir))
+    clear_stale_pipes(work.booley_dir)
     return run_cocotb_sim(
         build_dir=Path(work.build_dir),
         eda_tool=work.eda_tool,

@@ -1,6 +1,7 @@
 """Durable ownership record for runtime inputs a run stages into a run directory.
 
-The record also covers the overlay files a run writes beside a Target's core.
+The record also covers the overlay files a run writes beside a Target's core
+and the named pipes of declared traces.
 
 A run that is killed or interrupted cannot unwind its ``finally`` blocks, so the
 inputs it staged would stay behind and break the next run.  Each staging
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 RECORD_KIND = "booley-staged-runtime-inputs"
 RECORD_VERSION = 1
 _MAX_RECORD_BYTES = 1024 * 1024
-_ENTRY_KINDS = frozenset({"file", "link", "directory", "new-file"})
+_ENTRY_KINDS = frozenset({"file", "link", "directory", "new-file", "pipe"})
 
 
 def _record_root(booley_dir: Path) -> Path:
@@ -256,7 +257,13 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
     # A PID from another PID namespace reads as dead whether or not it runs.
     if owner.identity_scope != scope or observe_process(owner).state not in DEAD_PROCESS_STATES:
         return set()
-    live = [entry for entry in entries if entry.created is not None]
+    # An entry whose staged pipe could not be unlinked stays recorded for the next sweep.
+    stuck = {
+        id(entry)
+        for entry in entries
+        if entry.kind == "pipe" and _remove_staged_pipe(run_dir, entry)
+    }
+    live = [entry for entry in entries if entry.created is not None or id(entry) in stuck]
 
     def retire(entry: _Entry) -> None:
         # Retire before the unlink: a crash then leaves an unrecorded leftover and
@@ -268,11 +275,15 @@ def _sweep_record(record: Path, scope: str) -> set[Path]:
     retained: set[Path] = set()
     for entry in reversed(entries):
         if entry.created is None:
+            if id(entry) in stuck:
+                kept.append(entry)
             continue
         destination = run_dir / entry.path
         if _remove_entry(run_dir, entry, destination, retained, retire):
             kept.append(entry)
             retained.add(destination)
+        elif id(entry) in stuck:
+            kept.append(entry)
     kept.reverse()
     if kept:
         _publish(record, owner, run_dir, kept)
@@ -289,6 +300,33 @@ def _ancestors_are_real(run_dir: Path, relative: Path) -> bool:
         if not stat.S_ISDIR(os.lstat(current).st_mode):
             return False
     return True
+
+
+def _remove_staged_pipe(run_dir: Path, entry: _Entry) -> bool:
+    """Remove the pipe a run made under its recorded random name, before it was linked in.
+
+    Returns whether the unlink failed, so the entry must stay recorded.
+    """
+    relative = Path(entry.path)
+    try:
+        if entry.identity != Path(entry.identity or "").name or not entry.identity:
+            return False
+        if not _ancestors_are_real(run_dir, relative):
+            return False
+        staged = (run_dir / relative).with_name(entry.identity)
+        status = os.lstat(staged)
+        # A pending entry has no identity yet; its random name is the proof.
+        if stat.S_ISFIFO(status.st_mode) and entry.created in (
+            None,
+            (status.st_dev, status.st_ino),
+        ):
+            staged.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Could not remove staged pipe for %s: %s", run_dir / relative, exc)
+        return True
+    return False
 
 
 def _remove_entry(
@@ -319,6 +357,8 @@ def _still_created(entry: _Entry, destination: Path, status: os.stat_result) -> 
         return stat.S_ISREG(status.st_mode) and (
             status.st_size == 0 or _sha256(destination) == entry.identity
         )
+    if entry.kind == "pipe":
+        return stat.S_ISFIFO(status.st_mode)
     if entry.kind == "link":
         return stat.S_ISLNK(status.st_mode) and str(destination.readlink()) == entry.identity
     return stat.S_ISDIR(status.st_mode)
@@ -334,9 +374,15 @@ def _remove_created(
     if not _ancestors_are_real(run_dir, Path(entry.path)):
         return True
     if not _still_created(entry, destination, os.lstat(destination)):
-        return True
+        # A pipe has no content to tell a successor with a reused inode number
+        # apart, and no run reports a retained pipe: a stale entry could only
+        # authorize deleting a later pipe.
+        return entry.kind != "pipe"
     if entry.kind != "directory":
-        retire(entry)
+        if entry.kind != "pipe":
+            # A killed sweep must leave the pipe recorded: an unrecorded pipe would
+            # block the declared path for good, so a pipe is unlinked first.
+            retire(entry)
         # A concurrent sweep may have replaced the object while it was hashed.
         status = os.lstat(destination)
         if (status.st_dev, status.st_ino) == entry.created:
