@@ -195,9 +195,10 @@ rtl/fifo.sv:57  branch  else  TOP.tb.dut.u_fifo
 The columns are the file and line, the metric, which point, and the instance.
 Bit 2 of `wr_ptr` on line 42 never fell from 1 to 0 in instance `u_fifo`. For a
 `branch` point the third column is the outcome (`if`, `else`, a `case` item);
-for an `expression` point, the term combination; for a `line` point, the block
-number. The third column can contain spaces, so read the columns by eye rather
-than splitting on them.
+for an `expression` point, the term combination; for a `line` point, the kind
+of block Verilator reports, such as `block`, `if`, `else` or `case`. The
+third column can contain spaces, so read the columns by eye rather than
+splitting on them.
 
 - Only points that count toward the percentage are listed. Testbench and
   generated code is skipped, and so are [waived](#coverage-waivers) points, which the
