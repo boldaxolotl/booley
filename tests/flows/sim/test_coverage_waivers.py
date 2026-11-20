@@ -300,6 +300,42 @@ def test_configured_directory_symlink_is_rejected_without_following_it(tmp_path:
     ]
 
 
+def test_only_an_absent_configured_directory_loads_as_an_empty_set(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    directory = roots.project_data_repository / "coverage-waivers"
+
+    absent = _load(roots)
+    directory.mkdir()
+    empty = _load(roots)
+    directory.rmdir()
+    directory.write_bytes(b"")
+    not_a_directory = _refusal(roots)
+
+    assert (absent.waivers, absent.digest) == ((), empty.digest)
+    assert [(item.severity, item.code) for item in absent.advisories] == [
+        ("info", "COV_WAIVER_DIRECTORY_ABSENT")
+    ]
+    assert "coverage-waivers" in absent.advisories[0].message
+    assert empty.advisories == ()
+    assert [item.code for item in not_a_directory] == ["COV_WAIVER_DIRECTORY_INVALID"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_unreadable_configured_directory_is_rejected(tmp_path: Path) -> None:
+    roots = _roots(tmp_path)
+    directory = roots.project_data_repository / "coverage-waivers"
+    directory.mkdir()
+    directory.chmod(0)
+    try:
+        if os.access(directory, os.R_OK):
+            pytest.skip("permission bits are not enforced for this user")
+        findings = _refusal(roots)
+    finally:
+        directory.chmod(0o700)
+
+    assert [item.code for item in findings] == ["COV_WAIVER_DIRECTORY_UNREADABLE"]
+
+
 @pytest.mark.parametrize(
     ("link_kind", "expected_code"),
     [

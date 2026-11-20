@@ -211,10 +211,27 @@ def test_sim_and_lint_runs_return_their_typed_values(
     assert (sim.unavailable, lint.unavailable) == ({}, {})
 
 
+_ABSENT_WAIVERS = (
+    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
+)
+_BLOCKED_WAIVERS = (
+    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "booley.toml"\n'
+)
+
+
+@pytest.mark.parametrize(
+    "booley_toml",
+    [
+        pytest.param("", id="no-waivers-configured"),
+        pytest.param(_ABSENT_WAIVERS, id="absent-waiver-directory"),
+    ],
+)
 def test_coverage_run_returns_coverage_percents_with_test_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, booley_toml: str
 ) -> None:
-    result = coverage_result(tmp_path, monkeypatch, _MixedCoverageExecution())
+    result = coverage_result(
+        tmp_path, monkeypatch, _MixedCoverageExecution(), booley_toml=booley_toml
+    )
 
     (values,) = result.metrics.values()
     assert values.plain == {
@@ -331,11 +348,6 @@ class _MergeFailsExecution(_MixedCoverageExecution):
         return SimulationCommandResult(1)
 
 
-_MISSING_WAIVERS = (
-    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
-)
-
-
 def test_target_whose_values_cannot_be_produced_returns_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,12 +380,12 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         "native merge failed": coverage_result(
             tmp_path / "f", monkeypatch, _MergeFailsExecution()
         ),
-        "COV_WAIVER_DIRECTORY_MISSING": coverage_result(
-            tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_MISSING_WAIVERS
+        "COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
         ),
         # A blocked evaluation still errors when the design also aborted the collection.
-        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_MISSING": coverage_result(
-            tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_MISSING_WAIVERS
+        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
         ),
     }
 
@@ -386,10 +398,10 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
     (reason,) = cases["infrastructure error"].unavailable.values()
     assert "simulator build crashed" in reason
     verdicts, code = judged(
-        cases["COV_WAIVER_DIRECTORY_MISSING"], "coverage", "line_coverage_max", "line_coverage"
+        cases["COV_WAIVER_DIRECTORY_INVALID"], "coverage", "line_coverage_max", "line_coverage"
     )
     assert [v.verdict for v in verdicts] == [Verdict.ERROR]
-    assert "COV_WAIVER_DIRECTORY_MISSING" in verdicts[0].detail
+    assert "COV_WAIVER_DIRECTORY_INVALID" in verdicts[0].detail
     assert code == 2
 
 

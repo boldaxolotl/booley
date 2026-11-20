@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Collection, Container, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -95,6 +95,7 @@ class ApprovedWaiverSet:
     configuration: Mapping[str, FrozenJson]
     digest: str
     waivers: tuple[ApprovedWaiver, ...]
+    advisories: tuple[CoverageFinding, ...] = ()
 
     def match(self, coverage_record: CoverageRecord) -> ApprovedWaiverMatch:
         """Resolve applicable exact matches transactionally for one Coverage Record."""
@@ -676,10 +677,26 @@ def _load_enabled_set(
             SecureTree(approval_root) as approval_tree,
             SecureTree(roots.rtl_repository) as rtl_tree,
         ):
-            scan = approval_tree.scan_files(config.directory)
+            try:
+                scan = approval_tree.scan_files(config.directory)
+            except SecurePathError as error:
+                if error.kind != "missing":
+                    raise
+                return _absent_directory_set(config)
             return _load_scanned_set(config, scan, approval_tree, rtl_tree, known_targets)
     except SecurePathError as error:
         raise CoverageWaiverValidationError((_configured_directory_finding(error),)) from error
+
+
+def _absent_directory_set(config: CoverageWaiverConfig) -> ApprovedWaiverSet:
+    note = CoverageFinding(
+        "info",
+        "COV_WAIVER_DIRECTORY_ABSENT",
+        "/directory",
+        f"No approvals found: waiver directory {config.directory} ({config.anchor}) "
+        "does not exist.",
+    )
+    return replace(_approved_waiver_set(config, []), advisories=(note,))
 
 
 def _classify_scanned_files(
