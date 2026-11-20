@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
@@ -129,6 +129,13 @@ class _CapturingExecution:
         self._checkpoint = checkpoint
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
+        # The delegate's build slot lease must outlive the image copy below, or another
+        # attempt could prune the generation being copied. Test fakes may lack the method.
+        retain = getattr(self._delegate, "retaining_build_lease", None)
+        with retain() if callable(retain) else nullcontext():
+            return self._build_and_capture(request)
+
+    def _build_and_capture(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         started = time.monotonic()
         try:
             result = self._delegate.build(request)
