@@ -15,6 +15,7 @@ from booley.flows.sim.coverage_json import FrozenJson
 from booley.flows.sim.coverage_policy import coverage_metrics
 from booley.flows.sim.coverage_record import CoverageRecord, CoverageRollup
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome
+from booley.flows.sim.coverage_waivers import WAIVER_DIRECTORY_ABSENT_CODE
 from booley.flows.sim.record.test_run_files import TestRunFiles, simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.record.test_run_report import (
@@ -195,7 +196,7 @@ def _absent_waiver_directory_lines(coverage_record: CoverageRecord) -> list[str]
     return [
         f"  {finding.message}"
         for finding in coverage_record.findings
-        if finding.code == "COV_WAIVER_DIRECTORY_ABSENT"
+        if finding.code == WAIVER_DIRECTORY_ABSENT_CODE
     ]
 
 

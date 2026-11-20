@@ -44,6 +44,7 @@ from booley.flows.sim.coverage_waiver_files import (
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 _SET_SCHEMA = "booley.approved-waiver-set/v1"
+WAIVER_DIRECTORY_ABSENT_CODE = "COV_WAIVER_DIRECTORY_ABSENT"
 
 
 @dataclass(frozen=True)
@@ -691,7 +692,7 @@ def _load_enabled_set(
 def _absent_directory_set(config: CoverageWaiverConfig) -> ApprovedWaiverSet:
     note = CoverageFinding(
         "info",
-        "COV_WAIVER_DIRECTORY_ABSENT",
+        WAIVER_DIRECTORY_ABSENT_CODE,
         "/directory",
         f"No approvals found: waiver directory {config.directory} ({config.anchor}) "
         "does not exist.",
