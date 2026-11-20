@@ -49,6 +49,22 @@ function fakeEditor(options, records, settings) {
         open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_vaporview',
             creationOptions: {}, state: { isInteractedWith: true } });
     }
+    if (options.backgroundShell) {
+        open.push({ name: 'sh', creationOptions: {}, state: { isInteractedWith: true } });
+    }
+    // The terminal in front: the user terminal, else the last one pre-opened.
+    const front = options.userTerminal ? open.find(t => t.state.isInteractedWith)
+        : options.front === 'lifecycle' ? open.find(t => t.name === LIFECYCLE_NAME) : open.at(-1);
+    let active = front;
+    const makeActive = terminal => { active = terminal; records.listeners.active(terminal); };
+    for (const terminal of open) { terminal.show = function () { makeActive(this); }; }
+    // Another extension opens a terminal that takes the front.
+    records.openOver = terminal => {
+        terminal.show = function () { makeActive(this); };
+        open.push(terminal);
+        records.listeners.open(terminal);
+        makeActive(terminal);
+    };
     const root = { fsPath: '/work' };
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
@@ -97,13 +113,19 @@ function fakeEditor(options, records, settings) {
             createTerminal: options => {
                 const terminal = { options, creationOptions: options, shown: false, disposed: false,
                     state: { isInteractedWith: false },
-                    show(preserveFocus) { this.shown = true; this.preserveFocus = preserveFocus; },
+                    show(preserveFocus) {
+                        this.shown = true; this.preserveFocus = preserveFocus; this.shows++; makeActive(this);
+                    },
+                    shows: 0,
                     dispose() { this.disposed = true; } };
                 terminals.push(terminal);
                 open.push(terminal);
                 return terminal;
             },
             get terminals() { return open.slice(); },
+            get activeTerminal() { return active; },
+            onDidOpenTerminal: listen('open'),
+            onDidChangeActiveTerminal: listen('active'),
             showInformationMessage: (message, ...items) => {
                 const record = { message, items, resolve: undefined };
                 messages.push(record);
@@ -148,7 +170,8 @@ function fixture(options = {}) {
     // Timers are recorded, not run: a test fires one by calling its `fn`.
     const setTimeout = (fn, ms) => records.timers.push({ fn, ms });
     const clearTimeout = id => records.cleared.push(id);
-    vm.runInNewContext(source, { exports: module.exports, AbortController, setTimeout, clearTimeout,
+    const Date = { now: () => records.now ?? globalThis.Date.now() };
+    vm.runInNewContext(source, { exports: module.exports, AbortController, setTimeout, clearTimeout, Date,
         require: name => {
             if (name === 'vscode') { return vscode; }
             if (name === 'node:child_process') { return {execFile}; }
@@ -166,7 +189,7 @@ function fixture(options = {}) {
         registered: records.registered,
         // Run the command the way the Command Palette does.
         runCommand: () => records.registered['booley.dashboard.open'](),
-        timers: records.timers, cleared: records.cleared,
+        records, timers: records.timers, cleared: records.cleared,
         tabs: records.tabs, closedTabs: records.closedTabs, log, terminals, listeners, vscode, settings, complete: () => complete(),
         reactivate: () => module.exports.activate({subscriptions: [], workspaceState: context.workspaceState}) };
 }
@@ -180,6 +203,16 @@ test('the open-Dashboard command is registered and contributed', async () => {
         '../../src/booley/data/vscode/dashboard/package.json'), 'utf8'));
     assert.deepEqual(manifest.contributes.commands, [{ command: 'booley.dashboard.open',
         title: 'Open Dashboard', category: 'Booley' }]);
+});
+
+test('an interacted terminal behind the lifecycle terminal does not hold the Dashboard back', async () => {
+    const f = fixture({ remote: 'codespaces', backgroundShell: true, lifecycleTerminal: true, front: 'lifecycle' });
+    await tick();
+    assert.equal(f.terminals.length, 1);
+    assert.equal(f.terminals[0].shown, true);
+    assert.equal(f.terminals[0].preserveFocus, true);
+    assert.equal(f.messages.length, 0);
+    assert.match(f.log.join('\n'), /'sh' \(created as '', interacted: true, in front: false, not in use\)/);
 });
 
 test('default-off application permission still opens one fixed remote process', async () => {
@@ -456,7 +489,7 @@ test('a terminal nobody has used does not hold the Dashboard back', async () => 
 });
 
 test('a terminal the user has used keeps the panel; the Dashboard waits behind a notification', async () => {
-    // The unused terminal comes first: any used terminal counts, not just the first.
+    // The unused terminal comes first: the used terminal in front counts, not just the first.
     const f = fixture({ idleTerminal: true, userTerminal: true });
     await tick();
     assert.equal(f.terminals.length, 1, 'the Dashboard still starts');
@@ -478,7 +511,53 @@ test('a Codespaces lifecycle terminal does not hold the Dashboard back', async (
     const lines = f.log.filter(line => line.includes('created as'));
     assert.equal(lines.length, 1);
     assert.match(lines[0], /created as 'Codespaces: python -m booley\.runtime\.incontainer_live_preview/);
-    assert.match(lines[0], /interacted: true, not in use/);
+    assert.match(lines[0], /interacted: true, in front: true, not in use/);
+});
+
+const lifecycleTerminal = () => ({ name: LIFECYCLE_NAME, creationOptions: { name: LIFECYCLE_NAME },
+    state: { isInteractedWith: true } });
+
+async function dashboardInFront(options = {}) {
+    const f = fixture({ remote: 'codespaces', ...options });
+    await tick();
+    return [f, f.terminals[0]];
+}
+
+test('a lifecycle terminal that opens over the Dashboard gives the front back', async () => {
+    const [f, dashboard] = await dashboardInFront();
+    const lifecycle = lifecycleTerminal();
+    f.records.openOver(lifecycle);
+    assert.equal(dashboard.shows, 2, 'the Dashboard takes the front back');
+    assert.equal(dashboard.preserveFocus, true);
+    f.listeners.active(lifecycle);
+    assert.equal(dashboard.shows, 2, 'a lifecycle terminal the user selects keeps the front');
+});
+
+test('another terminal opening between the lifecycle terminal and its activation does not stop the give-back',
+    async () => {
+        const [f, dashboard] = await dashboardInFront();
+        const lifecycle = lifecycleTerminal();
+        f.listeners.open(lifecycle);
+        f.listeners.open({ name: 'sh', creationOptions: {}, state: { isInteractedWith: true } });
+        f.listeners.active(lifecycle);
+        assert.equal(dashboard.shows, 2);
+    });
+
+test('a lifecycle terminal over a used terminal in front leaves that terminal alone', async () => {
+    const f = fixture({ remote: 'codespaces', userTerminal: true });
+    await tick();
+    f.records.openOver(lifecycleTerminal());
+    assert.equal(f.terminals[0].shows, 0);
+});
+
+test('a lifecycle terminal selected after its opening window keeps the front', async () => {
+    const [f, dashboard] = await dashboardInFront();
+    const background = lifecycleTerminal();
+    f.records.now = 0;
+    f.listeners.open(background);
+    f.records.now = 3001;
+    f.listeners.active(background);
+    assert.equal(dashboard.shows, 1);
 });
 
 test('a used terminal beside a Codespaces lifecycle terminal keeps the panel', async () => {
@@ -491,8 +570,8 @@ test('a used terminal beside a Codespaces lifecycle terminal keeps the panel', a
     await tick();
     assert.equal(f.terminals[0].shown, true);
     const line = f.log.find(entry => entry.includes('created as'));
-    assert.match(line, /'bash' \(created as '', interacted: true, in use\)/);
-    assert.match(line, /interacted: true, not in use/);
+    assert.match(line, /'bash' \(created as '', interacted: true, in front: true, in use\)/);
+    assert.match(line, /interacted: true, in front: false, not in use/);
 });
 
 test('a terminal titled like a Codespaces lifecycle terminal does not hold the Dashboard back', async () => {
