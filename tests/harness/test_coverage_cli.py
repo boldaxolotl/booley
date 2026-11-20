@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.sim import coverage_record
 from booley.flows.sim.coverage_provenance import coverage_digest
 from booley.flows.sim.coverage_record import DurableTargetIdentity, encode_coverage_point_id
 from booley.flows.sim.coverage_record_store import publish_coverage_record
@@ -17,6 +18,7 @@ from tests.flows.sim.test_coverage_record import _valid_document
 
 pytestmark = pytest.mark.usefixtures("host_command")
 
+_METRIC_CHOICES = "{line,branch,expression,toggle,cover_property}"
 _HINT = "Pass sim/<N>/targets/<target>/coverage.json of a retained coverage run."
 
 
@@ -80,6 +82,8 @@ def _mixed_points() -> list[dict[str, object]]:
         _point("rtl/a.sv", 7, "line", {"basic_block": 0}),
         _point("rtl/a.sv", 7, "branch", {"outcome": "else"}),
         _point("rtl/a.sv", 30, "toggle", {"bit": "wr_ptr[2]:1->0"}),
+        _point("rtl/a.sv", 40, "expression", {"term": "a&b"}),
+        _point("rtl/a.sv", 41, "cover_property", {"name": "p_ok"}),
         _point("rtl/b.sv", 1, "branch", {"outcome": "if"}),
         _point("rtl/b.sv", 6, "line", {"basic_block": ""}),
         _point("rtl/a.sv", 2, "line", {"basic_block": 9}, hits=hit),
@@ -99,7 +103,7 @@ def _bind_closure(document: dict) -> None:
         document["fingerprints"][category + "_sources"] = coverage_digest(
             document["source_closure"][category]
         )
-    for metric in ("branch", "toggle"):
+    for metric in ("branch", "toggle", "expression", "cover_property"):
         document["collector"]["capabilities"].append(
             {"record_class": metric, "status": "reported"}
         )
@@ -161,6 +165,8 @@ _ALL_LINES = [
     "rtl/a.sv:7  line  0  TOP.counter",
     "rtl/a.sv:20  line  1  TOP.counter",
     "rtl/a.sv:30  toggle  wr_ptr[2]:1->0  TOP.counter",
+    "rtl/a.sv:40  expression  a&b  TOP.counter",
+    "rtl/a.sv:41  cover_property  p_ok  TOP.counter",
     "rtl/b.sv:1  branch  if  TOP.counter",
     "rtl/b.sv:5  line  3  TOP.counter",
     "rtl/b.sv:6  line  -  TOP.counter",
@@ -173,7 +179,7 @@ def test_uncovered_prints_one_line_per_point_and_a_summary(tmp_path, monkeypatch
     code, out, err = _run(monkeypatch, capsys, str(path))
 
     assert (code, err) == (0, "")
-    assert out.splitlines() == [*_ALL_LINES, "7 uncovered points; 2 waived points not listed"]
+    assert out.splitlines() == [*_ALL_LINES, "9 uncovered points; 2 waived points not listed"]
 
 
 def test_summary_reports_waived_points_left_out(tmp_path, monkeypatch, capsys) -> None:
@@ -203,8 +209,8 @@ def test_summary_has_no_waived_clause_without_waived_points(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     ("filters", "lines", "summary"),
     [
-        (["--metric", "line"], [1, 2, 5, 6], "4 uncovered points; 1 waived point not listed"),
-        (["--source", "rtl/b.sv"], [4, 5, 6], "3 uncovered points; 1 waived point not listed"),
+        (["--metric", "line"], [1, 2, 7, 8], "4 uncovered points; 1 waived point not listed"),
+        (["--source", "rtl/b.sv"], [6, 7, 8], "3 uncovered points; 1 waived point not listed"),
         (
             ["--metric", "branch", "--source", "rtl/a.sv"],
             [0],
@@ -212,15 +218,16 @@ def test_summary_has_no_waived_clause_without_waived_points(tmp_path, monkeypatc
         ),
         (
             ["--metric", "branch", "--source", "rtl/b.sv"],
-            [4],
+            [6],
             "1 uncovered point; 1 waived point not listed",
         ),
-        (["--metric", "Branch"], [], "0 uncovered points"),
         (["--source", "rtl/b.s"], [], "0 uncovered points"),
         (["--metric", "line", "--source", "tb/tb.sv"], [], "0 uncovered points"),
-        (["--metric", "nonsense"], [], "0 uncovered points"),
+        (["--metric", "toggle"], [3], "1 uncovered point"),
+        (["--metric", "expression"], [4], "1 uncovered point"),
+        (["--metric", "cover_property"], [5], "1 uncovered point"),
     ],
-    ids=["metric", "source", "both", "both-waived", "case", "prefix", "unscored", "unknown"],
+    ids=["line", "source", "both", "waived", "prefix", "unscored", "toggle", "expr", "prop"],
 )
 def test_filters_combine_and_unmatched_filter_prints_zero_count(
     tmp_path, monkeypatch, capsys, filters, lines, summary
@@ -232,6 +239,17 @@ def test_filters_combine_and_unmatched_filter_prints_zero_count(
 
     assert code == 0
     assert out.splitlines() == [everything[index] for index in lines] + [summary]
+
+
+@pytest.mark.parametrize("metric", ["Branch", "fsm", "nonsense"])
+def test_metric_outside_the_scored_set_is_a_usage_error(
+    tmp_path, monkeypatch, capsys, metric: str
+) -> None:
+    code, out, err = _run(monkeypatch, capsys, str(tmp_path / "coverage.json"), "--metric", metric)
+
+    assert (code, out) == (2, "")
+    assert _METRIC_CHOICES in err
+    assert "{" + ",".join(coverage_record.SCORED_METRICS) + "}" in err
 
 
 def test_fully_covered_record_prints_zero_count_and_exits_0(tmp_path, monkeypatch, capsys) -> None:
@@ -375,7 +393,7 @@ def test_command_reads_the_record_on_host_and_in_sandbox(
     code, out, err = _run(monkeypatch, capsys, str(path))
 
     assert (code, err) == (0, "")
-    assert out.splitlines() == [*_ALL_LINES, "7 uncovered points; 2 waived points not listed"]
+    assert out.splitlines() == [*_ALL_LINES, "9 uncovered points; 2 waived points not listed"]
 
 
 def test_command_needs_no_project_and_refuses_project_selection(
@@ -403,5 +421,5 @@ def test_command_is_registered_with_help_text(monkeypatch, capsys) -> None:
     code, out, _err = _run(monkeypatch, capsys, "--help")
 
     assert code == 0
-    for fragment in ("COVERAGE_JSON", "--metric", "--source", "sim/<N>/targets/<target>"):
+    for fragment in ("COVERAGE_JSON", _METRIC_CHOICES, "--source", "sim/<N>/targets/<target>"):
         assert fragment in out

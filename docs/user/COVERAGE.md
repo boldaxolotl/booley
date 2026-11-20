@@ -202,11 +202,15 @@ splitting on them.
 
 - Only points that count toward the percentage are listed. Testbench and
   generated code is skipped, and so are [waived](#coverage-waivers) points, which the
-  last line counts. `--metric` and `--source` match exactly, and a filter that
+  last line counts.
+- `--metric` takes `line`, `branch`, `expression`, `toggle`, or
+  `cover_property`. `--source` matches the path exactly, and a path that
   matches nothing prints `0 uncovered points`.
 - The exit code is `0` whether or not points are uncovered: this is a reader,
   not a gate. It is `2`, with a message naming the file, when the file is
-  missing, is not a coverage record, or its point store is damaged.
+  missing, is not a coverage record, or its point store is damaged. It is also
+  `2`, with a message listing the valid metrics, for any other `--metric`
+  value, such as `Branch` or `fsm`.
 - A run whose coverage collection failed (anything but `COMPLETE` in the
   result) prints a warning first: its list may be incomplete, and is not a
   coverage result.
