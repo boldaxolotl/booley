@@ -191,29 +191,6 @@ def _reference_projection(
         raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
 
 
-STEALTH_SOURCE_LIMITATION = (
-    "Stealth Mode: the Stealth core projections are out of date ({issues}), so analysis "
-    "uses normalized report evidence only and no Waiver Candidate is ready for human "
-    "review. A new Simulation run refreshes them once no file named here blocks them."
-)
-
-
-def stealth_source_limitation(project_root: Path) -> str | None:
-    """Return why Stealth Mode leaves sources unread, or None when it does not.
-
-    Only out-of-date Stealth core projections qualify: a Simulation run
-    refreshes them. An unreadable configuration or authored core keeps the
-    generic report-only limitation, which no refresh fixes.
-    """
-    from booley.fusesoc.core_projection import CoreProjectionError, reconciliation_issues
-
-    try:
-        issues = reconciliation_issues(project_root)
-    except (CoreProjectionError, OSError, ValueError):
-        return None
-    return STEALTH_SOURCE_LIMITATION.format(issues=", ".join(issues)) if issues else None
-
-
 def coverage_sources(
     coverage_record: CoverageRecord, project_root: Path
 ) -> CoverageSourceClosure | None:
@@ -232,8 +209,7 @@ def coverage_sources(
         )
         if fingerprint != coverage_record.fingerprints["target_definition"]:
             return None
-        # Advisory source access must not change Project state.
-        inspection = catalog.inspect(handle, reconcile=False)
+        inspection = catalog.inspect(handle)
         expected = {"rtl": [], "testbench": []}
         files = {}
         root = project_root.resolve()

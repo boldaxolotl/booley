@@ -283,26 +283,9 @@ def test_report_records_exact_evidence_scope(tmp_path, monkeypatch, fresh_eviden
     assert "point_references" not in report["analysis_scope"]
 
 
-@pytest.mark.parametrize(
-    ("stealth", "limitation"),
-    [
-        pytest.param(
-            False,
-            "Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only.",
-            id="report-only",
-        ),
-        pytest.param(
-            True,
-            "Stealth Mode: the Stealth core projections are out of date "
-            "(missing .booley-projected-counter.core), so analysis uses normalized report "
-            "evidence only and no Waiver Candidate is ready for human review. A new Simulation "
-            "run refreshes them once no file named here blocks them.",
-            id="stealth",
-        ),
-    ],
-)
+@pytest.mark.parametrize("stealth", [False, True], ids=["default", "stealth"])
 def test_cli_resolves_short_references_and_prints_the_analysis(
-    tmp_path, monkeypatch, fresh_evidence_session, capsys, stealth, limitation
+    tmp_path, monkeypatch, fresh_evidence_session, capsys, stealth
 ):
     from booley.mcp import coverage_evidence
 
@@ -310,10 +293,6 @@ def test_cli_resolves_short_references_and_prints_the_analysis(
     if stealth:
         (tmp_path / ".booley").mkdir(exist_ok=True)
         (tmp_path / ".booley" / "booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
-        (tmp_path / ".booley" / "cores").mkdir()
-        (tmp_path / ".booley" / "cores" / "counter.core").write_bytes(
-            b"CAPI=2:\nname: acme:demo:counter:1.0\n"
-        )
     canonical_id = _valid_document()["points"][0]["id"]
 
     def referencing_model(params):
@@ -363,7 +342,7 @@ def test_cli_resolves_short_references_and_prints_the_analysis(
         "Recommendations:",
         "  - Exercise the gap",
         "Limitations:",
-        f"  - {limitation}",
+        "  - Sources unavailable, unsafe, or stale; analysis uses normalized report evidence only.",
         f"Report: {report_path}",
     ]
     persisted = json.loads(report_path.read_text(encoding="utf-8"))
@@ -552,17 +531,13 @@ _REPORT_KEYS = {
 }
 
 
-def _project_snapshot(root):
-    """Every path under *root*: file bytes, or None for a directory."""
-    return {p: (p.read_bytes() if p.is_file() else None) for p in root.rglob("*")}
-
-
 @pytest.mark.parametrize("current", [True, False], ids=["current", "out-of-date"])
 @pytest.mark.parametrize("ignore_native", [False, True])
-def test_stealth_analysis_reads_current_projections_without_writing(
+def test_stealth_analysis_reads_sources_as_in_other_modes(
     tmp_path, monkeypatch, fresh_evidence_session, ignore_native, current
 ):
     from booley.fusesoc import fusesoc_registry
+    from booley.fusesoc.core_projection import projection_issues, registry_issues
     from booley.mcp import coverage_evidence
     from booley.targets.catalog import TargetCatalog
 
@@ -578,39 +553,22 @@ def test_stealth_analysis_reads_current_projections_without_writing(
     model = Model()
     analyst = CoverageAnalystSpecialist(model=model)
     analyst.parse_args(["--work-dir", str(tmp_path), "--record", str(path)])
-    before = _project_snapshot(tmp_path)
 
     report = analyst.coverage_analyst(path).to_dict()
     monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", str(path))
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
     overview = coverage_evidence.query_active_coverage_evidence({"view": "overview"})
 
-    assert _project_snapshot(tmp_path) == before
+    assert report["source_access"] == "verified"
+    assert json.loads(model.calls[0].prompt)["source_access"] == "verified"
+    assert overview["source_access"] == "verified"
+    assert report["limitations"] == []
     assert report["$schema"] == "booley.coverage-analysis/v4"
     assert set(report) == _REPORT_KEYS
     assert report["eligibility"] == "eligible"
-    expected_access = "verified" if current else "report_only"
-    assert report["source_access"] == expected_access
-    assert json.loads(model.calls[0].prompt)["source_access"] == expected_access
-    assert overview["source_access"] == expected_access
-    if current:
-        assert report["limitations"] == []
-        return
-    drift = "missing .booley-projected-counter.core" + (
-        ", missing private registry" if ignore_native else ""
-    )
-    assert report["limitations"] == [
-        f"Stealth Mode: the Stealth core projections are out of date ({drift}), so analysis "
-        "uses normalized report evidence only and no Waiver Candidate is ready for human "
-        "review. A new Simulation run refreshes them once no file named here blocks them."
-    ]
-    from booley.fusesoc.core_projection import reconciliation_issues
-
-    # A Simulation run in this process still reconciles, and the refusal is not cached.
     catalog = TargetCatalog.build(tmp_path)
-    catalog.inspect(catalog.select("sim_counter"))
-    assert reconciliation_issues(tmp_path) == ()
-    assert analyst.coverage_analyst(path).to_dict()["source_access"] == "verified"
+    catalog.inspect(catalog.select("sim_counter"))  # the Simulation Flow's inspection
+    assert projection_issues(tmp_path) == registry_issues(tmp_path) == ()
 
 
 def test_undecodable_configuration_keeps_generic_report_only_limitation(tmp_path):

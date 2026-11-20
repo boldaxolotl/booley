@@ -70,7 +70,6 @@ from booley.fusesoc.core_projection import (
     projection_enabled,
     reconcile_isolated_registry,
     reconcile_projected_cores,
-    reconciliation_issues,
     render_private_mirror,
     stealth_core_relative,
     stealth_core_root,
@@ -349,29 +348,12 @@ def _core_library_ignored_dirs(root: Path) -> frozenset[str]:
 def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
     """Reconcile and describe the FuseSoC library view for one Project."""
     root = Path(project_root).resolve()
+    cores = tuple(path.resolve() for path in discover_cores(root))
+    stealth_root = stealth_core_root(root).resolve()
     if projection_enabled(root):
         reconcile_projected_cores(root)
     if native_cores_ignored(root):
         reconcile_isolated_registry(root)
-    return _core_library_plan(root)
-
-
-def current_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
-    """Describe the FuseSoC library view without writing; refuse when projections are stale."""
-    root = Path(project_root).resolve()
-    issues = reconciliation_issues(root)
-    if issues:
-        raise TargetResolutionError(
-            f"Stealth core projections are out of date: {', '.join(issues)}"
-        )
-    return _core_library_plan(root)
-
-
-def _core_library_plan(root: Path) -> CoreLibraryPlan:
-    """Describe the library view of *root* from what is on disk."""
-    cores = tuple(path.resolve() for path in discover_cores(root))
-    stealth_root = stealth_core_root(root).resolve()
-    if native_cores_ignored(root):
         library_roots = (isolated_registry_root(root).resolve(),)
         operational = tuple((core, isolated_core_path(root, core).resolve()) for core in cores)
     elif projection_enabled(root):

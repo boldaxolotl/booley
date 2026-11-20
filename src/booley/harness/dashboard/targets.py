@@ -20,7 +20,9 @@ from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
-    reconciliation_issues,
+    projection_enabled,
+    projection_issues,
+    registry_issues,
 )
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees
 from booley.targets.catalog import TargetCatalog
@@ -165,7 +167,8 @@ def inspection_blocker(worktree: Path) -> str:
     writes no projection, so leftover projection files do not block.
     """
     try:
-        issues = reconciliation_issues(worktree)
+        projections = projection_issues(worktree) if projection_enabled(worktree) else ()
+        issues = (*projections, *registry_issues(worktree))
     except (CoreProjectionError, OSError) as exc:
         return f"core projections cannot be checked: {first_line(exc)}"
     if not issues:
