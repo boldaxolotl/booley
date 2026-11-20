@@ -302,6 +302,10 @@ used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
 - Git LFS files and files with filter attributes cannot be measured.
 - The measurement checkout has no `.git`, so a generator or Pre-Sim Command
   that calls `git` fails there.
+- Measurement reads the cell library from `PRJ_LIB_DIR` when it is set, as
+  `booley flow synth` does, and passes it as an absolute path. It refuses a
+  `PRJ_LIB_DIR` inside the working tree or the Booley Directory, because files
+  there are not part of the measured commit.
 - Local results are advisory. The measurement store is writable from the
   Sandbox, and a deliberate read of the live tree by absolute path is
   possible. A run in CI is the trusted one.

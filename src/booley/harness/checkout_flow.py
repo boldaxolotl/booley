@@ -12,7 +12,8 @@ and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
 path inside the checkout.
 
-Before the Flow starts, two checks keep live inputs out of the run. A static scan
+Before the Flow starts, two checks keep live inputs out of the run. The caller's
+``PRJ_LIB_DIR`` is passed on resolved and refused inside a live root. A static scan
 of the checkout refuses committed symlinks and absolute paths in ``.core`` files,
 ``fusesoc.conf`` and the Booley configuration that point into a live root (the
 Sandbox's ``/work`` mount of the working tree, or the Git checkout around Main or the
@@ -78,7 +79,11 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
 )
-from booley.measurement.environment import measurement_environment, write_git_refusal
+from booley.measurement.environment import (
+    PDK_ROOT_ENV,
+    measurement_environment,
+    write_git_refusal,
+)
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
 from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
@@ -326,6 +331,25 @@ def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
     findings = input_findings(checkout, roots)
     if findings:
         raise CheckoutFlowError("checkout run refused:\n" + "\n".join(findings))
+
+
+def _pdk_root(roots: list[LiveRoot]) -> Path | None:
+    """The caller's ``PRJ_LIB_DIR``, absolute and symlink-free; raise when it is in a live root.
+
+    Resolved here because the child's working directory is the checkout: a relative
+    value would name another directory there.
+    """
+    value = os.environ.get(PDK_ROOT_ENV)
+    if not value:
+        return None
+    resolved = Path(value).resolve()
+    for root in roots:
+        if booley_dir.contains(resolved, booley_dir=root.path) is not None:
+            raise CheckoutFlowError(
+                f"checkout run refused: {PDK_ROOT_ENV} names {resolved}, "
+                f"inside the {root.label} {root.path}"
+            )
+    return resolved
 
 
 def _prepare_scratch(checkout: Path) -> Path:
@@ -841,6 +865,7 @@ def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
     request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
     roots = _live_roots(main)
     _refuse_live_inputs(checkout, roots)
+    pdk_root = _pdk_root(roots)
     scratch = _prepare_scratch(checkout)
     try:
         environment = measurement_environment(
@@ -850,6 +875,7 @@ def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
             tmp=scratch / "tmp",
             runtime=scratch / "runtime",
             git_refusal=scratch / "bin",
+            pdk_root=pdk_root,
         )
         _preflight(request, checkout, roots, scratch, environment)
     except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
