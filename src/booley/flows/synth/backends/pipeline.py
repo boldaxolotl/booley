@@ -776,17 +776,8 @@ def boundary_output(
         stage = failure_stage
         stage_log = fresh_text(f"{stage}.log") or ""
         stage_marker = stage
-    parts.append(
-        _missing_output_marker(
-            plan,
-            fresh_text,
-            returncode,
-            stat_text,
-            diagnostic_sources.get("premap_check"),
-            diagnostic_sources.get("final_check"),
-        )
-        or ""
-    )
+    checks = (diagnostic_sources.get("premap_check"), diagnostic_sources.get("final_check"))
+    parts.append(_missing_output_marker(plan, fresh_text, returncode, stat_text, *checks) or "")
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
