@@ -847,19 +847,27 @@ def test_replacement_made_while_creating_is_never_deleted(
 ) -> None:
     """A file swapped in at the path after the exclusive create is not Booley's to remove."""
     ledger = StagedInputLedger(tmp_path / ".booley", tmp_path)
-    real = StagedInputLedger.created
+    destination = tmp_path / "x.core"
+    real_lstat = os.lstat
+    swapped = False
 
-    def swapped(self: StagedInputLedger, relative: Path, *rest: object) -> None:
-        # No public entry point runs between the exclusive create and its confirmation.
-        stranger = tmp_path / "stranger"
-        stranger.write_bytes(b"mine\n")
-        stranger.replace(tmp_path / relative)
-        if fail:
-            raise OSError("boom")
-        real(self, relative, *rest)
+    def lstat_after_swap(path: str | os.PathLike[str]) -> os.stat_result:
+        # The swap comes just before the identity check, with no handle open (Windows
+        # refuses to replace an open file).
+        nonlocal swapped
+        if not swapped and Path(path) == destination:
+            swapped = True
+            stranger = tmp_path / "stranger"
+            stranger.write_bytes(b"mine\n")
+            stranger.replace(destination)
+        return real_lstat(path)
 
-    monkeypatch.setattr(StagedInputLedger, "created", swapped)
+    def failing(self: StagedInputLedger, relative: Path, *rest: object) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr("booley.flows.sim.staged_input_ledger.os.lstat", lstat_after_swap)
     if fail:
+        monkeypatch.setattr(StagedInputLedger, "created", failing)
         with pytest.raises(OSError, match="boom"):
             ledger.create_file(Path("x.core"), b"content\n")
     else:
