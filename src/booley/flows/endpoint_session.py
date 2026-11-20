@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.flows.endpoint_cli import runtime_report_root
 from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
@@ -55,6 +56,18 @@ def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
     return result
 
 
+def _booley_dir_report_root(endpoint_kind: str, work_dir: Path) -> Path:
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
+
+    leaf = "flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports"
+    return resolve_checkout_booley_dir(work_dir) / leaf
+
+
+def default_report_root(endpoint_kind: str, work_dir: Path) -> Path:
+    """Report root a run without ``--report-dir`` writes to from this environment."""
+    return runtime_report_root(endpoint_kind) or _booley_dir_report_root(endpoint_kind, work_dir)
+
+
 def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
     """Select durable Booley Directory after adapters can supply a runtime root."""
     if (
@@ -62,10 +75,8 @@ def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutc
         or endpoint.args.report_dir is not None
     ):
         return None
-    from booley.runtime.booley_dir import resolve_checkout_booley_dir
-
     try:
-        project_data = resolve_checkout_booley_dir(Path(endpoint.args.work_dir))
+        root = _booley_dir_report_root(endpoint.endpoint_kind, Path(endpoint.args.work_dir))
     except (OSError, RuntimeError, ValueError) as exc:
         result = EndpointOutcome(
             exit_code=EXIT_ERROR,
@@ -73,9 +84,7 @@ def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutc
         )
         endpoint._publish_console_report(result)
         return result
-    endpoint.args.report_dir = project_data / (
-        "flow-reports" if endpoint.endpoint_kind == "flow" else "mcp-tool-reports"
-    )
+    endpoint.args.report_dir = root
     return None
 
 

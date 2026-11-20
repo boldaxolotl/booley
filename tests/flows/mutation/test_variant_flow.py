@@ -26,6 +26,7 @@ from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
+from tests.flows.failing_compiler import put_failing_iverilog_on_path
 from tests.flows.mutation.test_flow import (
     _SCOPE,
     _campaign,
@@ -38,6 +39,7 @@ from tests.flows.mutation.test_flow import (
     _wrap_preparer,
     _write_tests_toml,
 )
+from tests.flows.sim.test_execution_engine import _real_fusesoc
 
 _TESTS_TOML = '[lite]\ntests = ["full", "smoke"]\nselect = "+test={name}"\n'
 _COCOTB_PASS = COCOTB_RESULTS_PREFIX + (
@@ -579,3 +581,45 @@ def test_a_timed_out_run_leaves_no_adapter_result_files(
     _, row = _run_signal_case(tmp_path, monkeypatch, launch)
 
     assert row["timed_out"] is True
+
+
+def test_baseline_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A baseline that does not build names each source by Project path (issue #4999)."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    _write_tests_toml(tmp_path, '[sim]\ntests = ["t"]\n')
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    (tmp_path / "dut.core").write_bytes(
+        b"CAPI=2:\n"
+        b"name: acme:lib:dut:1\n"
+        b"filesets:\n"
+        b"  rtl:\n"
+        b"    files:\n"
+        b"      - rtl/mod_a.sv: {file_type: systemVerilogSource}\n"
+        b"targets:\n"
+        b"  sim:\n"
+        b"    flow: sim\n"
+        b"    flow_options: {tool: icarus}\n"
+        b"    filesets: [rtl]\n"
+        b"    toplevel: dummy\n"
+    )
+    raw = "src/acme_lib_dut_1/rtl/mod_a.sv:4: syntax error"
+    unmapped = "gen/other.sv:2: error: Unknown module type: other"
+    put_failing_iverilog_on_path(tmp_path, monkeypatch, [raw, unmapped])
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target="sim", scope=_SCOPE, count=1, min_detected=0
+    )
+
+    with _real_fusesoc():
+        result = endpoint.run_with_claims(CampaignClaims())
+
+    assert result.exit_code == EXIT_ERROR
+    for text in (result.detail["log_tail"], result.report_text):
+        lines = text.splitlines()
+        assert "rtl/mod_a.sv:4: syntax error" in lines
+        assert unmapped in lines
+        assert "src/acme_lib_dut_1/" not in text
+    log = tmp_path / result.detail["artifacts"]["baseline_build_log"]
+    assert raw in log.read_text(encoding="utf-8")

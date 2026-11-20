@@ -18,8 +18,10 @@ second `prepare` refuses because the root exists).
 
 Every setup-authored capture, exit-code sidecar, probe, conversion, and
 Developer Agent note goes beneath that root; nothing is registered. Flow output
-stays where the Flow writes it. Evidence worth keeping (reports, golden files)
-is written outside the root.
+stays where the Flow writes it. Evidence worth keeping is written outside the
+root, in `.booley/setup-evidence/`, which Git ignores: the Delivered Flow
+results snapshot in `.booley/setup-evidence/<run-id>/` and the parity golden in
+`.booley/setup-evidence/parity/`.
 
 ## 2. Preview and apply
 

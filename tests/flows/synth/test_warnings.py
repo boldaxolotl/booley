@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.warnings import parse_synth_diagnostics
 from tests.flows.synth.captured_yosys import diagnostic_sources
 
@@ -88,6 +89,46 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
     assert "Booley-generated deprecated query" in deprecation["rationale"]
 
 
+def test_4996_warnings_on_two_copies_of_one_project_file_form_one_group() -> None:
+    # Two cores that list one Project file export two copies of it. Renaming after
+    # grouping would leave two groups of one warning each.
+    paths = ProjectSourcePaths({"src/a_0/rtl/x.sv": "rtl/x.sv", "src/b_0/rtl/x.sv": "rtl/x.sv"})
+    sources = {
+        "sv2v": "WARNING: src/a_0/rtl/x.sv:3: unused\nWARNING: src/b_0/rtl/x.sv:3: unused\n",
+        "yosys": "Warning: wire w at src/a_0/rtl/x.sv:5 has no driver.\n",
+    }
+
+    summary = parse_synth_diagnostics(sources, paths.project_text).warnings
+
+    assert (summary.total_warnings, summary.unique_warnings) == (3, 2)
+    assert {(group.tool, group.message, group.count) for group in summary.representatives} == {
+        ("sv2v", "WARNING: rtl/x.sv:3: unused", 2),
+        ("yosys", "Warning: wire w at rtl/x.sv:5 has no driver.", 1),
+    }
+
+
+def test_4996_renaming_a_warning_keeps_its_classification() -> None:
+    # A copy that maps to a Project path whose name reads as a structural phrase.
+    paths = ProjectSourcePaths({"src/a_0/x.sv": "ip/found logic loop in module/x.sv"})
+    sources = {"yosys": "top.v:1: warning: see src/a_0/x.sv\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert "ip/found logic loop in module/x.sv" in warning.message
+    assert (warning.category, warning.disposition) == ("frontend", "informational")
+
+
+def test_4996_file_name_with_repeated_spaces_still_maps() -> None:
+    paths = ProjectSourcePaths(
+        {"src/a_0/a  b.sv": "rtl/first.sv", "src/a_0/a b.sv": "rtl/second.sv"}
+    )
+    sources = {"sv2v": "WARNING: src/a_0/a  b.sv:3: unused\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert warning.message == "WARNING: rtl/first.sv:3: unused"
+
+
 def test_huge_warning_message_is_bounded_and_traceable() -> None:
     instance_list = " ".join(f"u{i}" for i in range(500_000))
     warning = f"[WARNING STA-0349] missing clocks on {instance_list}\n"
@@ -151,7 +192,7 @@ def test_removed_loop_warnings_need_a_declared_count(
             "premap_check": _CLEAN_CHECK,
             "final_check": final,
         },
-        expected_comb_loops,
+        expected_comb_loops=expected_comb_loops,
     )
 
     groups = {group.category: group for group in diagnostics.warnings.representatives}
@@ -178,7 +219,7 @@ def test_declared_removed_loop_survives_representative_saturation() -> None:
             "premap_check": _CLEAN_CHECK,
             "final_check": _CLEAN_CHECK,
         },
-        1,
+        expected_comb_loops=1,
     )
     first = diagnostics.warnings.representatives[0]
     assert (first.category, first.disposition) == ("combinational_loop", "informational")

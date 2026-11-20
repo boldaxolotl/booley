@@ -88,11 +88,13 @@ from booley.flows.result_table import (
     note_line,
     status_cell,
 )
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth import openroad_reuse
 from booley.flows.synth.backends.pipeline import (
     BoundaryOutcome,
     openroad_thread_assignment,
     tool_phases,
+    tool_source_names,
     yosys_tmpdir,
     yosys_tmpdir_assignment,
 )
@@ -182,6 +184,7 @@ class _PlannedSynthRecipe:
 
     command: tuple[str, ...]
     resolved: Any
+    project_paths: ProjectSourcePaths
 
 
 @dataclass(frozen=True)
@@ -1274,6 +1277,16 @@ def _plan_source_name(project_root: Path, item: fusesoc_registry.ResolvedFile) -
     return fusesoc_registry.mirrored_source_path(project_root, item) or Path(item.name).as_posix()
 
 
+def _tool_source_paths(planned: _PlannedSynthRecipe, build_dir: Path) -> ProjectSourcePaths:
+    """The Project path of each Target source, by every name synthesis output gives it."""
+    export_root = Path(planned.resolved.build_root)
+
+    def spellings(name: str) -> tuple[str, str]:
+        return tool_source_names((export_root / name).resolve(), build_dir)
+
+    return planned.project_paths.with_spellings(spellings)
+
+
 def _boundary_failure(
     termination: str, outcome: Any, result: SubprocessResult, output: str
 ) -> EdaFailure | None:
@@ -1528,7 +1541,8 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             load_timing_config(work_dir)
         except SystemExit as exc:
             raise BoundaryError(str(exc.code)) from None
-        return _PlannedSynthRecipe(tuple(cmd), resolved)
+        paths = ProjectSourcePaths.for_target(self._target_handle(target), resolved)
+        return _PlannedSynthRecipe(tuple(cmd), resolved, paths)
 
     def _build_synth_cmd(self, target: str) -> list[str]:
         """Return the mutable compatibility argv for one resolved recipe."""
@@ -1731,18 +1745,25 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             target=target,
             temporary=role == "baseline",
         )
-        return self._run_configured(target, plan, resolved_source_bytes(planned.resolved))
+        return self._run_configured(target, plan, planned)
 
     def _run_configured(
-        self, target: str, plan: Any, source_bytes: int | None
+        self, target: str, plan: Any, planned: _PlannedSynthRecipe
     ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
+        paths = _tool_source_paths(planned, plan.build_dir)
         with judged_commands() as commands:
             start = time.monotonic()
-            run = self._run_synth_make(target, plan, source_bytes)
+            run = self._run_synth_make(target, plan, resolved_source_bytes(planned.resolved))
             elapsed = time.monotonic() - start
             metrics, output = self._interpret_boundary_run(
-                target, plan, run.result, elapsed, producer=run.producer, commands=commands
+                target,
+                plan,
+                run.result,
+                elapsed,
+                producer=run.producer,
+                commands=commands,
+                project_paths=paths,
             )
         metrics = self._attach_recipe_evidence(target, metrics)
         self._store_openroad_result(target, plan, metrics, run)
@@ -1853,7 +1874,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             metrics.recipe_snapshot, metrics.recipe_fingerprint, metrics.run_evidence = evidence
         return metrics
 
-    def _read_boundary_output(self, plan: Any, result: SubprocessResult) -> tuple[Any, str]:
+    def _read_boundary_output(
+        self, plan: Any, result: SubprocessResult, project_paths: ProjectSourcePaths
+    ) -> tuple[Any, str]:
         """Reconstruct fresh synthesis output from boundary artifacts."""
         from booley.flows.synth.backends import pipeline as syn_make
 
@@ -1863,6 +1886,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             stdout=result.stdout,
             is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
             expected_comb_loops=expected_count("synth", self.args.work_dir, "expected_comb_loops"),
+            project_paths=project_paths,
         )
         output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
         return outcome, output
@@ -2034,6 +2058,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         result: SubprocessResult,
         elapsed: float,
         output: str,
+        project_paths: ProjectSourcePaths,
     ) -> None:
         """Persist output and surface terminal diagnostics without duplicating it."""
         self._persist_synth_log(target, output)
@@ -2062,17 +2087,26 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         elif result.returncode != 0:
             logger.warning("Synth %s failed with rc=%d", target, result.returncode)
         if metrics.termination != "completed" or (not metrics.has_metrics and result.returncode):
-            self._log_boundary_failure(target, metrics, result)
+            self._log_boundary_failure(target, metrics, result, project_paths)
 
     def _log_boundary_failure(
-        self, target: str, metrics: SynthMetrics, result: SubprocessResult
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        result: SubprocessResult,
+        project_paths: ProjectSourcePaths,
     ) -> None:
-        """Log the terminal error line: a design check, or the tool's exit state."""
+        """Settle the failure text, naming sources by Project path, and log its first line.
+
+        The line is a design check, or the tool's exit state.
+        """
         metrics.failure_output = metrics.failure_output or _error_excerpt(
             "\n".join((result.stdout, result.stderr))
         )
         if metrics.latches and not metrics.failure_output.startswith(_latch_diagnostic(metrics)):
             metrics.failure_output = _latch_diagnostic(metrics) + "\n" + metrics.failure_output
+        metrics.failure_output = project_paths.project_text(metrics.failure_output)
+        metrics.infra_error = project_paths.project_text(metrics.infra_error)
         if metrics.termination == "design_failure":
             # The tool ran to completion; the design failed a check. The
             # process exit code and timeout state say nothing about that.
@@ -2102,6 +2136,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         producer: openroad_reuse.Producer | None = None,
         *,
         commands: JudgedCommands,
+        project_paths: ProjectSourcePaths,
     ) -> tuple[SynthMetrics, str]:
         """Interpret a boundary result from its freshness-gated artifacts.
 
@@ -2110,7 +2145,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         A *producer* means the OpenROAD outputs were restored from the reuse
         slot; they are interpreted exactly as a fresh run's, and labelled.
         """
-        outcome, output = self._read_boundary_output(plan, proc_result)
+        outcome, output = self._read_boundary_output(plan, proc_result, project_paths)
         metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
         if producer is not None:
             # At the end: run.log keeps only the tail of very long output.
@@ -2124,7 +2159,9 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             }
         failure = self._apply_boundary_completion(metrics, outcome, proc_result, output)
         _judge_stage_commands(commands, plan, metrics, outcome, failure)
-        self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
+        self._record_boundary_diagnostics(
+            target, metrics, proc_result, elapsed, output, project_paths
+        )
 
         return metrics, output
 

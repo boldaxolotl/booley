@@ -42,6 +42,7 @@ from pathlib import Path
 
 from booley.core.boundary import BoundaryError
 from booley.flows.eda_failures import FailureKind, new_attempt_token, render_failure_marker
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
@@ -264,6 +265,15 @@ def _rel(path: Path, build_dir: Path) -> str:
     if (build_dir / lexical).resolve() == Path(path).resolve():
         return lexical
     return posix_relpath(Path(path).absolute(), build_dir.resolve())
+
+
+def tool_source_names(source: Path, build_dir: Path) -> tuple[str, str]:
+    """The two names synthesis output gives the staged *source*.
+
+    sv2v and the slang frontend print the build-dir-relative path their command
+    hands them; the source-provenance text prints the absolute path.
+    """
+    return _rel(source, build_dir), str(source)
 
 
 def _write_yosys_script(spec: SynthSpec, build_dir: Path) -> None:
@@ -742,9 +752,15 @@ def boundary_output(
     is_stale: Callable[[Path], bool],
     stdout: str = "",
     expected_comb_loops: int = 0,
+    project_paths: ProjectSourcePaths | None = None,
 ) -> BoundaryOutcome:
-    """Rebuild synthesis output from freshness-gated make artifacts."""
+    """Rebuild synthesis output from freshness-gated make artifacts.
+
+    Warning messages and the source-provenance text name each source
+    *project_paths* maps by its Project path; the log sections stay as printed.
+    """
     spec = plan.spec
+    paths = project_paths or ProjectSourcePaths()
     fresh_text = _fresh_text_reader(plan.build_dir, is_stale)
     parts, parameter_failure, stat_text, diagnostic_sources = _boundary_sections(plan, fresh_text)
     forced_failure, failure_stage = _false_pass_failure(
@@ -753,7 +769,7 @@ def boundary_output(
     if forced_failure and forced_failure != parameter_failure:
         parts.append("ERROR: synthesis log reports an error despite exit 0:\n  " + forced_failure)
     if returncode != 0 or forced_failure:
-        parts.append(_source_provenance_text(plan.build_dir, list(spec.sources)))
+        parts.append(_source_provenance_text(plan.build_dir, list(spec.sources), paths))
 
     stage, stage_log, stage_marker = _stage_evidence(plan, fresh_text, stdout)
     if returncode == 0 and forced_failure:
@@ -774,7 +790,9 @@ def boundary_output(
 
     return BoundaryOutcome(
         text="\n".join(p for p in parts if p),
-        diagnostics=parse_synth_diagnostics(diagnostic_sources, expected_comb_loops),
+        diagnostics=parse_synth_diagnostics(
+            diagnostic_sources, paths.project_text, expected_comb_loops=expected_comb_loops
+        ),
         forced_failure=forced_failure,
         yosys_complete=_yosys_complete(plan, fresh_text),
         attempt_token=plan.attempt_token,
@@ -987,7 +1005,7 @@ def _source_file_for_module(name: str, files: list[Path]) -> Path | None:
     return None
 
 
-def _source_provenance_text(work_dir: Path, files: list[Path]) -> str:
+def _source_provenance_text(work_dir: Path, files: list[Path], paths: ProjectSourcePaths) -> str:
     """Provenance hint when a yosys error references the sv2v output, or ``""``.
 
     The concatenated ``sv2v_converted.v:<line>`` reference is useless to an
@@ -1008,10 +1026,11 @@ def _source_provenance_text(work_dir: Path, files: list[Path]) -> str:
     module = _enclosing_module(work_dir / syn_core.SV2V_OUTPUT_NAME, line_no)
     source = _source_file_for_module(module, files) if module else None
     if module and source:
-        lines.append(f"Offending module '{module}' is declared in: {source}")
+        declared_in = paths.project_path(str(source))
+        lines.append(f"Offending module '{module}' is declared in: {declared_in}")
         return "\n".join(lines)
     if module:
         lines.append(f"Offending module '{module}' (source file not resolved).")
     lines.append("Source files fed to sv2v (candidate cores):")
-    lines.extend(f"  - {f}" for f in files)
+    lines.extend(f"  - {paths.project_path(str(f))}" for f in files)
     return "\n".join(lines)
