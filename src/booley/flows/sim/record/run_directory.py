@@ -199,7 +199,7 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
                 "move the directory elsewhere, which keeps its files, then retry"
             )
         removed = True
-    _remove_booley_parents(run)
+    _remove_booley_parents(run, recovering=True)
     _creation_note(run, run.path).unlink(missing_ok=True)
     return removed
 
@@ -430,27 +430,37 @@ def _create_marked_chain(
     _create_marked_attempt(run, expected)
 
 
-def _remove_booley_parents(run: RunDirectory) -> None:
+def _remove_booley_parents(run: RunDirectory, *, recovering: bool = False) -> None:
     """Remove the empty, marked parents of ``run`` strictly below its template root.
 
     Walks upward and stops at the first link, unmarked directory, or directory
     holding anything besides its marker. A missing directory is skipped, so a
-    resume after a partly finished walk completes it.
+    resume after a partly finished walk completes it. Recovery also removes a
+    parent a killed run noted but never marked, only while it is completely empty.
     """
     root = run.template_root
     if root is None or not run.path.is_relative_to(root):
         return
     with _held_path_lock(run.lock_path.parent / _PARENT_LOCK, discard=False):
         notes: list[Path] = []
-        for parent in run.path.parents:
-            note = _creation_note(run, parent) if parent.is_relative_to(root) else None
-            if parent != root and note is not None and note.exists():
-                notes.append(note)
-                if parent.is_dir() and not is_report_link(parent):
-                    (parent / _PARENT_MARKER).write_bytes(b"{}")  # a killed run never marked it
+        if recovering:
+            for parent in run.path.parents:
+                if parent == root or not parent.is_relative_to(root):
+                    break
+                note = _creation_note(run, parent)
+                if note.exists():
+                    notes.append(note)
+                    _remove_empty_directory(parent)
         _remove_marked_parents(run, root)
         for note in notes:  # last, so a recovery killed mid-walk can be repeated
             note.unlink(missing_ok=True)
+
+
+def _remove_empty_directory(directory: Path) -> None:
+    """``rmdir`` a real directory; a link, a non-empty directory, or a missing one stays."""
+    if not is_report_link(directory):
+        with suppress(OSError):
+            directory.rmdir()
 
 
 def _remove_marked_parents(run: RunDirectory, root: Path) -> None:

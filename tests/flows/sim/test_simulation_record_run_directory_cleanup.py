@@ -172,6 +172,7 @@ def _killed_claim(
         "killed-before-attempt-marker",
         "killed-with-empty-attempt-marker",
         "killed-before-parent-marker",
+        "killed-before-attempt-mkdir",
         "recovery-killed-before-parent-rmdir",
     ],
 )
@@ -196,10 +197,11 @@ def test_resume_cleanup_removes_recorded_empty_parents(
         assert (run.path / ATTEMPT_MARKER).is_file()
     elif state.startswith("killed-") or state.startswith("recovery-"):
         # Killed while creating: the directories exist and Booley has not marked them.
-        marker = PARENT_MARKER if "parent" in state else ATTEMPT_MARKER
-        _killed_claim(
-            monkeypatch, run, identity, "write_bytes", marker, empty_first="empty" in state
-        )
+        method, marker = "write_bytes", PARENT_MARKER if "parent" in state else ATTEMPT_MARKER
+        if "mkdir" in state:
+            # The note is written, the directory not yet confirmed.
+            method, marker = "mkdir", "a1"
+        _killed_claim(monkeypatch, run, identity, method, marker, empty_first="empty" in state)
         if state.startswith("recovery-"):
             _kill_at(monkeypatch, "rmdir", "c")
             with pytest.raises(KeyboardInterrupt):
@@ -248,10 +250,48 @@ def test_recovery_after_killed_creation_spares_what_booley_did_not_create(
         assert not (tmp_path / "work/c/t").exists()
         assert (tmp_path / "work/c").is_dir()
         return
-    with pytest.raises(SimulationRecordIntegrityError, match="refusing to clean unowned run"):
+    with pytest.raises(
+        SimulationRecordIntegrityError,
+        match=r"refusing to clean unowned run.*move the directory elsewhere",
+    ):
         cleanup_interrupted_run_directory(restored, identity=identity)
     assert run.path.is_dir()
     assert state != "user-content" or (run.path / "mine.txt").read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize("who", ["recovery", "uninterrupted-run"])
+def test_noted_parent_the_user_filled_keeps_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, who: str
+) -> None:
+    run, identity = _run(tmp_path, "c", "t")
+    _killed_claim(monkeypatch, run, identity, "mkdir", "c")  # note written, no directory yet
+    mine = tmp_path / "work/c"
+    mine.mkdir()
+    (mine / PARENT_MARKER).mkdir()  # not a file: Booley never writes or removes through it
+    (mine / "mine.txt").write_bytes(b"mine")
+    if who == "recovery":
+        cleanup_interrupted_run_directory(_restore(run, tmp_path), identity=identity)
+    else:
+        other, other_identity = _run(tmp_path, "c", "t2")
+        with claimed_run_directory(other, identity=other_identity):
+            pass
+    assert (mine / "mine.txt").read_bytes() == b"mine"
+    assert (mine / PARENT_MARKER).is_dir()
+    assert [entry.name for entry in (mine / PARENT_MARKER).iterdir()] == []
+
+
+def test_noted_empty_parent_the_user_created_is_removed_only_by_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, identity = _run(tmp_path, "c", "t")
+    _killed_claim(monkeypatch, run, identity, "mkdir", "c")
+    (tmp_path / "work/c").mkdir()
+    other, other_identity = _run(tmp_path, "c", "t2")
+    with claimed_run_directory(other, identity=other_identity):
+        pass
+    assert (tmp_path / "work/c").is_dir()
+    cleanup_interrupted_run_directory(_restore(run, tmp_path), identity=identity)
+    assert not (tmp_path / "work/c").exists()
 
 
 def test_resume_cleanup_leaves_unrecorded_parents(tmp_path: Path) -> None:
