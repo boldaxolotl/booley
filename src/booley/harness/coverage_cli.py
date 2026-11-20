@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.core.exit_codes import EXIT_ERROR, EXIT_SUCCESS
+from booley.flows.sim.coverage_metrics import SCORED_METRICS
 
 if TYPE_CHECKING:
     from booley.flows.sim.coverage_point_query import UncoveredPoints
@@ -36,7 +37,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         type=Path,
         help="sim/<N>/targets/<target>/coverage.json of a retained coverage run",
     )
-    uncovered.add_argument("--metric", help="List only this metric (exact match), e.g. branch")
+    uncovered.add_argument("--metric", choices=SCORED_METRICS, help="List only this metric")
     uncovered.add_argument(
         "--source", metavar="PATH", help="List only this Project-relative source (exact match)"
     )
