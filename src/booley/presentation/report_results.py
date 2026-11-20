@@ -470,7 +470,7 @@ def _lint_targets(detail: Mapping[str, object], tools: Mapping[str, object]) -> 
 
 
 def _lint(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
-    if "plan" in detail:
+    if "plan" in detail:  # preparation failed: no EDA tool ran, so each Target shows "unavailable"
         return "", _lint_targets(
             detail, dict.fromkeys(_mapping(detail.get("metrics")), "unavailable")
         )
