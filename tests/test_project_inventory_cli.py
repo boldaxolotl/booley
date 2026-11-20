@@ -245,13 +245,18 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     keeper_host.tags["mirror:x"] = shared
     keeper_host.containers["d" * 64] = busy
     assert _run(_parser().parse_args(["projects", "forget", str(project)])) == 0
-    assert f"booley projects forget --purge {quote_arg(str(project))}" in capsys.readouterr().out
+    plain = capsys.readouterr().out
+    assert f"booley projects forget --purge {quote_arg(str(project))}" in plain
+    assert "in-use:" not in plain
     assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "mirror:x" in keeper_host.tags
     rerun = f"rerun `booley projects forget --purge {quote_arg(str(project))}`"
-    assert "in-use: kept because a container still uses it; " + rerun in output
+    assert (
+        f"in-use: kept because a container still uses it; {rerun} once that container is removed"
+        in output
+    )
     keeper_host.containers.clear()
     assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
     output = capsys.readouterr().out
