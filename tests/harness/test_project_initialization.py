@@ -125,7 +125,10 @@ def test_project_initialization_runs_without_docker_or_host_private_state(
         ]
 
     before = readiness_findings(ignore_exclude=True)
-    assert [check_id for check_id, _fix in before] == ["guidance.links-unhealthy", None]
+    assert [check_id for check_id, _fix in before] == [
+        "guidance.links-unhealthy",
+        "stealth.projections-not-current",
+    ]
     assert all("booley init" in fix for _check_id, fix in before)
 
     results = _initialize(project, agent=CLAUDE)
