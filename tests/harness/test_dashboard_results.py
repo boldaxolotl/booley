@@ -726,6 +726,14 @@ def test_failed_targets_past_item_limit_are_named():
             },
             [("  t6", "failed · Reason: syntax", "fail")],
         ),
+        (
+            "lint",
+            {
+                "eda_tools": seven(lambda _: "verilator"),
+                "metrics": {"t6": {"unavailable": "late"}},
+            },
+            [("  t6", "verilator", "fail"), ("  t6 · Error", "late", "fail")],
+        ),
     ]
     for endpoint, detail, expected in cases:
         rows = [
@@ -737,3 +745,66 @@ def test_failed_targets_past_item_limit_are_named():
         assert ("  t6", "fail") in [(label, sem) for label, _, sem in rows], endpoint
         assert not any(label.startswith("  t5") for label, _, _ in rows), endpoint
         assert ("Targets", "1 more Targets in report", "") in rows, endpoint
+
+
+def lint_detail(count=2, **extra):
+    names = [f"t{i}" for i in range(count)]
+    return {
+        "targets": names,
+        "total_warnings": 0,
+        "eda_tools": dict.fromkeys(names, "verilator"),
+        **extra,
+    }
+
+
+def test_lint_errored_targets_show_their_first_error():
+    bad = {"plain": {"errors": 1}, "counted_items": {"errors": ["a.sv:3 SYNTAX: bad"]}}
+    warnings = [{"severity": "warning", "target": "t0", "message": "w"}] * 20
+    t1 = [("  t1", "verilator", "fail"), ("  t1 · Error", "a.sv:3 SYNTAX: bad", "fail")]
+    nomsg = ("  t1 · Error", "error message not in report", "fail")
+    clean = {f"t{i}": {"plain": {"errors": 0}} for i in range(5)}
+    cases = [
+        (
+            lint_detail(8, metrics={"t1": bad}),
+            [*t1[:1], ("Targets", "3 more Targets in report", ""), t1[1]],
+        ),
+        (lint_detail(2, total_warnings=25, findings=warnings, metrics={"t1": bad}), t1),
+        (
+            lint_detail(findings=[{"severity": "error", "target": "t1", "message": "t1 broke"}]),
+            [t1[0], ("  t1 · Error", "t1 broke", "fail")],
+        ),
+        (
+            lint_detail(1, metrics={"t0": {"unavailable": "no verilator"}}),
+            [("  t0", "verilator", "fail"), ("  Error", "no verilator", "fail")],
+        ),
+        (lint_detail(findings=warnings, findings_by_target={"t1": {"errors": 1}}), [t1[0], nomsg]),
+        (
+            lint_detail(
+                1,
+                metrics={"t0": {"plain": {"errors": 1}, "counted_items": {"errors": ["\x1b[0m"]}}},
+            ),
+            [("  t0", "verilator", "fail"), ("  Error", nomsg[1], "fail")],
+        ),
+        (lint_detail(5, metrics=clean, findings=warnings, findings_by_target=clean), []),
+    ]
+    for detail, expected in cases:
+        report = {"flow": "lint", "exit_code": 1, "detail": detail}
+        rows = [(row.label, row.value, row.semantic) for row in present_report(report).result_rows]
+        assert [row for row in rows if row[2] or row[0] == "Targets"] == expected, detail
+    old = {"total_warnings": 3, "eda_tools": {"t0": "verilator", "t1": "verible"}}
+    rows = present_report({"flow": "lint", "detail": old}).result_rows
+    assert [(row.label, row.value) for row in rows] == [
+        ("  t0", "verilator"),
+        ("  t1", "verible"),
+        ("Warnings", "3"),
+    ]
+
+
+def test_lint_preparation_failure_shows_the_failed_target():
+    detail = {"plan": {}, "metrics": {"t0": {"unavailable": "lint setup failed: boom"}}}
+    report = present_report({"flow": "lint", "exit_code": 2, "detail": detail})
+    assert [(row.label, row.value, row.semantic) for row in report.result_rows] == [
+        ("  t0", "unavailable", "fail"),
+        ("  Error", "lint setup failed: boom", "fail"),
+    ]
+    assert report.flow_result.value == "ERROR"
