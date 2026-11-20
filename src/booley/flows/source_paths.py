@@ -91,6 +91,20 @@ class ProjectSourcePaths:
             by_name.update((_normalized(spelling), project_path) for spelling in spellings(name))
         return ProjectSourcePaths(by_name)
 
+    def spelled_from(self, build_root: Path, cwd: Path) -> ProjectSourcePaths:
+        """Also map each name as a tool run in ``cwd`` prints it under ``build_root``.
+
+        A tool given a name relative to its working directory prints that
+        spelling or the absolute path, not FuseSoC's ``src/<core>/<name>``.
+        """
+        root = Path(build_root).resolve()
+        by_name = dict(self.by_name)
+        relative = Path(os.path.relpath(root, Path(cwd).resolve())).as_posix()
+        for spelling in (root.as_posix(), relative):
+            for name, project_path in self.by_name.items():
+                by_name[_normalized(f"{spelling}/{name}")] = project_path
+        return ProjectSourcePaths(by_name)
+
     def project_path(self, reported: str) -> str:
         """The Project path for a name a tool printed, else ``reported`` unchanged."""
         return self.by_name.get(_normalized(reported), reported)

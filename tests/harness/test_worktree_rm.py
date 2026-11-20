@@ -59,7 +59,8 @@ def _versioned(root: Path) -> Path:
     booley_dir.mkdir(exist_ok=True)
     git(booley_dir, "init", "-q", "-b", "main")
     (booley_dir / "booley.toml").write_bytes(b"# main\n")
-    # Common Booley State is ignored in a real Booley Directory; `plans/` stays tracked.
+    # Common Booley State is ignored in a real Booley Directory; `plans/` is left unignored here so
+    # tests can commit a plan, as a Project did before Booley ignored it.
     (booley_dir / ".gitignore").write_bytes(
         b"/handoffs/\n/reviewer-evidence/\n/flow-reports/\n/.runtime/\n/findings.jsonl\n"
         b"/setup-evidence/\n/measurements/\n"

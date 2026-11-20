@@ -21,6 +21,7 @@ from booley.projects.image_keepers import (
 )
 from booley.runtime import host_docker as docker
 from booley.runtime import project_resources, session_admission
+from booley.runtime.image_lifecycle import sweep_absent_owned_images
 from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.session_issuance import (
@@ -86,7 +87,10 @@ def forget_project(
                 allow_forgotten=purge,
             )
             if purge:  # purge collects recorded images itself, after releasing tags
-                return forgotten, outcomes[0], project_resources.purge(str(forgotten))
+                purged = project_resources.purge(str(forgotten))
+                with inventory.locked_protected_roots() as roots:
+                    sweep_absent_owned_images(roots())
+                return forgotten, outcomes[0], purged
             from booley.runtime.image_lifecycle import TAG_RETAINED, cleanup_owned_images
 
             for line in cleanup_owned_images(forgotten):
@@ -176,6 +180,7 @@ def prune_keepers(confirm: str | None = None) -> PruneResult:
             with inventory.locked_protected_roots() as roots:
                 result = _preview(roots())
                 if result.digest is None:
+                    sweep_absent_owned_images(roots())
                     result.errors.append(
                         "nothing to release: no keeper is eligible; nothing changed"
                     )

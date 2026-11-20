@@ -512,7 +512,7 @@ def _collect_run_evidence(
     hook_artifact, hook_error = _load_hook_evidence(request, context)
     raw_result = _read_raw_artifact(request, context, result.verdict)
     if isinstance(raw_result, _CollectedRun):
-        if hook_error is not None and hook_error.code == "COV_WRITE_HOOK_FAILED":
+        if hook_error is not None and _hook_error_precedes(hook_error, raw_result):
             raw_artifact = raw_result.artifact
             if raw_artifact is not None and raw_artifact.state in {
                 "incompatible",
@@ -848,6 +848,17 @@ def _run_failure(
     return _CollectedRun(run, artifact, records, (finding,), hook_artifact)
 
 
+def _hook_error_precedes(hook_error: _HookEvidenceError, raw_failure: _CollectedRun) -> bool:
+    """Whether the hook error, not the raw-database failure, is the run's diagnostic.
+
+    A missing or stale database is explained by a hook that did not run correctly; an unsafe,
+    incompatible, or unreadable one exists and is wrong for a reason no hook call explains.
+    """
+    if hook_error.code == "COV_WRITE_HOOK_FAILED":
+        return True
+    return raw_failure.findings[0].code in {"COV_RAW_FILE_MISSING", "COV_RAW_FILE_STALE"}
+
+
 def _load_hook_evidence(
     request: CoverageCollectionRequest,
     context: _RunContext,
@@ -861,8 +872,11 @@ def _load_hook_evidence(
             before=context.hook_before,
         )
     except ArtifactValidationError:
+        # No hook wrote evidence, so the first required hook is the one that did not run.
+        stem = "WRITE" if request.reset_included else "WINDOW"
+        hook = "write" if request.reset_included else "start"
         return None, _HookEvidenceError(
-            "COV_WINDOW_HOOK_MISSING", "Coverage start hook produced no fresh evidence."
+            f"COV_{stem}_HOOK_MISSING", f"Coverage {hook} hook produced no fresh evidence."
         )
     artifact = _artifact(
         context.hook_path,

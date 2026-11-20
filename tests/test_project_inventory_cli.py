@@ -247,6 +247,14 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
+    assert "in-use:" not in output
+    keeper_host.tags[f"{family}-busy:latest"] = busy = "sha256:" + "c" * 64
+    keeper_host.containers["d" * 64] = busy
+    assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
+    assert (
+        f"in-use: kept because a container still uses it; rerun `booley projects forget --purge {quote_arg(str(project))}`"
+        in capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize("grant", [False, True])
@@ -1295,3 +1303,35 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     assert _run_without_keepers(["projects", "discover", str(project), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []
+
+
+@pytest.mark.parametrize("command", ["purge", "refused-prune"])
+def test_purge_and_refused_prune_sweep_records_of_absent_images(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    from booley.runtime import image_lifecycle
+    from tests.harness.test_image_lifecycle import FakeDocker as LifecycleDocker
+
+    gone, present = "sha256:" + "d" * 64, "sha256:" + "a" * 64
+    lifecycle_docker = LifecycleDocker({"present:latest": (present, {})})
+    monkeypatch.setattr(
+        image_lifecycle, "_docker_adapter", lambda: lifecycle_docker
+    )  # the lifecycle's Docker port
+    _nothing_eligible_host(tmp_path, keeper_host)
+    registered = image_lifecycle.OwnedImages(tmp_path / "project")
+    registered.record({}, (gone,))
+    stale = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    stale.record({"booley-lifecycle-x:candidate": gone}, (gone, present))
+
+    if command == "purge":
+        runtime_image_keepers.forget_project(tmp_path / "unrelated", purge=True)
+    else:
+        assert runtime_image_keepers.prune_keepers(confirm="0" * 64).errors
+
+    assert image_lifecycle.OwnedImages(tmp_path / "project").ids == [gone]
+    swept = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    assert (swept.ids, swept.refs) == ([present], {})
+    assert lifecycle_docker.mutations == []
