@@ -18,7 +18,8 @@ const LIFECYCLE_PREFIX = 'Codespaces: ';
 // automatic open straight after it can find the Dashboard still counted as seen.
 // Look once more when it will have gone unseen (`UNSEEN_AFTER`, view_probe.py: 15 s).
 const RECHECK_MS = 16000;
-const ALREADY_OPEN_REASON = 'The Dashboard is already open in this Sandbox.';
+const ALREADY_OPEN_REASON = 'The Dashboard is already open in another window or terminal of this Sandbox. '
+    + 'Close it there (or press q in it), then run booley dashboard or Booley: Open Dashboard here.';
 const SKIP_NOTICES_KEY = 'autoOpenSkipNotices';
 
 // A Codespaces lifecycle-command terminal: Codespaces may send its command as
@@ -295,7 +296,7 @@ class AttachController {
         }
         if ([0, 3, 4].includes(closed.exitStatus?.code)) {
             if (closed.exitStatus.code === 3) {
-                this.output.appendLine('The Dashboard is already open in this Sandbox.');
+                this.output.appendLine(ALREADY_OPEN_REASON);
             }
             if (closed.exitStatus.code === 4) {
                 this.output.appendLine('Dashboard attach was disabled before startup; check Project policy.');
