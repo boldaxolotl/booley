@@ -275,6 +275,22 @@ def test_lease_exit_prunes_unpromoted_generations_and_survives_a_failed_delete(
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
+def test_lease_exit_never_prunes_through_a_linked_generations_directory(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    handle = _handle(tmp_path)
+    outside = tmp_path / "elsewhere" / "0123456789abcdef"
+    outside.mkdir(parents=True)
+    session = SimulationBuildSession(handle, wait_s=60)
+    with session:
+        (session.slot / "g").symlink_to(outside.parent, target_is_directory=True)
+    assert outside.is_dir()
+    assert "not pruning" in caplog.text
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
+)
 def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     overlay = selftest_overlay.bad_overlay_dir(tmp_path / ".booley", "sim") / "fixture.hex"

@@ -981,6 +981,9 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         except (OSError, ValueError, KeyError, TypeError):
             current = None
         generations = self.slot / _GENERATION_DIR
+        if generations.is_symlink():
+            logger.warning("not pruning Simulation generations through the link %s", generations)
+            return
         try:
             entries = list(generations.iterdir())
         except FileNotFoundError:

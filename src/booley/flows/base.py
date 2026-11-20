@@ -416,7 +416,7 @@ class FlowMechanics:
         """Return environment overrides for subprocess-backed EDA tools."""
         return {}
 
-    def _open_run_log(self, target: str, log_dir: Path) -> None:
+    def _open_run_log(self, target: str, log_dir: Path, *, temporary: bool = False) -> None:
         """Open *target*'s ``run.log`` fresh, for a run about to start (F-26).
 
         Every mechanical Flow persists its full raw output as ``run.log`` at
@@ -426,7 +426,8 @@ class FlowMechanics:
         to a header naming this run, makes that impossible.
 
         Best-effort: a work dir we cannot write is the run's own problem to
-        report, never a reason to fail the prepare half.
+        report, never a reason to fail the prepare half. *temporary* marks a log
+        in a directory the run deletes before it ends (a pruned build generation).
         """
         from booley.flows.run_log import begin_run_log
 
@@ -440,7 +441,8 @@ class FlowMechanics:
                 observer.log_path_known(
                     log_dir / "run.log",
                     target=target,
-                    temporary=getattr(self, "_execution_role", "candidate") == "baseline",
+                    temporary=temporary
+                    or getattr(self, "_execution_role", "candidate") == "baseline",
                 )
         except OSError:
             logger.debug("could not open a fresh run.log in %s", log_dir, exc_info=True)

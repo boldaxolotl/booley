@@ -231,8 +231,7 @@ resumed run continued from.
 Simulation keeps each Target's latest reusable build under
 `.booley/.runtime/edalize/sim/` in the checkout, so an unchanged rerun skips
 the build. Booley deletes a build once a newer one replaces it or nothing can
-reuse it, so the directory holds at most one build per Target, plus one for
-each traced or coverage variant of it.
+reuse it.
 
 You can delete the whole directory when no simulation is running. The next
 run rebuilds.
