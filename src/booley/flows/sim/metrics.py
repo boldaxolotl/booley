@@ -55,18 +55,26 @@ def _declarations(tier: CostTier, *, coverage: bool) -> tuple[MetricDeclaration,
     ``cycle_count=None``), so ``cycle_count`` is declared for the plain run only.
     """
     shared = (
-        MetricDeclaration("tests_failed", "tests", Better.LOWER, tier, MetricKind.PLAIN),
-        MetricDeclaration("tests_total", "tests", Better.HIGHER, tier, MetricKind.PLAIN),
+        MetricDeclaration(
+            "tests_failed", "tests", Better.LOWER, tier, MetricKind.PLAIN, minimum=0
+        ),
+        MetricDeclaration(
+            "tests_total", "tests", Better.HIGHER, tier, MetricKind.PLAIN, minimum=0
+        ),
     )
     if not coverage:
         return (
             *shared,
-            MetricDeclaration("cycle_count", "cycles", Better.LOWER, tier, MetricKind.PER_TEST),
+            MetricDeclaration(
+                "cycle_count", "cycles", Better.LOWER, tier, MetricKind.PER_TEST, minimum=0
+            ),
         )
     return (
         *shared,
         *(
-            MetricDeclaration(name, "%", Better.HIGHER, tier, MetricKind.PLAIN)
+            MetricDeclaration(
+                name, "%", Better.HIGHER, tier, MetricKind.PLAIN, minimum=0, maximum=100
+            )
             for name in COVERAGE_METRIC_NAMES.values()
         ),
     )
