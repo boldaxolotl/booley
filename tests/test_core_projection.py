@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.file_lock import LockTimeoutError
 from booley.fusesoc import core_projection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
@@ -479,6 +480,46 @@ def test_unremovable_temporary_keeps_its_claim_until_it_can_be_removed(
 
     assert not leftover.exists()
     assert not (state / "pending.json").exists()
+
+
+def test_unreadable_record_is_dropped_without_deleting_anything(tmp_path: Path) -> None:
+    root, _core = _project(tmp_path)
+    state = root / ".booley" / "tmp" / "core-projection-publication"
+    state.mkdir(parents=True)
+    (state / "pending.json").write_text("not json", encoding="utf-8")
+
+    core_projection.sweep_cancelled_publication(root / ".booley")
+
+    assert not (state / "pending.json").exists()
+
+
+def test_failed_publication_removes_its_temporary_and_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _core = _project(tmp_path)
+
+    def refuse(self: Path, target: Path) -> Path:
+        raise OSError("replace refused")
+
+    monkeypatch.setattr(Path, "replace", refuse)
+    with pytest.raises(OSError, match="replace refused"):
+        reconcile_projected_cores(root)
+
+    assert _temporaries(root) == []
+    assert not (root / _PENDING).exists()
+
+
+def test_publication_waiting_on_a_held_lock_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _core = _project(tmp_path)
+
+    def busy(*_args: object, **_kwargs: object) -> None:
+        raise LockTimeoutError("held")
+
+    monkeypatch.setattr(core_projection, "wait_for_file_lock", busy)
+    with pytest.raises(CoreProjectionError, match="another core projection publication"):
+        reconcile_projected_cores(root)
 
 
 @_needs_fork
