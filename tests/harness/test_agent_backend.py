@@ -99,6 +99,59 @@ def test_unclassified_stream_exception_keeps_traceback_at_debug(caplog) -> None:
     assert any(record.levelname == "DEBUG" and record.exc_info for record in caplog.records)
 
 
+def test_post_result_teardown_exceptions_are_swallowed(caplog) -> None:
+    from booley.runtime import _claude_backend as cb
+    from booley.runtime.agent_errors import TransientAPIError
+
+    caplog.set_level("DEBUG")
+    for failure in (TransientAPIError("late"), cb._SDK_TEARDOWN_EXCEPTIONS[0]("late")):
+        cb._handle_stream_exception(failure, True, deque(), deque(), 1, 1, None, model="test")
+
+    assert not [r for r in caplog.records if r.levelno >= 30]
+
+
+def test_crash_context_lines_list_stderr_activity_and_transcript(tmp_path) -> None:
+    from booley.runtime import _claude_backend as cb
+
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("{}", encoding="utf-8")
+
+    with_stderr = cb._crash_context_lines(
+        deque(["boom\n"]), deque(["Read x"]), 2, reason="r", transcript_path=transcript
+    )
+    without = cb._crash_context_lines(deque(), deque(), 0, reason="r", attempt=3)
+
+    assert "  [cli-stderr] boom" in with_stderr
+    assert "  Read x" in with_stderr
+    assert f"Transcript (may contain final activity): {transcript}" in with_stderr
+    assert without[0].startswith("SDK CLI stderr buffer empty on r (attempt 3)")
+
+
+def test_stream_routes_user_messages_to_file_edit_events(monkeypatch) -> None:
+    import asyncio
+
+    from booley.runtime import _claude_backend as cb
+
+    class FakeUser:
+        def __init__(self) -> None:
+            self.content = [SimpleNamespace(tool_use_id="t1", is_error=False)]
+
+    async def fake_query(*, prompt, options):
+        yield FakeUser()
+
+    monkeypatch.setattr(cb, "UserMessage", FakeUser)
+    monkeypatch.setattr(cb, "query", fake_query)
+    state = cb._StreamState(pending_file_edits={"t1": "a.py"})
+    events: list[dict] = []
+
+    asyncio.run(
+        cb._consume_claude_stream("p", None, cb._UsageCounters(), None, events.append, state)
+    )
+
+    assert state.pending_file_edits == {}
+    assert events
+
+
 def test_result_error_classification_uses_terminal_text(caplog) -> None:
     from claude_agent_sdk import ResultError
 
