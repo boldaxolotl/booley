@@ -35,12 +35,13 @@ def queue_line(facts: RunFacts) -> str:
 
 
 def timeout_line(facts: RunFacts) -> str:
-    """The per-work-unit timeout of a long-running Flow, or its problem; empty for the others."""
+    """The timeout of a long-running Flow (per work unit, or for the whole run), or its problem; empty for the others."""
     if facts.timeout_problem:
         return f"Timeout problem: {facts.timeout_problem}; the Flow will reject this run"
     if facts.timeout_ms is None:
         return ""
-    return f"Timeout: {format_duration(facts.timeout_ms / 1000)} per work unit"
+    covers = "for the whole run" if facts.timeout_whole_run else "per work unit"
+    return f"Timeout: {format_duration(facts.timeout_ms / 1000)} {covers}"
 
 
 def model_line(model: str, cli: str) -> str:
