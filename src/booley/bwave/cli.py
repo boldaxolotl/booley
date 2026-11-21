@@ -194,10 +194,10 @@ def _no_trace_found_message(directory: str | Path, note: str = "") -> str:
 # import would raise "attempted relative import with no known parent package".
 from booley.bwave.sessions import (
     _DEFAULT_ALIAS,
+    MarkerLookup,
     _get_markers,
     _load_sessions,
     _save_sessions,  # noqa: F401  # re-exported for backward compatibility
-    _validate_marker_name,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
     current_session_store,
@@ -205,17 +205,19 @@ from booley.bwave.sessions import (
 )
 
 
-def _marker_cycle_token(token: str, markers: dict[str, int]) -> str:
+def _marker_cycle_token(token: str, markers: MarkerLookup) -> str:
     """Replace a persisted marker name with an explicit cycle token."""
-    return f"{markers[token]}c" if token in markers else token
+    cycle = markers.cycle(token)
+    return token if cycle is None else f"{cycle}c"
 
 
-def _marker_bare_cycle(token: str, markers: dict[str, int]) -> str:
+def _marker_bare_cycle(token: str, markers: MarkerLookup) -> str:
     """Replace a marker where the native option accepts only a bare integer."""
-    return str(markers[token]) if token in markers else token
+    cycle = markers.cycle(token)
+    return token if cycle is None else str(cycle)
 
 
-def _resolve_marker_range(value: str, markers: dict[str, int]) -> str:
+def _resolve_marker_range(value: str, markers: MarkerLookup) -> str:
     """Resolve persisted markers in a typed START:END time range."""
     if ":" not in value:
         return _marker_cycle_token(value, markers)
@@ -281,7 +283,7 @@ def _async_marker_tick(trace: str, cycle: int, options: list[str]) -> str:
     return str(_capture_data(result, command)["target_tick"])
 
 
-def _resolve_diff_points(extra: list[str], markers: dict[str, int]) -> None:
+def _resolve_diff_points(extra: list[str], markers: MarkerLookup) -> None:
     """Resolve the two time points of `diff [options] T1 T2`, never an option value."""
     points = 0
     i = 1
@@ -301,19 +303,23 @@ def _resolve_markers_in_args(extra: list[str], alias: str, trace: str) -> None:
     (`--before/--after`) it gets the number (the tick of that cycle under
     `--async`), where it takes typed time it gets `Nc`.
     """
-    markers = _get_markers(_load_sessions(), alias)
-    if not markers:
+    stored = _get_markers(_load_sessions(), alias)
+    if not stored:
         return
+    markers = MarkerLookup(alias, stored)
 
     if extra and extra[0] == "diff":
         _resolve_diff_points(extra, markers)
 
     async_options = _cycle_grid_options(extra) if "--async" in extra else None
 
-    def bound(value: str, known: dict[str, int]) -> str:
-        if async_options is None or value not in known:
-            return _marker_bare_cycle(value, known)
-        return _async_marker_tick(trace, known[value], async_options)
+    def bound(value: str, known: MarkerLookup) -> str:
+        cycle = known.cycle(value)
+        if cycle is None:
+            return value
+        if async_options is None:
+            return str(cycle)
+        return _async_marker_tick(trace, cycle, async_options)
 
     resolvers = {
         "-t": _resolve_marker_range,
@@ -1252,7 +1258,7 @@ class _TickResolver:
 
     def __init__(self, trace: str, alias: str):
         self.trace = trace
-        self.markers = _get_markers(_load_sessions(), alias)
+        self.markers = MarkerLookup(alias, _get_markers(_load_sessions(), alias))
         self._total_ticks: int | None = None
 
     def to_tick(self, token: str, *, option: str) -> int:
@@ -1267,8 +1273,9 @@ class _TickResolver:
         # Markers are stored as cycle numbers; make the unit explicit so the
         # token survives async traces' bare-integer rejection with a clear
         # error pointing at the cycle grammar rather than a mystery number.
-        if token in self.markers:
-            token = f"{self.markers[token]}c"
+        cycle = self.markers.cycle(token)
+        if cycle is not None:
+            token = f"{cycle}c"
         command = ["value", self.trace]
         # Tick and physical-time tokens are absolute file positions. Resolving
         # them in sync mode first quantizes them to a clock cycle and then maps
@@ -2478,7 +2485,8 @@ Actions:
   list               Show all markers sorted by cycle
   delete NAME        Remove a marker
 
-Marker names must contain at least one non-digit character.
+Marker names need a non-digit character and cannot be a time token (5c, 10ns)
+or contain ':'.
 Markers persist across queries in the session file.
 
 Once set, markers resolve anywhere a cycle number is accepted:
