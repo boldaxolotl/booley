@@ -301,7 +301,7 @@ def _expected_isolated_cores(root: Path) -> dict[Path, str]:
 def _render_projection(root: Path, core_file: Path) -> str:
     try:
         content = core_file.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:  # not UTF-8: unreadable like any other (#5287)
+    except (OSError, UnicodeDecodeError) as exc:  # bad UTF-8 is a ValueError, not an OSError
         raise CoreProjectionError(f"could not read authoritative core {core_file}: {exc}") from exc
     lines = content.splitlines(keepends=True)
     if not lines or lines[0].strip() != "CAPI=2:":
@@ -626,7 +626,7 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
 
 
 def _is_owned_projection(path: Path) -> bool:
-    # Bytes, not text: ownership is the header alone, whatever bytes follow it (#5287).
+    # Bytes, not text: a decode error past the header must not make an owned copy foreign.
     try:
         with path.open("rb") as stream:
             stream.readline()
@@ -636,7 +636,7 @@ def _is_owned_projection(path: Path) -> bool:
 
 
 def _projection_current(destination: Path, content: str) -> bool:
-    """Whether an owned projection holds *content*; undecodable bytes are stale (#5287)."""
+    """Whether an owned projection holds *content*; bytes that do not decode are stale."""
     try:
         return destination.read_text(encoding="utf-8") == content
     except UnicodeDecodeError:

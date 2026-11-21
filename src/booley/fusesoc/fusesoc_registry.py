@@ -593,7 +593,7 @@ def read_core(core_file: Path | str) -> dict[str, Any]:
         # SyntaxError: FuseSoC's verdict on a non-mapping merge value, and its wrapper
         # of YAML parser errors. TypeError/AttributeError: merge_dict meeting a mapping
         # and a non-mapping under one key. RecursionError: a cyclic merge.
-        # UnicodeDecodeError: a file that is not UTF-8 (#5287).
+        # UnicodeDecodeError: a file that is not UTF-8 (a ValueError, not an OSError).
         doc = fusesoc_yaml_read(path.read_text(encoding="utf-8"))
     except (
         OSError,
