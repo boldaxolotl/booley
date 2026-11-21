@@ -1,0 +1,71 @@
+name: issue-4323-hung-tree-stress
+# Temporary: removed before review; never reaches main.
+on:
+  push:
+    branches: [codex/issue-4323-windows-hung-tree-flake]
+jobs:
+  windows-stress:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            .github/ci/constraints.txt
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
+      - name: Stress the four hung-tree tests
+        shell: bash
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
+        run: |
+          M=tests/test_platform_paths.py::test_run_captured_bounded_stops_a_hung_tree
+          pytest "${M}_fed_input" "${M}_reading_a_stdin_stream" "${M}_writing_an_output_stream" "${M}_capturing_bytes" "${M}_while_the_wait_is_stalled" \
+            -q --tb=short -n 4 --dist=load --count=200 --basetemp "${RUNNER_TEMP}/pytest" \
+            --timeout=60 --timeout-headroom=0.8 --timeout-headroom-warn=0.5 \
+            -o faulthandler_timeout=20 --durations=20 -rf --junitxml="${RUNNER_TEMP}/junit.xml"
+      - name: Summarise per-test timings
+        if: always()
+        shell: bash
+        env:
+          JUNIT: ${{ runner.temp }}/junit.xml
+        run: |
+          python - >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          import os, collections
+          import xml.etree.ElementTree as ET
+          rows = collections.defaultdict(list)
+          for case in ET.parse(os.environ["JUNIT"]).iter("testcase"):
+              failed = case.find("failure") is not None or case.find("error") is not None
+              rows[case.get("name").split("[")[0]].append((float(case.get("time")), failed))
+          print("| test | runs | failures | max s | p99 s |\n| --- | --- | --- | --- | --- |")
+          for name, runs in sorted(rows.items()):
+              times = sorted(t for t, _ in runs)
+              print(f"| {name} | {len(runs)} | {sum(f for _, f in runs)} | {times[-1]:.2f} | {times[int(0.99 * (len(times) - 1))]:.2f} |")
+          PY
+      - name: Publish pytest evidence
+        if: always()
+        uses: ./.github/actions/publish-pytest-evidence
+        with:
+          label: issue-4323-windows-stress
+  macos-check:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]" -c .github/ci/constraints.txt
+      - name: Run the bounded-capture modules
+        shell: bash
+        run: |
+          pytest -q --tb=short -n 4 --timeout=60 -m "not native_bwave" -rf \
+            $(grep -rlE "run_captured_bounded|pipe_holding_tree|platform_paths" tests | sort)
