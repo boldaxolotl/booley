@@ -103,7 +103,7 @@ from booley.flows.target_test_plan_loading import (
     plusarg_parameter_names,
     simulation_adapter_kind,
 )
-from booley.flows.terminal_progress import announce_unit
+from booley.flows.terminal_progress import announce_unit, observe_source_names
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -267,6 +267,10 @@ class _Attempt:
     history_tests: tuple[str, ...] = ()
     #: Size of the Target's resolved source files; ``None`` when unknown.
     source_bytes: int | None = None
+    #: Project path of each build-tree source name the Target's tools print.
+    project_paths: source_paths.ProjectSourcePaths = field(
+        default_factory=source_paths.ProjectSourcePaths
+    )
 
 
 def _open_preparation_log(
@@ -1071,6 +1075,8 @@ class SimulationExecution:
         )
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
         log = _open_preparation_log(handle, prepared, identity, test_names) if open_log else None
+        paths = source_paths.ProjectSourcePaths.for_target(handle, prepared.resolved)
+        observe_source_names(paths)
         return _Attempt(
             log=log,
             prepared=prepared,
@@ -1090,6 +1096,7 @@ class SimulationExecution:
             test_runs=test_runs,
             history_tests=history_test_names(handle, prepared, work.test_runs),
             source_bytes=resolved_source_bytes(prepared.resolved),
+            project_paths=paths,
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
@@ -1672,10 +1679,7 @@ def _infrastructure_outcome(
             kind,
             build.reason,
             missing_executable=find_missing_executable(build.output) or "",
-            detail=build_failure_report(
-                build,
-                source_paths.ProjectSourcePaths.for_target(handle, attempt.prepared.resolved),
-            ),
+            detail=build_failure_report(build, attempt.project_paths),
         )
     else:
         failure = SimulationInfrastructureFailure(kind, detail, detail=detail)
@@ -1926,7 +1930,7 @@ def _test_outcome(
         simulator_returncode=simulator_returncode,
         reason=reason,
         sva_errors=sva_errors,
-        error_tail="" if passed else reason or _output_tail(process, build.design_failed),
+        error_tail="" if passed else reason or _output_tail(attempt, process, build.design_failed),
         timed_out=verdict == "timeout",
         crashed=verdict == "crash",
         build=build,
@@ -1965,6 +1969,7 @@ def _test_reason(
     trace,
     failure_kind=None,
 ) -> str:
+    detail = attempt.project_paths.project_text(detail or "")
     if (
         termination != "completed"
         and detail
@@ -2003,9 +2008,7 @@ def _build_failure_test(
         verdict="elab_error",
         passed=False,
         elapsed_s=process.duration_s,
-        error_tail=source_paths.ProjectSourcePaths.for_target(
-            handle, attempt.prepared.resolved
-        ).project_text(_output_tail(process, True)),
+        error_tail=_output_tail(attempt, process, True),
         elab_failed=True,
         build=build,
         artifacts=(log,) if log is not None else (),
@@ -2232,10 +2235,10 @@ def _attach_group_telemetry(
     return (first, *tests[1:])
 
 
-def _output_tail(process: SubprocessResult, build_failed: bool) -> str:
+def _output_tail(attempt: _Attempt, process: SubprocessResult, build_failed: bool) -> str:
     combined = process.stdout + ("\n" + process.stderr if process.stderr else "")
     source = combined if build_failed or not process.stdout.strip() else process.stdout
-    return "\n".join(source.strip().splitlines()[-50:])
+    return attempt.project_paths.project_text("\n".join(source.strip().splitlines()[-50:]))
 
 
 __all__ = ["PreparedOrdinaryGroup", "SimulationExecution"]

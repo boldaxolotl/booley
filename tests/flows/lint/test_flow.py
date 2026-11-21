@@ -2380,6 +2380,31 @@ def test_fake_rc0_linter_is_error_through_execution_boundary(tmp_path, family):
     assert "libx.so" in result.error
 
 
+def test_linter_output_relays_project_paths(tmp_path):
+    import io
+    from types import SimpleNamespace
+
+    from booley.flows.source_paths import ProjectSourcePaths
+    from booley.flows.terminal_progress import TerminalProgress
+
+    fake = tmp_path / "linter.py"
+    fake.write_text("print('src/c/top.sv:3: warning')\n")
+    flow = LintFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    prepared = SimpleNamespace(
+        result=LintConfigResult(target="lite"),
+        command=[sys.executable, str(fake)],
+        resolved=SimpleNamespace(configured_eda_tool="verilator", files=(), build_root=tmp_path),
+        attempt_token="",
+        project_paths=ProjectSourcePaths({"src/c/top.sv": "rtl/top.sv"}),
+    )
+    sink = TerminalProgress("lint", "lite", tmp_path, stream=io.StringIO(), tool_output=True)
+    with sink.installed():
+        flow._run_lint_target(_target_handle("lite"), prepared=prepared)
+    assert "rtl/top.sv:3: warning" in sink.stream.getvalue()
+    assert "src/c/" not in sink.stream.getvalue()
+
+
 def _author_verible_alias_core(root: Path, spelling: str) -> None:
     (root / "rtl").mkdir()
     (root / "lint").mkdir()
