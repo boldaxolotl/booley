@@ -231,7 +231,8 @@ def test_the_measurement_flow_jobs_carry_the_session_of_its_job(
         requests.append(request)
         return SimpleNamespace(discard=lambda: None)
 
-    # The children's launch is the boundary; the real preflight builds their requests.
+    # A real child preflight refuses outside the Sandbox, so it is replaced; the requests
+    # it receives are built by the real measurement, which is what this test checks.
     monkeypatch.setattr(f"{COMMAND}.prepare_children", measure_children.prepare_children)
     monkeypatch.setattr(measure_children, "prepare_checkout_flow", prepare)
 
