@@ -40,7 +40,7 @@ RUNTIME_PATHS = (
     "runtime/doctor_stamp.json",
     "runtime/sessions/thread.json",
     "runtime/jobs/slots/memory/token.json",
-    ".interactive_logs/session.log",
+    "job_logs/session.log",
     "tickets/board/ticket.md",
     "tickets/state/state.json",
     "tickets/waiver-candidates/candidate.json",
@@ -197,7 +197,7 @@ def _publish_logs_and_cache(root, data, repo):
         runtime / "build",
         data / "logs",
         data / "tickets/logs",
-        data / ".interactive_logs",
+        data / "job_logs",
     ):
         directory.mkdir(parents=True, exist_ok=True)
         outputs.append(write_run_log(directory, "actual diagnostic publication\n"))

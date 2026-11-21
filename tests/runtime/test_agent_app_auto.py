@@ -62,7 +62,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
     monkeypatch.setattr(config_agent, "_inside_container", lambda: True)
     monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
-    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "started")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
     monkeypatch.setattr(shutil, "which", lambda name, mode=None: None)

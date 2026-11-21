@@ -153,7 +153,7 @@ def _job(
 
         root = standalone_jobs_dir(world.booley)
     else:
-        root = world.booley / ".interactive_logs" / session / ".runtime" / "jobs"
+        root = world.booley / "job_logs" / session / ".runtime" / "jobs"
     identity = _live_process(world, pid) if live and pid else None
     running = status == "running"
     job_records.write_record(
@@ -451,7 +451,7 @@ def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypat
     _job(world, "run-wt", world.wt, report={"passed": True})
     _job(world, "run-other", world.other, report={"secret": 1})
     (world.wt / "secret.json").write_bytes(b'{"secret": 2}')
-    other_report = world.booley / ".interactive_logs/sess1/.runtime/flow-reports/sim/run-other"
+    other_report = world.booley / "job_logs/sess1/.runtime/flow-reports/sim/run-other"
 
     with _client(world, monkeypatch) as client:
         url = _snapshot(client, world.wt)["results"]["jobs"][0]["report_url"]
@@ -620,7 +620,7 @@ def test_standalone_job_of_the_worktree_is_owned_by_you(world, monkeypatch):
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
     for index in range(65):
-        newer = world.booley / ".interactive_logs" / f"new{index}" / ".runtime" / "jobs"
+        newer = world.booley / "job_logs" / f"new{index}" / ".runtime" / "jobs"
         newer.mkdir(parents=True)
     _job(world, "run-s", world.wt, target="t_spawn", status="running", ended=None)
     _job(
@@ -657,7 +657,7 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
     _slot(world, "h", 1, 7101, {"memory": _claim(200.0)})
     _slot(world, "w", 2, 7002, _own(7002, "run-q", memory=_claim(400.0)))
     # The roots holding the unfinished Jobs are the oldest of all 66.
-    for root in (world.booley / ".interactive_logs").glob("*/.runtime/jobs"):
+    for root in (world.booley / "job_logs").glob("*/.runtime/jobs"):
         old = root.parent.parent.name in {"sess1", "standalone"}
         stamp = 1_000 if old else 2_000_000_000
         os.utime(root, (stamp, stamp))

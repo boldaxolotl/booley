@@ -807,34 +807,66 @@ def _move_stamp_to_legacy_location(project: Path) -> None:
     runtime_spec.stamp_path(project).replace(legacy)
 
 
+def _issue_with_retired_mcp_variable(project: Path) -> None:
+    """Re-issue the Sandbox as a Booley that set only the retired MCP variable (issue 4547)."""
+    path = dc.devcontainer_path(project)
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec["remoteEnv"].pop("BOOLEY_MCP_DEVELOPER_AGENT", None)
+    spec["remoteEnv"]["BOOLEY_MCP_MODE"] = "interactive"
+    digest = runtime_spec._spec_digest(spec)
+    run_args = spec["runArgs"]
+    old = next(arg for arg in run_args if arg.startswith("booley.spec-digest="))
+    run_args[run_args.index(old)] = f"booley.spec-digest={digest}"
+    written = dc.write_devcontainer(project, spec)
+
+    def restamp(document: dict) -> None:
+        document["spec_sha256"] = digest
+        document["file_sha256"] = runtime_spec._file_sha256(written)
+
+    _rewrite_stamp(project, restamp)
+
+
 @pytest.mark.parametrize(
-    ("damage", "fix"),
+    ("damage", "fix", "detail"),
     [
         pytest.param(
             lambda project: _rewrite_stamp(project, lambda doc: doc.__setitem__("version", 4)),
             "booley init --seed",
+            None,
             id="old-version",
         ),
         # The legacy-location stamp is not read, so it is absent: refresh reissues it.
         pytest.param(
-            _move_stamp_to_legacy_location, "booley session refresh", id="legacy-location"
+            _move_stamp_to_legacy_location,
+            "booley session refresh",
+            None,
+            id="legacy-location",
         ),
         pytest.param(
             lambda project: _write_project_toml("[flows.lint]\na = true\n[flows.lint]\n")(
                 project, project
             ),
             "booley.toml (line 3), then rerun `booley doctor`",
+            None,
             id="project-config",
         ),
         pytest.param(
             lambda project: _rewrite_stamp(project, lambda doc: doc.pop("project_data_layout")),
             "booley init --seed",
+            None,
             id="missing-layout",
+        ),
+        # A Sandbox issued with only the retired variable is stale: refresh reissues it.
+        pytest.param(
+            _issue_with_retired_mcp_variable,
+            "booley session refresh",
+            "BOOLEY_MCP_DEVELOPER_AGENT",
+            id="retired-mcp-variable",
         ),
     ],
 )
 def test_doctor_names_repair_for_rejected_issuance(
-    issued, monkeypatch, request, damage, fix
+    issued, monkeypatch, request, damage, fix, detail
 ) -> None:
     """Doctor FAILs a rejected pre-0.3.0 issuance and names the repair that applies."""
     project, _spec, _path, _stamp = issued
@@ -851,6 +883,7 @@ def test_doctor_names_repair_for_rejected_issuance(
     assert len(failures) == 1
     assert "Sandbox host issuance is invalid" in failures[0].message
     assert fix in failures[0].fix
+    assert detail is None or detail in failures[0].message
 
 
 def _write_project_toml(text: str):
@@ -3116,7 +3149,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         **environment,
         **spec["containerEnv"],
         "BOOLEY_DIR": stamp.project_data_source,
-        "BOOLEY_MCP_MODE": "interactive",
+        "BOOLEY_MCP_DEVELOPER_AGENT": "1",
     }
     applied = run_bounded_child(
         [sys.executable, *dc.git_identity_command().split()[1:]],

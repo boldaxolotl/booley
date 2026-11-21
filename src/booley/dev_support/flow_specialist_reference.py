@@ -303,7 +303,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
         "A CLI run is a Standalone Job: it shows in "
-        "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
+        "the Dashboard and copies its output to `job_logs/standalone/<run_id>/job.log` "
         "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
         "worktree).",
         "",

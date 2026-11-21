@@ -12,7 +12,7 @@ from booley.runtime import inspection
 
 pytestmark = pytest.mark.usefixtures("isolated_git_excludes")
 
-_LOGS_PASS = ".interactive_logs/ is not tracked in git"
+_LOGS_PASS = "job_logs/ is not tracked in git"
 _EXCLUDES_PASS = "Booley files excluded from git (info/exclude)"
 
 
@@ -47,7 +47,7 @@ def _tuples(
 
 
 def _seed_logs(booley_dir: Path) -> None:
-    logs = booley_dir / ".interactive_logs"
+    logs = booley_dir / "job_logs"
     logs.mkdir(parents=True)
     (logs / "one.log").write_bytes(b"one\n")
     (logs / "two.log").write_bytes(b"two\n")
@@ -87,28 +87,28 @@ def test_complete_excludes_pass(tmp_path: Path) -> None:
     ]
 
 
-def test_tracked_interactive_logs_fail_with_count_and_fix(tmp_path: Path) -> None:
+def test_tracked_job_logs_fail_with_count_and_fix(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write_exclude(tmp_path, "/.devcontainer", "/.booley")
     booley_dir = tmp_path / ".booley"
     _seed_logs(booley_dir)
-    _git(tmp_path, "add", "-f", "--", ".booley/.interactive_logs")
+    _git(tmp_path, "add", "-f", "--", ".booley/job_logs")
 
     findings = _inspect(tmp_path, booley_dir)
 
     assert _tuples(findings)[1:] == [
         (
             Severity.FAIL,
-            ".interactive_logs/ has 2 tracked file(s); committed "
+            "job_logs/ has 2 tracked file(s); committed "
             "scratch breaks fresh clones in the sandbox",
-            "git rm -r --cached .interactive_logs && commit the removal",
+            "git rm -r --cached job_logs && commit the removal",
             None,
             None,
         )
     ]
 
 
-def test_untracked_interactive_logs_pass(tmp_path: Path) -> None:
+def test_untracked_job_logs_pass(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write_exclude(tmp_path, "/.devcontainer", "/.booley")
     booley_dir = tmp_path / ".booley"

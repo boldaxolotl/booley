@@ -176,7 +176,7 @@ def prepare(
         "remoteUser": "agent",
         "updateRemoteUserUID": False,
         "mounts": [f"source={data},target=/booley,type=bind"],
-        "remoteEnv": {"BOOLEY_DIR": "/booley", "BOOLEY_MCP_MODE": "interactive"},
+        "remoteEnv": {"BOOLEY_DIR": "/booley", "BOOLEY_MCP_DEVELOPER_AGENT": "1"},
         "customizations": customization,
         "shutdownAction": "stopContainer",
     }

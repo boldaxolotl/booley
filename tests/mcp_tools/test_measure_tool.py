@@ -57,10 +57,10 @@ def measure_tool():
 
 def test_the_tool_is_offered_to_the_developer_agent_only() -> None:
     name = measure_tool().MEASURE_TOOL_NAME
-    developer = catalog.Exposure.from_mapping({"BOOLEY_MCP_MODE": "interactive"})
+    developer = catalog.Exposure.from_mapping({"BOOLEY_MCP_DEVELOPER_AGENT": "1"})
     nested = catalog.Exposure.from_mapping(
         {
-            "BOOLEY_MCP_MODE": "interactive",
+            "BOOLEY_MCP_DEVELOPER_AGENT": "1",
             "BOOLEY_NESTED_AGENT": "1",
             "BOOLEY_NESTED_MCP_TOOLS": "",
         }
@@ -78,7 +78,7 @@ def test_measure_returns_its_run_id_at_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tool = measure_tool()
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
     monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)  # must not apply
     started, release = asyncio.Event(), asyncio.Event()
@@ -149,7 +149,7 @@ def test_a_second_measure_never_attaches_to_a_live_one(
 ) -> None:
     """HEAD moves while a measurement runs, so the same argv can name another commit."""
     tool = measure_tool()
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
     release = asyncio.Event()
     spawned: list[list[str]] = []
@@ -251,7 +251,7 @@ def test_a_poll_shows_flows_finished_of_total_and_the_running_flow(
     assert "RUNNING" in by_run_id or "still in progress" in by_run_id
     assert "Still running" in argument_free
     # The process is the Job: it wrote no Standalone record of its own.
-    assert not (project / ".booley" / ".interactive_logs" / "standalone" / ".runtime").exists()
+    assert not (project / ".booley" / "job_logs" / "standalone" / ".runtime").exists()
 
 
 def test_the_final_result_carries_verdict_failing_rows_paths_and_exit_code(

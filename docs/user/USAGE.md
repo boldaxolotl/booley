@@ -488,7 +488,7 @@ and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 </details>
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
-are saved in `.booley/.interactive_logs/`. Chat transcripts live in
+are saved in `.booley/job_logs/`. Chat transcripts live in
 the Developer Agent CLI’s own session storage.
 
 ### Editing Project instructions

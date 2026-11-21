@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
 from booley import __version__
 from booley.config.retired import RetiredConfigError, refuse_retired_config
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -124,6 +124,7 @@ from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
+    DEVELOPER_AGENT_ENV,
     HTTP_ENDPOINT_PATH,
     HTTP_PORT_ENV,
     http_port,
@@ -250,7 +251,7 @@ class _McpLifetime:
         transport exists to fix. Container-level idle reaping (ADR 0018 WS2)
         remains the resource backstop.
         """
-        if os.environ.get("BOOLEY_MCP_MODE") != "interactive":
+        if os.environ.get(DEVELOPER_AGENT_ENV) != "1":
             # Client-owned server lifetime: no self-exit, but MCP activity feeds
             # the Sandbox reaper heartbeat so active work does not read as idle
             # (ADR 0028 Decision 11).
@@ -2044,7 +2045,7 @@ def build_mcp_probe_payload() -> dict[str, Any]:
     """
     _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR") or str(_interactive_logs_dir() or "")
+    logs_dir = os.environ.get("BOOLEY_LOGS_DIR") or str(_job_logs_dir() or "")
     return {
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
@@ -2078,7 +2079,7 @@ def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
         booley_dir = own_booley_dir_repo_path(Path.cwd()).as_posix()
     except BooleyLayoutError:
         return False
-    return f"/{booley_dir}/{INTERACTIVE_LOGS_DIR_NAME}/" in logs_dir.replace("\\", "/")
+    return f"/{booley_dir}/{JOB_LOGS_DIR_NAME}/" in logs_dir.replace("\\", "/")
 
 
 def _sdk_tool_result(
@@ -2373,7 +2374,7 @@ def _interactive_session_id() -> str:
     return f"pid{os.getpid()}"
 
 
-def _interactive_logs_dir() -> Path | None:
+def _job_logs_dir() -> Path | None:
     """The Sandbox's per-session logs directory under the Main Booley Directory, unmade.
 
     The Sandbox is detected by a Project resolving from the server's environment
@@ -2385,7 +2386,7 @@ def _interactive_logs_dir() -> Path | None:
     except (FileNotFoundError, SourceCheckoutProjectError):
         return None
     except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("Interactive logs directory unavailable: %s", exc)
+        logger.warning("Job logs directory unavailable: %s", exc)
         return None
     if not booley_dir.is_dir():
         return None
@@ -2394,10 +2395,10 @@ def _interactive_logs_dir() -> Path | None:
         # Host servers of different checkouts share a hostname: keep their Job
         # records, reports and Specialist sessions apart in the shared directory.
         session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
-    return booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
+    return booley_dir / JOB_LOGS_DIR_NAME / session_id
 
 
-def _maybe_configure_interactive_logs_dir() -> None:
+def _maybe_configure_job_logs_dir() -> None:
     """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
@@ -2405,14 +2406,14 @@ def _maybe_configure_interactive_logs_dir() -> None:
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.
 
-    Logs accumulate at ``<Main Booley Directory>/.interactive_logs/<session-id>/``
+    Logs accumulate at ``<Main Booley Directory>/job_logs/<session-id>/``
     (gitignored — see the template emitted by ``booley init``), whichever
     checkout the server runs in, so the Dashboard and handle pruning, which
     read the Main Booley Directory, see this session's Job records.
     """
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
-    logs_dir = _interactive_logs_dir()
+    logs_dir = _job_logs_dir()
     if logs_dir is None:
         return
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -2450,7 +2451,7 @@ def _load_agent_settings_from_toml() -> None:
 
 
 async def _main() -> None:
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
@@ -2497,7 +2498,7 @@ def _run_http(port: int) -> None:
     a container stop→start transparently brings the endpoint back — the agent
     apps hold only a URL, not a child process.
     """
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(

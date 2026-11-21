@@ -119,7 +119,7 @@ _BASELINE: tuple[str, ...] = (
     'fail - runtime/core_resolution.py::_execute ".core resolvability could not complete i"',
     'fail - runtime/core_resolution.py::_grade ".core Target \'"',
     'fail - runtime/core_resolution.py::_grade ".core resolvability produced incomplete "',
-    'fail - runtime/inspection.py::_check_interactive_logs_tracked ".interactive_logs/ has"',
+    'fail - runtime/inspection.py::_check_job_logs_tracked "job_logs/ has"',
     'fail - runtime/inspection.py::_check_issued_license_relay "License Profile authority is invalid:"',
     'fail - runtime/inspection.py::_credential_policy_inspectable "Sandbox credential mount expectation is "',
     'fail - runtime/inspection.py::_probe_mounted_vivado "Vivado runtime identity probe failed:"',

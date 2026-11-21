@@ -11,7 +11,7 @@ from booley.runtime.session_paths import session_jobs_dir
 
 @pytest.mark.parametrize("explicit_runtime", [False, True])
 def test_session_paths_follow_environment_precedence(tmp_path, monkeypatch, explicit_runtime):
-    logs = tmp_path / ".interactive_logs/session"
+    logs = tmp_path / "job_logs/session"
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     runtime = logs / ".runtime"

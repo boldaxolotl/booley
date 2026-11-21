@@ -169,7 +169,7 @@ class TestMcpLifetime:
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         lifetime = mod._McpLifetime.from_env()
         assert lifetime.idle_timeout_seconds is None
         assert lifetime.max_age_seconds is None
@@ -189,7 +189,7 @@ class TestMcpLifetime:
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         lifetime = mod._McpLifetime.from_env(self_exit=False)
         assert lifetime.idle_timeout_seconds is None
         assert lifetime.max_age_seconds is None
@@ -199,7 +199,7 @@ class TestMcpLifetime:
         import booley.mcp.server as mod
 
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(tmp_path / "hb"))
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         lifetime = mod._McpLifetime.from_env()
         assert lifetime.idle_timeout_seconds is not None
         assert lifetime.max_age_seconds is not None
@@ -995,7 +995,7 @@ class TestMcpExposureFiltering:
     def test_default_mode_exposes_autonomous_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
         assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
@@ -1006,7 +1006,7 @@ class TestMcpExposureFiltering:
     def test_interactive_mode_keeps_interactive_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
@@ -1034,7 +1034,7 @@ class TestMcpExposureFiltering:
 
     def test_explicit_allowlist_overrides_interactive_defaults(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,sim")
 
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
@@ -1151,7 +1151,7 @@ class TestBooleyStatus:
     def test_status_mcp_tool_def_only_interactive_by_default(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
 
         assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
@@ -1159,7 +1159,7 @@ class TestBooleyStatus:
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
         mcp_tools = catalog.visible_definitions(
             catalog.Exposure.from_mapping(os.environ),
@@ -1221,7 +1221,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1240,7 +1240,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1304,7 +1304,7 @@ class TestBooleySleep:
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
 
         mcp_tools = catalog.visible_definitions(
@@ -1769,7 +1769,7 @@ class TestBuiltinDiscoveryGate:
     @pytest.fixture(autouse=True)
     def _import(self, monkeypatch):
         # MCP visibility filters must not leak in from the invoking shell.
-        for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
+        for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_DEVELOPER_AGENT"):
             monkeypatch.delenv(var, raising=False)
 
     def test_helper_module_skipped_without_import(self, tmp_path, monkeypatch):

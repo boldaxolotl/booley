@@ -69,7 +69,7 @@ def _isolate_mcp_and_dashboard(monkeypatch, root):
     monkeypatch.chdir(root)
     monkeypatch.setattr(server, "_interactive_session_id", lambda: "fixture")
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(
         upgrade_review,
         "read_status",

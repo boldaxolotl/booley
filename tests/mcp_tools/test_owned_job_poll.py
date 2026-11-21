@@ -318,7 +318,7 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
 def _stub_http_server(monkeypatch, build=None):
     """Stub everything but the bind and announcement of ``_run_http``; return the served list."""
     monkeypatch.setattr(mcp_server, "_interactive_session_id", lambda: "box")
-    monkeypatch.setattr(mcp_server, "_maybe_configure_interactive_logs_dir", lambda: None)
+    monkeypatch.setattr(mcp_server, "_maybe_configure_job_logs_dir", lambda: None)
     monkeypatch.setattr(mcp_server, "_load_agent_settings_from_toml", lambda: None)
     monkeypatch.setattr(mcp_server, "_build_server", build or (lambda *_a, **_k: (object(), [])))
     monkeypatch.setattr(mcp_server.handle_pruning, "prune_at_start", lambda: None)

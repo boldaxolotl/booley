@@ -231,7 +231,7 @@ stopped or cancelled is measured again without `--again`.
 | `--base <sha>` | Compare with this commit, or with its merge-base with the measured commit when it is not an ancestor. See [Base runs](#base-runs). |
 | `--all` | Evaluate every table. Without it, the first unmet or errored table stops the run and the later tables are "not evaluated". |
 | `--again` | Measure a commit that is already Measured again and store a second run. |
-| `--target <name>` | Measure only this Target's tables. The run is never stored and never makes the commit Measured; its reports stay in the `measure` Job's directory under `.interactive_logs/standalone/<run_id>/`. |
+| `--target <name>` | Measure only this Target's tables. The run is never stored and never makes the commit Measured; its reports stay in the `measure` Job's directory under `job_logs/standalone/<run_id>/`. |
 | `--json` | Print the report as JSON. |
 
 | Exit status | Meaning |

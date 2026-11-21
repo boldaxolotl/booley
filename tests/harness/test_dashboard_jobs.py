@@ -262,8 +262,8 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     from booley.harness.dashboard.jobs import retained_job_roots
     from booley.mcp import server
 
-    current = tmp_path / ".interactive_logs/current/.runtime/jobs"
-    historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
+    current = tmp_path / "job_logs/current/.runtime/jobs"
+    historic = tmp_path / "job_logs/historic/.runtime/jobs"
     historic.mkdir(parents=True)
     monkeypatch.setattr(call_context, "container_jobs_root", lambda: current)
     monkeypatch.setattr(server, "resolve_booley_dir", lambda: tmp_path)
@@ -366,7 +366,7 @@ def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
     from booley.flows.progress_lifecycle import progress_document
     from booley.harness.dashboard.model import DashboardReader
 
-    root = tmp_path / ".interactive_logs/current/.runtime/jobs"
+    root = tmp_path / "job_logs/current/.runtime/jobs"
     paths = []
     for run in ("one", "two"):
         job_records.write_record(rec(run, status="done"), root)
@@ -419,7 +419,7 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
     monkeypatch.setattr(jobs, "MAX_INTERACTIVE_ROOTS", 3, raising=False)
     expected = []
     for index in range(5):
-        root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
+        root = tmp_path / f"job_logs/{index}/.runtime/jobs"
         root.mkdir(parents=True)
         os.utime(root, (100 + index, 100 + index))
         if index >= 2:
@@ -427,7 +427,7 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
     retained = jobs.retained_job_roots(tmp_path)
     assert set(retained.history) == set(expected)
     assert retained.older == tuple(
-        tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (1, 0)
+        tmp_path / f"job_logs/{index}/.runtime/jobs" for index in (1, 0)
     )
 
 
@@ -503,11 +503,11 @@ def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tm
 
     current = tmp_path / "current/.runtime/jobs"
     for index in range(3):
-        root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
+        root = tmp_path / f"job_logs/{index}/.runtime/jobs"
         root.mkdir(parents=True)
         os.utime(root, (100 + index, 100 + index))
     roots = jobs.retained_job_roots(tmp_path, interactive_root=current)
-    history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
+    history = [tmp_path / f"job_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
     assert list(roots.history) == [current, *history]
 
 
@@ -515,7 +515,7 @@ def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkey
     from booley.harness.dashboard.model import DashboardReader
     from tests.flows.sim.test_endpoint_record_lifecycle import completed_simulation_record_report
 
-    root = tmp_path / ".interactive_logs/test/.runtime/jobs"
+    root = tmp_path / "job_logs/test/.runtime/jobs"
     reader = DashboardReader(tmp_path, tmp_path)
     assert not reader.read().jobs.jobs
     monkeypatch.setenv("BOOLEY_RUN_ID", "one")
@@ -706,7 +706,7 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
     (view,) = snapshot_jobs(layout.control).jobs
     assert view.record.session_key is None
     assert view.state == "completed"
-    log = layout.control / ".interactive_logs/standalone" / view.record.run_id / "job.log"
+    log = layout.control / "job_logs/standalone" / view.record.run_id / "job.log"
     assert view.report is not None  # found under the checkout's reports, by the run's own id
     detail = job_detail(view)
     assert f"Log:\n{log}" in detail
@@ -788,7 +788,7 @@ def _old_session_jobs_world(tmp_path):
     """65 recent session roots; the oldest holds every kind of record."""
     from booley.runtime import job_slots
 
-    logs = tmp_path / ".interactive_logs"
+    logs = tmp_path / "job_logs"
     for index in range(65):
         (logs / f"new{index}/.runtime/jobs").mkdir(parents=True)
         os.utime(logs / f"new{index}/.runtime/jobs", (2_000_000_000, 2_000_000_000))
@@ -869,7 +869,7 @@ def test_dashboard_model_lists_unfinished_jobs_of_old_sessions(tmp_path, monkeyp
 def test_refresh_skips_records_of_unchanged_old_sessions(tmp_path, monkeypatch):
     from booley.runtime.job_observation import _observer
 
-    logs = tmp_path / ".interactive_logs"
+    logs = tmp_path / "job_logs"
     newest = []
     for index in range(2064):
         root = logs / f"{index}/.runtime/jobs"

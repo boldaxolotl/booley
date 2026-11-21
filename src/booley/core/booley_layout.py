@@ -17,9 +17,10 @@ RETIRED_DIR_NAME = ".booley_project"
 RETIRED_ENV = "BOOLEY_PROJECT_DIR"
 # Doctor's scratch root inside the Booley Directory; deep checks write Flow reports below it.
 DOCTOR_TMP_DIR = Path("tmp") / "doctor"
-# In-Sandbox MCP server scratch inside the Booley Directory: one subdirectory per
-# session, whose Flow reports live at ``<session>/.runtime/flow-reports``.
-INTERACTIVE_LOGS_DIR_NAME = ".interactive_logs"
+# Job logs inside the Booley Directory: one subdirectory per MCP session, whose Flow
+# reports live at ``<session>/.runtime/flow-reports``, plus ``standalone/`` for
+# Standalone Job logs.
+JOB_LOGS_DIR_NAME = "job_logs"
 # Goal Records inside the Booley Directory: one subdirectory per Goal id, whose Flow
 # reports live at ``<goal-id>/.runtime/flow-reports``.
 GOALS_DIR_NAME = "goals"

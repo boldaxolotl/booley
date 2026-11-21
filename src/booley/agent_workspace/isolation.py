@@ -137,6 +137,7 @@ def _booley_copy_roots(directory: Path) -> list[Path]:
     from booley.core.booley_layout import (
         GOAL_RECORD_LOGS_DIR,
         GOALS_DIR_NAME,
+        JOB_LOGS_DIR_NAME,
         is_goal_record_name,
     )
     from booley.runtime.session_paths import RUNTIME_DIR
@@ -150,7 +151,7 @@ def _booley_copy_roots(directory: Path) -> list[Path]:
             "worktrees",
             "flow-reports",
             "logs",
-            ".interactive_logs",
+            JOB_LOGS_DIR_NAME,
         )
     ]
     roots.extend(directory.glob(".baseline-wt-*"))

@@ -340,7 +340,7 @@ jobs:
             -e BOOLEY_IMAGE_DIGEST \
             -e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json \
             -e PYTHONPATH=/booley-source/src \
-            -e BOOLEY_MCP_MODE=interactive \
+            -e BOOLEY_MCP_DEVELOPER_AGENT=1 \
             booley-riscv-test bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '

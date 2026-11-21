@@ -35,7 +35,7 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writab
     )
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
+    env["BOOLEY_MCP_DEVELOPER_AGENT"] = "1"
     env.pop("BOOLEY_LOGS_DIR", None)
     source_root = Path(__file__).parents[2] / "src"
     existing_pythonpath = env.get("PYTHONPATH")
@@ -64,7 +64,7 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writab
     assert "bwave" in payload["tools"]
     assert payload["logs_dir_ok"] is True
     assert payload["logs_dir_writable"] is writable
-    assert Path(payload["logs_dir"]).parent == booley_dir / ".interactive_logs"
+    assert Path(payload["logs_dir"]).parent == booley_dir / "job_logs"
 
 
 @pytest.mark.parametrize(
@@ -101,7 +101,7 @@ def test_probe_and_live_server_share_catalog_validation(
         mcp_server._build_server()
 
 
-def test_mcp_probe_accepts_relocated_interactive_logs(
+def test_mcp_probe_accepts_relocated_job_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Logs under the checkout's relocated Booley Directory are ok; the default is not."""
@@ -118,10 +118,10 @@ def test_mcp_probe_accepts_relocated_interactive_logs(
         lambda _lifetime: (SimpleNamespace(list_tools=list), [], []),
     )
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/.interactive_logs/abc"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/job_logs/abc"))
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is True
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / ".booley/.interactive_logs/abc"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / ".booley/job_logs/abc"))
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is False
 
     # A retired layout in the working directory reads as "not ok", never a traceback.

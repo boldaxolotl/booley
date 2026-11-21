@@ -45,11 +45,11 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import (
+    DEVELOPER_AGENT_ENV,
     GATEWAY_PROVIDER_ID,
     HTTP_ENDPOINT_PATH,
     _codex_editor,
@@ -160,11 +160,10 @@ def _server_log_tail(path: Path) -> list[str]:
 
 def ensure_http_server(
     *,
-    mode: Literal["interactive"],
     timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS,
     log_path: str = _SERVER_LOG_PATH,
 ) -> str:
-    """Start the HTTP MCP server unless one is already serving. Returns status.
+    """Start the Developer Agent's HTTP MCP server unless one is already serving.
 
     The server is detached (own session, no stdio inheritance) so it outlives
     this registrar and the ``postStartCommand`` shell; it then runs for the
@@ -176,7 +175,7 @@ def ensure_http_server(
     if _port_is_serving(port):
         return "running"
     child_env = os.environ.copy()
-    child_env["BOOLEY_MCP_MODE"] = mode
+    child_env[DEVELOPER_AGENT_ENV] = "1"
     for variable in (
         "BOOLEY_NESTED_AGENT",
         "BOOLEY_NESTED_MCP_TOOLS",

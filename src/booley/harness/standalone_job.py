@@ -2,7 +2,7 @@
 
 A run typed in a Sandbox shell is foreground and in-process, so it used to leave
 no Job record. :class:`StandaloneJob` gives it one: a Job record with no session
-under ``<common Booley Directory>/.interactive_logs/standalone/.runtime/jobs`` (a
+under ``<common Booley Directory>/job_logs/standalone/.runtime/jobs`` (a
 root the Dashboard already scans) and a ``job.log`` copy of the run's output next
 to it. The terminal output is unchanged and the process exits exactly as before.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 from types import FrameType
 from typing import BinaryIO, TextIO
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.progress_lifecycle import abort_open_progress, after_progress_publication
 from booley.presentation.job_log_stream import JobLogStream
@@ -51,7 +51,7 @@ _SignalHandler = signal.Handlers | int | Callable[[int, FrameType | None], objec
 
 def standalone_log_root(booley_dir: Path) -> Path:
     """Human-facing log root of every Standalone Job."""
-    return booley_dir / INTERACTIVE_LOGS_DIR_NAME / _STANDALONE_DIR
+    return booley_dir / JOB_LOGS_DIR_NAME / _STANDALONE_DIR
 
 
 def standalone_jobs_dir(booley_dir: Path) -> Path:
