@@ -643,6 +643,7 @@ class TestTraceStatusManifest:
         session.start_conversion_budget(0)  # already spent
 
         session.postprocess(vcd)
+        session.report_failed_conversions(declared_trace_used=False)
 
         assert builds == []  # no bwave build ran
         assert "trace_convert_timeout_ms" in capsys.readouterr().out
