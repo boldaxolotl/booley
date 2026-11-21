@@ -47,6 +47,8 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     assert "features.shell_tool=false" in command
     assert "agents.enabled=false" in command
     assert "features.multi_agent_v2=false" in command
+    # Deprecated since Codex 0.168: setting it only adds a startup warning to the transcript.
+    assert "features.multi_agent=false" not in command
     assert Path(env["CODEX_HOME"]) != cache
     assert not (Path(env["CODEX_HOME"]) / "config.toml").exists()
 
