@@ -300,7 +300,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     markdown = markdown_report(view)
 
     assert "Run r1: rules loosened" in markdown
-    assert "**Amber: needs review (rules loosened)**" in markdown
+    assert markdown.splitlines()[2] == "**Amber: needs review (rules loosened)**"
     rules = section(markdown, "Rules changes")
     assert (
         "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — after DSP sharing"
@@ -490,7 +490,7 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     view = view_of(repo, store, stored, head)
 
     line = "Targets with no metrics: acme:b:1.0#x, acme:a:1.0#y"
-    assert "**Green: accepted**" in markdown_report(view)
+    assert markdown_report(view).splitlines()[2] == "**Green: accepted**"
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
         assert line in text
