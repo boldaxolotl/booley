@@ -736,6 +736,16 @@ def test_checkout_flow_keeps_shared_state_in_main(world: World) -> None:
 
 
 @linux_only
+def test_checkout_flow_job_keeps_the_session_of_its_request(world: World) -> None:
+    """#5310: a measuring session's Flow Job stays its Job after the Flow rewrote the record."""
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    result = run_checkout_flow(world.request("pass", session_key="codex:t1"))
+
+    assert record_of(world, result).session_key == "codex:t1"
+
+
+@linux_only
 def test_checkout_flow_environment_is_scrubbed(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

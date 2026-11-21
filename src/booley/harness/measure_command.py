@@ -123,6 +123,8 @@ class _JobHooks:
     progress: Callable[[int, int, tuple[str, ...]], None]
     # Gets the exit status and the summary of a finished measurement; an MCP Job only.
     publish: Callable[[int, str], None] | None = None
+    # The session whose MCP Job this is; its Flow Jobs are filed under it. An MCP Job only.
+    session_key: str | None = None
 
 
 class MeasureRefusedError(Exception):
@@ -181,7 +183,9 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     """
     mcp_job = McpMeasureJob.find()
     if mcp_job is not None:
-        hooks = _JobHooks(mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result)
+        hooks = _JobHooks(
+            mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result, mcp_job.session_key
+        )
         return _guarded(project_root, request, hooks)
     job = StandaloneJob.prepare(
         project_root,
@@ -305,9 +309,12 @@ def _scoped(catalog: TargetCatalog, rules: MetricsRules, target: str) -> tuple[M
 
 
 def _preflight(
-    checkout: Path, main: Path, run_id: str, rules: MetricsRules, target: str | None
+    checkout: Path, main: Path, hooks: _JobHooks, rules: MetricsRules, target: str | None
 ) -> _Preflight:
-    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
+    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child.
+
+    Each child Flow Job belongs to the session of the Job in *hooks*, if any.
+    """
     try:
         catalog = TargetCatalog.build(checkout)
         scope = None
@@ -321,8 +328,9 @@ def _preflight(
             checkout=checkout,
             main_booley_dir=main,
             # Beside the Job's own log, so no child record names a path the scratch deletes.
-            report_dir=standalone_log_root(main) / run_id / "children",
+            report_dir=standalone_log_root(main) / hooks.run_id / "children",
             timeout_s=None,
+            session_key=hooks.session_key,
         )
     except (ValueError, FuseSocError) as exc:  # includes CheckoutFlowError, unpinnable inputs
         raise MeasureRefusedError(str(exc)) from exc
@@ -472,7 +480,7 @@ def _measure_commit(
         _print_drift(project_root, commit, export.drift)
         keyed = _key_of(project_root, commit, export.paired_commit)
         rules = _load_rules(checkout, main, run_id)
-        preflight = _preflight(checkout, main, run_id, rules, request.target)
+        preflight = _preflight(checkout, main, hooks, rules, request.target)
         rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts
         try:
