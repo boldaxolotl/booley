@@ -301,7 +301,7 @@ def _expected_isolated_cores(root: Path) -> dict[Path, str]:
 def _render_projection(root: Path, core_file: Path) -> str:
     try:
         content = core_file.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:  # not UTF-8: unreadable like any other (#5287)
         raise CoreProjectionError(f"could not read authoritative core {core_file}: {exc}") from exc
     lines = content.splitlines(keepends=True)
     if not lines or lines[0].strip() != "CAPI=2:":
@@ -630,7 +630,7 @@ def _is_owned_projection(path: Path) -> bool:
         with path.open("r", encoding="utf-8") as stream:
             stream.readline()
             return stream.readline().startswith(_MARKER_PREFIX)
-    except OSError:
+    except (OSError, UnicodeDecodeError):  # Booley writes UTF-8: anything else is foreign
         return False
 
 

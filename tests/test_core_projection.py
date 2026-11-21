@@ -148,6 +148,16 @@ def test_reconcile_refuses_foreign_destination(tmp_path: Path) -> None:
     assert destination.read_text(encoding="utf-8") == "user data\n"
 
 
+def test_non_utf8_core_files_are_foreign_or_unreadable(tmp_path: Path) -> None:
+    root, core = _project(tmp_path)
+    projected_core_path(root, core).write_bytes(b"\xff not UTF-8\n")
+    with pytest.raises(CoreProjectionError, match="refusing to overwrite"):
+        reconcile_projected_cores(root)
+    core.write_bytes(b"CAPI=2:\nname: ::a:\xff\n")  # #5287
+    with pytest.raises(CoreProjectionError, match="could not read authoritative core"):
+        reconcile_projected_cores(root)
+
+
 def test_disabling_stealth_removes_only_owned_projections(tmp_path: Path) -> None:
     root, _core = _project(tmp_path)
     result = reconcile_projected_cores(root)

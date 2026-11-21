@@ -241,11 +241,12 @@ class TestDiscovery:
             "CAPI=2:\na: &a [x]\nb: {<<: *a}\n",
             "CAPI=2:\na: &a {k: s}\nb: {<<: *a, k: {z: 1}}\n",
             "CAPI=2:\ntargets: {sim: &sim {<<: *sim}}\n",
+            "CAPI=2:\nname: ::a:\xff\n",  # latin-1 0xff: not UTF-8 (#5287)
         ],
     )
     def test_read_core_rejects_non_mapping(self, tmp_path: Path, text: str):
         bad = tmp_path / "bad.core"
-        bad.write_text(text, encoding="utf-8")
+        bad.write_text(text, encoding="latin-1")
         with pytest.raises(FuseSocError):
             read_core(bad)
 
