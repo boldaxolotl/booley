@@ -118,7 +118,7 @@ from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.readiness import ProjectAudit
 from booley.mcp import server_inspection
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
-from booley.presentation.terminal_table import render_table
+from booley.presentation.terminal_table import render_table, width_budget
 from booley.runtime import (
     auth_token,
     core_repository_hygiene,
@@ -632,6 +632,7 @@ class _Reporter:
             DiagnosticReport(tuple(self.findings)).active_findings,
             key=lambda finding: finding.severity is not Severity.FAIL,
         )
+        budget = width_budget()
         if active:
             rows = [
                 [
@@ -641,9 +642,10 @@ class _Reporter:
                 ]
                 for finding in active
             ]
-            print(
-                "\n".join(render_table(("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}))
+            table = render_table(
+                ("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}, width=budget
             )
+            print("\n".join(table))
         else:
             print(ts.status_line(ts.LineStatus.PASS, bold_green("no failures or warnings")))
         print()
@@ -651,7 +653,7 @@ class _Reporter:
             [f"{ts.glyph(_LINE_STATUS[kind])} {label}", str(self.counts[kind])]
             for kind, label in _COUNT_LABELS
         ]
-        print("\n".join(render_table(("Status", "Count"), count_rows)))
+        print("\n".join(render_table(("Status", "Count"), count_rows, width=budget)))
 
     def _print_verdict(self) -> None:
         """End the run with one bold line naming the outcome.
