@@ -11,7 +11,8 @@ Decisions: the Target column and the rerun command use the Target key as written
 drop that is also a worse metric is shown once, under "``tests_total`` dropped" (matched
 on the rules entry's metric); the 20-line cap counts file and submodule lines together,
 while protected and constraint edits get their own uncapped lines; red and amber are
-words in Markdown, never colour (a rules change names its class, "loosened" and so on,
+words in Markdown, never colour (the report opens with the state in words: Red, Amber
+with the header's reasons, Green; a rules change names its class, "loosened" and so on,
 in its text); integers print whole and floats with ``:.12g`` (Δ signed) so float noise
 never reaches the report; in Markdown, specials in user text are backslash-escaped. An unmet
 lint or mutation bound lists the first findings or survived Mutants behind it after the failing tests.
@@ -103,6 +104,20 @@ def _tone(document: Mapping[str, Any]) -> _Tone:
     return "warn" if document["view"]["amber"] or not stored else "met"
 
 
+_STATE_WORDS: dict[_Tone, str] = {
+    "fail": "Red: not accepted",
+    "warn": "Amber: needs review",
+    "met": "Green: accepted",
+}
+
+
+def _state_line(document: Mapping[str, Any]) -> str:
+    """The state the terminal shows as colour, in words; amber adds the header's reasons."""
+    tone = _tone(document)
+    reasons = f" ({', '.join(_states(document))})" if tone == "warn" else ""
+    return _STATE_WORDS[tone] + reasons
+
+
 def _verdict_line(document: Mapping[str, Any]) -> _Text:
     counts = document["view"]["counts"]
     parts = [
@@ -181,19 +196,23 @@ def _run_lines(document: Mapping[str, Any]) -> list[_Block]:
     return lines
 
 
-def _header(document: Mapping[str, Any]) -> _Section:
+def _states(document: Mapping[str, Any]) -> list[str]:
     view = document["view"]
-    commit, tone = view["commit"], _tone(document)
     states = [] if document["status"] == "completed" else [document["status"]]
-    states.extend(["failing"] if tone == "fail" else [])
+    states.extend(["failing"] if _tone(document) == "fail" else [])
     states.extend(view["amber"])
     if view["target"] is not None:
         measured = "not stored"
     else:
         measured = "measured" if is_measured(document) else "not measured"
-    states = states or [measured]
+    return states or [measured]
+
+
+def _header(document: Mapping[str, Any]) -> _Section:
+    view = document["view"]
+    commit, tone = view["commit"], _tone(document)
     blocks: list[_Block] = [
-        _Text(f"Run {document['run_id']}: {', '.join(states)}", tone),
+        _Text(f"Run {document['run_id']}: {', '.join(_states(document))}", tone),
         _Text(f"Commit `{commit['sha']}`, tree `{commit['tree']}`"),
     ]
     if commit["measured_as"] is not None:
@@ -524,7 +543,11 @@ def _markdown_chunks(blocks: Sequence[_Block]) -> list[str]:
 
 def markdown_report(document: Mapping[str, Any]) -> str:
     """The Markdown Measurement Report of a view JSON (``run_view`` output)."""
-    parts = ["# Measurement Report", f"**{_verdict_line(document).text}**"]
+    parts = [
+        "# Measurement Report",
+        f"**{_state_line(document)}**",
+        f"**{_verdict_line(document).text}**",
+    ]
     for title, blocks in _sections(document):
         parts.extend([f"## {title}", *_markdown_chunks(blocks)])
     return "\n\n".join(parts) + "\n"

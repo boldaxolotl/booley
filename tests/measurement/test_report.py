@@ -110,7 +110,11 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
 
     markdown = markdown_report(view)
 
-    assert "**1 unmet, 1 error, 1 not evaluated of 4 enforced**" in markdown
+    assert markdown.splitlines()[2:5] == [
+        "**Red: not accepted**",
+        "",
+        "**1 unmet, 1 error, 1 not evaluated of 4 enforced**",
+    ]
     assert markdown.index("## Failing") < markdown.index("## Metrics")
     failing = section(markdown, "Failing")
     assert "core synth area_um2_max: 9 vs ≤ 5, unmet" in failing
@@ -127,6 +131,7 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert colors.green("met") in terminal
     assert colors.red("Run r1: failing") in terminal
     assert colors.red("1 unmet, 1 error, 1 not evaluated of 4 enforced") in terminal
+    assert "Red:" not in terminal
 
 
 def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path: Path) -> None:
@@ -262,7 +267,7 @@ def test_two_bases_give_two_base_sections_and_the_same_verdicts(tmp_path: Path) 
     assert f"booley measure --all {main}" in default
     assert f"booley measure --all {first}" in chosen
     assert section(default, "Changed files") != section(chosen, "Changed files")
-    assert default.splitlines()[2] == chosen.splitlines()[2]  # the verdict line
+    assert default.splitlines()[:5] == chosen.splitlines()[:5]  # the state and verdict lines
     for same in ("Failing", "Metrics"):
         assert section(default, same) == section(chosen, same) != ""
 
@@ -295,6 +300,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     markdown = markdown_report(view)
 
     assert "Run r1: rules loosened" in markdown
+    assert "**Amber: needs review (rules loosened)**" in markdown
     rules = section(markdown, "Rules changes")
     assert (
         "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — after DSP sharing"
@@ -307,6 +313,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     terminal = terminal_report(view)
     assert colors.amber("Run r1: rules loosened") in terminal
     assert colors.green("Run r1: rules loosened") not in terminal
+    assert "Amber:" not in terminal
     assert colors.green("2 of 2 enforced met") not in terminal  # not an all-green verdict
     assert colors.amber("2 of 2 enforced met") in terminal
 
@@ -440,6 +447,7 @@ def test_stopped_and_cancelled_runs_say_so_in_the_header(
 
         assert headline in section(markdown, "Run")
         assert f"- {line}" in section(markdown, "Run")
+        assert f"**Amber: needs review ({status.value})**" in markdown
         assert "**2 not evaluated of 2 enforced**" in markdown
         assert colors.amber(headline) in terminal
         assert colors.green(headline) not in terminal
@@ -482,6 +490,7 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     view = view_of(repo, store, stored, head)
 
     line = "Targets with no metrics: acme:b:1.0#x, acme:a:1.0#y"
+    assert "**Green: accepted**" in markdown_report(view)
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
         assert line in text
@@ -783,6 +792,7 @@ def test_a_target_run_is_never_reported_as_measured(
     assert "`--target` `acme:ip:core:1#core`: only its tables" in section(markdown, "Run")
     assert "for this tree" not in markdown
     assert "measured" not in section(markdown, "Run").replace("never makes the commit", "")
+    assert "**Amber: needs review (not stored)**" in markdown
     assert "**1 of 1 enforced met**" in markdown
     assert colors.green("Run scoped: not stored") not in terminal
     assert colors.amber("Run scoped: not stored") in terminal
