@@ -185,7 +185,9 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
     except (OSError, ValueError) as exc:
         report.fail(
             f"{path} does not parse: {exc}",
-            request.remedy if _hand_written_sandbox() else "re-run booley init",
+            "repair this Sandbox's devcontainer.json, then rebuild the Sandbox from it"
+            if _hand_written_sandbox()
+            else "re-run booley init",
         )
         return
     spec_app = dc.spec_agent_app(spec)

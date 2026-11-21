@@ -562,6 +562,19 @@ def test_hand_written_spec_is_not_compared(
     assert "booley init --seed" not in findings[0].message
 
 
+def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+) -> None:
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    dc.devcontainer_path(project).parent.mkdir(parents=True, exist_ok=True)
+    dc.devcontainer_path(project).write_bytes(b"{")
+
+    (finding,) = _inspect(project, monkeypatch, expected_spec=None)
+
+    assert finding.severity.value == "fail"
+    assert "booley init" not in finding.fix
+
+
 def test_hand_written_sandbox_keeps_compatibility_checks(
     project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
 ) -> None:
