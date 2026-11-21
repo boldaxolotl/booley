@@ -253,8 +253,10 @@ the base first, then give me a Measured Commit.*
 
 ## Read the Measurement Report
 
-The report starts with a verdict line and a header whose color says whether
-the work is accepted:
+The terminal report starts with a verdict line and a header whose color says
+whether the work is accepted. The Markdown report names the state in words
+above its verdict line, for example "Amber: needs review (tests changed)". The
+states are:
 
 - **Red:** a bound is unmet or a Flow errored.
 - **Green:** the commit is Measured, and nothing is amber.
