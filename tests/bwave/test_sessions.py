@@ -1032,7 +1032,7 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("alias", "argv", "flag", "typed", "name", "delete"),
+    ("alias", "argv", "flag", "typed", "name", "target"),
     [
         (
             "dut",
@@ -1040,7 +1040,7 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "-t",
             "5c:12c",
             "5c",
-            "bwave markers @dut delete 5c",
+            "@dut",
         ),
         (
             "my dut",
@@ -1048,13 +1048,13 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "--at",
             "10ns",
             "10ns",
-            "bwave markers '@my dut' delete 10ns",
+            "@my dut",
         ),
     ],
     ids=["wave-range", "value-at-spaced-alias"],
 )
 def test_query_keeps_typed_time_over_a_conflicting_marker(
-    tmp_path, monkeypatch, capsys, alias, argv, flag, typed, name, delete
+    tmp_path, monkeypatch, capsys, alias, argv, flag, typed, name, target
 ):
     from booley.bwave import cli as bwave
 
@@ -1075,7 +1075,7 @@ def test_query_keeps_typed_time_over_a_conflicting_marker(
     warnings = [x for x in capsys.readouterr().err.splitlines() if x.startswith("WARNING: marker")]
     assert len(warnings) == 1
     assert f"marker '{name}' on @{alias} does not apply" in warnings[0]
-    assert delete in warnings[0]
+    assert f"bwave markers {quote_arg(target)} delete {quote_arg(name)}" in warnings[0]
 
 
 def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
