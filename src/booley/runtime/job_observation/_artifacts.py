@@ -163,8 +163,12 @@ class JobArtifactCache:
         if data is None or not isinstance(data.get("run_id"), str):
             return
         kind = "progress" if path.name == "progress.json" else "report"
-        if kind != "progress" or data.get("flow") == endpoint:
-            result.setdefault((kind, data["run_id"]), (data, path))
+        if kind == "progress" and data.get("flow") != endpoint:
+            return
+        key = kind, data["run_id"]
+        # The unnumbered <flow>.json copies the newest invocation report; that run's own wins.
+        if key not in result or result[key][1].parent.name == "flow-reports":
+            result[key] = data, path
 
     def _read(self, path: Path) -> dict[str, Any] | None:
         try:
