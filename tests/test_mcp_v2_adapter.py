@@ -33,7 +33,7 @@ def _test_server(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mcp_server, "_build_mcp_tool_index", lambda _tools: {})
     monkeypatch.setattr(catalog, "visible_definitions", lambda _exposure, _tools: [definition])
 
-    async def dispatch_status(name, arguments, jobs, names, *, caller=None):
+    async def dispatch_status(name, arguments, jobs, names, *, request_context=None, caller=None):
         return [TextContent(type="text", text=f"{name}: ready")]
 
     monkeypatch.setattr(mcp_server, "_dispatch_special_mcp_tool", dispatch_status)
@@ -97,7 +97,7 @@ def test_http_adapter_rejects_host_and_origin_injection(monkeypatch) -> None:
 
 
 def test_application_dispatch_routes_bwave_and_python_tools(monkeypatch) -> None:
-    async def no_special(*_args, caller=None):
+    async def no_special(*_args, request_context=None, caller=None):
         return None
 
     async def bwave(name, _arguments, _request_context=None):
