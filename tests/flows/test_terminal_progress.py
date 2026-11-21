@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,6 +28,7 @@ from booley.flows.terminal_progress import (
     TerminalProgress,
     announce_unit,
     current_progress,
+    observe_source_names,
     progress_lane,
 )
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
@@ -36,6 +37,7 @@ from tests.time_budget import hang_guard_s, scaled
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
 LINT_TARGETS = ("lint_a", "lint_b")
+BUILD_NAMES = {"src/c/top.v": "rtl/top.v"}
 
 
 class Screen(io.StringIO):
@@ -617,19 +619,19 @@ def prepare_synth_unit(flow, tmp_path, monkeypatch):
     recipe = SimpleNamespace(
         command=["spec"],
         resolved=SimpleNamespace(files=(), build_root=tmp_path),
-        project_paths=ProjectSourcePaths(),
+        project_paths=ProjectSourcePaths(BUILD_NAMES),
     )
     monkeypatch.setattr(flow, "_resolve_synth_recipe", lambda _: recipe)
     monkeypatch.setattr(flow, "_configure_synth", lambda *_: plan)
     script = (
         f"import pathlib; pathlib.Path({str(build / 'yosys.log')!r})"
-        ".write_text('BOOLEY_STAGE: yosys\\nreal file-only line\\n')"
+        ".write_text('BOOLEY_STAGE: yosys\\nsrc/c/top.v:3: real file-only line\\n')"
     )
     monkeypatch.setattr(flow, "_synth_boundary_cmd", lambda _: [sys.executable, "-c", script])
     monkeypatch.setattr(
         flow, "_interpret_boundary_run", lambda *args, **_: (SimpleNamespace(), args[2].stdout)
     )
-    return flow._run_single_config, build / "yosys.log", "real file-only line"
+    return flow._run_single_config, build / "yosys.log", "src/c/top.v:3: real file-only line"
 
 
 def prepare_fpga_unit(flow, tmp_path, monkeypatch):
@@ -640,7 +642,7 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
     log = tmp_path / "demo.runs" / "impl_1" / "runme.log"
     script = (
         f"import pathlib; p=pathlib.Path({str(log)!r}); p.parent.mkdir(parents=True);"
-        " p.write_text('fresh implementation line\\n')"
+        " p.write_text('src/c/top.v:3: fresh implementation line\\n')"
     )
     prepared = _PreparedFpgaCommand(
         [sys.executable, "-c", script],
@@ -649,9 +651,10 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
         False,
         None,
         console_logs=(tmp_path / "vivado.log", log),
+        project_paths=ProjectSourcePaths(BUILD_NAMES),
     )
     monkeypatch.setattr(flow, "_prepare_fpga_command", lambda _: prepared)
-    return flow._run_single_target, log, "fresh implementation line"
+    return flow._run_single_target, log, "src/c/top.v:3: fresh implementation line"
 
 
 @pytest.mark.parametrize(
@@ -663,7 +666,7 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
             "candidate: configure",
             ["candidate: synthesis"] * 3,
             "candidate: yosys",
-            "real file-only line",
+            "src/c/top.v:3: real file-only line",
         ),
         (
             FpgaImplFlow,
@@ -671,7 +674,7 @@ def prepare_fpga_unit(flow, tmp_path, monkeypatch):
             None,
             ["candidate: Vivado running"] * 2,
             "candidate: implementation",
-            "fresh implementation line",
+            "src/c/top.v:3: fresh implementation line",
         ),
     ],
     ids=["synth", "fpga"],
@@ -699,7 +702,8 @@ def test_work_unit_observes_registered_log(
         assert records[0][1] == first
     assert [stage for _, stage, _ in records[1:]] == stages
     assert unit_stage in sink.stream.getvalue()
-    assert line in sink.stream.getvalue()
+    assert line.replace("src/c/", "rtl/") in sink.stream.getvalue()
+    assert "src/c/" not in sink.stream.getvalue()
     assert line.encode() in sink.log_path.read_bytes()
 
 
@@ -794,6 +798,26 @@ def test_internal_sim_result_records_filtered_but_retained_in_transcript(tmp_pat
     assert "BOOLEY_BUILD" not in sink.stream.getvalue()
     assert "BOOLEY_SIM_CPU" not in sink.stream.getvalue()
     assert data in sink.log_path.read_bytes()
+
+
+@pytest.mark.parametrize("lane", [False, True], ids=["serial", "lane"])
+def test_relayed_line_names_project_path_and_transcript_keeps_raw(tmp_path, lane):
+    raw = b"- src/acme_c_1/tb.v:266: Verilog $finish\nplain line\n"
+    sink = observer(tmp_path)
+    with sink.installed(), ExitStack() as stack:
+        observe_source_names(ProjectSourcePaths({"src/acme_c_1/tb.v": "rtl/tb.v"}))
+        if lane:
+            # Labelled by a Target other than the one the names were registered under.
+            stack.enter_context(progress_lane("t/1"))
+            announce_unit("run", target="acme:c:1#sim")
+        sink.begin_command()
+        sink.observe("stdout", raw)
+        sink.end_command()
+    shown = sink.stream.getvalue()
+    assert "rtl/tb.v:266: Verilog $finish" in shown
+    assert "plain line" in shown
+    assert "src/acme_c_1/" not in shown
+    assert raw in sink.log_path.read_bytes()
 
 
 def test_blocked_transcript_writer_cannot_block_process_capture(tmp_path):

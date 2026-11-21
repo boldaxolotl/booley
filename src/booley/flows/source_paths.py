@@ -105,6 +105,12 @@ class ProjectSourcePaths:
                 by_name[_normalized(f"{spelling}/{name}")] = project_path
         return ProjectSourcePaths(by_name)
 
+    def merged(self, other: ProjectSourcePaths) -> ProjectSourcePaths:
+        """This mapping plus *other*'s names, *other* winning; ``self`` when it adds none."""
+        if self.by_name.items() >= other.by_name.items():
+            return self
+        return ProjectSourcePaths({**self.by_name, **other.by_name})
+
     def project_path(self, reported: str) -> str:
         """The Project path for a name a tool printed, else ``reported`` unchanged."""
         return self.by_name.get(_normalized(reported), reported)

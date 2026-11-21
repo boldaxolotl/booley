@@ -30,6 +30,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.source_paths import ProjectSourcePaths
+from booley.flows.terminal_progress import current_progress
 from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp.flow_adapter import flow_schema
@@ -105,10 +106,17 @@ def elab_cli(
         image = inner / "Vtb_demo"
         image.write_bytes(b"image")
         image.chmod(0o755)
+        (tmp_path / "src/sim_0").mkdir(parents=True, exist_ok=True)
+        for name, data in _SOURCES.items():  # the export FuseSoC stages beside the Project
+            (tmp_path / "src/sim_0" / name).write_bytes(data)
         resolved = SimpleNamespace(
+            vlnv=handle.vlnv,
             build_root=tmp_path,
             cocotb_module="",
-            files=tuple(ResolvedFile(name, "systemVerilogSource") for name in _SOURCES),
+            files=tuple(
+                ResolvedFile(f"src/sim_0/{name}", "systemVerilogSource", core=handle.vlnv)
+                for name in _SOURCES
+            ),
         )
         return PreparedSimulationBuild(
             handle.selector,
@@ -133,6 +141,10 @@ def elab_cli(
         token = _BUILD_TOKEN.search(command[2])
         assert token is not None
         record = f"BOOLEY_BUILD_STAGE token={token.group(1)} rc={build.returncode}\n"
+        if sink := current_progress():
+            sink.begin_command()
+            sink.observe("stdout", build.stdout.encode())
+            sink.end_command()
         return SubprocessResult(
             returncode=build.returncode, stdout=build.stdout + record, stderr=build.stderr
         )
@@ -162,7 +174,11 @@ _DESIGN_FAIL = SubprocessResult(returncode=1, stdout="%Error: rtl/top.sv:1: synt
 _SETUP_ERROR = SimulationBuildPreparationError("current setup exploded")
 _MISSING_VERILATOR = SubprocessResult(
     returncode=2,
-    stdout="/bin/sh: 1: verilator: not found\nmake: *** [Makefile:8: Vtop.mk] Error 127\n",
+    stdout=(
+        "/bin/sh: 1: verilator: not found\n"
+        "src/sim_0/dut.sv:1: while elaborating\n"
+        "make: *** [Makefile:8: Vtop.mk] Error 127\n"
+    ),
 )
 
 
@@ -526,11 +542,16 @@ def test_simulation_record_exit_precedence(
 
 
 def test_missing_executable_is_typed_in_elab_only_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     result, _seen = elab_cli(tmp_path, monkeypatch, {"sim_dut": _MISSING_VERILATOR})
 
     outcome = result.outcome
+    relayed = capsys.readouterr().err
+    assert "output: dut.sv:1: while elaborating" in relayed
+    assert "src/sim_0/" not in relayed
+    assert "src/sim_0/" not in outcome.report_text
+    assert "\ndut.sv:1: while elaborating" in outcome.report_text
     assert result.exit_code == EXIT_ERROR
     assert outcome.detail["mode"] == "elab_only"
     assert outcome.detail["eda_tool_error"] == "missing_executable"

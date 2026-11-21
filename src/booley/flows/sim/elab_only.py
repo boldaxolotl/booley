@@ -39,6 +39,7 @@ from booley.flows.sim.live_progress import (
     publish_checkpoint,
 )
 from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -117,6 +118,7 @@ class ElabOnlyTargetResult:
         default_factory=lambda: BuildOutcome(False, None, "infrastructure")
     )
     log_path: str = ""
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -286,7 +288,7 @@ class ElabOnlyMixin:
             if binary is not None:
                 return result.target, MissingExecutableError(
                     binary,
-                    context=result.outcome.output,
+                    context=result.project_paths.project_text(result.outcome.output),
                 )
         return None
 
@@ -627,8 +629,10 @@ class ElabOnlyMixin:
             "-c",
             simulation_build_script(prepared, token),
         ]
-        from booley.flows.terminal_progress import announce_unit
+        from booley.flows.terminal_progress import announce_unit, observe_source_names
 
+        paths = ProjectSourcePaths.for_target(self._target_handle(target), prepared.resolved)
+        observe_source_names(paths)
         observe_stage(
             target,
             "building",
@@ -648,6 +652,7 @@ class ElabOnlyMixin:
             compile_command=shlex.join(command),
             fileset={name: list(paths) for name, paths in prepared.fileset.items()},
             outcome=outcome,
+            project_paths=paths,
         )
         result.log_path = self._persist_elab_only_log(target, outcome.output)
         return result
