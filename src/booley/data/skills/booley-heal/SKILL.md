@@ -71,10 +71,13 @@ Never describe one of those partial outcomes as healed.
    names (`booley init`; as an external action when the hint says "on the
    host"). Refresh `stealth.projections-not-current` (missing or stale root
    copies of stealth cores) by running any Booley Flow in place, for example a
-   lint of one Target, never by handing it to the user. The `✗` projection rows
-   need the action their hint names: ask the user before moving or deleting a
-   foreign file, fix an authored core that cannot be read, and hand the Git
-   exclusion (`booley init` on the host) to the user in an issued Sandbox.
+   lint of one Target, never by handing it to the user. When that WARN names
+   copies that outlive their authored cores, delete the files its hint names
+   yourself; no Flow removes them while no Target is left. The `✗` projection
+   rows need the action their hint names: ask the user before moving or
+   deleting a foreign file, fix an authored core that cannot be read, and hand
+   the Git exclusion (`booley init` on the host) to the user in an issued
+   Sandbox.
    Include each repair in the evidence and rerun before diagnosing remaining
    rows. The `... skipped - stealth core projections are not current` rows
    (Flow dry-runs, `.core` audit, deep checks) clear once the WARN and any
