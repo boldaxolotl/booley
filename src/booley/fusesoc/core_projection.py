@@ -279,7 +279,7 @@ def _projection_drift(expected: Mapping[Path, str]) -> list[ProjectionIssue]:
             issues.append(ProjectionIssue(ProjectionDrift.MISSING, destination.name))
         elif not _is_owned_projection(destination):
             issues.append(ProjectionIssue(ProjectionDrift.FOREIGN, destination.name))
-        elif destination.read_text(encoding="utf-8") != content:
+        elif not _projection_current(destination, content):
             issues.append(ProjectionIssue(ProjectionDrift.STALE, destination.name))
     return issues
 
@@ -607,7 +607,7 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
             raise CoreProjectionError(
                 f"refusing to overwrite non-Booley file at projected core path {destination}"
             )
-        if destination.read_text(encoding="utf-8") == content:
+        if _projection_current(destination, content):
             return False
     if state is not None:
         _publish_recorded(destination, content, state)
@@ -626,11 +626,20 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
 
 
 def _is_owned_projection(path: Path) -> bool:
+    # Bytes, not text: ownership is the header alone, whatever bytes follow it (#5287).
     try:
-        with path.open("r", encoding="utf-8") as stream:
+        with path.open("rb") as stream:
             stream.readline()
-            return stream.readline().startswith(_MARKER_PREFIX)
-    except (OSError, UnicodeDecodeError):  # Booley writes UTF-8: anything else is foreign
+            return stream.readline().startswith(_MARKER_PREFIX.encode())
+    except OSError:
+        return False
+
+
+def _projection_current(destination: Path, content: str) -> bool:
+    """Whether an owned projection holds *content*; undecodable bytes are stale (#5287)."""
+    try:
+        return destination.read_text(encoding="utf-8") == content
+    except UnicodeDecodeError:
         return False
 
 

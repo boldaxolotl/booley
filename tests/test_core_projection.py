@@ -148,9 +148,14 @@ def test_reconcile_refuses_foreign_destination(tmp_path: Path) -> None:
     assert destination.read_text(encoding="utf-8") == "user data\n"
 
 
-def test_non_utf8_core_files_are_foreign_or_unreadable(tmp_path: Path) -> None:
+def test_non_utf8_core_files_are_stale_foreign_or_unreadable(tmp_path: Path) -> None:
     root, core = _project(tmp_path)
-    projected_core_path(root, core).write_bytes(b"\xff not UTF-8\n")
+    destination = projected_core_path(root, core)
+    reconcile_projected_cores(root)
+    destination.write_bytes(destination.read_bytes() + b"\xff\n")  # damaged owned copy
+    assert list(map(str, projection_issues(root))) == [f"stale {destination.name}"]
+    assert reconcile_projected_cores(root).written == (destination,)
+    destination.write_bytes(b"\xff not UTF-8\n")
     with pytest.raises(CoreProjectionError, match="refusing to overwrite"):
         reconcile_projected_cores(root)
     core.write_bytes(b"CAPI=2:\nname: ::a:\xff\n")  # #5287
