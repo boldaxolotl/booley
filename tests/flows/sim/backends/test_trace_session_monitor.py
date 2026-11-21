@@ -643,6 +643,7 @@ class TestTraceStatusManifest:
         session.start_conversion_budget(0)  # already spent
 
         session.postprocess(vcd)
+        session.report_failed_conversions(declared_trace_used=False)
 
         assert builds == []  # no bwave build ran
         assert "trace_convert_timeout_ms" in capsys.readouterr().out
@@ -679,6 +680,24 @@ class TestTraceStatusManifest:
         data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
         assert any(e["kind"] == "bwave_published" for e in data["events"]) is published
         assert data["attempts"][-1]["status"] == status
+
+    def test_recovered_fifo_timeout_keeps_its_reason_in_the_evidence(self, tmp_path, capsys):
+        ts = TraceSession(work_dir=tmp_path)
+
+        class HungConversion:
+            def finish(self):
+                return ConversionResult(
+                    ts.bwave_path,
+                    failure_kind="timeout",
+                    events=("WARNING: bwave killed (FIFO hung)",),
+                )
+
+        ts.cleanup_fifo(HungConversion())
+        ts.report_failed_conversions(declared_trace_used=True)
+
+        assert capsys.readouterr().out.count("[trace] note:") == 1
+        data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+        assert data["attempts"][-1]["detail"] == "WARNING: bwave killed (FIFO hung)"
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path)

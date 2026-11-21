@@ -211,6 +211,8 @@ class TraceSelection:
     path: Path | None
     # Fresh declared stores when more than one exists and Booley owns none.
     ambiguous: tuple[Path, ...] = ()
+    # A declared [flows.sim].trace_files entry supplied `path`.
+    declared: bool = False
 
 
 def ambiguous_trace_reason(stores: tuple[Path, ...]) -> str:
@@ -304,14 +306,16 @@ class CurrentRunTraces:
                 if match in streamed:
                     # Publish as the session's own trace.fst, like a post-run
                     # conversion, so `bwave register/gui SIM_DIR` finds it.
-                    return TraceSelection(self.session.publish_bwave(match, move=True) or match)
-                return TraceSelection(match)
+                    return TraceSelection(
+                        self.session.publish_bwave(match, move=True) or match, declared=True
+                    )
+                return TraceSelection(match, declared=True)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that
             # postprocess retained when conversion failed.
             converted = self.session.find()
             if converted is not None:
-                return TraceSelection(converted)
+                return TraceSelection(converted, declared=True)
         return TraceSelection(None)
 
     def _fresh_declared(self) -> list[Path]:
