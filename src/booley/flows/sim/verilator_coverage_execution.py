@@ -8,7 +8,8 @@ import re
 import shlex
 import shutil
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -20,11 +21,12 @@ from booley.core.build_paths import work_root_for
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.job_estimates import sim_resource_flags
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
 from booley.flows.sim import trace_overlay
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import AdapterResult, AdapterTransportIdentity
 from booley.flows.sim.build import (
+    BuildOutcome,
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
     build_failure_report,
@@ -76,7 +78,8 @@ from booley.flows.sim.execution.engine import (
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import observe_stage, prepare_attempt_log
-from booley.flows.terminal_progress import announce_unit
+from booley.flows.source_paths import ProjectSourcePaths
+from booley.flows.terminal_progress import announce_unit, observe_source_names
 from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
@@ -85,6 +88,7 @@ from booley.fusesoc.fusesoc_registry import (
     mirrored_export_name,
     native_cores_ignored,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
@@ -145,6 +149,7 @@ class VerilatorCoverageExecution:
         self._pre_sim_commands = pre_sim_commands
         self._pre_sim_build_access = pre_sim_build_access
         self._prepared: PreparedSimulationBuild | None = None
+        self._project_paths = ProjectSourcePaths()
         self._artifact_paths: tuple[Path, ...] = ()
         self._build_variant: str | None = None
         self._trace_mode = "vcd_fifo"
@@ -154,6 +159,23 @@ class VerilatorCoverageExecution:
         self._verify_bundle: Callable[[], None] | None = None
         # Size of the resolved Target's files, labelled on every later command.
         self._source_bytes: int | None = None
+        # Set by ``retaining_build_lease``; ``build`` then enters its slot lease here.
+        self._retained_lease: ExitStack | None = None
+
+    @contextmanager
+    def retaining_build_lease(self) -> Iterator[None]:
+        """Keep each build's slot lease until the context ends, then prune the slot.
+
+        The caller copies the built image inside the context; without it the
+        slot lease ends when ``build`` returns, and the image is launched in
+        place and never pruned.
+        """
+        with ExitStack() as stack:
+            self._retained_lease = stack
+            try:
+                yield
+            finally:
+                self._retained_lease = None
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         """Prepare and compile the collector-selected isolated build variant."""
@@ -181,7 +203,12 @@ class VerilatorCoverageExecution:
         try:
             compile_surface = resolve_target_compile_surface(self._handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(self._handle, request.variant.name) as session:
+            retained = self._retained_lease
+            with ExitStack() as local:
+                stack = retained if retained is not None else local
+                session = stack.enter_context(
+                    self._lease(request.variant.name, prune=retained is not None)
+                )
                 candidate = session.new_generation()
                 prepared = self._prepare_build(request, build_root=candidate)
                 if isinstance(prepared, str):
@@ -211,12 +238,15 @@ class VerilatorCoverageExecution:
         key = session.reusable_key(candidate, inputs, hooks=False)
         retained = session.try_reuse(candidate, key)
         if retained is None:
-            result = self._execute_build(candidate, identity)
-            if result.success:
-                self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+            with judged_commands_failing_on_error() as commands:
+                result = self._execute_build(candidate, identity)
+                if result.success:
+                    self._artifact_paths = session.authorize_fresh_image(candidate, inputs, key)
+                commands.judge(result.success)
             return candidate, result
         session.discard_candidate(candidate.work_root)
         self._prepared = retained
+        self._map_sources(retained)
         self._artifact_paths = session.retained_artifacts(retained)
         announce_unit("coverage: verified build reuse", target=self._handle.selector)
         reason = f"verified Simulation build reuse ({session.cache_decision})"
@@ -270,6 +300,12 @@ class VerilatorCoverageExecution:
                 overlay.cleanup()
         return prepared
 
+    def _lease(self, variant: str, *, prune: bool = False) -> SimulationBuildSession:
+        """The variant's Target slot lease, waited for up to the build timeout."""
+        return SimulationBuildSession(
+            self._handle, variant, wait_s=self._build_timeout_s(), prune=prune
+        )
+
     def _build_timeout_s(self) -> int:
         timeout_ms = self._options.build_timeout_ms or DEFAULT_SIM_BUILD_TIMEOUT_MS
         return max(1, timeout_ms // 1000)
@@ -283,6 +319,7 @@ class VerilatorCoverageExecution:
         script = simulation_build_script(prepared, token)
         script = _in_directory_script(self._handle.project_root, script)
         timeout_s = self._build_timeout_s()
+        self._map_sources(prepared)
         observe_stage(
             self._handle.selector,
             "building",
@@ -296,18 +333,32 @@ class VerilatorCoverageExecution:
         announce_unit("coverage: build/elaboration", target=self._handle.selector)
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
+        if not outcome.passed:
+            return self._failed_build_result(outcome, identity)
+        self._prepared = prepared
+        return SimulationBuildResult(True, outcome.output, identity)
+
+    def _map_sources(self, prepared: PreparedSimulationBuild) -> None:
+        """Show the build's source names by Project path in relayed and recorded output."""
+        self._project_paths = ProjectSourcePaths.for_target(self._handle, prepared.resolved)
+        observe_source_names(self._project_paths)
+
+    def _failed_build_result(
+        self, outcome: BuildOutcome, identity: VerilatorCollectorIdentity
+    ) -> SimulationBuildResult:
+        """A failed build's result, quoting its compiler text by Project path."""
+        paths = self._project_paths
         if outcome.failure_kind == "infrastructure":
             return SimulationBuildResult(
                 False,
-                build_failure_report(outcome),
+                build_failure_report(outcome, paths),
                 identity,
                 infrastructure_error=True,
                 reason=outcome.reason,
             )
-        if not outcome.passed:
-            return SimulationBuildResult(False, outcome.output or outcome.reason, identity)
-        self._prepared = prepared
-        return SimulationBuildResult(True, outcome.output, identity)
+        return SimulationBuildResult(
+            False, paths.project_text(outcome.output) or outcome.reason, identity
+        )
 
     def run(self, request: SimulationRunRequest) -> SimulationRunResult:
         """Run one selected test in one process through the authenticated adapter."""
@@ -320,7 +371,7 @@ class VerilatorCoverageExecution:
         try:
             if self._bundle_bound:
                 return self._run_prepared(request, prepared)
-            with SimulationBuildSession(self._handle, variant):
+            with self._lease(variant):
                 return self._run_prepared(request, prepared)
         except SimulationBuildSlotError as exc:
             return SimulationRunResult(
@@ -444,28 +495,32 @@ class VerilatorCoverageExecution:
         }
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
-        self._observe_executing(request, prepared, transport, work)
-        try:
-            executed = execute_adapter_attempt(
-                self._invoke,
-                AdapterAttemptRequest(
-                    ("sh", "-c", script),
-                    work.timeout_s
-                    + (work.trace_convert_timeout_s if work.trace else 0)
-                    + _ADAPTER_CLEANUP_MARGIN_S,
-                    transport,
-                    evidence_root,
-                ),
-            )
-        finally:
-            observe_stage(
-                self._handle.selector,
-                "postprocessing",
-                evidence_root=evidence_root,
-                attempt_token=transport.attempt_token,
-                source_bytes=self._source_bytes,
-            )
-        return replace(_simulation_run_result(executed, request.test.name), pre_sim=pre_sim)
+        with judged_commands_failing_on_error() as commands:
+            self._observe_executing(request, prepared, transport, work)
+            try:
+                executed = execute_adapter_attempt(
+                    self._invoke,
+                    AdapterAttemptRequest(
+                        ("sh", "-c", script),
+                        work.timeout_s
+                        + (work.trace_convert_timeout_s if work.trace else 0)
+                        + _ADAPTER_CLEANUP_MARGIN_S,
+                        transport,
+                        evidence_root,
+                    ),
+                )
+            finally:
+                observe_stage(
+                    self._handle.selector,
+                    "postprocessing",
+                    evidence_root=evidence_root,
+                    attempt_token=transport.attempt_token,
+                    source_bytes=self._source_bytes,
+                )
+            result = _simulation_run_result(executed, request.test.name)
+            result = replace(result, output=self._project_paths.project_text(result.output))
+            commands.judge(result.verdict == "pass")
+        return replace(result, pre_sim=pre_sim)
 
     def _observe_executing(
         self,
@@ -505,7 +560,7 @@ class VerilatorCoverageExecution:
         """Run one collector utility in its requested artifact directory."""
         observe_stage(self._handle.selector, "postprocessing", source_bytes=self._source_bytes)
         announce_unit(f"coverage: {request.argv[0]}", target=self._handle.selector)
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.output_path.parent)
         script = f"cd {shlex.quote(str(request.cwd))}\nexec {shlex.join(request.argv)}"
         result = self._invoke(["sh", "-c", script], timeout=DEFAULT_TIMEOUT_S)
         return SimulationCommandResult(result.returncode, result.stdout, result.stderr)
@@ -767,9 +822,9 @@ def _in_directory_script(directory: Path, script: str) -> str:
 
 
 def _prepare_artifact_directories(request: SimulationRunRequest) -> None:
-    request.raw_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(request.raw_path.parent)
     if request.hook_evidence_path is not None:
-        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(request.hook_evidence_path.parent)
 
 
 def _snapshot_pre_sim_state(

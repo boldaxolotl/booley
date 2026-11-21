@@ -147,7 +147,8 @@ def _child_sweep(worktree: str, fifo: str, stage: str, barrier_s: int) -> None:
             barrier()
         return [MutationTestRun("suite", process=subprocess.CompletedProcess([], 0))]
 
-    endpoint._run_elab = elaborate
+    # The build seam, not _run_elab: the claim and the OOM rerun around it stay real.
+    endpoint._build_elab = elaborate
     endpoint._run_target_test_suite = run_suite
     plan = MutationRunPlan(
         scope_files=[SCOPE],

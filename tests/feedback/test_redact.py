@@ -438,8 +438,28 @@ def test_feedback_overlapping_terms_and_separate_identifier_contract():
     )
     design_only = RedactionPlan(identifiers={"quokka": "<module-1>"})
     assert apply_plan("myquokkafile quokka_config QuokkaRunner quokka", design_only) == (
-        "myquokkafile quokka_config QuokkaRunner <module-1>",
-        {"<module-1>": 1},
+        "myquokkafile <module-1>_config QuokkaRunner <module-1>",
+        {"<module-1>": 2},
+    )
+
+
+def test_design_names_match_at_identifier_component_boundaries(tmp_path):
+    """`_` joins identifiers and FuseSoC build directories, so it separates names."""
+    root = tmp_path / "ip"
+    (root / ".booley").mkdir(parents=True)
+    (root / ".booley" / "booley.toml").write_text(
+        '[feedback]\nredact_extra = ["zorgblat"]\n', encoding="utf-8", newline="\n"
+    )
+    (root / "picorv32.core").write_text(
+        "name: booley::picorv32:0\ntoplevel: picorv32_axi\n", encoding="utf-8", newline="\n"
+    )
+    text = (
+        "picorv32_wb picorv32_regs uut.picorv32_core.cpuregs rtl/picorv32_wb/top.v "
+        "src/booley__picorv32_0/x.v picorv32_axi zorgblat_cfg picorv32x xpicorv32"
+    )
+    assert redact(text, root)[0] == (
+        "<module-1>_wb <module-1>_regs uut.<module-1>_core.cpuregs rtl/<module-1>_wb/top.v "
+        "src/booley__<module-1>_0/x.v <module-2> <redacted>_cfg picorv32x xpicorv32"
     )
 
 

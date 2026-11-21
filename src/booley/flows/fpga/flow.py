@@ -20,10 +20,9 @@ from __future__ import annotations
 
 import logging
 import re
-import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -46,7 +45,12 @@ from booley.flows.edam import EdamFile
 from booley.flows.flow_config import expected_count
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
-from booley.flows.job_resources import resolved_source_bytes, resource_phase
+from booley.flows.job_resources import (
+    judged_commands,
+    resolved_source_bytes,
+    resource_phase,
+    unjudged_commands,
+)
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -62,12 +66,15 @@ from booley.flows.result_table import (
     note_line,
     status_cell,
 )
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_parameters import vlogparam_specs
-from booley.flows.terminal_progress import ProgressText
+from booley.flows.terminal_progress import ProgressText, observe_source_names
+from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
 from booley.presentation import colors
 from booley.presentation.terminal_table import render_table
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
 from booley.targets.parameter_integrity import validate_top_parameter_intent
@@ -135,6 +142,7 @@ class _PreparedFpgaCommand:
     run_evidence: dict[str, Any] = field(default_factory=dict)
     ppa_profile: VivadoProfile = VIVADO_PROFILES["balanced"]
     console_logs: tuple[Path, ...] = ()
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
     @property
     def kill_logs(self) -> tuple[Path, ...]:
@@ -308,14 +316,8 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         for target in targets:
             try:
                 if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
-                        prefix=".booley-fpga-plan-",
-                        dir=self.args.work_dir,
-                    ) as scratch:
-                        recipe = self._resolve_fpga_recipe(
-                            target,
-                            build_root=Path(scratch) / target,
-                        )
+                    with self._dry_run_build_root(target) as build_root:
+                        recipe = self._resolve_fpga_recipe(target, build_root=build_root)
                 else:
                     recipe = self._resolve_fpga_recipe(target)
                     candidate_recipes[target] = recipe
@@ -469,14 +471,22 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             variant="fusesoc",
         )
         handle = self._target_handle(target)
+        runner = setup_runner(self.name, target, "fpga_prepare")
         ref = getattr(self, "_target_execution_refs", {}).get(target)
-        if ref is not None:
-            return resolve_target_execution_ref(handle, ref, build_root=selected_root)
-        return fusesoc_registry.resolve_target_handle(
-            handle,
-            build_root=selected_root,
-            library_plan=fusesoc_registry.build_library_plan(handle.project_root, selected_root),
-        )
+        # The Target's judgment covers only Vivado: the setup keeps its own outcome.
+        with unjudged_commands():
+            if ref is not None:
+                return resolve_target_execution_ref(
+                    handle, ref, build_root=selected_root, runner=runner
+                )
+            return fusesoc_registry.resolve_target_handle(
+                handle,
+                build_root=selected_root,
+                library_plan=fusesoc_registry.build_library_plan(
+                    handle.project_root, selected_root
+                ),
+                runner=runner,
+            )
 
     def _prepare_fpga_command(
         self,
@@ -519,6 +529,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             recipe_fingerprint=recipe.recipe_fingerprint,
             run_evidence=dispatch_evidence.as_dict(),
             ppa_profile=recipe.ppa_profile,
+            project_paths=ProjectSourcePaths.for_target(
+                self._target_handle(target), recipe.resolved
+            ).spelled_from(recipe.resolved.build_root, work_root),
         )
 
     def _fpga_recipe_for_execution(self, target: str) -> ResolvedFpgaRecipe:
@@ -598,6 +611,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         from booley.flows.terminal_progress import announce_unit, observe_logs
 
         role = getattr(self, "_execution_role", "candidate")
+        observe_source_names(prepared.project_paths)
         self._open_run_log(target, prepared.work_root)
         announce_unit(f"{role}: Vivado running", target=target)
         observe_logs(
@@ -626,7 +640,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         Reservation.
         """
         try:
-            return self._implement_target(target)
+            with judged_commands() as commands:
+                metrics = self._implement_target(target)
+                commands.judge(metrics.returncode == 0)
+            return metrics
         finally:
             if getattr(self, "_execution_role", "candidate") != "baseline":
                 report_phase_end(target, "fpga_impl")
@@ -711,7 +728,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             metrics.infra_error = completion_error
         if result.timed_out:
             metrics.timed_out = True
-        self._apply_vivado_failure(metrics, result, report_text, log_text, stderr_text)
+        self._report_vivado_failure(metrics, result, report_text, prepared.project_paths)
         # Where this run's artifacts live, for the reader to list.
         metrics.dirs = self._artifact_dirs(work_root)
         # Persist the combined run log (route reports + make log/stderr) on pass
@@ -763,6 +780,25 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             metrics.infra_error = (
                 report_error or "Vivado required reports lack usable utilization/timing evidence"
             )
+
+    def _report_vivado_failure(
+        self,
+        metrics: FpgaMetrics,
+        result: SubprocessResult,
+        evidence: str,
+        project_paths: ProjectSourcePaths,
+    ) -> None:
+        """Classify a failed Vivado run, then name Project paths in the text it reports."""
+        # Map before classifying: the diagnostic line is capped, which would cut a
+        # long build-tree path before it could be replaced.
+        project = replace(
+            result,
+            stdout=project_paths.project_text(result.stdout),
+            stderr=project_paths.project_text(result.stderr),
+        )
+        self._apply_vivado_failure(
+            metrics, project, project_paths.project_text(evidence), project.stdout, project.stderr
+        )
 
     def _apply_vivado_failure(
         self,
@@ -874,7 +910,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
 
         log_dir = work_root_for(self.args.work_dir, self.name, target)
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             log_path = write_run_log(log_dir, text)
         except OSError:
             logger.debug(

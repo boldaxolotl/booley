@@ -50,12 +50,6 @@ def write_markdown_report(view: dict[str, Any]) -> Path:
     return write_report(view)
 
 
-@pytest.fixture(autouse=True)
-def plain_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Terminal text without ANSI unless a test turns colour on."""
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-
 def section(markdown: str, title: str) -> str:
     """The body of the Markdown section *title*; empty when the report has none."""
     marker = f"## {title}\n"
@@ -116,7 +110,11 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
 
     markdown = markdown_report(view)
 
-    assert "**1 unmet, 1 error, 1 not evaluated of 4 enforced**" in markdown
+    assert markdown.splitlines()[2:5] == [
+        "**Red: not accepted**",
+        "",
+        "**1 unmet, 1 error, 1 not evaluated of 4 enforced**",
+    ]
     assert markdown.index("## Failing") < markdown.index("## Metrics")
     failing = section(markdown, "Failing")
     assert "core synth area_um2_max: 9 vs ≤ 5, unmet" in failing
@@ -133,6 +131,7 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert colors.green("met") in terminal
     assert colors.red("Run r1: failing") in terminal
     assert colors.red("1 unmet, 1 error, 1 not evaluated of 4 enforced") in terminal
+    assert "Red:" not in terminal
 
 
 def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path: Path) -> None:
@@ -268,7 +267,7 @@ def test_two_bases_give_two_base_sections_and_the_same_verdicts(tmp_path: Path) 
     assert f"booley measure --all {main}" in default
     assert f"booley measure --all {first}" in chosen
     assert section(default, "Changed files") != section(chosen, "Changed files")
-    assert default.splitlines()[2] == chosen.splitlines()[2]  # the verdict line
+    assert default.splitlines()[:5] == chosen.splitlines()[:5]  # the state and verdict lines
     for same in ("Failing", "Metrics"):
         assert section(default, same) == section(chosen, same) != ""
 
@@ -301,6 +300,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     markdown = markdown_report(view)
 
     assert "Run r1: rules loosened" in markdown
+    assert markdown.splitlines()[2] == "**Amber: needs review (rules loosened)**"
     rules = section(markdown, "Rules changes")
     assert (
         "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — after DSP sharing"
@@ -313,6 +313,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     terminal = terminal_report(view)
     assert colors.amber("Run r1: rules loosened") in terminal
     assert colors.green("Run r1: rules loosened") not in terminal
+    assert "Amber:" not in terminal
     assert colors.green("2 of 2 enforced met") not in terminal  # not an all-green verdict
     assert colors.amber("2 of 2 enforced met") in terminal
 
@@ -446,6 +447,7 @@ def test_stopped_and_cancelled_runs_say_so_in_the_header(
 
         assert headline in section(markdown, "Run")
         assert f"- {line}" in section(markdown, "Run")
+        assert f"**Amber: needs review ({status.value})**" in markdown
         assert "**2 not evaluated of 2 enforced**" in markdown
         assert colors.amber(headline) in terminal
         assert colors.green(headline) not in terminal
@@ -488,6 +490,7 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     view = view_of(repo, store, stored, head)
 
     line = "Targets with no metrics: acme:b:1.0#x, acme:a:1.0#y"
+    assert markdown_report(view).splitlines()[2] == "**Green: accepted**"
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
         assert line in text
@@ -608,12 +611,14 @@ def test_failing_tests_list_test_runs_first_lines_and_the_report(tmp_path: Path)
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     reason = "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
-    failing = {"t00": reason, "t01": "", **{f"t{index:02d}": "boom" for index in range(2, 20)}}
+    failing = [f"t00: {reason}", "t01", *(f"t{index:02d}: boom" for index in range(2, 20))]
     unmet = Entry(
         "tests_failed_max", "tests_failed", 23, bound=0, verdict=Verdict.UNMET, detail="23 bad"
     )
     listed = FlowMetricValues(
-        plain={"tests_failed": 23, "tests_total": 25}, per_clock={}, failing_tests=failing
+        plain={"tests_failed": 23, "tests_total": 25},
+        per_clock={},
+        counted_items={"tests_failed": failing},
     )
     table = Table("sim", (unmet,), listed)
     source = tmp_path / "sources" / "report.json"
@@ -636,10 +641,96 @@ def test_failing_tests_list_test_runs_first_lines_and_the_report(tmp_path: Path)
     assert f"    t00: {reason}" in terminal
     assert "**1 unmet of 1 enforced**" in markdown
     old: dict[str, Any] = json.loads(json.dumps(view))
-    del old["tables"][0]["values"]["failing_tests"]
+    del old["tables"][0]["values"]["counted_items"]
     for text in (markdown_report(old), terminal_report(old)):
         assert "core sim: 23 failed of 25 tests" in text
         assert "t00" not in text
+
+
+def test_unmet_lint_and_mutation_tables_list_their_items_and_report(tmp_path: Path) -> None:
+    from booley.flows.metric_declarations import FlowMetricValues
+
+    repo, _, head = feature_repo(tmp_path)
+    store = MeasurementStore(repo / ".booley")
+    errors = [f"rtl/x.v:{line}: bad {line}" for line in range(1, 21)]
+    warnings = ["rtl/a.v:3 WIDTH: wide", "rtl/b.v:4 UNUSED: unused"]
+    survivors = ["MUT-1 negate a.v:4: 'a' -> 'b'", "MUT-2 swap a.v:9: '+' -> '-'"]
+    lint = Table(
+        "lint",
+        (
+            Entry("errors_max", "errors", 23, bound=0, verdict=Verdict.UNMET),
+            Entry("warnings_max", "warnings", 2, bound=0, verdict=Verdict.UNMET),
+        ),
+        FlowMetricValues(
+            {"errors": 23, "warnings": 2},
+            {},
+            counted_items={"errors": errors, "warnings": warnings},
+        ),
+    )
+    mutation = Table(
+        "mutation",
+        (
+            Entry("mutation_score_min", "mutation_score", 50, bound=80, verdict=Verdict.UNMET),
+            Entry("mutants_survived_max", "mutants_survived", 2, bound=1, verdict=Verdict.UNMET),
+        ),
+        FlowMetricValues(
+            {"mutation_score": 50, "mutants_survived": 2},
+            {},
+            counted_items={"mutants_survived": survivors},
+        ),
+    )
+    other = Table(
+        "lint",
+        (Entry("warnings_max", "warnings", 1, bound=5),),
+        FlowMetricValues({"warnings": 1}, {}, counted_items={"warnings": ["rtl/o.v:1 W: met"]}),
+        identity="acme:other:1.0#top",
+        target="other",
+    )
+    sources = {"acme:core:1.0#top": ["lint", "mutation"], "acme:other:1.0#top": ["lint"]}
+    reports = []
+    for identity, flows in sources.items():
+        for flow in flows:
+            source = (
+                tmp_path
+                / "sources"
+                / identity.replace(":", "_").replace("#", "_")
+                / flow
+                / "report.json"
+            )
+            write(source, "{}")
+            reports.append(FlowReport(identity, flow, source))
+    stored = store.write(build_run(key_of(repo, head), "r1", (lint, mutation, other)), reports)
+    view = view_of(repo, store, stored, head)
+
+    markdown = markdown_report(view)
+    terminal = terminal_report(view, width=200)
+
+    found = section(markdown, "Lint findings")
+    assert "- core lint: 23 errors" in found
+    assert errors[0] in found
+    assert "... and 3 more" in found
+    assert "- core lint: 2 warnings" in found
+    assert all(line in found for line in warnings)
+    assert f"- core lint report: `{stored.path.parent / 'r1' / '0-lint' / 'report.json'}`" in found
+    assert "other" not in found
+    survived = section(markdown, "Survived Mutants")
+    assert all(line in survived for line in survivors)
+    assert "... and" not in survived
+    assert survived.count("core mutation report: `") == 1
+    assert (
+        survived.count("- core mutation: 2 survived Mutants") == 1
+    )  # both bounds unmet, one list
+    assert found.count("core lint report: `") == 1  # errors and warnings unmet, one path
+    assert f"    {errors[0]}" in terminal
+    assert all(f"    {line}" in terminal for line in survivors)
+    assert "**4 unmet of 5 enforced**" in markdown
+    old: dict[str, Any] = json.loads(json.dumps(view))
+    for table in old["tables"]:
+        del table["values"]["counted_items"]
+    for text in (markdown_report(old), terminal_report(old)):
+        assert "core lint: 23" not in text
+        assert "Survived Mutants" not in text
+        assert "unmet of 5 enforced" in text
 
 
 def test_wordings_numbers_and_markdown_escaping_of_user_text(tmp_path: Path) -> None:
@@ -701,6 +792,7 @@ def test_a_target_run_is_never_reported_as_measured(
     assert "`--target` `acme:ip:core:1#core`: only its tables" in section(markdown, "Run")
     assert "for this tree" not in markdown
     assert "measured" not in section(markdown, "Run").replace("never makes the commit", "")
+    assert "**Amber: needs review (not stored)**" in markdown
     assert "**1 of 1 enforced met**" in markdown
     assert colors.green("Run scoped: not stored") not in terminal
     assert colors.amber("Run scoped: not stored") in terminal

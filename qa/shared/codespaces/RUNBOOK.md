@@ -41,8 +41,11 @@ finding, work around it if you can, and keep going.
 - **Don't reload the page** unless the area is about reload. A reload loses the
   Dashboard terminal and every terminal's contents.
 - **The Codespace carries the maintainer's identity.** `/etc/gitconfig` holds
-  their name and email, and `booley doctor -v` prints them. Keep that output
-  out of screenshots and evidence.
+  their name and email, and `booley doctor` prints them, with or without
+  `-v`, on its `sandbox.gitconfig-identity` line (warned or waived). Before
+  any screenshot or DOM read of Doctor output, filter that line
+  (`booley doctor 2>&1 | grep -v gitconfig-identity`) or capture only the
+  Summary. Keep the identity out of screenshots and evidence.
 
 ## 1. Preconditions
 
@@ -135,7 +138,10 @@ Get `<repo-id>` from `gh api repos/$DEMO --jq .id`. Call `preview_resize`
 with `freeform` 1440×900; its result reports the scaled screenshot size
 (1280×800), so confirm 1440×900 with `preview_status`. Check that the page shows branch `qa/<short>`,
 configuration "Booley PicoRV32 demo" and machine type 4-core, then click
-"Create codespace" and note the time. The Codespace's name exists only after
+"Create codespace" by locator or `aria-ref` (step 7, "Clicking") and note the
+time. Right after the click, check that the page navigated and that
+`gh codespace list --repo $DEMO` lists the new Codespace; a missed click
+creates nothing and says nothing. The Codespace's name exists only after
 the click: add its `resources.md` row as "name pending" before clicking, and
 fill in the name from the listing below.
 
@@ -148,8 +154,9 @@ the trust prompt ("Do you trust the authors of the files in this folder?")
 
 1. VS Code opens in Restricted Mode every time (by design, #2699), and no
    terminal starts until the folder is trusted. Click "Trust Folder &
-   Continue". A selector click on that button can time out; click its
-   coordinates instead (see "Clicking" in step 7), which works first time.
+   Continue" by its `aria-ref`. A selector click on that button can time
+   out; then click its page coordinates (see "Clicking" in step 7). Check
+   right after that the prompt is gone and Restricted Mode has ended.
 2. About 5-20 s later the Dashboard extension opens a "Booley Dashboard"
    terminal running `booley dashboard --on-attach`. It should come to the
    front on its own, ahead of the `postAttachCommand` terminal
@@ -188,7 +195,10 @@ python3 -c "import json,os;p=os.path.expanduser('~/.vscode-remote/data/Machine/s
 
 The same merge pins the theme to `Dark 2026`, so every run looks alike (a
 Codespace otherwise opens light or dark, and a reload can flip it). Other
-themes by name: `Light 2026`, `Dark High Contrast`, `Light High Contrast`.
+themes by ID: `Light 2026`, `Default High Contrast` (dark) and
+`Default High Contrast Light`. A picker label that is not an ID (such as
+`Dark High Contrast`) is written but changes nothing, so after each switch
+check that `document.querySelector('.monaco-workbench').className` changed.
 Never pick one in the theme picker: that writes the maintainer's settings.
 
 With `terminal.integrated.gpuAcceleration: "off"`, terminal rows are DOM text.
@@ -215,9 +225,16 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
 
 ## 7. Interaction rules
 
-- **Clicking:** screenshots come back scaled (a 1440×900 viewport gives a
-  1280×800 image), so never click at coordinates read off a screenshot. Get
-  them from the page:
+- **Clicking:** click by locator (such as
+  `button:has-text("Create codespace")`) or by an `aria-ref` from
+  `preview_snapshot`, and check the result right after (the page navigated,
+  the dialog closed, the Codespace is listed): a missed click fails
+  silently. Screenshots come back scaled (a 1440×900 viewport gives a
+  1280×800 image), so never click at coordinates read off a screenshot.
+  Page coordinates are the fallback, and only after checking that
+  `window.innerWidth` equals the viewport width `preview_status` reports: a
+  zoomed tab reports less (1280 at 1440) and its coordinates miss. Get them
+  from the page:
 
   ```js
   [...document.querySelectorAll('.monaco-button, .terminal-tabs-entry')].map(e => {
@@ -228,7 +245,6 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   })
   ```
 
-  An `aria-ref` from `preview_snapshot` also works.
 - **First key press:** click somewhere in the page first. Until then `press`
   fails with "focus inside cross-site frame".
 - **Terminal tabs:** switch terminals by clicking their entry in the tab list
@@ -250,6 +266,16 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
 - **Read only the terminal in front.** A terminal behind another one keeps
   stale DOM text: a hidden Dashboard can still read `1 FAIL` after the CLI
   published `0 failed`, and shows the new value once brought to the front.
+- **Hidden tab:** while your tab is not visible (`preview_status` reports
+  `visible: false`) it renders no frames, and the terminal DOM goes stale.
+  Take a `preview_snapshot` (`save: true`, `includeImage: false`) first: it
+  forces a repaint. If the snapshot fails, see step 9.
+- **Forwarded ports:** the T3 preview tab may block the cross-site GitHub
+  sign-in that a private forwarded port needs, so a page served on one
+  (Live Preview's internal browser) can stay blank inside the Codespace.
+  Load the same page top-level ("Live Preview: Show Preview (External
+  Browser)", or the forwarded-port URL from the Ports view in a tab of your
+  own) before calling it a Booley finding.
 - **Dashboard:** click inside it, then press keys. `ArrowRight`/`ArrowLeft`
   switch between the Sessions, Jobs and Targets windows, `Enter` opens a
   detail, `Escape` goes back one level. `ArrowUp` on the first row moves into
@@ -258,8 +284,8 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   `Running Finished All Owner: <owner>`; Targets: `Worktree: <name>`), then
   `Run` and `Help`, separated by `│`. In the top bar `ArrowLeft`/`ArrowRight`
   choose and `Enter` applies. In Help, after leaving the top bar, `ArrowDown`
-  scrolls; the mouse wheel and PageDown don't. `q` quits; `booley dashboard`
-  in a terminal reopens it.
+  and PageUp/PageDown scroll, as the footer says; the mouse wheel doesn't.
+  `q` quits; `booley dashboard` in a terminal reopens it.
 - **Long output:** F1, `View: Toggle Maximized Panel` shows output that doesn't
   fit the panel (a layout change, not a setting), and gives the Dashboard more
   than its default ~258 px. Toggle it back afterwards.
@@ -285,13 +311,13 @@ mismatch.
 
 | GUI surface | Oracle (command terminal) |
 |---|---|
-| Dashboard `Doctor:` line (`OK`, or `N FAIL · M WARN`) | `booley doctor` (not `-v`, see Hard rules). It republishes the result the Dashboard reads, so the line must match its summary after the next refresh. |
+| Dashboard `Doctor:` line (`OK`, or `N FAIL · M WARN`) | `booley doctor 2>&1 \| grep -v gitconfig-identity`, or read only its Summary (the identity line, see Hard rules). It republishes the result the Dashboard reads, so the line must match its summary after the next refresh. |
 | Dashboard resource line (CPU, Memory, Free disk) | No Booley command: `booley resources --json` shows historical peaks per Target, not this line. Compare with `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /workspaces`; CPU % only roughly, against `top -bn1 \| head -5`. |
 | Notices (upgrade review) | `booley upgrade status --json` |
 | Sessions overview, preview pane, session detail | No CLI. Check against what you started: which agent sessions, their branch and work dir (`git worktree list`), and the last Booley call you made in each. Each call shows as two rows (started, completed), and the detail stays on an ended session until `Escape`. Without a signed-in agent, make sessions with the scripted MCP client below. |
 | Session measurement line (`Measured <sha>`, `last Measured … · latest …`, `measuring k/n`) and the report it opens | The run's own document, found by its run ID: the report `Enter` opens is `<run_id>.md`, and the `measure` Job record carries `run_id`; then `find /workspaces/picorv32/.booley/measurements -name '<run_id>.json'` (layout `measurements/<project_tree>/<run_id>.json`) read with `jq .`, and compare its commit with `git -C <worktree> rev-parse HEAD`. While measuring, the `measure` Job's `progress.json` beside its `job.log`. Never pick a run by directory order, and never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement. |
 | Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,logs/,logs/*/,.interactive_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
-| VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s` re-reports the rows, but it moves the markers. |
+| VaporView scoped view (`bwave gui ... -s ... -g ...`) | The command's own report: it prints the signal and group tree VaporView reports back (`getViewerState`), the viewport and the marker times, and warns on stderr about signals the viewer didn't show. Compare the screenshot with that report, and the report with what you asked for. `--time`/`--cursor` without `-s`/`-g` keeps the rows and reports only the viewport and markers; re-send the selection to read the rows back. |
 
 **Scripted MCP client.** Sessions without an agent: in a command terminal,
 write a Python script (heredoc) that uses the image's `mcp` package against the

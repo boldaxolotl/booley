@@ -211,7 +211,7 @@ def _make_invalidation_store_unsafe(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-@pytest.mark.parametrize("operation", ["up", "status", "validate"])
+@pytest.mark.parametrize("operation", ["up", "up_without_recovery", "status", "validate"])
 def test_public_session_runtime_translates_unsafe_invalidation_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -289,7 +289,7 @@ def test_leftover_refresh_journal_blocks_no_command(
     assert session_runtime.validate(project) == "digest"
     assert not issuance_invalidation.shared_recovery_blocks_command(read_only=True)
     report = Findings()
-    host_diagnostics._inspect_session_stores(report)
+    host_diagnostics._inspect_session_stores(project, report)
     assert not [f for f in report.report().findings if f.severity is Severity.FAIL]
     assert leftover.read_bytes() == b"not a journal"
 

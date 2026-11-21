@@ -119,6 +119,16 @@ read-only, and delegating it would loosen the hardening.
 - A Job reserves its largest phase estimate at admission and shrinks it as
   phases finish. It never grows, so a running Job never waits partway
   through.
+- A synthesis Job is planned on its tools: `sv2v` (with the sv2v frontend),
+  `yosys`, and `openroad` (in physical mode). A tool with no record of its
+  own takes the Target's whole-command `synth` estimate, never another
+  Target's. The reservation drops to OpenROAD's when Yosys ends, and a reused
+  OpenROAD result ends that phase at once. A tool the run never reached ends
+  with its Target, so a run that fails before OpenROAD releases its estimate.
+  `sv2v` and Yosys run in one command and end together. FPGA implementation
+  stays one phase: one Vivado batch run does both synthesis and
+  implementation, so Booley sees no boundary between them. A Custom Flow is
+  one opaque command and stays one phase.
 - Order is by priority, but a later Job may jump ahead of a front Job that
   does not fit when it fits now and is estimated to finish before the front
   Job can start. A Job without wall-clock history never jumps. Strict order
@@ -208,9 +218,14 @@ read-only, and delegating it would loosen the hardening.
   scripts' own logs.
   Detection is deliberately conservative: a kill hidden behind a wrapper that
   reports none of these (a FuseSoC generator names no signal) is a plain
-  failure and is not requeued, as is a kill in a Pre-Sim Command or a
-  mutation run. A Pre-Sim Command is measured but not blamed for a kill: its
-  failure stays the hook's result, as the Simulation's tests see it.
+  failure and is not requeued.
+- A requeue reruns the smallest unit the kill took. A Pre-Sim Command's kill
+  is its attempt's, as its simulator's would be: a Simulation Record work
+  item's requeues only that item. A mutation campaign's coordinator holds a
+  companion claim, so each Mutant build and simulation, which holds a claim of
+  its own, is the unit: a kill at the Sandbox's limit runs it once more,
+  alone. A second kill, or a host kill, makes that Mutant inconclusive (or
+  fails the baseline), and its reason names the kill.
 
 ### Simulation Records
 

@@ -108,6 +108,11 @@ only):
 With row 6a `now`, apply Step 2 §2d to the scaffold's simulation Target before
 the Step 4 gate.
 
+In the container, before Step 3, reuse the **Run ID** that `SETUP-PLAN.md` §3
+records; when it records none, allocate the run's scratch root with
+`booley cleanup prepare` and record its run ID and scratch root there, as Step 0
+does. The Delivered Flow results snapshot and Step 7 use that ID.
+
 Then, in the container, run **Step 3 (optional — offer it) and Step 4
 (the doctor gate)**. Use plain `booley doctor` while fixing the scaffold, then
 follow Step 4's single final deep gate over the settled files; this summary does
@@ -138,8 +143,9 @@ The scaffold is a runnable counter starter. Record each extra request in SETUP-P
 - IP name, simulator, TB style, linter, ASIC/FPGA enablement and part, optional AGENTS.md and history/stealth: use the existing choices above.
 
 After Doctor, run **Step 6 §2 (write the report), §3 (walk through it), and §5
-(close out)** per the shared **Delivered Flow results** contract in SKILL.md;
-triage and export keep Step 6's existing consent requirements. Then run **Step 7**
-for cleanup, removing the run's scratch root. The final
+(close out)** per the shared **Delivered Flow results** contract in SKILL.md,
+including its snapshot into `.booley/setup-evidence/<run-id>/`; triage and
+export keep Step 6's existing consent requirements. Then run **Step 7** for
+cleanup, removing the run's scratch root. The final
 summary reuses the report's evidence rows, including unverified checks and
 deviations.

@@ -142,7 +142,8 @@ class RunFacts:
 
     ``job_class`` is the admission class (``None``: no slot); ``timeout_ms`` is
     set only for Flows with a long default budget, and ``timeout_problem`` says
-    why the configured value cannot be resolved. ``specialist`` is set for a Specialist.
+    why the configured value cannot be resolved; ``timeout_whole_run`` says the budget
+    covers the whole run, not each work unit. ``specialist`` is set for a Specialist.
     """
 
     job_class: str | None
@@ -150,6 +151,7 @@ class RunFacts:
     timeout_ms: int | None = None
     timeout_problem: str = ""
     specialist: SpecialistFacts | None = None
+    timeout_whole_run: bool = False
 
     @property
     def takes_slot(self) -> bool:
@@ -211,7 +213,14 @@ def _parse_facts(stdout: str) -> RunFacts | None:
         specialist = _parse_specialist_facts(data.get("specialist"))
         if data.get("specialist") is not None and specialist is None:
             return None
-        return RunFacts(job_class, data["dry_run"], timeout_ms, timeout_problem, specialist)
+        return RunFacts(
+            job_class,
+            data["dry_run"],
+            timeout_ms,
+            timeout_problem,
+            specialist,
+            timeout.get("whole_run") is True,
+        )
     except (ValueError, KeyError, AttributeError):
         return None
 
@@ -343,7 +352,8 @@ def _timeout_facts(flow: BuiltinFlow, request: Any) -> dict[str, Any]:
     if default_timeout_ms(flow.name) < _LONG_TIMEOUT_MS:
         return {}
     try:
-        return {"ms": resolve_timeout_ms(flow.name, request.work_dir, request.timeout_ms)}
+        ms = resolve_timeout_ms(flow.name, request.work_dir, request.timeout_ms)
+        return {"ms": ms, "whole_run": flow.timeout_covers_whole_run}
     except BoundaryError as exc:
         return {"problem": str(exc)}
 

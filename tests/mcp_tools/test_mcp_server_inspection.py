@@ -135,7 +135,11 @@ def test_discovery_errors_fail_with_first_error_as_fix(monkeypatch, tmp_path):
 
 
 def test_log_setup_failure_fails(monkeypatch, tmp_path):
-    for payload in (_payload(logs_dir_ok=False), {"tools": _ALL_TOOLS, "errors": []}):
+    for payload in (
+        _payload(logs_dir_ok=False),
+        _payload(logs_dir_writable=False),
+        {"tools": _ALL_TOOLS, "errors": []},
+    ):
         report = _Probe(monkeypatch, tmp_path, _completed(json.dumps(payload))).inspect()
 
         assert _summary(report) == [(Severity.FAIL, "MCP interactive log setup failed")]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -513,6 +514,13 @@ def _completed_result_documents(store: SimulationRecordStore) -> list[dict[str, 
     ]
 
 
+def _derived(group, names):
+    """A fake of ``PreparedOrdinaryGroup.for_work_item``: the retained group's state, new names."""
+    derived = copy.copy(group)
+    derived.names = names
+    return derived
+
+
 def _shared_executor(build_root, run_log, handle, launches, compile_count, bindings):
     class FakeGroup:
         def __init__(self, names: tuple[str, ...]) -> None:
@@ -529,6 +537,9 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count, bindi
 
         def planning_disclosure(self):
             return {}
+
+        def for_work_item(self, names, _test_runs):
+            return _derived(self, names)
 
         def compile(self):
             compile_count[0] += 1
@@ -602,6 +613,9 @@ class _TestGroup:
 
     def planning_disclosure(self) -> dict[str, object]:
         return {}
+
+    def for_work_item(self, names: tuple[str, ...], _test_runs: object) -> _TestGroup:
+        return _TestGroup(self.build_root, names[0])
 
     def compile(self) -> SimpleNamespace:
         return SimpleNamespace(passed=True)
@@ -805,6 +819,9 @@ class _Group:
 
     def planning_disclosure(self):
         return self._disclosure
+
+    def for_work_item(self, names, _test_runs):
+        return _derived(self, names)
 
     def compile(self):
         self._counters["compile"] += 1
@@ -1208,6 +1225,9 @@ class _ParallelGroup:
     def planning_disclosure(self):
         return {}
 
+    def for_work_item(self, names, _test_runs):
+        return _derived(self, names)
+
     def compile(self):
         self.state.compile_count += 1
         return SimpleNamespace(passed=True)
@@ -1243,7 +1263,8 @@ class _ParallelGroup:
         )
 
     def _coordinate(self, name: str) -> None:
-        # The first item builds alone under the Flow's claim; the next two overlap.
+        # The first item builds under the Flow's claim, then the others are admitted beside
+        # it; only the last two meet here.
         if name not in {"beta", "gamma"}:
             return
         self.state.barrier.wait()
@@ -1991,3 +2012,14 @@ def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, 
         }
         for item in cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
     ]
+
+
+def as_if_the_sandbox_restarted(booley_dir: Path) -> None:
+    """Rewrite each staged-input record as one from an earlier Sandbox lifetime looks from the new one."""
+    for record in (booley_dir / ".runtime/staged-runtime-inputs").glob("*.json"):
+        document = json.loads(record.read_text(encoding="utf-8"))
+        # A namespace scope parses only with a Linux identity kind, which Windows owners lack.
+        document["owner"].update(
+            identity_kind="linux-procfs-start", identity_scope="pid:[earlier-lifetime]"
+        )
+        record.write_text(json.dumps(document), encoding="utf-8")

@@ -99,12 +99,96 @@ fn build_default_uses_parallel_engine() {
 
     assert_eq!(default_code, 0, "default build failed: {default_stderr}");
     assert_eq!(parallel_code, 0, "parallel build failed: {parallel_stderr}");
+    for stderr in [&default_stderr, &parallel_stderr] {
+        assert!(!stderr.contains("WARNING:"), "clean trace warned: {stderr}");
+    }
     assert_eq!(
         std::fs::read(&default_store).unwrap(),
         std::fs::read(&parallel_store).unwrap()
     );
     for store in [default_store, parallel_store] {
         let _ = std::fs::remove_file(store);
+    }
+}
+
+const UNUSABLE_HEADER: &str = "$timescale 1ns $end\n$scope module tb $end\n\
+$var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
+$upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
+$enddefinitions $end";
+
+/// Body of the unusable-value-change trace. The header is 207 bytes, so the
+/// body starts at byte 207. The text has no final newline.
+const UNUSABLE_BODY: &str = "#0\n0!\nb00000000 #\n0&\n\
+#10\n1!\n1?\nb0101\n1\nr1.5\n\
+$comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
+#20\n0!\n$dumpoff\n1?\nb1 \nb11   \n$end\n$dumpon\n\
+#30\n1!\nb0010001";
+
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("WARNING:"))
+        .collect()
+}
+
+#[test]
+fn build_counts_unusable_value_changes_identically_in_both_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("unusable.vcd");
+    std::fs::write(&vcd, format!("{UNUSABLE_HEADER}\n{UNUSABLE_BODY}")).unwrap();
+    let header_only = dir.path().join("header_only.vcd");
+    std::fs::write(&header_only, UNUSABLE_HEADER).unwrap();
+    let expected = [
+        "WARNING: 6 malformed value-change line(s) skipped (first at byte 238)",
+        "WARNING: 2 value change(s) for an identifier the header does not declare skipped \
+         (first at byte 235)",
+        "WARNING: input does not end with a newline; the final line (byte 351) may be a \
+         truncated record",
+    ];
+    let header_only_expected = [
+        "WARNING: input does not end with a newline; the final line (byte 186) may be a \
+          truncated record",
+    ];
+
+    let configs = [
+        ("serial", None),
+        ("parallel", Some("8")),
+        ("parallel", Some("17")),
+        ("parallel", Some("64")),
+        ("parallel", None),
+    ];
+    for (engine, chunk) in configs {
+        for (input, want) in [
+            (&vcd, &expected[..]),
+            (&header_only, &header_only_expected[..]),
+        ] {
+            let store = dir.path().join("out.fst");
+            let _ = std::fs::remove_file(&store);
+            let mut args = vec!["build", "--engine", engine, "--scope", "tb"];
+            if let Some(chunk) = chunk {
+                args.extend(["--chunk-bytes", chunk]);
+            }
+            args.extend([input.to_str().unwrap(), "-o", store.to_str().unwrap()]);
+            let (_, stderr, code) = run(&args);
+            let label = format!("{engine} chunk {chunk:?} {}", input.display());
+            assert_eq!(code, 0, "{label}: {stderr}");
+            assert_eq!(warning_lines(&stderr), want, "{label}: {stderr}");
+            let wrote = stderr.find("# wrote").expect("wrote line");
+            assert!(stderr.rfind("WARNING:").unwrap() < wrote, "{label}");
+            if input == &vcd {
+                let cache = bwave::cache::ColumnCache::load_from_file(&store).unwrap();
+                let out = cache
+                    .signals
+                    .iter()
+                    .position(|signal| signal.name == "tb.out")
+                    .expect("tb.out is stored");
+                assert_eq!(
+                    cache.read_transitions(out),
+                    vec![(0, "x".to_string()), (10, "1".to_string())],
+                    "{label}: a declared id inside a comment is still stored"
+                );
+            }
+        }
     }
 }
 
@@ -1466,7 +1550,7 @@ fn bit_range_pattern_selects_the_slice() {
     let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
     assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
     let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
-    assert!(out.contains("data[5:4]  0  0  0  0  3  3  3"), "{out}");
+    assert!(out.contains("data[5:4]  0  0  0  3  3  3"), "{out}");
     let (out, _, _) = run(&[
         "wave",
         &b,
@@ -2391,13 +2475,81 @@ fn issue_1100_change_commands_agree_and_preserve_literals() {
             } else {
                 vec!["--async", "--count"]
             };
-            assert_eq!(
-                issue_1100_query(&store, command, "bus", "rising", &extra),
-                "0"
-            );
+            let mut args = vec![command, store.as_str(), "bus", "rising"];
+            args.extend(extra);
+            let (out, error, _) = issue_1100_run(&args);
+            assert_eq!(out.trim(), "0");
+            let note = format!("# {command}: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.");
+            assert!(error.lines().any(|l| l == note), "{command}: {error}");
         }
+        let (out, _, _) = issue_1100_run(&["find", &store, "bus", "rising", "--format", "json"]);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let warnings = json["warnings"].as_array().unwrap();
+        let note = "find: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+        assert!(warnings.iter().any(|w| w == note), "{warnings:?}");
         let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
         assert!(error.contains("only fires on 1-bit signals"));
+    }
+}
+
+/// `issue_1100_store` signals with `clk` toggling, so sync runs have a grid.
+const ISSUE_4903_CLOCKED: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n1!\nb0001 #\n#15\n1$\n#20\n0$\n0!\nb0011 #\n#25\n1$\n#30\n0$\n1!\n#35\n1$\n#40\n0$\n";
+
+#[test]
+fn issue_4903_distance_multi_bit_edge_note_names_either_operand() {
+    let (_dir, store) = issue_1100_store(ISSUE_4903_CLOCKED, "serial");
+    let note = "distance: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+    let distance = |query: &[&str], mode: &[&str], json: bool| {
+        let mut args = vec!["distance", store.as_str()];
+        args.extend(query);
+        args.extend(mode);
+        if json {
+            args.extend(["--format", "json"]);
+        }
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        (out, err)
+    };
+    let warnings = |out: &str| {
+        let json: serde_json::Value = serde_json::from_str(out).unwrap();
+        assert_eq!(json["data"]["count"], 0, "{json}");
+        assert_eq!(json["data"]["pairs"], serde_json::json!([]), "{json}");
+        json["warnings"].clone()
+    };
+    for mode in [&[][..], &["--async"]] {
+        for query in [
+            &["bus", "rising"][..],
+            &["scalar", "rising", "--to", "bus", "rising"],
+        ] {
+            let (out, err) = distance(query, mode, false);
+            let line = format!("# {note}");
+            assert!(
+                out.is_empty() && err.lines().any(|l| l == line),
+                "{query:?} {mode:?}: {err}"
+            );
+            let (out, _) = distance(query, mode, true);
+            assert_eq!(
+                warnings(&out),
+                serde_json::json!([note]),
+                "{query:?} {mode:?}"
+            );
+        }
+        // A literal that never occurs keeps today's text, and JSON stays silent.
+        let literal = ["scalar", "rising", "--to", "bus", "'hF"];
+        let today = if mode.is_empty() {
+            "# distance: no events found for bus F"
+        } else {
+            "# distance: pattern 'bus' matched but value 'F' never occurred"
+        };
+        let (out, err) = distance(&literal, mode, false);
+        assert!(
+            out.is_empty() && err.lines().any(|l| l == today),
+            "{mode:?}: {err}"
+        );
+        assert_eq!(
+            warnings(&distance(&literal, mode, true).0),
+            serde_json::json!([])
+        );
     }
 }
 
@@ -3588,6 +3740,42 @@ fn issue_1108_sync_signal_limits_changed_records() {
 }
 
 #[test]
+fn clockless_sync_queries_warn_once_with_next_step() {
+    let store = build_bwave("test_no_clock.vcd", "clockless_warns");
+    let store = store.to_str().unwrap();
+    let text = "no usable clock: fewer than two rising edges; queries fall back to ticks; \
+                select a clock with --clock PATTERN or use --async";
+    for (command, args, has_json) in [
+        ("signal", vec!["-s", "count"], true),
+        ("wave", vec!["-s", "count"], true),
+        ("value", vec!["--at", "10"], true),
+        ("find", vec!["enable", "'h1"], true),
+        ("sample", vec!["enable", "'h1", "--count"], false),
+        ("distance", vec!["enable", "'h1"], true),
+    ] {
+        let mut tokens = vec![command, store];
+        tokens.extend(&args);
+        let (_, err, code) = run(&tokens);
+        assert_eq!(code, 0, "{command}: {err}");
+        assert_eq!(err.matches("# WARNING:").count(), 1, "{command}: {err}");
+        assert!(
+            err.lines().any(|l| l == format!("# WARNING: {text}")),
+            "{command}: {err}"
+        );
+        if has_json {
+            tokens.extend(["--format", "json"]);
+            let (out, err, code) = run(&tokens);
+            assert_eq!(code, 0, "{command}: {err}");
+            let json: serde_json::Value = serde_json::from_str(&out).expect(&out);
+            assert_eq!(json["warnings"], serde_json::json!([text]), "{command}");
+        }
+    }
+    let (out, err, code) = run(&["overview", store]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("# clock: <not detected>\n"), "{out}");
+}
+
+#[test]
 fn issue_1108_point_errors_preserve_buffered_diagnostics() {
     let (dir, fst) = issue_1108_store("point-error-diagnostics");
     let p = fst.to_str().unwrap();
@@ -3596,9 +3784,7 @@ fn issue_1108_point_errors_preserve_buffered_diagnostics() {
         assert_eq!(code, 2, "{err}");
         assert!(out.is_empty(), "{out}");
         assert!(err.contains("# scope: tb"), "{err}");
-        let warning = err
-            .find("no clock signal found, falling back to async mode")
-            .expect(&err);
+        let warning = err.find("no usable clock").expect(&err);
         let error = err.find("ERROR: value time").expect(&err);
         assert!(warning < error, "{err}");
     }
@@ -4912,6 +5098,34 @@ fn issue_1418_signed_bounds() {
 }
 
 #[test]
+fn find_no_match_note_counts_same_tick_writes_and_skips_negative_windows() {
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n";
+    let (_dir, store) = issue_1100_store(body, "serial");
+    let note = |extra: &[&str]| {
+        let mut args = vec!["find", store.as_str(), "scalar", "'h1"];
+        args.extend_from_slice(extra);
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.is_empty(), "{out}");
+        err.lines()
+            .filter(|l| l.starts_with("# NOTE:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Tick 15 writes 1 then 0: the transient 1 is held inside the window.
+    let held = note(&["--with-reset", "-t", "2:2"]);
+    assert!(held.contains("was held in this window"), "{held}");
+    // A window wholly before tick 0 holds nothing, whatever tick 0 holds.
+    let (_, err, code) =
+        issue_1100_run(&["find", &store, "scalar", "'h0", "--async", "-t=-2t:-1t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("# NOTE: 'h0 was never held in this window"),
+        "{err}"
+    );
+}
+
+#[test]
 fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
     for engine in ["serial", "parallel"] {
         let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n#25\n1$\n1!\n0!\n1!\n#30\n0$\n#35\n1$\n#40\n0$\n";
@@ -5129,6 +5343,8 @@ const ALL: &[&str] = &["signal", "find", "wave", "sample", "stats", "distance"];
 const BOUND_FLAGS: &[&str] = &["find", "sample"];
 const SYNC_PAST_END: &str = "lies outside the trace: counted cycles are 1..19 \
      (counted after reset), and the trace ends at 200ns";
+const SYNC_WITH_RESET_PAST_END: &str = "lies outside the trace: counted cycles are 1..20 \
+     (counted from the first clock edge), and the trace ends at 200ns";
 const TICK_PAST_END: &str = "lies outside the trace: the trace ends at tick 200 (200ns)";
 
 /// (fixture, commands, window args, flag as typed when a warning is expected).
@@ -5152,8 +5368,22 @@ fn window_rows() -> Vec<WindowRow> {
         (0, ALL, &["-t", "0:999999"], None),
         (0, ALL, &["-t", "0:5"], None),
         (0, ALL, &["-t", "0t:999999t", "--async"], None),
-        (0, &["signal", "wave"], &["-t", "0:0"], Some("-t 0:0 ")),
-        (0, BOUND_FLAGS, &["--before", "0"], Some("--before 0 ")),
+        // Cycle 0 exists after a detected reset, so `-t 0:0` is inside the trace.
+        (0, &["signal", "wave"], &["-t", "0:0"], None),
+        (
+            0,
+            &["signal", "wave"],
+            &["-t", "0:0", "--with-reset"],
+            Some("-t 0:0 "),
+        ),
+        // `--before 0` ends at cycle 0, which exists after a detected reset.
+        (0, BOUND_FLAGS, &["--before", "0"], None),
+        (
+            0,
+            BOUND_FLAGS,
+            &["--before", "0", "--with-reset"],
+            Some("--before 0 "),
+        ),
         (0, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (1, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
         (
@@ -5175,6 +5405,7 @@ fn window_rows() -> Vec<WindowRow> {
 /// The warning each row expects: the flag as typed plus the trace's extent.
 fn window_expected(fixture: usize, window: &[&str], flag: &str) -> String {
     let extent = match (fixture, window.contains(&"--async")) {
+        (0, false) if window.contains(&"--with-reset") => SYNC_WITH_RESET_PAST_END,
         (0, false) => SYNC_PAST_END,
         (2, _) => "lies outside the trace: the trace ends at tick 52962 (529620ns)",
         _ => TICK_PAST_END,
@@ -5440,6 +5671,7 @@ fn issue_4698_oversized_literals_warn_in_every_command() {
         assert!(dist.contains(&expected), "{dist:?}");
         let def = format!("v = *data == {lit}");
         let (_, virt) = issue_4698_json(&["find", p, "v", "'h1", "--virtual", &def, "--async"]);
+        let virt = without_never_held_notes(virt);
         assert_eq!(virt.len(), 1, "{virt:?}");
         assert!(
             virt[0].starts_with(&format!(
@@ -5474,13 +5706,19 @@ fn issue_4698_literal_over_its_own_prefix_warns_and_still_matches() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The literal-width warnings are asserted here, not the #4748 no-match note.
+fn without_never_held_notes(warnings: Vec<String>) -> Vec<String> {
+    let note = |w: &String| w.ends_with(" was never held in this window");
+    warnings.into_iter().filter(|w| !note(w)).collect()
+}
+
 #[test]
 fn issue_4698_one_warning_lists_only_signals_the_literal_cannot_fit() {
     let fst = build_bwave("small_clocked.vcd", "4698_multi");
     let p = fst.to_str().unwrap();
     let (_, warnings) = issue_4698_json(&["find", p, "*a*", "'h1F"]);
     assert_eq!(
-        warnings,
+        without_never_held_notes(warnings),
         vec!["'h1F needs 5 bits and never matches tb.dut.enable (1-bit), tb.dut.flag (1-bit), tb.dut.state[3:0] (4-bit)".to_string()]
     );
     let _ = std::fs::remove_file(fst);
@@ -5532,6 +5770,7 @@ fn issue_4698_virtual_comparison_with_oversized_literal_states_its_result() {
                 "--async",
                 "--count",
             ]);
+            let warnings = without_never_held_notes(warnings);
             assert_eq!(warnings, vec![expected.clone()], "{op}");
             assert_eq!(json["data"]["count"], count, "{op} {value}: {json}");
         }
@@ -5610,4 +5849,151 @@ fn issue_4705_value_past_end_names_at_and_the_typed_time() {
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("# Snapshot at 30"), "{out}");
     let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4764_stats_cycle_window_matches_wave() {
+    let fst = build_bwave("small_clocked.vcd", "4764-stats-window");
+    let p = fst.to_str().unwrap();
+    let query = |command: &str, window: &[&str], extra: &[&str]| {
+        let mut args = vec![command, p, "-s", "state"];
+        args.extend(window);
+        args.extend(extra);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command} {window:?}: {err}");
+        out
+    };
+    let json = |command: &str, window: &[&str]| -> serde_json::Value {
+        serde_json::from_str(&query(command, window, &["--format", "json"])).unwrap()
+    };
+    for (window, shown) in [
+        (&["-t", "0:10"][..], 11),
+        (&["-t", "3:10"], 8),
+        (&["--with-reset", "-t", "0:10"], 10),
+        (&[], 49),
+    ] {
+        let wave = json("wave", window);
+        assert_eq!(
+            wave["data"]["columns"].as_array().unwrap().len(),
+            shown,
+            "{window:?}"
+        );
+        let stats = json("stats", window);
+        let signal = &stats["data"]["signals"][0];
+        let sampled: u64 = [
+            "time_in_state_clocked_cycles",
+            "time_in_state_stopped_cycles",
+        ]
+        .iter()
+        .flat_map(|key| signal[key].as_object().unwrap().values())
+        .map(|n| n.as_u64().unwrap())
+        .sum();
+        assert_eq!(stats["data"]["total_cycles"], shown, "{window:?}");
+        assert_eq!(sampled, shown as u64, "{window:?}");
+        let text = query("stats", window, &[]);
+        assert!(
+            text.contains(&format!(", {shown} cycles (")),
+            "{window:?}: {text}"
+        );
+        let text_sampled: u64 = text
+            .lines()
+            .filter_map(|line| line.split_once("% (")?.1.strip_suffix(" stopped cycles)"))
+            .flat_map(|counts| counts.split(" clocked, "))
+            .map(|n| n.parse::<u64>().unwrap())
+            .sum();
+        assert_eq!(text_sampled, shown as u64, "{window:?}: {text}");
+    }
+    // value_hist counts held runs: 'h0 holds all four cycles as one run.
+    let stats = json("stats", &["--with-reset", "-t", "0:4"]);
+    let signal = &stats["data"]["signals"][0];
+    assert_eq!(signal["value_hist"], serde_json::json!({"'h0": 1}));
+    assert_eq!(
+        signal["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 4})
+    );
+    // Cycle 0 reads before the reset tick: wave's column 0 for clk is 0, cycle 1 is 1.
+    let args = ["stats", p, "-s", "clk", "-t", "0:4", "--format", "json"];
+    let (out, err, code) = run(&args);
+    assert_eq!(code, 0, "{err}");
+    let stats: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        stats["data"]["signals"][0]["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 1, "'h1": 4})
+    );
+    let _ = std::fs::remove_file(fst);
+}
+
+fn fractional_clock_store(half_period: u64) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("frac.vcd");
+    let fst = dir.path().join("frac.fst");
+    let mut text = String::from("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" d $end\n$var wire 1 # k $end\n$var wire 1 $ rst_n $end\n$upscope $end\n$enddefinitions $end\n");
+    text.push_str("#0\n0!\n0\"\n0#\n0$\n#500\n1$\n");
+    let mut last = 500;
+    for i in 0..40u64 {
+        let t = (i + 1) * half_period;
+        text.push_str(&format!("#{t}\n{}!\n", (i + 1) % 2));
+        if i == 12 {
+            text.push_str("1\"\n");
+        }
+        last = t;
+    }
+    text.push_str(&format!("#{}\n", last + 100));
+    std::fs::write(&vcd, text).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+#[test]
+fn tick_times_keep_fractional_nanoseconds() {
+    let (_dir, fst) = fractional_clock_store(3200);
+    // (args, read stderr, expected substring) on a 1ps store with a 6400-tick clock.
+    let cases: &[(&[&str], bool, &str)] = &[
+        (
+            &["signal", "-s", "tb.d", "--clock", "tb.clk"],
+            true,
+            "# sync: period=6.4ns",
+        ),
+        (
+            &["stats", "-s", "tb.d"],
+            false,
+            "# Simulation: 127.6ns, 21 cycles (6.4ns period)",
+        ),
+        (
+            &["stats", "-s", "tb.d", "--async"],
+            false,
+            "# Simulation: 128.1ns",
+        ),
+        (&["stats", "-s", "tb.d", "--async"], false, "(86.5ns)"),
+        (&["stuck", "--async"], false, "(100%, 128.1ns)"),
+        (
+            &["value", "-s", "tb.d", "--at", "999"],
+            true,
+            "Simulation time range: 0.5ns..128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "-t", "500:600"],
+            true,
+            "the trace ends at 128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "--async", "-t", "999999t:9999999t"],
+            true,
+            "the trace ends at tick 128100 (128.1ns)",
+        ),
+    ];
+    for (args, use_err, expected) in cases {
+        let mut full: Vec<&str> = vec![args[0], &fst];
+        full.extend_from_slice(&args[1..]);
+        let (out, err, _) = run(&full);
+        let text = if *use_err { &err } else { &out };
+        assert!(
+            text.contains(expected),
+            "{args:?}: want {expected:?}\nstdout: {out}\nstderr: {err}"
+        );
+    }
+    let (_dir, fst) = fractional_clock_store(5000);
+    let (_, err, _) = run(&["signal", &fst, "-s", "tb.d"]);
+    assert!(err.lines().any(|l| l == "# sync: period=10ns"), "{err}");
 }

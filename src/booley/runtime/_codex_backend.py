@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from booley.config.gateway import (
     gateway_settings_from_env,
 )
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
+from booley.runtime.filesystem_utils import make_directories
 
 from ._codex_live_usage import CodexLiveUsage
 from ._codex_transcript_md import (  # noqa: F401 — re-exported for backward compat
@@ -202,7 +204,7 @@ def _codex_write_transcript(events: list[dict], transcript_path: Path | None) ->
     """Write raw JSONL events to transcript file."""
     if transcript_path is None or not events:
         return
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(transcript_path.parent)
     with transcript_path.open("w", encoding="utf-8") as f:
         for event in events:
             f.write(json.dumps(event, default=str) + "\n")
@@ -486,6 +488,9 @@ def _codex_thread_id(events: list[dict[str, Any]]) -> str | None:
 
 
 _NESTED_HOMES: dict[str, str] = {}
+# Serializes the check-then-create of _NESTED_HOMES: parallel searches in one
+# process share a cache key and would otherwise create the same home at once.
+_NESTED_HOMES_LOCK = threading.Lock()
 
 
 def _remove_nested_homes() -> None:
@@ -560,7 +565,6 @@ def _ensure_nested_codex_home(
     leaves the existing config untouched.
     """
     import hashlib
-    import os
 
     allowlist = list(allowed_mcp_tools or [])
     # Deterministic cache key from the allowlist content. Empty -> "_none".
@@ -568,22 +572,32 @@ def _ensure_nested_codex_home(
     ticket_scope = _ticket_home_scope()
     env_str = json.dumps(extra_env or {}, sort_keys=True, separators=(",", ":"))
     cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}:{auth_mode}"
-    cached = _NESTED_HOMES.get(cache_key)
-    if cached is not None:
-        from .auth_token import link_codex_auth, subscription_creds_path
+    with _NESTED_HOMES_LOCK:
+        cached = _NESTED_HOMES.get(cache_key)
+        if cached is not None:
+            from .auth_token import link_codex_auth, subscription_creds_path
 
-        link_codex_auth(
-            subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
-        )
-        return cached
+            link_codex_auth(
+                subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
+            )
+            return cached
 
-    # Dir name: short hash of the cache key, plus a hint of the parent_label
-    # for easier debugging when poking around /tmp.
-    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:8]
-    safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in (parent_label or "anon"))[
-        :40
-    ]
-    nested = scratch_root() / f"codex-nested-home-{ticket_scope}-{safe_label}-{digest}"
+        # Dir name: short hash of the cache key, plus a hint of the parent_label
+        # for easier debugging when poking around /tmp.
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:8]
+        safe_label = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in (parent_label or "anon")
+        )[:40]
+        nested = scratch_root() / f"codex-nested-home-{ticket_scope}-{safe_label}-{digest}"
+        _create_nested_codex_home(nested, allowlist, extra_env, auth_mode)
+        _NESTED_HOMES[cache_key] = str(nested)
+        return _NESTED_HOMES[cache_key]
+
+
+def _create_nested_codex_home(
+    nested: Path, allowlist: list[str], extra_env: dict[str, str] | None, auth_mode: str
+) -> None:
+    """Create and populate the nested home at *nested* (callers hold the cache lock)."""
     codex_dir = nested / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
     mark_owned(nested)
@@ -604,9 +618,6 @@ def _ensure_nested_codex_home(
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
 
     _populate_private_codex_home(codex_dir, booley_env, auth_mode=auth_mode)
-
-    _NESTED_HOMES[cache_key] = str(nested)
-    return _NESTED_HOMES[cache_key]
 
 
 def _log_agent_done(tag: str, result: AgentResult) -> None:

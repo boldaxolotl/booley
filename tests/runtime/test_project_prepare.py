@@ -24,9 +24,7 @@ import booley
 from booley.runtime.project_prepare import prepare_project
 
 # ``timeout_s`` is printed raw by ``prepare_project``, so it stays an ``int``.
-_CAPTURED_HOOK_TIMEOUT_S = math.ceil(scaled(2))
-_LOGGED_HOOK_TIMEOUT_S = math.ceil(scaled(1))
-_LOGGED_HOOK_BOUND_S = scaled(30)
+_HOOK_TIMEOUT_S = math.ceil(scaled(2))
 _BACKGROUND_CHILD_TIMEOUT_S = math.ceil(scaled(50))
 _BACKGROUND_CHILD_BOUND_S = scaled(30)
 
@@ -77,6 +75,19 @@ def test_prepare_project_returns_hook_failure(tmp_path: Path) -> None:
     assert not result.ok
     assert "rc=7" in result.error
     assert "broken" in result.error
+
+
+@pytest.mark.parametrize("rc", [0, 7], ids=["succeeds", "fails"])
+def test_captured_hook_output_that_is_not_utf8_does_not_abort(tmp_path: Path, rc: int) -> None:
+    root, project = _project(tmp_path)
+    (project / "hooks" / "post-setup.sh").write_bytes(
+        f"#!/bin/sh\nprintf '\\377' >&2\nexit {rc}\n".encode()
+    )
+
+    result = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
+
+    assert result.ok is (rc == 0)
+    assert rc == 0 or f"rc={rc}" in result.error
 
 
 #: A Booley command in miniature: report where Booley would put slots and handles.
@@ -164,24 +175,28 @@ def _hook_checkout(tmp_path: Path, body: str) -> Path:
 def _heartbeat_hook_checkout(tmp_path: Path, paths: dict[str, Path]) -> Path:
     """A checkout whose hook is ``PARENT_SCRIPT``: it spawns a heartbeat grandchild and waits."""
     argv = [str(paths["heartbeat"]), str(paths["stop"]), str(paths["done"]), "live-until-stop"]
-    return _hook_checkout(tmp_path, f"import sys\nsys.argv[1:] = {argv!r}\n{PARENT_SCRIPT}")
+    body = f"import sys\nprint('started', flush=True)\nsys.argv[1:] = {argv!r}\n{PARENT_SCRIPT}"
+    return _hook_checkout(tmp_path, body)
 
 
-def test_captured_hook_timeout_stops_the_hook_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("logged", [False, True], ids=["captured", "logged"])
+def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, logged: bool) -> None:
+    log = tmp_path / "h.log" if logged else None
     with heartbeat_tree(tmp_path) as paths:
         root = _heartbeat_hook_checkout(tmp_path, paths)
         started = time.monotonic()
 
         result = prepare_project(
-            root, root, slug="s", sim_flow_enabled=False, timeout_s=_CAPTURED_HOOK_TIMEOUT_S
+            root, root, slug="s", sim_flow_enabled=False, timeout_s=_HOOK_TIMEOUT_S, log=log
         )
 
         # The timeout plus the helper's fixed 32 s Windows margin, under a scaled
         # bound below the grandchild's self-exit
         assert time.monotonic() - started < scaled(38)
         assert not result.ok
-        assert result.error == f"post-setup hook timed out ({_CAPTURED_HOOK_TIMEOUT_S}s)"
+        assert result.error == f"post-setup hook timed out ({_HOOK_TIMEOUT_S}s)"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+        assert log is None or "started" in log.read_text(encoding="utf-8")
 
 
 def test_captured_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
@@ -249,23 +264,6 @@ def test_logged_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> N
     assert "OS error" in result.error
 
 
-def test_logged_hook_timeout_kills_the_hook(tmp_path: Path) -> None:
-    root = _hook_checkout(
-        tmp_path,
-        f"import time\nprint('started', flush=True)\ntime.sleep({2 * _LOGGED_HOOK_BOUND_S:g})\n",
-    )
-    log = tmp_path / "h.log"
-    started = time.monotonic()
-
-    result = prepare_project(
-        root, root, slug="s", sim_flow_enabled=False, timeout_s=_LOGGED_HOOK_TIMEOUT_S, log=log
-    )
-
-    assert not result.ok and "timed out" in result.error
-    assert time.monotonic() - started < _LOGGED_HOOK_BOUND_S
-    assert "started" in log.read_text(encoding="utf-8")
-
-
 def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> None:
     """A detached child that keeps the log open must not delay a hook that already exited."""
     child_pid_file = tmp_path / "child.pid"
@@ -313,32 +311,25 @@ def _stop_process(pid_file: Path) -> None:
         time.sleep(0.05)
 
 
-def test_logged_hook_is_killed_when_interrupted(tmp_path: Path, monkeypatch) -> None:
+def test_logged_hook_is_stopped_with_its_descendants_when_interrupted(
+    tmp_path: Path, monkeypatch
+) -> None:
     from booley.runtime import project_prepare
 
-    pid_file = tmp_path / "hook.pid"
-    root = _hook_checkout(
-        tmp_path,
-        "import os, pathlib, time\n"
-        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8')\n"
-        "time.sleep(60)\n",
-    )
-
     def interrupt_once_started() -> None:
-        if pid_file.exists() and pid_file.read_text(encoding="utf-8"):
+        # The poll tick is the only point inside the wait loop to inject an interrupt.
+        if paths["heartbeat"].exists():
             raise KeyboardInterrupt("injected interrupt")
         time.sleep(0.05)
 
     monkeypatch.setattr(project_prepare, "_wait_tick", interrupt_once_started)
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths)
 
-    with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
-        prepare_project(root, root, slug="s", sim_flow_enabled=False, log=tmp_path / "h.log")
+        with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
+            prepare_project(root, root, slug="s", sim_flow_enabled=False, log=tmp_path / "h.log")
 
-    pid = int(pid_file.read_text(encoding="utf-8"))
-    if os.name == "nt":
-        pytest.skip("the exit probe uses POSIX signals")
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
 
 
 def test_unlogged_hook_is_found_without_running_it(tmp_path: Path) -> None:

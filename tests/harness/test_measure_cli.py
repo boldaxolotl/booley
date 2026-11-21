@@ -43,6 +43,9 @@ from tests.time_budget import scaled
 def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> int:
     """Run the real entry point as ``booley -C <project> measure <arguments>`` in a Sandbox."""
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    # Windows has no mountinfo, which reads as an issued Sandbox that mounts no ``/work``.
+    hand_written = cli.runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
+    monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda: hand_written)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", *arguments])
     return cli._dispatch_main()
@@ -71,13 +74,18 @@ def test_validate_lists_every_load_error_and_exits_nonzero(
 ) -> None:
     write_metrics_project(
         tmp_path,
-        "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n",
+        "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n"
+        "[sim_core.coverage]\nline_coverage_min = 100.01\n",
     )
     assert _measure(monkeypatch, tmp_path, "--validate") == 2
     err = capsys.readouterr().err
     assert "[nope.sim]" in err
     assert "[sim_core.sim] bogus_max: " in err
-    assert "metrics.toml has 2 load errors" in err
+    assert (
+        "[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], "
+        "got 100.01\n  write instead: line_coverage_min = 100"
+    ) in err
+    assert "metrics.toml has 3 load errors" in err
 
 
 def test_validate_reports_a_table_free_file(
@@ -110,6 +118,77 @@ def test_validate_refuses_an_automatic_mutation_count(
 
     err = capsys.readouterr().err
     assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
+
+
+def test_validate_percentage_bound_says_bounds_are_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A percentage bound value says bounds are absolute; another string keeps its error."""
+    write_metrics_project(
+        tmp_path,
+        '[sim_core.sim]\ntests_total_min = "+10%"\ntests_failed_max = "10%"\n'
+        'tests_total_max = "zero"\n',
+    )
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 2
+
+    err = capsys.readouterr().err
+    assert err.count("a bound is an absolute number, not a percentage") == 2
+    assert "tests_total_min must be a finite number, got '+10%'; a bound" in err
+    assert "tests_failed_max must be a finite number, got '10%'; a bound" in err
+    assert "got 'zero'\n" in err
+
+
+@pytest.mark.parametrize(
+    ("entry", "key"),
+    [
+        pytest.param('"rx_clkk.wns_ns_min" = 0', "rx_clkk.wns_ns_min", id="bound"),
+        pytest.param('track = ["rx_clkk.wns_ns"]', "rx_clkk.wns_ns", id="tracked"),
+    ],
+)
+def test_validate_warns_on_a_clock_no_stored_run_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entry: str,
+    key: str,
+) -> None:
+    """AC1-AC5: an unreported clock prefix warns and exits 0; reported clocks and no store stay quiet."""
+    from booley.measurement.run_key import KeyedCommit, MeasurementKey
+    from tests.measurement.test_run_store import make_run
+
+    metrics = (
+        '[synth_core.synth]\n"rx_clk.wns_ns_min" = 0\n"tx_clk.fmax_mhz_min" = 100\n' + entry + "\n"
+    )
+    write_metrics_project(tmp_path, metrics)
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == ""
+
+    keyed = KeyedCommit(MeasurementKey("0" * 40, None), "1" * 40, "m", (), None)
+    identity = "::synth_core:0#synth_core"
+    store = MeasurementStore(tmp_path / ".booley")
+    first = make_run(
+        keyed,
+        "r1",
+        minute=1,
+        identity=identity,
+        flow="synth",
+        per_clock={"wns_ns": {"rx_clk": 0.5}},
+    )
+    second = make_run(keyed, "r2", minute=2, identity=identity, flow="synth", clocks=("tx_clk",))
+    store.write(first, [])
+    store.write(second, [])
+
+    assert _measure(monkeypatch, tmp_path, "--validate") == 0
+    captured = capsys.readouterr()
+    assert "metrics.toml is valid: 1 table" in captured.out
+    assert captured.err == (
+        f"warning: [synth_core.synth] {key}: clock rx_clkk was never reported; "
+        "reported clocks: rx_clk, tx_clk\n"
+    )
 
 
 # ---------------------------------------------------------------- measuring a commit
@@ -290,6 +369,28 @@ def test_a_preflight_refusal_exits_two_and_stores_nothing(
     assert not (project / ".booley" / "measurements").exists()
     assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
     assert "checkout run refused: unsafe path" in job_log(project)
+
+
+def test_a_failing_post_setup_hook_refuses_with_its_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hook = tmp_path / "proj" / ".booley" / "hooks" / "post-setup.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_bytes(b"import sys\nprint('hook-output')\nsys.exit(3)\n")
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
+
+    assert run_command(monkeypatch, project) == 2
+
+    run_id = job_record(project).run_id
+    log = standalone_log_root(project / ".booley") / run_id / "post-setup.log"
+    err = capsys.readouterr().err
+    assert ".booley/hooks/post-setup.py" in err.replace("\\", "/")
+    assert f"post-setup hook failed (rc=3); log: {log}" in err
+    assert "hook-output" in log.read_text(encoding="utf-8")
+    assert steps == []
+    assert not (project / ".booley" / "measurements").exists()
+    assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
 
 
 def test_a_first_child_that_cannot_launch_is_a_refusal(
@@ -619,7 +720,7 @@ def project_with_live_changes(tmp_path: Path) -> Path:
     return project
 
 
-@pytest.mark.parametrize("revision", ["head", "head-sha", "other-commit"])
+@pytest.mark.parametrize("revision", ["head", "head-sha", "other-commit", "stored"])
 def test_live_tree_notices(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -632,22 +733,97 @@ def test_live_tree_notices(
         "head": [],
         "head-sha": [git(project, "rev-parse", "HEAD")],
         "other-commit": ["HEAD~1"],
+        "stored": [],
     }[revision]
     changes = "uncommitted changes in the working tree are not measured"
     drift = "submodule working-tree differences are not measured: ip"
-    if revision == "other-commit":
+    if revision in ("other-commit", "stored"):
         # The same live state does warn for HEAD: only the other commit goes without notices.
         assert run_command(monkeypatch, project) == 0
-        assert changes in capsys.readouterr().err
+        first = capsys.readouterr()
+        assert changes in first.err
 
     assert run_command(monkeypatch, project, *asked) == 0
 
-    err = capsys.readouterr().err
-    if revision == "other-commit":
+    captured = capsys.readouterr()
+    err = captured.err
+    if revision == "stored":
+        assert captured.out == first.out
+        assert changes in err and "working-tree differences" not in err
+        assert err.index(changes) < err.index("is already Measured by run")
+    elif revision == "other-commit":
         assert changes not in err and "working-tree differences" not in err
     else:
         assert changes in err and drift in err
         assert "untracked" not in err
+
+
+def stealth_project(tmp_path: Path, metrics: str) -> Path:
+    """A project whose ``.booley/`` is its own Git repository, excluded from the RTL one."""
+    project = write_metrics_project(tmp_path / "proj", metrics)
+    git(project, "init", "-q", "-b", "main")
+    exclude = project / ".git" / "info" / "exclude"
+    exclude.write_bytes(exclude.read_bytes() + b"/.booley/\n")
+    git(project, "add", "-A")
+    git(project, "commit", "-q", "-m", "rtl")
+    data = project / ".booley"
+    git(data, "init", "-q", "-b", "main")
+    git(data, "add", "-A")
+    git(data, "commit", "-q", "-m", "booley directory")
+    return project
+
+
+@pytest.mark.parametrize("edited", ["tests.toml", "metrics.toml"])
+def test_stealth_notes_uncommitted_booley_directory_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    edited: str,
+) -> None:
+    project = stealth_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    capsys.readouterr()
+    assert run_command(monkeypatch, project) == 0
+    clean = capsys.readouterr()
+    assert "note:" not in clean.err
+    before = {path: path.read_bytes() for path in stored_runs(project)}
+    with (project / ".booley" / edited).open("ab") as handle:
+        handle.write(b"# edited\n")
+    marker = "uncommitted changes in the Booley Directory's repository"
+
+    for arguments in ((), ("--again",)):
+        assert run_command(monkeypatch, project, *arguments) == 0
+        captured = capsys.readouterr()
+        lines = [text for text in captured.err.splitlines() if marker in text]
+        assert len(lines) == 1, captured.err
+        line = lines[0]
+        assert ("metrics.toml" in line) is (edited == "metrics.toml")
+        assert "working tree" not in captured.err
+        assert "note:" not in captured.out
+        if not arguments:
+            assert captured.out == clean.out
+            assert {path: path.read_bytes() for path in stored_runs(project)} == before
+
+    git(project, "commit", "-q", "--allow-empty", "-m", "same tree")
+    for arguments in (("HEAD~1",), ("--again", "HEAD~1")):
+        assert run_command(monkeypatch, project, *arguments) == 0
+        assert "note:" not in capsys.readouterr().err
+
+
+def test_an_unreadable_status_does_not_hide_the_stored_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    assert run_command(monkeypatch, project) == 0
+    clean = capsys.readouterr()
+    (project / ".git" / "index").write_bytes(b"not an index")
+
+    assert run_command(monkeypatch, project) == 0
+    captured = capsys.readouterr()
+    assert captured.out == clean.out
+    assert "note:" not in captured.err
 
 
 def test_a_clean_live_tree_prints_no_notice(
@@ -678,7 +854,10 @@ def send(number: int) -> None:
 
 
 def test_cancelled_after_a_finished_child_is_stored_as_cancelled_and_not_measured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _measuring_environment: Path
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _measuring_environment: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     project = committed_project(tmp_path, TWO_LINT_TABLES)
     script_children(
@@ -693,6 +872,9 @@ def test_cancelled_after_a_finished_child_is_stored_as_cancelled_and_not_measure
 
     assert_cancelled_run_stored(project)
     assert not list(_measuring_environment.iterdir())  # the scratch checkout is gone
+    (path,) = stored_runs(project)
+    assert path.with_suffix(".md").is_file()
+    assert f"Run {path.stem}: cancelled" in capsys.readouterr().out
 
 
 def test_cancelled_before_any_child_finished_stores_nothing(
@@ -814,6 +996,94 @@ def test_a_signal_while_storing_leaves_a_complete_run_and_a_matching_exit(
     (path,) = stored_runs(project)
     assert json.loads(path.read_text())["status"] == "completed"
     assert MeasurementStore(project / ".booley").measured(key_of(project)) is not None
+
+
+class _BrokenPipe:
+    """A stdout whose reader is gone."""
+
+    def write(self, _text: str) -> int:
+        raise BrokenPipeError
+
+    def flush(self) -> None:
+        raise BrokenPipeError
+
+
+@pytest.mark.parametrize(
+    ("failing", "note"),
+    [
+        ("view", "the report of cancelled run {} cannot be built: "),
+        ("markdown", "the Markdown report of cancelled run {} cannot be written: "),
+        ("print", "the report of cancelled run {} cannot be printed: "),
+    ],
+    ids=["view", "markdown", "print"],
+)
+def test_a_cancelled_run_whose_report_fails_exits_130_with_a_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failing: str,
+    note: str,
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+    aside = tmp_path / "git-aside"
+
+    def children(tables: Sequence[TableRules], _cancelled: object) -> ChildrenOutcome:
+        if failing == "view":  # a real Git failure: the store needs no Git, the view does
+            (project / ".git").rename(aside)
+        if failing == "print":  # the terminal is outside Booley: a closed pipe
+            monkeypatch.setattr(sys, "stdout", _BrokenPipe())
+        return outcome_of(tables, [0, 0], status=RunStatus.CANCELLED, finished=[True, False])
+
+    script_children(monkeypatch, children)
+    write = MeasurementStore.write
+
+    def write_with_blocked_markdown(store: MeasurementStore, *args: object, **kwargs: object):
+        stored = write(store, *args, **kwargs)  # type: ignore[arg-type]
+        if failing == "markdown":  # a directory in the way makes the atomic replace fail
+            stored.path.with_suffix(".md").mkdir()
+        return stored
+
+    # No public seam fails only the Markdown write, so the store's write is wrapped (as in the
+    # signal-while-storing test); the failure itself is a real OSError from the replace.
+    monkeypatch.setattr(MeasurementStore, "write", write_with_blocked_markdown)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(monkeypatch, project)
+
+    if aside.exists():
+        aside.rename(project / ".git")
+    monkeypatch.undo()
+    assert_cancelled_run_stored(project)
+    captured = capsys.readouterr()
+    (path,) = stored_runs(project)
+    notes = [line for line in captured.err.splitlines() if line.startswith("note:")]
+    assert len(notes) == 1
+    assert notes[0].startswith("note: " + note.format(path.stem))
+    assert "Traceback" not in captured.err
+    assert "measurement failed" not in captured.err
+    assert (f"Run {path.stem}: cancelled" in captured.out) is (failing == "markdown")
+    assert path.with_suffix(".md").is_file() is (failing == "print")
+    if failing == "print":  # a bare exception still names what failed
+        assert notes[0].endswith(": BrokenPipeError")
+
+
+def test_a_cancelled_run_with_no_terminal_still_ends_as_a_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+
+    def children(tables: Sequence[TableRules], _cancelled: object) -> ChildrenOutcome:
+        monkeypatch.setattr(sys, "stdout", _BrokenPipe())
+        monkeypatch.setattr(sys, "stderr", _BrokenPipe())  # the note cannot be written either
+        return outcome_of(tables, [0, 0], status=RunStatus.CANCELLED, finished=[True, False])
+
+    script_children(monkeypatch, children)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(monkeypatch, project)
+
+    monkeypatch.undo()
+    assert_cancelled_run_stored(project)
 
 
 def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
@@ -1036,8 +1306,22 @@ def test_a_target_run_exits_like_a_full_run(
     assert stored_runs(project) == []
 
 
-def test_a_target_on_a_measured_commit_shows_the_stored_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("arguments", "code", "said", "runs"),
+    [
+        (["--target", "nope"], 2, "Unknown target 'nope'", 1),
+        (["--target", "sim_fifo"], 2, NOTHING_IN_SCOPE, 1),
+        (["--all", "--target", "sim_core"], 0, ": not stored", 2),
+    ],
+)
+def test_a_target_on_a_measured_commit_is_validated_and_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    code: int,
+    said: str,
+    runs: int,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
@@ -1045,11 +1329,14 @@ def test_a_target_on_a_measured_commit_shows_the_stored_run(
     (first,) = stored_runs(project)
     capsys.readouterr()
 
-    assert run_command(monkeypatch, project, "--target", "sim_core") == 0
+    assert run_command(monkeypatch, project, *arguments) == code
 
-    assert "is already Measured by run" in capsys.readouterr().err
-    assert steps == ["prepare", "run"]
+    captured = capsys.readouterr()
+    assert said in captured.out + captured.err
+    assert "is already Measured" not in captured.err
+    assert steps == ["prepare", "run"] * runs
     assert stored_runs(project) == [first]
+    assert MeasurementStore(project / ".booley").measured(key_of(project)).path == first
 
 
 def test_validate_init_defaults_bound_listed_sim_headers(

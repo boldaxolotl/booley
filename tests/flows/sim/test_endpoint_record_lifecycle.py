@@ -220,7 +220,7 @@ def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
     invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     # Private seams: the integrity failure and corruption must land between projection and attach,
     # which no public run exposes.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
@@ -274,9 +274,7 @@ def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     )
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(
-        target=["sim"], result_verbosity="brief", report_dir=invocation.parent
-    )
+    flow._args = SimpleNamespace(target=["sim"], report_dir=invocation.parent)
     # Private seam: projects a returned record; the fixture runs no flow around it.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
     endpoint = _report_endpoint(flow, invocation, "verilator")
@@ -1419,7 +1417,7 @@ def test_invoke_endpoint_hands_the_admission_only_to_an_invocation_that_borrows_
             return EndpointOutcome(report_text="ok")
 
     admission, invocation = object(), Invocation()
-    endpoint = SimpleNamespace(name="sim", _finalize_result=lambda _outcome: None)
+    endpoint = SimpleNamespace(name="sim", _run_roots=None, _finalize_result=lambda _outcome: None)
     invoke_endpoint(
         endpoint, SimpleNamespace(invocation=invocation), admission=admission, started=0.0
     )  # type: ignore[arg-type]
@@ -1673,7 +1671,7 @@ def test_hook_success_survives_build_failure(tmp_path, monkeypatch):
     )
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     # Private seam: projects a returned record; the fixture runs no flow around it.
     result = flow._simulation_record_endpoint_outcome([simulation_record])
     assert result.exit_code == 1

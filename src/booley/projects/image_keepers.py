@@ -57,3 +57,12 @@ class PurgeResult:
 
     removed: tuple[str, ...] = ()
     kept: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class StampPrune:
+    """Which stamp-only removal candidates exist, and what a named removal did."""
+
+    candidates: tuple[str, ...]
+    withdrawn: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()

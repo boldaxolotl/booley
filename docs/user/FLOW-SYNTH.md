@@ -70,23 +70,36 @@ RESULT: PASS
 | Column | Meaning |
 |---|---|
 | Area | Cell area in kGE: thousands of NAND2 gates of the same area. |
-| Crit path | Delay of the worst path on the slowest clock, in ps. |
+| Crit path | Delay of the worst path on the slowest clock that has one, in ps. |
 | Fmax | Highest frequency that clock's worst path would meet; the clock is named when there are several. |
 | Setup slack | Worst setup slack across clocks; negative means the constraints are not met. |
 | Δ | With `--baseline`: change from the baseline. |
+
+Each clock's critical path is its period minus the setup slack of its worst
+path, and its Fmax is 1 divided by that critical path. The register-to-register
+Fmax is derived the same way from the worst path between registers, using the
+period of the clock that path ends on. Only the clocks a path actually runs on
+count: a clock that times no path changes none of these numbers. When the worst
+path starts on one clock and ends on another, no period applies to it, so
+Booley shows its slack and leaves out the critical path and Fmax; for the
+register-to-register path, the note below the table shows its slack instead.
 
 Below the table come the cell count, worst hold slack, the register-to-register
 Fmax, a warning count with the log path, and any failure reason. When the
 worst path starts at an input or ends at an output, a note says so: such a
 path's slack depends on the input and output delays in your constraints, not on
 the logic between registers, so fix those constraints rather than the RTL.
+In physical mode, another note appears when some endpoints or ports are
+[unconstrained](#timing-constraints): it gives the endpoint count, the inputs
+and outputs without a delay, and the log path, where the full lists are. It
+does not change the verdict.
 
 Everything else is in the run's numbered directory (`synth/3/` above; see
 [Reading results](FLOW_REFERENCE.md#reading-results) for where it lives):
 
 | File | What it holds |
 |---|---|
-| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`; `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz`; `reg2reg_fmax_mhz`; `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. |
+| `targets/<target>.json` | The Target's results. `area_kge` and `cell_count`, each with its source (`area_source`, `cell_count_source`: `openroad_post_optimization` for the placed netlist after timing repair, `yosys_mapped` for the mapped netlist); `per_clock`, one entry per clock with its `period_ns`, setup slack `wns_ns`, hold slack `whs_ns`, `critical_path_ps` and `fmax_mhz` (both `null` when the clock's worst path starts on another clock); `reg2reg_fmax_mhz` (`null` when the worst register-to-register path crosses clocks); `conditions` with the latch, combinational-loop and multi-driven counts; `total_warnings` and `warning_summary`, the warnings grouped with a few sample messages. With `--baseline`: `baseline` (the same metrics at that revision), and `delta_pct` (area) and `timing_delta_pct` (critical path) in percent. In physical mode, `unconstrained` gives the count and a sample of names for `endpoints`, `inputs_without_delay` and `outputs_without_delay`. A logical-mode run has `estimated_fmax_mhz` instead of clock timing. The implementation report's `wire_count` is the mapped netlist's count in both modes. |
 | `artifacts/synth_<target>/run.log` | The full Yosys and OpenROAD output: every warning and error. |
 | `artifacts/synth_<target>/timing/` | The STA reports, physical mode only (see [`timing_report_paths`](#configuration-flowssynth)). |
 | `artifacts/synth_<target>/baseline_timing/` | With `--baseline`: the baseline run's STA reports. |
@@ -117,6 +130,14 @@ source lines, are counted but don't cause `WARN`. A loop or multi-driven
 warning is still checked and can fail the run. A loop within
 `expected_comb_loops` doesn't fail the run, but Yosys still prints its
 warning, so the run ends `WARN` rather than `PASS`.
+
+Optimization can remove a combinational loop or a multi-driven net before the
+final netlist. Its warning still ends the run `WARN`: the tool dropped the
+logic, and nobody has checked that the RTL means what was kept. Review the RTL
+the warning names and fix it. For a removed loop you accept, declare its
+warnings with
+[`expected_comb_loops`](#configuration-flowssynth): they are then listed as
+notes and don't cause `WARN`.
 
 ## Synthesis Target
 
@@ -162,7 +183,10 @@ with a define and a synthesis-only fileset, not a Target option; see
 A synthesis Target reads its timing constraints from SDC files in a
 `file_type: SDC` fileset. At least one file must create a clock; Booley adds
 no constraints of its own, so the clock periods and I/O delays you write are
-what the timing numbers mean. To declare the fileset, see the
+what the timing numbers mean. A path that starts at an input without
+`set_input_delay` or ends at an output without `set_output_delay` is not timed,
+and neither is any other unconstrained endpoint, so the numbers cover only the
+constrained paths. To declare the fileset, see the
 [Synthesis Target recipe](#synthesis-target).
 
 ```tcl
@@ -262,8 +286,9 @@ repair and timing analysis. Set `synth_mode: logical` on the Target to stop
 after mapping. It runs much faster and needs no SDC, and reports mapped area
 and an estimated Fmax from the longest chain of mapped logic. Both are usually
 optimistic. The Fmax ignores placement and wires; every run prints that
-warning, and the Crit path column reads `logical estimate`. The area leaves out
-the buffers and larger cells that timing repair adds in physical mode.
+warning, and the Crit path column reads `logical estimate`. The area and cell
+count leave out the buffers and larger cells that timing repair adds in
+physical mode.
 Use logical mode for quick area trends on large designs, and physical mode
 whenever timing matters. The mode belongs to the Target. There is
 no per-call `--synth-mode` option, so keep one Target per mode if you need
@@ -367,6 +392,11 @@ structures the design contains on purpose, such as the latch inside a
 standard-cell clock gater. The run reports the actual count and fails only on
 the excess, so one more than declared still fails. A negative, boolean, or
 non-integer value counts as `0`. Multi-driven nets have no allowance.
+
+`expected_comb_loops` also covers the warnings for loops that optimization
+removed. When the final netlist has no loop, the run compares the number of
+those warnings, which the report prints (`this run N`), with the declared
+count: within it they are notes, and one more ends the run `WARN` again.
 
 Keep `fail_on_timing_violation = false` while the constraints are
 placeholders. Turn it on once they are real, so a CI step that reads only the

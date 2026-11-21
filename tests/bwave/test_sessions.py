@@ -918,40 +918,52 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch, capsys):
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    markers = {"start": 10, "done": 20, "5c": 30, "10ns": 40, "10c": 50, "20c": 60}
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers=markers)})
+    markers = {"start": 10, "done": 20, "5c": 30, "10ns": 40, "10c": 50}
+    _write_sessions({"dut": _make_entry("unused.fst", markers=markers)})
 
     cases = [
-        (["-t", "start:done"], ["-t", "10c:20c"], None),
-        (["--before", "done"], ["-t", ":20c", "--last"], None),
-        (["--after", "start"], ["-t", "10c:", "--first"], None),
+        (["-t", "start:done"], ["-t", "10c:20c"]),
+        (["--before", "done"], ["--before", "20"]),
+        (["--after", "start"], ["--after", "10"]),
         (
-            ["find", "sig", "1", "--before", "done", "--async"],
-            ["find", "sig", "1", "-t", ":20c", "--last", "--async"],
-            None,
+            ["find", "sig", "1", "--before", "done", "--count"],
+            ["find", "sig", "1", "--before", "20", "--count"],
         ),
-        (["--diff", "start", "done"], ["--diff", "10c", "20c"], None),
-        (["diff", "start", "done"], ["diff", "10c", "20c"], None),
-        (["value", "--at", "start"], ["value", "--at", "10c"], None),
-        (["-t", "unknown:done"], ["-t", "unknown:20c"], None),
+        (["--before=done"], ["--before=20"]),
+        (["--time=start:done"], ["--time=10c:20c"]),
+        (["-tstart:done"], ["-t10c:20c"]),
+        (["-t=start:"], ["-t=10c:"]),
+        (["value", "--at=start"], ["value", "--at=10c"]),
+        (["--before", "start", "--before", "done"], ["--before", "10", "--before", "20"]),
+        (["--before"], ["--before"]),
+        (["--diff", "start", "done"], ["--diff", "10c", "20c"]),
+        (["diff", "start", "done"], ["diff", "10c", "20c"]),
+        (["diff", "-s", "start", "start", "done"], ["diff", "-s", "start", "10c", "20c"]),
+        (["diff", "--async", "start", "done"], ["diff", "--async", "10c", "20c"]),
+        (["value", "--at", "start"], ["value", "--at", "10c"]),
+        (["-t", "unknown:done"], ["-t", "unknown:20c"]),
+    ]
+    for args, expected in cases:
+        bwave._resolve_markers_in_args(args, "dut", "unused.fst")
+        assert args == expected
+    assert capsys.readouterr().err == ""
+
+    conflicting = [
         (["-t", "start:10ns"], ["-t", "10c:10ns"], "10ns"),
         (["diff", "5c", "done"], ["diff", "5c", "20c"], "5c"),
         (["--diff", "10ns", "start"], ["--diff", "10ns", "10c"], "10ns"),
         (["--before", "5c"], ["--before", "5c"], "5c"),
-        (["--after", "10ns"], ["--after", "10ns"], "10ns"),
+        (["--after=10ns"], ["--after=10ns"], "10ns"),
+        (["find", "sig", "1", "--before", "5c", "--async"], None, "5c"),
         (["--at-cycle", "5c"], ["--at-cycle", "5c"], "5c"),
         (["--at-time", "10ns"], ["--at-time", "10ns"], "10ns"),
-        (["find", "sig", "1", "--at", "5c"], ["find", "sig", "1", "--at", "5c"], "5c"),
+        (["find", "sig", "1", "--at", "5c"], None, "5c"),
     ]
-    for args, expected, warned in cases:
-        capsys.readouterr()
-        bwave._resolve_markers_in_args(args, "dut")
-        assert args == expected
-        err = capsys.readouterr().err
-        if warned is None:
-            assert err == "", args
-        else:
-            assert f"marker '{warned}' on @dut is ignored" in err, args
+    for args, expected, warned in conflicting:
+        original = list(args)
+        bwave._resolve_markers_in_args(args, "dut", "unused.fst")
+        assert args == (expected or original)
+        assert f"marker '{warned}' on @dut is ignored" in capsys.readouterr().err, original
 
 
 def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
@@ -959,7 +971,7 @@ def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    _write_sessions({"dut": _make_entry("unused.fst", markers={"start": 10, "done": 20})})
 
     legacy = ["--wave"]
     bwave._inject_marker_flags(legacy, "dut")
@@ -1345,3 +1357,82 @@ def test_wrapper_help_command_lists_match_accepted_commands():
     # (c) `bwave query --help` text.
     query_help = _help_entry_names(_help_section_lines(bwave._QUERY_HELP_TEXT, ("Subcommands",)))
     assert query_help == bwave._V02_CONSUMER_SUBCOMMANDS | bwave._V02_META_SUBCOMMANDS
+
+
+_MARKER_CYCLE_PAIRS = [
+    ("find *req* 1 --before hs --count", "find *req* 1 --before 25 --count", 0),
+    ("find *req* 1 --after hs --first", "find *req* 1 --after 25 --first", 2),
+    ("find *req* 1 --before hs", "find *req* 1 --before 25", 0),
+    ("find *req* 1 --after hs", "find *req* 1 --after 25", 0),
+    (
+        "sample *req* 1 -s *data* --before hs --count",
+        "sample *req* 1 -s *data* --before 25 --count",
+        0,
+    ),
+    (
+        "sample *req* 1 -s *data* --after hs --first",
+        "sample *req* 1 -s *data* --after 25 --first",
+        2,
+    ),
+    ("sample *req* 1 -s *data* --after hs", "sample *req* 1 -s *data* --after 25", 0),
+    ("find *req* 1 --before=hs --count", "find *req* 1 --before=25 --count", 0),
+    ("find *req* 1 --time=hs:he", "find *req* 1 --time=25:35", 0),
+    ("find *req* 1 -ths:he", "find *req* 1 -t25:35", 0),
+    ("value --at=hs -s *req*", "value --at=25 -s *req*", 0),
+    ("diff -s *data* hs he", "diff -s *data* 25 35", 0),
+    ("find *req* 1 --before hs --async --count", "find *req* 1 --before 265 --async --count", 0),
+]
+
+
+@pytest.mark.native_bwave
+@pytest.mark.parametrize(("marker_form", "cycle_form", "returncode"), _MARKER_CYCLE_PAIRS)
+def test_marker_matches_its_cycle_form(marker_form, cycle_form, returncode):
+    """A Marker behaves like its cycle typed in its place: same output, refusal, exit code."""
+    _ensure_bwave_fixture()
+    _write_sessions({"dut": _make_entry(str(BWAVE.resolve()), markers={"hs": 25, "he": 35})})
+
+    by_marker = _query("@dut", *marker_form.split())
+    by_cycle = _query("@dut", *cycle_form.split())
+
+    assert by_marker.returncode == returncode, by_marker.stderr
+    assert (by_marker.returncode, by_marker.stdout, by_marker.stderr) == (
+        by_cycle.returncode,
+        by_cycle.stdout,
+        by_cycle.stderr,
+    )
+
+
+@pytest.mark.native_bwave
+def test_async_marker_bound_on_a_clockless_trace_is_refused(tmp_path):
+    """The async probe lets the native cycle resolver refuse a trace with no clock."""
+    native = _native_bwave_binary()
+    store = tmp_path / "no_clock.fst"
+    built = run_bounded_child(
+        [str(native), "build", str(FIXTURE_DIR / "test_no_clock.vcd"), "-o", str(store)],
+        timeout=2 * hang_guard_s(),
+    )
+    assert built.returncode == 0, built.stderr
+    _write_sessions({"nc": _make_entry(str(store.resolve()), markers={"m": 2})})
+
+    result = _query("@nc", "find", "*enable*", "1", "--before", "m", "--async")
+
+    assert result.returncode == 2
+    assert "no clock detected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (["--clock", "clk", "--reset", "rst"], ["--clock", "clk", "--reset", "rst"]),
+        (
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+        ),
+        (["--async", "--before", "m"], []),
+    ],
+)
+def test_cycle_grid_options_keep_attached_values_joined(extra, expected):
+    """The async probe gets the options that map a cycle to a tick, spelled as typed."""
+    from booley.bwave import cli as bwave
+
+    assert bwave._cycle_grid_options(extra) == expected

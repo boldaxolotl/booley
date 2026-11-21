@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -49,6 +50,16 @@ class NativeExecution:
         self.executable.write_bytes(b"authenticated simulator image")
         self.verify_bundle = None
         self.evidence_root = None
+        self.lease_open = False
+
+    @contextmanager
+    def retaining_build_lease(self):
+        """Mirror the real execution's optional port method: the lease spans ``build``."""
+        self.lease_open = True
+        try:
+            yield
+        finally:
+            self.lease_open = False
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)

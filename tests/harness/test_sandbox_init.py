@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.config import agent as agent_config
 from booley.harness import booley as cli
 from booley.harness import init_cmd
 from booley.harness.setup import git_hooks
@@ -191,15 +192,34 @@ def test_issued_sandbox_refuses_init_without_writing(
         assert not (project / "AGENTS.md").exists()
 
 
+@pytest.mark.parametrize("auth", ["subscription", "visitor"])
 def test_sandbox_init_keeps_existing_agent_settings(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, auth: str
 ) -> None:
-    original = _set_booley_toml(project, '[agent]\ndefault = "codex"\nauth = "subscription"\n')
+    original = _set_booley_toml(project, f'[agent]\ndefault = "codex"\nauth = "{auth}"\n')
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
 
     assert _booley_init(project, monkeypatch) == 0
 
     assert (project / ".booley" / "booley.toml").read_bytes() == original
+
+
+def test_sandbox_init_replaces_visitor_where_it_does_not_run(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A container with no spec hand-off reads `visitor` as the host does, so init
+    # replaces it with the detected policy, as Doctor expects.
+    _set_booley_toml(project, '[agent]\ndefault = "codex"\nauth = "visitor"\n')
+    monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+
+    assert _booley_init(project, monkeypatch) == 0
+
+    text = (project / ".booley" / "booley.toml").read_text(encoding="utf-8")
+    assert 'auth = "visitor"' not in text
+    assert 'auth = "subscription"' in text
 
 
 def test_sandbox_init_fills_missing_default_cli_from_agent_app(

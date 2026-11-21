@@ -1,9 +1,9 @@
-"""Project readiness and bounded, explicit guidance/projection reconciliation.
+"""Project readiness: read-only checks of configuration, guidance, and projections.
 
 These fixed operations run at separate composition points so Doctor can retain
 its config, upgrade, guidance, Git, line-ending, projection, orphan ordering.
-Inspection does not repair; reconciliation only uses the existing guidance and
-projection owners. No command rendering, Sandbox issuance, or full Init here.
+Every check only inspects; a finding's fix hint names the command that repairs
+it. No command rendering, Sandbox issuance, or full Init here.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import subprocess
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,6 @@ from booley.harness.setup.git_hooks import (
 )
 from booley.harness.setup.guidance_links import (
     CANON_NAME,
-    ensure_guidance_links,
     guidance_links_current,
 )
 from booley.harness.setup.line_endings import (
@@ -61,13 +59,6 @@ _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _GUIDANCE_BTOOL_MARKER = "booley_status"
 _GUIDANCE_SANDBOX_MARKERS = ("inside the sandbox", "session runtime")
 _STATE_TRANSIENT_DIR_NAMES = frozenset({"worktrees", "build", "_build", ".runtime", ".git", "tmp"})
-
-
-class ReadinessMode(StrEnum):
-    """Whether readiness may repair generated guidance links and projections."""
-
-    INSPECT = "inspect"
-    RECONCILE = "reconcile"
 
 
 @dataclass(frozen=True)
@@ -126,25 +117,29 @@ def load_project(project_root: Path) -> ProjectLoadResult:
     return ProjectLoadResult(report.report(), booley_dir, project)
 
 
-def check_guidance(project: ProjectAudit, *, mode: ReadinessMode) -> DiagnosticReport:
-    """Inspect canonical guidance; RECONCILE may repair generated root links."""
+def check_guidance(project: ProjectAudit) -> DiagnosticReport:
+    """Inspect canonical guidance and the generated root links; never repairs."""
     report = Findings()
-    _check_agents_md(project, report, repair=mode is ReadinessMode.RECONCILE)
+    _check_agents_md(project, report)
     return report.report()
 
 
-def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> DiagnosticReport:
-    """Grade authored cores; RECONCILE may refresh generated projections."""
+def stealth_projections_current(project: ProjectAudit) -> bool:
+    """Whether resolving a Target would leave the root-level core projections as they are."""
+    if not core_projection.projection_enabled(project.project_root):
+        return True
+    try:
+        return not core_projection.projection_issues(project.project_root)
+    except (core_projection.CoreProjectionError, OSError):
+        return False
+
+
+def check_stealth_cores(project: ProjectAudit) -> DiagnosticReport:
+    """Grade authored cores and inspect generated projections; never repairs."""
     report = Findings()
     stealth = project.booley_toml.get("stealth")
     enabled = isinstance(stealth, Mapping) and stealth.get("enabled") is True
-    _check_stealth_cores(
-        project.project_root,
-        project.booley_dir,
-        report,
-        stealth_enabled=enabled,
-        repair=mode is ReadinessMode.RECONCILE,
-    )
+    _check_stealth_cores(project.project_root, project.booley_dir, report, stealth_enabled=enabled)
     return report.report()
 
 
@@ -325,6 +320,11 @@ def _inspect_git_versions(
             report.note(
                 "host Git capability inferred from checkout worktree.useRelativePaths=true "
                 "(host-init policy; host version not rechecked inside the Sandbox)"
+            )
+        elif runtime_context.in_hand_written_sandbox():
+            report.note(
+                "host Git capability is unknown in a Sandbox Booley did not create",
+                "if a host also opens this checkout, run `booley doctor` there",
             )
         else:
             report.warn(
@@ -643,8 +643,8 @@ def _add_config_audit(audit: config_common.ConfigTableAudit, report: Findings) -
     return audit.is_valid
 
 
-def _check_agents_md(project: ProjectAudit, report: Findings, *, repair: bool) -> None:
-    """Check the canonical guidance file and ensure root links point to it.
+def _check_agents_md(project: ProjectAudit, report: Findings) -> None:
+    """Check the canonical guidance file and that root links point to it.
 
     The canonical AGENTS.md lives in the Booley Directory; the Project Root
     only carries generated AGENTS.md/CLAUDE.md links to it.
@@ -653,25 +653,15 @@ def _check_agents_md(project: ProjectAudit, report: Findings, *, repair: bool) -
     if not canon.is_file():
         report.note("project guidance file missing; run setup guidance when ready")
         return
-    if repair:
-        try:
-            ensure_guidance_links(project.project_root, project.booley_dir)
-            report.pass_("project guidance file present; root links ensured")
-        except OSError as exc:
-            _guidance_warning(report, f"could not create root guidance links: {exc}")
-    elif guidance_links_current(project.project_root, canon):
+    if guidance_links_current(project.project_root, canon):
         report.pass_("project guidance file present; root links current")
     else:
-        _guidance_warning(
-            report,
+        report.warn(
             "project guidance root links are missing or stale",
-            "run `booley doctor` to repair AGENTS.md and CLAUDE.md",
+            f"run {runtime_context.booley_init_hint()} to recreate the root AGENTS.md and CLAUDE.md links",
+            check_id="guidance.links-unhealthy",
         )
     _check_guidance_runtime_note(canon, report)
-
-
-def _guidance_warning(report: Findings, message: str, fix: str = "") -> None:
-    report.warn(message, fix, check_id="guidance.links-unhealthy")
 
 
 def _check_guidance_runtime_note(canon: Path, report: Findings) -> None:
@@ -701,9 +691,9 @@ def _scope_warning(canon: Path, report: Findings, message: str, fix: str = "") -
 
 
 def _check_stealth_cores(
-    project_root: Path, booley_dir: Path, report: Findings, *, stealth_enabled: bool, repair: bool
+    project_root: Path, booley_dir: Path, report: Findings, *, stealth_enabled: bool
 ) -> None:
-    """Diagnose stranded/colliding authored cores and inspect or repair projections."""
+    """Diagnose stranded/colliding authored cores and inspect projections."""
     stealth_root = booley_dir / core_projection.STATE_CORES_SUBDIR
     authored = tuple(sorted(stealth_root.rglob("*.core"))) if stealth_root.is_dir() else ()
     if stealth_enabled is False and authored:
@@ -712,7 +702,7 @@ def _check_stealth_cores(
             "set [stealth] enabled = true, or move the cores into the tracked repository",
         )
     elif stealth_enabled is True:
-        _check_core_projections(project_root, report, repair=repair)
+        _check_core_projections(project_root, report)
         _check_scaffold_root_cores(project_root, booley_dir, report)
 
     stranded = [
@@ -801,35 +791,46 @@ def _check_scaffold_root_cores(project_root: Path, booley_dir: Path, report: Fin
         report.pass_("no scaffold-authored core tracked outside .booley/cores/")
 
 
-def _check_core_projections(project_root: Path, report: Findings, *, repair: bool) -> None:
-    """Audit or reconcile the derived root-level core copies."""
-    failed = False
-    if repair:
-        try:
-            core_projection.reconcile_projected_cores(project_root)
-        except (core_projection.CoreProjectionError, OSError) as exc:
-            report.fail(
-                f"stealth core projection failed: {exc}",
-                f"fix the conflict and run {runtime_context.booley_init_hint()}",
-            )
-            failed = True
+def _check_core_projections(project_root: Path, report: Findings) -> None:
+    """Audit the derived root-level core copies."""
     try:
         issues = core_projection.projection_issues(project_root)
     except (core_projection.CoreProjectionError, OSError) as exc:
         report.fail(
             f"could not inspect stealth core projections: {exc}",
-            f"fix the core and run {runtime_context.booley_init_hint()}",
+            f"fix the authored core, then run any Booley Flow to refresh the projections{_init_alternative()}",
         )
-        failed = True
-        issues = ()
-    if issues:
-        report.fail(
-            f"stealth core projections are not current: {', '.join(issues)}",
-            f"run {runtime_context.booley_init_hint()} to reconcile the ignored root-level projections",
-        )
-    elif not failed:
-        report.pass_("stealth core projections match .booley/cores/")
+    else:
+        _report_projection_issues(issues, report)
     _check_projection_exclude(project_root, report)
+
+
+def _report_projection_issues(
+    issues: tuple[core_projection.ProjectionIssue, ...], report: Findings
+) -> None:
+    """WARN for copies a Flow run refreshes; FAIL for a foreign file only a person can move."""
+    refreshable = [issue for issue in issues if issue.refreshable]
+    foreign = [issue.name for issue in issues if not issue.refreshable]
+    if refreshable:
+        report.warn(
+            f"stealth core projections are missing or stale: {', '.join(map(str, refreshable))}",
+            f"run any Booley Flow to refresh them{_init_alternative()}",
+            check_id="stealth.projections-not-current",
+        )
+    if foreign:
+        report.fail(
+            f"foreign files block stealth core projections: {', '.join(foreign)}",
+            "move or delete each listed file; Booley writes its projection there on the next Flow run",
+        )
+    if not issues:
+        report.pass_("stealth core projections match .booley/cores/")
+
+
+def _init_alternative() -> str:
+    """Name `booley init` beside a Flow run, except where Init is refused."""
+    if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
+        return ""
+    return f", or run {runtime_context.booley_init_hint()}"
 
 
 def _check_projection_exclude(project_root: Path, report: Findings) -> None:

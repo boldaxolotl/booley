@@ -34,10 +34,10 @@ from booley.flows.synth.backends.yosys.core import (
 from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.request import SynthRequest
+from booley.targets.target_surface import SynthTools
 
-from .backends.openroad.ppa import openroad_profile
-from .backends.yosys.ppa import yosys_profile
-from .ppa_config import append_ppa_args, resolve_ppa_profile
+from .backends.configure import recipe_ppa_settings
+from .ppa_config import append_ppa_args
 from .recipe_migrations import retired_option_message
 
 __all__ = [
@@ -51,6 +51,7 @@ __all__ = [
     "RECIPE_SNAPSHOT_PARAM",
     "default_recipe_args",
     "resolve_synth_mode",
+    "synth_target_tools",
     "synthesis_recipe_args",
     "synthesis_recipe_changes",
     "synthesis_recipe_fingerprint",
@@ -155,25 +156,35 @@ def resolve_synth_mode(
     return SynthMode(mode)
 
 
-def _ppa_profile_settings(
-    flow_options: Mapping[str, Any],
-    args: SynthRequest | argparse.Namespace,
-    synth_mode: SynthMode,
-    *,
-    target: str,
-) -> dict[str, Any]:
-    """Return the selected profile's own settings for the recipe identity.
+def synth_target_tools(flow_options: Mapping[str, Any], target: str) -> SynthTools:
+    """Resolve the synth mode, frontend, and EDA programs the Flow runs for a Target.
 
-    Explicit overrides are already in ``recipe_args``; these are the profile's
-    defaults, so editing a profile table changes the fingerprint. OpenROAD
-    settings count only when the mode runs OpenROAD.
+    Raises :class:`BoundaryError` (a :class:`ValueError`) for invalid options.
     """
-    profile = resolve_ppa_profile(
-        flow_options, args, field_prefix=f"Target {target!r} flow_options"
+    mode = resolve_synth_mode(flow_options, target=target)
+    frontend = (
+        resolve_frontend(dict(flow_options), field=f"Target {target!r} flow_options.frontend")
+        or DEFAULT_FRONTEND
     )
-    settings: dict[str, Any] = {"yosys": jsonable(asdict(yosys_profile(profile)))}
+    tools = ["sv2v"] if frontend == "sv2v" else []
+    tools.append("yosys")
+    if mode.runs_openroad:
+        tools.append("openroad")
+    return SynthTools(synth_mode=mode.value, frontend=frontend, eda_tools=tuple(tools))
+
+
+def _effective_ppa_settings(recipe_args: list[str], synth_mode: SynthMode) -> dict[str, Any]:
+    """Return the settings the backend resolves from *recipe_args*.
+
+    The selected profile with the Target's and the call's overrides applied, so
+    editing a profile table changes the fingerprint of every recipe whose
+    settings in effect it changes. OpenROAD settings count only when the mode
+    runs OpenROAD.
+    """
+    yosys, openroad = recipe_ppa_settings(recipe_args)
+    settings: dict[str, Any] = {"yosys": jsonable(asdict(yosys))}
     if synth_mode.runs_openroad:
-        settings["openroad"] = jsonable(asdict(openroad_profile(profile)))
+        settings["openroad"] = jsonable(asdict(openroad))
     return settings
 
 
@@ -200,6 +211,7 @@ def synthesis_recipe_snapshot(
         )
 
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
+    recipe_args = synthesis_recipe_args(resolved.flow_options, args, target=target)
     liberty, _found = resolve_liberty_lenient(None)
     return {
         "schema": 5 if synth_mode.runs_openroad else 4,
@@ -219,10 +231,8 @@ def synthesis_recipe_snapshot(
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
         "parameters": jsonable(resolved.parameters),
-        "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
-        "ppa_profile_settings": _ppa_profile_settings(
-            resolved.flow_options, args, synth_mode, target=target
-        ),
+        "recipe_args": recipe_args,
+        "effective_ppa_settings": _effective_ppa_settings(recipe_args, synth_mode),
         "constraints": constraints,
         "technology": {
             "liberty": liberty.as_posix(),

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.runtime.display_identity import DisplayIdentity
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -104,7 +105,7 @@ def _write_display_event(event: dict) -> None:
         return
     try:
         path = Path(runtime_dir) / "display.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(path.parent)
         with path.open("a", encoding="utf-8") as f:
             f.write(_serialize_display_event(event))
     except (OSError, TypeError, ValueError):

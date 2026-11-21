@@ -7,7 +7,11 @@ with the actionable reason and a bounded, marker-free output tail.
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import re
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -17,9 +21,11 @@ import pytest
 
 import booley.flows.sim.build as build_module
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.adapter_transport import AdapterResult, AdapterTestResult
 from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.execution import SimulationOptions
 from booley.flows.sim.execution.contract import SimulationTestOutcome
+from booley.flows.sim.execution.engine import SimulationExecution
 from booley.flows.sim.record.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
@@ -33,7 +39,13 @@ from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.source_paths import ProjectSourcePaths
+from booley.flows.terminal_progress import TerminalProgress
+from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR
+from booley.targets.catalog import TargetCatalog
+from tests.flows.failing_compiler import put_failing_iverilog_on_path
+from tests.flows.sim.prepared_group import run_prepared_group
 from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
@@ -43,11 +55,22 @@ from tests.flows.sim.simulation_record_test_support import (
     _run_coverage_simulation_record,
 )
 from tests.flows.sim.simulation_record_test_support import _handle as _shared_handle
-from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
+from tests.flows.sim.test_execution_engine import (
+    _handle,
+    _prepared,
+    _real_fusesoc,
+    _run_execution,
+    _subprocess_invoker,
+    _write_fake_icarus_tools,
+    _write_runtime_input_project,
+    _write_vvp,
+)
 from tests.flows.sim.test_verilator_coverage_execution import (
     _build_coverage,
     _execution_fixture,
+    _run_request,
 )
+from tests.time_budget import hang_guard_s
 
 TIMEOUT_REASON = "build timed out after 600 s (raise [flows.sim].build_timeout_ms)"
 OOM_REMEDY = (
@@ -117,7 +140,7 @@ def test_oom_build_names_oom_evidence_and_remedy(
         f"build failed while the Sandbox recorded an OOM kill ({peak_text}; {OOM_REMEDY})"
     )
     assert outcome.failure_kind == "infrastructure"
-    report = build_module.build_failure_report(outcome)
+    report = build_module.build_failure_report(outcome, ProjectSourcePaths())
     assert report.splitlines()[0] == outcome.reason
     assert "Error 137" in report
     assert "BOOLEY_BUILD_STAGE" not in report
@@ -162,22 +185,98 @@ def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypa
     assert diagnostic in outcome.output
 
 
-def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
-    diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    result = _run_execution(
-        handle,
-        prepared,
-        lambda _command, timeout: SubprocessResult(
-            returncode=1, stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n"
-        ),
-        ("smoke",),
-        cocotb=False,
-        canned_at="build",
+_DESIGN = ("{core}:4: syntax error", "gen/other.sv:2: error: Unknown module type: other")
+_SORRY = ("{core}:4: sorry: Constant user functions are not supported.",)
+
+
+@pytest.mark.parametrize(
+    ("trace", "lines"),
+    [(False, _DESIGN), (True, _DESIGN), (False, _SORRY)],
+    ids=["design", "trace-overlay", "infrastructure"],
+)
+def test_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trace: bool, lines: tuple[str, ...]
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    core = f"src/acme_lib_runtime_input{'-booleytrace' if trace else ''}_1/tb.sv"
+    printed = [line.format(core=core) for line in lines]
+    put_failing_iverilog_on_path(tmp_path, monkeypatch, printed)
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    options = SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000)
+    with _real_fusesoc():
+        outcome = run_prepared_group(
+            SimulationExecution(invoke=_subprocess_invoker(project), options=options), handle, ()
+        )
+
+    failure = outcome.infrastructure_failure
+    shown = (failure.detail if failure else outcome.tests[0].error_tail).splitlines()
+    assert (failure is not None) == (lines == _SORRY)
+    for line in lines:
+        assert line.format(core="tb.sv") in shown
+    if failure is None:
+        # The persisted build output keeps the raw build-tree spelling.
+        assert printed[0] in outcome.builds[0].output
+
+
+def test_runtime_failure_names_project_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    raw = "src/acme_lib_runtime_input_1/tb.sv"
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    _write_vvp(fake_bin, raw)  # a vvp that fails naming the build-tree file
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    sink = TerminalProgress("sim", "t", tmp_path / "progress", stream=io.StringIO())
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project, observed=True),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
-    assert result.infrastructure_failure is None
-    assert diagnostic in result.tests[0].error_tail
+    with _real_fusesoc(), sink.installed():
+        outcome = run_prepared_group(execution, handle, ("t",))
+
+    (test,) = outcome.tests
+    assert "Unable to open tb.sv for reading" in test.error_tail
+    assert raw not in test.error_tail + test.reason
+    assert "Unable to open tb.sv for reading" in sink.stream.getvalue()
+    assert raw not in sink.stream.getvalue()
+    assert raw in sink.log_path.read_text(encoding="utf-8")
+
+
+def test_project_text_leaves_longer_unmapped_filenames_alone() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+    text = "src/core/top.sv:4: bad; src/core/top.sv.generated:4: note; src/core/top.sv."
+    assert (
+        paths.project_text(text)
+        == "rtl/top.sv:4: bad; src/core/top.sv.generated:4: note; rtl/top.sv."
+    )
+
+
+def test_project_text_maps_a_name_printed_with_backslashes() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+    assert paths.project_text("src\\core\\top.sv:4: bad; src\\core/top.sv:5") == (
+        "rtl/top.sv:4: bad; rtl/top.sv:5"
+    )
+
+
+def test_merged_mappings_keep_both_targets_and_let_the_newer_win() -> None:
+    first = ProjectSourcePaths({"src/a/top.sv": "rtl/a.sv", "src/c/x.sv": "old/x.sv"})
+    second = ProjectSourcePaths({"src/b/top.sv": "rtl/b.sv", "src/c/x.sv": "new/x.sv"})
+
+    merged = first.merged(second)
+
+    assert dict(merged.by_name) == {
+        "src/a/top.sv": "rtl/a.sv",
+        "src/b/top.sv": "rtl/b.sv",
+        "src/c/x.sv": "new/x.sv",
+    }
+    assert first.merged(ProjectSourcePaths()) is first
 
 
 def _engine_timeout_outcome(tmp_path: Path):
@@ -300,18 +399,107 @@ def test_flow_sim_build_timeout_report_leads_with_the_reason(
     assert run.launched == []
 
 
-def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
-    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch)
+def _failed_coverage_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_stage: Callable[[str], SubprocessResult],
+    files: tuple[ResolvedFile, ...] = (),
+):
+    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch, files=files)
     execution._options = SimulationOptions(build_timeout_ms=600_000)
     original = execution._invoke
 
     def invoke(command, *, timeout):
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return _timed_out_result(stdout)
+            return build_stage(command[-1])
         return original(command, timeout=timeout)
 
     execution._invoke = invoke
     return _build_coverage(execution, target)
+
+
+def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
+    return _failed_coverage_build(tmp_path, monkeypatch, lambda _script: _timed_out_result(stdout))
+
+
+def test_coverage_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = "src/acme_demo_counter-booleycoverage_1"
+    files = (
+        ResolvedFile(
+            f"{prefix}/rtl/counter.sv",
+            "systemVerilogSource",
+            core="acme:demo:counter-booleycoverage:1",
+        ),
+    )
+
+    def build_stage(script: str) -> SubprocessResult:
+        token = re.search(r"token=([0-9a-f]+)", script)
+        assert token is not None
+        return SubprocessResult(
+            returncode=1,
+            stdout=(
+                f"%Error: {prefix}/rtl/counter.sv:1:8: syntax error\n"
+                "%Error: gen/other.sv:2:3: syntax error\n"
+                f"BOOLEY_BUILD_STAGE token={token.group(1)} rc=1\n"
+            ),
+        )
+
+    build = _failed_coverage_build(tmp_path, monkeypatch, build_stage, files)
+
+    assert build.success is False
+    assert build.infrastructure_error is False
+    assert build.output.splitlines()[:2] == [
+        "%Error: rtl/counter.sv:1:8: syntax error",
+        "%Error: gen/other.sv:2:3: syntax error",
+    ]
+
+
+def test_coverage_relay_and_run_output_name_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = "src/acme_demo_counter-booleycoverage_1/rtl/counter.sv"
+    files = (ResolvedFile(raw, "systemVerilogSource", core="acme:demo:counter-booleycoverage:1"),)
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch, files=files)
+    detail = f"{raw}:1:8: mismatch"
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=False,
+        sva_errors=0,
+        tests=("wrap",),
+        termination="fatal_init",
+        failure_kind="infrastructure",
+        detail=detail,
+        test_results=(
+            AdapterTestResult(
+                "wrap",
+                "fail",
+                detail=detail,
+                termination="fatal_init",
+                failure_kind="infrastructure",
+            ),
+        ),
+    )
+    original = execution._invoke
+    sink = TerminalProgress("sim", "t", tmp_path / "progress", stream=io.StringIO())
+
+    def invoke(command, *, timeout):
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            sink.begin_command()
+            sink.observe("stdout", f"{detail}\n".encode())
+            sink.end_command()
+        return original(command, timeout=timeout)
+
+    execution._invoke = invoke
+    with sink.installed():
+        assert _build_coverage(execution, target).success
+        result = execution.run(_run_request(target, raw_path))
+
+    assert "rtl/counter.sv:1:8: mismatch" in result.output
+    assert raw not in result.output
+    assert "rtl/counter.sv:1:8: mismatch" in sink.stream.getvalue()
+    assert raw not in sink.stream.getvalue()
 
 
 def test_coverage_build_timeout_is_infrastructure_with_reason_first(

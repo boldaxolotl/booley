@@ -69,6 +69,9 @@ PROJECT_GITIGNORE_PATTERNS = (
     "/PARITY-REPORT.md",
     # Measurement Runs (Common Booley State): local results, never committed.
     "/measurements/",
+    # Developer Agents' plans and handoffs (Project AGENTS template): working notes.
+    "/plans/",
+    "/handoffs/",
 )
 
 PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(

@@ -154,6 +154,13 @@ def test_publisher_and_build_stamp_share_standard_contract_calculator() -> None:
     assert "profile=BuildProfile.DEVELOPMENT_WHEEL" in test_workflow
 
 
+def test_unmet_build_requirement_is_named_not_fetched(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('[build-system]\nrequires = ["setuptools>=9999"]\n')
+    built = run_bounded_child([sys.executable, "-m", "build", "--no-isolation"], cwd=tmp_path)
+    assert "setuptools>=9999" in built.stderr
+    assert "pip" not in built.stderr
+
+
 @pytest.fixture(scope="module")
 def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]:
     """Build the official sdist and the wheel built from it, as ``publish.yml`` does.
@@ -168,8 +175,9 @@ def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     dist = base / "dist"
     built = run_bounded_child(
-        [sys.executable, "-m", "build", "--outdir", str(dist)],
+        [sys.executable, "-m", "build", "--no-isolation", "--outdir", str(dist)],
         cwd=checkout,
+        env={**os.environ, "PIP_NO_INDEX": "1"},
     )
     assert built.returncode == 0, built.stderr or built.stdout
     return checkout, next(dist.glob("booley_rtl-*.tar.gz")), next(dist.glob("booley_rtl-*.whl"))

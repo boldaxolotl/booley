@@ -100,8 +100,9 @@ def test_issued_spec_seeds_every_listed_cli(tmp_path, monkeypatch):
     assert spec["remoteEnv"]["OPENAI_API_KEY"] == "${localEnv:OPENAI_API_KEY}"
 
 
-def test_single_cli_spec_seeds_only_claude_as_before(tmp_path, monkeypatch):
-    project = _host(tmp_path, monkeypatch, '[agent]\nclis = ["claude"]\n')
+@pytest.mark.parametrize("auth", ["", 'auth = "visitor"\n'], ids=["missing", "recorded-visitor"])
+def test_single_cli_spec_seeds_only_claude_as_before(tmp_path, monkeypatch, auth):
+    project = _host(tmp_path, monkeypatch, f'[agent]\nclis = ["claude"]\n{auth}')
     monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
 
     spec = _issue(project, "claude")

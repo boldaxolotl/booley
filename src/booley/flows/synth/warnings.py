@@ -9,6 +9,10 @@ Structural counts come from two Yosys ``check`` passes: the pre-mapping check
 because mapped library cells are black boxes to ``check``; the reported loop
 count is the larger of the two. The final check owns multi-driven nets after
 mapping.
+
+A loop or driver warning from an earlier pass that the completed checks no
+longer find was removed by optimization, not reviewed: it stays actionable
+unless it is a loop the Project declared with ``expected_comb_loops``.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -24,6 +28,13 @@ WarningDisposition = Literal["benign", "advisory", "structural", "informational"
 # Identity of one warning group: the `_WarningRecord` fields `_warning_summary` counts by
 # (tool, code, category, disposition, message_sha256, message, original_bytes, truncated, rationale).
 _GroupKey = tuple[str, str | None, str, WarningDisposition, str, str, int, bool, str | None]
+
+# Earlier-pass structural category -> what shows that optimization removed it.
+# Only the final check counts multi-driven nets, so its rationale names that check.
+_REMOVED_EVIDENCE = {
+    "combinational_loop": "the completed structural checks find no combinational loops",
+    "multi_driver": "the completed final check finds no multi-driven nets",
+}
 
 _SOURCE_ORDER = ("sv2v", "yosys", "openroad", "final_check")
 _REPRESENTATIVE_LIMIT = 8
@@ -76,6 +87,11 @@ class WarningGroup:
     truncated: bool
     count: int
     rationale: str | None = None
+
+    @property
+    def removed(self) -> bool:
+        """True for an earlier-pass loop or driver warning the completed checks no longer find."""
+        return self.rationale is not None and self.category in _REMOVED_EVIDENCE
 
     def to_detail(self) -> dict[str, Any]:
         detail: dict[str, Any] = {
@@ -193,22 +209,33 @@ def _warning_record(
     )
 
 
-def _multiline_records(text: str, starts: re.Pattern[str]) -> list[str]:
-    records: list[str] = []
+def _printed_and_shown(lines: list[str], project_text: Callable[[str], str]) -> tuple[str, str]:
+    """The message as the tool printed it, and as shown with Project paths.
+
+    Each line is renamed before whitespace is collapsed, so a file name with
+    repeated spaces still matches the mapping.
+    """
+    return _normalize_message(lines), _normalize_message([project_text(line) for line in lines])
+
+
+def _multiline_records(
+    text: str, starts: re.Pattern[str], project_text: Callable[[str], str]
+) -> list[tuple[str, str]]:
+    records: list[tuple[str, str]] = []
     current: list[str] = []
     for line in text.splitlines():
         if starts.match(line):
             if current:
-                records.append(_normalize_message(current))
+                records.append(_printed_and_shown(current, project_text))
             current = [line]
         elif current and (line.startswith((" ", "\t")) or not line.strip()):
             if line.strip():
                 current.append(line)
         elif current:
-            records.append(_normalize_message(current))
+            records.append(_printed_and_shown(current, project_text))
             current = []
     if current:
-        records.append(_normalize_message(current))
+        records.append(_printed_and_shown(current, project_text))
     return records
 
 
@@ -238,17 +265,23 @@ def _disposition(message: str, category: str) -> tuple[WarningDisposition, str |
     return "advisory", None
 
 
-def _yosys_records(text: str) -> list[_WarningRecord]:
+def _as_printed(message: str) -> str:
+    return message
+
+
+def _yosys_records(
+    text: str, project_text: Callable[[str], str] = _as_printed
+) -> list[_WarningRecord]:
     result: list[_WarningRecord] = []
-    for message in _multiline_records(text, _YOSYS_WARNING_RE):
+    for message, shown in _multiline_records(text, _YOSYS_WARNING_RE, project_text):
         tool = "abc" if message.lower().startswith("abc:") else "yosys"
         category = _category(message, None)
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record(tool, None, category, disposition, message, rationale))
-    return [*result, *_located_records(text)]
+        result.append(_warning_record(tool, None, category, disposition, shown, rationale))
+    return [*result, *_located_records(text, project_text)]
 
 
-def _located_records(text: str) -> list[_WarningRecord]:
+def _located_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     """Parse single-line located frontend warnings.
 
     The echoed source line and caret line that follow are never attached, and
@@ -259,64 +292,118 @@ def _located_records(text: str) -> list[_WarningRecord]:
         match = _LOCATED_WARNING_RE.match(line)
         if match is None:
             continue
-        message = _normalize_message(["Warning: " + match.group(3)])
+        message, shown = _printed_and_shown(["Warning: " + match.group(3)], project_text)
         code_match = _SLANG_CODE_RE.search(message)
         code = code_match.group(1) if code_match else None
         category = _category(message, code)
         if category == "other":
-            result.append(_warning_record("yosys", code, "frontend", "informational", message))
+            result.append(_warning_record("yosys", code, "frontend", "informational", shown))
             continue
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record("yosys", code, category, disposition, message, rationale))
+        result.append(_warning_record("yosys", code, category, disposition, shown, rationale))
     return result
 
 
-def _openroad_records(text: str) -> list[_WarningRecord]:
+def _openroad_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     result: list[_WarningRecord] = []
     for line in text.splitlines():
         match = _OPENROAD_WARNING_RE.match(line)
         if match is None and not _PLAIN_WARNING_RE.match(line):
             continue
         code = match.group(1).upper() if match and match.group(1) else None
-        message = _normalize_message([line])
+        message, shown = _printed_and_shown([line], project_text)
         category = _category(message, code)
         disposition, rationale = _disposition(message, category)
-        result.append(_warning_record("openroad", code, category, disposition, message, rationale))
+        result.append(_warning_record("openroad", code, category, disposition, shown, rationale))
     return result
 
 
-def _records(sources: Mapping[str, str], structural: StructuralConditions) -> list[_WarningRecord]:
+def _removed_rationale(category: str, seen: int, expected_comb_loops: int) -> str:
+    """Say why a removed structure still matters; only loops have an allowance to declare."""
+    if category != "combinational_loop":
+        verdict = "Removed is not reviewed: check the RTL and fix it."
+    else:
+        verdict = (
+            (
+                "Declared as intentional"
+                if seen <= expected_comb_loops
+                else "Removed is not reviewed: check the RTL, then fix it or declare the count"
+            )
+            + f": [flows.synth].expected_comb_loops (this run {seen}, declared {expected_comb_loops})."
+        )
+    return (
+        f"An earlier synthesis pass reported this; {_REMOVED_EVIDENCE[category]}, "
+        f"so optimization removed it. {verdict}"
+    )
+
+
+def _annotate_removed(
+    records: list[_WarningRecord],
+    structural: StructuralConditions,
+    expected_comb_loops: int,
+) -> list[_WarningRecord]:
+    """Mark earlier-pass loop and driver warnings the completed checks no longer find.
+
+    They stay actionable, except loops within ``expected_comb_loops``: one more
+    than declared warns again. Multi-driven nets have no allowance.
+    """
+    if not structural.complete:
+        return records
+    remaining = {
+        "combinational_loop": structural.comb_loops,
+        "multi_driver": structural.multi_driven,
+    }
+    seen = Counter(item.category for item in records)
+    result: list[_WarningRecord] = []
+    for item in records:
+        if remaining.get(item.category, 1):
+            result.append(item)
+            continue
+        declared = (
+            item.category == "combinational_loop" and seen[item.category] <= expected_comb_loops
+        )
+        result.append(
+            replace(
+                item,
+                disposition="informational" if declared else "advisory",
+                rationale=_removed_rationale(
+                    item.category, seen[item.category], expected_comb_loops
+                ),
+            )
+        )
+    return result
+
+
+def _records(
+    sources: Mapping[str, str],
+    structural: StructuralConditions,
+    project_text: Callable[[str], str],
+    expected_comb_loops: int,
+) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
         text = sources.get(source, "")
         if not text:
             continue
         if source == "openroad":
-            records.extend(_openroad_records(text))
+            records.extend(_openroad_records(text, project_text))
         elif source == "sv2v":
-            records.extend(_sv2v_records(text))
+            records.extend(_sv2v_records(text, project_text))
+        elif source == "final_check":
+            records.extend(_yosys_records(text, project_text))
         else:
-            parsed = _yosys_records(text)
-            if source != "final_check" and structural.complete and structural.comb_loops == 0:
-                parsed = [
-                    replace(
-                        item,
-                        disposition="advisory",
-                        rationale="Earlier synthesis pass reported this loop; the completed "
-                        "post-optimisation check reports no combinational loops.",
-                    )
-                    if item.category == "combinational_loop"
-                    else item
-                    for item in parsed
-                ]
-            records.extend(parsed)
+            records.extend(
+                _annotate_removed(
+                    _yosys_records(text, project_text), structural, expected_comb_loops
+                )
+            )
     return records
 
 
-def _sv2v_records(text: str) -> list[_WarningRecord]:
+def _sv2v_records(text: str, project_text: Callable[[str], str]) -> list[_WarningRecord]:
     return [
-        _warning_record("sv2v", None, "other", "advisory", message)
-        for message in _multiline_records(text, _PLAIN_WARNING_RE)
+        _warning_record("sv2v", None, "other", "advisory", shown)
+        for _, shown in _multiline_records(text, _PLAIN_WARNING_RE, project_text)
     ]
 
 
@@ -352,7 +439,7 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
     ]
     groups.sort(
         key=lambda item: (
-            not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            not item.removed,
             item.disposition == "informational",
             item.tool,
             item.code or "",
@@ -399,10 +486,23 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
     )
 
 
-def parse_synth_diagnostics(sources: Mapping[str, str]) -> SynthDiagnostics:
-    """Parse fresh stage text into bounded warnings and structural conditions."""
+def parse_synth_diagnostics(
+    sources: Mapping[str, str],
+    project_text: Callable[[str], str] = _as_printed,
+    *,
+    expected_comb_loops: int = 0,
+) -> SynthDiagnostics:
+    """Parse fresh stage text into bounded warnings and structural conditions.
+
+    *project_text* renames the source files a warning message names before
+    warnings are grouped; classification reads the message as printed.
+    ``expected_comb_loops`` is the Project's declared loop count, which also
+    covers earlier-pass loop warnings that optimization removed.
+    """
     structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources, structural)),
+        warnings=_warning_summary(
+            _records(sources, structural, project_text, expected_comb_loops)
+        ),
         structural=structural,
     )

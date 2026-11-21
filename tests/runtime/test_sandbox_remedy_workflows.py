@@ -17,6 +17,7 @@ from booley.core.project_identity import project_label_id
 from booley.runtime import (
     image_lifecycle,
     runtime_context,
+    sandbox_apply,
     session_admission,
     session_issuance,
     session_runtime,
@@ -194,12 +195,21 @@ def test_own_image_named_like_the_generated_one_is_external(host: SimpleNamespac
     assert session_runtime.sandbox_remedy(host.root) == EXTERNAL + HEADLESS_RESEED
 
 
+@pytest.mark.parametrize("location", ["issued", "hand-written"])
 def test_inside_the_sandbox_lists_both_workflows(
-    host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    host: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    location: str,
 ) -> None:
+    if location == "hand-written":
+        request.getfixturevalue("hand_written_sandbox")
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
 
-    assert session_runtime.sandbox_remedy(host.root) == UNKNOWN_MANAGED
+    expected = (
+        UNKNOWN_MANAGED if location == "issued" else sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
+    )
+    assert session_runtime.sandbox_remedy(host.root) == expected
 
 
 def test_unreachable_docker_asks_for_connectivity(

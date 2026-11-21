@@ -19,6 +19,7 @@ from tests.docker_host_support import fake_docker_host
 from tests.session_issuance_support import install_trusted_validator, stub_keeper
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Findings
+from booley.config.agent import RetiredAuthError
 from booley.config.host_config import host_config_path
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -28,6 +29,7 @@ from booley.runtime import (
     inspection,
     project_image,
     runtime_context,
+    sandbox_apply,
     session_runtime,
     vaporview,
 )
@@ -516,19 +518,103 @@ def test_unbuildable_expected_spec_warns_unverified(
     assert "rerun `booley doctor`" in finding.fix
 
 
-def test_hand_written_auto_spec_is_not_compared(
+def test_retired_auth_skips_the_drift_check_with_a_note(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _seed(project, dc.APP_NONE)
+
+    def retired(_image: str | None) -> dict:
+        try:
+            raise RetiredAuthError("booley.toml [agent] auth = 'auto' is retired")
+        except RetiredAuthError as exc:
+            raise runtime_spec.RuntimeSpecError(str(exc)) from exc
+
+    (finding,) = _inspect(project, monkeypatch, expected_spec=retired)
+
+    assert finding.severity.value == "note"
+    assert finding.message == "devcontainer.json drift check skipped - set [agent] auth first"
+    assert "booley doctor" not in finding.message
+
+
+@pytest.mark.parametrize("case", ["auto", "claude-spec", "missing-spec"])
+def test_hand_written_spec_is_not_compared(
+    project: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, case: str
+) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
-    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto" if case == "auto" else "claude"
+    spec["name"] = "drifted"
     _write(project, spec)
+    if case != "auto":
+        request.getfixturevalue("hand_written_sandbox")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    if case == "missing-spec":
+        dc.devcontainer_path(project).unlink()
 
     def forbidden(_image: str | None) -> dict:
         raise AssertionError("a hand-written spec must not be rebuilt")
 
     findings = _inspect(project, monkeypatch, expected_spec=forbidden)
 
-    assert [(f.severity.value, "hand-written" in f.message) for f in findings] == [("note", True)]
+    assert [
+        (f.severity.value, "hand-written" in f.message or "not checked" in f.message)
+        for f in findings
+    ] == [("note", True)]
+    assert "booley init --seed" not in findings[0].message
+
+
+def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+) -> None:
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    dc.devcontainer_path(project).parent.mkdir(parents=True, exist_ok=True)
+    dc.devcontainer_path(project).write_bytes(b"{")
+
+    (finding,) = _inspect(project, monkeypatch, expected_spec=None)
+
+    assert finding.severity.value == "fail"
+    assert finding.fix == (
+        "repair this Sandbox's devcontainer.json, then rebuild the Sandbox from it"
+    )
+
+
+@pytest.mark.parametrize("hand_written", [True, False])
+def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    hand_written: bool,
+) -> None:
+    if hand_written:
+        request.getfixturevalue("hand_written_sandbox")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(
+        inspection.idk,
+        "compare_issued_image",
+        lambda *_a, **_kw: inspection.image_identity.Comparison(
+            inspection.image_identity.Status.UNKNOWN
+        ),
+    )
+    inspected = inspection.RuntimeInspectionRequest(project, "booley-sandbox", None)
+    report = Findings()
+
+    assert inspection._image_current(inspected, {"image": _IMAGE_A}, report)
+
+    (note,) = report.report().findings
+    assert "image drift is unverified" in note.message
+    assert ("host `booley doctor` is authoritative" in note.message) is not hand_written
+
+
+def test_hand_written_sandbox_keeps_compatibility_checks(
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+) -> None:
+    spec = _seed(project, dc.APP_CLAUDE)
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
+    _write(project, spec)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+
+    findings = _inspect(project, monkeypatch, expected_spec=None, declared_provider=dc.APP_CODEX)
+
+    assert _drift(findings).message.endswith(sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS)
 
 
 def test_inside_sandbox_compares_visible_parts(

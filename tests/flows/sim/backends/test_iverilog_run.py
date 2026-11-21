@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.time_budget import hang_guard_s
@@ -83,6 +84,34 @@ def test_traced_document_with_trace_args_starts(tmp_path: Path, monkeypatch, too
 
     assert ir.main([encode_simulation_work(work)]) == 0
     assert "+test_id=2" in marker.read_text(encoding="utf-8")
+
+
+def test_document_forwards_the_booley_directory(tmp_path: Path, monkeypatch):
+    """Without the Booley Directory the run silently stops streaming declared traces."""
+    from booley.flows.sim import run_guard
+    from booley.flows.sim.adapter_contract import encode_simulation_work
+
+    seen: dict[str, object] = {}
+
+    def record(**kwargs: object) -> SimpleNamespace:
+        seen.update(kwargs)
+        return SimpleNamespace(exit_code=0)
+
+    monkeypatch.setattr(run_guard, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(ir, "run_icarus_image", record)
+    work = PreparedSimulationWork(
+        adapter="icarus",
+        build_dir=str(tmp_path),
+        run_cwd="",
+        timeout_s=hang_guard_s(),
+        work_dir=str(tmp_path / "work"),
+        trace=True,
+        trace_files=("fpu.vcd",),
+        booley_dir=str(tmp_path / ".booley"),
+    )
+
+    assert ir.main([encode_simulation_work(work)]) == 0
+    assert seen["booley_dir"] == tmp_path / ".booley"
 
 
 def test_run_icarus_image_missing_image_returns_error(tmp_path: Path):
@@ -241,6 +270,9 @@ class _FakeTraceSession:
         return None
 
     def start_conversion_budget(self, _timeout_s):
+        return None
+
+    def report_failed_conversions(self, *, declared_trace_used):
         return None
 
     def postprocess(self, path):

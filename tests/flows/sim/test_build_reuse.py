@@ -607,7 +607,10 @@ def test_verilator_key_declines_ineligible_builds(
     )
 
     assert (
-        SimulationBuildSession(_handle(tmp_path)).reusable_key(prepared, {}, hooks=False) is None
+        SimulationBuildSession(_handle(tmp_path), wait_s=60).reusable_key(
+            prepared, {}, hooks=False
+        )
+        is None
     )
 
 
@@ -660,7 +663,7 @@ def _manifest(prepared: Any) -> dict[str, Any]:
 def test_generation_path_never_reaches_the_target_environment_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     keys: list[str | None] = []
     with session:
         for plain in ("1", "1", "2"):
@@ -701,7 +704,7 @@ def test_closure_may_name_exact_toolchain_files_outside_every_root(tmp_path: Pat
 def test_declined_key_clears_the_previous_verilator_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     with session:
         prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
         key = session.reusable_key(prepared, inputs, hooks=False)
@@ -722,7 +725,7 @@ def test_generated_makefile_reading_unkeyed_environment_downgrades(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("BOOLEY_TEST_UNKEYED", "-DSURPRISE")
-    session = SimulationBuildSession(_handle(tmp_path))
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
     with session:
         prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
         (prepared.build_root / "Vtop.mk").write_text(

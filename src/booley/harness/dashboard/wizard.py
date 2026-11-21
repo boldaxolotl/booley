@@ -34,6 +34,7 @@ from booley.harness.dashboard.launch import (
     NO_FACTS,
     ArgumentsError,
     CheckResult,
+    FlowChoice,
     Launcher,
     RunFacts,
     SpecialistListing,
@@ -72,6 +73,7 @@ from booley.harness.dashboard.targets import (
     TargetListing,
     TargetsReader,
     WorktreeChoice,
+    enabled_flows,
     first_line,
 )
 from booley.harness.worktree_list import WorktreeListError
@@ -208,7 +210,8 @@ class RunWizard(ModalScreen[str | None]):
         self._preset = preset
         self._launcher = launcher
         self._targets = targets  # the app's reader: its lock serializes every catalog read
-        self._flows = launcher.flows()
+        self._builtin_flows = launcher.flows()  # discovered once; each worktree filters it
+        self._flows: tuple[FlowChoice, ...] = ()  # those the picked worktree leaves enabled
         # What each row of the Flow or Specialist step stands for: (kind, name), or None when disabled.
         self._entries: list[tuple[str, str] | None] = []
         self._specialists: SpecialistListing | None = None  # None while being read
@@ -232,8 +235,7 @@ class RunWizard(ModalScreen[str | None]):
         self._form: RunForm | SpecialistForm | None = None
         # The one build whose result counts.
         self._form_worker: Worker[RunForm | SpecialistForm] | None = None
-        self._building = False
-        self._form_error = ""
+        self._building, self._form_error = False, ""
         self._values: dict[str, str] = {}
         self._picked: dict[str, tuple[str, ...]] = {}  # the Test Runs chosen, in pick order
         # The worktree's Targets and the chosen Target's Test Runs; None while being read.
@@ -398,6 +400,8 @@ class RunWizard(ModalScreen[str | None]):
                 group=SPECIALISTS_GROUP,
                 exit_on_error=False,
             )
+        listed = set(enabled_flows((flow.name for flow in self._builtin_flows), worktree))
+        self._flows = tuple(flow for flow in self._builtin_flows if flow.name in listed)
         self._fill_entries()
         self._show_stage("flow")
 

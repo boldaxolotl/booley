@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fnmatch
+import itertools
 import json
 import os
 import re
@@ -588,6 +589,8 @@ def _fake_async_target_tick(token: str) -> int:
         return int(token[:-2]) * _TICKS_PER_NS * 1_000_000
     if token.endswith("t"):
         return int(token[:-1])
+    if token.endswith("c"):
+        return int(token[:-1]) * _TICKS_PER_CYCLE
     raise AssertionError(f"unexpected async time token: {token}")
 
 
@@ -832,6 +835,8 @@ def fake_rust(monkeypatch):
                 "time_label": token,
                 "signals": [],
             }
+        elif sub == "find":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         elif sub == "stats":
             data = {
                 "simulation_ns": 1000,
@@ -2465,3 +2470,23 @@ def test_list_envelope_refuses_native_usage_error(monkeypatch, capsys):
 
     assert raised.value.code == 2
     assert "exceeds width 8" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("cycle", "bound"), [(25, "250"), (200_000, "1000001")])
+def test_async_marker_bound_is_its_cycles_tick(fake_rust, tmp_path, cycle, bound):
+    """Async `--before` takes a tick: a Marker is passed as the tick of its cycle."""
+    from booley.bwave import cli as bwave
+
+    _write_sessions({"dut": _make_entry(str(_make_trace(tmp_path)), {"m": cycle})})
+
+    argv = ["@dut", "find", "sig", "1", "--before", "m", "--async", "--with-reset"]
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=argv))
+
+    assert exc.value.code == 0
+    *probes, final = fake_rust["calls"]
+    assert final[1] == "find"
+    assert ("--before", bound) in itertools.pairwise(final)
+    value_probe = next(call for call in probes if call[1] == "value")
+    assert "--async" in value_probe
+    assert "--with-reset" in value_probe

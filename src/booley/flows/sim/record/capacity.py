@@ -76,6 +76,8 @@ class SimulationRecordCapacity:
         )
         self._shutdown = threading.Event()
         self._outer_entered = False
+        # Lanes an ``admitted_lane`` took on: it marks them terminal, not ``child_lane``.
+        self._admitted: set[ExecutionId] = set()
         self._waiting: dict[str, SlotToken] = {}
         # Child permits inside their work, and those whose lost lease was handled.
         self._held: dict[str, ChildPermit] = {}
@@ -165,13 +167,37 @@ class SimulationRecordCapacity:
     ) -> Iterator[ChildPermit]:
         """Give one lane its identity and slot, retiring both on exit.
 
-        ``publish`` gets the lane ID before the slot is requested. A *memory*
-        claim is the item's Memory Reservation; it fixes the item's thread count
-        at its share of the cores for everything it runs.
-        *queue_reason* names why a requeued item claims again. While the Flow
-        still reserves memory, the claim takes over its reservation and queue place.
-        *tests* are the item's test names, shown beside its run, Flow and Target
-        in queue reports.
+        The lane (``child_lane``) and its admission (``admitted_lane``) entered in sequence.
+        """
+        with (
+            self.child_lane(
+                work_item_id,
+                attempt_id=attempt_id,
+                attempt_ordinal=attempt_ordinal,
+                attempt_directory=attempt_directory,
+                publish=publish,
+            ) as prepared,
+            self.admitted_lane(
+                prepared, work_item_id, memory=memory, queue_reason=queue_reason, tests=tests
+            ) as permit,
+        ):
+            yield permit
+
+    @contextmanager
+    def child_lane(
+        self,
+        work_item_id: str,
+        *,
+        attempt_id: str,
+        attempt_ordinal: int,
+        attempt_directory: Path,
+        publish: Callable[[ExecutionId], None],
+    ) -> Iterator[PreparedChild]:
+        """Give one lane its execution identity, before it has a slot.
+
+        ``publish`` gets the lane ID. A lane that no ``admitted_lane`` took on is
+        marked terminal on exit (``completed``, or ``record_error`` when the work
+        raised); an admitted one is marked by ``admitted_lane``.
         """
         store = self._admission.slot_store
         if not self.managed or store is None:
@@ -187,6 +213,42 @@ class SimulationRecordCapacity:
         )
         try:
             publish(child_id)
+            yield prepared
+        except BaseException:
+            if child_id not in self._admitted:
+                self._lanes.mark_terminal(prepared, "record_error")
+            self._admitted.discard(child_id)
+            raise
+        if child_id in self._admitted:
+            self._admitted.discard(child_id)
+        else:
+            self._lanes.mark_terminal(prepared, "completed")
+
+    @contextmanager
+    def admitted_lane(
+        self,
+        prepared: PreparedChild,
+        work_item_id: str,
+        *,
+        memory: MemoryClaim,
+        queue_reason: str | None = None,
+        tests: Sequence[str] = (),
+    ) -> Iterator[ChildPermit]:
+        """Acquire the slot of a prepared lane, run on it, then retire both.
+
+        A *memory* claim is the item's Memory Reservation; it fixes the item's thread count
+        at its share of the cores for everything it runs.
+        *queue_reason* names why a requeued item claims again. While the Flow
+        still reserves memory, the claim takes over its reservation and queue place.
+        *tests* are the item's test names, shown beside its run, Flow and Target
+        in queue reports.
+        """
+        store = self._admission.slot_store
+        if not self.managed or store is None:
+            raise SimulationRecordCapacityError("unmanaged records cannot acquire child permits")
+        child_id = prepared.execution_id
+        self._admitted.add(child_id)  # from here this method marks the lane terminal
+        try:
             if self._cancelled():
                 raise ClaimAbortedError("record shutdown requested")
             token = self._acquire_child(store, child_id, memory, queue_reason, tests)
@@ -288,9 +350,12 @@ class SimulationRecordCapacity:
     @staticmethod
     def _failed_cause(exc: SimulationRecordCapacityError, permit: ChildPermit) -> str:
         """The terminal cause of a lane whose work raised a capacity error."""
+        from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
         from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 
-        stopped = isinstance(exc.__cause__, PreSimScopeStoppedError)
+        stopped = isinstance(
+            exc.__cause__, (PreSimScopeStoppedError, SimulationBuildLeaseStoppedError)
+        )
         return "lease_lost" if stopped and permit.lease_health.lost.is_set() else "record_error"
 
     def _child_cancellation_cause(self, permit: ChildPermit) -> str | None:

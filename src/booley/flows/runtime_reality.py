@@ -25,7 +25,7 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import session_runtime
 from booley.runtime.platform_paths import run_captured_bounded
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.sandbox_apply import in_sandbox_steps
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import LINT_EDA_TOOL_FAMILIES, FuseSocError
 
@@ -108,6 +108,9 @@ def _check_session_binary(
     try:
         command = request.sandbox_command(["sh", "-c", f"command -v {binary}"])
         result = run_captured_bounded(command, timeout=30)
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return
     except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
         findings.fail(
             f"{label} (runtime/probe error: {exc})",
@@ -130,7 +133,7 @@ def _bake_fix(request: FlowRuntimeInspectionRequest, binary: str) -> str:
     baking a binary does, so no ``--force`` is needed.
     """
     steps = (
-        UNKNOWN_SANDBOX_STEPS
+        in_sandbox_steps()
         if request.inside_sandbox
         else session_runtime.sandbox_remedy(request.project_root)
     )

@@ -76,7 +76,7 @@ optional is not covered by a primary run.
 | Codespaces onboarding | [gui/docs-site](missions/gui/MISSION.md), [gui/setup](missions/gui/MISSION.md) |
 | Dashboard | [gui/dashboard-default](missions/gui/MISSION.md), [gui/dashboard-live](missions/gui/MISSION.md), [gui/matrix](missions/gui/MISSION.md), [gui/stop-resume](missions/gui/MISSION.md) |
 | Terminal output rendering | [gui/matrix](missions/gui/MISSION.md), [gui/terminal-output](missions/gui/MISSION.md) |
-| Live Preview reports | [gui/live-preview](missions/gui/MISSION.md) |
+| Live Preview | [gui/live-preview](missions/gui/MISSION.md) |
 | Stealth Mode | [taxi/setup](missions/taxi/MISSION.md), [uart/bootstrap-init](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md) |
 | Stealth core projection | [picorv32/baseline](missions/picorv32/MISSION.md) |
 | Git safety policy | none: taxi takes it over in #3899 |

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from booley.flows import job_estimates as estimates
+from booley.runtime.resource_history import HistoryKey
 
 
 def _record(
@@ -82,6 +83,9 @@ def _borrow_records() -> list[dict[str, Any]]:
         _record("t2", "synth", memory=8000),
         _record("t2", "fpga_impl", memory=8000),
         _record("t2", "lint", memory=600),
+        # Split synthesis phases: a tool's own record, never another Target's tool record.
+        _record("t1", "yosys", memory=2000),
+        _record("t2", "openroad", memory=9000),
         # Pre-Sim Commands are measured per Target (#4534).
         _record("t2", "sim_pre_run", memory=3000),
     ]
@@ -123,6 +127,21 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     synth = estimator.estimate([estimates.JobRequest("synth", "t1")])
     same_target = _phase(synth, "synth").memory_mb
     assert (same_target.value, same_target.source) == (3750.0, estimates.Source.TARGET)
+    # A split phase with no record takes the Target's whole-command estimate (#4535).
+    split = estimates.JobRequest("synth", "t1", split_phases=("sv2v", "yosys", "openroad"))
+    phases = {p.key.phase: p.memory_mb for p in estimator.estimate([split]).phases}
+    assert (phases["yosys"].value, phases["yosys"].source) == (2500.0, estimates.Source.OWN)
+    for fallback in ("sv2v", "openroad"):
+        assert (phases[fallback].value, phases[fallback].source) == (
+            3750.0,
+            estimates.Source.TARGET,
+        )
+    fresh = estimator.estimate(
+        [estimates.JobRequest("synth", "t3", split_phases=split.split_phases)]
+    )
+    assert {p.memory_mb.source for p in fresh.phases} == {estimates.Source.UNKNOWN}
+    assert fresh.unmeasured == (HistoryKey("t3", "synth", (), ""),)
+
     for flow, phase in (("synth", "synth"), ("fpga", "fpga_impl")):
         other = estimator.estimate([estimates.JobRequest(flow, "t3")])
         size_dependent = _phase(other, phase).memory_mb

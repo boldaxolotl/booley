@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import sys
@@ -656,6 +657,16 @@ def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture(autouse=True)
+def _fresh_booley_dir_selection() -> Iterator[None]:
+    """A cached selection names the previous test's tmp_path; clear it around every test (#5261)."""
+    from booley.runtime.booley_dir import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admission tests must not depend on the host exposing ``/proc/meminfo``.
 
@@ -686,6 +697,20 @@ def pin_memory_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
     no key there sets it, and the host's memory must not matter.
     """
     return lambda mib: pin_budget(monkeypatch, mib)
+
+
+@pytest.fixture(autouse=True)
+def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under ``pytest -s`` stdin and stdout are the terminal: start as under capture."""
+    from booley.presentation import colors
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
 
 @pytest.fixture(autouse=True)
@@ -736,6 +761,12 @@ import sys
 import time
 
 args = sys.argv[1:]
+if args[0] == "list":
+    sys.stdout.write(
+        '{{"data": {{"scope_prefix": "tb", "root_scopes": ["tb"], '
+        '"signal_count": 1, "total_ticks": 1}}}}'
+    )
+    sys.exit(0)
 store = args[args.index("-o") + 1]
 mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
 if mode == "never_read":
@@ -747,6 +778,13 @@ data = sys.stdin.buffer.read()
 if b"$enddefinitions" not in data:
     sys.stderr.write("fake bwave: no VCD header\\n")
     sys.exit(1)
+if not data.endswith(b"\\n"):
+    offset = data.rfind(b"\\n") + 1
+    sys.stderr.write(
+        "WARNING: input does not end with a newline; the final line "
+        f"(byte {{offset}}) may be a truncated record\\n"
+    )
+sys.stderr.write(f"# wrote {{store}}\\n")
 with open(store, "wb") as out:
     out.write({store_bytes!r})
 '''
@@ -757,7 +795,9 @@ def fake_bwave(tmp_path, monkeypatch):
     """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
 
     It reads stdin to EOF and writes a minimal store when it saw a VCD header,
-    else exits 1. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
+    else exits 1; like the real tool it warns on stderr about input without a final
+    newline and reports ``# wrote <store>``, and ``list`` answers a one-signal
+    hierarchy. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
     stdin) or ``exit_early`` (exits 1 at once).
     """
     from booley.bwave import waveform_store
@@ -788,3 +828,34 @@ def fake_sandbox_attachment(
 
     attach(None)
     return attach
+
+
+def _point_mountinfo_at(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    from booley.runtime import runtime_context
+
+    mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
+    mountinfo.write_bytes(text.encode())
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+
+
+@pytest.fixture(autouse=True)
+def _issued_sandbox_mounts(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
+
+    The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
+    issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
+    """
+    issued = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
+    _point_mountinfo_at(tmp_path_factory, monkeypatch, issued)
+
+
+@pytest.fixture
+def hand_written_sandbox(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
+    _point_mountinfo_at(tmp_path_factory, monkeypatch, "")

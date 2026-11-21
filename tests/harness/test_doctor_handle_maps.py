@@ -49,16 +49,22 @@ _UNKNOWN_HEADLESS = (
 _PREFIX = "restart the Sandbox so its MCP server prunes expired handles at start: "
 
 
-@pytest.mark.parametrize("owner", ["vscode", "headless", "unknown", "inside"])
+@pytest.mark.parametrize(
+    "owner", ["vscode", "headless", "unknown", "inside", "inside-hand-written"]
+)
 def test_handle_map_fix_names_the_restart_for_each_owner(
-    tmp_path, monkeypatch, fake_sandbox_attachment, owner
+    tmp_path, monkeypatch, fake_sandbox_attachment, owner, request
 ):
+    if owner == "inside-hand-written":
+        request.getfixturevalue("hand_written_sandbox")
     store = handles.HandleStore(tmp_path)
     store.root.mkdir(parents=True)
     with store.path.open("wb") as stream:
         stream.truncate(THRESHOLD + 1)
     attachment = {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: owner == "inside")
+    monkeypatch.setattr(
+        runtime_context, "inside_session_runtime", lambda: owner.startswith("inside")
+    )
     fake_sandbox_attachment(attachment)
     name = quote_arg(session_runtime.session_container_name(tmp_path))
     reporter = doctor._Reporter.create()
@@ -72,6 +78,7 @@ def test_handle_map_fix_names_the_restart_for_each_owner(
         "headless": f"run `docker stop {name}`, then `booley session up` on the host",
         "unknown": both,
         "inside": both,
+        "inside-hand-written": "stop this Sandbox, then start it again",
     }[owner]
     assert finding.fix == _PREFIX + expected
     assert "session down" not in finding.fix
