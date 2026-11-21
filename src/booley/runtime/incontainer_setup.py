@@ -815,10 +815,10 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     ``"written"``/``"current"``/``"cleared"``/``"none"`` — see the per-app
     helpers. Unknown apps are a no-op.
     """
-    from booley.config.agent import sandbox_cli_policy
+    from booley.config.agent import sandbox_cli_policy, unrecorded_cli_policy
     from booley.config.gateway import GATEWAY_AUTH
 
-    policy = sandbox_cli_policy(app) or auth_token.VISITOR_AUTH
+    policy = sandbox_cli_policy(app) or unrecorded_cli_policy(app, Path.cwd())
     if policy == GATEWAY_AUTH:  # already inside the container by definition
         # The gateway login is the provider written by _apply_codex_gateway;
         # there is no auth.json. Leave any Booley-managed credential copies
@@ -871,9 +871,11 @@ def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
 
 def _claude_credential_present(home: Path | None) -> bool:
     """Whether Claude would find a login credential, by the registrar's own inputs."""
-    from booley.config.agent import sandbox_cli_policy
+    from booley.config.agent import sandbox_cli_policy, unrecorded_cli_policy
 
-    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or auth_token.VISITOR_AUTH
+    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or unrecorded_cli_policy(
+        auth_token.APP_CLAUDE, Path.cwd()
+    )
     credential = auth_token.effective_credential(
         auth_token.APP_CLAUDE, policy, home=home or _agent_home()
     )
@@ -1084,7 +1086,7 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     from booley.config.gateway import GATEWAY_AUTH
 
     if sandbox_cli_policy("codex") != GATEWAY_AUTH:
-        return _drop_codex_gateway(home) if agent_app.auto_choice() else "off"
+        return drop_codex_gateway(home) if agent_app.auto_choice() else "off"
     path = codex_config_path(home)
     inputs = _gateway_inputs(path)
     if inputs is None:
@@ -1140,7 +1142,7 @@ def hide_gateway_from_claude(home: Path | None = None) -> str:
     return "hidden"
 
 
-def _drop_codex_gateway(home: Path | None) -> str:
+def drop_codex_gateway(home: Path | None = None) -> str:
     """Remove Booley's gateway selection from the user's Codex config.
 
     For ``BOOLEY_AGENT_APP=auto`` only: a start that stopped using the gateway

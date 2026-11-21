@@ -55,7 +55,7 @@ def _use_home(monkeypatch, home: Path) -> Path:
 
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
-    """An isolated in-Sandbox start with ``BOOLEY_AGENT_APP=auto`` and no credential."""
+    """An isolated in-Sandbox start with ``BOOLEY_AGENT_APP=auto``, no credential, ``visitor`` recorded."""
     for name in _CREDENTIAL_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -70,7 +70,9 @@ def sandbox(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.chdir(project)
     set_agent_settings(None)
-    yield SimpleNamespace(home=_use_home(monkeypatch, tmp_path / "home"), project=project)
+    env = SimpleNamespace(home=_use_home(monkeypatch, tmp_path / "home"), project=project)
+    _record_auth(env, monkeypatch)
+    yield env
     set_agent_settings(None)
 
 
@@ -133,14 +135,14 @@ def _record_auth(sandbox, monkeypatch, toml: bytes = b'[agent]\nauth = "visitor"
 # What each credential situation resolves to: (default app, policy the consumers see,
 # every allowed CLI with the default first).
 _CASES = {
-    "claude-api-key": ("claude", "subscription", ("claude",)),
-    "claude-oauth-token": ("claude", "subscription", ("claude",)),
-    "claude-login": ("claude", "subscription", ("claude",)),
-    "codex-api-key": ("codex", "subscription", ("codex",)),
-    "codex-login": ("codex", "subscription", ("codex",)),
-    "both": ("claude", "subscription", ("claude", "codex")),
+    "claude-api-key": ("claude", "visitor", ("claude",)),
+    "claude-oauth-token": ("claude", "visitor", ("claude",)),
+    "claude-login": ("claude", "visitor", ("claude",)),
+    "codex-api-key": ("codex", "visitor", ("codex",)),
+    "codex-login": ("codex", "visitor", ("codex",)),
+    "both": ("claude", "visitor", ("claude", "codex")),
     "gateway": ("codex", "gateway", ("codex",)),
-    "nothing": ("claude", "subscription", ("claude",)),
+    "nothing": ("claude", "visitor", ("claude",)),
 }
 
 
@@ -167,7 +169,8 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
         settings = get_agent_settings()
         assert (settings.default_cli, settings.auth_for(app)) == (app, policy)
     assert doctor._configured_provider(None) == app
-    assert doctor._configured_auth_policy(None) == policy
+    recorded = SimpleNamespace(booley_toml={"agent": {"auth": "visitor"}})
+    assert doctor._configured_auth_policy(recorded) == policy
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     assert chat_cmd.run(argparse.Namespace(agent_args=[]), sandbox.project) == 2
     assert f"configured agent CLI '{app}'" in capsys.readouterr().err
@@ -205,8 +208,10 @@ def test_signing_in_after_a_gateway_start_makes_the_stored_health_result_due(
     from booley.runtime.booley_dir import reset_cache
 
     booley_dir = sandbox.project / ".booley"
-    booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[project]\nname="auto-health"\n')
+    booley_dir.mkdir(exist_ok=True)
+    (booley_dir / "booley.toml").write_text(
+        '[project]\nname="auto-health"\n[agent]\nauth = "visitor"\n'
+    )
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
 
@@ -313,8 +318,9 @@ def _restart_with(kind: str, sandbox, monkeypatch, capsys) -> None:
         ("gateway", "codex-api-key"),
         ("claude-api-key", "codex-api-key"),
         ("codex-api-key", "claude-api-key"),
+        ("gateway", "claude-api-key"),
     ],
-    ids=["gateway-to-codex-key", "claude-to-codex", "codex-to-claude"],
+    ids=["gateway-to-codex-key", "claude-to-codex", "codex-to-claude", "gateway-to-claude"],
 )
 def test_restart_after_the_choice_changes_leaves_no_breaking_registration(
     sandbox, monkeypatch, capsys, tmp_path, first, second
@@ -534,6 +540,10 @@ def test_handwritten_sandbox_runs_a_recorded_visitor_only(
         assert settings.auth_for("claude") == policy
         plan = auth_token.credential_plan("claude", policy)
         assert (plan.selected is not None) == (policy == "visitor")
+    entry.main()
+    assert ("hasCompletedOnboarding" in _read(sandbox.home / ".claude.json")) == (
+        policy == "visitor"
+    )
 
 
 def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch):
@@ -561,3 +571,59 @@ def test_gateway_fallback_keys_on_the_visitor_mode(sandbox, monkeypatch):
         else:
             assert (choice.app, choice.policy) == ("codex", "gateway"), auth
             assert set(lookups) == {"visitor"}, auth
+
+
+@pytest.mark.parametrize(
+    ("agent_toml", "kind", "handoff", "app", "policy"),
+    [
+        ("", "gateway", None, "claude", "subscription"),
+        (
+            'clis = ["claude", "codex"]\n[agent.auth]\ncodex = "visitor"\n',
+            "both-gateway",
+            None,
+            "codex",
+            "gateway",
+        ),
+        (
+            'clis = ["claude", "codex"]\n[agent.auth]\nclaude = "subscription"\ncodex = "api_key"\n',
+            "both",
+            None,
+            "codex",
+            "api_key",
+        ),
+        ("", "codex-api-key", None, "claude", "subscription"),
+        ('auth = "subscription"\n', "codex-api-key", "api_key", "codex", "api_key"),
+    ],
+    ids=[
+        "missing-no-gateway",
+        "codex-visitor-gateway",
+        "api-key",
+        "missing-key-ignored",
+        "handoff",
+    ],
+)
+def test_auto_choice_follows_the_recorded_policy(
+    sandbox, monkeypatch, capsys, tmp_path, agent_toml, kind, handoff, app, policy
+):
+    """Without a hand-off the recorded ``[agent] auth`` decides which CLI a credential selects."""
+    from booley.runtime import auth_token
+
+    recorded = tmp_path / "recorded"  # outside the Project Root, read through BOOLEY_DIR
+    recorded.mkdir()
+    (recorded / "booley.toml").write_bytes(f"[agent]\n{agent_toml}".encode())
+    monkeypatch.setenv("BOOLEY_DIR", str(recorded))
+    _give(kind.removeprefix("both-"), sandbox.home, monkeypatch)
+    if kind == "both-gateway":
+        _give("claude-api-key", sandbox.home, monkeypatch)
+    if handoff:
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", handoff)
+
+    assert f"app:{app} " in _start(capsys)
+
+    assert agent_app.auto_choice().clis == (app,)
+    assert get_agent_settings().auth_for(app) == policy
+    assert ("booley_gateway" in _codex_config(sandbox.home)) == (policy == "gateway")
+    codex_auth = _read(sandbox.home / ".codex" / "auth.json")
+    assert ("synthetic-codex-key" in codex_auth) == (policy == "api_key")
+    if policy == "api_key":
+        assert auth_token.credential_plan(app, "api_key").selected is not None
