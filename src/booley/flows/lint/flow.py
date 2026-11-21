@@ -982,9 +982,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
         cmd = prepared.command
         family = _lint_eda_tool_family(prepared.resolved.configured_eda_tool)
         start = time.monotonic()
-        from booley.flows.terminal_progress import announce_unit
+        from booley.flows.terminal_progress import announce_unit, observe_source_names
 
         announce_unit("checking", target=selector)
+        observe_source_names(prepared.project_paths)
         proc = self._run_linter(selector, cmd, resolved_source_bytes(prepared.resolved))
         result.duration_s = time.monotonic() - start
         result.returncode = proc.returncode
