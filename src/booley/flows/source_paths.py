@@ -120,7 +120,8 @@ class ProjectSourcePaths:
         names = sorted(self.by_name, key=len, reverse=True)
         if not names:
             return None
-        alternation = "|".join(re.escape(name) for name in names)
+        # A Windows tool may print the exported name with backslashes.
+        alternation = "|".join(re.escape(name).replace("/", r"[/\\]") for name in names)
         return re.compile(rf"(?<![\w./-])(?:{alternation})(?![\w/-]|\.\w)")
 
     def project_text(self, text: str) -> str:
@@ -128,4 +129,4 @@ class ProjectSourcePaths:
         pattern = self._name_pattern
         if pattern is None:
             return text
-        return pattern.sub(lambda match: self.by_name[match.group(0)], text)
+        return pattern.sub(lambda match: self.by_name[_normalized(match.group(0))], text)

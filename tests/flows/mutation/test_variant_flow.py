@@ -419,6 +419,17 @@ def test_mutant_snippet_names_project_paths(detected: bool) -> None:
     assert snippet.endswith("FATAL: rtl/mod_a.sv:4: mismatch")
 
 
+def test_inconclusive_mutant_snippet_names_project_paths() -> None:
+    verdict = VariantSuiteVerdict(
+        inconclusive_reason="cannot open src/acme_lib_dut_1/rtl/mod_a.sv:4"
+    )
+    paths = ProjectSourcePaths({"src/acme_lib_dut_1/rtl/mod_a.sv": "rtl/mod_a.sv"})
+
+    snippet = MutationFlow._variant_snippet(verdict, "", paths)
+
+    assert snippet == "sim outcome inconclusive: cannot open rtl/mod_a.sv:4"
+
+
 def test_cocotb_detected_snippet_comes_from_the_detecting_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -258,6 +258,13 @@ def test_project_text_leaves_longer_unmapped_filenames_alone() -> None:
     )
 
 
+def test_project_text_maps_a_name_printed_with_backslashes() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+    assert paths.project_text("src\\core\\top.sv:4: bad; src\\core/top.sv:5") == (
+        "rtl/top.sv:4: bad; rtl/top.sv:5"
+    )
+
+
 def _engine_timeout_outcome(tmp_path: Path):
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)

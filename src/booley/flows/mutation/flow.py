@@ -1621,7 +1621,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return _error_outcome(
                 "baseline",
                 "; ".join(self._baseline_problems(runs)),
-                report_text=f"mutation baseline was inconclusive: {inconclusive}\n"
+                report_text=f"mutation baseline was inconclusive: {paths.project_text(inconclusive)}\n"
                 + tail(output, 50),
             )
         if not self._baseline_suite_passed(runs):
@@ -1790,8 +1790,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _baseline_project_paths(self) -> ProjectSourcePaths:
         """Project path of each build-tree source name the baseline's build prints.
 
-        Built when a failure is reported, not before the build: it reads every
-        core of the Target's closure.
+        Built after the baseline's build, not before it: it reads every core of
+        the Target's closure.
         """
         if self._baseline_sources is None:
             return ProjectSourcePaths()
@@ -2686,7 +2686,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     ) -> str:
         """The report snippet of a scored Mutant: its detecting run's failure, else the tail."""
         if verdict.inconclusive_reason:
-            return f"sim outcome inconclusive: {verdict.inconclusive_reason}"
+            return f"sim outcome inconclusive: {paths.project_text(verdict.inconclusive_reason)}"
         if verdict.detecting_run is not None:
             run = verdict.detecting_run
             return detection_snippet(
