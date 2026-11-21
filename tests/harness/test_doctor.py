@@ -284,6 +284,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
 ) -> list[list[str]]:
     reset_cache()
     route_bounded_captures_through_subprocess_run(monkeypatch)
+    # Modules that import this helper lack this module's autouse routing; without
+    # it Doctor's container checks start real `docker run`s that can each wait 30 s.
+    route_docker_helper_through_subprocess_run(monkeypatch)
+    forbid_docker_processes(monkeypatch)
     fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,

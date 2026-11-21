@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import IO
 
 import pytest
 from tests import conftest
@@ -13,13 +16,21 @@ from booley.dev_support import agent_readiness, pytest_basetemp
 
 
 @pytest.fixture
-def tools_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the shared tools root at an isolated directory on a POSIX host."""
+def tools_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point the shared tools root at an isolated directory on a POSIX host.
+
+    Each test gets its own session lock table; the claims it took are released after.
+    """
     root = tmp_path / "agent-tools"
     root.mkdir()
+    held: list[IO[bytes]] = []
     monkeypatch.setattr(agent_readiness, "agent_tools_root", lambda: root)
-    monkeypatch.setattr(pytest_basetemp.sys, "platform", "linux")
-    return root
+    # Only this module sees the fake platform; the file lock keeps the real one.
+    monkeypatch.setattr(pytest_basetemp, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(pytest_basetemp, "_HELD_LOCKS", held)
+    yield root
+    for handle in held:
+        handle.close()
 
 
 def _checkout(tmp_path: Path, name: str) -> Path:
@@ -48,10 +59,12 @@ def test_marker_records_the_resolved_checkout(tools_root: Path, tmp_path: Path) 
 def test_orphan_folder_and_marker_are_pruned(tools_root: Path, tmp_path: Path) -> None:
     checkout = _checkout(tmp_path, "live")
     orphan = _basetemp(tools_root, "orphan", tmp_path / "removed-worktree")
+    (tools_root / "pytest-basetemp-orphan.lock").touch()
     pruned = pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout)
     assert pruned == (orphan,)
     assert not orphan.exists()
     assert not (tools_root / "pytest-basetemp-orphan.checkout").exists()
+    assert not (tools_root / "pytest-basetemp-orphan.lock").exists()
 
 
 def test_live_unmarked_and_foreign_folders_are_kept(tools_root: Path, tmp_path: Path) -> None:
@@ -110,8 +123,8 @@ def test_marker_write_failure_does_not_fail_and_still_prunes(
     assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == (
         orphan,
     )
-    # Neither the marker nor its staging file is left behind.
-    assert sorted(path.name for path in tools_root.iterdir()) == []
+    # Neither the marker nor its staging file is left behind; the session lock stays.
+    assert sorted(path.name for path in tools_root.iterdir()) == ["pytest-basetemp-own.lock"]
 
 
 def test_folder_is_kept_when_its_checkout_cannot_be_checked(
@@ -198,3 +211,28 @@ def test_only_the_pytest_controller_prunes(
     config = SimpleNamespace(option=option, **({"workerinput": {}} if worker else {}))
     conftest.prune_orphan_basetemps(config)  # type: ignore[arg-type]
     assert orphan.exists() is not pruned
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows runs use pytest's default basetemp")
+def test_a_second_session_on_a_held_basetemp_is_refused(tools_root: Path, tmp_path: Path) -> None:
+    # pytest wipes --basetemp at session start; a second concurrent session from
+    # the same checkout would delete the first one's tmp_path trees mid-run.
+    own = tools_root / "pytest-basetemp-own"
+    config = SimpleNamespace(option=SimpleNamespace(basetemp=str(own)))
+    conftest.prune_orphan_basetemps(config)  # type: ignore[arg-type]
+    (own / "popen-gw0").mkdir(parents=True)
+    with pytest.raises(pytest.UsageError, match="another pytest session is using"):
+        conftest.prune_orphan_basetemps(config)  # type: ignore[arg-type]
+    assert (own / "popen-gw0").is_dir()
+
+
+def test_unlockable_basetemp_still_runs_and_records_its_owner(
+    tools_root: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A cache that cannot hold the lock file must not fail the session.
+    (tools_root / "pytest-basetemp-own.lock").mkdir()
+    checkout = _checkout(tmp_path, "live")
+    assert pytest_basetemp.record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
+    assert "could not lock pytest basetemp" in caplog.text
+    marker = tools_root / "pytest-basetemp-own.checkout"
+    assert marker.read_text(encoding="utf-8").strip() == str(checkout.resolve())
