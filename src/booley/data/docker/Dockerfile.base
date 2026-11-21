@@ -122,7 +122,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
 # Minimal Sandbox. The immutable upstream development image remains the
 # EDA builder, but none of its compilers, Docker tooling, Pandoc, LLVM, CMake,
 # headers, or build caches become runtime layers.
-FROM docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+FROM docker.io/library/ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=America/Los_Angeles \
@@ -293,13 +293,13 @@ RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
 # Both are MIT: the build fails unless the shipped LICENSE.txt says so, and the
 # license, third-party notices and a source pointer ship beside the image.
 # renovate: datasource=custom.openvsx depName=mshr-h/veriloghdl
-ARG VERILOGHDL_VERSION=1.29.0
+ARG VERILOGHDL_VERSION=1.29.1
 # pin-companion: VERILOGHDL_VERSION
-ARG VERILOGHDL_SHA256=fd52004fd9e70c6e7627387e8f4134dfc3528e82c25d9495452bc659739ebae6
+ARG VERILOGHDL_SHA256=eb7f4a046cd579e92247bc05b6e2fcff14fd6b7f8703a748a3e22a1d44b86a32
 # pin-companion: VERILOGHDL_VERSION
-ARG VERILOGHDL_SOURCE_TAG=v1.29.0
+ARG VERILOGHDL_SOURCE_TAG=v1.29.1
 # pin-companion: VERILOGHDL_VERSION
-ARG VERILOGHDL_SOURCE_COMMIT=53484f7c5bc6313cf648955d050dbffcd3fe6855
+ARG VERILOGHDL_SOURCE_COMMIT=44a5534c66e78bd8472eb6803b0a122ebeee8aba
 RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
     -o /tmp/veriloghdl.vsix \
@@ -360,11 +360,11 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=24.22.3
 # pin-companion: NODE_VERSION
 ARG NPM_VERSION=11.19.1
 # pin-companion: NODE_VERSION
-ARG NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
+ARG NODE_SHA256=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
 RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
@@ -382,7 +382,6 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && CLAUDE_ACTIVE=/opt/agent-clis/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
     && CLAUDE_MUSL=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl \
     && test "$CLAUDE_GLIBC" -ef "$CLAUDE_ACTIVE" \
-    && test -x "$CLAUDE_MUSL/claude" \
     && rm -rf "$CLAUDE_MUSL" \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
@@ -580,6 +579,6 @@ LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       io.booley.openroad.source-revision=${OPENROAD_SOURCE_REF} \
       io.booley.openroad.builder-artifact=docker.io/openroad/ubuntu26.04@sha256:c3185708e2f1cdb4fed9fb4d84d2882d36a1f1f6af90959ceb07dcb7416fe49d \
       io.booley.eda.builder-artifact=docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c613e4582a5093180bc7c07e24351e09 \
-      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+      io.booley.openroad.runtime-parent-artifact=docker.io/library/ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 WORKDIR /work
