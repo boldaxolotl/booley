@@ -1892,7 +1892,12 @@ async def _dispatch_application_tool(
         else job_ownership.caller_for(server_identity, request_context)
     )
     special_result = await _dispatch_special_mcp_tool(
-        name, arguments, jobs, status_mcp_tool_names, caller=caller
+        name,
+        arguments,
+        jobs,
+        status_mcp_tool_names,
+        request_context=request_context,
+        caller=caller,
     )
     if special_result is not None:
         return special_result

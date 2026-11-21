@@ -114,9 +114,9 @@ _DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
 # and VS Code pins a VSIX install so auto-update leaves it there.
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
-# The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
-# mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
-_HDL_VERSION = "1.29.0"
+# The extension's ``package.json`` at ``_HDL_VERSION`` also claims the
+# ``.sdc``/``.xdc`` suffixes (recheck on a bump), so nothing else is required.
+_HDL_VERSION = "1.29.1"
 HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded

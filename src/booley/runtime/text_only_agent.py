@@ -1,9 +1,10 @@
 """Fail-closed Codex composition with no built-in execution capabilities.
 
-Codex 0.167.1 registers apply_patch from model metadata independently of shell
-feature flags. A private exact-model catalog removes that metadata; explicit
-startup overrides remove the remaining tool registration gates. No user/project
-MCP configuration or skills are inherited into the empty analysis workspace.
+The pinned Codex (``data/docker/agent-clis-package.json``) registers
+apply_patch from model metadata independently of shell feature flags. A private
+exact-model catalog removes that metadata; explicit startup overrides remove the
+remaining tool registration gates. No user/project MCP configuration or skills
+are inherited into the empty analysis workspace.
 The catalog entry is generated, not read from the models cache, under the
 gateway policy (that cache comes from the native login the policy excludes) and
 whenever the cache lacks the model.
@@ -29,6 +30,8 @@ _GATEWAY_BASE_INSTRUCTIONS = (
 
 _DISABLED_FEATURES = (
     "shell_tool",
+    # Redundant with agents.enabled=false on Codex >= 0.145; kept for older host CLIs,
+    # where it is the only switch for the V1 subagent tools.
     "multi_agent",
     "multi_agent_v2",
     "apps",
@@ -133,7 +136,7 @@ def _write_config(private: Path, params: AgentCallParams, gateway_url: str | Non
 def _generated_model(name: str, effort: str | None) -> dict[str, object]:
     """Catalog entry for *name* when the gateway or a cache without it supplies none.
 
-    Mirrors Codex ``model_info_from_slug`` (rust-v0.167.1, the fallback for an
+    Mirrors the pinned Codex's ``model_info_from_slug`` (the fallback for an
     unknown slug) with three deviations: the tool fields (forced off by
     ``_write_catalog``), the reasoning levels (the configured *effort*), and a
     short ``base_instructions`` instead of Codex's coding-agent prompt. Every
