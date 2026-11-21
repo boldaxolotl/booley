@@ -119,6 +119,26 @@ def test_session_up_waits_for_lifecycle_lock(
     assert "host Docker lifecycle is busy" in caplog.text
 
 
+def test_doctor_start_checks_recovery_after_taking_lifecycle_lock(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
+    waiting = observe_lifecycle_contention(monkeypatch)
+
+    with (
+        held_lifecycle_lock(lock_path) as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
+        result = executor.submit(sr.up_without_recovery, workspace)
+        assert waiting.wait(hang_guard_s())
+        issuance_invalidation.prepare(str(tmp_path / "another-project"))
+        holder.release()
+        with pytest.raises(sr.RecoveryPendingError):
+            result.result(timeout=hang_guard_s())
+
+    assert issuance_invalidation.pending_invalidations() == (str(tmp_path / "another-project"),)
+
+
 def _spec(**kwargs) -> dict:
     defaults = {
         "booley_dir_source": "/c/ws/i2c/.booley",
@@ -1135,6 +1155,27 @@ class TestUp:
 
         assert _mutations(up_docker) == []
 
+    @pytest.mark.parametrize("own", [True, False], ids=["own", "other"])
+    def test_doctor_start_refuses_pending_recovery_that_up_completes(
+        self, workspace: Path, up_docker: SandboxDocker, own: bool
+    ) -> None:
+        identity = str(workspace.resolve() if own else workspace / "other")
+        up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(workspace)
+        issuance_invalidation.prepare(identity)
+        stamps = runtime_spec.stamp_store()
+        stamps.write(identity, "{}")
+
+        with pytest.raises(sr.RecoveryPendingError):
+            sr.up_without_recovery(workspace)
+
+        assert issuance_invalidation.pending_invalidations() == (identity,)
+        assert stamps.path(identity).read_bytes() == b"{}"
+        assert _mutations(up_docker) == []
+        with pytest.raises(sr.SessionError, match="recovered interrupted Sandbox host state"):
+            sr.up(workspace)
+        assert issuance_invalidation.pending_invalidations() == ()
+
+    @pytest.mark.parametrize("entry", ["up", "up_without_recovery"])
     @pytest.mark.parametrize(
         ("state", "verbs", "hooks"),
         [
@@ -1152,13 +1193,14 @@ class TestUp:
         state: bool | None,
         verbs: list[str],
         hooks: list[str],
+        entry: str,
     ) -> None:
         name = sr.session_container_name(workspace)
         if state is not None:
             up_docker.containers[name] = _sandbox_state(workspace, running=state)
         spec = json.loads(dc.devcontainer_path(workspace).read_text(encoding="utf-8"))
 
-        assert sr.up(workspace) == name
+        assert getattr(sr, entry)(workspace) == name
 
         assert [call[1] for call in up_docker.calls if call[1] in {"run", "start"}] == verbs
         assert [call for call in up_docker.calls if call[1] == "exec"] == [
@@ -2589,22 +2631,6 @@ def test_vscode_prepare_names_init_for_egress_drift(tmp_path, monkeypatch):
     assert "session refresh" not in message
 
 
-def test_startup_host_config_error_names_file_without_teardown(tmp_path, monkeypatch):
-    from booley.config.host_config import host_config_path
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    config = host_config_path()
-    config.parent.mkdir(parents=True)
-    config.write_text('[sandbox]\negress = "proxied"\n', encoding="utf-8")
-    monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
-    with pytest.raises(sr.SessionError) as raised:
-        sr._validate_up_request(tmp_path)
-    message = str(raised.value)
-    assert str(config) in message
-    assert "sandbox.egress" in message
-    assert "session down" not in message
-
-
 def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypatch):
     from booley.runtime import session_admission as admission
 
@@ -3380,6 +3406,28 @@ def _linked_cli(monkeypatch, argv):
 
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     return cli.main()
+
+
+def test_ctrl_c_while_session_enter_prepares_the_sandbox_prints_one_line(
+    tmp_path, monkeypatch, capsys
+):
+    _linked_project(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+
+    def interrupted(_root):
+        raise KeyboardInterrupt
+
+    # This is where the host Sandbox preparation (the Docker image checks) runs; no Docker fake
+    # can deliver a Ctrl-C into it (the same seam `_linked_attachment` replaces).
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", interrupted)
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        _linked_cli(monkeypatch, ["session", "enter", "--", "true"])
+
+    assert type(raised.value) is KeyboardInterrupt
+    assert capsys.readouterr().err.splitlines()[-1:] == ["interrupted; session enter cancelled"]
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert capsys.readouterr().err == ""
 
 
 def _linked_attachment(monkeypatch):

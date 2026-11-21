@@ -67,6 +67,7 @@ def test_work_document_round_trips_every_field() -> None:
         "trace_scope": "tb",
         "trace_args": ("--trace={file}",),
         "trace_files": ("dump.vcd",),
+        "booley_dir": "project/.booley",
         "trace_convert_timeout_s": 90,
         "runtime_inputs": ("firmware.hex",),
         "pass_sentinels": ("PASS",),
@@ -74,7 +75,6 @@ def test_work_document_round_trips_every_field() -> None:
         "top": "tb",
         "cocotb_module": "tests.counter",
         "tests": ("test_a", "test_b"),
-        "result_verbosity": "full",
         "sim_time_grace_s": float("inf"),  # project config may say inf
         "adapter_result_path": "result.json",
         "attempt_token": "token",

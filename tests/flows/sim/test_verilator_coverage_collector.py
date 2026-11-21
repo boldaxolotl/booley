@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows import job_resources
+from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -21,6 +23,8 @@ from booley.flows.sim.verilator_coverage import (
     collect,
 )
 from booley.flows.test_runs import build_test_run
+from booley.runtime import resource_history
+from tests.canned_process_support import canned_command, measured_flow
 from tests.conftest import symlink_or_skip
 
 _HEADER = "# SystemC::Coverage-3\n"
@@ -30,6 +34,7 @@ _LINE_POINT = (
 )
 
 
+_START = {"hook": "start", "sequence": 1, "success": True}
 _SOURCES = (CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),)
 
 
@@ -210,13 +215,15 @@ class _StagedSourceExecution(_PresenceExecution):
 
 
 class _HookFailureExecution(_GeneratedMainExecution):
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(self, events: list[dict[str, object]] | None) -> None:
         self.events = events
 
     def run(self, request) -> SimulationRunResult:
         assert request.hook_evidence_path is not None
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+        if self.events is None:
+            return SimulationRunResult(verdict="pass")
         request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
         request.hook_evidence_path.write_text(
             json.dumps(
@@ -232,7 +239,7 @@ class _HookFailureExecution(_GeneratedMainExecution):
 
 
 class _HookAndRawFailureExecution(_HookFailureExecution):
-    def __init__(self, events: list[dict[str, object]], raw_payload: str | None) -> None:
+    def __init__(self, events: list[dict[str, object]] | None, raw_payload: str | None) -> None:
         super().__init__(events)
         self.raw_payload = raw_payload
 
@@ -512,15 +519,16 @@ def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None
 def test_missing_raw_database_is_a_collector_error_without_losing_simulation_truth(
     tmp_path: Path,
 ) -> None:
-    request = _request(tmp_path, "reset", sources=())
+    request = _request(tmp_path, "reset", sources=(), harness="custom_main", hooks=("write_hook",))
+    events = [{"hook": "write", "sequence": 1, "success": True}]
 
-    result = collect(request, _MissingRawExecution())
+    result = collect(request, _HookAndRawFailureExecution(events, None))
 
     assert result.status == "collector_error"
     assert [(run.simulation_verdict, run.collection) for run in result.runs] == [
         ("pass", "collector_error")
     ]
-    assert result.artifacts == ()
+    assert [artifact.kind for artifact in result.artifacts] == ["coverage_hook_evidence"]
     assert result.merge.status == "not_run"
     assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_MISSING"]
 
@@ -544,8 +552,14 @@ def test_unsafe_raw_database_is_reported_as_unsafe(
     assert result.artifacts == ()
 
 
-def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: Path) -> None:
-    request = _request(tmp_path, "wrap")
+@pytest.mark.parametrize(
+    ("expected_code", "reset_included"),
+    [("COV_RAW_FILE_STALE", True), ("COV_WINDOW_HOOK_MISSING", False)],
+)
+def test_stale_raw_database_is_retained_but_excluded_from_collection(
+    tmp_path: Path, expected_code: str, reset_included: bool
+) -> None:
+    request = _request(tmp_path, "wrap", reset_included=reset_included)
 
     raw = request.artifact_root / "native" / "raw" / "001-wrap.dat"
     raw.parent.mkdir(parents=True)
@@ -558,7 +572,7 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
     assert result.runs[0].collection == "collector_error"
     assert [artifact.state for artifact in result.artifacts] == ["stale"]
     assert result.points == ()
-    assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_STALE"]
+    assert [finding.code for finding in result.findings] == [expected_code]
 
 
 @pytest.mark.parametrize(
@@ -755,48 +769,74 @@ def test_invalid_start_hook_is_a_collector_error(
     assert result.runs[0].simulation_verdict == "pass"
 
 
-@pytest.mark.parametrize(
-    ("hooks", "reset_included", "expected_code"),
-    [
-        ((), True, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"),
-        (("write_hook",), False, "COV_CUSTOM_MAIN_START_HOOK_REQUIRED"),
-        (("write_hook", "start_hook"), True, "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY"),
-        (("write_hook", "write_hook"), True, "COV_CUSTOM_MAIN_HOOK_DUPLICATE"),
-        (("write_hook", "mystery"), True, "COV_CUSTOM_MAIN_HOOK_UNKNOWN"),
-    ],
-)
-def test_invalid_custom_main_hook_declarations_fail_before_execution(
-    tmp_path: Path,
-    hooks: tuple[str, ...],
-    reset_included: bool,
-    expected_code: str,
-) -> None:
-    request = _request(
-        tmp_path,
-        "custom",
-        harness="custom_main",
-        hooks=hooks,
-        reset_included=reset_included,
-        sources=(),
-    )
+_INVALID_HOOK_CASES = [
+    (
+        "generated_main",
+        ("write_hook",),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
+        "remove it",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "write_hook"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_DUPLICATE",
+        "more than once",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "mystery"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_UNKNOWN",
+        "['mystery']",
+    ),
+    (
+        "custom_main",
+        (),
+        True,
+        "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED",
+        "booley_coverage_write() once on every normal exit path",
+    ),
+    (
+        "custom_main",
+        ("write_hook",),
+        False,
+        "COV_CUSTOM_MAIN_START_HOOK_REQUIRED",
+        "booley_coverage_start() once after reset",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "start_hook"),
+        True,
+        "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY",
+        "reset_included: false",
+    ),
+]
 
-    result = collect(request, _NoExecution())
 
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == [expected_code]
+def test_invalid_custom_main_hook_declarations_fail_before_execution(tmp_path: Path) -> None:
+    for index, (harness, hooks, reset_included, expected_code, expected_fix) in enumerate(
+        _INVALID_HOOK_CASES
+    ):
+        request = _request(
+            tmp_path / str(index),
+            "custom",
+            harness=harness,
+            hooks=hooks,
+            reset_included=reset_included,
+            sources=(),
+        )
 
+        result = collect(request, _NoExecution())
 
-def test_non_custom_target_rejects_custom_main_hooks_before_execution(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path, "generated", hooks=("write_hook",))
-
-    result = collect(request, _NoExecution())
-
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == ["COV_CUSTOM_MAIN_HOOK_FORBIDDEN"]
+        assert result.status == "collector_error", expected_code
+        assert result.runs == ()
+        assert [finding.code for finding in result.findings] == [expected_code]
+        message = result.findings[0].message
+        assert message.startswith("sim_counter: "), expected_code
+        assert "flow_options.booley.coverage.custom_main_hooks" in message, expected_code
+        assert expected_fix in message, expected_code
 
 
 def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) -> None:
@@ -931,13 +971,19 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
             "COV_WRITE_HOOK_DUPLICATE",
             True,
         ),
+        ([_START], "COV_WRITE_HOOK_MISSING", False),
+        ([_START, _START], "COV_WINDOW_HOOK_DUPLICATE", False),
+        (None, "COV_WINDOW_HOOK_MISSING", False),
+        (None, "COV_WRITE_HOOK_MISSING", True),
     ],
 )
+@pytest.mark.parametrize("raw_payload", [_HEADER + _LINE_POINT, None], ids=["raw", "no_raw"])
 def test_post_reset_custom_main_hook_event_precedence(
     tmp_path: Path,
-    events: list[dict[str, object]],
+    events: list[dict[str, object]] | None,
     expected_code: str,
     reset_included: bool,
+    raw_payload: str | None,
 ) -> None:
     request = _request(
         tmp_path,
@@ -947,7 +993,7 @@ def test_post_reset_custom_main_hook_event_precedence(
         reset_included=reset_included,
     )
 
-    result = collect(request, _HookFailureExecution(events))
+    result = collect(request, _HookAndRawFailureExecution(events, raw_payload))
 
     assert result.status == "collector_error"
     assert [finding.code for finding in result.findings] == [expected_code]
@@ -1202,3 +1248,49 @@ def test_authenticated_cleanup_warning_survives_collection(
     )
     assert warning.severity == "warning"
     assert warning.message == "partial cleanup denied"
+
+
+class _MeasuredMerge:
+    """Replays the wrapped port's merge result through the Flow's measured run."""
+
+    def __init__(self, inner: _GeneratedMainExecution, root: Path) -> None:
+        self.inner = inner
+        self.flow = measured_flow(root)
+
+    def build(self, request) -> SimulationBuildResult:
+        return self.inner.build(request)
+
+    def run(self, request) -> SimulationRunResult:
+        return self.inner.run(request)
+
+    def command(self, request) -> SimulationCommandResult:
+        result = self.inner.command(request)
+        process = SubprocessResult(result.returncode, result.stdout, result.stderr)
+        with job_resources.resource_phase("sim", "sim_postprocess"):
+            self.flow._execute_boundary(canned_command(process), timeout=30)
+        return result
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome"),
+    [
+        pytest.param("accepted", "exit_zero", id="accepted"),
+        pytest.param("missing", "exit_nonzero", id="missing-merged-file"),
+        pytest.param("mismatch", "exit_nonzero", id="mismatched-counts"),
+    ],
+)
+def test_merge_record_outcome_follows_the_merged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, outcome: str
+) -> None:
+    """The merge records a failure when Booley rejects the file the zero-exit merge wrote (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    inner = (
+        _GeneratedMainExecution()
+        if mode == "accepted"
+        else _BadMergeExecution(mode, tmp_path / "outside" / "merged.dat")
+    )
+
+    collect(_request(tmp_path, "reset"), _MeasuredMerge(inner, tmp_path))
+
+    records = resource_history.load_records(tmp_path / ".booley")
+    assert [(r["outcome"], r["returncode"]) for r in records] == [(outcome, 0)]

@@ -108,7 +108,8 @@ on a real project, never pass the flag.
 After the renderer finishes, follow SKILL.md's **Delivered Flow results** contract:
 add or replace that single section at the actual returned path (the
 root report when the enclosing dogfood flow selected it), keeping existing Feedback content
-intact. The contract owns the evidence rows and the pre-cleanup snapshot. Repeat
+intact. The contract owns the evidence rows and the pre-cleanup snapshot in
+`.booley/setup-evidence/<run-id>/`. Repeat
 after any setup-owned render; later independent Feedback renders keep their
 existing contract.
 

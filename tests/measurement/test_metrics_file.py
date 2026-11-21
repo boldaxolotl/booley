@@ -371,6 +371,61 @@ def test_relative_bound_shows_absolute_line(tmp_path: Path) -> None:
         assert error.corrected_line == corrected, line
 
 
+def test_bound_outside_its_metric_range_shows_in_range_line(tmp_path: Path) -> None:
+    from booley.measurement.metrics_file import MetricsFileError, parse_metrics_as_written
+
+    cases = [
+        (
+            "[sim_core.coverage]\nline_coverage_min = 100.01",
+            "line_coverage must be within [0, 100], got 100.01",
+            "line_coverage_min = 100",
+        ),
+        (
+            "[sim_core.coverage]\nline_coverage_min = -1",
+            "line_coverage must be within [0, 100], got -1",
+            "line_coverage_min = 0",
+        ),
+        (
+            "[sim_core.sim]\ntests_failed_max = -1",
+            "tests_failed must be at least 0, got -1",
+            "tests_failed_max = 0",
+        ),
+        (
+            '[synth_core.synth]\n"clk_i.fmax_mhz_min" = -5',
+            "fmax_mhz must be at least 0, got -5",
+            '"clk_i.fmax_mhz_min" = 0',
+        ),
+        (
+            "[defaults.coverage]\nline_coverage_min = 101",
+            "line_coverage must be within [0, 100], got 101",
+            "line_coverage_min = 100",
+        ),
+    ]
+    for text, message, corrected in cases:
+        (error,) = _errors(tmp_path, text + "\n")
+        assert error.message == message, text
+        assert error.corrected_line == corrected, text
+        assert f"write instead: {corrected}" in error.render(), text
+
+    rules = _load(
+        tmp_path,
+        "[sim_core.coverage]\nline_coverage_min = 100\nbranch_coverage_min = 0\n"
+        "[sim_core.sim]\ntests_failed_max = 0\n"
+        '[synth_core.synth]\n"clk_i.wns_ns_min" = -0.5\n"clk_i.whs_ns_min" = -0.1\n',
+    )
+    assert _bounds(_table(rules, "sim_core", "coverage")) == {
+        "line_coverage_min": 100,
+        "branch_coverage_min": 0,
+    }
+    assert _bounds(_table(rules, "sim_core", "sim")) == {"tests_failed_max": 0}
+    assert _bounds(_table(rules, "synth_core", "synth")) == {
+        "clk_i.wns_ns_min": -0.5,
+        "clk_i.whs_ns_min": -0.1,
+    }
+    with pytest.raises(MetricsFileError):
+        parse_metrics_as_written(b"[sim_core.coverage]\nline_coverage_min = 100.01\n")
+
+
 def test_every_load_error_is_reported(tmp_path: Path) -> None:
     text = (
         "[nope.sim]\ntests_failed_max = 0\n"

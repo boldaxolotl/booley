@@ -129,21 +129,25 @@ implementation borrow only from the same Target, because their memory grows
 with the design: the first run of such a Target runs alone, and Booley says
 it has no measurement yet. A step with no record at all also runs alone. A
 Simulation Record runs independent tests in parallel while their reservations
-fit. A Target's
+fit. A physical-mode ASIC synthesis Job lowers its reservation to what OpenROAD
+needs once Yosys finishes. A Target's
 [Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
 reserve as much as that Target's build until Booley has measured them.
 
 If the kernel kills a Job for running out of memory because the Sandbox has
 used `[sandbox].memory` plus its
 [swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
-alone. A second kill fails the Job.
+alone. A second kill fails the Job. When one test of a Simulation (with its
+Pre-Sim Commands) is killed after the shared build, or one build or simulation
+of a Mutation run is killed, only that part runs again.
 
 If the host itself runs out of memory while the Sandbox stays below that
 limit, running alone does not help, so Booley does not retry the Job. The
 result says the host ran out of memory: free memory on the host, or lower
-`[sandbox].memory` and recreate the Sandbox, then run the Job again. A kill
-Booley cannot see (inside a FuseSoC generator, a Pre-Sim Command or a mutation
-run, for example) is a plain failure.
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A Mutant
+whose build or simulation is killed on the host, or killed again when run
+alone, counts as inconclusive. A kill Booley cannot see (inside a FuseSoC
+generator, for example) is a plain failure.
 
 Limits apply to one Project.
 
@@ -174,7 +178,8 @@ maximum peak memory and wall-clock time for each, and the peak swap of an entry
 that swapped, with one line per Specialist after the Targets (`--json` for
 scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
 has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
-name), and the seeds of one Variant share it. Flow runs that `booley doctor`
+name), and the seeds of one Variant share it. A synthesis run also has an
+entry for each tool (`sv2v`, `yosys`, `openroad`). Flow runs that `booley doctor`
 starts are not recorded. If the history is not valid JSON or was written by
 another Booley version, the next Job keeps it as
 `.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
@@ -357,7 +362,8 @@ toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
 `post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
 Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
 and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git.
+outputs ignored by Git. `booley measure` runs the same hook in its checkout of
+the commit; see [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 ### Git submodules (`[submodules]`)
 

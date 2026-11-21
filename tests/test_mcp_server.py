@@ -1418,6 +1418,9 @@ class TestBooleyTargets:
         payload = json.loads(result[0].text)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert sorted(names) == ["fpga_core", "sim", "synth"]
+        synth = next(t for c in payload["cores"] for t in c["targets"] if t["name"] == "synth")
+        assert synth["synth_mode"] == "physical"
+        assert synth["eda_tools"] == ["sv2v", "yosys", "openroad"]
 
     def test_dispatch_applies_filters(self, tmp_path, monkeypatch):
         import json

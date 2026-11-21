@@ -9,9 +9,10 @@ covers it), advisory endpoints with their explicit opt-outs, and the verbose-onl
 tool list.
 
 Permitted effects: one ``docker run --init --rm`` of the probe with the Project
-Root mounted at ``/work`` (60-second timeout). The probe may create its
-interactive log directory under the Booley Directory. The owner prints nothing
-and never raises on a failed probe; the caller renders the report.
+Root mounted at ``/work`` (60-second timeout). The probe creates nothing: it
+resolves its interactive log directory and checks that it could be written. The
+owner prints nothing and never raises on a failed probe; the caller renders the
+report.
 
 The caller decides whether the probe is worth running (container runtime and
 image present) and what the optional FPGA axis covers; this module holds the
@@ -156,7 +157,9 @@ def _grade_payload(
     if errors:
         findings.fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
         return
-    if payload.get("logs_dir_ok") is not True:
+    # Only an explicit false fails: an older image's probe made the directory, so
+    # its payload (without this field) already proves it was writable.
+    if payload.get("logs_dir_ok") is not True or payload.get("logs_dir_writable") is False:
         findings.fail("MCP interactive log setup failed", "check .booley mount and permissions")
         return
     missing = _required_tools(request) - set(mcp_tools)

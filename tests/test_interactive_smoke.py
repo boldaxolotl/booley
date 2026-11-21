@@ -192,6 +192,37 @@ class TestJobLogsDir:
 
         assert not os.environ.get("BOOLEY_LOGS_DIR")
 
+    def test_unresolvable_booley_dir_yields_no_location(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.mcp import server as mcp_server
+
+        def fail() -> Path:
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(mcp_server, "resolve_booley_dir", fail)
+
+        assert mcp_server._job_logs_dir() is None
+
+    def test_missing_main_booley_dir_yields_no_location(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.mcp import server as mcp_server
+
+        monkeypatch.setattr(mcp_server, "resolve_booley_dir", lambda: tmp_path / "gone")
+        monkeypatch.setattr(mcp_server, "resolve_common_booley_dir", lambda: tmp_path / "gone")
+
+        assert mcp_server._job_logs_dir() is None
+
+    def test_empty_location_is_not_writable(self) -> None:
+        from booley.mcp import server as mcp_server
+
+        assert mcp_server._logs_dir_writable("") is False
+
 
 # ---------------------------------------------------------------------------
 # asic_synthesize: --baseline works in a Developer Agent session

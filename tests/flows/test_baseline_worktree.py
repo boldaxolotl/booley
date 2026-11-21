@@ -594,6 +594,42 @@ def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path) -> None:
     assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
 
 
+def _write_hook(project: Path, script: str) -> None:
+    hook = project / ".booley" / "hooks" / "post-setup.sh"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_bytes(f"{script}\n".encode())
+
+
+def test_a_hook_built_link_target_lifts_the_refusal(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "top.v").write_text("generated\n", encoding="utf-8")  # never committed
+    _stealth_core_linking_to_rtl(tmp_path)
+    _write_hook(tmp_path, "mkdir -p rtl && echo built > rtl/top.v")
+
+    with baseline_worktree(tmp_path, "HEAD") as baseline:
+        assert (baseline / ".booley/cores/ip/rtl/top.v").read_text() == "built\n"
+
+
+@pytest.mark.parametrize("fails", [False, True], ids=["builds", "fails"])
+def test_post_setup_hook_runs_in_the_baseline_checkout(tmp_path: Path, fails: bool) -> None:
+    _init_repo(tmp_path)
+    _write_hook(tmp_path, "exit 4" if fails else "echo built > gen.txt")
+
+    if fails:
+        with (
+            pytest.raises(
+                BaselineWorktreeError, match=r"post-setup hook failed \(rc=4\).*post-setup\.sh"
+            ),
+            baseline_worktree(tmp_path, "HEAD"),
+        ):
+            pytest.fail("a failing hook must stop the baseline before it is used")
+        assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
+    else:
+        with baseline_worktree(tmp_path, "HEAD") as baseline:
+            assert (baseline / "gen.txt").read_text() == "built\n"
+
+
 @pytest.mark.parametrize("with_cores", [True, False], ids=["stealth-cores", "config-only"])
 def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
     tmp_path: Path, monkeypatch, with_cores: bool

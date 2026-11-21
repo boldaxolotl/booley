@@ -15,8 +15,11 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.flows import runtime_reality as owner
-from booley.runtime import runtime_context, session_runtime
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
+from booley.runtime import runtime_context, sandbox_apply, session_runtime
+from booley.runtime.sandbox_apply import (
+    UNKNOWN_SANDBOX_STEPS,
+    Attachment,
+)
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 
@@ -113,7 +116,9 @@ def test_present_binary_passes(tmp_path, lint_core, monkeypatch):
     assert _summary(inside) == expected
 
 
-def test_missing_binary_fails(tmp_path, lint_core, monkeypatch, vscode_owner):
+def test_missing_binary_fails(
+    tmp_path, lint_core, monkeypatch, vscode_owner, hand_written_sandbox
+):
     """An absent binary FAILs with the host or in-Sandbox wording and the bake fix."""
 
     probe = _HostProbe(monkeypatch, returncode=1)
@@ -127,6 +132,10 @@ def test_missing_binary_fails(tmp_path, lint_core, monkeypatch, vscode_owner):
     assert _summary(inside) == [
         (Severity.FAIL, "lint: 'verilator' is not on this container's PATH", _BAKE_FIX_INSIDE)
     ]
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    (finding,) = owner.inspect_flow_runtime_reality(_request(tmp_path, inside=True)).findings
+    assert finding.fix == _BAKE + sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
 
 
 def test_unavailable_runtime_skips(tmp_path, lint_core, monkeypatch):
@@ -164,6 +173,14 @@ def test_probe_error_fails(tmp_path, lint_core, monkeypatch, vscode_owner):
                 fix,
             )
         ]
+
+
+def test_pending_recovery_skips(tmp_path, lint_core, monkeypatch):
+    probe = _HostProbe(monkeypatch, error=session_runtime.RecoveryPendingError())
+    report = owner.inspect_flow_runtime_reality(_request(tmp_path, command=probe.command))
+    [(severity, message, _fix)] = _summary(report)
+    assert severity is Severity.SKIP
+    assert message.endswith("recovery is pending on this host")
 
 
 def test_binary_selection_follows_target_eda_tool(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import signal
+import threading
 import time
 import traceback
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     SimulationArtifactEvidence,
@@ -50,6 +52,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
     _validated_resume,
+    as_if_the_sandbox_restarted,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
@@ -150,6 +153,9 @@ class _CrashGroup:
 
     def planning_disclosure(self):
         return {}
+
+    def for_work_item(self, _names, _test_runs):
+        return self
 
     def build_recovery_document(self):
         return _build_execution()
@@ -1198,3 +1204,78 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
 
     assert outcome.complete is True
     assert [item.state for item in case.store.scan().items] == ["complete"]
+
+
+class _CancelAfterInputs:
+    """Publication checkpoint: the forked worker is cancelled once its inputs are staged.
+
+    ``kill`` exits like a SIGKILL. ``sigint`` signals the worker's own process
+    and waits, as the CLI does for Ctrl-C while a lane thread works. The test
+    process records whether the destination survived into the next attempt.
+    """
+
+    def __init__(self, how: str) -> None:
+        self.how = how
+        self.destination: Path | None = None
+        self.test_process = os.getpid()
+        self.present_at_restage: list[bool] = []
+
+    def __call__(self, name: str) -> None:
+        if os.getpid() == self.test_process:
+            if name == "before:runtime_inputs" and self.destination is not None:
+                self.present_at_restage.append(self.destination.exists())
+            return
+        if name != "after:runtime_inputs":
+            return
+        if self.how != "sigint":
+            os._exit(_KILLED)
+        os.kill(os.getpid(), signal.SIGINT)
+        threading.Event().wait(hang_guard_s())
+
+
+def _interrupted(run) -> None:
+    """Run in the worker like the CLI: a Ctrl-C ends the process without unwinding lanes."""
+    try:
+        run()
+    except KeyboardInterrupt:
+        os._exit(_KILLED)
+
+
+@_needs_fork
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("how", ["kill", "sigint", "kill-then-restart"])
+@pytest.mark.parametrize("route", ["serial", "coverage"])
+def test_cancelled_attempt_leaves_no_runtime_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, how: str
+) -> None:
+    """A run cancelled while its inputs are staged leaves none for the next attempt."""
+    checkpoint = _CancelAfterInputs(how)
+    if route == "serial":
+        case = _serial_case(tmp_path / "case", monkeypatch, True, checkpoint)
+        run = lambda: case.record.run(case.request)  # noqa: E731
+        project = case.request.project_root
+        destination, parent = project / "run/inputs/input.bin", project / "run/inputs"
+        resume = lambda: _resume_crashed_simulation_record(  # noqa: E731
+            case.record, case.request, case.store, case.manifest, case.plan, "x"
+        )
+    else:
+        record, request, resume_request, _store, _target = _coverage_case(
+            tmp_path / "case", checkpoint
+        )
+        run = lambda: record.run(request)  # noqa: E731
+        project = request.project_root
+        destination, parent = project / "data/stimulus.bin", project / "data"
+        resume = lambda: record.run(resume_request)  # noqa: E731
+    checkpoint.destination = destination
+
+    _run_killed(lambda: _interrupted(run), tmp_path / "trace.txt")
+    assert destination.is_file()
+    if how == "kill-then-restart":
+        as_if_the_sandbox_restarted(resolve_checkout_booley_dir(project))
+
+    assert resume().complete is True
+    assert checkpoint.present_at_restage == [False]
+    assert not destination.exists()
+    assert not parent.exists()
+    ledger = resolve_checkout_booley_dir(project) / ".runtime/staged-runtime-inputs"
+    assert list(ledger.glob("*.json")) == []

@@ -6,15 +6,22 @@ launches are answered per Mutant, and the assertions read the classified rows of
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
 
-from booley.flows.mutation.flow import UnsupportedSimTargetError, compute_source_size_budget
+from booley.flows.mutation.flow import (
+    MutationFlow,
+    UnsupportedSimTargetError,
+    VariantSuiteVerdict,
+    compute_source_size_budget,
+)
 from booley.flows.mutation.memory_claims import CampaignClaims
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.adapter_transport import (
@@ -24,8 +31,10 @@ from booley.flows.sim.adapter_transport import (
 )
 from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
+from tests.flows.failing_compiler import put_failing_iverilog_on_path
 from tests.flows.mutation.test_flow import (
     _SCOPE,
     _campaign,
@@ -37,6 +46,11 @@ from tests.flows.mutation.test_flow import (
     _results_markdown,
     _wrap_preparer,
     _write_tests_toml,
+)
+from tests.flows.sim.test_execution_engine import (
+    _real_fusesoc,
+    _write_fake_icarus_tools,
+    _write_vvp,
 )
 
 _TESTS_TOML = '[lite]\ntests = ["full", "smoke"]\nselect = "+test={name}"\n'
@@ -393,6 +407,29 @@ def test_detected_snippet_starts_at_the_killing_tests_failure_line(
     assert survived["sim_output_snippet"].endswith("iverilog sim PASSED (rc=0)")
 
 
+@pytest.mark.parametrize("detected", [True, False], ids=["detected", "survivor"])
+def test_mutant_snippet_names_project_paths(detected: bool) -> None:
+    line = "FATAL: src/acme_lib_dut_1/rtl/mod_a.sv:4: mismatch"
+    run = SimpleNamespace(test_name="full", output=line)
+    verdict = VariantSuiteVerdict(detected=detected, detecting_run=run if detected else None)
+    paths = ProjectSourcePaths({"src/acme_lib_dut_1/rtl/mod_a.sv": "rtl/mod_a.sv"})
+
+    snippet = MutationFlow._variant_snippet(verdict, line, paths)
+
+    assert snippet.endswith("FATAL: rtl/mod_a.sv:4: mismatch")
+
+
+def test_inconclusive_mutant_snippet_names_project_paths() -> None:
+    verdict = VariantSuiteVerdict(
+        inconclusive_reason="cannot open src/acme_lib_dut_1/rtl/mod_a.sv:4"
+    )
+    paths = ProjectSourcePaths({"src/acme_lib_dut_1/rtl/mod_a.sv": "rtl/mod_a.sv"})
+
+    snippet = MutationFlow._variant_snippet(verdict, "", paths)
+
+    assert snippet == "sim outcome inconclusive: cannot open rtl/mod_a.sv:4"
+
+
 def test_cocotb_detected_snippet_comes_from_the_detecting_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,3 +616,57 @@ def test_a_timed_out_run_leaves_no_adapter_result_files(
     _, row = _run_signal_case(tmp_path, monkeypatch, launch)
 
     assert row["timed_out"] is True
+
+
+@pytest.mark.parametrize("stage", ["build", "run"])
+def test_baseline_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """A baseline that fails names each source by Project path (issues #4999, #5315)."""
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    _write_tests_toml(tmp_path, '[sim]\ntests = ["t"]\n')
+    _prepare_scope_files(tmp_path, [_SCOPE])
+    (tmp_path / "dut.core").write_bytes(
+        b"CAPI=2:\n"
+        b"name: acme:lib:dut:1\n"
+        b"filesets:\n"
+        b"  rtl:\n"
+        b"    files:\n"
+        b"      - rtl/mod_a.sv: {file_type: systemVerilogSource}\n"
+        b"targets:\n"
+        b"  sim:\n"
+        b"    flow: sim\n"
+        b"    flow_options: {tool: icarus}\n"
+        b"    filesets: [rtl]\n"
+        b"    toplevel: dummy\n"
+    )
+    raw = "src/acme_lib_dut_1/rtl/mod_a.sv:4: syntax error"
+    unmapped = "gen/other.sv:2: error: Unknown module type: other"
+    if stage == "build":
+        put_failing_iverilog_on_path(tmp_path, monkeypatch, [raw, unmapped])
+    else:
+        fake_bin = _write_fake_icarus_tools(tmp_path)
+        _write_vvp(
+            fake_bin, raw.split(":", maxsplit=1)[0]
+        )  # a vvp that fails naming the build-tree file
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    endpoint = _make_endpoint(
+        tmp_path, monkeypatch, target="sim", scope=_SCOPE, count=1, min_detected=0
+    )
+
+    with _real_fusesoc():
+        result = endpoint.run_with_claims(CampaignClaims())
+
+    assert result.exit_code == EXIT_ERROR
+    if stage == "run":
+        assert "Unable to open rtl/mod_a.sv for reading" in result.report_text
+        assert "src/acme_lib_dut_1/" not in result.report_text
+        return
+    for text in (result.detail["log_tail"], result.report_text):
+        lines = text.splitlines()
+        assert "rtl/mod_a.sv:4: syntax error" in lines
+        assert unmapped in lines
+        assert "src/acme_lib_dut_1/" not in text
+    log = tmp_path / result.detail["artifacts"]["baseline_build_log"]
+    assert raw in log.read_text(encoding="utf-8")

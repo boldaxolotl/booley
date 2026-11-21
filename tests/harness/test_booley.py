@@ -101,6 +101,7 @@ def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
         (["init", "--sim-tool", "verilator"], "--sim-tool is retired; use --sim-eda-tool"),
         (["init", "--lint-tool", "verilator"], "--lint-tool is retired; use --lint-eda-tool"),
         (["init", "--provider", "codex", "--auth", "auto"], "choose subscription or api-key"),
+        (["init", "--provider", "codex", "--auth", "visitor"], "choose subscription or api-key"),
         (["bootstrap", "--check-only", "--force"], "not allowed with argument"),
         (["bootstrap", "--with-qa-skills", "--without-qa-skills"], "not allowed with argument"),
         (["bootstrap", "--egress", "open"], "invalid choice"),
@@ -213,6 +214,11 @@ def test_auth_cli_and_hidden_app_alias_parse_identically(monkeypatch, capsys):
     auth_help = capsys.readouterr().out
     assert "--cli" in auth_help
     assert "--app" not in auth_help
+    words = " ".join(auth_help.split())
+    assert (
+        "status reports this CLI only, else every Agent CLI the Project allows, default first"
+        in words
+    )
 
 
 # ===========================================================================
@@ -318,7 +324,7 @@ def _fail_doctor(monkeypatch, failure):
         doctor._DoctorFlowRuntime(Path("/project"), "docker").command(["true"])
 
     monkeypatch.setattr(doctor, "run_doctor_result", exercise_runtime)
-    monkeypatch.setattr(session_runtime, "up", MagicMock(side_effect=failure))
+    monkeypatch.setattr(session_runtime, "up_without_recovery", MagicMock(side_effect=failure))
 
 
 def _fail_auth(monkeypatch, failure):

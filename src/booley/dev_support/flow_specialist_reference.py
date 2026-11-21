@@ -79,8 +79,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
         "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
-        "output summarizes unselected skips; pass `--result-verbosity full` to print "
-        "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
+        "output summarizes unselected skips; the complete XML and JSON results are always retained"
     ),
     "synth": (
         f"{_BASELINE_CONTROL}; physical Targets must own an SDC fileset that creates a clock"

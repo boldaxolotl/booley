@@ -42,15 +42,17 @@ def test_input_findings_name_an_absolute_live_path_in_each_spelling(
     assert f"inside the live working tree {live}" in findings[0]
 
 
-def test_input_findings_name_the_whole_path_not_the_root(tmp_path: Path) -> None:
+# A legacy ``pipeline.toml`` is the Project configuration while no ``booley.toml`` exists.
+@pytest.mark.parametrize("name", ["ip.core", ".booley/pipeline.toml", ".booley/metrics.toml"])
+def test_input_findings_name_the_whole_path_not_the_root(tmp_path: Path, name: str) -> None:
     live = (tmp_path / "live").resolve()
     live.mkdir()
     checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    (checkout / "ip.core").write_text(f"files: [{live}/rtl/top.v]\n", encoding="utf-8")
+    (checkout / ".booley").mkdir(parents=True)
+    (checkout / name).write_text(f"files: [{live}/rtl/top.v]\n", encoding="utf-8")
 
     assert input_findings(checkout, [LiveRoot("live working tree", live)]) == [
-        f"ip.core names {live}/rtl/top.v, inside the live working tree {live}"
+        f"{name} names {live}/rtl/top.v, inside the live working tree {live}"
     ]
 
 

@@ -74,7 +74,8 @@ Two project-side extension points:
   extensionless `post-setup` runs in each new sandboxed worktree that
   `booley worktree new` creates, and a failure removes the
   worktree again; make it idempotent. It may install/build dependencies, copy
-  files, create symlinks, or prepare generated inputs.
+  files, create symlinks, or prepare generated inputs. `booley measure` also
+  runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that
   must exist in every Sandbox, build an image extending `booley-sandbox` from
   `.booley/docker/Dockerfile` and point `[sandbox].image` at it.
@@ -788,7 +789,8 @@ What goes here:
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured
   first Doctor Target. For simulation, mirror replacement build-tree files beneath
-  `.booley/selftest/sim/bad-overlay/`; the overlay must build and then fail the
+  `.booley/selftest/sim/bad-overlay/` (Project input: commit it with the
+  rest of the Booley Directory); the overlay must build and then fail the
   selected smoke Test behaviorally — a compile-only failure is insufficient.
   Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -175,6 +176,19 @@ def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):
 
     assert prepared.plan is None
     assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
+    assert prepared.findings[0].message.endswith("does not register for the Target: ghost")
+
+
+def test_preflight_names_the_tests_when_the_registry_is_emptied(tmp_path, monkeypatch):
+    context = replace(_project(tmp_path, monkeypatch), test_names={})
+    runs = _runs(tmp_path, "reset")
+
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), test_runs={"sim_0": runs}), context
+    )
+
+    assert prepared.plan is None
+    assert prepared.findings[0].message.endswith("does not register for the Target: reset")
 
 
 def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeypatch):
@@ -311,7 +325,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     assert command == (
         "booley flow sim --target sim_0 "
         + " ".join(f"--test={name}" for name in names)
-        + " --coverage"
+        + f" --coverage --report-dir {shlex.quote(str(reports))}"
     )
     # The named command resolves to exactly the frozen Test Runs: nothing is drawn.
     replayed = load_target_test_plan(

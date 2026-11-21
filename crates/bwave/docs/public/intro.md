@@ -24,11 +24,6 @@ map of the docs; each topic below is one `bwave docs show <topic>` away.
 - `reference/markers`: named times in `wave` and the wrapper.
 - `reference/sessions`: `@<alias>` sessions in the Booley wrapper.
 
-## Troubleshooting
-
-- `troubleshooting/empty-results`: query returned nothing.
-- `troubleshooting/clock-detection`: wrong clock picked.
-
 `bwave docs topics` lists every topic and `bwave docs search <text>`
 searches them. `bwave <command> --help` is authoritative for flags, and
 `bwave schema` for `--format json` output.

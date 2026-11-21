@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
@@ -40,6 +40,7 @@ from booley.runtime.image_build_contracts import (
 )
 from booley.runtime.image_identity import ImageMetadata, logical_selection_fingerprint_for_chain
 from booley.runtime.image_provenance import (
+    ENV_SANDBOX_FLAVOR,
     LABEL_ARTIFACT_ROLE,
     LABEL_BUILD_ORIGIN,
     LABEL_EFFECTIVE_INPUTS,
@@ -70,6 +71,8 @@ STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 STANDARD_SUBSTRATE_IMAGE = "booley-sandbox-standard-substrate:local"
 RISCV_SUBSTRATE_IMAGE = "booley-sandbox-riscv-substrate:local"
 FLAVOR_RECIPES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
+# Published images mark only the RISC-V flavor; the standard image sets no marker.
+FLAVOR_MARKERS = {"booley-sandbox-riscv": "riscv"}
 PUBLISHED_REGISTRY = "ghcr.io/boldaxolotl"
 # Docker prints this for an absent repository or tag (digest-only and dangling
 # images). Reference grammar forbids "<" and ">", so it is never a real name.
@@ -399,12 +402,16 @@ def _owned_store() -> PrivateStore:
     return PrivateStore(root, anchor, "refresh image ownership", ImageLifecycleError)
 
 
+def _record_name(identity: str) -> str:
+    return hashlib.sha256(identity.encode()).hexdigest() + ".json"
+
+
 class OwnedImages:
     """One Project's refresh-built image IDs and candidate refs; a str root is not resolved."""
 
     def __init__(self, project: Path | str = "", *, name: str = "") -> None:
         identity = project if isinstance(project, str) else str(project.resolve())
-        self.name = name or hashlib.sha256(identity.encode()).hexdigest() + ".json"
+        self.name = name or _record_name(identity)
         self.store, self.ids, self.refs = _owned_store(), [], {}
         try:
             self.store.validate_existing_directory()
@@ -442,6 +449,10 @@ class OwnedImages:
         self.record(found, tuple(image for image in found.values() if image not in before))
 
 
+#: The reason cleanup_owned_images gives for an owned image a tag still names.
+TAG_RETAINED = "retained (tag/keeper)"
+
+
 def cleanup_owned_images(
     project: Path | str | None = None, *, docker: DockerPort | None = None
 ) -> tuple[str, ...]:
@@ -458,7 +469,7 @@ def cleanup_owned_images(
     for record in records:
         for image in reversed(record.ids):
             if image in tags.values():
-                retained[image] = "retained (tag/keeper)"
+                retained[image] = TAG_RETAINED
             elif image in present:
                 try:
                     adapter.remove_tag(image)  # exact ID, non-force, --no-prune
@@ -470,6 +481,30 @@ def cleanup_owned_images(
         record.refs = {ref: image for ref, image in record.refs.items() if ref in tags}
         record.record({})
     return tuple(f"{image}: {reason}" for image, reason in retained.items())
+
+
+def sweep_absent_owned_images(
+    registered: Iterable[str], *, docker: DockerPort | None = None
+) -> None:
+    """Drop record entries whose image or candidate ref is gone; removes no image.
+
+    Records of the *registered* roots stay untouched.
+    """
+    store = _owned_store()
+    paths = sorted(store.root.glob("*.json")) if store.validate_existing_directory() else []
+    skipped = {_record_name(root) for root in registered}
+    records = [OwnedImages(name=path.name) for path in paths if path.name not in skipped]
+    if not records:
+        return
+    adapter = docker or _docker_adapter()
+    present = adapter.image_ids()
+    tags = {row.reference for row in adapter.image_references()}
+    for record in records:
+        ids = [image for image in record.ids if image in present]
+        refs = {ref: image for ref, image in record.refs.items() if ref in tags}
+        if (ids, refs) != (record.ids, record.refs):
+            record.ids, record.refs = ids, refs
+            record.record({})
 
 
 def _build_adapter(
@@ -1113,7 +1148,27 @@ def _node_identity_reason(node: ImageNode, metadata: ImageMetadata) -> Diagnosti
         and recorded_selection != node.logical_selection_fingerprint
     ):
         return Diagnostic("inputs-changed", "logical Sandbox Image selection changed")
+    flavor_mismatch = _release_flavor_mismatch(node, metadata)
+    if flavor_mismatch is not None:
+        return Diagnostic("inputs-changed", flavor_mismatch)
     return None
+
+
+def _release_flavor_mismatch(node: ImageNode, metadata: ImageMetadata) -> str | None:
+    """Describe a published release image whose flavor is not the configured one."""
+    if node.acquisition_policy is not ArtifactPolicy.VERIFIED_RELEASE_ONLY:
+        return None
+    configured = node.published_reference or node.reference
+    found = metadata.environment.get(ENV_SANDBOX_FLAVOR)
+    if found == FLAVOR_MARKERS.get(configured):
+        return None
+    image = next((name for name, marker in FLAVOR_MARKERS.items() if marker == found), None)
+    if found is None:
+        image = BASE_IMAGE
+    return (
+        f"configured Sandbox Image is {configured} but the image is "
+        f"{image or f'{ENV_SANDBOX_FLAVOR}={found}'}"
+    )
 
 
 def _node_ancestry_reason(
@@ -1320,6 +1375,11 @@ def _verify_prepared_image(
     if mismatched:
         raise ImageLifecycleError(
             f"prepared candidate {reference!r} has invalid provenance: " + ", ".join(mismatched)
+        )
+    flavor_mismatch = _release_flavor_mismatch(node, metadata)
+    if flavor_mismatch is not None:
+        raise ImageLifecycleError(
+            f"prepared candidate {reference!r} is the wrong image: {flavor_mismatch}"
         )
     if (
         parent_artifact is not None

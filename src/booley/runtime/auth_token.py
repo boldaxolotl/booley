@@ -479,7 +479,7 @@ CREDENTIAL_SCHEMA = "1"
 def defers_to_cli(policy: str) -> bool:
     """Whether *policy* leaves the credential choice to the CLI's own precedence.
 
-    Only the env-only ``visitor`` mode does; ``auto`` is retired and defers to nothing.
+    Only the ``visitor`` mode does; ``auto`` is retired and defers to nothing.
     """
     return policy == VISITOR_AUTH
 
@@ -587,6 +587,11 @@ def inspect_config_seed(path: Path, policy: str) -> None:
         )
 
 
+def uses_stored_credential(app: str, policy: str) -> bool:
+    """Whether *policy* lets *app*'s agents use its stored rotation-free credential."""
+    return CREDENTIALS[app].env_var in allowed_credential_keys(app, policy)
+
+
 def credential_plan(
     app: str = APP_CLAUDE, policy: str = "subscription", *, home: Path | None = None
 ) -> CredentialPlan:
@@ -612,7 +617,7 @@ def credential_plan(
     token = token_path(app) if home is None else home / TOKEN_SEED_BASENAME[app]
     token_seed = (
         token
-        if CREDENTIALS[app].env_var in allowed
+        if uses_stored_credential(app, policy)
         and token.is_file()
         and read_stored_token(app, home=home)
         else None

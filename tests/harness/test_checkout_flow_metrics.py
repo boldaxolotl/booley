@@ -211,10 +211,24 @@ def test_sim_and_lint_runs_return_their_typed_values(
     assert (sim.unavailable, lint.unavailable) == ({}, {})
 
 
+_WAIVERS = '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "{}"\n'
+_ABSENT_WAIVERS = _WAIVERS.format("missing-waivers")
+_BLOCKED_WAIVERS = _WAIVERS.format("booley.toml")
+
+
+@pytest.mark.parametrize(
+    "booley_toml",
+    [
+        pytest.param("", id="no-waivers-configured"),
+        pytest.param(_ABSENT_WAIVERS, id="absent-waiver-directory"),
+    ],
+)
 def test_coverage_run_returns_coverage_percents_with_test_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, booley_toml: str
 ) -> None:
-    result = coverage_result(tmp_path, monkeypatch, _MixedCoverageExecution())
+    result = coverage_result(
+        tmp_path, monkeypatch, _MixedCoverageExecution(), booley_toml=booley_toml
+    )
 
     (values,) = result.metrics.values()
     assert values.plain == {
@@ -230,8 +244,25 @@ def test_coverage_run_returns_coverage_percents_with_test_counts(
     assert judged(result, "coverage", "line_coverage_max", "line_coverage")[1] == 1
 
 
+@pytest.mark.parametrize(
+    ("noise", "fragments"),
+    [
+        pytest.param(
+            "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n",
+            ("tb_top", "pyuvm"),
+            id="cocotb-1x",
+        ),
+        pytest.param(
+            (
+                Path(__file__).parents[1] / "fixtures/cocotb_results/2.1.0/import-missing.log"
+            ).read_text(encoding="utf-8"),
+            ("import_missing_cases", "qa_no_such_module_xyz"),
+            id="cocotb-2x",
+        ),
+    ],
+)
 def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, noise: str, fragments: tuple[str, str]
 ) -> None:
     from booley.measurement.metrics_file import Bound, TableRules
     from booley.measurement.verdicts import FlowFailed, evaluate_table, measure_exit_code
@@ -255,7 +286,6 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     import_failure = tmp_path / "cocotb"
     import_failure.mkdir()
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
-    noise = "Failed to import module tb_top: ModuleNotFoundError: No module named 'pyuvm'\n"
     # The run half swaps "results.xml not found" for the import failure it finds in the output.
     detail = find_import_failure(noise)
     stdout = noise + _cocotb_output([], state="missing", detail=detail, passed=False)
@@ -274,18 +304,18 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
         (Bound("tests_total_min", "tests_total", "min", 1, None, None, None),),
         (),
     )
-    for result, fragments in (
+    for result, expected in (
         (missing, ("missing tool: verilator",)),
-        (cocotb, ("tb_top", "pyuvm")),
+        (cocotb, fragments),
     ):
         assert result.metrics == {}
         assert result.excerpt is not None
-        assert all(fragment in result.excerpt for fragment in fragments), result.excerpt
+        assert all(fragment in result.excerpt for fragment in expected), result.excerpt
         verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
         assert [v.detail for v in verdicts] == [result.excerpt]
         assert measure_exit_code(v.verdict for v in verdicts) == 2
     (reason,) = cocotb.unavailable.values()
-    assert "tb_top" in reason and "pyuvm" in reason
+    assert all(fragment in reason for fragment in fragments)
 
 
 def unfinished_simulation_record_result(
@@ -313,11 +343,6 @@ class _MergeFailsExecution(_MixedCoverageExecution):
         from booley.flows.sim.verilator_coverage import SimulationCommandResult
 
         return SimulationCommandResult(1)
-
-
-_MISSING_WAIVERS = (
-    '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
-)
 
 
 def test_target_whose_values_cannot_be_produced_returns_the_reason(
@@ -352,12 +377,12 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
         "native merge failed": coverage_result(
             tmp_path / "f", monkeypatch, _MergeFailsExecution()
         ),
-        "COV_WAIVER_DIRECTORY_MISSING": coverage_result(
-            tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_MISSING_WAIVERS
+        "COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "g", monkeypatch, _MixedCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
         ),
         # A blocked evaluation still errors when the design also aborted the collection.
-        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_MISSING": coverage_result(
-            tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_MISSING_WAIVERS
+        "the coverage evaluation was blocked: COV_WAIVER_DIRECTORY_INVALID": coverage_result(
+            tmp_path / "h", monkeypatch, _TimedOutCoverageExecution(), booley_toml=_BLOCKED_WAIVERS
         ),
     }
 
@@ -370,10 +395,10 @@ def test_target_whose_values_cannot_be_produced_returns_the_reason(
     (reason,) = cases["infrastructure error"].unavailable.values()
     assert "simulator build crashed" in reason
     verdicts, code = judged(
-        cases["COV_WAIVER_DIRECTORY_MISSING"], "coverage", "line_coverage_max", "line_coverage"
+        cases["COV_WAIVER_DIRECTORY_INVALID"], "coverage", "line_coverage_max", "line_coverage"
     )
     assert [v.verdict for v in verdicts] == [Verdict.ERROR]
-    assert "COV_WAIVER_DIRECTORY_MISSING" in verdicts[0].detail
+    assert "COV_WAIVER_DIRECTORY_INVALID" in verdicts[0].detail
     assert code == 2
 
 

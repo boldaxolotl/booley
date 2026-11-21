@@ -21,6 +21,7 @@ from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.endpoint_execution import ExecutionResult
+from tests.memory_budget_support import fail_budget
 from tests.time_budget import hang_guard_s, scaled
 
 # A grandchild must outlive the tree wait, the flow timeout, the kill and the death poll,
@@ -126,10 +127,13 @@ class TestBooleyFlowExecution:
         exit_code: int,
         text: str,
     ) -> None:
+        fail_budget(monkeypatch)
         result, seen = _run_command(session_runtime, command, monkeypatch)
 
         assert result.exit_code == exit_code, result.outcome.report_text
         assert text in result.outcome.report_text
+        # Only a Custom Flow that ran a command reports that it ran alone.
+        assert ("memory_admission_warning" in result.outcome.detail) == bool(command)
         if command == ["nonexistent_binary_12345"]:
             assert seen[0].returncode != 0
 

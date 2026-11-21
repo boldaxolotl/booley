@@ -249,13 +249,18 @@ def test_seen_dashboard_still_refuses(tmp_path, monkeypatch, scope, newcomer, ca
     try:
         time.sleep(scaled(4.5))  # beyond the unseen threshold: only heartbeat answers keep it seen
         policy = command.attach_policy(tmp_path)
-        assert policy["already_open"] is True
-        assert policy["reason"] == "The Dashboard is already open in this Sandbox."
         assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
         assert command.run_dashboard(tmp_path) == 0
-        assert (
-            capsys.readouterr().out.count("Booley Dashboard is already open in this Sandbox") == 2
-        )
+        refusals = capsys.readouterr().out.splitlines()
+        assert len(refusals) == 2 and refusals[0] == refusals[1]
+        assert "already open in another window or terminal of this Sandbox" in refusals[0]
+        assert "then run booley dashboard or Booley: Open Dashboard here" in refusals[0]
+        assert policy == {
+            "protocol": 1,
+            "enabled": False,
+            "reason": refusals[0],
+            "already_open": True,
+        }
         assert newcomer.launches == []
         assert visible.process.poll() is None, "a visible Dashboard was stopped"
     finally:

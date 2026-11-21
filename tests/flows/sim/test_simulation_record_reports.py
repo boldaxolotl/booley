@@ -333,7 +333,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     result = flow._simulation_record_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
     assert result.report_text.count("pre_run_commands") == expected_runs
@@ -406,7 +406,6 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"],
-        result_verbosity="brief",
         work_dir=tmp_path / "project",
         report_dir=invocation.parent,
         dry_run=False,
@@ -646,7 +645,7 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
 def observed_hook_flow(tmp_path, monkeypatch) -> tuple[SimulateFlow, Any]:
     """A Simulation Flow that published a candidate record and its Cycle Count baseline."""
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     return flow, _current_observed_hook_dag(tmp_path, monkeypatch, flow)
 
 
@@ -729,7 +728,7 @@ def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=Fa
     from booley.flows.sim import record
 
     flow = module.SimulateFlow()
-    flow._args = SimRequest(target="sim", coverage=False, mode=None, result_verbosity="compact")
+    flow._args = SimRequest(target="sim", coverage=False, mode=None)
     evidence = {}
 
     def run(_prepared):

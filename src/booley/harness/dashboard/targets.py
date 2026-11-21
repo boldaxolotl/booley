@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import subprocess
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
+from booley.core.booley_layout import BooleyLayoutError
+from booley.flows.execution import FlowConfigError, flow_enabled
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import (
@@ -48,12 +50,34 @@ def first_line(error: BaseException) -> str:
     )
 
 
-def launchable_flows(flows: tuple[str, ...]) -> tuple[str, ...]:
-    """The Flows a Target detail offers: those that drive it, then those that run what they drive.
+def enabled_flows(flows: Iterable[str], worktree: Path) -> tuple[str, ...]:
+    """The given Flows, in order, that ``[flows.<name>].enabled`` leaves on in *worktree*.
 
-    ``("sim",)`` becomes ``("sim", "mutation")``; the driving Flows keep their order and lead.
+    A setting that cannot be read (a retired ``[flows]`` key, a refused Booley Directory layout)
+    keeps its Flow listed: the Flow's own run reports the problem, and the wizard calls this on the
+    UI thread, where an exception would end the Dashboard.
     """
-    return (*flows, *(flow for flow, kind in TARGET_KIND_OF_FLOW.items() if kind in flows))
+    kept: list[str] = []
+    for flow in flows:
+        try:
+            if not flow_enabled(flow, worktree):
+                continue
+        except (FlowConfigError, BooleyLayoutError):
+            pass
+        kept.append(flow)
+    return tuple(kept)
+
+
+def launchable_flows(flows: tuple[str, ...], worktree: Path) -> tuple[str, ...]:
+    """The enabled Flows a Target detail offers: those that drive it, then those that run what they drive.
+
+    ``("sim",)`` becomes ``("sim", "mutation")``; the driving Flows keep their order and lead. A Flow
+    that ``[flows.<name>].enabled`` turns off in *worktree* is left out, and so is a Flow that
+    would run only what a turned-off Flow drives.
+    """
+    driving = enabled_flows(flows, worktree)
+    derived = (flow for flow, kind in TARGET_KIND_OF_FLOW.items() if kind in driving)
+    return (*driving, *enabled_flows(derived, worktree))
 
 
 @dataclass(frozen=True)
@@ -82,7 +106,8 @@ class TargetDetail:
     ``worktree`` and ``selector`` name the request it answers. ``tests`` and
     ``constraints`` are ``None`` when that part could not be read (shown as
     unavailable, not as none); ``problems`` names each part that could not be
-    resolved. ``row`` is ``None`` when the Target itself could not be found.
+    resolved. ``row`` is ``None`` when the Target itself could not be found. ``launchable`` is the
+    Flows its Run list offers.
     """
 
     worktree: Path
@@ -93,6 +118,7 @@ class TargetDetail:
     tests: tuple[str, ...] | None = None
     constraints: tuple[str, ...] | None = None
     problems: tuple[str, ...] = ()
+    launchable: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -175,7 +201,7 @@ def inspection_blocker(worktree: Path) -> str:
         return ""
     return (
         "core projections need a refresh (any Booley Flow run in this worktree refreshes them): "
-        + ", ".join(issues)
+        + ", ".join(map(str, issues))
     )
 
 
@@ -272,7 +298,15 @@ class TargetsReader:
             constraints = _guarded(problems, "Inputs", lambda: _constraints(catalog, handle))
             tests = _guarded(problems, "Tests", lambda: _tests(worktree, row))
         return TargetDetail(
-            worktree, selector, row, core_file, filesets, tests, constraints, tuple(problems)
+            worktree,
+            selector,
+            row,
+            core_file,
+            filesets,
+            tests,
+            constraints,
+            tuple(problems),
+            launchable_flows(row.flows, worktree),
         )
 
 

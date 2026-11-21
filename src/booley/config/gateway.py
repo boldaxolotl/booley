@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 
 GATEWAY_AUTH = "gateway"
 # The visitor's own credential under the CLI's own precedence, else the sponsored gateway.
-# Environment-only: never an ``[agent] auth`` value, and never read from ``booley.toml``.
+# An ``[agent] auth`` value, honoured only in a hand-written Sandbox
+# (``config.agent.visitor_mode_honoured``).
 VISITOR_AUTH = "visitor"
 GATEWAY_URL_ENV = "BOOLEY_GATEWAY_URL"
 GATEWAY_TOKEN_ENV = "BOOLEY_GATEWAY_TOKEN"

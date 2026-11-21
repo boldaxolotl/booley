@@ -10,7 +10,7 @@ from pathlib import Path
 
 from booley.harness import upgrade_review
 from booley.runtime.booley_dir import resolve_common_booley_dir
-from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
+from booley.runtime.sandbox_apply import in_sandbox_steps
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ def status_presentation(status: upgrade_review.ReviewStatus) -> StatusPresentati
         return StatusPresentation(
             f"This Sandbox has Booley {status.running_version}, behind review target {target}",
             "upgrade.runtime-stale",
-            f"recreate the Sandbox first ({UNKNOWN_SANDBOX_STEPS}), then invoke /booley-heal",
+            f"recreate the Sandbox first ({in_sandbox_steps()}), then invoke /booley-heal",
         )
     check_id = {
         upgrade_review.ReviewCondition.CORRUPT: "upgrade.review-state-corrupt",

@@ -12,6 +12,10 @@ and ``TMPDIR`` beside the checkout, and its reports go to a directory the caller
 names outside the checkout. Once the entry point returns, no Job record names a
 path inside the checkout.
 
+Before anything else, :func:`run_post_setup_hook` runs the Project's post-setup hook in
+the checkout, in the same environment: the export holds only tracked files, so an input
+the Project builds reaches the checkout only that way.
+
 Before the Flow starts, two checks keep live inputs out of the run. A static scan
 of the checkout refuses committed symlinks and absolute paths in ``.core`` files,
 ``fusesoc.conf`` and the Booley configuration that point into a live root (the
@@ -29,6 +33,9 @@ Outside ``ignore_native_cores`` Projects it prepares the Project's shared core v
 which projects stealth cores into the checkout exactly as the Flow's own resolution
 does. It resolves the Target's own core: a Booley-generated overlay of a Flow is
 derived from the same base core and names the same files.
+
+The caller's ``PRJ_LIB_DIR`` is passed on resolved and refused inside a live root,
+also before the Job record and admission.
 
 The run's ``PATH`` also starts with a ``git`` that refuses every call (exit 128, one
 line naming the command): the checkout has no repository, so a generator or Pre-Sim
@@ -68,6 +75,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.config.flow_enablement import flow_enabled
 from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict, as_float
 from booley.flows.metric_declarations import FlowMetricValues, MetricsUnavailable
@@ -78,7 +86,11 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
 )
-from booley.measurement.environment import measurement_environment, write_git_refusal
+from booley.measurement.environment import (
+    PDK_ROOT_ENV,
+    measurement_environment,
+    write_git_refusal,
+)
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
 from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
@@ -89,6 +101,7 @@ from booley.runtime.process_group import (
     new_group_kwargs,
 )
 from booley.runtime.project_discovery import discover_project_root, has_git_worktree_marker
+from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 from booley.targets.flow_names import canonical
 
@@ -328,6 +341,25 @@ def _refuse_live_inputs(checkout: Path, roots: list[LiveRoot]) -> None:
         raise CheckoutFlowError("checkout run refused:\n" + "\n".join(findings))
 
 
+def _pdk_root(roots: list[LiveRoot]) -> Path | None:
+    """The caller's ``PRJ_LIB_DIR``, absolute and symlink-free; raise when it is in a live root.
+
+    Resolved here because the child's working directory is the checkout: a relative
+    value would name another directory there.
+    """
+    value = os.environ.get(PDK_ROOT_ENV)
+    if not value:
+        return None
+    resolved = Path(value).resolve()
+    for root in roots:
+        if booley_dir.contains(resolved, booley_dir=root.path) is not None:
+            raise CheckoutFlowError(
+                f"checkout run refused: {PDK_ROOT_ENV} names {resolved}, "
+                f"inside the {root.label} {root.path}"
+            )
+    return resolved
+
+
 def _prepare_scratch(checkout: Path) -> Path:
     """Create the run's directory beside the checkout: ``home/``, ``tmp/``, ``runtime/`` and ``bin/git``."""
     scratch = Path(tempfile.mkdtemp(dir=checkout.parent, prefix=f".{checkout.name}.env-"))
@@ -494,6 +526,16 @@ def _resolved_paths(resolved: ResolvedTarget) -> dict[str, object]:
     }
 
 
+def _report_resolution_failure(error: Exception) -> int:
+    """Print the preflight's resolution failure; a missing source also names the hook route."""
+    from booley.targets.domain import MissingSourceError
+
+    print(error, file=sys.stderr)
+    if isinstance(error, MissingSourceError):
+        print(_MISSING_SOURCE_HINT, file=sys.stderr)
+    return _START_FAILURE_EXIT_CODE
+
+
 def preflight_main(argv: list[str] | None = None) -> int:
     """The preflight child: resolve the Target in the cwd and write the paths it reads.
 
@@ -514,8 +556,7 @@ def preflight_main(argv: list[str] | None = None) -> int:
     except UnknownTargetError:
         pass
     except fusesoc_registry.FuseSocError as exc:
-        print(exc, file=sys.stderr)
-        return _START_FAILURE_EXIT_CODE
+        return _report_resolution_failure(exc)
     else:
         try:
             resolved = fusesoc_registry.resolve_target_handle(
@@ -525,8 +566,7 @@ def preflight_main(argv: list[str] | None = None) -> int:
                 export=False,
             )
         except fusesoc_registry.FuseSocError as exc:
-            print(exc, file=sys.stderr)
-            return _START_FAILURE_EXIT_CODE
+            return _report_resolution_failure(exc)
         result = _resolved_paths(resolved)
     Path(result_file).write_text(json.dumps(result), encoding="utf-8")
     return 0
@@ -830,6 +870,65 @@ class PreparedCheckoutFlow:
         shutil.rmtree(self.scratch, ignore_errors=True)
 
 
+_MISSING_SOURCE_HINT = (
+    "hint: the measurement checkout holds only the commit's files; an input the Project "
+    "builds reaches it only through the post-setup hook (.booley/hooks/post-setup.*), "
+    "which runs there before this check"
+)
+
+
+def _run_environment(main: Path, scratch: Path, pdk_root: Path | None) -> dict[str, str]:
+    """The scrubbed environment of every process that runs in the checkout."""
+    return measurement_environment(
+        os.environ,
+        main_booley_dir=main,
+        home=scratch / "home",
+        tmp=scratch / "tmp",
+        runtime=scratch / "runtime",
+        git_refusal=scratch / "bin",
+        pdk_root=pdk_root,
+    )
+
+
+def run_post_setup_hook(checkout: Path, main: Path, *, slug: str, log: Path) -> None:
+    """Run the Project's post-setup hook in *checkout*, in the measurement environment.
+
+    The export holds only tracked files, so an input the Project builds reaches the
+    checkout only through this hook. It runs before any Target is read; its output is
+    echoed to stderr and written to *log*. Nothing runs without a hook.
+
+    Raises:
+        CheckoutFlowError: the hook is a link into a live root, or it failed or timed out.
+        FlowConfigError: the checkout's Flow settings are unreadable.
+    """
+    hook = find_post_setup_hook(checkout)
+    if hook is None:
+        return
+    # The children repeat this scan, but they run after the hook: no live code may execute.
+    roots = _live_roots(main)
+    _refuse_live_inputs(checkout, roots)
+    pdk_root = _pdk_root(roots)
+    shown = os.path.relpath(hook, checkout)
+    print(f"Running post-setup hook {shown} (log: {log})...", file=sys.stderr)
+    scratch = _prepare_scratch(checkout)
+    try:
+        result = prepare_project(
+            checkout,
+            checkout,
+            slug=slug,
+            sim_flow_enabled=flow_enabled("sim", checkout),
+            log=log,
+            environment=_run_environment(main, scratch, pdk_root),
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    if not result.ok:
+        raise CheckoutFlowError(
+            f"checkout run refused: the post-setup hook {shown} failed in the measurement "
+            f"checkout: {result.error}; log: {log}"
+        )
+
+
 def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
     """Refuse an unsafe request and preflight the Target; start nothing and write no record.
 
@@ -841,16 +940,10 @@ def prepare_checkout_flow(request: CheckoutFlowRequest) -> PreparedCheckoutFlow:
     request = replace(request, flow=canonical(request.flow))  # the CLI reports under this name
     roots = _live_roots(main)
     _refuse_live_inputs(checkout, roots)
+    pdk_root = _pdk_root(roots)
     scratch = _prepare_scratch(checkout)
     try:
-        environment = measurement_environment(
-            os.environ,
-            main_booley_dir=main,
-            home=scratch / "home",
-            tmp=scratch / "tmp",
-            runtime=scratch / "runtime",
-            git_refusal=scratch / "bin",
-        )
+        environment = _run_environment(main, scratch, pdk_root)
         _preflight(request, checkout, roots, scratch, environment)
     except BaseException:  # includes a Ctrl-C: the directory must not outlive the run
         shutil.rmtree(scratch, ignore_errors=True)

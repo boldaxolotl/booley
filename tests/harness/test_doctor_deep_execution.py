@@ -32,7 +32,7 @@ __all__ = ["flow_project"]
 IMAGE = "sha256:" + "a" * 64
 
 
-def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
+def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host, sim=""):
     import shutil
     import tomllib
 
@@ -47,7 +47,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     symlink_or_skip(alias, data, target_is_directory=True)
     config = data / "booley.toml"
     config.write_text(
-        "[flows.sim]\nenabled=true\n[flows.lint]\nenabled=false\n"
+        f"[flows.sim]\nenabled=true\n{sim}[flows.lint]\nenabled=false\n"
         "[flows.synth]\nenabled=false\n[flows.fpga]\nenabled=false\n"
     )
     core = flow_project / "demo.core"
@@ -116,6 +116,43 @@ def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
     return executions, launches
+
+
+@pytest.mark.parametrize("run_cwd", ["missing", "existing-literal", "templated"])
+def test_plain_doctor_sim_dry_run_checks_literal_run_cwd(
+    flow_project, tmp_path, monkeypatch, run_cwd, capsys, request
+):
+    from booley.presentation import colors
+    from booley.runtime.booley_dir import reset_cache
+
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    configured = "runs/{attempt}" if run_cwd == "templated" else "run"
+    audit, data, alias = _alias_doctor_project(
+        flow_project, tmp_path, monkeypatch, False, sim=f'run_cwd = "{configured}"\n'
+    )
+    if run_cwd == "existing-literal":
+        (flow_project / "run").mkdir()
+    _real_simulation_transport(monkeypatch, flow_project, alias, data, False)
+    reporter = doctor._Reporter.create()
+    doctor._run_flow_audit(
+        audit,
+        doctor._DoctorFlowRuntime(flow_project, "docker"),
+        reporter.pass_,
+        reporter.note_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _diagnostics=reporter.diagnostics,
+    )
+    output = colors.strip_ansi(capsys.readouterr().out)
+    if run_cwd == "missing":
+        assert "✗  sim dry-run [sim] failed with exit 2" in output
+        assert "literal run directory must already exist" in output
+        assert "sim.run-cwd-missing" in {item.check_id for item in reporter.findings}
+    else:
+        assert "✓  sim dry-run [sim] passed" in output
+        assert "sim dry-run [sim] failed" not in output
 
 
 def _assert_real_bad_simulation_report(outcome, build_failure):

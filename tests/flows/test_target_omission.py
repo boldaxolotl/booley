@@ -24,6 +24,7 @@ from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
+from tests.memory_budget_support import fail_budget, pin_budget
 
 FLOWS = {"sim": SimulateFlow, "lint": LintFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 CASES = [(entry, flow) for entry in ("cli", "mcp") for flow in FLOWS]
@@ -436,6 +437,23 @@ def test_disabled_flow_preserves_selection_error_order(
     assert code == 2 and executed == []
     assert (f"{name} is disabled" in text) == (count == 1)
     assert ("Eligible Targets:" in text) == (count != 1)
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("name", FLOWS)
+def test_only_a_job_that_runs_reports_its_memory_warning(
+    name, enabled, project, executed, monkeypatch
+):
+    write_targets(project, name)
+    if name in ("synth", "fpga"):
+        # Empty history: the Job's first run carries the missing-measurement note.
+        pin_budget(monkeypatch, 1000)
+    else:
+        fail_budget(monkeypatch)
+    if not enabled:
+        (project / ".booley/booley.toml").write_text(f"[flows.{name}]\nenabled = false\n")
+    code, text = invoke("cli", name, project)
+    assert (code, "this Job ran alone" in text) == ((0, True) if enabled else (2, False)), text
 
 
 @pytest.mark.parametrize("failed", (False, True))

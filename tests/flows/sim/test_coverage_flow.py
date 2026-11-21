@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,7 @@ from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.filesystem_utils import safe_rmtree
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.memory_budget_support import fail_budget
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
@@ -113,7 +115,9 @@ class _CustomMainHookExecution(NativeExecution):
         return result
 
 
-def _configure_custom_main_coverage(root: Path) -> None:
+def _configure_custom_main_coverage(
+    root: Path, recipe: str = "custom_main_hooks: [start_hook, write_hook], reset_included: false"
+) -> None:
     (root / "main.cpp").write_text("int main() { return 0; }\n")
     core = root / "counter.core"
     core.write_text(
@@ -124,8 +128,7 @@ def _configure_custom_main_coverage(root: Path) -> None:
         )
         .replace(
             "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {coverage: "
-            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
+            "flow_options: {tool: verilator, booley: {coverage: {" + recipe + "}}}",
         )
     )
 
@@ -546,20 +549,7 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
 ) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    (tmp_path / "main.cpp").write_text("int main() { return 0; }\n")
-    core = tmp_path / "counter.core"
-    core.write_text(
-        core.read_text()
-        .replace(
-            "files: [rtl/counter.sv]",
-            "files: [rtl/counter.sv, {main.cpp: {file_type: cppSource}}]",
-        )
-        .replace(
-            "flow_options: {tool: verilator}",
-            "flow_options: {tool: verilator, booley: {coverage: "
-            "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
-        )
-    )
+    _configure_custom_main_coverage(tmp_path)
     project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
@@ -569,6 +559,29 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
     assert result.exit_code == 2
     assert "COV_WINDOW_HOOK_MISSING" in result.outcome.report_text
     assert (tmp_path / "reports/sim/1").is_dir()
+
+
+def test_custom_main_without_write_hook_fails_preflight_with_its_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    _configure_custom_main_coverage(tmp_path, "reset_included: true")
+    project_data = tmp_path / ".booley"
+    project_data.mkdir()
+    (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
+
+    result = _coverage(tmp_path)
+
+    assert result.exit_code == 2
+    assert _finding_codes(result.outcome) == ["COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"]
+    for expected in (
+        "sim_0: ",
+        "flow_options.booley.coverage.custom_main_hooks",
+        ".core",
+        "booley_coverage_write()",
+    ):
+        assert expected in result.outcome.report_text
 
 
 @pytest.mark.parametrize(
@@ -1076,6 +1089,7 @@ def _interrupt_coverage_collection(
     boundary=None,
     no_waivers=False,
     signalled=False,
+    report_dir=None,
 ):
     """Interrupt a coverage run before its collection records a result.
 
@@ -1086,6 +1100,7 @@ def _interrupt_coverage_collection(
     SIGTERM does: only the handler's progress abort runs.
     """
     reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
+    reports = report_dir or reports
 
     class Interrupted(NativeExecution):
         def run(self, request):
@@ -1242,12 +1257,14 @@ def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    fail_budget(monkeypatch)
 
     with simulation_record_invocation_lock(reports / "sim/1"):
         result = _coverage(tmp_path, resume_from=manifest)
 
     assert result.exit_code == 2
     assert "resume origin is busy" in result.outcome.report_text
+    assert "memory_admission_warning" not in result.outcome.detail
 
 
 def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path, monkeypatch):
@@ -1388,23 +1405,60 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     assert result.outcome.detail[state] == list(getattr(observed, state))
 
 
-@pytest.mark.parametrize("no_waivers", [True, False], ids=["repeats", "omits-by-default"])
-def test_resume_refusal_hint_repeats_no_waivers_only_when_requested(
-    tmp_path, monkeypatch, no_waivers
+@pytest.mark.parametrize(
+    ("selected", "no_waivers", "root", "expected"),
+    [
+        pytest.param(("reset",), False, None, ["--test=reset@1", "--coverage"], id="subset"),
+        pytest.param(
+            None,
+            True,
+            "my reports",
+            ["--coverage", "--no-waivers", "--report-dir"],
+            id="default-suite",
+        ),
+        pytest.param(None, False, "RUNTIME", ["--coverage"], id="runtime-default-root"),
+        pytest.param(
+            ("wrap@7", "reset"),
+            False,
+            "my reports",
+            ["--test=reset@1", "--test=wrap@7", "--coverage", "--report-dir"],
+            id="seeded",
+        ),
+    ],
+)
+def test_resume_refusal_command_repeats_the_record(
+    tmp_path, monkeypatch, selected, no_waivers, root, expected
 ):
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    report_root = tmp_path / (root or ".booley/flow-reports")
+    if root == "RUNTIME":
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+        report_root = tmp_path / "runtime/flow-reports"
     reports, _request = _interrupt_coverage_collection(
-        tmp_path, monkeypatch, no_waivers=no_waivers
+        tmp_path, monkeypatch, selected=selected, no_waivers=no_waivers, report_dir=report_root
     )
-    result = _coverage(
-        tmp_path,
-        resume_from=reports / "sim/1/targets/sim_0/record/manifest.json",
-    )
+    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    texts = {
+        _coverage(tmp_path, resume_from=manifest, dry_run=dry_run).outcome.report_text
+        for dry_run in (False, True)
+    }
+    assert len(texts) == 1
+    text = texts.pop()
+    line = next(line for line in text.splitlines() if "booley flow sim" in line)
+    if expected[-1] == "--report-dir":
+        expected = [*expected, str(report_root)]
+    assert shlex.split(line) == ["booley", "flow", "sim", "--target", "sim_0", *expected]
+    assert "Add the original" not in text
+    argv = shlex.split(line)[3:]
+    request = SimulateFlow().parse_args(["--work-dir", str(tmp_path), *argv])
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(request)
+    assert result.exit_code == 0
 
-    assert result.exit_code == 2
-    hint = next(
-        line for line in result.outcome.report_text.splitlines() if "booley flow sim" in line
-    )
-    assert hint.endswith("--coverage --no-waivers" if no_waivers else "--coverage")
+    def frozen(root_dir, number):
+        path = root_dir / f"sim/{number}/targets/sim_0/record/manifest.json"
+        return json.loads(path.read_text())["work_items"][0]["test_runs"]
+
+    assert frozen(report_root, 2) == frozen(report_root, 1)
 
 
 def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):
@@ -1765,10 +1819,9 @@ def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monk
 # --- #992: --no-waivers -----------------------------------------------------------
 
 
-def _configure_missing_waiver_directory(root: Path) -> None:
-    """Configure waivers whose directory is absent: a load-time error for gated runs."""
+def _configure_waiver_directory(root: Path, directory: str) -> None:
     (root / ".booley" / "booley.toml").write_text(
-        '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
+        f'[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "{directory}"\n'
     )
 
 
@@ -1790,7 +1843,7 @@ def _workload(reports: Path, selector: str) -> dict[str, object]:
 
 def test_no_waivers_reports_raw(tmp_path, monkeypatch):
     _prepare_sim_custom_project(tmp_path, monkeypatch)
-    _configure_missing_waiver_directory(tmp_path)
+    _configure_waiver_directory(tmp_path, "booley.toml")
 
     def run(name: str, **options):
         _coverage(
@@ -1801,7 +1854,7 @@ def test_no_waivers_reports_raw(tmp_path, monkeypatch):
             **options,
         )
 
-    # Control: the same run with waivers applied is blocked by the missing directory.
+    # Control: the same run with waivers applied is blocked by the invalid directory.
     run("control")
     assert _coverage_evaluation_status(tmp_path / "control", "sim_custom") == "blocked"
     run("raw", no_waivers=True)
@@ -1822,17 +1875,24 @@ def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
     assert run("raw", no_waivers=True)["no_waivers"] is True
 
 
-def test_ungated_invalid_waivers_exit_2_with_no_waivers_hint(tmp_path, monkeypatch):
+def test_absent_waiver_directory_is_evaluated_and_an_invalid_one_blocks(tmp_path, monkeypatch):
     _coverage_project(tmp_path, monkeypatch)
-    _configure_missing_waiver_directory(tmp_path)
+    _configure_waiver_directory(tmp_path, "missing-waivers")
 
     def run(name: str, **options):
         return _coverage(tmp_path, report_dir=tmp_path / name, **options)
 
+    absent = run("absent")
+    assert absent.exit_code == 0
+    assert _coverage_evaluation_status(tmp_path / "absent", "sim_0") == "not_requested"
+    assert "No approvals found" in absent.outcome.report_text
+    assert "missing-waivers" in absent.outcome.report_text
+
+    _configure_waiver_directory(tmp_path, "booley.toml")
     blocked = run("default")
     assert blocked.exit_code == 2
     assert _coverage_evaluation_status(tmp_path / "default", "sim_0") == "blocked"
-    assert "evaluation BLOCKED (COV_WAIVER_DIRECTORY_MISSING)" in blocked.outcome.report_text
+    assert "evaluation BLOCKED (COV_WAIVER_DIRECTORY_INVALID)" in blocked.outcome.report_text
     assert "--no-waivers" in blocked.outcome.report_text
 
     raw = run("raw", no_waivers=True)

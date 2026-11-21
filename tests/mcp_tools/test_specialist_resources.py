@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -28,7 +29,7 @@ from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import agent_config, resource_history
 from booley.specialists.specialist import Specialist
 from tests.mcp_tools.test_specialist import _env_with_state
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
@@ -204,7 +205,7 @@ def test_unmeasurable_values_are_recorded_absent(env: _Env, monkeypatch) -> None
     env.respond = lambda _params: AgentResult(structured={"approved": True})
     monkeypatch.setattr(job_resources, "process_tree", lambda *_a, **_k: None)
     # The two probes below are the measurement sources this test makes unavailable.
-    monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
+    monkeypatch.setattr(job_resources, "_children_rusage", lambda: None)
     monkeypatch.setattr(
         job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
     )
@@ -333,3 +334,58 @@ def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> N
     assert env.run(endpoint).exit_code == EXIT_FAILURE
 
     assert len(env.records()) == 1  # no agent call, so no stale record
+
+
+_WINDOWS_SCRIPT = """
+import json, resource, subprocess, sys, threading
+from booley.flows import job_resources
+
+# The sampler must miss the short children, as a 0.25 s sampler does.
+job_resources.process_tree = lambda *_a, **_k: {}
+
+
+# Bigger than this process's own peak: a reaped child's peak counts its parent's.
+BASE = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+
+
+def window(mib, calls):
+    code = f'b = b"x" * ({mib} << 20)'
+    with job_resources.measure_agent_call(calls):
+        subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def peak(calls):
+    return job_resources.specialist_record("w", calls, 0)["peak_rss_mb"]
+
+
+alone_calls = []
+window(BASE, alone_calls)
+
+entered, finished = threading.Event(), threading.Event()
+overlapped_calls = []
+
+
+def overlapped():
+    with job_resources.measure_agent_call(overlapped_calls):
+        entered.set()
+        finished.wait(TIMEOUT)
+
+
+thread = threading.Thread(target=overlapped)
+thread.start()
+entered.wait(TIMEOUT)
+window(BASE + 64, [])
+finished.set()
+thread.join()
+print(json.dumps({"base": BASE, "alone": peak(alone_calls), "overlapped": peak(overlapped_calls)}))
+""".replace("TIMEOUT", str(SUBPROCESS_TIMEOUT_S))
+
+
+def test_agent_call_window_folds_its_reaped_peak_only_alone() -> None:
+    # A fresh interpreter: the window rule reads this process's high-water mark,
+    # which earlier tests in this worker have already raised.
+    done = run_bounded_child([sys.executable, "-c", _WINDOWS_SCRIPT], check=True)
+
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+    assert seen["alone"] is not None and seen["alone"] >= seen["base"]
+    assert seen["overlapped"] is None

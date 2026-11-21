@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -246,6 +247,14 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     output = capsys.readouterr().out
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in keeper_host.tags
+    assert "in-use:" not in output
+    keeper_host.tags[f"{family}-busy:latest"] = busy = "sha256:" + "c" * 64
+    keeper_host.containers["d" * 64] = busy
+    assert _run(_parser().parse_args(["projects", "forget", "--purge", str(project)])) == 0
+    assert (
+        f"in-use: kept because a container still uses it; rerun `booley projects forget --purge {quote_arg(str(project))}`"
+        in capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize("grant", [False, True])
@@ -711,13 +720,11 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
     assert len(keeper_host.tags) == 4
 
 
-@pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
 def test_lifecycle_contention_becomes_cli_error(
     tmp_path: Path,
     keeper_host: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    operation: str,
 ) -> None:
     from contextlib import contextmanager
 
@@ -731,13 +738,14 @@ def test_lifecycle_contention_becomes_cli_error(
         yield
 
     monkeypatch.setattr(runtime_image_keepers, "host_lifecycle_lock", busy)
-    flags = (
-        ["projects", operation, str(project)]
-        if operation == "forget"
-        else ["projects", operation, "--confirm", "digest"]
-    )
-    assert _run(_parser().parse_args(flags)) == 2
-    assert "lifecycle busy" in capsys.readouterr().err and keeper_host.calls == []
+    for operation in ("forget", "prune-keepers", "prune-stamps"):
+        flags = (
+            ["projects", operation, str(project)]
+            if operation != "prune-keepers"
+            else ["projects", operation, "--confirm", "digest"]
+        )
+        assert _run(_parser().parse_args(flags)) == 2
+        assert "lifecycle busy" in capsys.readouterr().err and keeper_host.calls == []
 
 
 @pytest.mark.parametrize("mutation", ["retag", "container", "grant"])
@@ -1003,13 +1011,11 @@ def test_forget_incomplete_observation_preserves_inventory(
     assert _session_files_remain(str(project.resolve()))
 
 
-@pytest.mark.parametrize("operation", ["forget", "prune-keepers"])
 def test_keeper_release_refuses_pending_recovery(
     tmp_path: Path,
     keeper_host: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    operation: str,
 ) -> None:
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -1017,15 +1023,75 @@ def test_keeper_release_refuses_pending_recovery(
     monkeypatch.setattr(
         runtime_image_keepers, "shared_recovery_blocks_command", lambda **kwargs: True
     )
-    flags = (
-        ["projects", "forget", str(project)]
-        if operation == "forget"
-        else ["projects", "prune-keepers", "--confirm", "digest"]
-    )
-    assert _run(_parser().parse_args(flags)) == 2
-    assert "requires recovery" in capsys.readouterr().err
-    assert keeper_host.calls == [] and tag in keeper_host.tags
-    assert project_inventory.project_inventory()[0].remembered
+    for operation in ("forget", "prune-keepers", "prune-stamps"):
+        flags = (
+            ["projects", "prune-keepers", "--confirm", "digest"]
+            if operation == "prune-keepers"
+            else ["projects", operation, str(project)]
+        )
+        assert _run(_parser().parse_args(flags)) == 2
+        assert "requires recovery" in capsys.readouterr().err
+        assert keeper_host.calls == [] and tag in keeper_host.tags
+        assert project_inventory.project_inventory()[0].remembered
+
+
+def test_prune_stamps_withdraws_only_orphan_session_files(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only a deleted, unremembered root loses its stamp and claim; no Docker command runs."""
+    orphan = str(tmp_path / "orphan")
+    remembered_gone = _remember(tmp_path, "remembered-gone")
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    keeper = keeper_image(Path(orphan))
+    keeper_host.tags[keeper] = "sha256:" + "a" * 64
+    roots = [orphan, str(remembered_gone.resolve()), str(existing)]
+    for root in roots:
+        _write_session_files(root)
+    shutil.rmtree(remembered_gone)
+    inventory_before = project_inventory.project_inventory()
+
+    assert _run(_parser().parse_args(["projects", "prune-stamps", "--json"])) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["candidates"] == [orphan]
+    assert preview["withdrawn"] == [] and preview["kept"] == []
+    assert all(_session_files_remain(root) for root in roots)
+
+    named = ["projects", "prune-stamps", orphan, str(remembered_gone.resolve()), "--json"]
+    assert _run(_parser().parse_args(named)) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["withdrawn"] == [orphan]
+    assert result["kept"] == [str(remembered_gone.resolve())]
+    assert not _session_files_remain(orphan)
+    assert _session_files_remain(str(remembered_gone.resolve()))
+    assert _session_files_remain(str(existing))
+    # No Docker command ran, so no image or state volume was removed.
+    assert keeper_host.calls == [] and keeper in keeper_host.tags
+    assert project_inventory.project_inventory() == inventory_before
+
+
+def test_prune_stamps_human_output_names_the_exact_command(
+    tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
+) -> None:
+    orphan = str(tmp_path / "orphan root")
+    _write_session_files(orphan)
+    assert _run(_parser().parse_args(["projects", "prune-stamps"])) == 0
+    preview = capsys.readouterr().out
+    assert f"Removable: {orphan}" in preview
+    assert f"booley projects prune-stamps {quote_arg(orphan)}" in preview
+    assert _run(_parser().parse_args(["projects", "prune-stamps", orphan])) == 0
+    removed = capsys.readouterr().out
+    assert f"Removed Sandbox issuance stamp: {orphan}" in removed
+    assert "booley projects forget --purge" in removed
+    assert _run(_parser().parse_args(["projects", "prune-stamps"])) == 0
+    assert "No Sandbox issuance stamps" in capsys.readouterr().out
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    assert _run(_parser().parse_args(["projects", "prune-stamps", str(existing)])) == 2
+    kept = capsys.readouterr().out
+    assert f"Kept (not a deleted, forgotten Project): {existing}" in kept
+    assert "Removed Sandbox" not in kept and "forget --purge" not in kept
+    assert keeper_host.calls == []
 
 
 def test_human_keeper_outcomes_identify_image_and_retained_tags(
@@ -1237,3 +1303,35 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     assert _run_without_keepers(["projects", "discover", str(project), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovered"] == [str(project)]
     assert keeper_host.calls == []
+
+
+@pytest.mark.parametrize("command", ["purge", "refused-prune"])
+def test_purge_and_refused_prune_sweep_records_of_absent_images(
+    tmp_path: Path,
+    keeper_host: FakeDocker,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    from booley.runtime import image_lifecycle
+    from tests.harness.test_image_lifecycle import FakeDocker as LifecycleDocker
+
+    gone, present = "sha256:" + "d" * 64, "sha256:" + "a" * 64
+    lifecycle_docker = LifecycleDocker({"present:latest": (present, {})})
+    monkeypatch.setattr(
+        image_lifecycle, "_docker_adapter", lambda: lifecycle_docker
+    )  # the lifecycle's Docker port
+    _nothing_eligible_host(tmp_path, keeper_host)
+    registered = image_lifecycle.OwnedImages(tmp_path / "project")
+    registered.record({}, (gone,))
+    stale = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    stale.record({"booley-lifecycle-x:candidate": gone}, (gone, present))
+
+    if command == "purge":
+        runtime_image_keepers.forget_project(tmp_path / "unrelated", purge=True)
+    else:
+        assert runtime_image_keepers.prune_keepers(confirm="0" * 64).errors
+
+    assert image_lifecycle.OwnedImages(tmp_path / "project").ids == [gone]
+    swept = image_lifecycle.OwnedImages(str(tmp_path / "unregistered"))
+    assert (swept.ids, swept.refs) == ([present], {})
+    assert lifecycle_docker.mutations == []

@@ -186,7 +186,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "f64df13be84e5f190c79aaf5cfc04db24bac8c40"
+    assert contract.project_ref == "19af39397010e0dd74c76c7f3b5a4f4f178aef98"
     assert contract.schema == 3
     assert contract.target_metrics == {
         "lint_core": {"lint": {"errors_max": 0, "track": ["warnings"]}}

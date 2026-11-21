@@ -125,9 +125,10 @@ Don't continue until `booley doctor` shows no failures or warnings.
     see [Several agents at once](#several-agents-at-once).
 
     `booley chat --cli codex` opens another Agent CLI instead, as long as it is
-    listed in `[agent] clis`; otherwise it stops and lists the allowed ones. In
-    the Sandbox, Booley currently sets up (sign-in, Booley tools, skills) only
-    the default CLI, so another one may ask you to sign in and lack Booley's tools.
+    listed in `[agent] clis`; otherwise it stops and lists the allowed ones.
+    In the Sandbox, every listed CLI gets Booley's tools and skills and the
+    sign-in its `[agent.auth]` policy allows; an unlisted one gets none. See
+    [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 
     Arguments after `booley chat` and its own options (`--cli`, `-C`,
     `--new-worktree`, `--here`, `--name`) go to the
@@ -241,6 +242,9 @@ The Dashboard has three windows; press `←` or `→` to switch:
   reported: working, waiting for a tool call, or waiting for your input.
   Sessions waiting for your input are grouped under
   **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
+  Each session's row lists its running and queued Jobs; Jobs with no session
+  are listed under **STANDALONE JOBS**. Finished Jobs are only in the Jobs
+  window.
   When the session's checkout declares a `[target.flow]` table in
   `metrics.toml`, a second line under the session shows its measurement:
   `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
@@ -250,7 +254,8 @@ The Dashboard has three windows; press `←` or `→` to switch:
   [Measurement Report](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)
   in your editor.
 - **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
-  session.
+  session. The tab reads `Jobs 1▶ 1 queued` while one Job runs and one waits
+  to start.
   A `booley flow` or `booley specialist` run typed in a container terminal
   also appears here as a Standalone Job with no session. Its output is copied
   to `job.log`, shown as a link.
@@ -282,13 +287,16 @@ the Targets and Test Runs you type. Output and Expert options go in the
 **Extra arguments** field, typed as on the command line. `Esc` in a choice list
 or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
-review screen also says whether the Job runs now or queues behind other Jobs
-(with its position). A Simulation, synthesis, FPGA, or lint Job is admitted by
-memory: the screen says it waits while its estimate does not fit the Memory
-Budget, without a position. The screen also warns when the worktree has a connected session,
-running Jobs, or uncommitted changes. A check it cannot make is reported as
-such. Synth and FPGA runs show their per-work-unit timeout. **Submit** starts
-the Job, unless, for a Specialist, its Agent CLI cannot sign in or its settings cannot be read:
+review screen also says whether the Job runs now or is admitted by
+memory. Every Job that takes a slot, Specialists and the Mutation Flow
+included, is admitted by memory: it waits while its estimate does not fit the
+Memory Budget. A dry run runs now. The screen also warns when the worktree has
+a connected session, running or queued Jobs, or uncommitted changes. A check it
+cannot make is reported as such. Synth and FPGA runs show their timeout per
+work unit, a Mutation Flow run its timeout for the whole run, and a Specialist
+its timeout per model call; Simulation and lint runs show none.
+**Submit** starts the Job, unless, for a Specialist, its Agent CLI cannot
+sign in or its settings cannot be read:
 then Submit says why (with the fix) and does nothing until the problem is fixed.
 **Copy command** asks your terminal to copy the
 command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a

@@ -92,6 +92,11 @@ class CheckoutStub(BooleyFlow):
             order.write(target + "\\n")
         if target == "fail":
             return EndpointOutcome(exit_code=1)
+        if target == "liberty":
+            # The ASIC Synthesis Flow's own Liberty discovery, as a ``synth`` run reaches it.
+            from booley.flows.synth.backends.yosys.discovery import resolve_liberty
+
+            (CTL / "liberty").write_text(str(resolve_liberty()), encoding="utf-8")
         if target == "crash":
             raise RuntimeError("stub crashed")
         if target == "abort":
@@ -238,7 +243,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         config: str = "",
     ) -> World:
         # PYTHONPATH stays: the suite sets it so that child interpreters import this checkout.
-        for name in ("BOOLEY_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
+        for name in ("BOOLEY_DIR", "PRJ_LIB_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -738,6 +743,7 @@ def test_checkout_flow_environment_is_scrubbed(
 
     for name, value in (CALLER_ENV | KEPT_ENV).items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PRJ_LIB_DIR", "")  # an empty value is as good as unset
     before = set(world.checkout.parent.iterdir())
 
     result = run_checkout_flow(world.request("pass"))
@@ -746,6 +752,7 @@ def test_checkout_flow_environment_is_scrubbed(
     env = seen["env"]
     assert isinstance(env, dict)
     assert not (CALLER_ENV.keys() - {"BOOLEY_RUN_ID"}) & env.keys()
+    assert "PRJ_LIB_DIR" not in env
     assert env["BOOLEY_RUN_ID"] == result.run_id  # its own run, not the caller's
     assert (env["PYTHONSAFEPATH"], env["PYTHONNOUSERSITE"]) == ("1", "1")
     assert env["BOOLEY_DIR"] == str(world.main)
@@ -1314,6 +1321,58 @@ def test_checkout_flow_refuses_a_path_into_the_booley_dir_variable(
 
 
 @linux_only
+@pytest.mark.parametrize("spelling", ["absolute", "relative"])
+def test_checkout_flow_passes_the_callers_pdk_root(
+    world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spelling: str
+) -> None:
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    real = tmp_path / "pdk-real"
+    library = real / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"library (x) {}\n")
+    (tmp_path / "pdk").symlink_to(real)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk") if spelling == "absolute" else "pdk")
+
+    run_checkout_flow(world.request("liberty"))
+
+    env = world.seen()["env"]
+    assert isinstance(env, dict)
+    assert env["PRJ_LIB_DIR"] == str(real.resolve())
+    expected = real.resolve() / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+    assert (world.ctl / "liberty").read_text(encoding="utf-8") == str(expected)
+
+
+@linux_only
+@pytest.mark.parametrize("case", ["live-tree", "main-booley-dir", "booley-dir-env", "symlink"])
+def test_checkout_flow_refuses_a_pdk_root_in_a_live_root(
+    world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    env_dir = tmp_path / "env-bd"
+    env_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
+    (tmp_path / "link").symlink_to(world.live)
+    named, label, root = {
+        "live-tree": (world.live / "pdk", "live working tree", world.live),
+        "main-booley-dir": (world.main / "pdk", "Main Booley Directory", world.main),
+        "booley-dir-env": (env_dir / "pdk", "BOOLEY_DIR", env_dir.resolve()),
+        "symlink": (tmp_path / "link" / "pdk", "live working tree", world.live),
+    }[case]
+    monkeypatch.setenv("PRJ_LIB_DIR", str(named))
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("liberty"))
+
+    expected = f"PRJ_LIB_DIR names {world.live / 'pdk' if case == 'symlink' else named.resolve()}"
+    assert expected in str(refused.value)
+    assert f"inside the {label} {root}" in str(refused.value)
+    assert_refused_before_any_run(world)
+
+
+@linux_only
 def test_checkout_flow_takes_a_work_directory_with_a_git_marker_as_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1499,6 +1558,7 @@ def test_preflight_resolution_runs_in_the_measurement_environment(
     assert "CALLER_ONLY_VARIABLE" not in seen["env"]
     flow_env = world.seen()["env"]
     assert isinstance(flow_env, dict)
+    assert "PRJ_LIB_DIR" not in flow_env
     scratch = Path(flow_env["HOME"]).parent
     assert Path(seen["env"]["HOME"]).parent == scratch  # the run's own HOME, as the Flow saw
     assert scratch.parent == world.checkout.parent and scratch.name.startswith(".checkout.env-")
@@ -1540,9 +1600,11 @@ def test_checkout_flow_refuses_when_the_preflight_cannot_resolve(
     use_fusesoc(monkeypatch)
     world = make_world(files={"probe.core": PROBE_CORE.format(files="missing.v")})
 
-    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe"):
+    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe") as refused:
         run_checkout_flow(world.request("probe"))
 
+    assert "missing.v" in str(refused.value)
+    assert "only through the post-setup hook" in str(refused.value)
     assert_refused_before_any_run(world)
 
 

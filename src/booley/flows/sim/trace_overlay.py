@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from booley.flows.sim.staged_input_ledger import StagedInputLedger, sweep_cancelled_run_inputs
 from booley.flows.sim.trace_recipe import (
     TraceMode,
     TraceRecipeError,
@@ -25,10 +26,12 @@ from booley.flows.sim.trace_recipe import (
 )
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.fusesoc.core_projection import (
+    CoreProjectionError,
     lexical_stealth_path,
     native_cores_ignored,
     projected_core_path,
     projection_enabled,
+    reconcile_projected_cores,
     stealth_core_relative,
 )
 from booley.fusesoc.fusesoc_registry import (
@@ -36,6 +39,7 @@ from booley.fusesoc.fusesoc_registry import (
     require_current_target_handle,
     target_fileset_names,
 )
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.domain import FuseSocError, TargetHandle
 
 logger = logging.getLogger(__name__)
@@ -73,7 +77,26 @@ def packaged_vcd_dump_source() -> Path:
     return source
 
 
+def _create_overlay_file(ledger: StagedInputLedger, path: Path, content: bytes, what: str) -> None:
+    """Create *path* beside the Target's core through *ledger*; never replace a file."""
+    try:
+        ledger.create_file(Path(path.name), content)
+    except FileExistsError as exc:
+        if ledger.is_leftover(Path(path.name)):
+            raise FuseSocError(
+                f"cannot write {what} {path}: a cancelled Booley run left a file there "
+                "and it is safe to delete"
+            ) from exc
+        raise FuseSocError(
+            f"cannot write {what} {path}: a file this run did not create is already there, "
+            "and Booley will not overwrite it"
+        ) from exc
+    except OSError as exc:
+        raise FuseSocError(f"could not write {what} {path}: {exc}") from exc
+
+
 def _inject_dump_module(
+    ledger: StagedInputLedger,
     overlay_doc: MutableMapping[str, Any],
     target: str,
     base_core_file: Path,
@@ -95,7 +118,7 @@ def _inject_dump_module(
     """
     src = packaged_vcd_dump_source()
     try:
-        content = src.read_text(encoding="utf-8")
+        content = src.read_bytes()
     except OSError as exc:
         raise FuseSocError(f"could not read packaged trace dump module {src}: {exc}") from exc
 
@@ -103,11 +126,7 @@ def _inject_dump_module(
     declared_path = str(src.resolve())
     if not native_cores_ignored(project_root):
         injected = base_core_file.with_name(f"{_VCD_DUMP_MODULE}{marker}.sv")
-        try:
-            injected.write_text(content, encoding="utf-8")
-        except OSError as exc:
-            _unlink_quietly((injected,))  # a partial write must not linger
-            raise FuseSocError(f"could not supply trace dump module {injected}: {exc}") from exc
+        _create_overlay_file(ledger, injected, content, "trace dump module")
         declared_path = injected.name
     filesets = overlay_doc.setdefault("filesets", {})
     filesets[_INJECTED_DUMP_FILESET] = {
@@ -217,18 +236,26 @@ class TraceOverlay:
     """Absolute path to the written overlay ``.core`` (carries the marker)."""
 
     vlnv: str
-    """The overlay's derived VLNV — what :func:`resolve_target` is handed."""
+    """The overlay's derived VLNV, passed as *resolution_vlnv* to ``resolve_target_handle``."""
+
+    ledger: StagedInputLedger
+    """Ownership record of the files the writer created."""
 
     mode: TraceMode = TraceMode.VCD_FIFO
     """The coherent build/run recipe selected for this overlay."""
 
     extra_files: tuple[Path, ...] = ()
-    """Overlay-*supplied* source files (e.g. an injected dump module) to remove
-    alongside the ``.core`` — empty when the design's own fileset carried them."""
+    """The overlay-*supplied* dump module, empty when the design's own fileset
+    carried it."""
+
+    projection: Path | None = None
+    """The Stealth Mode root-level projection of the overlay ``.core``, if any."""
 
     def cleanup(self) -> None:
-        """Remove the overlay ``.core`` and any supplied files (idempotent)."""
-        _unlink_quietly((self.core_file, *self.extra_files))
+        """Remove the files this overlay created and its projection (idempotent)."""
+        self.ledger.remove_created()
+        if self.projection is not None:
+            _unlink_quietly((self.projection,))
 
 
 def _unlink_quietly(paths: Sequence[Path]) -> None:
@@ -243,6 +270,7 @@ def _unlink_quietly(paths: Sequence[Path]) -> None:
 
 
 def _inject_runtime_dump_trace(
+    ledger: StagedInputLedger,
     overlay_doc: dict,
     doc: dict,
     target: str,
@@ -266,6 +294,7 @@ def _inject_runtime_dump_trace(
     injected: Path | None = None
     if _target_dump_module_entry(doc, target) is None:
         injected = _inject_dump_module(
+            ledger,
             overlay_doc,
             target,
             ref.core_file,
@@ -278,18 +307,16 @@ def _inject_runtime_dump_trace(
     return injected
 
 
-def _write_overlay_core_file(overlay_path: Path, overlay_doc: dict) -> None:
+def _write_overlay_core_file(
+    ledger: StagedInputLedger, overlay_path: Path, overlay_doc: dict, what: str
+) -> None:
     """Serialize *overlay_doc* to *overlay_path* as a CAPI2 ``.core`` file."""
-    # A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; safe_load parses
-    # that marker into a harmless ``CAPI=2`` key on read (read_core), so re-emit it
+    # A ``.core`` is YAML with a leading ``CAPI=2:`` marker line; read_core parses
+    # that marker into a harmless ``CAPI=2`` key on read, so re-emit it
     # explicitly and drop the round-tripped key from the body.
     body = {k: v for k, v in overlay_doc.items() if k != "CAPI=2"}
-    try:
-        with overlay_path.open("w", encoding="utf-8") as f:
-            f.write("CAPI=2:\n")
-            yaml.safe_dump(body, f, sort_keys=False)
-    except OSError as exc:
-        raise FuseSocError(f"could not write trace overlay {overlay_path}: {exc}") from exc
+    text = "CAPI=2:\n" + yaml.safe_dump(body, sort_keys=False)
+    _create_overlay_file(ledger, overlay_path, text.encode("utf-8"), what)
 
 
 def _rebase_injected_dump_to_root(
@@ -347,21 +374,36 @@ def write_trace_overlay(
     Verilator/Icarus sim Target, or if the supplied dump module cannot be written.
     A failed call removes every file it wrote, so nothing is left in the Project.
     """
-    written: list[Path] = []
+    project_root = require_current_target_handle(handle)
+    ledger = StagedInputLedger(
+        resolve_checkout_booley_dir(Path(project_root)), handle.core_file.parent
+    )
     try:
-        return _write_trace_overlay(handle, trace_depth, written)
+        return _write_trace_overlay(handle, trace_depth, project_root, ledger)
     except BaseException:
-        _unlink_quietly(written)
+        ledger.remove_created()
         raise
+
+
+def sweep_cancelled_run_leftovers(project_root: Path, booley_dir: Path) -> None:
+    """Remove what cancelled runs left, then the projection of a swept stealth overlay core."""
+    sweep_cancelled_run_inputs(booley_dir)
+    if not projection_enabled(project_root):
+        return
+    try:
+        reconcile_projected_cores(project_root)
+    except (CoreProjectionError, OSError) as exc:
+        # Best effort like the sweep itself: Target resolution reports the same error.
+        logger.warning("Could not reconcile projected cores: %s", exc)
 
 
 def _write_trace_overlay(
     handle: TargetHandle,
     trace_depth: int,
-    written: list[Path],
+    project_root: Path | str,
+    ledger: StagedInputLedger,
 ) -> TraceOverlay:
-    """Build and write the overlay, recording each created file in *written*."""
-    project_root = require_current_target_handle(handle)
+    """Build and write the overlay through *ledger*."""
     target = handle.name
     flow = handle.flow
     eda_tool = handle.eda_tool
@@ -396,6 +438,7 @@ def _write_trace_overlay(
     else:  # Icarus — runtime +trace via an explicitly rooted dump module
         mode = TraceMode.VCD_FIFO
         injected = _inject_runtime_dump_trace(
+            ledger,
             overlay_doc,
             doc,
             target,
@@ -403,8 +446,6 @@ def _write_trace_overlay(
             flow_options,
             project_root,
         )
-        if injected is not None:
-            written.append(injected)
 
     # Only stealth cores (under `.booley/cores/`) get a root-level projection.
     # A repository-native core keeps its overlay beside it, where FuseSoC
@@ -420,14 +461,14 @@ def _write_trace_overlay(
     overlay_path = handle.core_file.with_name(
         f"{handle.core_file.stem}{TRACE_OVERLAY_MARKER}{handle.core_file.suffix}"
     )
-    # Recorded before writing: opening the file creates it even if the write fails.
-    written.append(overlay_path)
-    _write_overlay_core_file(overlay_path, overlay_doc)
+    _write_overlay_core_file(ledger, overlay_path, overlay_doc, "trace overlay")
     if projects_overlay:
         projected_overlay = projected_core_path(project_root, overlay_path)
     return TraceOverlay(
         core_file=overlay_path,
         vlnv=overlay_vlnv,
+        ledger=ledger,
         mode=mode,
-        extra_files=tuple(path for path in (injected, projected_overlay) if path is not None),
+        extra_files=(injected,) if injected is not None else (),
+        projection=projected_overlay,
     )

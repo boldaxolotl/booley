@@ -332,6 +332,15 @@ def test_sandbox_start_failure_fails(tmp_path, monkeypatch):
         assert result.completed == (), failure
 
 
+def test_pending_recovery_skips(tmp_path, monkeypatch):
+    _write_core(tmp_path, "unit", ("sim_ok",))
+    sandbox = _Sandbox(monkeypatch, _ok_for_all)
+    sandbox.command = lambda _inner: (_ for _ in ()).throw(session_runtime.RecoveryPendingError())
+    result = _inspect(tmp_path, ("sim_ok",), sandbox)
+    assert [f.severity for f in result.report.findings] == [Severity.SKIP]
+    assert result.report.findings[0].message.endswith("recovery is pending on this host")
+
+
 def test_unavailable_runtime_skips(tmp_path, monkeypatch):
     """With no Sandbox runtime the owner SKIPs and touches neither catalog nor Sandbox."""
     sandbox = _Sandbox(monkeypatch, _ok_for_all)

@@ -196,6 +196,7 @@ def test_document_fields_reach_run_verilated_binary(tmp_path: Path, monkeypatch)
         trace_args=("--trace={file}",),
         trace_files=("fpu.vcd",),
         trace_convert_timeout_s=90,
+        booley_dir=str(tmp_path / ".booley"),
         runtime_inputs=("firmware.hex",),
         pass_sentinels=("ALL TESTS PASSED.",),
         fail_sentinels=("ERROR!", "TIMEOUT"),
@@ -224,6 +225,7 @@ def test_document_fields_reach_run_verilated_binary(tmp_path: Path, monkeypatch)
         "max_rundir_bytes": 5000,
         "runtime_inputs": ("firmware.hex",),
         "trace_convert_timeout": 90,
+        "booley_dir": tmp_path / ".booley",
         "transport": AdapterTransportIdentity(
             adapter="verilator",
             attempt_token="attempt-1",

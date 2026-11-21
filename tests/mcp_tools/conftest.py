@@ -14,9 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 @pytest.fixture(autouse=True)
 def _set_booley_dir(tmp_path, monkeypatch):
     """Prevent resolve_booley_dir() from failing in endpoints tests."""
-    from booley.runtime.booley_dir import reset_cache
-
-    reset_cache()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     # Bind implicit source discovery to this fixture's selected checkout.

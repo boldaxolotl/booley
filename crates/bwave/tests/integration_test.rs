@@ -320,6 +320,77 @@ fn test_no_clock_fallback() {
     );
 }
 
+#[test]
+fn test_no_clock_find_honors_window_in_ticks() {
+    let store = build_bwave("test_no_clock.vcd", "no_clock_find_window");
+    let store_arg = store.to_string_lossy().to_string();
+    let virtual_def = "en = tb.enable";
+    let rows: [(&[&str], &str); 11] = [
+        (&["*", "'h1", "--after", "99999"], ""),
+        (&["*", "'h1", "--after", "0"], "10 enable 1\n"),
+        (&["*", "'h1", "-t", "5:20"], "10 enable 1\n"),
+        (&["*", "'h1", "--before", "5"], ""),
+        (&["*", "'h1", "--before", "20"], "10 enable 1\n"),
+        (&["enable", "rising", "-t", "30:200"], "75 enable 1\n"),
+        (&["enable", "falling", "-t", "0:40"], ""),
+        (
+            &["*", "change", "-t", "30:60"],
+            "50 enable 0\n50 count[3:0] 2\n",
+        ),
+        (&["en", "'h1", "-t", "30:60", "--virtual", virtual_def], ""),
+        (
+            &["en", "rising", "-t", "30:200", "--virtual", virtual_def],
+            "75 en 1\n",
+        ),
+        (
+            &[
+                "en",
+                "rising",
+                "-t",
+                "30t:200t",
+                "--async",
+                "--virtual",
+                virtual_def,
+            ],
+            "75 en 1\n",
+        ),
+    ];
+    for (args, expected) in rows {
+        let mut full: Vec<&str> = vec!["find", &store_arg];
+        full.extend_from_slice(args);
+        let (stdout, stderr, code) = run_bwave(&full);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert_eq!(stdout, expected, "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_file(store);
+}
+
+#[test]
+fn test_no_clock_find_reports_ticks_past_i64_max() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("big.vcd");
+    std::fs::write(
+        &vcd,
+        b"$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! en $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#9223372036854775808\n1!\n",
+    )
+    .unwrap();
+    let store = dir.path().join("big.fst");
+    let (_, stderr, code) = run_bwave(&[
+        "build",
+        vcd.to_str().unwrap(),
+        "-o",
+        store.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    for extra in [&[][..], &["--async"][..]] {
+        let mut args = vec!["find", store.to_str().unwrap(), "en", "'h1"];
+        args.extend_from_slice(extra);
+        let (stdout, stderr, code) = run_bwave(&args);
+        assert_eq!(code, 0, "{extra:?}: {stderr}");
+        assert_eq!(stdout, "9223372036854775808 en 1\n", "{extra:?}: {stderr}");
+    }
+}
+
 // -- X/Z handling -----------------------------------------------------
 
 #[test]
@@ -2344,11 +2415,13 @@ fn test_docs_show_unknown_topic_exits_1() {
 #[test]
 fn test_docs_references_resolve() {
     // Every topic named in backticks by a topic must exist, and the retired
-    // reset-skipping topic is gone (the reset rules live in
-    // `reference/sync-vs-async`).
+    // reset-skipping, clock-detection and empty-results topics are gone (their
+    // rules live in the `reference/` pages).
     let (topics, _stderr, code) = run_bwave(&["docs", "topics"]);
     assert_eq!(code, 0);
-    assert!(!topics.lines().any(|l| l.contains("reset-skipping")));
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
+        assert!(!topics.lines().any(|l| l.contains(retired)), "{retired}");
+    }
     for topic in topics.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let (body, stderr, code) = run_bwave(&["docs", "show", topic]);
         assert_eq!(code, 0, "{topic}: {stderr}");
@@ -2363,8 +2436,10 @@ fn test_docs_references_resolve() {
             }
         }
     }
-    let (_, stderr, code) = run_bwave(&["docs", "show", "troubleshooting/reset-skipping"]);
-    assert_eq!(code, 1, "{stderr}");
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
+        let (_, stderr, code) = run_bwave(&["docs", "show", &format!("troubleshooting/{retired}")]);
+        assert_eq!(code, 1, "{retired}: {stderr}");
+    }
 }
 
 #[test]
@@ -2613,8 +2688,8 @@ fn test_native_verilator_fst_clock_rederivation() {
         .to_string();
     let (stdout, stderr, code) = run_query(&["stats", &fst]);
     assert_eq!(code, 0, "stderr: {}", stderr);
-    // clock meta is re-derived from FST content: 10ns period, 36 cycles
-    assert!(stdout.contains("36 cycles"), "got: {}", stdout);
+    // clock meta is re-derived from FST content: 10ns period, 38 cycles
+    assert!(stdout.contains("38 cycles"), "got: {}", stdout);
     assert!(stdout.contains("10ns period"), "got: {}", stdout);
 }
 
@@ -2719,10 +2794,10 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             let store = Issue1098Store::reset(active_low, clock_first);
             let high = if active_low { "'h0" } else { "'h1" };
             let low = if active_low { "'h1" } else { "'h0" };
-            for (mode, total) in [
-                (vec!["--with-reset"], 1200),
-                (vec![], 200),
-                (vec!["--async"], 1200),
+            for (mode, total, cycles) in [
+                (vec!["--with-reset"], 1200, 120),
+                (vec![], 200, 21),
+                (vec!["--async"], 1200, 120),
             ] {
                 let mut args = vec!["-s", "tb.rst*"];
                 args.extend(mode);
@@ -2730,7 +2805,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
                 let data = &json["data"];
                 assert_eq!(data["total_ticks"], total);
                 assert_eq!(data["simulation_ns"], total);
-                assert_eq!(data["total_cycles"], total / 10);
+                assert_eq!(data["total_cycles"], cycles);
                 let signal = &data["signals"][0];
                 assert_eq!(signal["transitions"], 1);
                 assert_eq!(signal["time_in_state_ticks"][low], 200);
@@ -2744,7 +2819,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             }
             assert!(store
                 .query("stats", &["-s", "stable"])
-                .contains("200ns, 20 cycles"));
+                .contains("200ns, 21 cycles"));
             assert!(store
                 .query("stats", &["-s", "stable", "--with-reset"])
                 .contains("1200ns, 120 cycles"));

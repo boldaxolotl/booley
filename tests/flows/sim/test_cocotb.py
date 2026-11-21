@@ -368,15 +368,11 @@ def test_cocotb_named_cycles_within_batch(tmp_path: Path, monkeypatch: pytest.Mo
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("verbosity", ["compact", "full"])
-def test_cocotb_batch_launch_document(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verbosity: str
-) -> None:
+def test_cocotb_batch_launch_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """One launch for the whole set, its document naming the adapter, module and grace."""
-    request = {} if verbosity == "compact" else {"result_verbosity": "full"}
     # F-25: the frozen-clock watchdog knob crosses into the sandbox.
     with patch("booley.flows.sim.execution.engine.resolve_sim_time_grace_s", return_value=42.0):
-        run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING), **request)
+        run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING))
 
     assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
     (launch,) = run.launches  # one build + one sim process for 3 tests
@@ -384,7 +380,6 @@ def test_cocotb_batch_launch_document(
     assert work.adapter == "cocotb"
     assert work.tests == tuple(_TESTS["ccfg"])
     assert work.cocotb_module == "test_counter"
-    assert work.result_verbosity == verbosity
     assert work.adapter_result_path
     assert work.sim_time_grace_s == 42.0
 

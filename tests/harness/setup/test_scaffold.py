@@ -787,9 +787,7 @@ def _healthy_host_doctor(root: Path, monkeypatch) -> None:
         return host_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=False), root, read_only=True, record_clean=False
-    )
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), root, record_clean=False)
     assert not [
         (f.check_id, f.subject, f.message)
         for f in result.findings
@@ -1019,7 +1017,7 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
             stdout=(
                 "Chip area for top module 'my_ip': 1000.0\nNumber of cells: 10\n"
                 "STA_WORST_SLACK_NS: 0.500000\nOPENROAD_DESIGN_AREA_UM2: 1000.0\n"
-                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1 setup_same_clock=1\n"
             ),
             stderr="",
         ),
@@ -1144,9 +1142,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     )
     findings = list(reporter.result(0).findings)
     _assert_target_names_conform(findings)
-    findings += readiness.check_stealth_cores(
-        project, mode=readiness.ReadinessMode.RECONCILE
-    ).findings
+    findings += readiness.check_stealth_cores(project).findings
     assert not [
         (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
     ]

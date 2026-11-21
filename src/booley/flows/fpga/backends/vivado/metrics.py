@@ -29,14 +29,24 @@ from booley.flows.metric_declarations import (
 # Per-clock wns_ns/whs_ns cover intra-clock paths only, unlike the design-wide fields.
 _FPGA_COST_TIER = CostTier.HIGH
 FPGA_METRIC_DECLARATIONS: tuple[MetricDeclaration, ...] = (
-    MetricDeclaration("lut_count", "LUTs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("ff_count", "FFs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
-    # Vivado reports fractional BRAM tiles (a RAMB18 is half a tile).
-    MetricDeclaration("bram_count", "BRAM tiles", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("dsp_count", "DSPs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN),
-    MetricDeclaration("fmax_mhz", "MHz", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
     MetricDeclaration(
-        "critical_path_ps", "ps", Better.LOWER, _FPGA_COST_TIER, MetricKind.PER_CLOCK
+        "lut_count", "LUTs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "ff_count", "FFs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    # Vivado reports fractional BRAM tiles (a RAMB18 is half a tile).
+    MetricDeclaration(
+        "bram_count", "BRAM tiles", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "dsp_count", "DSPs", Better.LOWER, _FPGA_COST_TIER, MetricKind.PLAIN, minimum=0
+    ),
+    MetricDeclaration(
+        "fmax_mhz", "MHz", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK, minimum=0
+    ),
+    MetricDeclaration(
+        "critical_path_ps", "ps", Better.LOWER, _FPGA_COST_TIER, MetricKind.PER_CLOCK, minimum=0
     ),
     MetricDeclaration("wns_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),
     MetricDeclaration("whs_ns", "ns", Better.HIGHER, _FPGA_COST_TIER, MetricKind.PER_CLOCK),

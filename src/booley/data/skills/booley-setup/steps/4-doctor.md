@@ -53,7 +53,13 @@ over that severity bug with a project waiver.
    Sandbox-specific SKIPs on each side; a *FAIL* that exists on one side only
    is real. The host-session reminder is a PASS: Project Setup planning expects a
    Claude Code or Codex session on the host, while Booley Flows and MCP tools live only in the Sandbox. It needs
-   no waiver. Resolve or waive other host-only warnings before continuing.
+   no waiver. Resolve host warnings about this Project. A host finding about
+   state this Project does not own belongs to the user: never waive it in this
+   Project's waiver file and do not run its remedy. Another Project's leftovers
+   show as notes: they do not block setup, so list each with its `→` remedy for
+   the final report. A host-wide warning or failure (Host Bootstrap, the host
+   clock) and another Project's unusable claim or journal file keep their
+   severity: hand each to the user with its remedy.
 7. Run plain `booley doctor` **once more** in the container after the footprint
    and host findings are settled. Host-side waiver changes must land before this
    point.
@@ -205,8 +211,9 @@ cores into the repository root. An open footprint uses tracked native cores.
 hybrid, follow the hidden procedure for `.booley/`, but commit only the
 row's named repository-native integration artifacts. Keep the selected native
 `.core` authoritative, and keep a real tracked root `AGENTS.md` whose content
-matches `<booley_dir>/AGENTS.md`; current init/Doctor preserves that durable
-file and generates only the optional `CLAUDE.md` link. Verify the tracked
+matches `<booley_dir>/AGENTS.md`; `booley init` preserves that durable
+file and generates only the optional `CLAUDE.md` link, and Doctor reports a
+missing link. Verify the tracked
 allowlist exactly—hybrid does not authorize committing operational state.
 
 **Hidden (default) — exclude it in the *parent repo's* `.git/info/exclude`.**
@@ -241,7 +248,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   directory.
 - Also confirm the RTL repo's own `.gitignore` picked up **no** Booley lines
   during setup, and that the root `AGENTS.md`/`CLAUDE.md` links are excluded
-  the same way (Step 3; plain `booley doctor` repairs them).
+  the same way (Step 3; `booley init` repairs them).
 
 **Open — commit `.booley/` to the RTL repo.**
 
@@ -308,6 +315,7 @@ Once all three final invocations are green:
   changed.
 - Report every waiver with its check ID, subject (if any), reason, and expiry or
   permanent status. There must be no warning merely "left for later."
+- List each host finding left for the user in step 6, with its `→` remedy.
 - Set `status: complete` in `SETUP-PLAN.md`, and include the plan's §3
   deviation log plus (unattended mode) any `review`-flagged decision rows the
   user should audit.

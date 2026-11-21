@@ -650,7 +650,8 @@ def _add_auth_subparser(sub) -> None:
         default=None,
         help=(
             "Agent CLI (credential changes default to claude; "
-            "status uses the Project's default CLI or both CLIs)"
+            "status reports this CLI only, else every Agent CLI the Project allows, "
+            "default first, or both outside a Project)"
         ),
     )
     # Historical spelling of --cli: same dest, so both parse identically.
@@ -927,7 +928,7 @@ def _add_measure_subparser(sub) -> None:
         "--again",
         action="store_true",
         help="Measure again even when the commit is already Measured; "
-        "otherwise its stored run is shown",
+        "otherwise, without --target, its stored run is shown",
     )
     parser.add_argument(
         "--target",
@@ -1485,12 +1486,16 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
         raw = raw[1:]
-    return sr.enter(
-        project_root,
-        raw or None,
-        tty=sys.stdin.isatty() and sys.stdout.isatty(),
-        cwd=getattr(args, "_session_cwd", None),
-    )
+    try:
+        return sr.enter(
+            project_root,
+            raw or None,
+            tty=sys.stdin.isatty() and sys.stdout.isatty(),
+            cwd=getattr(args, "_session_cwd", None),
+        )
+    except KeyboardInterrupt:
+        print("interrupted; session enter cancelled", file=sys.stderr)
+        raise _CancelledRun from None
 
 
 def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
@@ -1775,7 +1780,7 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
 
 
 class _CancelledRun(KeyboardInterrupt):
-    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+    """A Ctrl-C the command already reported."""
 
 
 def _quiet_keyboard_interrupt(
@@ -1884,10 +1889,13 @@ def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
 ) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.targets import target_surface
 
     inside_runtime = runtime_context.inside_session_runtime()
-    payload = target_surface.detail_payload(project_root, selector, resolve=inside_runtime)
+    payload = target_surface.detail_payload(
+        project_root, selector, resolve=inside_runtime, synth_tools=synth_target_tools
+    )
     if inside_runtime:
         return payload
     command = ["booley", "session", "enter", "--", "booley", "targets", selector]
@@ -1907,6 +1915,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """
     import json as _json
 
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.fusesoc import fusesoc_registry
     from booley.harness import targets_view
     from booley.targets import target_surface
@@ -1948,12 +1957,13 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    payload = target_surface.surface_payload(surface, project_root, synth_tools=synth_target_tools)
     if as_json:
-        print(_json.dumps(target_surface.surface_payload(surface, project_root), indent=2))
+        print(_json.dumps(payload, indent=2))
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
+        print(targets_view.render_listing(payload))
     return 0
 
 
@@ -2022,6 +2032,13 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
                 f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
                 f"{len(table.tracked)} tracked"
             )
+        from booley.core.booley_dir import main_booley_dir_of
+        from booley.measurement.clock_prefixes import unreported_clock_warnings
+        from booley.measurement.run_store import MeasurementStore
+
+        store = MeasurementStore(main_booley_dir_of(project_root))
+        for warning in unreported_clock_warnings(rules.tables, store):
+            print(f"warning: {warning}", file=sys.stderr)
     return 0
 
 

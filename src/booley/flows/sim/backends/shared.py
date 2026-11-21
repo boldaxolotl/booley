@@ -211,6 +211,8 @@ class TraceSelection:
     path: Path | None
     # Fresh declared stores when more than one exists and Booley owns none.
     ambiguous: tuple[Path, ...] = ()
+    # A declared [flows.sim].trace_files entry supplied `path`.
+    declared: bool = False
 
 
 def ambiguous_trace_reason(stores: tuple[Path, ...]) -> str:
@@ -250,11 +252,13 @@ class CurrentRunTraces:
         patterns: tuple[str, ...] = (),
         roots: tuple[Path, ...] = (),
         stream_from: Path | None = None,
+        booley_dir: Path | None = None,
     ) -> CurrentRunTraces:
         """Clear Booley-owned outputs, snapshot declared files in every root, then stream.
 
-        With *stream_from* (the run directory) eligible declared VCDs become
-        pipes, started after the snapshot so freshness evidence is unchanged.
+        With *stream_from* (the run directory) and *booley_dir* (whose ownership
+        record names each pipe) eligible declared VCDs become pipes, started
+        after the snapshot so freshness evidence is unchanged.
         """
         session.reset_for_run(raw_trace_paths)
         before: TraceFileSnapshot = {}
@@ -263,8 +267,8 @@ class CurrentRunTraces:
             if stamp is not None:
                 before[match.resolve()] = stamp
         streams = (
-            DeclaredTraceStreams.start(session, patterns, stream_from)
-            if stream_from is not None
+            DeclaredTraceStreams.start(session, patterns, stream_from, booley_dir)
+            if stream_from is not None and booley_dir is not None
             else None
         )
         return cls(session, patterns, roots, before, streams)
@@ -302,14 +306,16 @@ class CurrentRunTraces:
                 if match in streamed:
                     # Publish as the session's own trace.fst, like a post-run
                     # conversion, so `bwave register/gui SIM_DIR` finds it.
-                    return TraceSelection(self.session.publish_bwave(match, move=True) or match)
-                return TraceSelection(match)
+                    return TraceSelection(
+                        self.session.publish_bwave(match, move=True) or match, declared=True
+                    )
+                return TraceSelection(match, declared=True)
             self.session.postprocess(match)
             # Owned-only lookup: the converted store, or the VCD that
             # postprocess retained when conversion failed.
             converted = self.session.find()
             if converted is not None:
-                return TraceSelection(converted)
+                return TraceSelection(converted, declared=True)
         return TraceSelection(None)
 
     def _fresh_declared(self) -> list[Path]:

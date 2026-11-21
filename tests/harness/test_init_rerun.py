@@ -43,7 +43,7 @@ from booley.runtime.git import add_git_excludes
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
-from tests.conftest import symlink_or_skip
+from tests.conftest import symlink_or_skip, use_terminal_stdin
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.docker_host_support import fake_docker_host
 from tests.harness.test_project_initialization import _initialize
@@ -1160,19 +1160,11 @@ def _after_init_scaffold_args(**overrides):
 
 def _never_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the run interactive and fail the test on any prompt."""
-    # private: `InitContext.interactive` binds `sys.stdin.isatty` at import, so no public input
-    # makes `run_init` interactive under pytest.
-    real_context = init_cmd._init_context
-
-    def interactive_context(args, project_root):
-        ctx = real_context(args, project_root)
-        ctx.interactive = True
-        return ctx
 
     def no_prompt(*_args, **_kwargs):
         raise AssertionError("scaffold after plain init prompted the user")
 
-    monkeypatch.setattr(init_cmd, "_init_context", interactive_context)
+    use_terminal_stdin(monkeypatch)
     monkeypatch.setattr("builtins.input", no_prompt)
 
 

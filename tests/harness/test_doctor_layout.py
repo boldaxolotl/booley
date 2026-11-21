@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
+import sys
 from datetime import date
 
 import pytest
@@ -158,6 +161,23 @@ def test_finish_prints_problem_table_and_counts(scenario, capsys, monkeypatch):
         assert problem_rows[1].rstrip().endswith("test.warn:s0")
         assert "fine" not in "\n".join(lines[2:7])
         assert "just so you know" not in "\n".join(lines[2:7])
+
+
+@pytest.mark.parametrize("columns", [115, 18])
+def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
+    # #5312: a 115-column terminal wrapped the problem table mid-ID; 18 also shrinks the counts.
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *_: os.terminal_size((columns, 24)))
+    reporter = doctor._Reporter.create()
+    message = "the destination branch named by project data is missing from the Project " * 2
+    reporter.warn_(doctor.warning("project-data.destination-branch-missing", message, subject="s"))
+    capsys.readouterr()
+    reporter.finish()
+
+    lines = capsys.readouterr().out.splitlines()
+    tables = lines[lines.index("Summary") + 1 : -2]
+    assert max(map(colors.len_visible, tables)) <= columns
 
 
 @pytest.mark.parametrize(

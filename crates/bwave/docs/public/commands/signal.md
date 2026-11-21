@@ -38,9 +38,10 @@ question, and snapshots every matching signal.
 
 ## Common errors
 
-- **Output starts after cycle 0**: the reset phase was
-  skipped. Pass `--with-reset` to include it; the `# reset:` header says
-  what was skipped (`reference/sync-vs-async`).
+- **The reset phase is missing**: sync mode skips it, and output starts at
+  cycle 0 (the tick before reset deasserts) or cycle 1. Pass
+  `--with-reset` to include it; the `# reset:` header says what was
+  skipped (`reference/sync-vs-async`).
 - **Off by one cycle against a waveform viewer**: sync
   mode reads post-edge values by default. See the sampling
   modes in `reference/sync-vs-async`.

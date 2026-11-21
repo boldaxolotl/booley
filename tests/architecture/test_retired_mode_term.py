@@ -42,6 +42,7 @@ _OLD_PRIVATE_NAMES = (
     "_interactive_project",
     "_auth_interactive_ports",
     "interactive_docker",
+    "_interactive_logs_dir",
     "_maybe_configure_interactive_logs_dir",
     "INTERACTIVE_LOGS_DIR_NAME",
     "_check_interactive_logs_tracked",

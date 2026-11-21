@@ -4,9 +4,15 @@ Every local Flow command is sampled while it runs: process-tree RSS, the size
 of the command's own temporary directory (``TMPDIR``), CPU time, wall-clock
 time and the container's cgroup memory. TMPDIR counts toward peak memory only
 when it is on tmpfs (its pages are charged to the container's memory limit);
-the temporary-file peak is always recorded on its own. Measurement only observes:
+the temporary-file peak is always recorded on its own. A child that starts and
+exits between two samples is never seen alive, so the sampled peak is raised to
+the peak the kernel reports for the reaped command (``MeasuredPopen``), or for a
+Specialist window, for the children this process reaped alone in it. Per-phase
+records stay sampled. Measurement only observes:
 it never changes a Job's verdict, scheduling or exit code, and a value that
-could not be measured is recorded as absent (``None``), never as zero.
+could not be measured is recorded as absent (``None``), never as zero. A Flow may
+hold its commands' records until it has judged them (``judged_commands``, or
+``judged_commands_failing_on_error`` when an exception means it refused them).
 """
 
 from __future__ import annotations
@@ -15,6 +21,8 @@ import contextlib
 import logging
 import os
 import re
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -32,6 +40,8 @@ from booley.runtime.resource_history import DOCTOR_RUN_ENV, append_records
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
+    import resource
+
     from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
 logger = logging.getLogger(__name__)
@@ -96,6 +106,95 @@ class ResourceLabel:
 
 
 _label: ContextVar[ResourceLabel | None] = ContextVar("booley_resource_label", default=None)
+
+
+_judged: ContextVar[JudgedCommands | None] = ContextVar("booley_judged_commands", default=None)
+
+
+class JudgedCommands:
+    """Records a Flow holds until it says whether each command succeeded."""
+
+    def __init__(self) -> None:
+        self._builders: list[Callable[[], list[dict[str, Any]]]] = []
+        self._verdicts: dict[int, bool] = {}
+        # Commands that exited zero as an unchanged repeat: written only when judged failed.
+        self._unchanged_repeats: set[int] = set()
+        # An enclosing block that nested blocks join: it writes and judges for them.
+        self.joinable = False
+
+    def judge(self, succeeded: bool, command: int | None = None) -> None:
+        """Record the Flow's judgment of every held command, or of the one at *command*.
+
+        An index with no held command is ignored: a command that never started
+        holds no record, and judging must not raise in a Flow.
+        """
+        indexes = range(len(self._builders)) if command is None else [command]
+        for index in indexes:
+            if 0 <= index < len(self._builders):
+                self._verdicts[index] = succeeded
+
+    def records(self) -> list[dict[str, Any]]:
+        """Build the records; a judged exit outcome follows the judgment, a stop stays."""
+        rows: list[dict[str, Any]] = []
+        for index, build in enumerate(self._builders):
+            if index in self._unchanged_repeats and self._verdicts.get(index) is not False:
+                continue
+            for row in build():
+                if index in self._verdicts and row["outcome"] in ("exit_zero", "exit_nonzero"):
+                    row["outcome"] = "exit_zero" if self._verdicts[index] else "exit_nonzero"
+                rows.append(row)
+        return rows
+
+
+@contextlib.contextmanager
+def judged_commands(*, joinable: bool = False) -> Iterator[JudgedCommands]:
+    """Hold the records of the commands run inside the block; write them when it ends.
+
+    A *joinable* block lets a ``judged_commands`` block nested in it hold and
+    judge its commands there, so the outer block has the last word on them.
+    """
+    outer = _judged.get()
+    if outer is not None and outer.joinable:
+        yield outer
+        return
+    held = JudgedCommands()
+    held.joinable = joinable
+    token = _judged.set(held)
+    try:
+        yield held
+    finally:
+        _judged.reset(token)
+        if held._builders:
+            _append_to_history(held.records)
+
+
+@contextlib.contextmanager
+def unjudged_commands() -> Iterator[None]:
+    """Record the commands run inside the block at once, whatever judgment encloses it.
+
+    For a command an enclosing ``judged_commands`` block does not cover, such as
+    a setup that runs inside the Target's judged Vivado run.
+    """
+    token = _judged.set(None)
+    try:
+        yield
+    finally:
+        _judged.reset(token)
+
+
+@contextlib.contextmanager
+def judged_commands_failing_on_error(*, joinable: bool = False) -> Iterator[JudgedCommands]:
+    """Like :func:`judged_commands`, but a block that raises judges its commands failed.
+
+    For a block where an exception after a command is the Flow refusing that
+    command's result.
+    """
+    with judged_commands(joinable=joinable) as commands:
+        try:
+            yield commands
+        except BaseException:
+            commands.judge(False)
+            raise
 
 
 def label_commands(
@@ -188,14 +287,91 @@ def _container_memory_bytes() -> int | None:
         return None
 
 
-def _children_cpu_s() -> tuple[float, float] | None:
+def _children_rusage() -> resource.struct_rusage | None:
     try:
         import resource
 
-        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return resource.getrusage(resource.RUSAGE_CHILDREN)
     except (ImportError, OSError):
         return None
-    return usage.ru_utime, usage.ru_stime
+
+
+def _kernel_peak_bytes(maxrss: int) -> int | None:
+    """Convert a ``ru_maxrss`` (KiB on Linux, bytes on macOS); ``None`` when not reported."""
+    if maxrss <= 0:
+        return None
+    return maxrss if sys.platform == "darwin" else maxrss * 1024
+
+
+def _own_peak_bytes() -> int | None:
+    """This process's own peak resident set, or ``None`` when the kernel reports none."""
+    try:
+        import resource
+
+        return _kernel_peak_bytes(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except (ImportError, OSError):
+        return None
+
+
+def _beyond(peak: int | None, spawner_peak: int | None) -> int | None:
+    """*peak* when it exceeds the spawning process's own peak, else ``None``.
+
+    A reaped child's ``ru_maxrss`` is at least the resident peak its parent had
+    when it exec'd, so a value at or below that carries nothing about the child.
+    """
+    if peak is None or spawner_peak is None or peak <= spawner_peak:
+        return None
+    return peak
+
+
+def _risen_peak_bytes(
+    before: resource.struct_rusage | None, after: resource.struct_rusage | None
+) -> int | None:
+    """The children's peak when a child reaped between the two readings set a new high-water mark."""
+    if before is None or after is None or after.ru_maxrss <= before.ru_maxrss:
+        return None
+    return _beyond(_kernel_peak_bytes(after.ru_maxrss), _own_peak_bytes())
+
+
+class MeasuredPopen(subprocess.Popen[str]):
+    """A ``Popen`` that keeps the kernel's peak memory of the child it reaps.
+
+    ``Popen`` reaps with ``os.waitpid``, which drops the child's resource usage,
+    so a descendant that exits between two samples is never measured. Where
+    ``os.wait4`` exists this reaps with it and keeps ``ru_maxrss``, the largest
+    resident set of the child and of every descendant reaped inside its tree.
+    The kernel counts the spawner's own peak at exec in that value, so only a
+    peak above it is kept (the child then really grew past it).
+    ``_try_wait`` is CPython's single reap hook behind ``wait()`` and
+    ``communicate()`` on POSIX (3.11 to 3.14 checked); ``poll()`` is routed
+    through ``wait(timeout=0)`` so it reaps there too.
+    """
+
+    reaped_peak_bytes: int | None = None
+    _spawner_peak_bytes: int | None = None
+
+    if hasattr(os, "wait4"):
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            # The child's peak includes its parent's at exec; see ``_beyond``.
+            self._spawner_peak_bytes = _own_peak_bytes()
+
+        def _try_wait(self, wait_flags: int) -> tuple[int, int]:
+            try:
+                pid, status, usage = os.wait4(self.pid, wait_flags)
+            except ChildProcessError:
+                return (self.pid, 0)  # reaped by someone else: nothing to report
+            if pid == self.pid:
+                self.reaped_peak_bytes = _beyond(
+                    _kernel_peak_bytes(usage.ru_maxrss), self._spawner_peak_bytes
+                )
+            return (pid, status)
+
+        def poll(self) -> int | None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.wait(timeout=0)
+            return self.returncode
 
 
 @dataclass(frozen=True)
@@ -377,6 +553,12 @@ class Usage:
             user, system = self.ticks.get(pid, (0, 0))
             self.ticks[pid] = (max(user, proc.user_ticks), max(system, proc.sys_ticks))
 
+    def fold_kernel_peak(self, peak: int | None) -> None:
+        """Raise the memory peaks to the kernel-reported *peak* (a child may have exited unseen)."""
+        self.peak_rss = _peak(self.peak_rss, peak)
+        self.peak_memory = _peak(self.peak_memory, peak)
+        self.peak_with_swap = _peak(self.peak_with_swap, peak)
+
     def seen_s(self) -> float | None:
         """Time between the first and last sample that saw a process."""
         if self.first_seen is None or self.last_seen is None:
@@ -510,7 +692,7 @@ class JobResourceMonitor:
         self._ticket = _IN_PROCESS.enter()
         try:
             self._events_before = cgroup_memory_events()
-            self._cpu_before = _children_cpu_s()
+            self._children_before = _children_rusage()
             self._container_start = _container_memory_bytes()
             self._others_before = _other_jobs_hold_slots()
             self._sample()
@@ -520,8 +702,14 @@ class JobResourceMonitor:
             _IN_PROCESS.leave(self._ticket)
             raise
 
-    def finish(self) -> JobMeasurement:
-        """Stop sampling once the command is reaped; later calls return the same result."""
+    def finish(self, reaped_peak_bytes: int | None = None) -> JobMeasurement:
+        """Stop sampling once the command is reaped; later calls return the same result.
+
+        *reaped_peak_bytes* is the kernel's peak for the command this monitor
+        sampled (``MeasuredPopen.reaped_peak_bytes``); without it a window that
+        sampled this process's descendants alone uses the rise of the process's
+        children's high-water mark.
+        """
         if self._pid is None:  # the command never started
             return JobMeasurement(self._interval_s, Usage(), {}, None, None, None)
         if self._measurement is None:
@@ -529,17 +717,23 @@ class JobResourceMonitor:
             if self._thread.is_alive():
                 self._thread.join(timeout=2)
             self._sample()
-            self._measurement = self._measure()
+            self._measurement = self._measure(reaped_peak_bytes)
         return self._measurement
 
-    def _measure(self) -> JobMeasurement:
+    def _measure(self, reaped_peak_bytes: int | None) -> JobMeasurement:
+        # Read the children's usage before leaving: a command that starts after the
+        # read makes this window not alone, and none can start and reap in between.
+        events_after, after = cgroup_memory_events(), _children_rusage()
         alone = _IN_PROCESS.leave(self._ticket)
         others = (self._others_before, _other_jobs_hold_slots())
-        events_after, cpu_after = cgroup_memory_events(), _children_cpu_s()
+        before = self._children_before
         # Exact children CPU when alone; otherwise the per-process samples.
         cpu = self._overall.sampled_cpu_s()
-        if alone and self._cpu_before is not None and cpu_after is not None:
-            cpu = (cpu_after[0] - self._cpu_before[0], cpu_after[1] - self._cpu_before[1])
+        if alone and before is not None and after is not None:
+            cpu = (after.ru_utime - before.ru_utime, after.ru_stime - before.ru_stime)
+        if reaped_peak_bytes is None and alone and not self._include_root:
+            reaped_peak_bytes = _risen_peak_bytes(before, after)
+        self._overall.fold_kernel_peak(reaped_peak_bytes)
         oom = _delta(self._events_before.oom_kill, events_after.oom_kill)
         limit_oom = _delta(self._events_before.oom, events_after.oom)
         return JobMeasurement(
@@ -872,11 +1066,23 @@ def record_command(
     """Append the command's records to the Project history; never raise.
 
     Flow runs that Doctor starts (self-tests, smoke and deep checks) write
-    nothing: they would pollute the Project's real keys.
+    nothing: they would pollute the Project's real keys. Inside ``judged_commands``
+    the records are held until the block ends.
     """
-    if _repeating.get() and result.returncode == 0 and not result.timed_out:
+    unchanged_repeat = _repeating.get() and result.returncode == 0 and not result.timed_out
+    held = _judged.get()
+    if unchanged_repeat and held is None:
         return
-    _append_to_history(lambda: history_records(flow, label, flags, measurement, result))
+
+    def build() -> list[dict[str, Any]]:
+        return history_records(flow, label, flags, measurement, result)
+
+    if held is None:
+        _append_to_history(build)
+    else:
+        if unchanged_repeat:
+            held._unchanged_repeats.add(len(held._builders))
+        held._builders.append(build)
 
 
 def record_specialist(name: str, calls: list[AgentCallUsage], returncode: int | None) -> None:

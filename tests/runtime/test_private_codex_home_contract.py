@@ -1,5 +1,6 @@
 """Nested Codex HOME environment and destination preservation."""
 
+import json
 import os
 import shutil
 import sys
@@ -9,7 +10,13 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import require_symlinks
-from tests.owned_scratch_support import complete_runs, make_repo
+from tests.owned_scratch_support import (
+    complete_runs,
+    gate_marker_publishes,
+    make_repo,
+    run_together,
+)
+from tests.time_budget import scaled
 
 from booley.runtime import auth_token
 
@@ -185,3 +192,44 @@ def test_private_codex_writer_invalid_destination(tmp_path, monkeypatch, existin
         with pytest.raises(ValueError, match="boolean"):
             create("test", ["lint"])
         assert config.read_text() == existing
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="nested homes exist only in the Linux Sandbox"
+)
+def test_parallel_callers_share_one_home_per_cache_key(tmp_path, monkeypatch):
+    """AC1 and AC3: parallel callers get one home per key, created exactly once."""
+    from booley.runtime import _codex_backend as cb
+    from booley.runtime.pid import capture_process_identity
+
+    _isolate_scratch(tmp_path, monkeypatch)
+    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    # "Created exactly once" is not visible in a home's contents and no public
+    # entry point reaches the cache, so record each creation's marking.
+    marked: list[Path] = []
+    real_mark = cb.mark_owned
+
+    def spy(directory: Path) -> None:
+        marked.append(directory)
+        real_mark(directory)
+
+    monkeypatch.setattr(cb, "mark_owned", spy)
+    gate_marker_publishes(monkeypatch, 2, scaled(1.0))
+
+    homes = run_together(
+        *[lambda: cb._ensure_nested_codex_home("race", ["lint"])] * 4,
+        *[lambda: cb._ensure_nested_codex_home("race", ["sim"])] * 4,
+    )
+
+    lint, sim = set(homes[:4]), set(homes[4:])
+    assert len(lint) == 1
+    assert len(sim) == 1
+    assert lint != sim
+    assert sorted(marked) == sorted(Path(h) for h in (*lint, *sim))
+    identity = capture_process_identity(os.getpid())
+    assert identity is not None
+    for home, tool in ((*lint, "lint"), (*sim, "sim")):
+        marker = json.loads((Path(home) / ".booley-owner.json").read_text(encoding="utf-8"))
+        assert marker["owner"] == identity.to_payload()
+        config = tomllib.loads((Path(home) / ".codex" / "config.toml").read_text(encoding="utf-8"))
+        assert config["mcp_servers"]["booley"]["env"]["BOOLEY_NESTED_MCP_TOOLS"] == tool

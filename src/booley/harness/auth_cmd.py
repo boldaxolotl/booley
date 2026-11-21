@@ -58,15 +58,22 @@ _MODE_DESC = {
 }
 
 
-def _policy_note(policy: str) -> None:
-    """State the auth policy and where its credentials come from, in words."""
-    note(f"auth policy '{policy}'; credentials come from the environment this command inherited")
+def _policy_note(policy: str, cli: str | None = None) -> None:
+    """State the auth policy and where its credentials come from, in words.
+
+    A Project report names the CLI each policy belongs to.
+    """
+    prefix = f"{cli}: " if cli else ""
+    note(
+        f"{prefix}auth policy '{policy}'; "
+        "credentials come from the environment this command inherited"
+    )
 
 
-def _report_gateway_status(app: str | None) -> int:
+def _report_gateway_status(app: str | None, label: str | None = None) -> int:
     """Report the env-selected gateway policy: Codex only, URL + token required."""
     app = app or APP_CODEX
-    _policy_note(GATEWAY_AUTH)
+    _policy_note(GATEWAY_AUTH, label)
     if app != APP_CODEX:
         err(f"{app}: auth '{GATEWAY_AUTH}' routes Codex only")
         return 1
@@ -117,62 +124,84 @@ def _host_policy(policy: str, *, handoff: bool) -> str:
 
 
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
-    """Report the launching process's credential under the selected Project policy."""
+    """Report the launching process's credentials under the Project's policies.
+
+    In a Project every allowed Agent CLI is reported under its own policy, the default
+    first; *app* narrows the report to that CLI. The exit code is nonzero only when no
+    reported CLI has a usable credential.
+    """
     from booley.config import agent_app
     from booley.config.agent import (
-        _inside_container,
-        gateway_handoff_active,
-        missing_auth_policy,
-        project_credential_policy,
+        DEFAULT_AUTH,
+        VALID_AUTH_MODES,
+        env_auth_handoff,
+        project_cli_policies,
     )
     from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
-    policy = missing_auth_policy()
     # Under BOOLEY_AGENT_APP=auto the registrar's choice names the app; it also
     # refuses (AgentAppError) outside a Sandbox.
-    app = app or agent_app.resolved_app(None)
-    if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
-        provider, policy = project_credential_policy(project_root, cli=app)
-        app = app or provider
+    chosen = app or agent_app.resolved_app(None)
+    if project_root is None or not resolve_authoritative_booley_dir(project_root).is_dir():
+        apps = (chosen,) if chosen else tuple(auth_token.CREDENTIALS)
+        handoff = env_auth_handoff()
+        fallback = (
+            handoff if handoff in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH) else DEFAULT_AUTH
+        )
+        return 0 if _report_policy(apps, fallback, label=None) else 1
+    usable = 0
+    # Only --cli filters; the auto choice only names an undeclared set.
+    for cli, policy in project_cli_policies(project_root, cli=app, selected=chosen):
+        try:
+            usable += _report_policy((cli,), policy, label=cli)
+        except ValueError as exc:  # one CLI's unplannable credential must not hide the others
+            err(f"{cli}: {exc}")
+    return 0 if usable else 1
+
+
+def _report_policy(apps: tuple[str, ...], policy: str, *, label: str | None) -> int:
+    """Report *apps* under *policy*; the number of them with a usable credential."""
+    from booley.config.agent import _inside_container, gateway_handoff_active
+
     # A declared gateway policy is honored inside any Sandbox (hand-written specs
     # included), as the runtime and Doctor do; only outside one does it read as `subscription`.
     handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
-    if handoff and _gateway_covers(app):
-        return _report_gateway_status(app)
+    covered = apps[0] if len(apps) == 1 else None
+    if handoff and _gateway_covers(covered):
+        return int(_report_gateway_status(covered, label) == 0)
     policy = _host_policy(policy, handoff=handoff)
-    apps = [app] if app else list(auth_token.CREDENTIALS)
-    usable = 0
-    _policy_note(policy)
-    for selected in apps:
-        plan = auth_token.credential_plan(selected, policy)
-        for message in auth_token.credential_warnings(plan):
-            warn(message)
-        effective = plan.selected
-        if effective is None:
-            warn(
-                f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
-            )
-            if auth_token.defers_to_cli(policy):
-                hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
-            continue
-        usable += 1
-        line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
-        if effective.rotation_free:
-            ok(line)
-        else:
-            warn(line)
-            hint("a host-side login can revoke a running container's copy mid-run")
-            if auth_token.defers_to_cli(policy):
-                hint(f"booley auth --cli {selected}")
-        for loser in effective.overridden:
-            hint(f"{loser} is present but not used; the line above wins")
-        if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(
-            selected
-        ):
-            warn(f"{selected}: stored credential is readable by others — chmod 600 it")
-        _report_token_storage(plan)
-    return 0 if usable else 1
+    _policy_note(policy, label)
+    return sum(_report_cli(selected, policy) for selected in apps)
+
+
+def _report_cli(selected: str, policy: str) -> int:
+    """Report one CLI's credential under *policy*; 1 when it has a usable one."""
+    plan = auth_token.credential_plan(selected, policy)
+    for message in auth_token.credential_warnings(plan):
+        warn(message)
+    effective = plan.selected
+    if effective is None:
+        warn(
+            f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
+        )
+        if auth_token.defers_to_cli(policy):
+            hint(f"run the app's login, export an API key, or booley auth --cli {selected}")
+        return 0
+    line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
+    if effective.rotation_free:
+        ok(line)
+    else:
+        warn(line)
+        hint("a host-side login can revoke a running container's copy mid-run")
+        if auth_token.defers_to_cli(policy):
+            hint(f"booley auth --cli {selected}")
+    for loser in effective.overridden:
+        hint(f"{loser} is present but not used; the line above wins")
+    if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(selected):
+        warn(f"{selected}: stored credential is readable by others — chmod 600 it")
+    _report_token_storage(plan)
+    return 1
 
 
 def _report_token_storage(plan: auth_token.CredentialPlan) -> None:
@@ -309,6 +338,9 @@ def _resolve_app(args: argparse.Namespace) -> str | None:
     return app
 
 
+_STORED_CREDENTIAL_POLICY = {APP_CLAUDE: "subscription", APP_CODEX: "api_key"}
+
+
 def _store_and_reseed(
     token: str, credential: AppCredential, project_root: Path | None
 ) -> Path | None:
@@ -322,7 +354,7 @@ def _store_and_reseed(
     ok(f"stored {credential.label} at {path} (mode 0600)")
     info("kept outside every repo; Sandboxes receive it only through a read-only mount")
     if project_root is None:
-        policy = "api_key" if credential.app == APP_CODEX else "subscription"
+        policy = _STORED_CREDENTIAL_POLICY[credential.app]
         info(f"{credential.app} Projects with auth={policy} use this stored credential.")
     if _reseed_spec(project_root):
         return path
@@ -373,6 +405,62 @@ def run_auth(args: argparse.Namespace, project_root: Path | None) -> int:
     return _run_store(args, app, project_root)
 
 
+def _report_project_use(app: str, project_root: Path) -> bool:
+    """Say whether the Project's auth policy uses the stored credential."""
+    from booley.config.agent import project_credential_policies
+    from booley.runtime.session_issuance import authorized_project_data_source
+
+    # The source issuance reads, so a trusted BOOLEY_DIR is honored as the Sandbox spec is.
+    found = project_credential_policies(
+        project_root, booley_dir=authorized_project_data_source(project_root), selected=app
+    )
+    using = _STORED_CREDENTIAL_POLICY[app]
+    if app not in found.clis:
+        warn(
+            f"This Project does not list {app} in [agent] clis, "
+            "so its agents will not use the stored credential."
+        )
+        hint(
+            f"to use it here: add {app} to [agent] clis, set [agent.auth] {app} = "
+            f'"{using}", then run booley session refresh'
+        )
+        return False
+    policy = found.policies[app]
+    if auth_token.uses_stored_credential(app, policy):
+        info(f"This Project's {app} auth policy '{policy}' uses the stored credential.")
+        return True
+    warn(
+        f"This Project's {app} auth policy '{policy}' does not use the stored credential, "
+        "so its agents will not use it."
+    )
+    hint(
+        f'to use it here: set [agent.auth] {app} = "{using}" in booley.toml, '
+        "then run booley session refresh"
+    )
+    return False
+
+
+def _report_stored(credential: AppCredential, project_root: Path | None) -> None:
+    """Tell what the stored credential now does, for this Project or any Project."""
+    app = credential.app
+    print()
+    if project_root is not None and not _report_project_use(app, project_root):
+        return
+    ok(
+        f"Done. {app} Projects using the stored credential pick this up automatically — "
+        "VS Code's 'Reopen in Container' included, no export needed."
+    )
+    if project_root is None:
+        info(
+            "In those Projects it does not refresh, so a host-side login can no longer "
+            "revoke a running agent."
+        )
+    else:
+        info("It does not refresh, so a host-side login can no longer revoke a running agent.")
+    info("Existing containers: rebuild once to add the mount; after that a restart suffices.")
+    info(f"Escape hatch: an exported {credential.env_var} still overrides the stored value.")
+
+
 def _run_store(args: argparse.Namespace, app: str, project_root: Path | None) -> int:
     """Admit storage, acquire a credential, and propagate its reference."""
     credential = auth_token.CREDENTIALS[app]
@@ -402,12 +490,5 @@ def _run_store(args: argparse.Namespace, app: str, project_root: Path | None) ->
     if _store_and_reseed(token, credential, project_root) is None:
         return 1
 
-    print()
-    ok(
-        f"Done. {app} Projects using the stored credential pick this up automatically — "
-        "VS Code's 'Reopen in Container' included, no export needed."
-    )
-    info("It does not refresh, so a host-side login can no longer revoke a running agent.")
-    info("Existing containers: rebuild once to add the mount; after that a restart suffices.")
-    info(f"Escape hatch: an exported {credential.env_var} still overrides the stored value.")
+    _report_stored(credential, project_root)
     return 0

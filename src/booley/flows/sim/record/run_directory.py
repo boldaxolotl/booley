@@ -17,6 +17,7 @@ from booley.flows.sim.config import literal_run_cwd_error
 from booley.flows.sim.record_reports import is_report_link, report_link_ancestor
 from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.mount_history import MountHistoryError, translate_stored_path
 
 from .codec import SimulationRecordIntegrityError, canonical_json_bytes
@@ -24,6 +25,7 @@ from .codec import SimulationRecordIntegrityError, canonical_json_bytes
 _MARKER = ".booley-simulation-attempt.json"
 _PARENT_MARKER = ".booley-simulation-parent.json"
 _PARENT_LOCK = "parents.lock"
+_NOTE_SUFFIX = ".creating"
 _FIELDS = frozenset({"simulation_record_id", "work_item_id", "attempt_id"})
 _LOCK_TIMEOUT_S = 60.0
 _CREATE_ATTEMPTS = 3
@@ -189,15 +191,82 @@ def _cleanup_interrupted_run_directory(run: RunDirectory, *, identity: Mapping[s
     if run.path.exists():
         marker = run.path / _MARKER
         expected = canonical_json_bytes(dict(identity))
-        if not marker.is_file() or marker.read_bytes() != expected:
+        if marker.is_file() and marker.read_bytes() == expected:
+            _remove_owned_tree(run.path)
+        elif not _remove_unmarked_attempt(run, expected):
             raise SimulationRecordIntegrityError(
                 f"refusing to clean unowned run directory: {run.path}; "
                 "move the directory elsewhere, which keeps its files, then retry"
             )
-        _remove_owned_tree(run.path)
         removed = True
-    _remove_booley_parents(run)
+    _remove_booley_parents(run, recovering=True)
+    _creation_note(run, run.path).unlink(missing_ok=True)
     return removed
+
+
+def _creation_note(run: RunDirectory, directory: Path) -> Path:
+    """The note that says Booley is creating ``directory``, beside the run lock."""
+    key = os.path.normcase(str(directory.resolve(strict=False)))
+    return run.lock_path.parent / (hashlib.sha256(key.encode("utf-8")).hexdigest() + _NOTE_SUFFIX)
+
+
+def _noted_mkdir(run: RunDirectory, directory: Path) -> Path:
+    """Write the creation note, then create ``directory``; return the note."""
+    note = _creation_note(run, directory)
+    note.write_bytes(b"")
+    try:
+        directory.mkdir()
+    except OSError:
+        note.unlink(missing_ok=True)  # nothing was created, so the note names nothing
+        raise
+    return note
+
+
+def _create_marked_attempt(run: RunDirectory, expected: bytes) -> None:
+    """Create the attempt directory and its marker, bracketed by a creation note."""
+    note = _noted_mkdir(run, run.path)
+    note.write_bytes(_identity_bytes(run.path))
+    _write_marker(run.path / _MARKER, expected)
+    note.unlink()
+
+
+def _identity_bytes(directory: Path) -> bytes:
+    info = os.lstat(directory)
+    return f"{info.st_dev}:{info.st_ino}".encode("ascii")
+
+
+def _remove_unmarked_attempt(run: RunDirectory, expected: bytes) -> bool:
+    """Remove an unmarked attempt directory that a killed Booley run created.
+
+    The creation note decides. A confirmed note names this very directory, which
+    may hold a partly written marker; an unconfirmed note allows removing an empty
+    directory only. Anything else is not Booley's to remove.
+    """
+    path = run.path
+    if is_report_link(path) or not path.is_dir():
+        return False
+    try:
+        written = _creation_note(run, path).read_bytes()
+    except OSError:
+        return False
+    identity = _identity_bytes(path)
+    if not identity.startswith(written):
+        return False
+    entries = [entry.name for entry in path.iterdir()]
+    if entries:
+        marker = path / _MARKER
+        partial = (
+            written == identity
+            and entries == [_MARKER]
+            and marker.is_file()
+            and not marker.is_symlink()
+            and expected.startswith(marker.read_bytes())
+        )
+        if not partial:
+            return False
+        marker.unlink()
+    path.rmdir()
+    return True
 
 
 def restore_run_directory_from_project_data(
@@ -272,7 +341,7 @@ def _acquire_current_lock(lock_path: Path) -> IO[str]:
     """
     deadline = time.monotonic() + _LOCK_TIMEOUT_S
     while time.monotonic() <= deadline:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(lock_path.parent)
         lock = lock_path.open("a+", encoding="utf-8")
         try:
             wait_for_file_lock(lock, timeout_s=max(0.0, deadline - time.monotonic()))
@@ -327,14 +396,14 @@ def _create_run_directory(run: RunDirectory, expected: bytes) -> None:
     """
     root = run.template_root
     if root is None or not run.path.is_relative_to(root):
-        run.path.mkdir(parents=True)
-        _write_marker(run.path / _MARKER, expected)
+        run.path.parent.mkdir(parents=True, exist_ok=True)
+        _create_marked_attempt(run, expected)
         return
     parents = run.path.relative_to(root).parts[:-1]
     with _held_path_lock(run.lock_path.parent / _PARENT_LOCK, discard=False):
         for _ in range(_CREATE_ATTEMPTS):
             try:
-                _create_marked_chain(root, parents, run.path, expected)
+                _create_marked_chain(run, root, parents, expected)
             except FileNotFoundError:
                 continue  # an ancestor vanished under us (unlocked sibling); start over
             return
@@ -342,44 +411,69 @@ def _create_run_directory(run: RunDirectory, expected: bytes) -> None:
 
 
 def _create_marked_chain(
-    root: Path, parents: tuple[str, ...], attempt: Path, expected: bytes
+    run: RunDirectory, root: Path, parents: tuple[str, ...], expected: bytes
 ) -> None:
     """Create ``root``, the missing marked ``parents`` below it, then the attempt dir."""
     root.mkdir(parents=True, exist_ok=True)
     current = root
     for name in parents:
         current = current / name
+        if os.path.lexists(current):
+            continue  # an earlier killed run's note for it must stay
         try:
-            current.mkdir()
+            note = _noted_mkdir(run, current)
         except FileExistsError:
             continue  # pre-existing or a sibling's: never ours to remove unmarked
         # No fsync: a lost parent marker only leaves the directory unmarked (safe).
         (current / _PARENT_MARKER).write_bytes(expected)
-    attempt.mkdir()
-    _write_marker(attempt / _MARKER, expected)
+        note.unlink()
+    _create_marked_attempt(run, expected)
 
 
-def _remove_booley_parents(run: RunDirectory) -> None:
+def _remove_booley_parents(run: RunDirectory, *, recovering: bool = False) -> None:
     """Remove the empty, marked parents of ``run`` strictly below its template root.
 
     Walks upward and stops at the first link, unmarked directory, or directory
     holding anything besides its marker. A missing directory is skipped, so a
-    resume after a partly finished walk completes it.
+    resume after a partly finished walk completes it. Recovery also removes a
+    parent a killed run noted but never marked, only while it is completely empty.
     """
     root = run.template_root
     if root is None or not run.path.is_relative_to(root):
         return
     with _held_path_lock(run.lock_path.parent / _PARENT_LOCK, discard=False):
-        current = run.path.parent
-        for _ in range(len(run.path.parts)):
-            if current == root or not current.is_relative_to(root):
-                return
-            if not (current.is_symlink() or current.exists()):
-                current = current.parent
-                continue
-            if not _remove_marked_empty_directory(current):
-                return
+        notes: list[Path] = []
+        if recovering:
+            for parent in run.path.parents:
+                if parent == root or not parent.is_relative_to(root):
+                    break
+                note = _creation_note(run, parent)
+                if note.exists():
+                    notes.append(note)
+                    _remove_empty_directory(parent)
+        _remove_marked_parents(run, root)
+        for note in notes:  # last, so a recovery killed mid-walk can be repeated
+            note.unlink(missing_ok=True)
+
+
+def _remove_empty_directory(directory: Path) -> None:
+    """``rmdir`` a real directory; a link, a non-empty directory, or a missing one stays."""
+    if not is_report_link(directory):
+        with suppress(OSError):
+            directory.rmdir()
+
+
+def _remove_marked_parents(run: RunDirectory, root: Path) -> None:
+    current = run.path.parent
+    for _ in range(len(run.path.parts)):
+        if current == root or not current.is_relative_to(root):
+            return
+        if not (current.is_symlink() or current.exists()):
             current = current.parent
+            continue
+        if not _remove_marked_empty_directory(current):
+            return
+        current = current.parent
 
 
 def _remove_marked_empty_directory(directory: Path) -> bool:

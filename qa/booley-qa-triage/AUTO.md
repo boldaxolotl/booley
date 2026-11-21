@@ -12,9 +12,14 @@ acted on exactly as in interactive mode, including posting the brief and
 - Automatic mode runs inside T3 Code only, where `delegate_task` reaches every
   juror's provider. Call `orchestrator_capabilities` once; when it is not
   available, stop.
+- Seat the jury from the top-level T3 thread. A native sub-agent (Claude
+  `Agent`, Codex `spawn_agent`) sees `orchestrator_capabilities` but its
+  `delegate_task` fails with `parent_not_active`, so run the jury steps in the
+  thread itself; a sub-agent may still prepare the packet and act on decisions.
 - Read `jury.toml` beside this file. A `jury=<model>,<model>,...` argument
   replaces it; each listed model runs at `high` effort on the provider whose
-  catalog lists it.
+  catalog lists it, under the effort option that provider's models list in
+  `orchestrator_capabilities`.
 - Check every juror against `orchestrator_capabilities` (use `search` with the
   model ID): its provider must be enabled with `canRunChildTask`. A jury
   needs at least two jurors.
@@ -41,9 +46,11 @@ jurors start, so they all judge the same `origin/main`.
    verdict is independent.
 2. **Convene.** Start every juror in parallel with `delegate_task`
    (`role: review`, `isolation: shared`, the juror's provider and model, and
-   `options: {effort: <effort>}`). Its task is `JUROR.md` from this directory,
-   verbatim, followed by the packet. Give one juror at most eight clusters per
-   task; for more, start further tasks of eight for every juror.
+   the juror's effort under its `effort_option` name, for example
+   `options: {effort: "high"}` or `options: {reasoningEffort: "high"}`). Its
+   task is `JUROR.md` from this directory, verbatim, followed by the packet.
+   Give one juror at most eight clusters per task; for more, start further
+   tasks of eight for every juror.
 3. **Collect.** Save each juror's JSON to `<run-dir>/jury/<juror-slug>.json`.
    A juror that fails, times out, or returns invalid JSON gets one retry with
    the same task; after that, every cluster in its task is escalated with the
