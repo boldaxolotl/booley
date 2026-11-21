@@ -1933,7 +1933,7 @@ def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust, ca
         "start": 1200 * _TICKS_PER_CYCLE,
         "end": 1400 * _TICKS_PER_CYCLE,
     }
-    assert "marker '1400c' on @dut is ignored" in capsys.readouterr().err
+    assert "marker '1400c' on @dut does not apply" in capsys.readouterr().err
 
 
 def test_gui_ended_range_uses_list_total_ticks(tmp_path, monkeypatch, fake_rust):

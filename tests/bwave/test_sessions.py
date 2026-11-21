@@ -963,7 +963,7 @@ def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch, capsys):
         original = list(args)
         bwave._resolve_markers_in_args(args, "dut", "unused.fst")
         assert args == (expected or original)
-        assert f"marker '{warned}' on @dut is ignored" in capsys.readouterr().err, original
+        assert f"marker '{warned}' on @dut does not apply" in capsys.readouterr().err, original
 
 
 def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
@@ -1074,7 +1074,7 @@ def test_query_keeps_typed_time_over_a_conflicting_marker(
     assert native[native.index(flag) + 1] == typed
     warnings = [x for x in capsys.readouterr().err.splitlines() if x.startswith("WARNING: marker")]
     assert len(warnings) == 1
-    assert f"marker '{name}' on @{alias} is ignored" in warnings[0]
+    assert f"marker '{name}' on @{alias} does not apply" in warnings[0]
     assert delete in warnings[0]
 
 

@@ -537,7 +537,7 @@ class MarkerLookup:
                 self._warned.add(token)
                 delete = f"bwave markers {quote_arg('@' + self._alias)} delete {quote_arg(token)}"
                 print(
-                    f"WARNING: marker '{token}' on @{self._alias} is ignored: "
+                    f"WARNING: marker '{token}' on @{self._alias} does not apply: "
                     f"'{token}' is a time token and keeps its time meaning. "
                     f"Delete the marker: {delete}",
                     file=sys.stderr,
