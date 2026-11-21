@@ -5619,8 +5619,15 @@ _STALE_ROW = (
     "warn",
     "stealth.projections-not-current",
     "stealth core projections are missing or stale: missing .booley-projected-b.core, "
-    "stale .booley-projected-a.core, stale .booley-projected-c.core",
+    "stale .booley-projected-a.core",
     _REFRESH,
+)
+# #5290: no Flow can remove a copy whose authored core is gone, so its hint names the delete.
+_ORPHAN_ROW = (
+    "warn",
+    "stealth.projections-not-current",
+    "stealth core projections outlive their authored cores: .booley-projected-c.core",
+    "delete .booley-projected-c.core from the Project Root",
 )
 _FOREIGN_ROW = (
     "fail",
@@ -5633,8 +5640,15 @@ _FOREIGN_ROW = (
 @pytest.mark.parametrize(
     ("case", "rows", "exit_code"),
     [
-        ("drift", [_STALE_ROW], 0),
-        ("waived", [("waived", *_STALE_ROW[1:3], "Accepted for the #5252 regression test.")], 0),
+        ("drift", [_STALE_ROW, _ORPHAN_ROW], 0),
+        (
+            "waived",
+            [
+                ("waived", *row[1:3], "Accepted for the #5252 regression test.")
+                for row in (_STALE_ROW, _ORPHAN_ROW)
+            ],
+            0,
+        ),
         (
             "foreign",
             [
