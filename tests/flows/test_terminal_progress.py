@@ -1367,7 +1367,7 @@ def test_tty_watched_log_flows_leave_compact_output(tmp_path, monkeypatch, flow_
     results = [line for line in lines if not line.startswith((" ", "transcript:"))]
     assert len(results) == 1, lines
     assert re.fullmatch(r"done   demo · candidate: [\w ]+   0s", results[0]), results
-    assert f"    {watched_line}" in lines
+    assert f"    {watched_line.replace('src/c/', 'rtl/')}" in lines
     prefix = f"transcript: {sink.log_path} · logs: "
     assert lines[-1].startswith(prefix)
     assert lines[-1].removeprefix(prefix).split(", ")[-1] == str(log)
