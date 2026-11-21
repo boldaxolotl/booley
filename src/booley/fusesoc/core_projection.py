@@ -51,7 +51,8 @@ class ProjectionDrift(Enum):
 
     MISSING = "missing"
     STALE = "stale"
-    ORPHANED = "orphaned"  # owned copy whose authored core is gone
+    # Owned copy with no authored core behind it; with stealth disabled, every owned copy.
+    ORPHANED = "orphaned"
     FOREIGN = "foreign file blocks"
 
 
@@ -61,11 +62,6 @@ class ProjectionIssue:
 
     drift: ProjectionDrift
     name: str
-
-    @property
-    def refreshable(self) -> bool:
-        """Whether reconciling clears it: only a foreign file blocks the reconcile."""
-        return self.drift is not ProjectionDrift.FOREIGN
 
     def __str__(self) -> str:
         return f"{self.drift.value} {self.name}"
