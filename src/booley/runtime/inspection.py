@@ -56,7 +56,7 @@ from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.platform_paths import run_captured_bounded, same_host_path
-from booley.runtime.sandbox_apply import Attachment
+from booley.runtime.sandbox_apply import HAND_WRITTEN_SANDBOX_STEPS, Attachment
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +150,13 @@ def _devcontainer_tracked(project_root: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+_NO_SPEC_BASELINE_NOTES = {
+    True: "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
+    "`booley init` is not checked",
+    False: "this Sandbox is hand-written: drift against `booley init` is not checked",
+}
+
+
 def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings) -> None:  # noqa: PLR0911 — ordered drift preconditions
     """ADR 0018: untracked, valid devcontainer.json that matches what init would write.
 
@@ -168,6 +175,12 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     path = devcontainer_path(request.project_root)
     if not path.is_file():
+        if runtime_context.in_hand_written_sandbox():
+            report.note(
+                "no .devcontainer/devcontainer.json at the Project Root: drift against "
+                "`booley init` is not checked in a Sandbox Booley did not create"
+            )
+            return
         _spec_warning(
             request, report, "no .devcontainer/devcontainer.json - run `booley init` (or `--seed`)"
         )
@@ -177,7 +190,12 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
             json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
     except (OSError, ValueError) as exc:
-        report.fail(f"{path} does not parse: {exc}", "re-run booley init")
+        report.fail(
+            f"{path} does not parse: {exc}",
+            "repair this Sandbox's devcontainer.json, then rebuild the Sandbox from it"
+            if runtime_context.in_hand_written_sandbox()
+            else "re-run booley init",
+        )
         return
     spec_app = dc.spec_agent_app(spec)
     if not _provider_current(request, spec, spec_app, report):
@@ -188,14 +206,19 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         request, spec_app, report
     ):
         return
-    if spec_app == agent_app.AUTO_APP:
-        # `booley init` never writes 'auto', so there is no spec to compare against.
-        report.note(
-            "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
-            "`booley init` is not checked"
-        )
+    if spec_app == agent_app.AUTO_APP or runtime_context.in_hand_written_sandbox():
+        # `booley init` never writes 'auto', and a Sandbox it did not create is not rebuilt
+        # from what it writes, so there is no spec to compare against.
+        report.note(_NO_SPEC_BASELINE_NOTES[spec_app == agent_app.AUTO_APP])
         return
     _compare_with_expected_spec(request, spec, report)
+
+
+def _host_authority_remedy() -> str:
+    """Where to repair a Sandbox that holds host authority: a hand-written one is rebuilt from its spec."""
+    if runtime_context.in_hand_written_sandbox():
+        return HAND_WRITTEN_SANDBOX_STEPS
+    return session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
 
 
 def _provider_current(
@@ -256,10 +279,15 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
         executable=request.docker_exe or "docker",
     )
     if comparison.status is image_identity.Status.UNKNOWN:
+        authority = (
+            ""
+            if runtime_context.in_hand_written_sandbox()
+            else " and host `booley doctor` is authoritative"
+        )
         report.note(
             "devcontainer.json has an immutable image pin, but [sandbox].image "
-            f"'{request.image}' cannot be compared conclusively here; image drift is unverified "
-            "and host `booley doctor` is authoritative"
+            f"'{request.image}' cannot be compared conclusively here; image drift is "
+            f"unverified{authority}"
         )
     elif comparison.status is image_identity.Status.MISMATCH:
         _spec_warning(
@@ -450,7 +478,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     ):
         report.fail(
             "host-provisioned Vivado is absent from the Sandbox",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return
     if mounted:
@@ -606,7 +634,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
     if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
@@ -614,7 +642,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
         if entry is not None:
             report.fail(
                 f"Sandbox exposes a forbidden host-authority surface: {entry}",
-                session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+                _host_authority_remedy(),
             )
             return False
     report.pass_("Sandbox host-authority isolation verified")
@@ -769,13 +797,13 @@ def _mounted_vivado_files(report: Findings) -> bool:
     except OSError as exc:
         report.fail(
             f"mounted Vivado wrapper is unreadable: {exc}",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
             "mounted Vivado wrapper/release layout differs from built-in policy",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     compatibility = (
@@ -786,7 +814,7 @@ def _mounted_vivado_files(report: Findings) -> bool:
     if any(not path.is_file() for path in compatibility):
         report.fail(
             "Sandbox Image lacks the fixed Vivado compatibility libraries or locale",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     return True
@@ -803,7 +831,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     if len(matches) != 1 or "ro" not in matches[0][5].split(","):
         report.fail(
             "Vivado release root is not one exact read-only runtime mount",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
@@ -813,7 +841,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     ):
         report.fail(
             "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     return True
