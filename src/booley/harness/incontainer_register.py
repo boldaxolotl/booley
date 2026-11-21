@@ -117,27 +117,29 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
         if len(clis) > 1:
             reason += f"; {_LABELS[default]} is the default"
         return agent_app.AgentAppChoice(default, policy, reason, clis)
-    if lookups[auth_token.APP_CODEX] == VISITOR_AUTH:
-        try:
-            gateway = gateway_settings_from_env()
-        except GatewayConfigError:
-            pass
-        else:
-            return agent_app.AgentAppChoice(
-                auth_token.APP_CODEX,
-                GATEWAY_AUTH,
-                f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
-                (auth_token.APP_CODEX,),
-            )
-    if lookups[auth_token.APP_CODEX] == VISITOR_AUTH:
-        reason = "no credential and no gateway; Claude's login is offered"
-    else:
-        reason = "no credential; Claude's login is offered"
+    visitor_codex = lookups[auth_token.APP_CODEX] == VISITOR_AUTH
+    if visitor_codex and (gateway_choice := _gateway_choice()) is not None:
+        return gateway_choice
+    gateway_note = " and no gateway" if visitor_codex else ""
     return agent_app.AgentAppChoice(
         auth_token.APP_CLAUDE,
         policy,
-        reason,
+        f"no credential{gateway_note}; Claude's login is offered",
         (auth_token.APP_CLAUDE,),
+    )
+
+
+def _gateway_choice() -> agent_app.AgentAppChoice | None:
+    """Codex on the sponsored gateway when its configuration is complete, else ``None``."""
+    try:
+        gateway = gateway_settings_from_env()
+    except GatewayConfigError:
+        return None
+    return agent_app.AgentAppChoice(
+        auth_token.APP_CODEX,
+        GATEWAY_AUTH,
+        f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
+        (auth_token.APP_CODEX,),
     )
 
 
