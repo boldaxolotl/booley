@@ -107,6 +107,7 @@ class _PtyDashboard:
 
         self.scope = scope
         self._answers = answers
+        self.output = bytearray()
         self._master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
         try:
@@ -135,6 +136,7 @@ class _PtyDashboard:
                 return
             if not chunk:
                 return
+            self.output += chunk
             if self._answers:
                 try:
                     for _ in range(chunk.count(_CURSOR_REQUEST)):
@@ -210,13 +212,18 @@ def test_takeover_leaves_no_earlier_dashboard_running(tmp_path, monkeypatch, sco
         return original_app(*args, **kwargs)
 
     monkeypatch.setattr(command, "DashboardApp", watching_app)
+    # The grace only stops a hang: the 0.5 s of _thresholds would kill a slow, orderly shutdown.
+    monkeypatch.setattr(command.view_probe, "TERM_GRACE_SECONDS", hang_guard_s())
     try:
+        _wait_until(lambda: _CURSOR_REQUEST in old.output, "the Dashboard to send its first heartbeat")
         time.sleep(scaled(2.0))
         assert command.run_dashboard(tmp_path) == 0
         assert running_at_launch == [False], "no new Dashboard started over the earlier one"
-        assert old.process.poll() is not None
+        assert old.process.poll() == 0, "the earlier Dashboard did not shut down in order"
     finally:
         old.close()
+    assert b"\x1b[?1049l" in old.output, "the earlier Dashboard left the alternate screen"
+    assert b"a newer Dashboard replaced it" in old.output
 
 
 def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, newcomer):
