@@ -46,7 +46,7 @@ jobs:
       - name: Run Renovate
         env:
           # Moved by Renovate itself (custom manager in .github/renovate.json).
-          IMAGE: renovate/renovate:44.235.4@sha256:6ef4ae76af70f842dcf0adb8240b5149872fa5a433eaa348a60a7b212b6235ef
+          IMAGE: renovate/renovate:44.257.8@sha256:68f58fa3b0e92875fa2f44c4ae02936186818b0170c2d39fe7261a2af5260f36
           # The token reaches the container by name (--env), never on the command line.
           RENOVATE_TOKEN: ${{ steps.app-token.outputs.token }}
           RENOVATE_PLATFORM: github
