@@ -321,10 +321,7 @@ def _inspect_git_versions(
                 "host Git capability inferred from checkout worktree.useRelativePaths=true "
                 "(host-init policy; host version not rechecked inside the Sandbox)"
             )
-        elif (
-            runtime_context.runtime_location()
-            is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
-        ):
+        elif runtime_context.in_hand_written_sandbox():
             report.note(
                 "host Git capability is unknown in a Sandbox Booley did not create",
                 "if a host also opens this checkout, run `booley doctor` there",

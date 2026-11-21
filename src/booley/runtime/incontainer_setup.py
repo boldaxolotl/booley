@@ -56,7 +56,7 @@ from booley.runtime.mcp_config import (
     gateway_provider_toml,
     http_port,
 )
-from booley.runtime.runtime_context import RuntimeLocation, runtime_location
+from booley.runtime.runtime_context import in_hand_written_sandbox
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -101,7 +101,7 @@ class HttpServerInspectionRequest:
 
 def _not_serving_fix() -> str:
     """Name how to get the server started: a hand-written spec must run the registration itself."""
-    if runtime_location() is RuntimeLocation.HAND_WRITTEN_SANDBOX:
+    if in_hand_written_sandbox():
         return (
             "make this Sandbox's devcontainer spec run `python -m booley.harness.incontainer_register` "
             "in postStartCommand, then rebuild or reopen the Sandbox"

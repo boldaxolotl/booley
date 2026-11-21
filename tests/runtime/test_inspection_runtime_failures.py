@@ -134,6 +134,28 @@ def test_mounted_runtime_rejects_invalid_evidence(mounted_runtime, field, value,
         assert calls[0][1]["timeout"] == 90
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("wrapper", PermissionError("denied")),
+        ("wrapper", b"changed wrapper"),
+        ("compatible", False),
+        ("mountinfo", ""),
+    ],
+)
+def test_mounted_runtime_failures_in_a_hand_written_sandbox_name_no_host_step(
+    mounted_runtime, hand_written_sandbox, field, value
+):
+    request, state, _ = mounted_runtime
+    state[field] = value
+    (failure,) = [
+        f
+        for f in inspection.inspect_runtime(request).issuance.findings
+        if f.severity is Severity.FAIL
+    ]
+    assert failure.fix == sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
+
+
 def test_mounted_runtime_rejects_external_license_pointer_before_execution(
     mounted_runtime, monkeypatch
 ):

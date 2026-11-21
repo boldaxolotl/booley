@@ -16,7 +16,7 @@ from pathlib import Path
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.host_shell import quote_arg
 from booley.runtime.docs_links import docs_url
-from booley.runtime.runtime_context import RuntimeLocation, runtime_location
+from booley.runtime.runtime_context import in_hand_written_sandbox
 
 __all__ = [
     "APPLY_DOC_URL",
@@ -118,6 +118,6 @@ HAND_WRITTEN_SANDBOX_STEPS = (
 
 def in_sandbox_steps() -> str:
     """The recreate steps named from inside a Sandbox; a hand-written one is rebuilt from its own spec."""
-    if runtime_location() is RuntimeLocation.HAND_WRITTEN_SANDBOX:
+    if in_hand_written_sandbox():
         return HAND_WRITTEN_SANDBOX_STEPS
     return UNKNOWN_SANDBOX_STEPS

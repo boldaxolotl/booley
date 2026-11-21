@@ -75,6 +75,11 @@ def runtime_location() -> RuntimeLocation:
     return RuntimeLocation.HAND_WRITTEN_SANDBOX
 
 
+def in_hand_written_sandbox() -> bool:
+    """Whether this process runs in a Sandbox Booley did not create."""
+    return runtime_location() is RuntimeLocation.HAND_WRITTEN_SANDBOX
+
+
 def booley_init_hint(*, code: bool = False) -> str:
     """Name the `booley init` command together with where to run it.
 

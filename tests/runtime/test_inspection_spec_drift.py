@@ -572,7 +572,36 @@ def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
     (finding,) = _inspect(project, monkeypatch, expected_spec=None)
 
     assert finding.severity.value == "fail"
-    assert "booley init" not in finding.fix
+    assert finding.fix == (
+        "repair this Sandbox's devcontainer.json, then rebuild the Sandbox from it"
+    )
+
+
+@pytest.mark.parametrize("hand_written", [True, False])
+def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    hand_written: bool,
+) -> None:
+    if hand_written:
+        request.getfixturevalue("hand_written_sandbox")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(
+        inspection.idk,
+        "compare_issued_image",
+        lambda *_a, **_kw: inspection.image_identity.Comparison(
+            inspection.image_identity.Status.UNKNOWN
+        ),
+    )
+    inspected = inspection.RuntimeInspectionRequest(project, "booley-sandbox", None)
+    report = Findings()
+
+    assert inspection._image_current(inspected, {"image": _IMAGE_A}, report)
+
+    (note,) = report.report().findings
+    assert "image drift is unverified" in note.message
+    assert ("host `booley doctor` is authoritative" in note.message) is not hand_written
 
 
 def test_hand_written_sandbox_keeps_compatibility_checks(
