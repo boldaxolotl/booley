@@ -265,6 +265,20 @@ def test_project_text_maps_a_name_printed_with_backslashes() -> None:
     )
 
 
+def test_merged_mappings_keep_both_targets_and_let_the_newer_win() -> None:
+    first = ProjectSourcePaths({"src/a/top.sv": "rtl/a.sv", "src/c/x.sv": "old/x.sv"})
+    second = ProjectSourcePaths({"src/b/top.sv": "rtl/b.sv", "src/c/x.sv": "new/x.sv"})
+
+    merged = first.merged(second)
+
+    assert dict(merged.by_name) == {
+        "src/a/top.sv": "rtl/a.sv",
+        "src/b/top.sv": "rtl/b.sv",
+        "src/c/x.sv": "new/x.sv",
+    }
+    assert first.merged(ProjectSourcePaths()) is first
+
+
 def _engine_timeout_outcome(tmp_path: Path):
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
