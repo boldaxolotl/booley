@@ -272,6 +272,9 @@ class _FakeTraceSession:
     def start_conversion_budget(self, _timeout_s):
         return None
 
+    def report_failed_conversions(self, *, declared_trace_used):
+        return None
+
     def postprocess(self, path):
         if self._published is not None and path.exists():
             self._published.write_text("converted", encoding="utf-8")

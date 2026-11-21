@@ -281,8 +281,9 @@ def _execute_supervised(
     runtime_inputs: tuple[str, ...],
 ) -> tuple[deque[str], subprocess.Popen, RunTermination]:
     """Execute one supervised simulator process and clean up its trace FIFO."""
+    finished = False
     try:
-        return run_supervised(
+        result = run_supervised(
             SimulatorLaunch(
                 label="Verilator",
                 command=cmd,
@@ -297,11 +298,16 @@ def _execute_supervised(
                 streams=trace.current.streams if trace.current is not None else None,
             )
         )
+        finished = True
+        return result
     finally:
         if trace.current is not None:
             trace.current.close_streams()
         if trace.session is not None and trace.mode is TraceMode.VCD_FIFO:
             trace.session.cleanup_fifo(trace.conversion)
+            if not finished:
+                # finalize_trace never runs, so nothing else releases the held output.
+                trace.session.report_failed_conversions(declared_trace_used=False)
 
 
 def _finalize_verilated_run(
