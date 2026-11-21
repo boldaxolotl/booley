@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import signal
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -790,6 +791,15 @@ class DashboardApp(App[None]):
         yield Static(id="footer", markup=False)
 
     async def on_mount(self) -> None:
+        if self.view_state is not None:
+            # A newer Dashboard retires this one with SIGTERM; leave the terminal as found.
+            asyncio.get_running_loop().add_signal_handler(
+                signal.SIGTERM,
+                self.exit,
+                None,
+                0,
+                "Dashboard closed: a newer Dashboard replaced it.",
+            )
         await self.refresh_snapshot()
         self.set_interval(REFRESH_SECONDS, self.refresh_snapshot)
         self.query_one(DataTable).focus()
