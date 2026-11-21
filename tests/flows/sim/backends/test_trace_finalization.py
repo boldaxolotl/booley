@@ -28,6 +28,9 @@ class _FakeTrace:
     def start_conversion_budget(self, timeout_s: float) -> None:
         self.events.append(f"budget:{timeout_s}")
 
+    def report_failed_conversions(self, *, declared_trace_used: bool) -> None:
+        self.events.append(f"report:{declared_trace_used}")
+
     def postprocess(self, _path: Path) -> None:
         self.events.append("postprocess")
 
