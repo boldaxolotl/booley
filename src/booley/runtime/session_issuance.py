@@ -69,6 +69,7 @@ from booley.runtime.incontainer_git_identity import (
     git_identity_environment,
     load_git_identity,
 )
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
@@ -141,7 +142,7 @@ _PROXY_REMOTE_ENV = {
 }
 _REQUIRED_REMOTE_ENV = frozenset(
     {
-        "BOOLEY_MCP_MODE",
+        DEVELOPER_AGENT_ENV,
         "BOOLEY_DIR",
         COMPILER_CACHE_ROOT_ENV,
         "BOOLEY_AGENT_APP",
@@ -162,7 +163,7 @@ _ALLOWED_REMOTE_ENV = (
     }
 )
 _FIXED_REMOTE_ENV = {
-    "BOOLEY_MCP_MODE": "interactive",
+    DEVELOPER_AGENT_ENV: "1",
     "BOOLEY_DIR": BOOLEY_DIR_TARGET,
     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
 }

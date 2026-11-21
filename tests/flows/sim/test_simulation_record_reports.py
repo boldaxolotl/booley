@@ -1093,12 +1093,12 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
         ("flow-reports", False),
         (".runtime/flow-reports", False),
         ("tmp/doctor/flow-reports", False),
-        (".interactive_logs/session-1/.runtime/flow-reports", False),
+        ("job_logs/session-1/.runtime/flow-reports", False),
         ("goals/demo-20261027T000000Z/.runtime/flow-reports", False),
         ("custom", True),
         ("tmp/flow-reports", True),
-        (".interactive_logs/flow-reports", True),
-        (".interactive_logs/a/b/.runtime/flow-reports", True),
+        ("job_logs/flow-reports", True),
+        ("job_logs/a/b/.runtime/flow-reports", True),
         ("goals/flow-reports", True),
         ("other/run-1/.runtime/flow-reports", True),
     ],
@@ -1110,7 +1110,7 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
 
     Booley-owned roots are derivable: the default ones, deep Doctor's own
     ``tmp/doctor/flow-reports``, and the per-run runtime roots of in-Sandbox MCP sessions
-    MCP sessions (``.interactive_logs/<session>/.runtime/flow-reports``) and Goal
+    MCP sessions (``job_logs/<session>/.runtime/flow-reports``) and Goal
     Records (``goals/<goal-id>/.runtime/flow-reports``). A Codespace links
     ``/work/.booley``.
     """

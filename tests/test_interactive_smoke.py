@@ -51,7 +51,7 @@ def _clear_ticket_env() -> None:
 
     Uses a manual save/restore (rather than ``monkeypatch.delenv``) because
     a couple of the tests below intentionally mutate ``os.environ`` via
-    ``_maybe_configure_interactive_logs_dir``, and ``monkeypatch`` does not
+    ``_maybe_configure_job_logs_dir``, and ``monkeypatch`` does not
     track direct ``os.environ`` writes — without this fixture they leaked
     into adjacent test modules and corrupted ``reviewer``'s session-file
     persistence path.
@@ -135,8 +135,8 @@ class TestNoTicketDryRun:
 # ---------------------------------------------------------------------------
 
 
-class TestInteractiveLogsDir:
-    """The MCP server promotes ``.booley/.interactive_logs/<id>/``
+class TestJobLogsDir:
+    """The MCP server promotes ``.booley/job_logs/<id>/``
     to ``BOOLEY_LOGS_DIR`` when (a) the env var is unset and (b) a
     ``.booley/`` is present in CWD."""
 
@@ -151,14 +151,14 @@ class TestInteractiveLogsDir:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
-        mcp_server._maybe_configure_interactive_logs_dir()
+        mcp_server._maybe_configure_job_logs_dir()
 
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
         assert logs_dir, "BOOLEY_LOGS_DIR should have been set"
         logs_path = Path(logs_dir)
         assert logs_path.is_dir()
-        assert ".interactive_logs" in logs_path.parts
-        assert logs_path.parent.name == ".interactive_logs"
+        assert "job_logs" in logs_path.parts
+        assert logs_path.parent.name == "job_logs"
         assert logs_path.parent.parent.name == ".booley"
 
     def test_noop_when_logs_dir_already_set(
@@ -174,7 +174,7 @@ class TestInteractiveLogsDir:
         existing.mkdir()
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(existing))
 
-        mcp_server._maybe_configure_interactive_logs_dir()
+        mcp_server._maybe_configure_job_logs_dir()
 
         assert os.environ["BOOLEY_LOGS_DIR"] == str(existing)
 
@@ -188,7 +188,7 @@ class TestInteractiveLogsDir:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
-        mcp_server._maybe_configure_interactive_logs_dir()
+        mcp_server._maybe_configure_job_logs_dir()
 
         assert not os.environ.get("BOOLEY_LOGS_DIR")
 
@@ -204,7 +204,7 @@ class TestInteractiveLogsDir:
 
         monkeypatch.setattr(mcp_server, "resolve_booley_dir", fail)
 
-        assert mcp_server._interactive_logs_dir() is None
+        assert mcp_server._job_logs_dir() is None
 
     def test_missing_main_booley_dir_yields_no_location(
         self,
@@ -216,7 +216,7 @@ class TestInteractiveLogsDir:
         monkeypatch.setattr(mcp_server, "resolve_booley_dir", lambda: tmp_path / "gone")
         monkeypatch.setattr(mcp_server, "resolve_common_booley_dir", lambda: tmp_path / "gone")
 
-        assert mcp_server._interactive_logs_dir() is None
+        assert mcp_server._job_logs_dir() is None
 
     def test_empty_location_is_not_writable(self) -> None:
         from booley.mcp import server as mcp_server

@@ -303,7 +303,7 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
         registry.upsert(attribution(), "sim", "completed", now=100)
         job = job_records.JobRecord("job-one", "sim", STAMP, 60, session_key="codex:one")
         handles.register_job(tmp_path, job.run_id, job.endpoint, job.session_key)
-        job_records.write_record(job, tmp_path / ".interactive_logs/old/.runtime/jobs")
+        job_records.write_record(job, tmp_path / "job_logs/old/.runtime/jobs")
         store = handles.HandleStore(tmp_path)
         if map_state == "empty":
             store.save(handles.HandleMap())
@@ -467,7 +467,7 @@ def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_facto
         else:
             store.path.unlink()
         job = job_records.JobRecord("old", "sim", STAMP, 60, session_key="codex:disconnected")
-        root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+        root = tmp_path / "job_logs/old/.runtime/jobs"
         job_records.write_record(job, root)
         before = (root / "old.json").read_bytes()
         observer = SessionObserver(now=lambda: 200)
@@ -515,7 +515,7 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
     from booley.runtime.timefmt import rfc3339_from_epoch
 
     now = 1_800_000_000.0
-    root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+    root = tmp_path / "job_logs/old/.runtime/jobs"
     for run_id, ended_ago in [
         ("sim-expired", 2 * 86400),
         ("sim-recent", 3600),

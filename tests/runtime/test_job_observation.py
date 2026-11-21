@@ -28,7 +28,7 @@ def write_job(root: Path, run_id: str, **kwargs) -> Path:
 
 def test_only_explicit_roots_are_observed_and_repeated_roots_keep_one_identity(tmp_path):
     selected = tmp_path / "selected/jobs"
-    unselected = tmp_path / ".interactive_logs/other/.runtime/jobs"
+    unselected = tmp_path / "job_logs/other/.runtime/jobs"
     write_job(selected, "one")
     write_job(unselected, "other")
 

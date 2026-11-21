@@ -233,7 +233,7 @@ Try:
   Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
   Again: the stored run, no Flow, exit 0. `--again` stores a second run;
   `--again --target synth_mac_10g` is never stored or Measured (reports under
-  `.interactive_logs/standalone/<run_id>/`); `--json` matches the Markdown
+  `job_logs/standalone/<run_id>/`); `--json` matches the Markdown
   report.
 - Turn the physical tracked numbers into bounds with slack outside the observed
   values, per-clock keys quoted and only for clocks the report lists; commit;

@@ -12,7 +12,7 @@ from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_layout import (
     DOCTOR_TMP_DIR,
     GOALS_DIR_NAME,
-    INTERACTIVE_LOGS_DIR_NAME,
+    JOB_LOGS_DIR_NAME,
     BooleyLayoutError,
 )
 from booley.core.checkout_role import SourceCheckoutProjectError
@@ -68,7 +68,7 @@ def simulation_booley_dir(project_root: Path) -> Path | None:
 
 # Booley Directory children whose ``<id>/.runtime`` holds Flow reports for agent runs:
 # in-Sandbox MCP sessions and the Goal Record directories an earlier version left behind.
-_RUNTIME_OWNER_DIRS = frozenset({INTERACTIVE_LOGS_DIR_NAME, GOALS_DIR_NAME})
+_RUNTIME_OWNER_DIRS = frozenset({JOB_LOGS_DIR_NAME, GOALS_DIR_NAME})
 
 
 def invocation_booley_dir(root: Path) -> Path | None:

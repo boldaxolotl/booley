@@ -356,7 +356,7 @@ Specialists) unless you pass `--report-dir`, and return the usual exit codes.
 ### Where its output goes
 
 A Developer Agent's MCP server writes its logs under
-`.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths
+`job_logs/<session-id>/` in the Main Booley Directory. Use the paths
 the result returns rather than
 guessing.
 

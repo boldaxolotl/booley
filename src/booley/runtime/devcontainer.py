@@ -41,6 +41,7 @@ from booley.runtime.incontainer_git_identity import (
     git_identity_environment,
     load_git_identity,
 )
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -727,8 +728,8 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
         else {}
     )
     remote_env |= {
-        # The in-Sandbox MCP server reads BOOLEY_MCP_MODE and finds config here.
-        "BOOLEY_MCP_MODE": "interactive",
+        # The in-Sandbox MCP server reads BOOLEY_MCP_DEVELOPER_AGENT and finds config here.
+        DEVELOPER_AGENT_ENV: "1",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
         # The in-container registrar (postStartCommand) configures this app.

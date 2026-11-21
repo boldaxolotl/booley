@@ -22,7 +22,7 @@ from tests.time_budget import hang_guard_s
 
 # Where the Dashboard already scans for Job records: the common Booley Directory's standalone log
 # root, with machine-owned records under ``.runtime/jobs`` and each run's output beside them.
-STANDALONE_ROOT = Path(".interactive_logs") / "standalone"
+STANDALONE_ROOT = Path("job_logs") / "standalone"
 JOBS_ROOT = STANDALONE_ROOT / ".runtime" / "jobs"
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
@@ -167,11 +167,11 @@ def test_run_outside_standalone_scope_is_unrecorded(monkeypatch, project, tmp_pa
     StubEndpoint.outcome = 3
     assert shell_run(monkeypatch, target, "flow") == 3
     assert records(project) == []
-    assert not (target / ".booley" / ".interactive_logs").exists()
+    assert not (target / ".booley" / "job_logs").exists()
 
 
 def test_unwritable_record_warns_and_runs_unrecorded(monkeypatch, project, capfd):
-    (project / ".booley" / ".interactive_logs").write_bytes(b"in the way")
+    (project / ".booley" / "job_logs").write_bytes(b"in the way")
     StubEndpoint.outcome = 3
     assert shell_run(monkeypatch, project, "flow") == 3
     err = capfd.readouterr().err

@@ -25,7 +25,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     # Startup reconciles orphaned jobs of the real Project; these tests have none.
     monkeypatch.setattr(server, "_reconcile_orphaned_jobs", lambda: None)
     reset_cache()

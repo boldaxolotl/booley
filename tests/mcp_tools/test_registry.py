@@ -256,7 +256,7 @@ def test_no_mutation_tester_endpoint():
 def test_interactive_catalog_offers_no_goal_tool(monkeypatch):
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
     builtins = [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}]
     names = {

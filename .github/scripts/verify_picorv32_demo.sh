@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export BOOLEY_MCP_MODE=interactive
+export BOOLEY_MCP_DEVELOPER_AGENT=1
 
 booley_dir="${BOOLEY_DIR:-/booley}"
 

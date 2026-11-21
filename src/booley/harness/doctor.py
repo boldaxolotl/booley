@@ -1003,6 +1003,7 @@ def _run_project_phase(
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
     _check_goal_leftovers(common_dir, booley_dir, reporter)
+    _check_job_logs_leftover(common_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -1311,6 +1312,32 @@ def _check_goal_leftovers(
                 "Booley no longer reads it",
                 "delete it when you no longer need its records",
             )
+
+
+# The Main Booley Directory child that held session and Standalone Job logs before `job_logs/`.
+_RETIRED_JOB_LOGS_DIR_NAME = ".interactive_logs"
+
+
+def _check_job_logs_leftover(main_booley_dir: Path | None, reporter: _Reporter) -> None:
+    """Warn about the old session-logs directory an earlier version left behind.
+
+    Logs now go to ``job_logs/`` and nothing reads the old directory; Doctor only
+    looks, and nothing deletes or moves it.
+    """
+    if main_booley_dir is None:
+        return
+    leftover = main_booley_dir / _RETIRED_JOB_LOGS_DIR_NAME
+    if not leftover.is_dir():
+        return
+    command = (
+        f"Remove-Item -LiteralPath {quote_arg(str(leftover))} -Recurse -Force"
+        if os.name == "nt"
+        else f"rm -rf {quote_arg(str(leftover))}"
+    )
+    _warning_sink(reporter.warn_, "job-logs.leftover", subject=str(leftover))(
+        f"{leftover} holds session logs from an earlier Booley version; Booley no longer reads it",
+        f"delete it: `{command}`",
+    )
 
 
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:

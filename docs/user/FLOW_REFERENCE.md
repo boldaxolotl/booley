@@ -217,13 +217,13 @@ deletes them:
 
 | Run started by | Reports | Cleaned up |
 |---|---|---|
-| The Developer Agent | `.interactive_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
+| The Developer Agent | `job_logs/<session>/` in the main checkout's Booley Directory, from any checkout | Not automatically; see below. |
 | You, from the CLI | `flow-reports/` in the Booley Directory of the checkout you run in, or `--report-dir` | With the worktree, for a run in a linked worktree. |
 
 In the main checkout nothing removes them, and coverage runs in particular
 grow to gigabytes. Delete the run folders under `flow-reports/` and the
-sessions under `.interactive_logs/` you don't need, when no run is active. Keep a run you may
-still [resume](FLOW-SIM.md#resuming-an-interrupted-run), and the run a
+sessions under `job_logs/` you don't need, when no run is active. Keep a run
+you may still [resume](FLOW-SIM.md#resuming-an-interrupted-run), and the run a
 resumed run continued from.
 
 ### Cleaning up Simulation builds

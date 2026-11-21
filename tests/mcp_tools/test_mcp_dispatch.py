@@ -555,13 +555,13 @@ class TestReportFetch:
         blocks = out[0] if isinstance(out, tuple) else out
         assert "flow: sim" in blocks[0].text
 
-    def test_report_mcp_tool_visible_interactive(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    def test_report_mcp_tool_visible_developer_agent(self, monkeypatch):
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is True
 
     def test_report_mcp_tool_def_hidden_when_not_visible(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
         assert catalog.report_visible(catalog.Exposure.from_mapping(os.environ)) is False
 
@@ -1460,7 +1460,7 @@ class TestAsyncJobDispatch:
 
     def test_poll_endpoint_schema_advertises_wait_seconds(self, monkeypatch):
         # An agent discovers long-poll through the schema; keep it advertised.
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         endpoint_def = catalog._poll_mcp_tool_def()
         assert endpoint_def is not None
         description = endpoint_def["description"]
@@ -1680,7 +1680,7 @@ class TestAsyncJobDispatch:
 
     def test_poll_endpoint_always_visible(self, monkeypatch):
         # Unlike booley_report, poll must be reachable in Ticket-Mode too.
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
         assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
@@ -2126,7 +2126,7 @@ class TestCancel:
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):
         # Like poll, cancel must be reachable in Ticket-Mode too: any server
         # that hands back a queued run_id must let the caller withdraw it.
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")  # explicit allowlist
         endpoint_def = catalog._cancel_mcp_tool_def()
@@ -2878,7 +2878,7 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".booley").mkdir()
     assert session_jobs_dir() is None
-    mcp_server._maybe_configure_interactive_logs_dir()
+    mcp_server._maybe_configure_job_logs_dir()
     root = session_jobs_dir()
     assert root is not None
 

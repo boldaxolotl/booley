@@ -242,13 +242,13 @@ def test_probe_command_mounts_project_and_relocated_booley_dir(monkeypatch, tmp_
     assert cmd[5].endswith(":/work")
     assert cmd[6:8] == ["-w", "/work"]
     assert "BOOLEY_DIR=/work/tools/booley" in cmd
-    assert "BOOLEY_MCP_MODE=interactive" in cmd
+    assert "BOOLEY_MCP_DEVELOPER_AGENT=1" in cmd
     assert cmd[-4:] == ["booley:test", "python", "-m", "booley.mcp.probe"]
     assert "-c" not in cmd
     assert kwargs["cwd"] == root
     assert kwargs["timeout"] == 60
     assert kwargs["env"]["BOOLEY_DIR"] == str(host_booley_dir)
-    assert kwargs["env"]["BOOLEY_MCP_MODE"] == "interactive"
+    assert kwargs["env"]["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
 
     default = _Probe(monkeypatch, tmp_path / "plain", _completed(json.dumps(_payload())))
     reset_cache()

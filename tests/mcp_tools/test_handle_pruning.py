@@ -39,7 +39,7 @@ def pruning():
 
 
 def jobs_root(booley_dir: Path) -> Path:
-    return booley_dir / ".interactive_logs/old/.runtime/jobs"
+    return booley_dir / "job_logs/old/.runtime/jobs"
 
 
 def add_job(
@@ -268,7 +268,7 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
 
     served = capture_serving(monkeypatch)
     monkeypatch.setattr(pruning(), "prune_at_start", capture)
-    monkeypatch.setattr(server, "_maybe_configure_interactive_logs_dir", lambda: None)
+    monkeypatch.setattr(server, "_maybe_configure_job_logs_dir", lambda: None)
     monkeypatch.setattr(server, "_load_agent_settings_from_toml", lambda: None)
     monkeypatch.setattr(
         server._McpLifetime,

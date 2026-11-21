@@ -413,7 +413,7 @@ COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/s
 # Linux; the base ubuntu:26.04 image already occupies 1000 with its default
 # "ubuntu" user, so remove that first. Without this, bind-mounted project files
 # (owned by host uid 1000) are unwritable by the container and the MCP server
-# fails to create its .interactive_logs dir.
+# fails to create its job_logs dir.
 RUN userdel -r ubuntu 2>/dev/null || true \
     && groupadd -g 1000 agent \
     && useradd -m -s /bin/bash -u 1000 -g 1000 agent

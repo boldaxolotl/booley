@@ -75,7 +75,7 @@ def test_count_rejects_text_that_is_not_auto_or_an_integer(tmp_path, capsys) -> 
 
 
 def test_mcp_definition_is_a_flow_with_the_mutation_schema(monkeypatch) -> None:
-    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
+    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_DEVELOPER_AGENT"):
         monkeypatch.delenv(name, raising=False)
     definitions, errors = catalog.discover_builtin_definitions(
         discover_mcp_tools(), catalog.Exposure.from_mapping(os.environ)

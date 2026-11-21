@@ -6,7 +6,7 @@ In-runtime validation probes mounted Vivado (90s), without host authority access
 A CLI timeout does not itself prove remote container cleanup. Live execution
 must independently validate authority; a diagnostic report grants no authority.
 It also owns the host-side Interactive Git inspection (`info/exclude` entries and
-tracked `.interactive_logs`) through bounded `git rev-parse` / `git ls-files` probes.
+tracked `job_logs`) through bounded `git rev-parse` / `git ls-files` probes.
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
     """Inspect Git excludes and tracked scratch for the Sandbox; never repairs."""
     report = Findings()
     _check_devcontainer_excludes(request.project_root, report)
-    _check_interactive_logs_tracked(request.booley_dir, report)
+    _check_job_logs_tracked(request.booley_dir, report)
     return report.report()
 
 
@@ -968,8 +968,8 @@ def _check_devcontainer_excludes(project_root: Path, report: Findings) -> None:
         )
 
 
-def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
-    """Fail when ephemeral .interactive_logs/ scratch is committed to git.
+def _check_job_logs_tracked(booley_dir: Path, report: Findings) -> None:
+    """Fail when ephemeral job_logs/ scratch is committed to git.
 
     Tracked scratch is laid down read-protected on fresh clones and makes the
     in-container MCP server fail with an opaque PermissionError. The gitignore
@@ -977,7 +977,7 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     """
     try:
         result = platform_paths.run_captured_bounded(
-            ["git", "ls-files", "--", ".interactive_logs"],
+            ["git", "ls-files", "--", "job_logs"],
             timeout=10,
             cwd=booley_dir,
             errors="strict",
@@ -989,9 +989,9 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     tracked = [line for line in result.stdout.splitlines() if line.strip()]
     if tracked:
         report.fail(
-            f".interactive_logs/ has {len(tracked)} tracked file(s); committed "
+            f"job_logs/ has {len(tracked)} tracked file(s); committed "
             "scratch breaks fresh clones in the sandbox",
-            "git rm -r --cached .interactive_logs && commit the removal",
+            "git rm -r --cached job_logs && commit the removal",
         )
     else:
-        report.pass_(".interactive_logs/ is not tracked in git")
+        report.pass_("job_logs/ is not tracked in git")
