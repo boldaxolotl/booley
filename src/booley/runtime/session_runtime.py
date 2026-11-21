@@ -45,10 +45,10 @@ from booley.runtime.platform_paths import (
 )
 from booley.runtime.sandbox_apply import (
     REBUILD_CONTAINER,
-    UNKNOWN_SANDBOX_STEPS,
     Attachment,
     apply_steps,
     image_is_managed,
+    in_sandbox_steps,
 )
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
@@ -2663,7 +2663,7 @@ def sandbox_remedy(workspace: Path) -> str:
     from booley.runtime.runtime_context import inside_session_runtime
 
     if inside_session_runtime():
-        return UNKNOWN_SANDBOX_STEPS
+        return in_sandbox_steps()
     refreshable = True
     try:
         runtime_spec.load_issued_snapshot(workspace)

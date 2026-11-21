@@ -1355,7 +1355,7 @@ def _run_runtime_phase(
         reporter.skip_,
         reporter.fail_,
     )
-    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_, reporter.note_)
     _check_sandbox_swap(
         project, docker_exe, sandbox_image, reporter.pass_, reporter.warn_, reporter.skip_
     )
@@ -1701,6 +1701,10 @@ def _check_worktree_core_shadow_guard(
 _RUNTIME_MARKER_FIX = (
     f"the image predates the Sandbox runtime marker; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
 )
+_HAND_WRITTEN_MARKER_FIX = (
+    "set BOOLEY_CONTAINER=1 in this Sandbox's devcontainer spec (containerEnv), "
+    "then rebuild the Sandbox"
+)
 
 
 def _licensed_tools_in_use(project: ProjectAudit) -> tuple[str, ...]:
@@ -1744,6 +1748,7 @@ def _check_sandbox_memory(
     _pass: Check,
     _warn: Warn,
     _skip: Check,
+    _note: Warn,
 ) -> None:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
@@ -1772,7 +1777,7 @@ def _check_sandbox_memory(
         return
     if runtime_context.inside_session_runtime():
         _check_live_sandbox_memory(
-            mem_str, limit, _pass, _warning_sink(_warn, "sandbox.memory-drift")
+            mem_str, limit, _pass, _warning_sink(_warn, "sandbox.memory-drift"), _note
         )
         return
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
@@ -1781,28 +1786,42 @@ def _check_sandbox_memory(
 _MEMORY_DRIFT_FIX = f"recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
 
 
-def _check_live_sandbox_memory(mem_str: str, configured: int, _pass: Check, _warn: Warn) -> None:
+def _check_live_sandbox_memory(
+    mem_str: str, configured: int, _pass: Check, _warn: Warn, _note: Warn
+) -> None:
     """Compare ``[sandbox].memory`` with the limit the running Sandbox has.
 
-    The kernel stores the limit in whole pages, so the comparison is in pages.
+    The kernel stores the limit in whole pages, so the comparison is in pages. A
+    Sandbox Booley did not create never gets the setting applied, so there a
+    difference is a NOTE with no recreate advice.
     """
     live = resource_policy.cgroup_memory_limit_bytes()
-    if live is None:
+    if live is not None and live // mmap.PAGESIZE == configured // mmap.PAGESIZE:
+        _pass(
+            f"[sandbox].memory = {resource_policy.format_memory(live)}: "
+            "the Sandbox's memory limit, which sizes the Memory Budget"
+        )
+    elif runtime_context.in_hand_written_sandbox():
+        own = (
+            "uses installed memory"
+            if live is None
+            else f"uses this Sandbox's own memory limit of {resource_policy.format_memory(live)}, set by its devcontainer spec"
+        )
+        _note(
+            f"[sandbox] memory = {mem_str!r} cannot be applied in this Sandbox, which Booley "
+            f"did not create: the Memory Budget {own}"
+        )
+    elif live is None:
         _warn(
             f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox has no readable "
             "memory limit, so the Memory Budget falls back to installed memory",
             _MEMORY_DRIFT_FIX,
         )
-    elif live // mmap.PAGESIZE != configured // mmap.PAGESIZE:
+    else:
         _warn(
             f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox's memory limit is "
             f"still {resource_policy.format_memory(live)}, and the Memory Budget comes from it",
             _MEMORY_DRIFT_FIX,
-        )
-    else:
-        _pass(
-            f"[sandbox].memory = {resource_policy.format_memory(live)}: "
-            "the Sandbox's memory limit, which sizes the Memory Budget"
         )
 
 
@@ -1875,6 +1894,11 @@ def _check_sandbox_swap(
     if problem is not None:
         _warn(*problem)
         return
+    if runtime_context.in_hand_written_sandbox():
+        _skip(
+            "sandbox swap skipped - Booley did not create this Sandbox, so [sandbox].swap is not applied here"
+        )
+        return
     swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
     host, why = _read_host_memory(docker_exe, sandbox_image)
     if host is None:
@@ -1936,7 +1960,8 @@ def _check_runtime_location(
     else:
         _warn(
             "container detected only via the /.dockerenv fallback — "
-            f"BOOLEY_CONTAINER=1 is missing; {_RUNTIME_MARKER_FIX}"
+            f"BOOLEY_CONTAINER=1 is missing; "
+            f"{_HAND_WRITTEN_MARKER_FIX if runtime_context.in_hand_written_sandbox() else _RUNTIME_MARKER_FIX}"
         )
     _check_slot_store_writable(_pass, _fail)
 
@@ -2644,11 +2669,13 @@ def _no_docker_skip_reason() -> str:
     from booley.runtime import runtime_context
 
     if runtime_context.inside_session_runtime():
-        return (
+        inside = (
             "container checks not applicable in here - you are already inside the "
-            "Sandbox, which has no nested Docker. Run `booley doctor` on "
-            "the host to audit the sandbox images"
+            "Sandbox, which has no nested Docker"
         )
+        if runtime_context.in_hand_written_sandbox():
+            return inside
+        return f"{inside}. Run `booley doctor` on the host to audit the sandbox images"
     return "container checks skipped - no Docker/Podman runtime found on this host"
 
 
@@ -3870,6 +3897,8 @@ def _handle_map_restart(project_root: Path) -> str:
     if attachment is Attachment.HEADLESS:
         name = quote_arg(session_runtime.session_container_name(project_root))
         return f"run `docker stop {name}`, then `booley session up` on the host"
+    if runtime_context.in_hand_written_sandbox():
+        return "stop this Sandbox, then start it again"
     return (
         f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
         "with `docker stop`, then run `booley session up` on the host"
