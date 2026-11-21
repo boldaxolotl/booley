@@ -51,7 +51,8 @@ class ProjectionDrift(Enum):
 
     MISSING = "missing"
     STALE = "stale"
-    ORPHANED = "orphaned"  # owned copy whose authored core is gone
+    # Owned copy with no authored core behind it; with stealth disabled, every owned copy.
+    ORPHANED = "orphaned"
     FOREIGN = "foreign file blocks"
 
 
@@ -61,11 +62,6 @@ class ProjectionIssue:
 
     drift: ProjectionDrift
     name: str
-
-    @property
-    def refreshable(self) -> bool:
-        """Whether reconciling clears it: only a foreign file blocks the reconcile."""
-        return self.drift is not ProjectionDrift.FOREIGN
 
     def __str__(self) -> str:
         return f"{self.drift.value} {self.name}"
@@ -279,7 +275,7 @@ def _projection_drift(expected: Mapping[Path, str]) -> list[ProjectionIssue]:
             issues.append(ProjectionIssue(ProjectionDrift.MISSING, destination.name))
         elif not _is_owned_projection(destination):
             issues.append(ProjectionIssue(ProjectionDrift.FOREIGN, destination.name))
-        elif destination.read_text(encoding="utf-8") != content:
+        elif not _projection_current(destination, content):
             issues.append(ProjectionIssue(ProjectionDrift.STALE, destination.name))
     return issues
 
@@ -301,7 +297,7 @@ def _expected_isolated_cores(root: Path) -> dict[Path, str]:
 def _render_projection(root: Path, core_file: Path) -> str:
     try:
         content = core_file.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:  # bad UTF-8 is a ValueError, not an OSError
         raise CoreProjectionError(f"could not read authoritative core {core_file}: {exc}") from exc
     lines = content.splitlines(keepends=True)
     if not lines or lines[0].strip() != "CAPI=2:":
@@ -607,7 +603,7 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
             raise CoreProjectionError(
                 f"refusing to overwrite non-Booley file at projected core path {destination}"
             )
-        if destination.read_text(encoding="utf-8") == content:
+        if _projection_current(destination, content):
             return False
     if state is not None:
         _publish_recorded(destination, content, state)
@@ -626,11 +622,20 @@ def _write_projection(destination: Path, content: str, state: Path | None = None
 
 
 def _is_owned_projection(path: Path) -> bool:
+    # Bytes, not text: a decode error past the header must not make an owned copy foreign.
     try:
-        with path.open("r", encoding="utf-8") as stream:
+        with path.open("rb") as stream:
             stream.readline()
-            return stream.readline().startswith(_MARKER_PREFIX)
+            return stream.readline().startswith(_MARKER_PREFIX.encode())
     except OSError:
+        return False
+
+
+def _projection_current(destination: Path, content: str) -> bool:
+    """Whether an owned projection holds *content*; bytes that do not decode are stale."""
+    try:
+        return destination.read_text(encoding="utf-8") == content
+    except UnicodeDecodeError:
         return False
 
 

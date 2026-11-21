@@ -249,6 +249,12 @@ class TestDiscovery:
         with pytest.raises(FuseSocError):
             read_core(bad)
 
+    def test_read_core_rejects_non_utf8(self, tmp_path: Path):
+        bad = tmp_path / "bad.core"
+        bad.write_bytes(b"CAPI=2:\nname: ::a:\xff\n")
+        with pytest.raises(FuseSocError, match=r"could not read \.core .*bad\.core"):
+            read_core(bad)
+
     def test_target_names_excludes_default(self, tmp_path: Path):
         doc = read_core(_write_core(tmp_path))
         assert core_target_names(doc) == ["sim"]

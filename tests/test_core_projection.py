@@ -138,14 +138,25 @@ def test_reconcile_refreshes_and_removes_owned_stale_projection(tmp_path: Path) 
     assert "demo:1" in destination.read_text(encoding="utf-8")
 
 
-def test_reconcile_refuses_foreign_destination(tmp_path: Path) -> None:
+@pytest.mark.parametrize("data", [b"user data\n", b"\xff not UTF-8\n"], ids=["text", "non-utf8"])
+def test_reconcile_refuses_foreign_destination(tmp_path: Path, data: bytes) -> None:
     root, core = _project(tmp_path)
     destination = projected_core_path(root, core)
-    destination.write_text("user data\n", encoding="utf-8")
+    destination.write_bytes(data)
 
+    assert list(map(str, projection_issues(root))) == [f"foreign file blocks {destination.name}"]
     with pytest.raises(CoreProjectionError, match="refusing to overwrite"):
         reconcile_projected_cores(root)
-    assert destination.read_text(encoding="utf-8") == "user data\n"
+    assert destination.read_bytes() == data
+
+
+def test_owned_projection_with_non_utf8_bytes_is_stale(tmp_path: Path) -> None:
+    root, core = _project(tmp_path)
+    destination = projected_core_path(root, core)
+    reconcile_projected_cores(root)
+    destination.write_bytes(destination.read_bytes() + b"\xff\n")
+    assert list(map(str, projection_issues(root))) == [f"stale {destination.name}"]
+    assert reconcile_projected_cores(root).written == (destination,)
 
 
 def test_disabling_stealth_removes_only_owned_projections(tmp_path: Path) -> None:

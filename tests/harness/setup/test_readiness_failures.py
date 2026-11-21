@@ -127,6 +127,24 @@ def test_stealth_inspection_reports_stale_projection_without_creating_it(tmp_pat
     assert (projected.read_bytes(), projected.stat().st_mtime_ns) == before
 
 
+def test_non_utf8_stealth_core_fails_as_unreadable(tmp_path):
+    booley_dir = _write_project(tmp_path)
+    with (booley_dir / "booley.toml").open("a") as stream:
+        stream.write("\n[stealth]\nenabled = true\n")
+    core = booley_dir / "cores" / "a.core"
+    core.parent.mkdir()
+    core.write_bytes(b"CAPI=2:\nname: ::a:\xff\n")
+    project = readiness.load_project(tmp_path).project
+    assert project is not None
+    report = readiness.check_stealth_cores(project)
+    unreadable = (
+        f"could not inspect stealth core projections: could not read authoritative core {core}: "
+    )
+    assert [f.fix for f in report.findings if f.message.startswith(unreadable)] == [
+        "fix the authored core, then run any Booley Flow to refresh the projections, or run booley init"
+    ]
+
+
 def test_uninspectable_projections_are_not_current(tmp_path, monkeypatch):
     _write_project(tmp_path)
     project = readiness.load_project(tmp_path).project
