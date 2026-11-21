@@ -71,33 +71,27 @@ AUTHORED_PATHS = (
 )
 
 
-def _versioned_project(base, monkeypatch, layout):
-    root = base / "design"
+@pytest.fixture(params=["standalone", "nested"])
+def versioned_project(tmp_path, monkeypatch, request):
+    root = tmp_path / "design"
     data = root / ".booley"
     data.mkdir(parents=True)
     (data / "booley.toml").write_text('[project]\nname = "fixture"\n')
-    repo = data if layout == "standalone" else root
+    repo = data if request.param == "standalone" else root
     initialize_repository(repo, data, monkeypatch)
     booley_dir.reset_cache()
-    return root, data, repo
-
-
-@pytest.fixture(params=["standalone", "nested"])
-def versioned_project(tmp_path, monkeypatch, request):
-    yield _versioned_project(tmp_path, monkeypatch, request.param)
+    yield root, data, repo
     booley_dir.reset_cache()
 
 
-def test_runtime_policy_hides_only_local_outputs(tmp_path, monkeypatch):
-    for layout in ("standalone", "nested"):
-        _root, data, repo = _versioned_project(tmp_path / layout, monkeypatch, layout)
-        for path in RUNTIME_PATHS:
-            output = data / path
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("local evidence\n")
-            assert output.is_file()
-            assert_clean(repo)
-        booley_dir.reset_cache()
+@pytest.mark.parametrize("path", RUNTIME_PATHS)
+def test_runtime_policy_hides_only_local_outputs(versioned_project, path):
+    _root, data, repo = versioned_project
+    output = data / path
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("local evidence\n")
+    assert output.is_file()
+    assert_clean(repo)
 
 
 @pytest.mark.parametrize("path", AUTHORED_PATHS)

@@ -91,24 +91,23 @@ def job_log(project, rec):
     )
 
 
-def test_shell_run_writes_standalone_job(monkeypatch, project):
-    for kind in ("flow", "specialist"):
-        for outcome in (0, 3):
-            StubEndpoint.outcome = outcome
-            assert shell_run(monkeypatch, project, kind) == outcome
-        of_kind = [rec for rec in records(project) if rec.argv[1] == kind]
-        done, failed = sorted(of_kind, key=lambda rec: rec.exit_code)
-        for rec, outcome, status in ((done, 0, "done"), (failed, 3, "failed")):
-            assert (rec.status, rec.exit_code) == (status, outcome)
-            assert rec.session_key is None
-            assert rec.endpoint == "stub"
-            assert rec.argv == ["booley", kind, "stub", "--target", "t1"]
-            assert rec.work_dir == str(project)
-            assert rec.pid == os.getpid()
-            assert rec.started_at
-            assert rec.ended_at
-        assert StubEndpoint.seen_run_id == failed.run_id  # the endpoint ran under its Job's run id
-        assert "BOOLEY_RUN_ID" not in os.environ
+@pytest.mark.parametrize("kind", ["flow", "specialist"])
+def test_shell_run_writes_standalone_job(monkeypatch, project, kind):
+    for outcome in (0, 3):
+        StubEndpoint.outcome = outcome
+        assert shell_run(monkeypatch, project, kind) == outcome
+    done, failed = sorted(records(project), key=lambda rec: rec.exit_code)
+    for rec, outcome, status in ((done, 0, "done"), (failed, 3, "failed")):
+        assert (rec.status, rec.exit_code) == (status, outcome)
+        assert rec.session_key is None
+        assert rec.endpoint == "stub"
+        assert rec.argv == ["booley", kind, "stub", "--target", "t1"]
+        assert rec.work_dir == str(project)
+        assert rec.pid == os.getpid()
+        assert rec.started_at
+        assert rec.ended_at
+    assert StubEndpoint.seen_run_id == failed.run_id  # the endpoint ran under its Job's run id
+    assert "BOOLEY_RUN_ID" not in os.environ
 
 
 def test_job_log_copies_output_and_terminal_is_unchanged(monkeypatch, project, capfd):

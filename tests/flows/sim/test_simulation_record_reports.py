@@ -1087,23 +1087,24 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
     assert invocation_booley_dir(project / "out" / "flow-reports" / "sim" / "1") is None
 
 
-_REPORT_ROOT_CASES = (
-    ("flow-reports", False),
-    (".runtime/flow-reports", False),
-    ("tmp/doctor/flow-reports", False),
-    ("job_logs/session-1/.runtime/flow-reports", False),
-    ("goals/demo-20261027T000000Z/.runtime/flow-reports", False),
-    ("custom", True),
-    ("tmp/flow-reports", True),
-    ("job_logs/flow-reports", True),
-    ("job_logs/a/b/.runtime/flow-reports", True),
-    ("goals/flow-reports", True),
-    ("other/run-1/.runtime/flow-reports", True),
+@pytest.mark.parametrize(
+    ("reports_name", "expect_refused"),
+    [
+        ("flow-reports", False),
+        (".runtime/flow-reports", False),
+        ("tmp/doctor/flow-reports", False),
+        ("job_logs/session-1/.runtime/flow-reports", False),
+        ("goals/demo-20261027T000000Z/.runtime/flow-reports", False),
+        ("custom", True),
+        ("tmp/flow-reports", True),
+        ("job_logs/flow-reports", True),
+        ("job_logs/a/b/.runtime/flow-reports", True),
+        ("goals/flow-reports", True),
+        ("other/run-1/.runtime/flow-reports", True),
+    ],
 )
-
-
 def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str, expect_refused: bool
 ) -> None:
     """#2191: a custom report root under a linked entry is refused at the lock, not later.
 
@@ -1121,16 +1122,16 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.chdir(project)
     reset_cache()
-    for reports_name, expect_refused in _REPORT_ROOT_CASES:
-        report_dir = project / ".booley" / reports_name
-        flow = SimulateFlow()
-        flow._args = SimRequest(report_dir=report_dir)
-        if expect_refused:
-            with pytest.raises(ValueError, match="must not contain symlinks"):
-                flow.reserve_invocation_dir()
-            continue
-        with flow.publication_resources:
-            assert flow.reserve_invocation_dir() == report_dir / "sim" / "1", reports_name
+    report_dir = project / ".booley" / reports_name
+
+    flow = SimulateFlow()
+    flow._args = SimRequest(report_dir=report_dir)
+    if expect_refused:
+        with pytest.raises(ValueError, match="must not contain symlinks"):
+            flow.reserve_invocation_dir()
+        return
+    with flow.publication_resources:
+        assert flow.reserve_invocation_dir() == report_dir / "sim" / "1"
 
 
 _BUILD_STAGE = {
