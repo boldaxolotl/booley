@@ -402,3 +402,17 @@ def test_run_captured_bounded_stops_a_hung_tree_writing_an_output_stream(tmp_pat
 def test_run_captured_bounded_stops_a_hung_tree_capturing_bytes(tmp_path: Path):
     expired = _assert_hung_tree_is_stopped(tmp_path, text=False)
     assert expired.stderr is None or isinstance(expired.stderr, bytes)
+
+
+def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A wait stuck until the tree closes its pipes still times out at the deadline (#4323)."""
+    real_communicate = subprocess.Popen.communicate
+
+    def ignore_timeout(self, input=None, timeout=None):  # noqa: A002 - mirrors Popen
+        return real_communicate(self, input)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", ignore_timeout)
+    expired = _assert_hung_tree_is_stopped(tmp_path, text=False)
+    assert expired.timeout == _HUNG_TREE_DEADLINE_S
