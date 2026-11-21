@@ -382,7 +382,6 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && CLAUDE_ACTIVE=/opt/agent-clis/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
     && CLAUDE_MUSL=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl \
     && test "$CLAUDE_GLIBC" -ef "$CLAUDE_ACTIVE" \
-    && test -x "$CLAUDE_MUSL/claude" \
     && rm -rf "$CLAUDE_MUSL" \
     && test ! -e "$CLAUDE_MUSL" \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
