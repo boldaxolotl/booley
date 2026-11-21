@@ -51,6 +51,7 @@ class ProjectionDrift(Enum):
 
     MISSING = "missing"
     STALE = "stale"
+    ORPHANED = "orphaned"  # owned copy whose authored core is gone
     FOREIGN = "foreign file blocks"
 
 
@@ -63,7 +64,7 @@ class ProjectionIssue:
 
     @property
     def refreshable(self) -> bool:
-        """Whether reconciling clears it: only a foreign file needs a person."""
+        """Whether reconciling clears it: only a foreign file blocks the reconcile."""
         return self.drift is not ProjectionDrift.FOREIGN
 
     def __str__(self) -> str:
@@ -231,13 +232,16 @@ def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
 
 
 def projection_issues(project_root: Path | str) -> tuple[ProjectionIssue, ...]:
-    """Describe missing, stale, foreign, or disabled projections without writes."""
+    """Describe missing, stale, foreign, or orphaned projections without writes.
+
+    With stealth disabled every owned copy is orphaned.
+    """
     root = Path(project_root)
     expected = _expected_projections(root) if projection_enabled(root) else {}
     issues = _projection_drift(expected)
     for candidate in root.glob(PROJECTED_CORE_GLOB):
         if candidate not in expected and _is_owned_projection(candidate):
-            issues.append(ProjectionIssue(ProjectionDrift.STALE, candidate.name))
+            issues.append(ProjectionIssue(ProjectionDrift.ORPHANED, candidate.name))
     return tuple(sorted(issues, key=str))
 
 

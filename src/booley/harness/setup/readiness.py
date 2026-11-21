@@ -808,13 +808,27 @@ def _check_core_projections(project_root: Path, report: Findings) -> None:
 def _report_projection_issues(
     issues: tuple[core_projection.ProjectionIssue, ...], report: Findings
 ) -> None:
-    """WARN for copies a Flow run refreshes; FAIL for a foreign file only a person can move."""
-    refreshable = [issue for issue in issues if issue.refreshable]
-    foreign = [issue.name for issue in issues if not issue.refreshable]
-    if refreshable:
+    """WARN for copies a Flow run refreshes or a person deletes; FAIL for a foreign file.
+
+    An orphaned copy gets the delete hint: a Flow removes it only after resolving a
+    Target, and with the last authored core gone none may be selectable (#5290).
+    """
+    drift = core_projection.ProjectionDrift
+    by_drift = {kind: [issue for issue in issues if issue.drift is kind] for kind in drift}
+    drifted = by_drift[drift.MISSING] + by_drift[drift.STALE]
+    orphaned = [issue.name for issue in by_drift[drift.ORPHANED]]
+    foreign = [issue.name for issue in by_drift[drift.FOREIGN]]
+    if drifted:
         report.warn(
-            f"stealth core projections are missing or stale: {', '.join(map(str, refreshable))}",
+            f"stealth core projections are missing or stale: {', '.join(map(str, drifted))}",
             f"run any Booley Flow to refresh them{_init_alternative()}",
+            check_id="stealth.projections-not-current",
+        )
+    if orphaned:
+        names = ", ".join(orphaned)
+        report.warn(
+            f"stealth core projections outlive their authored cores: {names}",
+            f"delete {names} from the Project Root",
             check_id="stealth.projections-not-current",
         )
     if foreign:
