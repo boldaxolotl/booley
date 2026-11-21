@@ -64,7 +64,7 @@ class ProjectionIssue:
 
     @property
     def refreshable(self) -> bool:
-        """Whether reconciling clears it: only a foreign file needs a person."""
+        """Whether reconciling clears it: only a foreign file blocks the reconcile."""
         return self.drift is not ProjectionDrift.FOREIGN
 
     def __str__(self) -> str:

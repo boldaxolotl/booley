@@ -805,12 +805,6 @@ def _check_core_projections(project_root: Path, report: Findings) -> None:
     _check_projection_exclude(project_root, report)
 
 
-_FLOW_REFRESHED_DRIFT = (
-    core_projection.ProjectionDrift.MISSING,
-    core_projection.ProjectionDrift.STALE,
-)
-
-
 def _report_projection_issues(
     issues: tuple[core_projection.ProjectionIssue, ...], report: Findings
 ) -> None:
@@ -819,11 +813,11 @@ def _report_projection_issues(
     An orphaned copy gets the delete hint: a Flow removes it only after resolving a
     Target, and with the last authored core gone none may be selectable (#5290).
     """
-    drifted = [issue for issue in issues if issue.drift in _FLOW_REFRESHED_DRIFT]
-    orphaned = [
-        issue.name for issue in issues if issue.drift is core_projection.ProjectionDrift.ORPHANED
-    ]
-    foreign = [issue.name for issue in issues if not issue.refreshable]
+    drift = core_projection.ProjectionDrift
+    by_drift = {kind: [issue for issue in issues if issue.drift is kind] for kind in drift}
+    drifted = by_drift[drift.MISSING] + by_drift[drift.STALE]
+    orphaned = [issue.name for issue in by_drift[drift.ORPHANED]]
+    foreign = [issue.name for issue in by_drift[drift.FOREIGN]]
     if drifted:
         report.warn(
             f"stealth core projections are missing or stale: {', '.join(map(str, drifted))}",
