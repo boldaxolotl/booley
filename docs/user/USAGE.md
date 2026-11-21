@@ -287,12 +287,14 @@ the Targets and Test Runs you type. Output and Expert options go in the
 **Extra arguments** field, typed as on the command line. `Esc` in a choice list
 or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
 `cd … && booley flow …` command. The
-review screen also says whether the Job runs now or queues behind other Jobs
-(with its position). A Simulation, synthesis, FPGA, or lint Job is admitted by
-memory: the screen says it waits while its estimate does not fit the Memory
-Budget, without a position. The screen also warns when the worktree has a connected session,
-running or queued Jobs, or uncommitted changes. A check it cannot make is
-reported as such. Synth and FPGA runs show their per-work-unit timeout.
+review screen also says whether the Job runs now or is admitted by
+memory. Every Job that takes a slot, Specialists and the Mutation Flow
+included, is admitted by memory: it waits while its estimate does not fit the
+Memory Budget. A dry run runs now. The screen also warns when the worktree has
+a connected session, running or queued Jobs, or uncommitted changes. A check it
+cannot make is reported as such. Synth and FPGA runs show their timeout per
+work unit, a Mutation Flow run its timeout for the whole run, and a Specialist
+its timeout per model call; Simulation and lint runs show none.
 **Submit** starts the Job, unless, for a Specialist, its Agent CLI cannot
 sign in or its settings cannot be read:
 then Submit says why (with the fix) and does nothing until the problem is fixed.

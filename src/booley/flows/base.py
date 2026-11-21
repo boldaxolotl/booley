@@ -689,6 +689,8 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         cli(self)
 
     default_timeout: ClassVar[int] = 600
+    # True when the timeout budget is the whole run's, not each work unit's.
+    timeout_covers_whole_run: ClassVar[bool] = False
     non_persisting_dry_run = True
 
     def _dry_run_result(self, plan: object) -> EndpointOutcome:

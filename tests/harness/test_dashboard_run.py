@@ -1194,7 +1194,8 @@ def slots(tmp_path: Path):
         entry.release()
 
 
-LONG_TIMEOUT = "Timeout: 30m 00s per work unit"
+WORK_UNIT_TIMEOUT = "Timeout: 30m 00s per work unit"
+WHOLE_RUN_TIMEOUT = "Timeout: 30m 00s for the whole run"
 ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit the Memory Budget"
 
 
@@ -1202,11 +1203,12 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
 @pytest.mark.parametrize(
     ("flow", "live", "dead", "queue", "timeout"),
     [
-        ("mutation", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 1, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 2, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 0, 1, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("synth", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 0, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 1, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 2, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 0, 1, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("synth", 0, 0, ADMITTED_BY_MEMORY, WORK_UNIT_TIMEOUT),
+        ("fpga", 0, 0, ADMITTED_BY_MEMORY, "Timeout: 2h 00m per work unit"),
         ("lint", 1, 0, ADMITTED_BY_MEMORY, None),
     ],
     ids=[
@@ -1215,6 +1217,7 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
         "holder-and-waiter",
         "dead-owner-only",
         "synth-memory-timeout",
+        "fpga-memory-timeout",
         "lint-memory",
     ],
 )
@@ -1230,8 +1233,9 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
         wizard = await to_form(app, pilot, flow)
         await check_arguments(app, pilot, wizard, ARGUMENTS)
         assert shown(wizard, "#run-review").splitlines()[0] == queue
-        assert ("Timeout: 30m 00s per work unit" in shown(wizard, "#run-review")) == (
-            timeout is not None
+        review = shown(wizard, "#run-review")
+        assert [line for line in review.splitlines() if line.startswith("Timeout")] == (
+            [timeout] if timeout else []
         )
         assert shown(wizard, "#run-error") == ""
 
