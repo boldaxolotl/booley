@@ -81,6 +81,10 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     (reports / "sim.json").write_text(json.dumps({"run_id": "foreign", "passed": True}))
     view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
     assert view.report is None
+    (reports / "sim.json").write_text(json.dumps({"run_id": "one", "passed": True}))
+    assert (
+        snapshot_jobs(tmp_path, interactive_root=root).jobs[0].report_path == reports / "sim.json"
+    )
     (reports / "sim/1").mkdir(parents=True)
     exact = reports / "sim/1/report.json"
     exact.write_text(json.dumps({"run_id": "one", "passed": False, "summary": "design failed"}))
@@ -89,7 +93,7 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     assert view.report["passed"] is False
     assert "Flow result: PASSED" in job_detail(view)
     assert "Design verdict:" not in job_detail(view)
-    assert str(exact) in job_detail(view)
+    assert f"Report:\n{exact}" in job_detail(view)
     assert "Peak memory" not in job_detail(view)
     assert "CPU:" not in job_detail(view)
 
@@ -706,6 +710,7 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
     assert view.report is not None  # found under the checkout's reports, by the run's own id
     detail = job_detail(view)
     assert f"Log:\n{log}" in detail
+    assert view.report_path.name == "report.json"
     assert f"Report:\n{view.report_path}" in detail
     assert job_paths(view) == (str(log), str(view.report_path))
 
