@@ -292,13 +292,20 @@ def _communicate_sliced(
 
 
 class _DeadlineKiller:
-    """Kill *proc*'s tree from a separate thread once *timeout* seconds pass (#4323).
+    """Kill *proc*'s tree from a separate thread once *timeout* seconds pass.
 
-    The waiting thread alone cannot enforce the deadline: once on Windows CI it
-    stayed blocked inside one wait slice until the hung tree exited on its own,
-    38 s past a 2 s deadline, and then saw a normal exit. Killing the tree from
-    here closes its pipes, which ends any wait on them, so the timeout holds
-    even while the waiting thread is stalled.
+    Defense in depth for #4323, whose cause is unproven: once on Windows CI the
+    waiting thread returned 38 s past a 2 s deadline, when the hung tree exited
+    on its own, and saw a normal exit. If that thread was blocked on something
+    the tree held, such as its pipes, this kill ends the wait at the deadline.
+    It does not help when the whole process stalls (for example on the GIL):
+    this thread's timed wait uses the same timed-lock mechanism as the waiting
+    thread's ``Thread.join``.
+
+    A child that has already exited is left alone, even when its wait has not
+    returned yet: it finished in time, and its PID may already be reaped. If a
+    descendant still holds the pipes, the waiting thread's own deadline kills
+    the tree.
     """
 
     def __init__(self, proc: subprocess.Popen[bytes], timeout: float) -> None:
@@ -308,10 +315,14 @@ class _DeadlineKiller:
         self._expired = False
         self._thread = threading.Thread(
             target=self._kill_at_deadline,
-            args=(timeout,),
+            # Event.wait raises OverflowError above TIMEOUT_MAX (an inf timeout).
+            args=(min(timeout, threading.TIMEOUT_MAX),),
             name="bounded-capture-deadline",
             daemon=True,
         )
+
+    def start(self) -> None:
+        """Arm the deadline."""
         self._thread.start()
 
     def _kill_at_deadline(self, timeout: float) -> None:
@@ -319,7 +330,7 @@ class _DeadlineKiller:
             return
         with self._lock:
             # stop() may have run between the wait's timeout and this lock.
-            if self._stopped.is_set():
+            if self._stopped.is_set() or self._proc.poll() is not None:
                 return
             self._expired = True
         kill_process_tree(self._proc)
@@ -328,11 +339,12 @@ class _DeadlineKiller:
         """Disarm, wait for a kill in progress, and say whether the deadline fired.
 
         After this returns the tree is killed exactly when the result is True,
-        and no kill runs later.
+        and no kill runs later. Safe when :meth:`start` failed or never ran.
         """
         with self._lock:
             self._stopped.set()
-        self._thread.join()
+        if self._thread.ident is not None:
+            self._thread.join()
         return self._expired
 
 
@@ -368,6 +380,7 @@ def _run_bounded(
     killer = _DeadlineKiller(proc, timeout)
     try:
         try:
+            killer.start()
             out, err = _communicate_sliced(proc, timeout)
         except subprocess.TimeoutExpired:
             if not killer.stop():
@@ -386,7 +399,7 @@ def _run_bounded(
             _close_unowned_pipes(proc)
             raise
         if killer.stop():
-            # The wait returned only because the deadline kill closed the pipes.
+            # The child was still running at the deadline and was killed.
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
     finally:
         if feeder is not None:
@@ -442,9 +455,9 @@ def run_captured_bounded(
     Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
     child and (on Windows) then waits for the output pipes to reach EOF with no
     limit, this starts the child in its own process group, kills the whole tree
-    on timeout and abandons pipes a surviving descendant still holds. A
-    separate thread kills the tree at the deadline, so a stalled wait cannot
-    postpone the timeout.
+    on timeout and abandons pipes a surviving descendant still holds. As defense
+    in depth, a separate thread also kills a still-running child at the
+    deadline, in case the waiting thread stalls (#4323).
     *cwd* and *env* are the child's working directory and complete environment;
     ``None`` inherits the caller's.
 

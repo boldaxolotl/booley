@@ -8,10 +8,13 @@ by itself.  Shared by the ``_run_docker``, session-runtime and admission tests, 
 
 from __future__ import annotations
 
+import subprocess
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 from tests.time_budget import hang_guard_s, scaled
 
@@ -70,9 +73,24 @@ def heartbeat_tree(tmp_path: Path) -> Iterator[dict[str, Path]]:
         yield paths
     finally:
         paths["stop"].touch()
-        deadline = time.monotonic() + hang_guard_s()
-        while not paths["done"].exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        _wait_for_tree_exit(paths)
+
+
+def _wait_for_tree_exit(paths: dict[str, Path]) -> None:
+    """Wait for the done file, or for 1 s without a heartbeat (the tree was killed).
+
+    A live grandchild writes every 0.05 s and ends within one beat of the stop
+    file; a killed one never writes the done file.
+    """
+    deadline = time.monotonic() + hang_guard_s()
+    last_size, last_change = _heartbeat_size(paths["heartbeat"]), time.monotonic()
+    while not paths["done"].exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+        size = _heartbeat_size(paths["heartbeat"])
+        if size != last_size:
+            last_size, last_change = size, time.monotonic()
+        elif time.monotonic() - last_change > 1:
+            return
 
 
 def parent_argv(tmp_path: Path, python: str, paths: dict[str, Path], mode: str) -> list[str]:
@@ -119,3 +137,20 @@ def describe_heartbeat_tree(paths: dict[str, Path]) -> str:
     if paths["done"].exists():
         return f"had exited on its own (done file present, its {TREE_LIFE_S:g} s limit)"
     return "showed no heartbeat for 1 s and no done file (killed, or alive but not scheduled)"
+
+
+def stall_wait_on(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
+    """Make every wait on the child started with *argv* ignore its timeout.
+
+    Patches ``subprocess`` directly because no public entry point can stall the
+    waiting thread: #4323 saw that stall only inside CPython on a Windows runner.
+    Other children, such as ``taskkill``, keep the real wait.
+    """
+    real_communicate = subprocess.Popen.communicate
+
+    def communicate(self, input=None, timeout=None):  # noqa: A002 - mirrors Popen
+        if self.args == argv:
+            timeout = None
+        return real_communicate(self, input, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", communicate)

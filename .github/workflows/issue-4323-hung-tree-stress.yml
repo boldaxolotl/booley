@@ -3,62 +3,86 @@ name: issue-4323-hung-tree-stress
 on:
   push:
     branches: [codex/issue-4323-windows-hung-tree-flake]
+permissions:
+  contents: read
 jobs:
   windows-stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        # fixed: this branch; baseline: platform_paths.py from main (no deadline killer).
+        variant: [fixed, baseline]
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       PYTHONFAULTHANDLER: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: |
-            pyproject.toml
-            .github/ci/constraints.txt
+      - name: Use main's platform_paths.py (baseline only)
+        if: matrix.variant == 'baseline'
+        shell: bash
+        run: git show origin/main:src/booley/runtime/platform_paths.py > src/booley/runtime/platform_paths.py
       - name: Install package with test dependencies
         run: pip install -e ".[test]" -c .github/ci/constraints.txt
-      - name: Stress the four hung-tree tests
+      - name: Stress the hung-tree tests (4 chunks of 50 repetitions)
         shell: bash
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-          BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
+          VARIANT: ${{ matrix.variant }}
         run: |
           M=tests/test_platform_paths.py::test_run_captured_bounded_stops_a_hung_tree
-          pytest "${M}_fed_input" "${M}_reading_a_stdin_stream" "${M}_writing_an_output_stream" "${M}_capturing_bytes" "${M}_while_the_wait_is_stalled" \
-            -q --tb=short -n 4 --dist=load --count=200 --basetemp "${RUNNER_TEMP}/pytest" \
-            --timeout=60 --timeout-headroom=0.8 --timeout-headroom-warn=0.5 \
-            -o faulthandler_timeout=20 --durations=20 -rf --junitxml="${RUNNER_TEMP}/junit.xml"
+          tests=("${M}_fed_input" "${M}_reading_a_stdin_stream" "${M}_writing_an_output_stream" "${M}_capturing_bytes")
+          if [ "$VARIANT" = fixed ]; then tests+=("${M}_while_the_wait_is_stalled"); fi
+          mkdir -p "${RUNNER_TEMP}/junit"
+          status=0
+          for chunk in 1 2 3 4; do
+            # Each chunk writes its own junit file, so finished chunks survive a job timeout.
+            timeout 1800 pytest "${tests[@]}" -q --tb=short -n 4 --dist=load --count=50 \
+              --basetemp "${RUNNER_TEMP}/pytest-${chunk}" -p no:cacheprovider \
+              --timeout=60 -o faulthandler_timeout=50 --durations=10 -rf \
+              --junitxml="${RUNNER_TEMP}/junit/chunk-${chunk}.xml" || status=1
+          done
+          exit $status
       - name: Summarise per-test timings
         if: always()
         shell: bash
         env:
-          JUNIT: ${{ runner.temp }}/junit.xml
+          JUNIT_DIR: ${{ runner.temp }}/junit
+          VARIANT: ${{ matrix.variant }}
         run: |
           python - >> "${GITHUB_STEP_SUMMARY}" <<'PY'
-          import os, collections
+          import collections, glob, os
           import xml.etree.ElementTree as ET
           rows = collections.defaultdict(list)
-          for case in ET.parse(os.environ["JUNIT"]).iter("testcase"):
-              failed = case.find("failure") is not None or case.find("error") is not None
-              rows[case.get("name").split("[")[0]].append((float(case.get("time")), failed))
+          for path in sorted(glob.glob(os.path.join(os.environ["JUNIT_DIR"], "*.xml"))):
+              for case in ET.parse(path).iter("testcase"):
+                  failed = case.find("failure") is not None or case.find("error") is not None
+                  rows[case.get("name").split("[")[0]].append((float(case.get("time")), failed))
+          print(f"### {os.environ['VARIANT']}\n")
           print("| test | runs | failures | max s | p99 s |\n| --- | --- | --- | --- | --- |")
           for name, runs in sorted(rows.items()):
               times = sorted(t for t, _ in runs)
               print(f"| {name} | {len(runs)} | {sum(f for _, f in runs)} | {times[-1]:.2f} | {times[int(0.99 * (len(times) - 1))]:.2f} |")
           PY
-      - name: Publish pytest evidence
+      - name: Upload junit
         if: always()
-        uses: ./.github/actions/publish-pytest-evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          label: issue-4323-windows-stress
+          name: issue-4323-stress-${{ matrix.variant }}
+          path: ${{ runner.temp }}/junit
   macos-check:
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
