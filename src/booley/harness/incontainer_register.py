@@ -87,22 +87,25 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     """Pick the agent apps for ``BOOLEY_AGENT_APP=auto`` from this start's credentials.
 
     Every CLI with a credential is allowed, Claude first (the default), then
-    Codex. With no credential: a complete gateway configuration (Codex alone),
-    then Claude alone with its login offered. A visitor's own credential always
+    Codex. Without a ``BOOLEY_PRIMARY_AUTH`` hand-off each CLI's credential is
+    looked up under the policy the Project records. With no credential: a
+    complete gateway configuration (Codex alone, in the visitor mode), then
+    Claude alone with its login offered. A visitor's own credential always
     beats the gateway, so ``BOOLEY_PRIMARY_AUTH=gateway`` counts as the
     visitor mode here: the gateway is only that mode's fallback. Reasons name credential sources
     (variables and paths), never values.
     """
     raw_policy = agent.env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH"))
     policy = None if raw_policy == GATEWAY_AUTH else raw_policy
-    lookup = policy or VISITOR_AUTH
+    start = _hook_start_directory()
+    lookups = {app: policy or agent.unrecorded_cli_policy(app, start) for app in _LABELS}
     # Look where registration looks ($HOME), so the published reason names a
     # credential the registered app will really use.
     home = incontainer_setup._agent_home()
     logged_in = {
         app: credential
         for app in _LABELS
-        if (credential := auth_token.login_credential(app, lookup, home=home)) is not None
+        if (credential := auth_token.login_credential(app, lookups[app], home=home)) is not None
     }
     if logged_in:
         clis = tuple(logged_in)
@@ -114,23 +117,29 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
         if len(clis) > 1:
             reason += f"; {_LABELS[default]} is the default"
         return agent_app.AgentAppChoice(default, policy, reason, clis)
-    if lookup == VISITOR_AUTH:
-        try:
-            gateway = gateway_settings_from_env()
-        except GatewayConfigError:
-            pass
-        else:
-            return agent_app.AgentAppChoice(
-                auth_token.APP_CODEX,
-                GATEWAY_AUTH,
-                f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
-                (auth_token.APP_CODEX,),
-            )
+    visitor_codex = lookups[auth_token.APP_CODEX] == VISITOR_AUTH
+    if visitor_codex and (gateway_choice := _gateway_choice()) is not None:
+        return gateway_choice
+    gateway_note = " and no gateway" if visitor_codex else ""
     return agent_app.AgentAppChoice(
         auth_token.APP_CLAUDE,
         policy,
-        "no credential and no gateway; Claude's login is offered",
+        f"no credential{gateway_note}; Claude's login is offered",
         (auth_token.APP_CLAUDE,),
+    )
+
+
+def _gateway_choice() -> agent_app.AgentAppChoice | None:
+    """Codex on the sponsored gateway when its configuration is complete, else ``None``."""
+    try:
+        gateway = gateway_settings_from_env()
+    except GatewayConfigError:
+        return None
+    return agent_app.AgentAppChoice(
+        auth_token.APP_CODEX,
+        GATEWAY_AUTH,
+        f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
+        (auth_token.APP_CODEX,),
     )
 
 
@@ -234,6 +243,21 @@ def _hide_issued_gateway(status: str) -> str:
     )
 
 
+def _drop_unchosen_gateway(status: str, choice: agent_app.AgentAppChoice | None) -> str:
+    """Append the step that removes Booley's Codex gateway provider when ``auto`` skips Codex.
+
+    Codex's own registration drops the provider when Codex stays allowed; a start
+    that no longer allows Codex would keep one an earlier gateway start wrote.
+    """
+    if choice is None or auth_token.APP_CODEX in choice.clis:
+        return status
+    try:
+        return f"{status} codex-gateway:{incontainer_setup.drop_codex_gateway()}"
+    except ValueError:
+        # Codex is not chosen, so an unparsable config of it must not fail this start.
+        return f"{status} codex-gateway:unreadable"
+
+
 def _any_refused(status: str) -> bool:
     """Whether a status line carries a refused registration or step."""
     return any(token == "refused" or token.endswith(":refused") for token in status.split())
@@ -254,6 +278,7 @@ def main() -> None:
     server = incontainer_setup.ensure_http_server(mode="interactive") if clis else "skipped"
     trust = sandbox_trust_paths(_hook_start_directory()) if clis else ()
     status = _hide_issued_gateway(_register_clis(clis, trust))
+    status = _drop_unchosen_gateway(status, choice)
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
     print(
