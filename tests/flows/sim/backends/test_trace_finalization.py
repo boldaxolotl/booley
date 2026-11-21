@@ -132,3 +132,16 @@ def test_budget_starts_and_pending_incident_is_published_before_conversion(tmp_p
 
     assert seen == [("incident", "budget:42")]
     assert trace.events[:2] == ["budget:42", "postprocess"]
+
+
+def test_interrupted_finalization_still_releases_held_diagnostics(tmp_path: Path):
+    class _Interrupted(_FakeTrace):
+        def find(self) -> Path | None:
+            raise KeyboardInterrupt
+
+    trace = _Interrupted()
+
+    with pytest.raises(KeyboardInterrupt):
+        _finalize(trace)
+
+    assert trace.events[-1] == "report:False"

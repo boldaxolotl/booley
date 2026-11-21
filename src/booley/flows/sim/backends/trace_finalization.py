@@ -94,12 +94,17 @@ def finalize_trace(
     session.start_conversion_budget(convert_timeout_s)
     if publish_pending is not None:
         publish_pending(AdapterTraceResult("incident", detail=_PENDING_DETAIL))
-    current.finish_streams()
-    if raw_vcd is not None:
-        session.postprocess(raw_vcd)
-    selection = current.select()
-    found = selection.path
-    inspection = session.inspect(found) if found is not None else None
+    try:
+        current.finish_streams()
+        if raw_vcd is not None:
+            session.postprocess(raw_vcd)
+        selection = current.select()
+        found = selection.path
+        inspection = session.inspect(found) if found is not None else None
+    except BaseException:
+        # An interrupt or error must not swallow the held bwave diagnostics.
+        session.report_failed_conversions(declared_trace_used=False)
+        raise
     artifact = inspection.artifact if inspection is not None else None
     session.report_failed_conversions(
         declared_trace_used=artifact is not None and selection.declared

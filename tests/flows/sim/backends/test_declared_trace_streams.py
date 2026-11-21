@@ -319,8 +319,39 @@ def test_failed_conversion_diagnostics_wait_for_the_waveform_outcome(
         )
         for text in diagnostics:
             assert any(text in line for line in lines[:error])
-    assert out.attempts(kind)[-1]["detail"].startswith(evidence)
+    assert evidence in out.attempts(kind)[-1]["detail"]
     assert evidence in stderr_path.read_text(encoding="utf-8")
+
+
+def test_failed_supervision_still_releases_held_fifo_diagnostics(monkeypatch):
+    """finalize_trace never runs when the simulator supervisor raises, so cleanup must release."""
+    from types import SimpleNamespace
+
+    events: list[str] = []
+    session = SimpleNamespace(
+        cleanup_fifo=lambda _conversion: events.append("cleanup"),
+        report_failed_conversions=lambda *, declared_trace_used: events.append(
+            f"report:{declared_trace_used}"
+        ),
+    )
+    trace = SimpleNamespace(
+        session=session,
+        current=None,
+        mode=verilator_adapter.TraceMode.VCD_FIFO,
+        conversion=None,
+    )
+
+    def _boom(_launch):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(verilator_adapter, "run_supervised", _boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        verilator_adapter._execute_supervised(
+            [], SimpleNamespace(run_cwd=None, work_dir=None), {}, 1, trace, 0, ()
+        )
+
+    assert events == ["cleanup", "report:False"]
 
 
 def _no_pipe_left(run_dir: Path, name: str) -> None:

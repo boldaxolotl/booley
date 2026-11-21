@@ -487,7 +487,10 @@ class TraceSession:
         if status == "success":
             self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
-        detail = result.detail if result and not result.success else ""
+        # Events (e.g. "bwave killed (FIFO hung)") hold the cause when stderr is empty.
+        detail = ""
+        if result and not result.success:
+            detail = "; ".join(filter(None, (*result.events, result.detail)))
         self.record_attempt("fifo_cleanup", status, detail=detail, return_code=return_code)
 
     def start_monitor(
