@@ -115,7 +115,7 @@ _DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
 # The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
 # mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
-_HDL_VERSION = "1.29.0"
+_HDL_VERSION = "1.29.1"
 HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
