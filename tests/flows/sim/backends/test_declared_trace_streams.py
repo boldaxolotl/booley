@@ -230,6 +230,99 @@ def test_conversion_warning_reaches_the_trace_result(
     assert (trace.status, trace.warnings) == ("ok", (warning,))
 
 
+_FIFO_DIAGNOSTICS = (
+    "[bwave] WARNING: bwave exited with rc=1",
+    "[bwave] stderr: fake bwave: no VCD header",
+)
+_POST_RUN_DIAGNOSTICS = ("VCD not found:", "[bwave] WARNING: post-process failed (rc=None)")
+
+
+@pytest.mark.parametrize(
+    ("adapter", "mode", "steps", "entries", "subject", "kind", "evidence", "diagnostics"),
+    [
+        pytest.param(
+            "verilator",
+            verilator_adapter.TraceMode.VCD_FIFO,
+            "write:fpu.vcd",
+            ["fpu.vcd"],
+            "the FIFO conversion",
+            "fifo_cleanup",
+            "fake bwave: no VCD header",
+            _FIFO_DIAGNOSTICS,
+            id="fifo-recovered",
+        ),
+        pytest.param(
+            "verilator",
+            verilator_adapter.TraceMode.VCD_FIFO,
+            "",
+            [],
+            None,
+            "fifo_cleanup",
+            "fake bwave: no VCD header",
+            _FIFO_DIAGNOSTICS,
+            id="fifo-no-waveform",
+        ),
+        pytest.param(
+            "icarus",
+            verilator_adapter.TraceMode.NATIVE_FST,
+            "write:fpu.vcd",
+            ["fpu.vcd"],
+            "the post-run conversion of dump.vcd",
+            "vcd_postprocess_build",
+            "VCD not found:",
+            _POST_RUN_DIAGNOSTICS,
+            id="post-run-recovered",
+        ),
+        pytest.param(
+            "icarus",
+            verilator_adapter.TraceMode.NATIVE_FST,
+            "",
+            [],
+            None,
+            "vcd_postprocess_build",
+            "VCD not found:",
+            _POST_RUN_DIAGNOSTICS,
+            id="post-run-no-waveform",
+        ),
+    ],
+)
+def test_failed_conversion_diagnostics_wait_for_the_waveform_outcome(
+    adapter,
+    mode,
+    steps,
+    entries,
+    subject,
+    kind,
+    evidence,
+    diagnostics,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """#5316: a declared trace that replaces a failed conversion leaves one note, not bwave errors."""
+    out = _run(adapter, tmp_path, monkeypatch, steps, entries, trace_mode=mode)
+
+    printed = capsys.readouterr().out
+    lines = printed.splitlines()
+    notes = [line for line in lines if line.startswith("[trace] note:")]
+    stderr_path = tmp_path / "work" / "trace.fst.stderr"
+    if subject:
+        assert notes == [
+            f"[trace] note: {subject} did not produce the trace; used the declared trace "
+            f"instead (bwave output: {stderr_path})"
+        ]
+        assert not any(text in printed for text in diagnostics)
+    else:
+        assert not notes
+        error = next(
+            i for i, line in enumerate(lines) if line.startswith("ERROR: trace requested")
+        )
+        for text in diagnostics:
+            assert any(text in line for line in lines[:error])
+    assert out.attempts(kind)[-1]["detail"].startswith(evidence)
+    assert evidence in stderr_path.read_text(encoding="utf-8")
+
+
 def _no_pipe_left(run_dir: Path, name: str) -> None:
     assert not os.path.lexists(run_dir / name)
     assert not [path for path in run_dir.iterdir() if path.name.endswith(".booley-pipe")]

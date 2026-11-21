@@ -101,6 +101,9 @@ def finalize_trace(
     found = selection.path
     inspection = session.inspect(found) if found is not None else None
     artifact = inspection.artifact if inspection is not None else None
+    session.report_failed_conversions(
+        declared_trace_used=artifact is not None and selection.declared
+    )
     if artifact is not None:
         output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
         print(output)

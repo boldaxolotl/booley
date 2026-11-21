@@ -95,6 +95,8 @@ class TraceSession:
         self._monitor_threads: list[threading.Thread] = []
         # One monotonic deadline bounds every post-run conversion of the attempt.
         self._conversion_deadline: float | None = None
+        # Failed conversions (label, output lines) held until the waveform outcome is known.
+        self._held_failures: list[tuple[str, tuple[str, ...]]] = []
         # Once postprocess ran, find() must not convert the same VCD a second time.
         self._postprocessed = False
         # The `bwave build` warnings of each store a successful conversion wrote.
@@ -469,20 +471,24 @@ class TraceSession:
         return conversion
 
     def cleanup_fifo(self, conversion: StreamingConversion | None) -> None:
-        """Finish converter ownership and record Simulation evidence."""
+        """Finish converter ownership and record Simulation evidence.
+
+        A failed conversion's output is held for :meth:`report_failed_conversions`.
+        """
         result = conversion.finish() if conversion is not None else None
         if result:
-            for event in result.events:
-                print(f"[bwave] {event}")
+            lines = tuple(f"[bwave] {event}" for event in result.events)
             if result.detail:
-                print(f"[bwave] stderr: {result.detail}")
+                lines += (f"[bwave] stderr: {result.detail}",)
+            self._print_or_hold(result.success, "the FIFO conversion", lines)
         status = "success" if result and result.success else "no_artifact"
         if result:
             self.note_conversion(result)
         if status == "success":
             self.publish_bwave(self.bwave_path)
         return_code = result.attempts[-1].return_code if result and result.attempts else None
-        self.record_attempt("fifo_cleanup", status, return_code=return_code)
+        detail = result.detail if result and not result.success else ""
+        self.record_attempt("fifo_cleanup", status, detail=detail, return_code=return_code)
 
     def start_monitor(
         self,
@@ -675,14 +681,15 @@ class TraceSession:
                 existing_store=ExistingStorePolicy.REPLACE,
                 deadline=self._conversion_deadline,
             )
-            self._render_conversion(result)
-            self._record_conversion("vcd_postprocess_build", result)
             success = result.success
+            lines = self._conversion_lines(result)
             if not success and self._budget_spent():
-                print(
+                lines += (
                     "[bwave] WARNING: trace conversion ran out of its budget; "
-                    "raise [flows.sim].trace_convert_timeout_ms"
+                    "raise [flows.sim].trace_convert_timeout_ms",
                 )
+            self._print_or_hold(success, f"the post-run conversion of {vcd_path.name}", lines)
+            self._record_conversion("vcd_postprocess_build", result)
             if success:
                 self.publish_bwave(self.bwave_path)
             elif result.detail:
@@ -771,8 +778,33 @@ class TraceSession:
             )
 
     @staticmethod
-    def _render_conversion(result: ConversionResult) -> None:
-        for event in result.events:
-            print(f"[bwave] {event}")
-        for message in conversion_failure_messages(result, warning="post-process failed"):
-            print(message)
+    def _conversion_lines(result: ConversionResult) -> tuple[str, ...]:
+        return (
+            *(f"[bwave] {event}" for event in result.events),
+            *conversion_failure_messages(result, warning="post-process failed"),
+        )
+
+    def _print_or_hold(self, success: bool, label: str, lines: tuple[str, ...]) -> None:
+        """Print a conversion's output now, or hold a failure until the waveform is chosen."""
+        if success:
+            self._print_lines(lines)
+        else:
+            self._held_failures.append((label, lines))
+
+    @staticmethod
+    def _print_lines(lines: tuple[str, ...]) -> None:
+        for line in lines:
+            print(line)
+
+    def report_failed_conversions(self, *, declared_trace_used: bool) -> None:
+        """Release held failures: one note if a declared trace replaced them, else verbatim."""
+        held, self._held_failures = self._held_failures, []
+        if held and declared_trace_used:
+            labels = " and ".join(label for label, _ in held)
+            print(
+                f"[trace] note: {labels} did not produce the trace; used the declared "
+                f"trace instead (bwave output: {self.persisted_stderr_path})"
+            )
+        else:
+            for _, lines in held:
+                self._print_lines(lines)
