@@ -627,3 +627,46 @@ def test_auto_choice_follows_the_recorded_policy(
     assert ("synthetic-codex-key" in codex_auth) == (policy == "api_key")
     if policy == "api_key":
         assert auth_token.credential_plan(app, "api_key").selected is not None
+
+
+def test_gateway_handoff_with_a_stored_codex_key_still_applies_the_key(
+    sandbox, monkeypatch, capsys
+):
+    """``BOOLEY_PRIMARY_AUTH=gateway`` is the visitor mode when a personal credential wins."""
+    _record_auth(sandbox, monkeypatch, b'[agent]\nauth = "subscription"\n')
+    (sandbox.home / ".booley-api-key-seed").write_text("synthetic-codex-key")
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "")
+    _give("codex-api-key", sandbox.home, monkeypatch)
+
+    assert "app:codex " in _start(capsys)
+
+    assert agent_app.auto_choice().policy is None
+    assert "synthetic-codex-key" in _read(sandbox.home / ".codex" / "auth.json")
+
+
+def test_unrecorded_policy_reason_names_no_gateway_only_when_one_is_allowed(
+    sandbox, monkeypatch, capsys
+):
+    """The published reason mentions the gateway only in the visitor mode."""
+    _give("gateway", sandbox.home, monkeypatch)
+    _record_auth(sandbox, monkeypatch, b"[agent]\n")
+    assert "no credential;" in entry.resolve_auto_choice().reason
+    _record_auth(sandbox, monkeypatch, b'[agent]\nauth = "visitor"\n')
+    monkeypatch.delenv("BOOLEY_GATEWAY_URL")
+    assert "no credential and no gateway;" in entry.resolve_auto_choice().reason
+
+
+def test_an_unreadable_codex_config_does_not_fail_a_start_that_skips_codex(
+    sandbox, monkeypatch, capsys
+):
+    """Dropping a stale gateway provider is best effort when Codex is not chosen."""
+    _record_auth(sandbox, monkeypatch, b"[agent]\n")
+    _give("claude-api-key", sandbox.home, monkeypatch)
+    (sandbox.home / ".codex").mkdir()
+    (sandbox.home / ".codex" / "config.toml").write_text("not = [valid toml")
+
+    status = _start(capsys)
+
+    assert "codex-gateway:unreadable" in status
+    assert "refused" not in status

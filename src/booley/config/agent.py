@@ -478,14 +478,16 @@ def policy_in_force(recorded: str | None) -> str:
 
 
 def unrecorded_cli_policy(cli: str, project_root: Path) -> str:
-    """The policy for *cli* when neither the issued record nor a hand-off names one.
+    """The policy for *cli* when neither the issued record nor a published hand-off names one.
 
     A hand-written Sandbox reads the Project's recorded ``[agent] auth`` (``booley.toml``
     in ``BOOLEY_DIR``, else the Project Root's own Booley Directory): a missing or
     unreadable value is ``subscription``. A recorded ``gateway`` keeps the visitor
-    lookup. Elsewhere the lookup is the visitor mode.
+    lookup, and so does a ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off, which the registrar
+    does not publish when a personal credential wins. Elsewhere the lookup is the
+    visitor mode.
     """
-    if not visitor_mode_honoured():
+    if not visitor_mode_honoured() or env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH")):
         return VISITOR_AUTH
     env_dir = os.environ.get("BOOLEY_DIR")
     booley_dir = Path(env_dir) if env_dir else own_booley_dir(project_root)

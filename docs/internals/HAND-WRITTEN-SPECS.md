@@ -44,10 +44,11 @@ provides.
   registrar and the in-container credential setup look up each CLI's
   credential under the policy the Project records (`booley.toml` in
   `BOOLEY_DIR`, else the Project's own Booley Directory). A CLI recorded
-  `subscription`, or with no `auth`, is not chosen for an exported API key; the
-  gateway is the fallback only for a Codex recorded `visitor`. An unreadable
-  `booley.toml` reads as a missing `auth`. A start that no longer picks Codex
-  removes Booley's gateway provider from Codex's config. A
+  `subscription`, or with no `auth`, is not chosen for an exported API key, so
+  a key cannot bill an API account behind a `subscription` record. The gateway
+  is the fallback only for a Codex recorded `visitor` or `gateway`.
+  An unreadable `booley.toml` reads as a missing `auth`. A start whose choice
+  leaves out Codex removes Booley's gateway provider from Codex's config. A
   `BOOLEY_PRIMARY_AUTH` hand-off still overrides the recorded policy.
 - `booley init` in the spec's `onCreateCommand` keeps a recorded `visitor`.
   `--auth` and the prompt do not offer it.

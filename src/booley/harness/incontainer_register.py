@@ -98,12 +98,7 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
     raw_policy = agent.env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH"))
     policy = None if raw_policy == GATEWAY_AUTH else raw_policy
     start = _hook_start_directory()
-    lookups = {
-        app: (policy or VISITOR_AUTH)
-        if raw_policy is not None
-        else agent.unrecorded_cli_policy(app, start)
-        for app in _LABELS
-    }
+    lookups = {app: policy or agent.unrecorded_cli_policy(app, start) for app in _LABELS}
     # Look where registration looks ($HOME), so the published reason names a
     # credential the registered app will really use.
     home = incontainer_setup._agent_home()
@@ -134,10 +129,14 @@ def resolve_auto_choice() -> agent_app.AgentAppChoice:
                 f"no Claude or Codex credential; gateway at {gateway.url} ({gateway.token_source})",
                 (auth_token.APP_CODEX,),
             )
+    if lookups[auth_token.APP_CODEX] == VISITOR_AUTH:
+        reason = "no credential and no gateway; Claude's login is offered"
+    else:
+        reason = "no credential; Claude's login is offered"
     return agent_app.AgentAppChoice(
         auth_token.APP_CLAUDE,
         policy,
-        "no credential and no gateway; Claude's login is offered",
+        reason,
         (auth_token.APP_CLAUDE,),
     )
 
@@ -250,7 +249,11 @@ def _drop_unchosen_gateway(status: str, choice: agent_app.AgentAppChoice | None)
     """
     if choice is None or auth_token.APP_CODEX in choice.clis:
         return status
-    return f"{status} {_guarded_step('codex-gateway', incontainer_setup.drop_codex_gateway)}"
+    try:
+        return f"{status} codex-gateway:{incontainer_setup.drop_codex_gateway()}"
+    except ValueError:
+        # Codex is not chosen, so an unparsable config of it must not fail this start.
+        return f"{status} codex-gateway:unreadable"
 
 
 def _any_refused(status: str) -> bool:
