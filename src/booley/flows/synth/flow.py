@@ -114,7 +114,7 @@ from booley.flows.synth.timing import (
     parse_unconstrained_timing,
 )
 from booley.flows.synth.warnings import WarningSummary
-from booley.flows.terminal_progress import ProgressText
+from booley.flows.terminal_progress import ProgressText, observe_source_names
 from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
@@ -1759,6 +1759,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     ) -> tuple[SynthMetrics, str]:
         """Run and interpret one configured plan, then refresh its OpenROAD reuse slot."""
         paths = _tool_source_paths(planned, plan.build_dir)
+        observe_source_names(paths)
         with judged_commands() as commands:
             start = time.monotonic()
             run = self._run_synth_make(target, plan, resolved_source_bytes(planned.resolved))

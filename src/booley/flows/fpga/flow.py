@@ -68,7 +68,7 @@ from booley.flows.result_table import (
 )
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_parameters import vlogparam_specs
-from booley.flows.terminal_progress import ProgressText
+from booley.flows.terminal_progress import ProgressText, observe_source_names
 from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.core_projection import native_cores_ignored
@@ -611,6 +611,7 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         from booley.flows.terminal_progress import announce_unit, observe_logs
 
         role = getattr(self, "_execution_role", "candidate")
+        observe_source_names(prepared.project_paths)
         self._open_run_log(target, prepared.work_root)
         announce_unit(f"{role}: Vivado running", target=target)
         observe_logs(

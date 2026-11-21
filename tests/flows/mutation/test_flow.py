@@ -411,7 +411,7 @@ def _patch_resolve_target(
             selector=target,
             name=target,
             identity=f"::{target}:0#{target}",
-            vlnv=f"::{target}:0",
+            vlnv="::" + target.replace(":", "_").replace("#", "_") + ":0",
             project_root=Path(work_dir),
             eda_tool=eda_tool,
             cocotb_module=cocotb_module,

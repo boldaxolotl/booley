@@ -851,6 +851,8 @@ class Baseline:
     #: simulated with Verilator, where no Mutant is compared.
     generated_cpp: Mapping[str, str] | None = None
     verilator_version: str | None = None
+    #: Project path of each source name a baseline-built Mutant's run output prints.
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 #: Why ``_run_one_variant`` dropped a candidate instead of scoring it.
@@ -1612,12 +1614,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         output = self._suite_output(runs)
         self._persist_baseline_log(output)
+        paths = self._baseline_project_paths()
+        output = paths.project_text(output)
         inconclusive = self._suite_inconclusive_reason(runs)
         if inconclusive:
             return _error_outcome(
                 "baseline",
                 "; ".join(self._baseline_problems(runs)),
-                report_text=f"mutation baseline was inconclusive: {inconclusive}\n"
+                report_text=f"mutation baseline was inconclusive: {paths.project_text(inconclusive)}\n"
                 + tail(output, 50),
             )
         if not self._baseline_suite_passed(runs):
@@ -1630,7 +1634,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             run.test_name: MutantTimeLimit(run.duration_s, _mutant_timeout(run.duration_s))
             for run in runs
         }
-        return Baseline(time_limits, cpp, version)
+        return Baseline(time_limits, cpp, version, paths)
 
     @staticmethod
     def _baseline_run_cwd_error(plan: MutationRunPlan) -> EndpointOutcome | None:
@@ -1783,6 +1787,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return JobRequest("sim", handle.selector, test_runs=())
 
+    def _baseline_project_paths(self) -> ProjectSourcePaths:
+        """Project path of each build-tree source name the baseline's build prints.
+
+        Built after the baseline's build, not before it: it reads every core of
+        the Target's closure.
+        """
+        if self._baseline_sources is None:
+            return ProjectSourcePaths()
+        return ProjectSourcePaths.for_target(*self._baseline_sources)
+
     def _baseline_build_error(
         self, plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
     ) -> EndpointOutcome:
@@ -1794,13 +1808,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         log = self._persist_capped_log(
             workspace.baseline_build_log_path(), output, "baseline build"
         )
-        # Built here, not before the build: it reads every core of the Target's closure.
-        paths = (
-            ProjectSourcePaths.for_target(*self._baseline_sources)
-            if self._baseline_sources is not None
-            else ProjectSourcePaths()
-        )
-        log_tail = tail(paths.project_text(output), 50)
+        log_tail = tail(self._baseline_project_paths().project_text(output), 50)
         if oom_kill:
             # A killed build says nothing about the source.
             reason = f"pristine source build was {oom_kill}"
@@ -2661,7 +2669,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
-        snippet = self._variant_snippet(verdict, combined)
+        snippet = self._variant_snippet(verdict, combined, baseline.project_paths)
         return MutationResult(
             index=spec.index,
             inconclusive_reason=verdict.inconclusive_reason,
@@ -2673,19 +2681,21 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
 
     @staticmethod
-    def _variant_snippet(verdict: VariantSuiteVerdict, combined: str) -> str:
+    def _variant_snippet(
+        verdict: VariantSuiteVerdict, combined: str, paths: ProjectSourcePaths
+    ) -> str:
         """The report snippet of a scored Mutant: its detecting run's failure, else the tail."""
         if verdict.inconclusive_reason:
-            return f"sim outcome inconclusive: {verdict.inconclusive_reason}"
+            return f"sim outcome inconclusive: {paths.project_text(verdict.inconclusive_reason)}"
         if verdict.detecting_run is not None:
             run = verdict.detecting_run
             return detection_snippet(
                 run.test_name,
-                run.output,
+                paths.project_text(run.output),
                 timed_out=verdict.timed_out,
                 killing_test=verdict.first_killing_test,
             )
-        return tail_snippet(combined)
+        return tail_snippet(paths.project_text(combined))
 
     @staticmethod
     def _compare_build(

@@ -9,6 +9,7 @@ import pytest
 
 from booley.audit.diagnostic_results import Severity
 from booley.runtime import incontainer_setup as reg
+from booley.runtime import runtime_context
 
 
 def _stub_probe(monkeypatch: pytest.MonkeyPatch, serving: bool) -> list[int]:
@@ -42,9 +43,16 @@ def test_serving_port_passes_with_restart_hint(
     assert report.details == ()
 
 
+@pytest.mark.parametrize("hand_written", [False, True])
 def test_not_serving_fails_with_log_tail_and_remedy(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+    hand_written: bool,
 ) -> None:
+    if hand_written:
+        request.getfixturevalue("hand_written_sandbox")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setenv("BOOLEY_MCP_HTTP_PORT", "48123")
     asked = _stub_probe(monkeypatch, serving=False)
     log = tmp_path / "server.log"
@@ -57,7 +65,9 @@ def test_not_serving_fails_with_log_tail_and_remedy(
     assert [finding.severity for finding in report.findings] == [Severity.FAIL]
     finding = report.findings[0]
     assert "127.0.0.1:48123" in finding.message
-    assert "booley init --seed" in finding.fix
+    assert ("incontainer_register" in finding.fix) is hand_written
+    assert ("postStartCommand" in finding.fix) is hand_written
+    assert ("booley init --seed" in finding.fix) is not hand_written
     assert "rebuild or reopen" in finding.fix
     assert [detail.message for detail in report.details] == [
         f"last 8 line(s) of {log}:",

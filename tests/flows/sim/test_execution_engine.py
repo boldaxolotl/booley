@@ -26,6 +26,7 @@ from booley.core.file_lock import acquire_file_lock
 from booley.flows import run_log
 from booley.flows.base import SubprocessResult
 from booley.flows.memory_admission import JOB_THREADS_ENV
+from booley.flows.observed_process import communicate_observed
 from booley.flows.sim import build_parallelism
 from booley.flows.sim.adapter_transport import (
     AdapterResult,
@@ -63,7 +64,7 @@ from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import LiveProgressSink, install_progress
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
-from booley.flows.terminal_progress import TerminalProgress
+from booley.flows.terminal_progress import TerminalProgress, current_progress
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.runtime import paths as runtime_paths
@@ -326,7 +327,8 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
     return project, source
 
 
-def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
+def _subprocess_invoker(root: Path, *, observed: bool = False) -> Callable[..., SubprocessResult]:
+    """Run commands for real; with *observed*, relay them as the Flow boundary does."""
     source_root = Path(__file__).resolve().parents[3] / "src"
     python_path = os.pathsep.join(
         part for part in (str(source_root), os.environ.get("PYTHONPATH", "")) if part
@@ -334,14 +336,25 @@ def _subprocess_invoker(root: Path) -> Callable[..., SubprocessResult]:
 
     def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
         started = time.monotonic()
+        options: dict[str, Any] = {
+            "cwd": cwd or root,
+            "env": {**os.environ, "PYTHONPATH": python_path},
+        }
+        sink = current_progress()
+        if observed and sink is not None:
+            sink.begin_command()
+            with subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **options
+            ) as process:
+                stdout, stderr, _ = communicate_observed(process, sink, timeout=timeout)
+            return SubprocessResult(
+                returncode=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                duration_s=time.monotonic() - started,
+            )
         result = subprocess.run(
-            command,
-            cwd=cwd or root,
-            env={**os.environ, "PYTHONPATH": python_path},
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
+            command, capture_output=True, text=True, timeout=timeout, check=False, **options
         )
         return SubprocessResult(
             returncode=result.returncode,
