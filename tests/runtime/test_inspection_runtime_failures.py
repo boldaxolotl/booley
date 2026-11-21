@@ -16,7 +16,7 @@ from tests.harness import test_session_runtime as resolution_fixtures
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning.policies import vivado
-from booley.runtime import inspection, runtime_context
+from booley.runtime import inspection, runtime_context, sandbox_apply
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
@@ -147,20 +147,24 @@ def test_mounted_runtime_rejects_external_license_pointer_before_execution(
     assert not calls
 
 
-@pytest.mark.parametrize("failure", ["exposed-authority", "exposed-eda-config"])
+@pytest.mark.parametrize("failure", ["exposed-authority", "exposed-eda-config", "hand-written"])
 def test_runtime_rejects_broken_isolation_before_vivado_probe(
-    mounted_runtime, monkeypatch, failure
+    mounted_runtime, monkeypatch, failure, request
 ):
-    request, _, calls = mounted_runtime
+    if failure == "hand-written":
+        request.getfixturevalue("hand_written_sandbox")
+    inspected, _, calls = mounted_runtime
     exposed = Path(
         "/var/run/docker.sock"
-        if failure == "exposed-authority"
+        if failure != "exposed-eda-config"
         else "/home/agent/.config/booley/eda"
     )
     original = Path.exists
     monkeypatch.setattr(Path, "exists", lambda p: True if p == exposed else original(p))
-    failures = _fail_findings(inspection.inspect_runtime(request).issuance)
+    failures = _fail_findings(inspection.inspect_runtime(inspected).issuance)
     assert len(failures) == 1 and "forbidden host-authority surface" in failures[0].message
+    if failure == "hand-written":
+        assert failures[0].fix == sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
     assert not calls
 
 

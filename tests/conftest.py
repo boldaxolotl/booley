@@ -828,3 +828,29 @@ def fake_sandbox_attachment(
 
     attach(None)
     return attach
+
+
+def _point_mountinfo_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    from booley.runtime import runtime_context
+
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_bytes(text.encode())
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+
+
+@pytest.fixture(autouse=True)
+def _issued_sandbox_mounts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
+
+    The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
+    issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
+    """
+    _point_mountinfo_at(
+        tmp_path, monkeypatch, "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
+    )
+
+
+@pytest.fixture
+def hand_written_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
+    _point_mountinfo_at(tmp_path, monkeypatch, "")

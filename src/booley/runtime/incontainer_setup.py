@@ -56,6 +56,7 @@ from booley.runtime.mcp_config import (
     gateway_provider_toml,
     http_port,
 )
+from booley.runtime.runtime_context import RuntimeLocation, runtime_location
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -98,6 +99,16 @@ class HttpServerInspectionRequest:
     log_path: Path = Path(_SERVER_LOG_PATH)
 
 
+def _not_serving_fix() -> str:
+    """Name how to get the server started: a hand-written spec must run the registration itself."""
+    if runtime_location() is RuntimeLocation.HAND_WRITTEN_SANDBOX:
+        return (
+            "make this Sandbox's devcontainer spec run `python -m booley.harness.incontainer_register` "
+            "in postStartCommand, then rebuild or reopen the Sandbox"
+        )
+    return "run `booley init --seed` on the host, then rebuild or reopen the Sandbox"
+
+
 def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticReport:
     """Report whether this Sandbox's HTTP MCP server accepts connections.
 
@@ -122,7 +133,7 @@ def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticRepor
         return findings.report()
     findings.fail(
         f"Sandbox MCP server not serving on 127.0.0.1:{port}",
-        "run `booley init --seed` on the host, then rebuild or reopen the Sandbox",
+        _not_serving_fix(),
     )
     for line in _server_log_tail(request.log_path):
         findings.detail(line, verbose_only=False)

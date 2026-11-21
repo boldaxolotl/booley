@@ -56,7 +56,7 @@ from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.platform_paths import run_captured_bounded, same_host_path
-from booley.runtime.sandbox_apply import Attachment
+from booley.runtime.sandbox_apply import HAND_WRITTEN_SANDBOX_STEPS, Attachment
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +168,12 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     path = devcontainer_path(request.project_root)
     if not path.is_file():
+        if _hand_written_sandbox():
+            report.note(
+                "no .devcontainer/devcontainer.json at the Project Root: drift against "
+                "`booley init` is not checked in a Sandbox Booley did not create"
+            )
+            return
         _spec_warning(
             request, report, "no .devcontainer/devcontainer.json - run `booley init` (or `--seed`)"
         )
@@ -177,7 +183,10 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
             json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
     except (OSError, ValueError) as exc:
-        report.fail(f"{path} does not parse: {exc}", "re-run booley init")
+        report.fail(
+            f"{path} does not parse: {exc}",
+            request.remedy if _hand_written_sandbox() else "re-run booley init",
+        )
         return
     spec_app = dc.spec_agent_app(spec)
     if not _provider_current(request, spec, spec_app, report):
@@ -188,14 +197,30 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         request, spec_app, report
     ):
         return
-    if spec_app == agent_app.AUTO_APP:
-        # `booley init` never writes 'auto', so there is no spec to compare against.
+    if spec_app == agent_app.AUTO_APP or _hand_written_sandbox():
+        # `booley init` never writes 'auto', and a Sandbox it did not create is not rebuilt
+        # from what it writes, so there is no spec to compare against.
         report.note(
             "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
             "`booley init` is not checked"
+            if spec_app == agent_app.AUTO_APP
+            else "this Sandbox is hand-written: drift against `booley init` is not checked"
         )
         return
     _compare_with_expected_spec(request, spec, report)
+
+
+def _hand_written_sandbox() -> bool:
+    return (
+        runtime_context.runtime_location() is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
+    )
+
+
+def _host_authority_remedy() -> str:
+    """Where to repair a Sandbox that holds host authority: a hand-written one is rebuilt from its spec."""
+    if _hand_written_sandbox():
+        return HAND_WRITTEN_SANDBOX_STEPS
+    return session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
 
 
 def _provider_current(
@@ -450,7 +475,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     ):
         report.fail(
             "host-provisioned Vivado is absent from the Sandbox",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return
     if mounted:
@@ -606,7 +631,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
     if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
@@ -614,7 +639,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
         if entry is not None:
             report.fail(
                 f"Sandbox exposes a forbidden host-authority surface: {entry}",
-                session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+                _host_authority_remedy(),
             )
             return False
     report.pass_("Sandbox host-authority isolation verified")

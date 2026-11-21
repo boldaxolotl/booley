@@ -29,6 +29,7 @@ from booley.runtime import (
     inspection,
     project_image,
     runtime_context,
+    sandbox_apply,
     session_runtime,
     vaporview,
 )
@@ -535,19 +536,43 @@ def test_retired_auth_skips_the_drift_check_with_a_note(
     assert "booley doctor" not in finding.message
 
 
-def test_hand_written_auto_spec_is_not_compared(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("case", ["auto", "claude-spec", "missing-spec"])
+def test_hand_written_spec_is_not_compared(
+    project: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, case: str
 ) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
-    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto" if case == "auto" else "claude"
+    spec["name"] = "drifted"
     _write(project, spec)
+    if case != "auto":
+        request.getfixturevalue("hand_written_sandbox")
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    if case == "missing-spec":
+        dc.devcontainer_path(project).unlink()
 
     def forbidden(_image: str | None) -> dict:
         raise AssertionError("a hand-written spec must not be rebuilt")
 
     findings = _inspect(project, monkeypatch, expected_spec=forbidden)
 
-    assert [(f.severity.value, "hand-written" in f.message) for f in findings] == [("note", True)]
+    assert [
+        (f.severity.value, "hand-written" in f.message or "not checked" in f.message)
+        for f in findings
+    ] == [("note", True)]
+    assert "booley init --seed" not in findings[0].message
+
+
+def test_hand_written_sandbox_keeps_compatibility_checks(
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+) -> None:
+    spec = _seed(project, dc.APP_CLAUDE)
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
+    _write(project, spec)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+
+    findings = _inspect(project, monkeypatch, expected_spec=None, declared_provider=dc.APP_CODEX)
+
+    assert _drift(findings).message.endswith(sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS)
 
 
 def test_inside_sandbox_compares_visible_parts(

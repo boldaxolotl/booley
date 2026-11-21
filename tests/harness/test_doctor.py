@@ -2787,6 +2787,18 @@ class TestWorktreePortability:
         )
         assert not [item for item in findings if item.severity is Severity.WARN]
 
+    def test_hand_written_sandbox_notes_unknown_host_capability(
+        self, tmp_path, monkeypatch, git_versions, hand_written_sandbox
+    ):
+        _git_init(tmp_path)
+        git_versions((2, 53, 0))
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        findings = self._inspect(self._project(tmp_path), None, True)
+        (note,) = [i for i in findings if "host Git capability is unknown" in i.message]
+        assert note.severity is Severity.NOTE
+        assert note.message.endswith("in a Sandbox Booley did not create")
+        assert note.fix == "if a host also opens this checkout, run `booley doctor` there"
+
     @pytest.mark.parametrize("policy", ["false", None, "invalid"])
     def test_runtime_nontrue_policy_remains_unknown(self, tmp_path, git_versions, policy):
         _git_init(tmp_path)
@@ -3124,10 +3136,14 @@ def _edit_booley_toml(booley_dir: Path, old: str, new: str) -> None:
         "inside-unaligned",
         "inside-unapplied",
         "inside-unreadable",
+        "inside-hand-written-unreadable",
+        "inside-hand-written-unapplied",
     ],
 )
-def test_sandbox_memory(row, tmp_path, monkeypatch):
+def test_sandbox_memory(row, tmp_path, monkeypatch, request):
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; inside the Sandbox, the live limit does."""
+    if "hand-written" in row:
+        request.getfixturevalue("hand_written_sandbox")
     booley_dir = _setup_sandbox_memory_row(row, tmp_path, monkeypatch)
     if row == "unset":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
@@ -3137,7 +3153,7 @@ def test_sandbox_memory(row, tmp_path, monkeypatch):
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
     elif row == "inside-unaligned":
         _edit_booley_toml(booley_dir, '"16g"', '"17179869185"')
-    elif row == "inside-unapplied":
+    elif row.endswith("unapplied"):
         _edit_booley_toml(booley_dir, '"16g"', '"2290m"')
 
     result = _doctor_run(tmp_path)
@@ -3175,7 +3191,7 @@ def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
         _patch_environment(monkeypatch, tmp_path, booley_dir)
     cgroup = tmp_path / "memory.max"
     monkeypatch.setattr(doctor.resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (cgroup,))
-    if row != "inside-unreadable":
+    if not row.endswith("unreadable"):
         # The host row's 8g proves host Doctor ignores the live limit.
         cgroup.write_text(f"{(8 if row == 'set' else 16) * _GIB}\n", encoding="utf-8")
     return booley_dir
@@ -3190,6 +3206,16 @@ def _assert_inside_sandbox_memory(row, result):
     if row in {"inside-applied", "inside-unaligned"}:
         assert drift == []
         assert live_pass in passes
+    elif row.startswith("inside-hand-written"):
+        assert drift == []
+        (note,) = [m for m in _messages(result, Severity.NOTE) if "cannot be applied" in m]
+        assert "which Booley did not create: the Memory Budget " in note
+        assert note.endswith(
+            "uses installed memory"
+            if row.endswith("unreadable")
+            else "uses this Sandbox's own memory limit of 16g, set by its devcontainer spec"
+        )
+        assert "on the host" not in note + _fixes(result, note)[0]
     elif row == "inside-unapplied":
         (warning,) = drift
         assert "'2290m'" in warning
@@ -3199,6 +3225,7 @@ def _assert_inside_sandbox_memory(row, result):
         (warning,) = drift
         assert "no readable memory limit" in warning
         assert not any(m.startswith("[sandbox].memory") for m in passes)
+        assert _fixes(result, warning) == [f"recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"]
 
 
 def test_sandbox_swap(tmp_path, monkeypatch):
@@ -3250,6 +3277,31 @@ def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
             "unparseable": "'lots' is unparseable",
         }[row]
         assert expected in warning
+
+
+def test_hand_written_sandbox_doctor_names_no_host_steps(
+    tmp_path, monkeypatch, hand_written_sandbox
+):
+    """A Sandbox Booley did not create is rebuilt from its own spec: no finding names a host step."""
+    _runtime_setup(tmp_path, monkeypatch, inside=True)
+    _edit_booley_toml(tmp_path / ".booley", 'memory = "16g"\n', 'memory = "16g"\nswap = "20g"\n')
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 8388608 kB\nSwapTotal: 0 kB\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_PROC_MEMINFO", meminfo)
+
+    result = _doctor_run(tmp_path)
+
+    assert any(
+        "Booley did not create this Sandbox, so [sandbox].swap is not applied here" in m
+        for m in _messages(result, Severity.SKIP)
+    )
+    assert _messages(result, Severity.WARN, check_id="sandbox.swap-unbacked") == []
+    for finding in result.findings:
+        if finding.check_id == "sandbox.git-identity-override":
+            continue  # names the hand-written path beside the issued one
+        text = f"{finding.message}\n{finding.fix}".split("or on the host:")[0]
+        for host_step in ("session refresh", "session up", "on the host", "Rebuild Container"):
+            assert host_step not in text, finding
 
 
 def test_sandbox_swap_warns_on_a_non_string_setting(tmp_path, monkeypatch):
@@ -3330,6 +3382,19 @@ def _prepare_row(monkeypatch, row):
             "inspect_host",
             lambda _root: host_diagnostics.HostDiagnosticResult(report, None),
         )
+
+
+def test_runtime_marker_fix_for_a_hand_written_sandbox(
+    tmp_path, monkeypatch, hand_written_sandbox
+):
+    _runtime_setup(tmp_path, monkeypatch, inside=True, marker=False)
+
+    (warning,) = _messages(_doctor_run(tmp_path), Severity.WARN, check_id="sandbox.runtime-marker")
+
+    assert warning.endswith(
+        "set BOOLEY_CONTAINER=1 in this Sandbox's devcontainer spec (containerEnv), "
+        "then rebuild the Sandbox"
+    )
 
 
 @pytest.mark.parametrize(

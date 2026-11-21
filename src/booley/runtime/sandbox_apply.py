@@ -2,7 +2,8 @@
 
 ``docs/user/SANDBOX.md`` ("Applying Sandbox changes") is the authority. Every
 remedy that tells a user to recreate a Sandbox builds its text here, so the
-documented steps and the printed steps cannot drift apart.
+documented steps and the printed steps cannot drift apart. A hand-written
+Sandbox is rebuilt from its own spec.
 """
 
 from __future__ import annotations
@@ -15,14 +16,17 @@ from pathlib import Path
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.host_shell import quote_arg
 from booley.runtime.docs_links import docs_url
+from booley.runtime.runtime_context import RuntimeLocation, runtime_location
 
 __all__ = [
     "APPLY_DOC_URL",
+    "HAND_WRITTEN_SANDBOX_STEPS",
     "REBUILD_CONTAINER",
     "UNKNOWN_SANDBOX_STEPS",
     "Attachment",
     "apply_steps",
     "image_is_managed",
+    "in_sandbox_steps",
     "shell_command",
 ]
 
@@ -106,3 +110,14 @@ def apply_steps(
 UNKNOWN_SANDBOX_STEPS = (
     f"{apply_steps(None, managed=True)}; with your own image, follow the steps in {APPLY_DOC_URL}"
 )
+
+HAND_WRITTEN_SANDBOX_STEPS = (
+    "change this Sandbox's devcontainer spec, then rebuild the Sandbox from it"
+)
+
+
+def in_sandbox_steps() -> str:
+    """The recreate steps named from inside a Sandbox; a hand-written one is rebuilt from its own spec."""
+    if runtime_location() is RuntimeLocation.HAND_WRITTEN_SANDBOX:
+        return HAND_WRITTEN_SANDBOX_STEPS
+    return UNKNOWN_SANDBOX_STEPS
