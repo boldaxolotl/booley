@@ -30,6 +30,9 @@ _GATEWAY_BASE_INSTRUCTIONS = (
 
 _DISABLED_FEATURES = (
     "shell_tool",
+    # Redundant with agents.enabled=false on Codex >= 0.145; kept for older host CLIs,
+    # where it is the only switch for the V1 subagent tools.
+    "multi_agent",
     "multi_agent_v2",
     "apps",
     "plugins",
@@ -83,8 +86,6 @@ def prepare_codex_text_only(
     settings = [
         f"model_catalog_json={json.dumps(str(catalog))}",
         'web_search="disabled"',
-        # With multi_agent_v2 off, this disables every multi-agent version; the
-        # deprecated ``features.multi_agent`` flag would only add a startup warning.
         "agents.enabled=false",
         "tools.update_plan.enabled=false",
         "tools.experimental_request_user_input.enabled=false",

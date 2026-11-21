@@ -24,9 +24,9 @@ simulation, synthesis, linting, and measurement workflows.
   for failed checks and verification commands at their reported lifecycle
   point.
 - Never run `git stash`: all worktrees share one stash, so concurrent agents
-  pop each other's changes. To set your changes aside, run
-  `git diff HEAD --binary > <file>` then `git apply -R <file>`; untracked files
-  still need a throwaway commit or a separate worktree.
+  pop each other's changes. To check a version without your changes, use a
+  detached worktree (`git worktree add --detach <path> HEAD`) or a throwaway
+  commit.
 - Keep worktree branches local. Push a branch or create/update a pull request
   only on explicit request. A request to create/update a PR authorizes its
   required branch push; an implement, edit, or commit request does not.
