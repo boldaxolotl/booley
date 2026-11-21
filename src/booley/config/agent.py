@@ -477,6 +477,31 @@ def policy_in_force(recorded: str | None) -> str:
     return recorded
 
 
+def unrecorded_cli_policy(cli: str, project_root: Path) -> str:
+    """The policy for *cli* when neither the issued record nor a published hand-off names one.
+
+    A hand-written Sandbox reads the Project's recorded ``[agent] auth`` (``booley.toml``
+    in ``BOOLEY_DIR``, else the Project Root's own Booley Directory): a missing or
+    unreadable value is ``subscription``. A recorded ``gateway`` keeps the visitor
+    lookup, and so does a ``BOOLEY_PRIMARY_AUTH=gateway`` hand-off, which the registrar
+    does not publish when a personal credential wins. Elsewhere the lookup is the
+    visitor mode.
+    """
+    if not visitor_mode_honoured() or env_auth_mode(os.environ.get("BOOLEY_PRIMARY_AUTH")):
+        return VISITOR_AUTH
+    env_dir = os.environ.get("BOOLEY_DIR")
+    booley_dir = Path(env_dir) if env_dir else own_booley_dir(project_root)
+    data = _read_toml(_resolve_booley_toml(booley_dir)) or {}
+    section = data.get("agent")
+    try:
+        auth = parse_agent_section(section if isinstance(section, dict) else {}).auth
+    except BackendConfigError:
+        return DEFAULT_AUTH
+    recorded = auth.get(cli) if isinstance(auth, Mapping) else auth
+    policy = policy_in_force(recorded)
+    return VISITOR_AUTH if policy == GATEWAY_AUTH else policy
+
+
 def _declared_policies(declared: DeclaredAgent, clis: tuple[str, ...]) -> dict[str, str]:
     """One declared policy per listed CLI: ``[agent] auth``, else ``subscription``."""
     auth = declared.auth
