@@ -79,7 +79,7 @@ from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifac
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import observe_stage, prepare_attempt_log
 from booley.flows.source_paths import ProjectSourcePaths
-from booley.flows.terminal_progress import announce_unit
+from booley.flows.terminal_progress import announce_unit, observe_source_names
 from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
@@ -149,6 +149,7 @@ class VerilatorCoverageExecution:
         self._pre_sim_commands = pre_sim_commands
         self._pre_sim_build_access = pre_sim_build_access
         self._prepared: PreparedSimulationBuild | None = None
+        self._project_paths = ProjectSourcePaths()
         self._artifact_paths: tuple[Path, ...] = ()
         self._build_variant: str | None = None
         self._trace_mode = "vcd_fifo"
@@ -245,6 +246,7 @@ class VerilatorCoverageExecution:
             return candidate, result
         session.discard_candidate(candidate.work_root)
         self._prepared = retained
+        self._map_sources(retained)
         self._artifact_paths = session.retained_artifacts(retained)
         announce_unit("coverage: verified build reuse", target=self._handle.selector)
         reason = f"verified Simulation build reuse ({session.cache_decision})"
@@ -317,6 +319,7 @@ class VerilatorCoverageExecution:
         script = simulation_build_script(prepared, token)
         script = _in_directory_script(self._handle.project_root, script)
         timeout_s = self._build_timeout_s()
+        self._map_sources(prepared)
         observe_stage(
             self._handle.selector,
             "building",
@@ -331,18 +334,20 @@ class VerilatorCoverageExecution:
         process = self._invoke(["sh", "-c", script], timeout=timeout_s)
         outcome = classify_build_outcome(process, token, timeout_s=timeout_s)
         if not outcome.passed:
-            return self._failed_build_result(prepared, outcome, identity)
+            return self._failed_build_result(outcome, identity)
         self._prepared = prepared
         return SimulationBuildResult(True, outcome.output, identity)
 
+    def _map_sources(self, prepared: PreparedSimulationBuild) -> None:
+        """Show the build's source names by Project path in relayed and recorded output."""
+        self._project_paths = ProjectSourcePaths.for_target(self._handle, prepared.resolved)
+        observe_source_names(self._project_paths)
+
     def _failed_build_result(
-        self,
-        prepared: PreparedSimulationBuild,
-        outcome: BuildOutcome,
-        identity: VerilatorCollectorIdentity,
+        self, outcome: BuildOutcome, identity: VerilatorCollectorIdentity
     ) -> SimulationBuildResult:
         """A failed build's result, quoting its compiler text by Project path."""
-        paths = ProjectSourcePaths.for_target(self._handle, prepared.resolved)
+        paths = self._project_paths
         if outcome.failure_kind == "infrastructure":
             return SimulationBuildResult(
                 False,
@@ -513,6 +518,7 @@ class VerilatorCoverageExecution:
                     source_bytes=self._source_bytes,
                 )
             result = _simulation_run_result(executed, request.test.name)
+            result = replace(result, output=self._project_paths.project_text(result.output))
             commands.judge(result.verdict == "pass")
         return replace(result, pre_sim=pre_sim)
 
