@@ -794,7 +794,11 @@ class DashboardApp(App[None]):
         if self.view_state is not None:
             # A newer Dashboard retires this one with SIGTERM; leave the terminal as found.
             asyncio.get_running_loop().add_signal_handler(
-                signal.SIGTERM, self.exit, None, 0, "Dashboard closed: a newer Dashboard replaced it."
+                signal.SIGTERM,
+                self.exit,
+                None,
+                0,
+                "Dashboard closed: a newer Dashboard replaced it.",
             )
         await self.refresh_snapshot()
         self.set_interval(REFRESH_SECONDS, self.refresh_snapshot)

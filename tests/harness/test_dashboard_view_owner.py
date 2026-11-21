@@ -215,7 +215,9 @@ def test_takeover_leaves_no_earlier_dashboard_running(tmp_path, monkeypatch, sco
     # The grace only stops a hang: the 0.5 s of _thresholds would kill a slow, orderly shutdown.
     monkeypatch.setattr(command.view_probe, "TERM_GRACE_SECONDS", hang_guard_s())
     try:
-        _wait_until(lambda: _CURSOR_REQUEST in old.output, "the Dashboard to send its first heartbeat")
+        _wait_until(
+            lambda: _CURSOR_REQUEST in old.output, "the Dashboard to send its first heartbeat"
+        )
         time.sleep(scaled(2.0))
         assert command.run_dashboard(tmp_path) == 0
         assert running_at_launch == [False], "no new Dashboard started over the earlier one"
