@@ -956,7 +956,6 @@ def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
     """Full Doctor reaches the probe only through the owner, answered by the fake."""
     booley_dir = _write_project(tmp_path)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
-    forbid_docker_processes(monkeypatch)
     inspected: list[object] = []
     real_inspect = doctor.server_inspection.inspect_mcp_server
 

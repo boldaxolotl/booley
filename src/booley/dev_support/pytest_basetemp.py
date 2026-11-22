@@ -23,8 +23,9 @@ import logging
 import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import IO
 
 from booley.core.file_lock import LockContentionError, acquire_file_lock
 from booley.dev_support import agent_readiness
@@ -38,31 +39,30 @@ _FOREIGN_ENTRIES = ("pyvenv.cfg", ".git", "bin")
 
 _LOG = logging.getLogger(__name__)
 
-# Lock files held open for the life of this process. The OS releases the lock
-# when its holder exits, so a crashed session never leaves a stale claim behind.
-_HELD_LOCKS: list[IO[bytes]] = []
+
+class BasetempLockError(RuntimeError):
+    """pytest cannot exclusively claim its configured basetemp."""
 
 
-class BasetempInUseError(RuntimeError):
-    """Another live pytest session already owns this basetemp."""
-
-
-def record_and_prune(basetemp: Path | str | None, checkout: Path) -> tuple[Path, ...]:
+@contextmanager
+def record_and_prune(basetemp: Path | str | None, checkout: Path) -> Iterator[tuple[Path, ...]]:
     """Claim ``basetemp`` for this session, record ``checkout`` as its owner, and prune.
 
     A no-op on Windows (pytest's default basetemp is used there) and unless
     ``basetemp`` is a ``pytest-basetemp-*`` folder directly in the tools root.
-    Raises :class:`BasetempInUseError` while another session holds the folder.
+    Raises :class:`BasetempLockError` if the session cannot claim the folder.
     Only folders with a marker naming a missing checkout are deleted; deletion
     errors are logged, not raised, and keep the marker so a later run retries.
-    Returns the folders deleted.
+    Yields the folders deleted, holding the claim until the context exits.
     """
     if sys.platform == "win32" or basetemp is None:
-        return ()
+        yield ()
+        return
     tools_root = agent_readiness.agent_tools_root().resolve()
     own = Path(basetemp).resolve()
     if own.parent != tools_root or not own.name.startswith(_PREFIX):
-        return ()
+        yield ()
+        return
     # Prune before claiming and recording: on a disk out of inodes the deletions
     # are what make room for the lock and the marker. This run's own folder is
     # never pruned: a marker left for it can only name this checkout's path,
@@ -72,30 +72,34 @@ def record_and_prune(basetemp: Path | str | None, checkout: Path) -> tuple[Path,
         for folder in map(_folder_for, _markers(tools_root))
         if folder != own and _prune(folder)
     )
-    _claim(own)
-    _write_marker(_marker_for(own), checkout.resolve())
-    return pruned
+    with _claim(own):
+        _write_marker(_marker_for(own), checkout.resolve())
+        yield pruned
 
 
-def _claim(folder: Path) -> None:
-    """Hold an exclusive lock on ``folder``'s sibling lock file until this process exits."""
-    lock = folder.with_name(folder.name + _LOCK_SUFFIX)
+@contextmanager
+def _claim(folder: Path) -> Iterator[None]:
     try:
-        handle = lock.open("ab")
+        handle = _lock_for(folder).open("ab")
     except OSError as error:
-        # Like the marker, an unwritable cache never fails the session; it only
-        # leaves this run unprotected against a concurrent one.
-        _LOG.warning("could not lock pytest basetemp %s: %s", folder, error)
-        return
-    try:
-        acquire_file_lock(handle)
-    except LockContentionError:
-        handle.close()
-        raise BasetempInUseError(
-            f"another pytest session is using --basetemp={folder}, and pytest deletes it "
-            "at session start; wait for that session or pass a different --basetemp"
-        ) from None
-    _HELD_LOCKS.append(handle)
+        raise _unavailable(folder, error) from error
+    with handle:
+        try:
+            acquire_file_lock(handle)
+        except LockContentionError:
+            raise BasetempLockError(
+                f"another pytest session is using --basetemp={folder}, and pytest deletes it "
+                "at session start; wait for that session or pass a different --basetemp"
+            ) from None
+        except OSError as error:
+            raise _unavailable(folder, error) from error
+        yield
+
+
+def _unavailable(folder: Path, error: OSError) -> BasetempLockError:
+    return BasetempLockError(
+        f"could not lock pytest --basetemp={folder}: {error}; pass a different --basetemp"
+    )
 
 
 def _markers(tools_root: Path) -> list[Path]:
@@ -109,6 +113,10 @@ def _markers(tools_root: Path) -> list[Path]:
 
 def _marker_for(folder: Path) -> Path:
     return folder.with_name(folder.name + _MARKER_SUFFIX)
+
+
+def _lock_for(folder: Path) -> Path:
+    return folder.with_name(folder.name + _LOCK_SUFFIX)
 
 
 def _folder_for(marker: Path) -> Path:
@@ -161,6 +169,19 @@ def _prune(folder: Path) -> bool:
     owner = _recorded_checkout(marker)
     if owner is None or not _checkout_removed(owner):
         return False
+    try:
+        with _claim(folder):
+            # Leave the lock file in place. Unlinking it would let another
+            # session acquire a different inode while this one was still held.
+            return _remove_orphan(folder, marker)
+    except BasetempLockError:
+        return False
+
+
+def _remove_orphan(folder: Path, marker: Path) -> bool:
+    owner = _recorded_checkout(marker)
+    if owner is None or not _checkout_removed(owner):
+        return False
     if folder.is_symlink() or any((folder / entry).exists() for entry in _FOREIGN_ENTRIES):
         return False
     removed = folder.is_dir()
@@ -168,7 +189,6 @@ def _prune(folder: Path) -> bool:
         if removed:
             shutil.rmtree(folder)
         marker.unlink(missing_ok=True)
-        folder.with_name(folder.name + _LOCK_SUFFIX).unlink(missing_ok=True)
     except OSError as error:
         # Never fail the test session over cache cleanup; the marker remains.
         _LOG.warning("could not prune orphaned pytest basetemp %s: %s", folder, error)

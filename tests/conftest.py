@@ -401,8 +401,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
-    _begin_coverage_stamp(config)
     prune_orphan_basetemps(config)
+    _begin_coverage_stamp(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 
@@ -451,12 +451,14 @@ def prune_orphan_basetemps(config: pytest.Config) -> None:
     """
     if hasattr(config, "workerinput"):
         return
-    from booley.dev_support.pytest_basetemp import BasetempInUseError, record_and_prune
+    from booley.dev_support.pytest_basetemp import BasetempLockError, record_and_prune
 
+    stack = ExitStack()
     try:
-        record_and_prune(config.option.basetemp, _SOURCE_ROOT)
-    except BasetempInUseError as exc:
+        stack.enter_context(record_and_prune(config.option.basetemp, _SOURCE_ROOT))
+    except BasetempLockError as exc:
         raise pytest.UsageError(str(exc)) from exc
+    config.add_cleanup(stack.close)
 
 
 # (report, fingerprint) of a controller run that writes Cobertura XML; see
