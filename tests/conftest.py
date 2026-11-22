@@ -401,8 +401,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
-    _begin_coverage_stamp(config)
     prune_orphan_basetemps(config)
+    _begin_coverage_stamp(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 
@@ -444,16 +444,21 @@ def _configure_time_budgets(config: pytest.Config, timeout_loaded: bool) -> None
 
 
 def prune_orphan_basetemps(config: pytest.Config) -> None:
-    """Record this checkout's tools-cache basetemp and prune those of removed checkouts.
+    """Claim and record this checkout's tools-cache basetemp; prune those of removed checkouts.
 
     Controller only: xdist workers share the controller's basetemp, and one
     prune per session is enough. See ``booley.dev_support.pytest_basetemp``.
     """
     if hasattr(config, "workerinput"):
         return
-    from booley.dev_support.pytest_basetemp import record_and_prune
+    from booley.dev_support.pytest_basetemp import BasetempLockError, record_and_prune
 
-    record_and_prune(config.option.basetemp, _SOURCE_ROOT)
+    stack = ExitStack()
+    try:
+        stack.enter_context(record_and_prune(config.option.basetemp, _SOURCE_ROOT))
+    except BasetempLockError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    config.add_cleanup(stack.close)
 
 
 # (report, fingerprint) of a controller run that writes Cobertura XML; see
@@ -664,6 +669,23 @@ def _fresh_booley_dir_selection() -> Iterator[None]:
     reset_cache()
     yield
     reset_cache()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with an empty process-wide Target catalog cache.
+
+    The cache is keyed by Project Root and authored-input digest. A later test whose
+    ``tmp_path`` reuses a deleted earlier path (pytest before 9.2 with the "failed"
+    retention policy) and writes the same cores would otherwise get the earlier
+    test's catalog, whose FuseSoC library view was prepared once and is never
+    reconciled again. Private: no production entry point drops the cache.
+    """
+    try:
+        from booley.targets.catalog import TargetCatalog
+    except ModuleNotFoundError:  # minimal CI images lack FuseSoC dependencies
+        return
+    monkeypatch.setattr(TargetCatalog, "_cache", {})
 
 
 @pytest.fixture(autouse=True)
