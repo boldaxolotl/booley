@@ -2020,9 +2020,10 @@ def test_project_data_mount_rejects_broad_and_mount_grammar_paths(
     project.mkdir()
     (project / ".booley").mkdir()
     monkeypatch.setenv("BOOLEY_DIR", source)
+    # On macOS /home is a symlink, so the symlink check rejects it first.
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
-        match=r"too broad|mount grammar|unavailable|must be an absolute host path",
+        match=r"too broad|mount grammar|unavailable|must be an absolute host path|must not be a symlink",
     ):
         runtime_spec.authorized_project_data_source(project)
 

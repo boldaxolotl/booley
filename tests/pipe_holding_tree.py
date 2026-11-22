@@ -13,6 +13,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from tests.time_budget import hang_guard_s, scaled
 
 # How long the tree lives when nothing stops it.  It must outlive a caller's whole
@@ -70,9 +72,24 @@ def heartbeat_tree(tmp_path: Path) -> Iterator[dict[str, Path]]:
         yield paths
     finally:
         paths["stop"].touch()
-        deadline = time.monotonic() + hang_guard_s()
-        while not paths["done"].exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        _wait_for_tree_exit(paths)
+
+
+def _wait_for_tree_exit(paths: dict[str, Path]) -> None:
+    """Wait for the done file or for a quiet heartbeat after a likely kill.
+
+    A live grandchild writes every 0.05 s and ends within one beat of the stop
+    file; a killed one never writes the done file.
+    """
+    deadline = time.monotonic() + hang_guard_s()
+    last_size, last_change = _heartbeat_size(paths["heartbeat"]), time.monotonic()
+    while not paths["done"].exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+        size = _heartbeat_size(paths["heartbeat"])
+        if size != last_size:
+            last_size, last_change = size, time.monotonic()
+        elif time.monotonic() - last_change > scaled(1):
+            return
 
 
 def parent_argv(tmp_path: Path, python: str, paths: dict[str, Path], mode: str) -> list[str]:
@@ -119,3 +136,21 @@ def describe_heartbeat_tree(paths: dict[str, Path]) -> str:
     if paths["done"].exists():
         return f"had exited on its own (done file present, its {TREE_LIFE_S:g} s limit)"
     return "showed no heartbeat for 1 s and no done file (killed, or alive but not scheduled)"
+
+
+def stall_wait_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the bounded capture's own child ignore its communicate timeout.
+
+    The stall occurs outside Booley inside CPython's subprocess wait.
+    """
+    from booley.runtime import platform_paths
+
+    real_spawn = platform_paths._spawn
+
+    def spawn(*args, **kwargs):
+        proc, feeder = real_spawn(*args, **kwargs)
+        real_communicate = proc.communicate
+        monkeypatch.setattr(proc, "communicate", lambda **_: real_communicate())
+        return proc, feeder
+
+    monkeypatch.setattr(platform_paths, "_spawn", spawn)

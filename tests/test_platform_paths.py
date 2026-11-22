@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import ntpath
 import os
 import signal
@@ -10,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +20,7 @@ from tests.pipe_holding_tree import (
     describe_heartbeat_tree,
     heartbeat_tree,
     parent_argv,
+    stall_wait_on,
     wait_until_heartbeat_stops,
 )
 from tests.time_budget import hang_guard_s, scaled
@@ -346,6 +349,9 @@ def test_run_captured_bounded_feeds_input_and_streams(tmp_path: Path):
     assert streamed.stderr == "warn"
 
 
+#: A child that exits at once.
+_EXIT_AT_ONCE = [sys.executable, "-c", "pass"]
+
 #: Deadline given to ``run_captured_bounded`` for a hung child tree.
 _HUNG_TREE_DEADLINE_S = scaled(2)
 
@@ -402,3 +408,38 @@ def test_run_captured_bounded_stops_a_hung_tree_writing_an_output_stream(tmp_pat
 def test_run_captured_bounded_stops_a_hung_tree_capturing_bytes(tmp_path: Path):
     expired = _assert_hung_tree_is_stopped(tmp_path, text=False)
     assert expired.stderr is None or isinstance(expired.stderr, bytes)
+
+
+def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A wait stuck until the tree closes its pipes still times out at the deadline (#4323)."""
+    # Exercise the Windows deadline policy on every host, with native process
+    # group operations still selected by the real host platform.
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        stall_wait_on(monkeypatch)
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            platform_paths.run_captured_bounded(argv, timeout=_HUNG_TREE_DEADLINE_S, text=False)
+        assert time.monotonic() - started < scaled(38)
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+    assert not [t for t in threading.enumerate() if t.name == "bounded-capture-deadline"]
+
+
+def test_deadline_kill_spares_a_child_that_already_exited():
+    """A child that exited before the deadline is not reported as timed out (#4323)."""
+    proc = subprocess.Popen(_EXIT_AT_ONCE)
+    proc.wait(timeout=hang_guard_s())
+    killer = platform_paths._DeadlineKiller(proc, 0)
+    killer.start()
+    killer._thread.join(hang_guard_s())  # the deadline has passed before the wait returns
+
+    assert killer.stop() is False
+
+
+def test_run_captured_bounded_accepts_an_infinite_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    result = platform_paths.run_captured_bounded(_EXIT_AT_ONCE, timeout=math.inf)
+    assert result.returncode == 0
