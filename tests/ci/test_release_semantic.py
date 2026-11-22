@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parents[2]
@@ -51,15 +52,16 @@ def test_pr_topology_requires_one_minute_semantic_budget() -> None:
     assert errors == ("release-semantic must enforce a 60-second duration budget",)
 
 
-def test_publication_topology_grants_reusable_workflow_permissions() -> None:
+@pytest.mark.parametrize("scope", ["actions", "pull-requests"])
+def test_publication_topology_grants_reusable_workflow_permissions(scope: str) -> None:
     publication = yaml.safe_load(
         (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
     )
-    publication["jobs"]["source-validation"]["permissions"].pop("actions")
+    publication["jobs"]["source-validation"]["permissions"].pop(scope, None)
 
     errors = semantic.validate_publication_topology(publication, _test_workflow())
 
-    assert errors == ("source-validation must grant actions: read required by test.yml",)
+    assert errors == (f"source-validation must grant {scope}: read required by test.yml",)
 
 
 def test_publication_topology_requires_official_release_attestation() -> None:

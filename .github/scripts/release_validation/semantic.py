@@ -97,6 +97,27 @@ def validate_pr_topology(workflow: dict[str, Any]) -> tuple[str, ...]:
     return tuple(errors)
 
 
+def _source_permission_errors(
+    source_validation: dict[str, Any], source_workflow: dict[str, Any]
+) -> list[str]:
+    granted = _mapping(source_validation.get("permissions"), "source-validation permissions")
+    source_jobs = _mapping(source_workflow.get("jobs"), "test workflow jobs")
+    permissions = [_mapping(source_workflow.get("permissions"), "test workflow permissions")]
+    # GitHub checks job-level requests even when the job's condition is false.
+    for name, job in source_jobs.items():
+        if "permissions" in job:
+            permissions.append(_mapping(job["permissions"], f"{name} permissions"))
+    return sorted(
+        {
+            f"source-validation must grant {scope}: {access} required by test.yml"
+            for requested in permissions
+            for scope, access in requested.items()
+            if _PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
+            < _PERMISSION_LEVELS.get(str(access), -1)
+        }
+    )
+
+
 def validate_publication_topology(
     workflow: dict[str, Any], source_workflow: dict[str, Any]
 ) -> tuple[str, ...]:
@@ -105,14 +126,7 @@ def validate_publication_topology(
     build_package = _mapping(jobs.get("build-package"), "build-package job")
     test_wheel = _mapping(jobs.get("test-wheel"), "test-wheel job")
     test_sdist = _mapping(jobs.get("test-sdist"), "test-sdist job")
-    granted = _mapping(source_validation.get("permissions"), "source-validation permissions")
-    required = _mapping(source_workflow.get("permissions"), "test workflow permissions")
-    errors: list[str] = []
-    for scope, access in required.items():
-        required_level = _PERMISSION_LEVELS.get(str(access), -1)
-        granted_level = _PERMISSION_LEVELS.get(str(granted.get(scope, "none")), -1)
-        if granted_level < required_level:
-            errors.append(f"source-validation must grant {scope}: {access} required by test.yml")
+    errors = _source_permission_errors(source_validation, source_workflow)
     build_steps = _steps(build_package)
     tag_validation = _named_step(build_package, "Verify tag matches package version")
     package_build = _named_step(build_package, "Build sdist and wheel")
