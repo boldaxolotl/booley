@@ -377,13 +377,16 @@ def _run_bounded(
 ) -> subprocess.CompletedProcess[bytes]:
     """Bytes core of :func:`run_captured_bounded`: kill the tree, bound every wait."""
     proc, feeder = _spawn(argv, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout)
-    killer = _DeadlineKiller(proc, timeout)
+    # On POSIX poll() can return None while another thread reaps the child.
+    # Windows polls its process handle and can tell whether the child exited.
+    killer = _DeadlineKiller(proc, timeout) if sys.platform == "win32" else None
     try:
         try:
-            killer.start()
+            if killer is not None:
+                killer.start()
             out, err = _communicate_sliced(proc, timeout)
         except subprocess.TimeoutExpired:
-            if not killer.stop():
+            if killer is None or not killer.stop():
                 kill_process_tree(proc)
             try:
                 out, err = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
@@ -394,11 +397,11 @@ def _run_bounded(
                 _close_unowned_pipes(proc)
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
         except BaseException:
-            if not killer.stop():
+            if killer is None or not killer.stop():
                 kill_process_tree(proc)
             _close_unowned_pipes(proc)
             raise
-        if killer.stop():
+        if killer is not None and killer.stop():
             # The child was still running at the deadline and was killed.
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
     finally:

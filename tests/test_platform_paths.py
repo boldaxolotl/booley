@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -413,9 +414,12 @@ def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A wait stuck until the tree closes its pipes still times out at the deadline (#4323)."""
+    # Exercise the Windows deadline policy on every host, with native process
+    # group operations still selected by the real host platform.
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        stall_wait_on(monkeypatch, argv)
+        stall_wait_on(monkeypatch)
         started = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
             platform_paths.run_captured_bounded(argv, timeout=_HUNG_TREE_DEADLINE_S, text=False)
@@ -435,6 +439,7 @@ def test_deadline_kill_spares_a_child_that_already_exited():
     assert killer.stop() is False
 
 
-def test_run_captured_bounded_accepts_an_infinite_timeout():
+def test_run_captured_bounded_accepts_an_infinite_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
     result = platform_paths.run_captured_bounded(_EXIT_AT_ONCE, timeout=math.inf)
     assert result.returncode == 0
