@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 /// Pinned `$schema` URL. Bump alongside the git tag at release-cut time.
 pub const SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.5.0/crates/bwave/schema/bwave.json";
+    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.5.1/crates/bwave/schema/bwave.json";
 
 /// B-Wave JSON envelope revision 2, emitted by `--format json` on list, value,
 /// find, stats, signal, wave, distance and overview; sample, diff and stuck are
