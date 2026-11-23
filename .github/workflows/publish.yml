@@ -16,6 +16,8 @@ jobs:
       actions: read
       contents: read
       packages: read
+      # GitHub validates permissions even for jobs skipped on tags.
+      pull-requests: read
 
   build-package:
     runs-on: ubuntu-latest
