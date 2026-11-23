@@ -9,6 +9,22 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+## 0.5.1 - 23 NOV 2026
+
+### Bug fixes
+
+- Fixed the release workflow permission that blocked publication of the
+  0.5.0 Python package and the GitHub Release with its standalone B-Wave
+  binary. Use 0.5.1 for these downloads.
+  ([#5353](https://github.com/boldaxolotl/booley/pull/5353))
+
+### Upgrade notes
+
+- If you are upgrading from 0.4.x, read the
+  [0.5.0 feature and upgrade notes](https://github.com/boldaxolotl/booley/blob/v0.5.0/CHANGELOG.md#050---22-nov-2026).
+- If your Project pins a 0.5.0 Sandbox Image, update the pin to 0.5.1
+  to match the Python package.
+
 ## 0.5.0 - 22 NOV 2026
 
 ### Major features
