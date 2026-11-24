@@ -299,7 +299,7 @@ def test_snapshot_commit_disables_git_auto_maintenance(tmp_path, monkeypatch):
 
     calls: list[list[str]] = []
     monkeypatch.setattr(specialist_workspace, "_run_git", lambda args, cwd: calls.append(args))
-    specialist_workspace._initialize_snapshot_git(tmp_path)
+    specialist_workspace.initialize_snapshot_git(tmp_path)
     commit = next(args for args in calls if "commit" in args)
     assert "gc.auto=0" in commit and "maintenance.auto=false" in commit
 
