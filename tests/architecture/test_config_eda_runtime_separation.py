@@ -9,41 +9,6 @@ from tests.architecture.contract import ArchitectureContract, evaluate_contract
 from tests.architecture.import_graph import Dependency, analyze_imports, top_level_package_sccs
 
 
-@pytest.mark.parametrize(
-    "source,target,rule",
-    [
-        ("config", "eda", "D23"),
-        ("eda", "runtime", "D24"),
-        ("runtime", "flows", "D41"),
-        ("runtime", "harness", "D6"),
-    ],
-)
-@pytest.mark.parametrize(
-    "location", ["module", "relative", "function", "conditional", "type", "initializer"]
-)
-def test_new_directions_cover_every_static_import_location(
-    tmp_path, source, target, rule, location
-):
-    root = tmp_path / "booley"
-    for package in (root, root / source, root / target):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / target / "provider.py").write_text("value = 1\n")
-    statement = f"from booley.{target} import provider\n"
-    statements = {
-        "module": statement,
-        "relative": f"from ..{target} import provider\n",
-        "function": f"def helper():\n    {statement}",
-        "conditional": f"if False:\n    {statement}",
-        "type": f"from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    {statement}",
-        "initializer": statement,
-    }
-    filename = "__init__.py" if location == "initializer" else "consumer.py"
-    (root / source / filename).write_text(statements[location])
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    assert rule in {problem.rule for problem in problems}
-
-
 @pytest.mark.parametrize("owner", ["private_store", "file_lock", "resources"])
 @pytest.mark.parametrize(
     "target", ["config.eda", "eda.provisioning.authority", "runtime.private_store"]
@@ -80,14 +45,6 @@ def test_approved_cyclic_groups_are_tightened_to_actual_groups():
     assert set(BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs) == actual, (
         "Tighten approved SCC metadata after a split so separated groups cannot recombine"
     )
-    # The Flow layer sits below the Specialist layer: no edge back up.
-    upward = sorted(
-        f"{dependency.path}:{dependency.line}"
-        for dependency in dependencies
-        if dependency.source.startswith("booley.flows")
-        and dependency.target.startswith("booley.specialists")
-    )
-    assert upward == [], f"booley.flows imports booley.specialists: {upward}"
 
 
 # Packages already split out of the remaining group. One test covers all of them

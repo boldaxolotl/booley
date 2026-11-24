@@ -202,21 +202,6 @@ def compare_dependency_graphs(
     )
 
 
-def select_dependencies(
-    dependencies: tuple[Dependency, ...],
-    *,
-    source_prefixes: tuple[str, ...] = (),
-    target_prefixes: tuple[str, ...] = (),
-) -> tuple[Dependency, ...]:
-    """Select dependencies whose ends match the supplied module prefixes."""
-    return tuple(
-        dependency
-        for dependency in dependencies
-        if _matches_any(dependency.source, source_prefixes)
-        and _matches_any(dependency.target, target_prefixes)
-    )
-
-
 def top_level_package_sccs(
     dependencies: tuple[Dependency, ...],
 ) -> tuple[tuple[str, ...], ...]:
@@ -308,12 +293,6 @@ def _from_base(node: ast.ImportFrom, source: SourceModule) -> str | None:
     if node.module:
         base.extend(node.module.split("."))
     return ".".join(base)
-
-
-def _matches_any(module: str, prefixes: tuple[str, ...]) -> bool:
-    return not prefixes or any(
-        module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes
-    )
 
 
 def _dependency_key(dependency: Dependency) -> tuple[str, str, str, int, int]:

@@ -84,53 +84,53 @@ def _hook():
     return module
 
 
+_USER = "docs/user"
+_INTERNALS = "docs/internals"
+
+
 @pytest.mark.parametrize(
-    ("target", "expected"),
+    ("base", "target", "expected"),
     [
-        ("TESTS.md#seeds-seed-default_seed", "TESTS.md#seeds-seed-default_seed"),
+        (_USER, "TESTS.md#seeds-seed-default_seed", "TESTS.md#seeds-seed-default_seed"),
         (
+            _USER,
             "../internals/CONTRIBUTING.md#getting-set-up",
             "{blob}docs/internals/CONTRIBUTING.md#getting-set-up",
         ),
-        ("../../README.md", "{blob}README.md"),
-        ("https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#a", "USAGE.md#a"),
-        (f"{SITE_URL}docs/usage/#a", "USAGE.md#a"),
-        (f"{SITE_URL}docs/assets/x.png", "assets/x.png"),
-        (f"{SITE_URL}#limitations", None),  # not a user doc
-        # A published contributor doc stays on the site too.
-        ("../internals/ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
+        (_USER, "../../README.md", "{blob}README.md"),
         (
+            _USER,
+            "https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#a",
+            "USAGE.md#a",
+        ),
+        (_USER, f"{SITE_URL}docs/usage/#a", "USAGE.md#a"),
+        (_USER, f"{SITE_URL}docs/assets/x.png", "assets/x.png"),
+        (_USER, f"{SITE_URL}#limitations", f"{SITE_URL}#limitations"),  # not a user doc
+        # A published contributor doc stays on the site too.
+        (_USER, "../internals/ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
+        (
+            _USER,
             "https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#overview",
             "ARCHITECTURE.md#overview",
+        ),
+        # docs/internals/ARCHITECTURE.md links published files on the site, the rest on GitHub.
+        (_INTERNALS, "../user/USAGE.md#a", "USAGE.md#a"),
+        (_INTERNALS, "../user/assets/architecture.svg", "assets/architecture.svg"),
+        (_INTERNALS, "ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
+        (
+            _INTERNALS,
+            "CONTRIBUTING.md#getting-set-up",
+            "{blob}docs/internals/CONTRIBUTING.md#getting-set-up",
         ),
     ],
 )
 def test_hook_points_doc_links_where_they_work_on_the_site(
-    target: str, expected: str | None
+    base: str, target: str, expected: str
 ) -> None:
-    hook = _hook()
-    expected = (expected or target).format(blob=hook.GITHUB_BLOB)
-
-    assert hook.rewrite_links(f"[x]({target})", PurePosixPath("docs/user")) == f"[x]({expected})"
-
-
-@pytest.mark.parametrize(
-    ("target", "expected"),
-    [
-        ("../user/USAGE.md#a", "USAGE.md#a"),
-        ("../user/assets/architecture.svg", "assets/architecture.svg"),
-        ("ARCHITECTURE.md#overview", "ARCHITECTURE.md#overview"),
-        ("CONTRIBUTING.md#getting-set-up", "{blob}docs/internals/CONTRIBUTING.md#getting-set-up"),
-    ],
-)
-def test_hook_points_contributor_doc_links_where_they_work_on_the_site(
-    target: str, expected: str
-) -> None:
-    """docs/internals/ARCHITECTURE.md links published files on the site, the rest on GitHub."""
     hook = _hook()
     expected = expected.format(blob=hook.GITHUB_BLOB)
 
-    rewritten = hook.rewrite_links(f"[x]({target})", PurePosixPath("docs/internals"))
+    rewritten = hook.rewrite_links(f"[x]({target})", PurePosixPath(base))
 
     assert rewritten == f"[x]({expected})"
 
