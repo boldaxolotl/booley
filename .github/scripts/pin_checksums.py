@@ -242,9 +242,6 @@ PINS: dict[str, Pin] = {
         ),
         _GITHUB,
     ),
-    "lramseyer/vaporview": _vsix(
-        "VAPORVIEW", "lramseyer/vaporview", "Lramseyer/vaporview", "{version}-rel"
-    ),
     "mshr-h/veriloghdl": _vsix(
         "VERILOGHDL", "mshr-h/veriloghdl", "mshr-h/vscode-verilog-hdl-support", "v{version}"
     ),

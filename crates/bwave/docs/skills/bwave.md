@@ -63,18 +63,7 @@ bwave @dut find hsk 'h1 --virtual "hsk = *valid & *ready" --count
 
 ## Showing the human a waveform
 
-`bwave gui` is for the HUMAN; you read values with the query commands. When
-the human needs to see something, query first, then show a scoped view of
-what you found, in named groups with a radix and color per selector. It
-needs an attached VS Code window and hard-errors when none answers: pass the
-setup hint on rather than assuming it worked. How to compose the view:
-`commands/gui`.
-
-```bash
-bwave @dut find "tb.dut.fifo.overflow" rising --first
-bwave gui @dut \
-  --signals 'tb.clk%b@red' \
-  --group 'FIFO handshake=tb.dut.fifo.*%h@green' \
-  --group 'Control=tb.dut.ctrl.state%h@blue' \
-  --time 1180c:1260c
-```
+Booley has no waveform viewer for now, and `bwave gui` only checks a selection
+and exits non-zero (`commands/gui`). When the human needs to see something,
+report what the queries found as text: the signal names, the times and the
+values.

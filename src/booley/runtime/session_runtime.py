@@ -174,8 +174,8 @@ def vscode_session_container(workspace: Path) -> str | None:
     Recognised by the ``devcontainer.local_folder`` label the Dev Containers CLI
     stamps — our own headless `session up` container never carries it, so this
     distinguishes the two container origins. The label does not prove that a
-    renderer or extension host is still attached; callers such as the VaporView
-    doctor check must probe their live service after finding the container.
+    renderer or extension host is still attached; callers such as Doctor's
+    bundled-extension check must probe their live service after finding the container.
     """
     selected = resolve_running_sandbox(workspace)
     return selected.name if selected is not None and selected.vscode else None

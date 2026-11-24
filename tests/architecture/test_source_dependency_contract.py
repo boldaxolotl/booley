@@ -490,7 +490,7 @@ def test_direction_rule_catches_all_static_import_locations(tmp_path, statement)
         "harness.setup.readiness",
         "runtime.inspection",
         "flows.sim.backends.cocotb_target_checks",
-        "runtime.vaporview",
+        "runtime.bundled_extensions",
         "flows.target_test_plan_inspection",
         "audit.core_tree_inspection",
         "runtime.core_repository_hygiene",

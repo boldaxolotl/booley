@@ -56,7 +56,7 @@ The `bwave` installed with Booley wraps the native binary and adds:
 |---|---|
 | `register` | Register a store or sim directory as a session. See `reference/sessions`. |
 | `markers` | Name cycles on a session. See `reference/markers`. |
-| `gui` | Show a trace to the human in VaporView. See `commands/gui`. |
+| `gui` | Check a waveform selection; no viewer for now. See `commands/gui`. |
 
 ## Shared global options
 
