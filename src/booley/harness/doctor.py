@@ -166,7 +166,6 @@ from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     LINT_EDA_TOOL_FAMILIES,
-    CoreSources,
     FuseSocError,
     TargetHandle,
     TargetInspection,
@@ -4780,23 +4779,13 @@ def _check_sim_verdict_setup(
     _pass: Check,
     _warn: Check,
     *,
-    sources: fusesoc_registry.CoreSources | None = None,
+    sources: fusesoc_registry.CoreSources,
     _note: Check | None = None,
 ) -> None:
     """Check that a non-cocotb simulation TB can emit a pass verdict."""
     if ref.cocotb_module:
         return
     sentinels, configured = _sim_pass_sentinels(project)
-    if sources is None:
-        try:
-            catalog = TargetCatalog.build(root)
-            inspection = catalog.inspect(catalog.select(f"{ref.vlnv}#{ref.name}"))
-            sources = CoreSources(
-                rtl_source_files=inspection.rtl_files,
-                tb_files=inspection.tb_files,
-            )
-        except fusesoc_registry.FuseSocError:
-            return
     tb_files = sources.tb_files
     if not tb_files:
         return  # the untagged-TB check already covered "sim Target has no TB"
