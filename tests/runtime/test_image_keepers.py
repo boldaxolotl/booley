@@ -10,6 +10,9 @@ def test_forget_cleans_images_of_the_forgotten_root(tmp_path: Path, monkeypatch,
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))  # withdrawal stays private
     project = tmp_path / "project"
     forgotten = tmp_path / "canonical-root"  # inventory may canonicalize the requested path
+    # The private patches stand in for a keeper Docker host that has no public seam short of
+    # one; tests/test_project_inventory_cli.py runs the public forget path with a fake host.
+    # This test pins the root passed to cleanup and the warning filter.
     monkeypatch.setattr(image_keepers, "_require_recovered_host", lambda: None)
     monkeypatch.setattr(
         image_keepers, "_release_root", lambda _root: image_keepers.KeeperRelease("absent", "k")
