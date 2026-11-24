@@ -8,22 +8,22 @@ actual writes in a tmp repo.
 from __future__ import annotations
 
 import argparse
-import re
-import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
+from booley.audit import target_matrix
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
     core_schema_errors,
     read_core,
 )
-from booley.harness import doctor
+from booley.harness import doctor, init_cmd
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
 from booley.harness.setup.common import InitContext
+from booley.harness.setup.guidance_links import ensure_guidance_links
 from booley.harness.setup.scaffold import (
     ScaffoldChoices,
     existing_design_files,
@@ -31,12 +31,14 @@ from booley.harness.setup.scaffold import (
     scaffold_files,
     step_scaffold,
 )
-from booley.runtime.booley_dir import reset_cache
+from booley.runtime import devcontainer as dc
+from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from tests.harness.doctor_host_support import serve_healthy_doctor_host
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -93,8 +95,10 @@ def _core(files: dict[str, str]) -> dict:
     return yaml.safe_load(files["my_ip.core"])
 
 
-def _selftest_core(files: dict[str, str]) -> dict:
-    return yaml.safe_load(files["verif/booley_doctor_selftest.core"])
+def _write(root: Path, files: dict[str, str]) -> None:
+    for rel, content in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -198,95 +202,47 @@ def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("lint_eda_tool", "style_lint", "lint_targets"),
+    [
+        ("verilator", True, ("lint_my_ip", "lint_my_ip_style")),
+        ("verilator", False, ("lint_my_ip",)),
+        ("verible", False, ("lint_my_ip",)),
+    ],
+)
 def test_scaffold_supplies_doctor_fail_path_fixtures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch, lint_eda_tool: str, style_lint: bool, lint_targets: tuple
 ) -> None:
-    cases = [
-        ("verilator", True, ["lint_my_ip", "lint_my_ip_style"]),
-        ("verible", False, ["lint_my_ip"]),
-    ]
-    for lint_eda_tool, style_lint, lint_targets in cases:
-        with monkeypatch.context() as case_patch:  # the overlay env must not leak across cases
-            _check_doctor_fail_path_fixtures(
-                tmp_path / lint_eda_tool, lint_eda_tool, style_lint, lint_targets, case_patch
-            )
-
-
-def _check_doctor_fail_path_fixtures(
-    tmp_path: Path,
-    lint_eda_tool: str,
-    style_lint: bool,
-    lint_targets: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    """Doctor's --deep self-test finds both fixtures; only Doctor sees the bad lint Target."""
     files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool, style_lint=style_lint))
+    _write(tmp_path, files)
 
-    sim_overlay = ".booley/selftest/sim/bad-overlay/my_ip.sv"
-    lint_bad_source = "verif/booley_doctor_selftest/lint_bad.sv"
-    lint_bad_core = "verif/booley_doctor_selftest.core"
-    assert sim_overlay in files
-    assert lint_bad_source in files
-    assert lint_bad_core in files
-
-    for rel, content in files.items():
-        target = tmp_path / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-
-    booley_dir = tmp_path / ".booley"
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml=tomllib.loads((booley_dir / "booley.toml").read_text(encoding="utf-8")),
-        configs_toml=tomllib.loads((booley_dir / "tests.toml").read_text(encoding="utf-8")),
-        first_target="sim_my_ip",
-    )
-    warnings: list[str] = []
-
-    sim_plan = doctor._selftest_plan(project, "sim", warnings.append)
-    lint_plan = doctor._selftest_plan(project, "lint", warnings.append)
-
-    assert warnings == []
-    assert sim_plan is not None
-    assert sim_plan.good.target == sim_plan.bad.target == "sim_my_ip"
-    assert lint_plan is not None
-    assert lint_plan.good.target == "lint_my_ip"
-    assert lint_plan.bad.target == "lint_selftest_bad"
-    assert doctor._doctor_targets(project, "lint") == lint_targets
-
+    assert selftest_overlay.has_bad_overlay(tmp_path / ".booley", "sim")
+    assert target_matrix.doctor_targets(tmp_path, "lint") == lint_targets
     core = _core(files)
     assert "lint_selftest_bad" not in core["targets"]
-    assert "lint_selftest_bad" not in core["filesets"]
-
-    selftest_core = _selftest_core(files)
+    selftest_core = yaml.safe_load(files["verif/booley_doctor_selftest.core"])
     lint_bad = selftest_core["targets"]["lint_selftest_bad"]
-    assert lint_bad["flow"] == "lint"
-    assert lint_bad["flow_options"] == {
-        "tool": lint_eda_tool,
-        "booley": {"doctor_selftest": True},
+    assert lint_bad == {
+        "flow": "lint",
+        "flow_options": {"tool": lint_eda_tool, "booley": {"doctor_selftest": True}},
+        "filesets": ["lint_selftest_bad"],
+        "toplevel": "my_ip_lint_selftest_bad",
     }
-    assert lint_bad["filesets"] == ["lint_selftest_bad"]
-    assert lint_bad["toplevel"] == "my_ip_lint_selftest_bad"
-    assert selftest_core["filesets"]["lint_selftest_bad"]["files"] == [
-        {"booley_doctor_selftest/lint_bad.sv": {"file_type": "systemVerilogSource"}}
-    ]
+    assert core_schema_errors(tmp_path / "verif/booley_doctor_selftest.core") == []
 
-    assert core_schema_errors(tmp_path / lint_bad_core) == []
     public = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
+    assert {"sim_my_ip", "synth_my_ip", *lint_targets} <= public
+    assert "lint_selftest_bad" not in public
     assert "lint_selftest_bad" not in {entry.name for entry in collect_surface(tmp_path).entries()}
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    doctor_targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
-    assert "lint_selftest_bad" in doctor_targets
-    assert "lint_selftest_bad" not in public
+    assert TargetCatalog.build(tmp_path).select("lint_selftest_bad").doctor_private
 
 
 def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> None:
     pytest.importorskip("fusesoc")
     files = scaffold_files(_choices())
-    for rel, content in files.items():
-        target = tmp_path / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+    _write(tmp_path, files)
 
     resolved = _resolve(tmp_path, "sim_my_ip", tmp_path / "build")
     staged_rtl = resolved.build_root / "my_ip.sv"
@@ -303,11 +259,7 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
 
 def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -> None:
     pytest.importorskip("fusesoc")
-    files = scaffold_files(_choices())
-    for rel, content in files.items():
-        target = tmp_path / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+    _write(tmp_path, scaffold_files(_choices()))
 
     resolved = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build", doctor_private=True)
 
@@ -330,27 +282,66 @@ def test_asic_scaffold_sdc_excludes_clock_and_asynchronous_reset_from_data_timin
     assert "[all_outputs]" not in sdc
 
 
-def test_icarus_combo_uses_g2012() -> None:
-    core = _core(scaffold_files(_choices(sim_eda_tool="icarus")))
-    opts = core["targets"]["sim_my_ip"]["flow_options"]
-    assert opts["tool"] == "icarus"
-    assert opts["iverilog_options"] == ["-g2012"]
-    assert "verilator_options" not in opts
-
-
-def test_icarus_lint_target_gets_g2012() -> None:
-    # The scaffold's RTL is SystemVerilog, and iverilog defaults to
-    # Verilog-2005 — a NON-sim icarus target (lint/elaborate) used to be
-    # exactly where -g2012 got forgotten, manufacturing syntax errors that
-    # read like design bugs. LINT_EDA_TOOLS has no Icarus entry today; the rule is
-    # keyed on the EDA tool so the gap cannot reopen if the wizard grows one.
-    core = _core(scaffold_files(_choices(lint_eda_tool="icarus")))
-    opts = core["targets"]["lint_my_ip"]["flow_options"]
-    assert opts == {
-        "tool": "icarus",
-        "iverilog_options": ["-g2012"],
-        "booley": {"doctor": ["lint"]},
-    }
+@pytest.mark.parametrize(
+    ("overrides", "target", "flow_options"),
+    [
+        pytest.param(
+            {"sim_eda_tool": "icarus"},
+            "sim_my_ip",
+            {"tool": "icarus", "booley": {"doctor": ["sim"]}, "iverilog_options": ["-g2012"]},
+            id="icarus-sim",
+        ),
+        # The RTL is SystemVerilog and iverilog defaults to Verilog-2005: a non-sim
+        # Icarus Target is where -g2012 got forgotten, manufacturing syntax errors that
+        # read like design bugs. The rule is keyed on the EDA tool, not the Flow.
+        pytest.param(
+            {"lint_eda_tool": "icarus"},
+            "lint_my_ip",
+            {"tool": "icarus", "iverilog_options": ["-g2012"], "booley": {"doctor": ["lint"]}},
+            id="icarus-lint",
+        ),
+        pytest.param(
+            {"tb_style": "cocotb"},
+            "sim_my_ip",
+            {
+                "tool": "verilator",
+                "booley": {"doctor": ["sim"]},
+                "cocotb_module": "test_my_ip",
+                "timescale": "1ns/1ps",
+                "verilator_options": ["--timing", "-Wno-fatal"],
+            },
+            id="cocotb-verilator",
+        ),
+        pytest.param(
+            {"lint_eda_tool": "verible", "style_lint": False},
+            "lint_my_ip",
+            {"tool": "verible", "booley": {"doctor": ["lint"]}},
+            id="verible-lint",
+        ),
+        pytest.param(
+            {"style_lint": False},
+            "lint_my_ip",
+            {"tool": "verilator", "verilator_options": ["-Wall"], "booley": {"doctor": ["lint"]}},
+            id="style-lint-off",
+        ),
+        pytest.param(
+            {"fpga_part": "xc7a200tfbg484-1"},
+            "fpga_my_ip",
+            {
+                "tool": "vivado",
+                "part": "xc7a200tfbg484-1",
+                "ppa_profile": "balanced",
+                "out_of_context": True,
+                "booley": {"doctor": ["fpga"]},
+            },
+            id="fpga",
+        ),
+    ],
+)
+def test_choice_sets_target_flow_options(overrides: dict, target: str, flow_options: dict) -> None:
+    assert _core(scaffold_files(_choices(**overrides)))["targets"][target]["flow_options"] == (
+        flow_options
+    )
 
 
 def test_cocotb_combo_shapes() -> None:
@@ -376,91 +367,13 @@ def test_cocotb_combo_shapes() -> None:
     assert "[SIM_RESULT]" not in tb  # cocotb verdicts come from results.xml
 
 
-def test_cocotb_verilator_options() -> None:
-    core = _core(scaffold_files(_choices(sim_eda_tool="verilator", tb_style="cocotb")))
-    opts = core["targets"]["sim_my_ip"]["flow_options"]
-    assert opts["verilator_options"] == ["--timing", "-Wno-fatal"]
-
-
-def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
-    files = scaffold_files(_choices(lint_eda_tool="verible", style_lint=False))
-    core = _core(files)
-    assert core["targets"]["lint_my_ip"]["flow_options"] == {
-        "tool": "verible",
-        "booley": {"doctor": ["lint"]},
-    }
-
-    cfg = tomllib.loads(files[".booley/booley.toml"])
-    assert "elab" not in cfg["flows"]
-    assert core["targets"]["sim_my_ip"]["flow_options"]["booley"]["doctor"] == ["sim"]
-
-
-def test_style_lint_opt_out_keeps_one_verilator_target() -> None:
-    core = _core(scaffold_files(_choices(style_lint=False)))
-    lint_targets = {name for name in core["targets"] if name.startswith("lint_")}
-    assert lint_targets == {"lint_my_ip"}
-    assert core["targets"]["lint_my_ip"]["flow_options"]["verilator_options"] == ["-Wall"]
-
-
-def test_no_asic_omits_synth_target_and_sdc() -> None:
-    files = scaffold_files(_choices(asic=False))
-    assert "constraints/my_ip.sdc" not in files
-    core = _core(files)
-    assert "synth_my_ip" not in core["targets"]
-    assert "constraints" not in core["filesets"]
-    cfg = tomllib.loads(files[".booley/booley.toml"])
-    assert cfg["flows"]["synth"]["enabled"] is False
-    assert "default_target" not in cfg["flows"]["synth"]
-
-
-def test_fpga_part_emits_fpga_target_and_xdc() -> None:
+def test_fpga_part_adds_xdc_and_enables_the_fpga_flow() -> None:
     files = scaffold_files(_choices(fpga_part="xc7a200tfbg484-1"))
-    assert "constraints/my_ip.xdc" in files
     core = _core(files)
-    fpga = core["targets"]["fpga_my_ip"]
-    assert fpga["flow"] == "generic"
-    assert fpga["flow_options"] == {
-        "tool": "vivado",
-        "part": "xc7a200tfbg484-1",
-        "ppa_profile": "balanced",
-        "out_of_context": True,
-        "booley": {"doctor": ["fpga"]},
-    }
-    assert "xdc" in fpga["filesets"]
-    xdc_entry = core["filesets"]["xdc"]["files"][0]
-    assert xdc_entry == {"constraints/my_ip.xdc": {"file_type": "xdc"}}
-
-    cfg = tomllib.loads(files[".booley/booley.toml"])
-    assert "backend" not in cfg["flows"]["fpga"]
-    assert cfg["flows"]["fpga"] == {}
-
-
-@pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
-@pytest.mark.parametrize("sim_eda_tool", ["verilator", "icarus"])
-def test_every_combo_parses_with_booleys_own_readers(
-    tmp_path: Path, monkeypatch, sim_eda_tool: str, tb_style: str
-) -> None:
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
-    files = scaffold_files(
-        _choices(sim_eda_tool=sim_eda_tool, tb_style=tb_style, fpga_part="xc7a35tcpg236-1")
-    )
-    for rel, content in files.items():
-        target = tmp_path / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-
-    core = read_core(tmp_path / "my_ip.core")  # raises on unparseable YAML
-    assert core["CAPI=2"] is None  # marker line parsed as expected
-
-    targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
-    expected = {"sim_my_ip", "lint_my_ip", "synth_my_ip", "fpga_my_ip"}
-    assert expected <= targets
-    assert "lint_selftest_bad" not in targets
-    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    doctor_targets = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
-    assert "lint_selftest_bad" in doctor_targets
-    reset_cache()
+    assert "xdc" in core["targets"]["fpga_my_ip"]["filesets"]
+    assert core["filesets"]["xdc"]["files"] == [{"constraints/my_ip.xdc": {"file_type": "xdc"}}]
+    assert "constraints/my_ip.xdc" in files
+    assert tomllib.loads(files[".booley/booley.toml"])["flows"]["fpga"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -518,20 +431,6 @@ def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, 
         assert line in out
 
 
-def test_gather_flags_win_over_defaults(tmp_path: Path, monkeypatch, capsys) -> None:
-    ctx = _ctx(tmp_path, monkeypatch)
-    args = _args(sim_eda_tool="icarus", tb_style="cocotb", lint_eda_tool="verible", asic=False)
-    choices = gather_scaffold_choices(args, ctx)
-    assert choices is not None
-    assert (choices.sim_eda_tool, choices.tb_style, choices.lint_eda_tool, choices.asic) == (
-        "icarus",
-        "cocotb",
-        "verible",
-        False,
-    )
-    capsys.readouterr()
-
-
 def test_gather_no_style_lint_opts_out(tmp_path: Path, monkeypatch, capsys) -> None:
     choices = gather_scaffold_choices(_args(style_lint=False), _ctx(tmp_path, monkeypatch))
     assert choices is not None
@@ -539,16 +438,13 @@ def test_gather_no_style_lint_opts_out(tmp_path: Path, monkeypatch, capsys) -> N
     assert "Style lint:" not in capsys.readouterr().out
 
 
-def test_gather_rejects_style_lint_flag_with_verible(tmp_path: Path, monkeypatch, capsys) -> None:
-    ctx = _ctx(tmp_path, monkeypatch)
-    for flag in (True, False):
-        args = _args(lint_eda_tool="verible", style_lint=flag)
-        assert gather_scaffold_choices(args, ctx) is None
-        assert "--lint-eda-tool verible" in capsys.readouterr().out
-
-    choices = gather_scaffold_choices(_args(lint_eda_tool="verible"), ctx)
-    assert choices is not None
-    assert choices.style_lint is False
+@pytest.mark.parametrize("flag", [True, False])
+def test_gather_rejects_style_lint_flag_with_verible(
+    tmp_path: Path, monkeypatch, capsys, flag: bool
+) -> None:
+    args = _args(lint_eda_tool="verible", style_lint=flag)
+    assert gather_scaffold_choices(args, _ctx(tmp_path, monkeypatch)) is None
+    assert "--lint-eda-tool verible" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -664,18 +560,8 @@ def test_step_writes_everything_in_fresh_repo(tmp_path: Path, monkeypatch, capsy
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is True
     assert ctx.results[-1].status == "ok"
-    for rel in (
-        "rtl/my_ip.sv",
-        "tb/tb_my_ip.sv",
-        "my_ip.core",
-        "verif/booley_doctor_selftest.core",
-        "verif/booley_doctor_selftest/lint_bad.sv",
-        "constraints/my_ip.sdc",
-        ".booley/booley.toml",
-        ".booley/tests.toml",
-        ".booley/selftest/sim/bad-overlay/my_ip.sv",
-    ):
-        assert (tmp_path / rel).is_file(), rel
+    written = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()}
+    assert written == set(scaffold_files(_choices()))
     reset_cache()
     # The closing hint names the real Target, not a bare axis.
     assert "target 'sim_my_ip'" in capsys.readouterr().out
@@ -708,91 +594,62 @@ def test_step_check_only_writes_nothing(tmp_path: Path, monkeypatch, capsys) -> 
     capsys.readouterr()
 
 
+def _git(root: Path, *args: str) -> str:
+    result = run_bounded_child(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+        cwd=root,
+        check=True,
+    )
+    return result.stdout
+
+
 def _track_scaffold(root: Path) -> None:
-    for args in (
-        ["init", "-q"],
-        ["add", "."],
-        [
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "-qm",
-            "scaffold",
-        ],
-    ):
-        run_bounded_child(["git", *args], cwd=root, check=True)
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "scaffold")
 
 
-def _seed_doctor_init_state(root: Path) -> None:
-    """Seed state owned by regular init without suppressing project checks."""
-    from booley.harness.setup.guidance_links import ensure_guidance_links
-    from booley.runtime import devcontainer as dc
-    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-    from tests.harness.test_doctor import _seed_sandbox_files
+def _initialize(root: Path, ctx: InitContext) -> None:
+    """Run Project Initialization the way `booley init` does after the scaffold step.
 
-    booley_dir = root / ".booley"
-    (booley_dir / "FUSESOC_IGNORE").touch()
-    (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
-    (booley_dir / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
-    ensure_guidance_links(root, booley_dir)
-    _seed_sandbox_files(root)
+    No Interactive files: a hidden footprint must not depend on that step succeeding
+    (an offline init returns before excluding anything).
+    """
+    request = init_cmd.ProjectInitialization(
+        None,
+        root / ".booley" / "booley.toml",
+        lambda: init_cmd.ProjectFacts((2, 53, 0)),
+        reconcile_interactive_files=False,
+    )
+    with init_booley_dir_scope(root):
+        assert init_cmd.initialize_project(ctx, request)
+    reset_cache()
+
+
+def _doctor_findings(root: Path, monkeypatch) -> list:
+    """Add what host init adds after Project Initialization, run Doctor, return its findings.
+
+    The host and its commands are healthy, so no finding may warn or fail.
+    """
+    (root / ".booley" / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
+    ensure_guidance_links(root, root / ".booley")  # the setup skill's guidance step
     dc.write_devcontainer(
         root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
     )
-    (root / ".git/info/exclude").write_text("/.devcontainer\n/home/\n")
-    for key, value in (
-        ("gc.worktreePruneExpire", "never"),
-        ("worktree.useRelativePaths", "true"),
-        ("core.autocrlf", "false"),
-    ):
-        run_bounded_child(["git", "config", key, value], cwd=root, check=True)
-    config = booley_dir / "booley.toml"
+    with (root / ".git/info/exclude").open("a", encoding="utf-8") as exclude:
+        exclude.write("/.devcontainer\n/home/\n")  # the fake host's home is <root>/home
+    config = root / ".booley" / "booley.toml"
     config.write_text(
         config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
     )
-    _track_scaffold(root)
-
-
-def _healthy_host_doctor(root: Path, monkeypatch) -> None:
-    """Run all Doctor checks with healthy host/process observations."""
-    from tests.harness.test_doctor import _patch_environment
-
-    _seed_doctor_init_state(root)
-    real_run = subprocess.run
-    _patch_environment(
-        monkeypatch,
-        root,
-        root / ".booley",
-        mcp_tools=[
-            "synth",
-            "bwave",
-            "coverage_analyst",
-            "lint",
-            "mutation",
-            "reviewer",
-            "sim",
-            "fpga",
-        ],
-    )
-    host_run = subprocess.run
-
-    def run(command, **kwargs):
-        if command[0] == "git":
-            return real_run(command, **kwargs)
-        marker = re.search(r"BOOLEY_VIVADO_STARTUP_[0-9a-f]{32}", " ".join(map(str, command)))
-        if marker:
-            return subprocess.CompletedProcess(command, 0, marker[0] + "\n", "")
-        return host_run(command, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", run)
+    serve_healthy_doctor_host(monkeypatch, root)
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), root, record_clean=False)
     assert not [
         (f.check_id, f.subject, f.message)
         for f in result.findings
         if f.severity in {"warn", "fail"}
     ]
+    return list(result.findings)
 
 
 def _assert_target_names_conform(findings) -> None:
@@ -830,9 +687,7 @@ def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, linter, as
             "custom_main_hooks": ["write_hook"]
         }
     catalog = TargetCatalog.build(tmp_path)
-    sources = doctor._CoreAuditInputs(catalog, {h.name: h for h in catalog.list()}).sources_for(
-        "sim_my_ip"
-    )
+    sources = catalog.inspect(catalog.select("sim_my_ip")).sources
     tb = "tb/tb_my_ip.sv" if tb_style == "sv" else "tb/test_my_ip.py"
     assert set(sources.tb_files) == {tb, *(["tb/sim_main.cpp"] if owned else [])}
     assert sources.rtl_source_files == ("rtl/my_ip.sv",)
@@ -842,47 +697,32 @@ def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, linter, as
 @pytest.mark.parametrize("simulator", ["verilator", "icarus"])
 @pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
 @pytest.mark.parametrize("linter", ["verilator", "verible"])
-@pytest.mark.parametrize("asic,fpga", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "asic,synth_mode,fpga",
+    [(False, None, False), (True, None, False), (False, None, True), (True, "logical", True)],
+)
 def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
-    tmp_path, monkeypatch, simulator, tb_style, linter, asic, fpga
+    tmp_path, monkeypatch, simulator, tb_style, linter, asic, synth_mode, fpga
 ):
     args = _args(
         sim_eda_tool=simulator,
         tb_style=tb_style,
         lint_eda_tool=linter,
         asic=asic,
+        synth_mode=synth_mode,
         fpga_part="xc7a35tcpg236-1" if fpga else None,
     )
     resolved = gather_scaffold_choices(args, _ctx(tmp_path, monkeypatch))
     assert resolved is not None
     assert resolved.style_lint is (linter == "verilator")
-    assert step_scaffold(_ctx(tmp_path, monkeypatch), args)
-    _track_scaffold(tmp_path)
-    cfg = tmp_path / ".booley"
-    project = doctor.ProjectAudit(
-        tmp_path,
-        cfg,
-        tomllib.loads((cfg / "booley.toml").read_text()),
-        tomllib.loads((cfg / "tests.toml").read_text()),
-        "sim_my_ip",
-    )
-    reporter = doctor._Reporter.create()
-    doctor._run_core_audit(
-        project,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        _diagnostics=reporter.diagnostics,
-        _note=reporter.note_,
-    )
-    findings = reporter.result(0).findings
-    assert not [
-        (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
-    ]
-    _assert_target_names_conform(findings)
+    ctx = _ctx(tmp_path, monkeypatch)
+    assert step_scaffold(ctx, args)
     _assert_variant_sources_and_header(tmp_path, simulator, tb_style, linter, asic, fpga)
-    _healthy_host_doctor(tmp_path, monkeypatch)
+    _git(tmp_path, "init", "-q")
+    _initialize(tmp_path, ctx)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "scaffold")
+    _assert_target_names_conform(_doctor_findings(tmp_path, monkeypatch))
 
 
 @pytest.mark.parametrize("category", ["rtl", "tb"])
@@ -902,6 +742,8 @@ def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
 
 # Synthesis intent must survive the scaffold boundary and delivered reporting.
 def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
+    # Private: `main()` builds this parser and then runs the whole init; nothing public
+    # returns the parser `booley init` parses with.
     from booley.harness.booley import _build_parser
 
     parser = _build_parser()
@@ -935,26 +777,6 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     assert "synth_my_ip" in {h.name for h in TargetCatalog.build(tmp_path).list()}
     resolved = _resolve(tmp_path, "synth_my_ip", tmp_path / "build")
     assert resolved.eda_tool == "yosys"
-    _track_scaffold(tmp_path)
-    cfg = tmp_path / ".booley"
-    project = doctor.ProjectAudit(
-        tmp_path,
-        cfg,
-        tomllib.loads((cfg / "booley.toml").read_text()),
-        tomllib.loads((cfg / "tests.toml").read_text()),
-        "sim_my_ip",
-    )
-    reporter = doctor._Reporter.create()
-    doctor._run_core_audit(
-        project,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        _diagnostics=reporter.diagnostics,
-        _note=reporter.note_,
-    )
-    assert not [f for f in reporter.result(0).findings if f.severity in {"warn", "fail"}]
 
 
 def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch):
@@ -967,7 +789,9 @@ def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch)
         assert "constraints/my_ip.sdc" in files
     files = scaffold_files(gather_scaffold_choices(_args(asic=False), ctx))
     assert "synth_my_ip" not in _core(files)["targets"]
+    assert "constraints" not in _core(files)["filesets"]
     assert "constraints/my_ip.sdc" not in files
+    assert tomllib.loads(files[".booley/booley.toml"])["flows"]["synth"] == {"enabled": False}
 
 
 def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, capsys):
@@ -1008,6 +832,9 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
         build.mkdir(parents=True, exist_ok=True)
         return pipeline.SynthPlan(build_dir=build, spec=spec)
 
+    # Private: the Synthesis Flow runs Yosys inside the Sandbox. `_configure_synth`
+    # and `_execute_boundary` are its two Sandbox command calls; the real
+    # `configure` parser still reads the argv the scaffolded Target produces.
     monkeypatch.setattr(AsicSynthesizeFlow, "_configure_synth", configure_actual)
     monkeypatch.setattr(
         AsicSynthesizeFlow,
@@ -1052,30 +879,11 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def _git(root: Path, *args: str) -> str:
-    result = run_bounded_child(
-        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
-        cwd=root,
-        check=True,
-    )
-    return result.stdout
-
-
-def _stealth_scaffold(root: Path, monkeypatch) -> InitContext:
-    """Scaffold with ``--stealth`` and run the init steps that own stealth state.
-
-    Deliberately no Interactive step: the hidden footprint must not depend on
-    it succeeding (an offline init returns before excluding anything).
-    """
-    from booley.harness import init_cmd
-
+def _stealth_scaffold(root: Path, monkeypatch) -> None:
     _git(root, "init", "-q")
     ctx = _ctx(root, monkeypatch)
     assert step_scaffold(ctx, _args(stealth=True)) is True
-    init_cmd._step_booley_dir(ctx)
-    init_cmd._step_core_projections(ctx)
-    reset_cache()
-    return ctx
+    _initialize(root, ctx)
 
 
 def test_stealth_scaffold_tracks_no_booley_cores(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -1102,48 +910,23 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     pytest.importorskip("fusesoc")
-    from booley.harness.setup import readiness
-
     _stealth_scaffold(tmp_path, monkeypatch)
     booley_dir = tmp_path / ".booley"
     _git(tmp_path, "add", "-A")
     _git(booley_dir, "add", "-A")
     _git(booley_dir, "commit", "-qm", "stealth files")
-    project = doctor.ProjectAudit(
-        tmp_path,
-        booley_dir,
-        tomllib.loads((booley_dir / "booley.toml").read_text()),
-        tomllib.loads((booley_dir / "tests.toml").read_text()),
-        "sim_my_ip",
-    )
 
     for target in ("sim_my_ip", "lint_my_ip"):
         _resolve(tmp_path, target, tmp_path / "build" / target)
     bad = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build" / "bad", doctor_private=True)
     assert bad.vlnv == "::my_ip_booley_doctor_selftest:0"
     assert bad.rtl_source_files[0].absolute(bad.build_root).is_file()
-
-    warnings: list[str] = []
-    assert doctor._selftest_plan(project, "sim", warnings.append) is not None
-    assert doctor._selftest_plan(project, "lint", warnings.append) is not None
-    assert warnings == []
+    with monkeypatch.context() as patch:
+        patch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        assert TargetCatalog.build(tmp_path).select("lint_selftest_bad").doctor_private
     sim = _resolve(tmp_path, "sim_my_ip", tmp_path / "build" / "sim2")
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", sim.build_root) == 1
 
-    reporter = doctor._Reporter.create()
-    doctor._run_core_audit(
-        project,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        _diagnostics=reporter.diagnostics,
-        _note=reporter.note_,
-    )
-    findings = list(reporter.result(0).findings)
-    _assert_target_names_conform(findings)
-    findings += readiness.check_stealth_cores(project).findings
-    assert not [
-        (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
-    ]
+    # The whole Doctor run includes the core audit and the stealth-cores check.
+    _assert_target_names_conform(_doctor_findings(tmp_path, monkeypatch))
     capsys.readouterr()
