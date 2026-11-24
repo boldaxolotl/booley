@@ -695,6 +695,8 @@ async def test_cached_nested_home_drops_a_removed_login(tmp_path, monkeypatch):
     assert first["auth_json_exists"] is True
     assert second["home"] == first["home"]
     assert second["auth_json_exists"] is False
+    # A link left dangling is not a login the fake can read, but it is still a leftover.
+    assert not os.path.lexists(Path(second["home"]) / "auth.json")
 
 
 @pytest.mark.asyncio
