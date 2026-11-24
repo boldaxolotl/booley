@@ -114,6 +114,10 @@ class JobRecord:
     # that owner first read the final result; None for records that predate them.
     owner: str | None = None
     read_at: str | None = None
+    # The agent client that started the Job and its thread (Claude: the T3 Code thread);
+    # None for records that predate them or a caller without a thread.
+    client: str | None = None
+    thread: str | None = None
     # Directory holding this Job's ``flow-reports/`` and ``mcp-tool-reports/`` when it is
     # not the records root's parent (a Standalone Job's records live elsewhere).
     report_root: str | None = None
@@ -147,7 +151,7 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key", "report_root"):
+    for key in ("work_dir", "session_key", "report_root", "client", "thread"):
         if data.get(key) is not None:
             require_str(data, key)
 

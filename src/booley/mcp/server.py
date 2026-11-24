@@ -80,6 +80,7 @@ from booley.mcp import (
     measure_tool,
     peer_checkout,
 )
+from booley.mcp.agent_thread import resolve_agent_thread
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -1356,7 +1357,7 @@ async def _dispatch_async_job(
             mcp_tool_timeout,
             context=context,
             wait_seconds=_job_inline_wait_seconds() if inline_wait is None else inline_wait,
-            owner=None if caller is None else caller.owner,
+            caller=caller,
             attach=attach,
         )
         state = submission.poll
@@ -2275,7 +2276,8 @@ async def _resolve_observed_request_context(
         caller=caller,
     )
     facts = await observer.resolved(facts)
-    return replace(request, attribution=facts)
+    agent = await resolve_agent_thread(name, meta, facts)
+    return replace(request, attribution=facts, agent=agent)
 
 
 def _application_request_context(

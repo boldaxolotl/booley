@@ -486,7 +486,9 @@ def test_report_under_an_allowed_extra_root_is_found(tmp_path):
     assert found.report_path == report
 
 
-@pytest.mark.parametrize("malformed", [{"session_key": 5}, {"work_dir": []}])
+@pytest.mark.parametrize(
+    "malformed", [{"session_key": 5}, {"work_dir": []}, {"thread": ["x"]}, {"client": 5}]
+)
 def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     root = tmp_path / "jobs"
     job_records.write_record(rec("good", status="done"), root)
