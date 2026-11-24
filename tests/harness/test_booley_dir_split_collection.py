@@ -18,7 +18,6 @@ _SPLIT_PREFIX = (
 )
 _BOOLEY_DIR_DEPENDENTS = (
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_commands_are_grouped_by_execution_location",
-    "tests/harness/test_image_lifecycle.py::test_incremental_adapter_prepare_and_policy_helpers",
     "tests/harness/test_session_runtime.py::"
     "test_enter_preserves_container_credentials_without_literal_placeholder_overrides",
     "tests/harness/setup/test_git_hooks.py::TestProjectCommitMsgHookVendoring::"
