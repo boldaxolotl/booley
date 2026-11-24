@@ -216,7 +216,8 @@ CPU, but they fail by running out of memory.
 
 - **Budget.** The Memory Budget is the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
-  reserve for the agents and the MCP server.
+  reserve for the agents, the MCP server, the Dashboard, `t3 serve` and the
+  headless Chrome processes, each measured while it runs.
 - **Estimate.** A Job reserves its estimated peak memory: the largest recent
   peak recorded for the same Target and phase, plus headroom. A Job with no
   history borrows the largest estimate for that phase elsewhere in the
