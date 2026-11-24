@@ -198,17 +198,12 @@ def poisoned_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 
     tools = tmp_path / "fake-bin"
     write_fake_tools(tools, ctl)
-    # The Sandbox ships the Nangate library under /opt/pdk; the child imports it from here.
-    liberty = tmp_path / "pdk.lib"
+    # The Sandbox ships the Nangate library under /opt/pdk; the runner passes the caller's
+    # ``PRJ_LIB_DIR`` on to the child.
+    liberty = tmp_path / "pdk" / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+    liberty.parent.mkdir(parents=True)
     liberty.write_bytes(b"library(cells) {}\n")
-    monkeypatch.setattr(
-        checkout_flow,
-        "_BOOTSTRAP",
-        "import sys;sys.path.insert(0,sys.argv.pop(1));"
-        "import pathlib;import booley.flows.synth.backends.yosys.discovery as d;"
-        f"d.DEFAULT_LIBERTY=pathlib.Path({str(liberty)!r});"
-        "from booley.harness.checkout_flow import child_main;raise SystemExit(child_main())",
-    )
+    monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     # The verdict must not depend on the mounts of the host that runs the tests.

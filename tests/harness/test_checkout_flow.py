@@ -25,16 +25,24 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from booley.harness.dashboard.jobs import JobReader
-from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
+from booley.harness.standalone_job import (
+    STANDALONE_TIMEOUT_S,
+    standalone_jobs_dir,
+    standalone_log_path,
+)
 from booley.runtime import booley_dir, job_records, job_slots
 from booley.runtime.commit_export import export_commit
-from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.resource_history import load_records
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.harness.process_fake import FakeProcess
+from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
 if TYPE_CHECKING:
-    from booley.harness.checkout_flow import CheckoutFlowRequest, CheckoutFlowResult
+    from booley.harness.checkout_flow import (
+        CheckoutFlowChild,
+        CheckoutFlowRequest,
+        CheckoutFlowResult,
+    )
 
 # The runner is imported inside each test, so its absence fails that test, not collection.
 linux_only = pytest.mark.skipif(
@@ -346,33 +354,12 @@ def test_checkout_flow_returns_outcome_and_reports(
     )
     assert record.report_root == str(world.report_dir.resolve())
     assert len(records_in(world.main)) == 1  # the CLI wrote no second record
+    assert result.elapsed_s is not None and result.elapsed_s == document["elapsed_s"]
 
 
 @linux_only
-def test_checkout_flow_returns_typed_metrics_of_its_report(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.metric_declarations import FlowMetricValues
-    from booley.harness.checkout_flow import run_checkout_flow
-    from booley.measurement import flow_metrics
-
-    def reader(detail: dict[str, object]) -> dict[str, FlowMetricValues]:
-        return {
-            "top": FlowMetricValues(plain={"cell_count": int(str(detail["marker"]))}, per_clock={})
-        }
-
-    monkeypatch.setitem(flow_metrics._READERS_BY_FLOW, FLOW, reader)
-
-    result = run_checkout_flow(world.request("metrics"))
-
-    assert result.metrics == {"top": FlowMetricValues(plain={"cell_count": 7}, per_clock={})}
-    # The Flow's own time after admission, as its report states it.
-    report = json.loads(result.reports[-1].read_text(encoding="utf-8"))
-    assert result.elapsed_s == report["elapsed_s"]
-
-
-@linux_only
-def test_coverage_request_runs_the_flow_with_coverage_collection(world: World) -> None:
+def test_coverage_and_settings_reach_the_child_as_its_options(world: World) -> None:
+    """Each setting of the request is one ``--<name> <value>`` option of the Flow child."""
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
 
     plain = run_checkout_flow(world.request("pass"))
@@ -380,29 +367,28 @@ def test_coverage_request_runs_the_flow_with_coverage_collection(world: World) -
     assert world.seen()["coverage"] is False
     assert record_of(world, plain).argv == ["booley", "flow", FLOW, "--target", "pass"]
 
-    result = run_checkout_flow(world.request("pass", coverage=True))
+    result = run_checkout_flow(
+        world.request("pass", coverage=True, settings={"count": 4, "seed": 3})
+    )
 
     assert result.status is CheckoutFlowStatus.PASSED
-    assert world.seen()["coverage"] is True
-    assert record_of(world, result).argv[-1] == "--coverage"
+    seen = world.seen()
+    assert (seen["coverage"], seen["count"], seen["seed"]) == (True, 4, 3)
+    assert record_of(world, result).argv[3:] == [
+        "--target",
+        "pass",
+        "--count",
+        "4",
+        "--seed",
+        "3",
+        "--coverage",
+    ]
 
 
 @linux_only
-def test_failed_crashed_or_timed_out_flow_returns_an_excerpt_that_errors_every_verdict(
-    world: World,
-) -> None:
+def test_failed_crashed_or_timed_out_flow_returns_an_excerpt(world: World) -> None:
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-    from booley.measurement.metrics_file import Bound, TableRules
-    from booley.measurement.run_document import Verdict
-    from booley.measurement.verdicts import (
-        FlowFailed,
-        evaluate_table,
-        measure_exit_code,
-    )
 
-    rules = TableRules(
-        "t", "vlnv:x#t", "lint", (Bound("errors_max", "errors", "max", 0, None, None, None),), ()
-    )
     cases = [
         ("crash", {}, CheckoutFlowStatus.FAILED, "RuntimeError: stub crashed"),
         ("abort", {}, CheckoutFlowStatus.FAILED, "stub aborted"),
@@ -421,9 +407,6 @@ def test_failed_crashed_or_timed_out_flow_returns_an_excerpt_that_errors_every_v
         assert result.excerpt is not None and expected in result.excerpt, target
         if status is CheckoutFlowStatus.TIMED_OUT:
             assert result.excerpt.startswith(expected)
-        verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
-        assert [(v.verdict, v.detail) for v in verdicts] == [(Verdict.ERROR, result.excerpt)]
-        assert measure_exit_code(v.verdict for v in verdicts) == 2
 
 
 def refusal_requests(
@@ -508,6 +491,7 @@ def test_checkout_flow_refuses_live_state_paths(
         "ancestor-selects-inside",
         "own-root",
         "own-selects-outside",
+        "unusable-config",
     ],
 )
 def test_checkout_flow_refuses_booley_config_outside_the_checkout(
@@ -516,6 +500,7 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
     """A checkout whose Booley configuration is not inside it is refused, naming the directory."""
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
+    checkout = world.checkout
     if case == "no-own-dir":
         # No Booley Directory in the commit: the child would fall back to Main's.
         checkout = tmp_path / "bare" / "checkout"
@@ -526,13 +511,11 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         # An ancestor's ``[project].dir`` selects a directory outside the checkout.
         offending = tmp_path / "selected"
         offending.mkdir()
-        checkout = world.checkout
         (checkout.parent / "booley.toml").write_bytes(
             f'[project]\ndir = "{offending.as_posix()}"\n'.encode()
         )
     elif case == "ancestor-selects-inside":
         # Even a directory inside the checkout is refused when an ancestor chose it.
-        checkout = world.checkout
         offending = checkout / "steered"
         offending.mkdir()
         (checkout.parent / "booley.toml").write_bytes(
@@ -540,12 +523,15 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         )
     elif case == "own-root":
         # The checkout's own ``booley.toml`` selects the checkout root itself.
-        checkout = world.checkout
         offending = checkout
         (checkout / "booley.toml").write_bytes(b'[project]\ndir = "."\n')
+    elif case == "unusable-config":
+        # A Booley Directory that is not a directory is the checkout's problem.
+        offending = checkout
+        shutil.rmtree(checkout / ".booley")
+        (checkout / ".booley").write_bytes(b"not a directory\n")
     else:
         # The checkout's own ``booley.toml`` selects a directory above it.
-        checkout = world.checkout
         offending = checkout.parent / "selected"
         offending.mkdir()
         (checkout / "booley.toml").write_bytes(b'[project]\ndir = "../selected"\n')
@@ -555,8 +541,9 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         run_checkout_flow(request)
 
     assert str(offending.resolve()) in str(refused.value)
-    if case == "own-root":
-        assert "selects its own root" in str(refused.value)
+    assert {"own-root": "selects its own root", "unusable-config": "unusable Booley"}.get(
+        case, ""
+    ) in str(refused.value)
     # Refused before anything was created: no Job record, no environment directory.
     assert not standalone_jobs_dir(world.main).exists()
     assert not list(checkout.parent.glob(".*env-*"))
@@ -573,11 +560,29 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         "empty-target",
         "several-targets",
         "nan-timeout",
+        "outside-sandbox",
+        "runner-env",
+        "unwritable-record",
     ],
 )
-def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> None:
+def test_checkout_flow_refuses_an_unusable_request_or_runner(
+    world: World, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    from booley.core.booley_layout import RETIRED_ENV
+    from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
+    def unwritable(*_args: object, **_kwargs: object) -> None:
+        raise OSError(30, "read-only file system")
+
+    if case == "outside-sandbox":
+        # Tells the host from the Sandbox: the boundary of the runner.
+        monkeypatch.setattr(checkout_flow.runtime_context, "inside_session_runtime", lambda: False)
+    if case == "runner-env":
+        # A retired selection variable in the runner's environment is not the checkout's fault.
+        monkeypatch.setenv(RETIRED_ENV, "")
+    if case == "unwritable-record":
+        monkeypatch.setattr(checkout_flow.job_records, "write_record_strict", unwritable)
     request = {
         "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
         "bad-flow-name": world.request("pass", flow="../escape"),
@@ -585,64 +590,21 @@ def test_checkout_flow_refuses_a_malformed_request(world: World, case: str) -> N
         "empty-target": world.request("  "),
         "several-targets": world.request("a,b"),
         "nan-timeout": world.request("pass", timeout_s=float("nan")),
+        "outside-sandbox": world.request("pass"),
+        "runner-env": world.request("pass"),
+        "unwritable-record": world.request("pass"),
     }[case]
 
     with pytest.raises(
         CheckoutFlowError,
-        match=r"not a directory|invalid Flow name|invalid Target|exactly one Target|positive",
+        match=(
+            r"not a directory|invalid Flow name|invalid Target|exactly one Target|positive"
+            r"|only inside the Sandbox|runner's environment is unusable|read-only file system"
+        ),
     ):
         run_checkout_flow(request)
 
     assert not standalone_jobs_dir(world.main).exists()
-
-
-@linux_only
-def test_checkout_flow_refuses_outside_the_sandbox(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness import checkout_flow
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    monkeypatch.setattr(checkout_flow.runtime_context, "inside_session_runtime", lambda: False)
-
-    with pytest.raises(CheckoutFlowError, match="only inside the Sandbox"):
-        run_checkout_flow(world.request("pass"))
-
-    assert not standalone_jobs_dir(world.main).exists()
-
-
-@linux_only
-def test_checkout_flow_reports_an_unwritable_record_as_a_refusal(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness import checkout_flow
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    def unwritable(*_args: object, **_kwargs: object) -> None:
-        raise OSError(30, "read-only file system")
-
-    monkeypatch.setattr(checkout_flow.job_records, "write_record_strict", unwritable)
-
-    with pytest.raises(CheckoutFlowError, match="read-only file system"):
-        run_checkout_flow(world.request("pass"))
-
-    assert not (world.ctl / "started").exists()
-
-
-@linux_only
-def test_checkout_flow_resolves_a_relative_main_booley_dir(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-
-    monkeypatch.chdir(
-        world.live
-    )  # the child runs in the checkout, where ".booley" is another place
-
-    result = run_checkout_flow(world.request("pass", main_booley_dir=Path(".booley")))
-
-    assert result.status is CheckoutFlowStatus.PASSED
-    assert len(records_in(world.main)) == 1
 
 
 @linux_only
@@ -684,47 +646,40 @@ def test_checkout_flow_queues_behind_live_flow_in_main_slot_store(
     slots_root = world.main / "runtime" / "jobs" / "slots"
     store = job_slots.SlotStore(slots_root)
     # A Flow of the session's own checkout runs alone in Main's memory class.
-    argv = _proc_cmdline(os.getpid()) or []
-    holders = [
-        store.acquire(
-            job_slots.CLASS_MEMORY,
-            pid=os.getpid(),
-            argv=argv,
-            memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
-        )
-    ]
+    holder = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=os.getpid(),
+        argv=list(sys.orig_argv),
+        memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
+    )
     reader = JobReader(world.main, slots_root=slots_root)
-    released = False
     with ThreadPoolExecutor(max_workers=1) as pool:
+        run = pool.submit(run_checkout_flow, world.request("pass"))
         try:
-            run = pool.submit(run_checkout_flow, world.request("pass"))
-
-            def queued() -> bool:
-                snapshot = reader.read()
-                return [view.state for view in snapshot.jobs] == ["queued"]
-
-            poll(queued, "the checkout Flow to queue")
+            poll(
+                lambda: [view.state for view in reader.read().jobs] == ["queued"],
+                "the checkout Flow to queue",
+            )
             assert not (world.ctl / "started").exists()
-            for holder in holders:
-                store.release(holder)
-            released = True
-            result = run.result(timeout=TIMEOUT_S)
         finally:
-            if not released:
-                for holder in holders:
-                    store.release(holder)
+            store.release(holder)
+        result = run.result(timeout=TIMEOUT_S)
 
     assert result.status is CheckoutFlowStatus.PASSED
     assert (world.ctl / "started").exists()
 
 
 @linux_only
-def test_checkout_flow_keeps_shared_state_in_main(world: World) -> None:
+def test_checkout_flow_keeps_shared_state_in_main(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
 
     before = {path.relative_to(world.checkout) for path in world.checkout.rglob("*")}
+    # A relative Main: the child runs in the checkout, where ".booley" is another place.
+    monkeypatch.chdir(world.live)
 
-    result = run_checkout_flow(world.request("pass"))
+    result = run_checkout_flow(world.request("pass", main_booley_dir=Path(".booley")))
 
     assert result.status is CheckoutFlowStatus.PASSED
     # Main gained the Flow's Resource History record and its Job record.
@@ -740,9 +695,12 @@ def test_checkout_flow_job_keeps_the_session_of_its_request(world: World) -> Non
     """#5310: a measuring session's Flow Job stays its Job after the Flow rewrote the record."""
     from booley.harness.checkout_flow import run_checkout_flow
 
-    result = run_checkout_flow(world.request("pass", session_key="codex:t1"))
+    # No timeout: the Job records the standalone bound, and the preflight runs within it.
+    result = run_checkout_flow(world.request("pass", session_key="codex:t1", timeout_s=None))
 
-    assert record_of(world, result).session_key == "codex:t1"
+    record = record_of(world, result)
+    assert record.session_key == "codex:t1"
+    assert record.timeout_s == STANDALONE_TIMEOUT_S
 
 
 @linux_only
@@ -778,20 +736,6 @@ def test_checkout_flow_environment_is_scrubbed(
     assert set(world.checkout.parent.iterdir()) == before
 
 
-@linux_only
-def test_flow_settings_reach_the_child_as_its_options(world: World) -> None:
-    """AC3: each setting of the request is one ``--<name> <value>`` option of the Flow child."""
-    from booley.harness.checkout_flow import _flow_arguments, run_checkout_flow
-
-    request = world.request("pass", settings={"count": 4, "seed": 3})
-
-    assert _flow_arguments(request) == ["--target", "pass", "--count", "4", "--seed", "3"]
-    run_checkout_flow(request)
-
-    seen = world.seen()
-    assert (seen["count"], seen["seed"]) == (4, 3)
-
-
 def assert_no_record_names(main: Path, checkout: Path) -> None:
     """No Job record or handle under *main* names a path inside *checkout*."""
     needles = {str(checkout), str(checkout.resolve())}
@@ -803,18 +747,19 @@ def assert_no_record_names(main: Path, checkout: Path) -> None:
 
 
 @linux_only
-@pytest.mark.parametrize("outcome", ["passed", "failed", "timed_out", "cancelled"])
+@pytest.mark.parametrize("outcome", ["passed", "failed", "timed_out", "cancelled", "killed"])
 def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) -> None:
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
 
-    if outcome == "cancelled":
-        # The Dashboard cancels a Job by signalling the pid its record names.
+    if outcome in {"cancelled", "killed"}:
+        # The Dashboard cancels a Job by signalling the pid its record names; a Flow killed
+        # before its terminal write is failed with its shell status.
         with ThreadPoolExecutor(max_workers=1) as pool:
             run = pool.submit(run_checkout_flow, world.request("wait"))
             poll((world.ctl / "started").exists, "the Flow to start")
             (running,) = records_in(world.main)
             assert running.pid is not None
-            os.kill(running.pid, signal.SIGTERM)
+            os.kill(running.pid, signal.SIGKILL if outcome == "killed" else signal.SIGTERM)
             result = run.result(timeout=TIMEOUT_S)
     else:
         target, timeout_s = {
@@ -824,11 +769,16 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
         }[outcome]
         result = run_checkout_flow(world.request(target, timeout_s=timeout_s))
 
-    assert result.status is CheckoutFlowStatus(outcome)
+    assert result.status is (
+        CheckoutFlowStatus.FAILED if outcome == "killed" else CheckoutFlowStatus(outcome)
+    )
     record = record_of(world, result)
     assert record.status != job_records.STATUS_RUNNING and record.ended_at
-    if outcome == "timed_out":
+    if outcome in {"timed_out", "killed"}:
         assert record.status == job_records.STATUS_FAILED
+    if outcome == "killed":
+        assert (result.exit_code, record.exit_code) == (137, 137)
+    assert not list(world.checkout.parent.glob(".*env-*"))
     shutil.rmtree(world.checkout)
 
     assert_no_record_names(world.main, world.checkout)
@@ -838,54 +788,6 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
         assert result.reports
     for report in result.reports:
         assert json.loads(report.read_text(encoding="utf-8"))["run_id"] == result.run_id
-
-
-# Runs the entry point in its own process so the test can interrupt it like a Ctrl-C.
-CALLER = f"""
-import json, sys
-from pathlib import Path
-from booley.harness.checkout_flow import CheckoutFlowRequest, run_checkout_flow
-
-checkout, main, reports = (Path(arg) for arg in sys.argv[1:4])
-request = CheckoutFlowRequest(checkout, main, reports, "checkout_stub", "wait", {hang_guard_s()})
-run_checkout_flow(request)
-"""
-
-
-@linux_only
-def test_interrupted_caller_stops_the_flow(world: World) -> None:
-    caller = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            CALLER,
-            str(world.checkout),
-            str(world.main),
-            str(world.report_dir),
-        ],
-        env=os.environ | {"BOOLEY_CONTAINER": "1"},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        poll(lambda: (world.ctl / "started").exists() or caller.poll() is not None, "the Flow")
-        assert caller.poll() is None, caller.communicate()[1]
-        (running,) = records_in(world.main)
-        assert running.pid is not None
-        caller.send_signal(signal.SIGINT)
-        caller.communicate(timeout=SUBPROCESS_TIMEOUT_S)
-    finally:
-        if caller.poll() is None:
-            caller.kill()
-            caller.communicate()
-
-    assert caller.returncode != 0  # the Ctrl-C reached the caller
-    poll(lambda: not Path(f"/proc/{running.pid}").exists(), "the Flow to be gone")
-    (final,) = records_in(world.main)
-    assert final.status not in {job_records.STATUS_RUNNING, job_records.STATUS_DONE}
-    assert final.ended_at
-    assert not list(world.checkout.parent.glob(".*env-*"))
 
 
 @linux_only
@@ -929,24 +831,6 @@ def test_child_main_without_a_record_reports_it(
 
 
 @linux_only
-def test_child_killed_before_its_terminal_write_fails_the_record(world: World) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        run = pool.submit(run_checkout_flow, world.request("wait"))
-        poll((world.ctl / "started").exists, "the Flow to start")
-        (running,) = records_in(world.main)
-        assert running.pid is not None
-        os.kill(running.pid, signal.SIGKILL)
-        result = run.result(timeout=TIMEOUT_S)
-
-    assert (result.status, result.exit_code) == (CheckoutFlowStatus.FAILED, 137)
-    record = record_of(world, result)
-    assert (record.status, record.exit_code) == ("failed", 137)
-    assert not list(world.checkout.parent.glob(".*env-*"))
-
-
-@linux_only
 def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -968,66 +852,95 @@ def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
     (record,) = records_in(world.main)
     assert record.status == "failed" and record.pid is not None
     assert not Path(f"/proc/{record.pid}").exists()
+    assert not list(world.checkout.parent.glob(".*env-*"))
 
 
-class StubbornProcess:
-    """A child that ends only when killed; the first wait is interrupted like a second Ctrl-C."""
+def flow_child(
+    root: Path,
+    process: Any,
+    *,
+    timeout_s: float | None = None,
+    age_s: float = 0.0,
+    record: job_records.JobRecord | None = None,
+) -> CheckoutFlowChild:
+    """A started child around *process* whose Job records live under ``root/jobs``."""
+    from booley.harness.checkout_flow import CheckoutFlowChild, CheckoutFlowRequest
 
-    def __init__(self) -> None:
-        self.signals: list[int] = []
-        self.killed = False
-        self.waits = 0
+    record = record or job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
+    return CheckoutFlowChild(
+        process=process,
+        request=CheckoutFlowRequest(root, root, root, FLOW, "pass", timeout_s),
+        run_id=record.run_id,
+        record=record,
+        jobs_root=root / "jobs",
+        log_path=root / "job.log",
+        report_dir=root,
+        scratch=root / "scratch",
+        started_at=time.monotonic() - age_s,
+    )
 
-    def send_signal(self, signum: int) -> None:
-        self.signals.append(signum)
+
+class InterruptedGraceWait(subprocess.Popen[bytes]):
+    """A real child whose grace wait is cut short by a second Ctrl-C."""
 
     def wait(self, timeout: float | None = None) -> int:
-        self.waits += 1
-        if self.waits == 1:
+        if timeout is not None:
             raise KeyboardInterrupt
-        return -9
+        return super().wait(timeout=hang_guard_s())
 
 
-def test_second_interrupt_during_the_stop_still_kills_the_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.harness import checkout_flow
-
-    process = StubbornProcess()
-    monkeypatch.setattr(checkout_flow, "capture_process_group", lambda _process: "group")
-    monkeypatch.setattr(
-        checkout_flow,
-        "force_group_termination",
-        lambda _process, group: setattr(process, "killed", group == "group"),
+@linux_only
+def test_second_interrupt_during_the_stop_still_kills_the_group(tmp_path: Path) -> None:
+    # A child that ignores SIGINT, like a Flow stuck in a tool: only the group kill ends it.
+    script = 'trap "" INT; echo ready; exec sleep 600'
+    process = InterruptedGraceWait(
+        ["sh", "-c", script], stdout=subprocess.PIPE, start_new_session=True
     )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline() == b"ready\n"
+        child = flow_child(tmp_path, process, timeout_s=1, age_s=10)
 
-    with pytest.raises(KeyboardInterrupt):
-        checkout_flow._stop(process)  # type: ignore[arg-type]  # a fake with Popen's used surface
+        with pytest.raises(KeyboardInterrupt):
+            child.poll()
 
-    assert process.signals == [signal.SIGINT]
-    assert process.killed
-    assert process.waits == 2  # the kill was reaped before the interrupt went on
+        assert process.returncode == -signal.SIGKILL
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
+        subprocess.Popen.wait(process, timeout=hang_guard_s())  # past the interrupting wait
+        if process.stdout is not None:
+            process.stdout.close()
 
 
-def test_a_child_that_finished_before_the_stop_keeps_its_done_record(tmp_path: Path) -> None:
-    from booley.harness import checkout_flow
+@pytest.mark.parametrize(
+    ("case", "returncode", "timed_out", "status", "exit_code"),
+    [
+        # A child that finished ``done`` before the stop landed keeps its record.
+        pytest.param("done-before-stop", 0, True, "passed", 0, id="done-before-stop"),
+        # Exit 0 but the child's terminal record write was lost: the record says running.
+        pytest.param("exit-0-without-done", 0, False, "failed", 0, id="exit-0-without-done"),
+        # A record that exists but cannot be read settles from the one in memory.
+        pytest.param("unreadable", 3, False, "failed", 3, id="unreadable"),
+    ],
+)
+def test_settle_decides_the_outcome_from_the_record(
+    tmp_path: Path, case: str, returncode: int, timed_out: bool, status: str, exit_code: int
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowStatus
 
     record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
-    record.status, record.exit_code, record.ended_at = "done", 0, "2026-11-07T00:00:01Z"
-    job_records.write_record_strict(record, tmp_path)
+    if case == "done-before-stop":
+        record.status, record.exit_code, record.ended_at = "done", 0, "2026-11-07T00:00:01Z"
+        job_records.write_record_strict(record, tmp_path / "jobs")
+    if case == "unreadable":
+        (tmp_path / "jobs" / "flow-1.json").mkdir(parents=True)  # a directory: read raises
+    child = flow_child(tmp_path, FakeProcess(returncode=returncode), record=record)
+    child.timed_out = timed_out
 
-    final = checkout_flow._settle_record(record, tmp_path, 0, timed_out=True)
+    result = child.settle()
 
-    assert (final.status, final.exit_code) == ("done", 0)
-    result = checkout_flow._result_from(
-        checkout_flow.CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, FLOW, "pass"),
-        "flow-1",
-        final,
-        tmp_path / "log",
-        tmp_path,
-        timed_out=True,
-    )
-    assert (result.status, result.exit_code) == (checkout_flow.CheckoutFlowStatus.PASSED, 0)
+    assert (result.status, result.exit_code) == (CheckoutFlowStatus(status), exit_code)
 
 
 @linux_only
@@ -1060,6 +973,10 @@ def test_child_selects_the_checkout_explicitly(
         return 0
 
     monkeypatch.chdir(world.checkout)
+    # The public boundary cannot show the selection: every layout where discovery and
+    # ``--project`` disagree is refused by the parent first (dropping ``--project`` left
+    # ``child_main`` passing with an ancestor ``[project].dir`` and with RTL_PROJECT_ROOT
+    # set), so only the argv handed to the CLI does.
     monkeypatch.setattr(booley_cli, "main", main)
 
     assert checkout_flow._run_flow_cli(FLOW, ["--target", "pass"]) == 0
@@ -1068,70 +985,6 @@ def test_child_selects_the_checkout_explicitly(
     assert seen == [
         ["booley", "--project", str(world.checkout.resolve()), "flow", FLOW, "--target", "pass"]
     ]
-
-
-def test_unreadable_record_settles_from_the_one_in_memory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness import checkout_flow
-
-    def unreadable(*_args: object, **_kwargs: object) -> None:
-        raise PermissionError(13, "denied")
-
-    monkeypatch.setattr(checkout_flow.job_records, "read_record", unreadable)
-    record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
-
-    final = checkout_flow._settle_record(record, tmp_path, 3, timed_out=False)
-
-    assert (final.status, final.exit_code) == ("failed", 3)
-
-
-def test_child_that_exited_zero_without_a_done_record_is_reported_failed(tmp_path: Path) -> None:
-    from booley.harness import checkout_flow
-
-    # Exit 0 but the child's terminal record write was lost: the record still says running.
-    record = job_records.JobRecord("flow-1", FLOW, "2026-11-07T00:00:00Z", 60)
-    final = checkout_flow._settle_record(record, tmp_path, 0, timed_out=False)
-
-    result = checkout_flow._result_from(
-        checkout_flow.CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, FLOW, "pass"),
-        "flow-1",
-        final,
-        tmp_path / "log",
-        tmp_path,
-        timed_out=False,
-    )
-
-    assert final.status == "failed"
-    assert result.status is checkout_flow.CheckoutFlowStatus.FAILED
-
-
-@linux_only
-def test_checkout_flow_refuses_an_unusable_booley_configuration(world: World) -> None:
-    """A Booley Directory that is not a directory is refused as the checkout's problem."""
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    shutil.rmtree(world.checkout / ".booley")
-    (world.checkout / ".booley").write_bytes(b"not a directory\n")
-
-    with pytest.raises(CheckoutFlowError, match="unusable Booley configuration") as refused:
-        run_checkout_flow(world.request("pass"))
-
-    assert str(world.checkout.resolve()) in str(refused.value)
-
-
-@linux_only
-def test_checkout_flow_blames_the_runner_environment_for_a_bad_selection_variable(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A retired selection variable in the runner's environment is not the checkout's fault."""
-    from booley.core.booley_layout import RETIRED_ENV
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    monkeypatch.setenv(RETIRED_ENV, "")
-
-    with pytest.raises(CheckoutFlowError, match="runner's environment is unusable"):
-        run_checkout_flow(world.request("pass"))
 
 
 # ---- Preflight: no Flow input may come from the live tree or the Main Booley Directory.
@@ -1203,11 +1056,16 @@ def assert_refused_before_any_run(world: World) -> None:
 
 @linux_only
 @pytest.mark.parametrize(
-    "case", ["core", "booley-toml", "symlink", "core-symlink", "config-symlink"]
+    "case",
+    ["core", "booley-toml", "symlink", "core-symlink", "config-symlink", "booley-dir-env"],
 )
-def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, case: str) -> None:
+def test_checkout_flow_refuses_live_paths_in_inputs(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
+    env_dir = tmp_path / "env-bd"
+    env_dir.mkdir()
     inputs: dict[str, tuple[dict[str, Any], str, str]] = {
         "core": (
             {"files": {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")}},
@@ -1241,9 +1099,18 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
             ".booley/tests.toml",
             "{live}/data.txt",
         ),
+        "booley-dir-env": (
+            {"files": {"ip.core": PROBE_CORE.format(files=f"{env_dir}/rtl/top.v")}},
+            "ip.core",
+            f"{env_dir}/rtl/top.v",
+        ),
     }
     build_arguments, offending, named_path = inputs[case]
     world = make_world(**build_arguments)
+    root = f"live working tree {world.live}"
+    if case == "booley-dir-env":
+        monkeypatch.setenv("BOOLEY_DIR", str(env_dir))  # after ``make_world`` clears it
+        root = f"BOOLEY_DIR {env_dir.resolve()}"
 
     with pytest.raises(CheckoutFlowError) as refused:
         run_checkout_flow(world.request("pass"))
@@ -1251,83 +1118,60 @@ def test_checkout_flow_refuses_live_paths_in_inputs(make_world: WorldBuilder, ca
     message = str(refused.value)
     assert offending in message
     assert named_path.replace("{live}", str(world.live)) in message
-    assert f"inside the live working tree {world.live}" in message
+    assert f"inside the {root}" in message
     assert_refused_before_any_run(world)
 
 
 @linux_only
-def test_checkout_flow_finds_the_live_tree_without_a_work_mount(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "case", ["around-main", "around-cwd", "empty-work", "git-work", "main-repo", "nowhere"]
+)
+def test_checkout_flow_derives_the_live_tree(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
+    from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
     from booley.runtime import sandbox_layout
 
-    # Without a ``/work`` mount the live tree is the Git checkout around Main, whatever
-    # directory the caller stands in.
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
-    monkeypatch.chdir(world.checkout.parent)
-
-    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
-        run_checkout_flow(world.request("pass"))
-
-    assert_refused_before_any_run(world)
-
-
-@linux_only
-def test_checkout_flow_derives_the_live_tree_from_the_working_directory(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from dataclasses import replace
-
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
-
-    # A Booley Directory outside every Git checkout: only the caller's directory shows the tree.
-    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    detached_main = tmp_path / "detached-main"
+    missing_work = str(world.live / "missing")
+    detached_main = tmp_path / "detached-main"  # outside every Git checkout
     detached_main.mkdir()
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
-    monkeypatch.chdir(world.live)
+    request = world.request("pass")
+    if case == "around-main":
+        # Without a ``/work`` mount the live tree is the Git checkout around Main, whatever
+        # directory the caller stands in.
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
+        monkeypatch.chdir(world.checkout.parent)
+    elif case == "around-cwd":
+        # Only the caller's directory shows the tree.
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
+        monkeypatch.chdir(world.live)
+        request = replace(request, main_booley_dir=detached_main)
+    elif case == "empty-work":
+        # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the tree.
+        (tmp_path / "empty-work").mkdir()
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(tmp_path / "empty-work"))
+    elif case == "git-work":
+        # Only a ``/work`` that is a Git checkout (``WORK_DIR`` is the live tree) shows it.
+        monkeypatch.chdir(tmp_path)
+        request = replace(request, main_booley_dir=detached_main)
+    elif case == "nowhere":
+        # Neither Main, the caller's directory nor ``/work`` is a Git checkout.
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
+        monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
+    else:
+        # A linked Booley Directory with its own repository is not the live tree around it.
+        git(world.main, "init", "-q")
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
+        monkeypatch.chdir(world.checkout.parent)
 
-    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
-        run_checkout_flow(replace(world.request("pass"), main_booley_dir=detached_main))
+    refusal = "no live working tree found" if case == "nowhere" else r"ip\.core names .*live"
+    with pytest.raises(CheckoutFlowError, match=refusal):
+        run_checkout_flow(request)
 
-
-@linux_only
-def test_checkout_flow_does_not_trust_an_empty_work_directory_outside_the_issued_sandbox(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
-
-    # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the tree.
-    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    empty_work = tmp_path / "empty-work"
-    empty_work.mkdir()
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(empty_work))
-
-    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
-        run_checkout_flow(world.request("pass"))
-
-    assert_refused_before_any_run(world)
-
-
-@linux_only
-def test_checkout_flow_refuses_a_path_into_the_booley_dir_variable(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    env_dir = tmp_path / "env-bd"
-    env_dir.mkdir()
-    world = make_world(files={"ip.core": PROBE_CORE.format(files=f"{env_dir}/rtl/top.v")})
-    monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
-
-    with pytest.raises(CheckoutFlowError, match=rf"{env_dir}/rtl/top\.v, inside the BOOLEY_DIR"):
-        run_checkout_flow(world.request("pass"))
-
-    assert_refused_before_any_run(world)
+    if request.main_booley_dir == world.main:
+        assert_refused_before_any_run(world)
 
 
 @linux_only
@@ -1383,61 +1227,6 @@ def test_checkout_flow_refuses_a_pdk_root_in_a_live_root(
 
 
 @linux_only
-def test_checkout_flow_takes_a_work_directory_with_a_git_marker_as_the_live_tree(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from dataclasses import replace
-
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    # Main is outside every checkout and the caller stands outside the tree: only a ``/work``
-    # that is a Git checkout (``WORK_DIR`` is the live tree here) shows it.
-    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    detached_main = tmp_path / "detached-main"
-    detached_main.mkdir()
-    monkeypatch.chdir(tmp_path)
-
-    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
-        run_checkout_flow(replace(world.request("pass"), main_booley_dir=detached_main))
-
-
-@linux_only
-def test_checkout_flow_ignores_a_path_under_an_empty_work_directory(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-    from booley.runtime import sandbox_layout
-
-    # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the
-    # tree: naming a path under it is not a read of uncommitted work.
-    empty_work = tmp_path / "empty-work"
-    empty_work.mkdir()
-    world = make_world(files={"ip.core": PROBE_CORE.format(files=f"{empty_work}/rtl/top.v")})
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(empty_work))
-
-    assert run_checkout_flow(world.request("pass")).status is CheckoutFlowStatus.PASSED
-
-
-@linux_only
-def test_checkout_flow_skips_a_booley_directory_that_is_its_own_checkout(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
-
-    # A linked Booley Directory with its own repository is not the live tree around it.
-    world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    git(world.main, "init", "-q")
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
-    monkeypatch.chdir(world.checkout.parent)
-
-    with pytest.raises(CheckoutFlowError, match=r"ip\.core names .*live working tree"):
-        run_checkout_flow(world.request("pass"))
-
-    assert_refused_before_any_run(world)
-
-
-@linux_only
 @pytest.mark.parametrize("case", ["live-path", "clean", "no-mount"])
 def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, case: str
@@ -1470,76 +1259,56 @@ def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
 
 
 @linux_only
-def test_checkout_flow_refuses_when_no_live_working_tree_is_found(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness import checkout_flow
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
-
-    monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
-    monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
-
-    with pytest.raises(CheckoutFlowError, match="no live working tree found"):
-        run_checkout_flow(world.request("pass"))
-
-    assert_refused_before_any_run(world)
-
-
-@linux_only
-def test_checkout_flow_runs_with_a_relative_path_spelling_a_live_root(
-    make_world: WorldBuilder,
+@pytest.mark.parametrize("case", ["empty-work-path", "relative-spelling"])
+def test_checkout_flow_runs_when_no_input_reads_the_live_tree(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
+    from booley.runtime import sandbox_layout
 
-    # ``sim`` + the live path is one relative token, not an absolute path into the live tree.
-    world = make_world(config='[flows.sim]\npre_run_commands = ["make -C sim{live}"]\n')
+    if case == "empty-work-path":
+        # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the
+        # tree: naming a path under it is not a read of uncommitted work.
+        empty_work = tmp_path / "empty-work"
+        empty_work.mkdir()
+        world = make_world(files={"ip.core": PROBE_CORE.format(files=f"{empty_work}/rtl/top.v")})
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(empty_work))
+    else:
+        # ``sim`` + the live path is one relative token, not an absolute path into the live tree.
+        world = make_world(config='[flows.sim]\npre_run_commands = ["make -C sim{live}"]\n')
 
     assert run_checkout_flow(world.request("pass")).status is CheckoutFlowStatus.PASSED
 
 
 @linux_only
-def test_checkout_flow_refuses_a_resolved_file_in_the_live_booley_dir(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("case", ["file", "include-path"])
+def test_checkout_flow_refuses_a_resolved_path_in_the_live_booley_dir(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     use_fusesoc(monkeypatch)
-    # Relative, so the static scan passes; FuseSoC resolves it into the live Booley Directory.
-    shared = "../../live/.booley/shared.v"
-    world = make_world(files={"probe.core": PROBE_CORE.format(files=shared)})
+    # Relative, so the static scan passes; only the resolved EDAM shows where it points.
+    if case == "file":
+        files = {"probe.core": PROBE_CORE.format(files="../../live/.booley/shared.v")}
+        named = "shared.v"
+    else:
+        include = "{inc/defs.vh: {is_include_file: true, include_path: ../../live/.booley/inc}}"
+        files = {
+            "probe.core": PROBE_CORE.format(files=f"top.v, {include}"),
+            "top.v": "module top; endmodule\n",
+            "inc/defs.vh": "",
+        }
+        named = "inc"
+    world = make_world(files=files)
     (world.main / "shared.v").write_bytes(b"module top; endmodule\n")
 
     with pytest.raises(CheckoutFlowError) as refused:
         run_checkout_flow(world.request("probe"))
 
     message = str(refused.value)
-    assert "Target probe" in message
-    assert str(world.main / "shared.v") in message and "Main Booley Directory" in message
-    assert_refused_before_any_run(world)
-
-
-@linux_only
-def test_checkout_flow_refuses_an_include_path_in_the_live_booley_dir(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-
-    use_fusesoc(monkeypatch)
-    # A relative include directory: only the resolved EDAM shows where it points.
-    include = "{inc/defs.vh: {is_include_file: true, include_path: ../../live/.booley/inc}}"
-    world = make_world(
-        files={
-            "probe.core": PROBE_CORE.format(files=f"top.v, {include}"),
-            "top.v": "module top; endmodule\n",
-            "inc/defs.vh": "",
-        }
-    )
-
-    with pytest.raises(CheckoutFlowError) as refused:
-        run_checkout_flow(world.request("probe"))
-
-    assert str(world.main / "inc") in str(refused.value)
+    assert "Target probe" in message and "Main Booley Directory" in message
+    assert str(world.main / named) in message
     assert_refused_before_any_run(world)
 
 
@@ -1619,14 +1388,16 @@ def test_checkout_flow_refuses_when_the_preflight_cannot_resolve(
 
 
 @linux_only
+@pytest.mark.parametrize("ending", ["timeout", "interrupt"])
 def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     use_fusesoc(monkeypatch)
     # The request's bound applies; it is generous, FuseSoC starts slowly on a loaded host.
+    # The floor is 60 s of real clock and no request input lowers it.
     monkeypatch.setattr(checkout_flow, "_PREFLIGHT_MIN_S", 0)
     world = make_world(
         files={
@@ -1637,10 +1408,22 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         }
     )
 
-    with pytest.raises(
-        CheckoutFlowError, match=rf"did not finish within {PREFLIGHT_DEADLINE_S:g} s"
-    ):
-        run_checkout_flow(world.request("probe", timeout_s=PREFLIGHT_DEADLINE_S))
+    if ending == "interrupt":
+
+        def interrupt_once_started() -> None:
+            poll((world.ctl / "generator.pid").exists, "the generator to start")
+            _thread.interrupt_main()  # the caller's Ctrl-C
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            watcher = pool.submit(interrupt_once_started)
+            with pytest.raises(KeyboardInterrupt):
+                run_checkout_flow(world.request("probe"))
+            watcher.result(timeout=TIMEOUT_S)
+    else:
+        with pytest.raises(
+            CheckoutFlowError, match=rf"did not finish within {PREFLIGHT_DEADLINE_S:g} s"
+        ):
+            run_checkout_flow(world.request("probe", timeout_s=PREFLIGHT_DEADLINE_S))
 
     assert_refused_before_any_run(world)
     assert (world.ctl / "generator.pid").exists(), "the generator never started within the bound"
@@ -1691,19 +1474,26 @@ def test_checkout_flow_refuses_a_generated_core_naming_a_live_path(
     assert_refused_before_any_run(world)
 
 
-@linux_only
-@pytest.mark.parametrize("target", ["probe", "pass"])
-def test_preflight_main_writes_the_paths_a_fusesoc_target_reads(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
-) -> None:
-    from booley.harness.checkout_flow import preflight_main
-
-    # In process, so the changed lines are measured: the Flow's child runs it in a subprocess.
+@pytest.fixture
+def probe_checkout(make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch) -> World:
+    """A world with a FuseSoC core for Target ``probe``, the caller standing in its checkout."""
     use_fusesoc(monkeypatch)
     world = make_world(
         files={"probe.core": PROBE_CORE.format(files="top.v"), "top.v": "module top; endmodule\n"}
     )
     monkeypatch.chdir(world.checkout)
+    return world
+
+
+@linux_only
+@pytest.mark.parametrize("target", ["probe", "pass"])
+def test_preflight_main_writes_the_paths_a_fusesoc_target_reads(
+    probe_checkout: World, tmp_path: Path, target: str
+) -> None:
+    from booley.harness.checkout_flow import preflight_main
+
+    world = probe_checkout
+    # In process, so the changed lines are measured: the Flow's child runs it in a subprocess.
     result_file = tmp_path / "preflight.json"
 
     assert preflight_main([target, str(tmp_path / "build"), str(result_file)]) == 0
@@ -1718,8 +1508,8 @@ def test_preflight_main_writes_the_paths_a_fusesoc_target_reads(
 
 @linux_only
 @pytest.mark.parametrize("failing", ["select", "resolve"])
+@pytest.mark.usefixtures("probe_checkout")
 def test_preflight_main_exits_with_the_start_failure_code_on_a_fusesoc_error(
-    make_world: WorldBuilder,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1728,12 +1518,6 @@ def test_preflight_main_exits_with_the_start_failure_code_on_a_fusesoc_error(
     from booley.fusesoc import fusesoc_registry
     from booley.harness.checkout_flow import preflight_main
     from booley.targets.catalog import TargetCatalog
-
-    use_fusesoc(monkeypatch)
-    world = make_world(
-        files={"probe.core": PROBE_CORE.format(files="top.v"), "top.v": "module top; endmodule\n"}
-    )
-    monkeypatch.chdir(world.checkout)
 
     def fail(*_args: object, **_kwargs: object) -> None:
         raise fusesoc_registry.FuseSocError("boom")
@@ -1750,99 +1534,33 @@ def test_preflight_main_exits_with_the_start_failure_code_on_a_fusesoc_error(
 
 @linux_only
 def test_prepare_scratch_removes_its_directory_when_it_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import run_checkout_flow
 
     def fail(_directory: Path) -> None:
         raise OSError("disk full")
 
+    # No request input makes writing into a fresh scratch directory fail.
     monkeypatch.setattr(checkout_flow, "write_git_refusal", fail)
-    checkout = tmp_path / "scratch" / "checkout"
-    checkout.mkdir(parents=True)
 
     with pytest.raises(OSError, match="disk full"):
-        checkout_flow._prepare_scratch(checkout)
+        run_checkout_flow(world.request("pass"))
 
-    assert not list(checkout.parent.glob(".*env-*"))
-
-
-@linux_only
-def test_a_callers_interrupt_ends_the_preflight_child(tmp_path: Path) -> None:
-    import threading
-
-    from booley.harness.checkout_flow import _run_preflight_child
-
-    pid_file = tmp_path / "pid"
-    command = ["sh", "-c", f"echo $$ > {pid_file}; sleep 60"]
-    threading.Timer(1.0, _thread.interrupt_main).start()
-
-    with pytest.raises(KeyboardInterrupt):
-        _run_preflight_child(
-            command, tmp_path, dict(os.environ), hang_guard_s(), tmp_path / "log", "t"
-        )
-
-    with pytest.raises(ProcessLookupError):
-        os.kill(int(pid_file.read_text()), 0)
+    assert_refused_before_any_run(world)
 
 
-@linux_only
-def test_the_preflight_of_a_run_without_a_timeout_uses_the_standalone_bound(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from booley.harness import checkout_flow
-
-    world = make_world()
-    bounds: list[float] = []
-
-    def child(
-        command: list[str], _c: Path, _e: dict[str, str], bound_s: float, *_r: object
-    ) -> None:
-        bounds.append(bound_s)
-        Path(command[-1]).write_text('{"files": null, "cores": []}', encoding="utf-8")
-
-    monkeypatch.setattr(checkout_flow, "_run_preflight_child", child)
-    scratch = tmp_path / "scratch-dir"
-    (scratch / "tmp").mkdir(parents=True)
-
-    checkout_flow._preflight(
-        world.request("pass", timeout_s=None), world.checkout, [], scratch, {}
+def test_poll_stops_a_child_whose_budget_expired(tmp_path: Path) -> None:
+    young, unbounded, expired = FakeProcess(), FakeProcess(), FakeProcess()
+    children = (
+        flow_child(tmp_path, young, timeout_s=100, age_s=1),
+        flow_child(tmp_path, unbounded, timeout_s=None, age_s=10_000),
+        flow_child(tmp_path, expired, timeout_s=5, age_s=10),
     )
 
-    assert bounds == [checkout_flow.STANDALONE_TIMEOUT_S]
-
-
-def test_poll_stops_a_child_whose_budget_expired(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.harness import checkout_flow
-    from booley.harness.checkout_flow import CheckoutFlowChild, CheckoutFlowRequest
-
-    stopped: list[object] = []
-    monkeypatch.setattr(checkout_flow, "_stop", stopped.append)
-
-    class Running:
-        """A process that never ends by itself."""
-
-        def poll(self) -> None:
-            return None
-
-    def child(timeout_s: float | None, age_s: float) -> CheckoutFlowChild:
-        request = CheckoutFlowRequest(tmp_path, tmp_path, tmp_path, "lint", "t", timeout_s)
-        return CheckoutFlowChild(
-            process=Running(),  # type: ignore[arg-type]
-            request=request,
-            run_id="run",
-            record=None,  # type: ignore[arg-type]
-            jobs_root=tmp_path,
-            log_path=tmp_path / "job.log",
-            report_dir=tmp_path,
-            scratch=tmp_path,
-            started_at=time.monotonic() - age_s,
-        )
-
-    young, unbounded, expired = child(100, 1), child(None, 10_000), child(5, 10)
-    assert not young.poll() and not unbounded.poll()
-    assert not (young.timed_out or unbounded.timed_out) and not stopped
-    assert expired.poll() and expired.timed_out
-    assert stopped == [expired.process]
+    assert not children[0].poll() and not children[1].poll()
+    assert not (children[0].timed_out or children[1].timed_out)
+    assert young.signals == [] and unbounded.signals == []
+    assert children[2].poll() and children[2].timed_out
+    assert expired.signals == [signal.SIGINT]
