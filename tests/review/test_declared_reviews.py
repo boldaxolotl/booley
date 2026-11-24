@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -425,3 +426,122 @@ def test_reviewer_doc_example_loads(tmp_path: Path) -> None:
     for number, block in enumerate(blocks):
         declared = load_declared_reviews(write_project(tmp_path / str(number), block))
         assert declared.reviews, block
+
+
+IN_TREE_REVIEWS = '[sim_core.review]\nrtl = ["bugs"]\nspec = "docs/spec.md"\n'
+PAIRED_REVIEWS = IN_TREE_REVIEWS.replace("docs/spec.md", ".booley/spec.md")
+REVIEWS_PATH = ".booley/reviews.toml"
+IN_TREE_CASES = {
+    "unchanged": ({}, (), ()),
+    "reviews-edited": (
+        {REVIEWS_PATH: IN_TREE_REVIEWS + 'resolve = "minor"\n'},
+        (),
+        ("reviews.toml",),
+    ),
+    "spec-edited": ({"docs/spec.md": "two\n"}, (), ("docs/spec.md",)),
+    "spec-target-edited": ({"docs/real.md": "two\n"}, ("docs/real.md",), ("docs/spec.md",)),
+    "unreadable-at-base": ({}, ("broken",), ("reviews.toml",)),
+}
+
+
+@pytest.mark.parametrize("case", IN_TREE_CASES)
+def test_review_rules_changes_since_the_base(tmp_path: Path, case: str) -> None:
+    """AC3: a changed reviews.toml or declared spec (even through a symlink) is reported."""
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.review.declared_reviews import review_rules_changes
+
+    edits, flags, expected = IN_TREE_CASES[case]
+    if "docs/real.md" in flags and sys.platform == "win32":
+        pytest.skip("needs symlinks")
+    repo = new_repository(tmp_path / "repo")
+    write(repo / ".booley" / "booley.toml", "[project]\n")
+    write(repo / "rtl.v", "rtl\n")
+    reviews = "[sim_core\n" if "broken" in flags else IN_TREE_REVIEWS
+    write(repo / REVIEWS_PATH, reviews)
+    write(
+        repo / "docs" / "spec.md" if "docs/real.md" not in flags else repo / "docs" / "real.md",
+        "one\n",
+    )
+    if "docs/real.md" in flags:
+        (repo / "docs" / "spec.md").symlink_to("real.md")
+    base = commit_all(repo, "base")
+    write(repo / REVIEWS_PATH, IN_TREE_REVIEWS)
+    for path, text in edits.items():
+        write(repo / path, text)
+    head = commit_all(repo, "head")
+
+    changed = review_rules_changes(repo, resolve_measurement_key(repo, head), base)
+
+    assert changed == expected
+
+
+@pytest.mark.parametrize(
+    ("case", "edit", "expected"),
+    [
+        (
+            "reviews-edited",
+            {"reviews.toml": PAIRED_REVIEWS + 'resolve = "minor"\n'},
+            ("reviews.toml",),
+        ),
+        ("spec-edited", {"spec.md": "two\n"}, (".booley/spec.md",)),
+    ],
+)
+def test_review_rules_changes_compare_a_versioned_booley_directory_with_its_rules_base(
+    tmp_path: Path, case: str, edit: dict[str, str], expected: tuple[str, ...]
+) -> None:
+    """AC3: rules in a Versioned Booley Directory are compared there, not in the RTL repository."""
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.review.declared_reviews import review_rules_changes
+
+    checkout, booley = make_versioned_booley_directory(tmp_path, "paired-checkout")
+    original = tmp_path / "main" / ".booley"
+    write(original / "reviews.toml", PAIRED_REVIEWS)
+    write(original / "spec.md", "one\n")
+    commit_all(original, "rules base")
+    git(booley, "merge", "-q", "--no-edit", "main")
+    for name, text in edit.items():
+        write(booley / name, text)
+        git(booley, "add", name)
+    commit_all(booley, case, staged_only=True)
+    head = git(checkout, "rev-parse", "HEAD")
+
+    changed = review_rules_changes(checkout, resolve_measurement_key(checkout, head), head)
+
+    assert changed == expected
+
+
+@pytest.mark.parametrize("spec", ["docs/spec.md", "vendor/spec.md"])
+def test_review_rules_changes_read_symlinks_and_submodules_as_the_reviewer_does(
+    tmp_path: Path, spec: str
+) -> None:
+    """AC3: a symlinked reviews.toml parses, a retargeted link and a moved submodule pin count."""
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.review.declared_reviews import review_rules_changes
+
+    if sys.platform == "win32":
+        pytest.skip("needs symlinks")
+    sub = new_repository(tmp_path / "sub")
+    write(sub / "spec.md", "one\n")
+    sub_one = commit_all(sub, "one")
+    write(sub / "spec.md", "two\n")
+    sub_two = commit_all(sub, "two")
+    repo = new_repository(tmp_path / "repo")
+    write(repo / ".booley" / "booley.toml", "[project]\n")
+    write(repo / "rtl.v", "rtl\n")
+    write(repo / "config" / "reviews.toml", IN_TREE_REVIEWS.replace("docs/spec.md", spec))
+    (repo / REVIEWS_PATH).symlink_to("../config/reviews.toml")
+    write(repo / "docs" / "old.md", "old\n")
+    write(repo / "docs" / "new.md", "new\n")
+    (repo / "docs" / "alias.md").symlink_to("old.md")
+    (repo / "docs" / "spec.md").symlink_to("alias.md")
+    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "vendor")
+    git(repo / "vendor", "checkout", "-q", sub_one)
+    base = commit_all(repo, "base")
+    (repo / "docs" / "alias.md").unlink()
+    (repo / "docs" / "alias.md").symlink_to("new.md")
+    git(repo / "vendor", "checkout", "-q", sub_two)
+    head = commit_all(repo, "head")
+
+    changed = review_rules_changes(repo, resolve_measurement_key(repo, head), base)
+
+    assert changed == (spec,)
