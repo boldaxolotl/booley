@@ -228,7 +228,6 @@ def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
         patch.object(fpga_cache, "load", return_value=None),
         patch.object(fpga_cache, "store", return_value=True),
         patch.object(flow, "_execute_boundary", side_effect=execute),
-        patch.object(flow, "_collect_route_reports", return_value="reports"),
         patch(
             "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
             return_value=_parsed_pass(),
@@ -259,7 +258,6 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
                 returncode=0, stdout="routed", dispatched_unix=time.time()
             ),
         ) as execute,
-        patch.object(flow, "_collect_route_reports", return_value="reports"),
         patch(
             "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
             return_value=_parsed_pass(),
@@ -311,7 +309,6 @@ def test_post_route_completion_gates_success_and_cache(
                 stdout="route_design completed successfully\n" + completion_log + "\n",
             ),
         ),
-        patch.object(flow, "_collect_route_reports", return_value=""),
         patch(
             "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
             return_value=_parsed_pass(),
