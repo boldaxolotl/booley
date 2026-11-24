@@ -190,6 +190,21 @@ def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
     assert codex.checkout is None and codex.refusal is None
 
 
+def test_codex_workspace_with_an_unreadable_git_marker_does_not_hide_a_later_worktree(
+    tmp_path: Path, repos: SimpleNamespace
+) -> None:
+    from booley.mcp import peer_checkout
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / ".git").write_bytes(b"not a gitdir marker\n")
+    metadata = {"x-codex-turn-metadata": {"workspaces": {str(broken): {}, str(repos.main_wt): {}}}}
+
+    result = peer_checkout.caller_checkout(None, client_name="codex", metadata=metadata)
+
+    assert result.checkout == repos.main_wt and result.refusal is None
+
+
 # --- Routing the call: work_dir injection ---------------------------------------------
 
 

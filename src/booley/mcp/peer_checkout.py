@@ -25,6 +25,7 @@ from typing import Any
 
 from starlette.requests import Request
 
+from booley.core.boundary import as_dict
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import codex_client, git_checkout_metadata, process_client
 from booley.runtime.pid import ProcessIdentity
@@ -79,9 +80,20 @@ def routable_checkout(cwd: Path, *, server_cwd: Path) -> Path | None:
 
 def codex_workspaces(metadata: Mapping[str, Any]) -> list[Path]:
     """The workspace roots a Codex call's turn metadata names (none when absent or odd)."""
-    turn = metadata.get("x-codex-turn-metadata")
-    workspaces = turn.get("workspaces") if isinstance(turn, Mapping) else None
-    return [Path(root) for root in workspaces] if isinstance(workspaces, Mapping) else []
+    turn = as_dict(metadata.get("x-codex-turn-metadata"), default={}) or {}
+    return [Path(root) for root in as_dict(turn.get("workspaces"), default={}) or {}]
+
+
+def first_routable_workspace(roots: list[Path], *, server_cwd: Path) -> Path | None:
+    """The first of *roots* that routes; one whose Git marker cannot be read is skipped."""
+    for root in roots:
+        try:
+            routed = routable_checkout(root, server_cwd=server_cwd)
+        except (OSError, ValueError, RuntimeError, UnicodeError):
+            continue
+        if routed is not None:
+            return routed
+    return None
 
 
 def caller_checkout(
@@ -99,12 +111,11 @@ def caller_checkout(
             roots = codex_workspaces(metadata)
             if not roots:
                 return CallerCheckout(peer, None, NO_WORKSPACE_REFUSAL)
-            routed = (routable_checkout(root, server_cwd=server_cwd) for root in roots)
-            return CallerCheckout(peer, next((path for path in routed if path), None))
+            return CallerCheckout(peer, first_routable_workspace(roots, server_cwd=server_cwd))
         if peer is not None and process_client(client_name, peer):
             return CallerCheckout(
                 peer, process_checkout(peer, server_cwd=server_cwd, proc_root=proc_root)
             )
     except (OSError, ValueError, RuntimeError, UnicodeError):
-        pass
+        return CallerCheckout(peer, None)  # An unreadable lookup keeps the server cwd.
     return CallerCheckout(peer, None)

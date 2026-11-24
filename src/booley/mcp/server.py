@@ -2222,7 +2222,8 @@ async def _caller_checkout(
     """Look up the calling agent's checkout for a call that names none.
 
     ``None`` means no lookup was made: no SDK request (stdio, stateless) or an
-    explicit ``work_dir``. Routing never depends on presentation, so this runs
+    explicit ``work_dir``. A Codex call whose metadata names no workspace comes
+    back with ``refusal`` set. Routing never depends on presentation, so this runs
     outside the Session observer and its response budget.
     """
     if context is None or context.request is None or (params.arguments or {}).get("work_dir"):
