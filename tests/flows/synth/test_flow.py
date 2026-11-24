@@ -2382,7 +2382,14 @@ def _git_project(project: Path) -> str:
     """Make *project* a Git repository with one commit and return its short revision."""
 
     def git(*args: str) -> str:
-        identity = ["-c", "user.name=Booley", "-c", "user.email=booley@example.invalid"]
+        identity = [
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "user.name=Booley",
+            "-c",
+            "user.email=booley@example.invalid",
+        ]
         argv = ["git", *identity, "-c", "commit.gpgsign=false", *args]
         return run_bounded_child(argv, cwd=project, check=True).stdout.strip()
 
