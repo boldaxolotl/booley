@@ -1243,6 +1243,7 @@ class TestUp:
         ]
         logs += [Path(sink).read_text() for sink in t3.sinks]
         assert t3.sinks
+        assert t3.serve_stdouts == [subprocess.DEVNULL]
         assert TOKEN not in "".join(logs)
 
     def test_existing_container_with_runtime_drift_is_never_started(

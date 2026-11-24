@@ -25,6 +25,7 @@ class T3CodeFake:
     served: list[list[str]] = field(default_factory=list)
     added: list[list[str]] = field(default_factory=list)
     sinks: list[str] = field(default_factory=list)
+    serve_stdouts: list[object] = field(default_factory=list)
 
     def serving(self, port: int, **_kwargs: object) -> bool:
         return port == mcp_config.http_port() or self.running
@@ -34,6 +35,7 @@ class T3CodeFake:
             raise self.spawn_error
         if cmd[0] == "t3":
             self.served.append(cmd)
+            self.serve_stdouts.append(kwargs["stdout"])
             self.running = True
         self.sinks += [s.name for s in (kwargs["stdout"], kwargs["stderr"]) if hasattr(s, "name")]
         if hasattr(kwargs["stdout"], "write"):
@@ -42,6 +44,8 @@ class T3CodeFake:
 
     def run(self, cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         self.added.append(cmd)
+        if not self.running:  # `t3 project add` talks to a running server
+            return subprocess.CompletedProcess(cmd, 78, "no server", "")
         reply = self.add_replies.pop(0) if self.add_replies else ADDED
         if isinstance(reply, OSError):
             raise reply
@@ -55,7 +59,11 @@ def serve_t3_code(
     running: bool = False,
     add_replies: list[tuple[int, str] | OSError] | None = None,
 ) -> T3CodeFake:
-    """Route `incontainer_setup`'s port probe and `subprocess` use to a `T3CodeFake`."""
+    """Route `incontainer_setup`'s port probe and `subprocess` use to a `T3CodeFake`.
+
+    The port probe is the network boundary and `subprocess` the process boundary; the
+    global `subprocess` module stays untouched.
+    """
     fake = T3CodeFake(running=running, add_replies=list(add_replies or []))
     monkeypatch.setattr(incontainer_setup, "_port_is_serving", fake.serving)
     process = SimpleNamespace(

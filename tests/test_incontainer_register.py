@@ -157,6 +157,19 @@ def test_a_t3_code_failure_never_stops_registration(tmp_path, monkeypatch, capsy
     assert re.search(r"t3:failed .* claude:current", capsys.readouterr().err)
 
 
+def test_no_agent_cli_skips_t3_code(tmp_path, monkeypatch, capsys):
+    t3 = serve_t3_code(monkeypatch)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+
+    entry.main()
+
+    assert "server:skipped t3:skipped " in capsys.readouterr().err
+    assert t3.served == []
+
+
 @pytest.mark.parametrize(
     ("result", "status"),
     [

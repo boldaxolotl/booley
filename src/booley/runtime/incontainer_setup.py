@@ -299,6 +299,7 @@ def _register_t3_project(base: Path, project_root: Path) -> bool:
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=_T3_START_TIMEOUT_SECONDS,
                 check=False,
             )
