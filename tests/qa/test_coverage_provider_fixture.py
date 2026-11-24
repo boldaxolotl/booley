@@ -97,19 +97,25 @@ def _text(value: str) -> dict:
     return {"content": [{"type": "text", "text": value}]}
 
 
-def test_plain_text_schema_rejection_is_recorded_verbatim() -> None:
-    rejection = "Invalid tool arguments at $.limit: 100000 is greater than the maximum of 100"
+@pytest.mark.parametrize(
+    ("rejection", "request_arguments"),
+    [
+        pytest.param(
+            "Invalid tool arguments at $.limit: 100000 is greater than the maximum of 100",
+            {"view": "points", "limit": 100000},
+            id="plain-text-schema-rejection",
+        ),
+        pytest.param(
+            json.dumps({"error": "coverage_evidence_rejected", "message": "Malformed cursor"}),
+            {"view": "points", "cursor": "bad"},
+            id="json-error-result",
+        ),
+    ],
+)
+def test_error_result_text_is_recorded_verbatim(rejection: str, request_arguments: dict) -> None:
     evidence = _evidence_returning({**_text(rejection), "isError": True})
     with pytest.raises(ValueError) as caught:
-        evidence.query(view="points", limit=100000)
-    assert str(caught.value) == rejection
-
-
-def test_json_error_result_is_recorded_verbatim() -> None:
-    rejection = json.dumps({"error": "coverage_evidence_rejected", "message": "Malformed cursor"})
-    evidence = _evidence_returning({**_text(rejection), "isError": True})
-    with pytest.raises(ValueError) as caught:
-        evidence.query(view="points", cursor="bad")
+        evidence.query(**request_arguments)
     assert str(caught.value) == rejection
 
 

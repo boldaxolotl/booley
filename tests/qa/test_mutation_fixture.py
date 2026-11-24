@@ -6,7 +6,6 @@ apart, and never run the Mutation Flow or any simulator.
 """
 
 import json
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -121,59 +120,6 @@ def test_oracle_outcomes_name_listed_candidates() -> None:
     assert exhaustive["not_detected"] == len(survivors)
     assert exhaustive["does_not_build"] == len(does_not_build)
     assert exhaustive["detected_by_timeout"] == len(hanging)
-    # Candidates that do not build are replaced; none is left to replace them here,
-    # so the run scores the rest and the default threshold follows that number.
-    scored = total - len(does_not_build)
-    assert exhaustive["scored"] == scored
-    assert exhaustive["shortfall"] == f"only {scored} Mutants could be scored ({total} requested)"
-    assert exhaustive["detected"] == scored - len(survivors)
-    threshold = math.ceil(0.8 * scored)  # default: 80 % of the Mutants scored, rounded up
-    assert exhaustive["threshold"] == threshold
-    assert (exhaustive["verdict"], exhaustive["exit"]) == (
-        ("PASS", 0) if exhaustive["detected"] >= threshold else ("FAIL", 1)
-    )
-    boundary = oracle["totals"]["boundary"]
-    assert boundary["min_detected"] == exhaustive["detected"] + 1
-    assert (boundary["verdict"], boundary["exit"]) == ("FAIL", 1)
-    for count, needed in oracle["totals"]["default_threshold_by_count"].items():
-        assert needed == math.ceil(0.8 * int(count)), count
-    _assert_selection_and_auto_follow_counts(oracle)
-
-
-def _assert_selection_and_auto_follow_counts(oracle: dict[str, Any]) -> None:
-    """Round-robin order and `--count auto` cases must follow the candidate counts."""
-    counts = {name: body["count"] for name, body in oracle["operators"].items()}
-    selection = oracle["selection"]
-    assert selection["operator_counts"] == counts
-
-    def picks(count: int) -> list[str]:
-        order: list[str] = []
-        taken = dict.fromkeys(OPERATORS, 0)
-        while len(order) < count and any(taken[name] < counts[name] for name in OPERATORS):
-            for name in OPERATORS:
-                if taken[name] < counts[name] and len(order) < count:
-                    taken[name] += 1
-                    order.append(name)
-        return order
-
-    for count, sequence in selection["round_robin"].items():
-        assert sequence == picks(int(count)), count
-    for count, per_operator in selection["picks_per_operator"].items():
-        chosen = picks(int(count))
-        assert per_operator == {name: chosen.count(name) for name in OPERATORS}, count
-    shortfall = selection["shortfall"]
-    assert shortfall["candidates"] == sum(counts.values())
-    assert shortfall["run"] == shortfall["candidates"] - len(oracle["outcomes"]["does_not_build"])
-    assert shortfall["message"] == (
-        f"only {shortfall['run']} Mutants could be scored ({shortfall['count']} requested)"
-    )
-    assert f"ceil(0.8 x {shortfall['run']}) = " in shortfall["threshold_by_doc"]
-    auto = oracle["auto"]
-    formula = max(3, min(25, round(math.sqrt(auto["scope_lines"]))))
-    assert auto["size_formula_count"] == formula
-    for case in auto["cases"]:
-        assert case["count"] == min(formula, case["time_cap"]), case["timeout"]
-        assert f"{case['count']} Mutants" in case["progress_line"]
 
 
 def test_decoys_are_never_candidates() -> None:

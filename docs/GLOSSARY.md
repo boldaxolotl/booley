@@ -387,7 +387,12 @@ A Reviewer focus that a Target declares in `reviews.toml` for one source role (R
 _Avoid_: review kind, review type, Review Goal
 
 **Reviewed Commit**:
-A commit on which a verify **Review Run**, one stored run of its Declared Reviews (the discovery pass over changes since the **Base**, or the verify pass re-checking open findings), left no finding open at or above the Declared Reviews' threshold. It is not reproducible, never gates CI, and is independent of being a **Measured Commit**.
+A commit on which its latest verify **Review Run**, or a discovery **Review
+Run**, left no finding open at or above the Declared Reviews' threshold. A
+**Review Run** is one stored run of its Declared Reviews: the discovery pass
+over changes since the **Base**, or the verify pass re-checking open findings.
+It is not reproducible, never gates CI, and is independent of being a **Measured
+Commit**.
 _Avoid_: approved commit, signed-off commit, clean review; review session, review receipt (for a Review Run)
 
 ## Retired and ambiguous terminology
