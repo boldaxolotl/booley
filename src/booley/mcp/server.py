@@ -2134,6 +2134,10 @@ async def _call_application_tool(
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
     caller = await _caller_checkout(context, params)
+    if caller is not None and caller.refusal is not None:
+        return CallToolResult(
+            content=[TextContent(type="text", text=caller.refusal)], is_error=True
+        )
     request = await _observed_request_context(context, params, observer, caller)
     try:
         try:
