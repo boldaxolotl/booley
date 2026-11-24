@@ -15,6 +15,8 @@ import anyio
 import pytest
 
 from booley.core.models import AgentCallParams
+
+# Private imports: see the comments at their uses (strict schema file, process lifecycle).
 from booley.runtime._codex_backend import (
     _codex_ensure_additional_properties,
     _codex_run_subprocess,
