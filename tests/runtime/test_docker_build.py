@@ -125,15 +125,17 @@ def _set_free_space(monkeypatch: pytest.MonkeyPatch, gib: int) -> None:
     monkeypatch.setattr("shutil.disk_usage", lambda _path: disk_usage(100, 88, gib * 2**30))
 
 
-@pytest.mark.parametrize("chatter", ["", "compiler chatter"])
+@pytest.mark.parametrize(
+    ("announce", "chatter"), [(True, ""), (True, "compiler chatter"), (False, "")]
+)
 def test_live_build_shows_progress_and_heartbeat_before_it_ends(
-    tmp_path: Path, monkeypatch, chatter: str
+    tmp_path: Path, monkeypatch, announce: bool, chatter: str
 ) -> None:
     release = tmp_path / "release"
     child = (
         "import pathlib, sys, time; "
-        "gate = pathlib.Path(sys.argv[1]); "
-        "print('>>> Building Yosys from source', flush=True)\n"
+        "gate = pathlib.Path(sys.argv[1])\n"
+        "if sys.argv[3]: print('>>> Building Yosys from source', flush=True)\n"
         "while not gate.exists():\n"
         "    if sys.argv[2]: print(sys.argv[2], flush=True)\n"
         "    time.sleep(0.01)"
@@ -144,7 +146,7 @@ def test_live_build_shows_progress_and_heartbeat_before_it_ends(
     worker = threading.Thread(
         target=lambda: results.append(
             run_docker_build(
-                [sys.executable, "-c", child, str(release), chatter],
+                [sys.executable, "-c", child, str(release), chatter, "1" if announce else ""],
                 image="booley-sandbox",
                 verbose=False,
                 timeout=2 * hang_guard_s(),
@@ -155,7 +157,8 @@ def test_live_build_shows_progress_and_heartbeat_before_it_ends(
 
     worker.start()
     try:
-        assert output.wait_for(">>> Building Yosys from source")
+        if announce:
+            assert output.wait_for(">>> Building Yosys from source")
         assert output.wait_for("[booley-sandbox build] elapsed:")
         assert worker.is_alive()
         assert "compiler chatter" not in output.text
