@@ -11,7 +11,7 @@ _FRAGMENTS = _ROOT / "changelog.d"
 
 
 def test_committed_fragments_are_well_formed() -> None:
-    """``assemble`` would reject a malformed fragment at release time; fail in the PR instead."""
+    """``cut`` would reject a malformed fragment at release time; fail in the PR instead."""
     # The README keeps the directory in the repository, so the scan below is never vacuous.
     assert (_FRAGMENTS / "README.md").is_file()
     spec = importlib.util.spec_from_file_location("release_changelog", _SCRIPT)

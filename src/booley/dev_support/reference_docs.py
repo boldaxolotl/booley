@@ -11,8 +11,8 @@ mirrored byte for byte (no link rewriting) to ``src/booley/data/refs/CHANGELOG.m
     python3 .github/scripts/sync_packaged_copies.py [--check]  # same, without installing Booley
 
 An ordinary change does not edit ``CHANGELOG.md`` or its mirror: it adds a fragment
-under ``changelog.d/`` that the release assembles
-(``.github/scripts/release_changelog.py assemble``). The mirror is generated; never
+under ``changelog.d/`` that the release cuts into a dated entry
+(``.github/scripts/release_changelog.py cut``). The mirror is generated; never
 edit it.
 """
 
