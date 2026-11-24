@@ -25,6 +25,17 @@ def _run(*arguments: str, cwd: Path | None = None) -> subprocess.CompletedProces
     return run_bounded_child([sys.executable, str(_REPORT), *arguments], cwd=cwd)
 
 
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    """An empty Git repository with a committer identity, for the ref-mode tests."""
+    root = tmp_path / "repository"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+    return root
+
+
 def test_root_mode_identifies_content_and_renders_explicit_empty_sections(
     tmp_path: Path,
 ) -> None:
@@ -106,14 +117,9 @@ def test_root_mode_rejects_non_package_and_syntax_failure(tmp_path: Path) -> Non
     assert "invalid syntax" in syntax.stderr
 
 
-def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(tmp_path: Path) -> None:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
-    )
+def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(
+    repository: Path,
+) -> None:
     package = _package(repository / "src", dependency="before")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "before"], cwd=repository, check=True)
@@ -147,14 +153,7 @@ def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(tmp_path: P
     assert result.stdout.count("Analyzer commit:") == 1
 
 
-def test_ref_mode_rejects_bad_ref_and_archive_without_package(tmp_path: Path) -> None:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
-    )
+def test_ref_mode_rejects_bad_ref_and_archive_without_package(repository: Path) -> None:
     (repository / "README").write_text("empty")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "empty"], cwd=repository, check=True)
