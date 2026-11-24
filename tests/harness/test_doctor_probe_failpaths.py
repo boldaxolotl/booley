@@ -45,29 +45,34 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list
     return root, serve_healthy_doctor_host(monkeypatch, root)
 
 
+_CODEX_MISSING = (
+    Severity.WARN,
+    "worker backend (Codex): Codex CLI not found on PATH (npm i -g @openai/codex)",
+)
+
+
 @pytest.mark.parametrize(
-    ("cli", "row"),
+    ("cli", "deep", "rows"),
     [
-        (
-            "codex",
-            (
-                Severity.WARN,
-                "worker backend (Codex): Codex CLI not found on PATH (npm i -g @openai/codex)",
-            ),
-        ),
+        ("codex", False, [_CODEX_MISSING]),
+        # f7a68eec6: deep Doctor drops the plain-mode hint but keeps the warning.
+        ("codex", True, [_CODEX_MISSING]),
         (
             "claude",
-            (
-                Severity.NOTE,
-                "worker backend configured locally: Claude SDK; provider authorization was not "
-                "exercised and the CLI was not started by plain Doctor "
-                "(run `booley doctor --deep` for a live check)",
-            ),
+            False,
+            [
+                (
+                    Severity.NOTE,
+                    "worker backend configured locally: Claude SDK; provider authorization was "
+                    "not exercised and the CLI was not started by plain Doctor "
+                    "(run `booley doctor --deep` for a live check)",
+                )
+            ],
         ),
     ],
-    ids=["warning", "healthy"],
+    ids=["warning", "warning-deep", "healthy"],
 )
-def test_backend_health_row(project, cli, row):
+def test_backend_health_row(project, cli, deep, rows):
     root, _calls = project
     config = root / ".booley" / "booley.toml"
     # Bytes keep LF on Windows, where Doctor would report a CRLF checkout.
@@ -75,11 +80,11 @@ def test_backend_health_row(project, cli, row):
         config.read_bytes().replace(b"[agent]", f'[agent]\ndefault = "{cli}"'.encode())
     )
 
-    result = _doctor_run(root)
+    result = _doctor_run(root, deep=deep)
 
     assert [
         (f.severity, f.message) for f in result.findings if f.message.startswith("worker backend")
-    ] == [row]
+    ] == rows
 
 
 def test_backend_config_failure_is_a_warning_not_a_crash(project, monkeypatch):
@@ -88,7 +93,8 @@ def test_backend_config_failure_is_a_warning_not_a_crash(project, monkeypatch):
     def unreadable(_root):
         raise ValueError("models.toml is garbage")
 
-    # Project load validates [agent] first, so no Project file makes this later load fail.
+    # load_backend_config re-reads the [agent] settings that Project load already validated,
+    # so no Project file makes this later read fail; only the replaced load can.
     monkeypatch.setattr(runtime_agent_config, "load_backend_config", unreadable)
 
     warnings = _messages(_doctor_run(root), Severity.WARN, check_id="agent.backend-health")

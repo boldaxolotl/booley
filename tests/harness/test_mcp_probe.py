@@ -105,7 +105,7 @@ def test_probe_and_live_server_share_catalog_validation(
 
 
 def test_mcp_probe_accepts_relocated_job_logs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
     """Logs under the checkout's relocated Booley Directory are ok; the default is not."""
     from booley.config.agent import set_agent_settings
@@ -115,6 +115,9 @@ def test_mcp_probe_accepts_relocated_job_logs(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
+    # The probe loads this Project's [agent] settings process-wide; undo it even on failure.
+    request.addfinalizer(lambda: set_agent_settings(None))
+    request.addfinalizer(reset_cache)
 
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/job_logs/abc"))
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is True
@@ -130,5 +133,3 @@ def test_mcp_probe_accepts_relocated_job_logs(
         Mock(side_effect=BooleyLayoutError("retired layout")),
     )
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is False
-    reset_cache()
-    set_agent_settings(None)  # the probe loaded this Project's [agent] settings
