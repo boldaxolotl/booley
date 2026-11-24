@@ -4,7 +4,7 @@ Backs ``test_sandbox_only_tests.py``. A module is *host reachable* when a comman
 on the host (``HOST`` or ``EITHER`` in ``COMMAND_LOCATIONS``) can import it. Host code runs on
 Windows, so a module that only Sandbox-only tests cover would lose all Windows coverage.
 Graph semantics are those of ``import_graph``; this module adds the cut from the Sandbox
-command handlers and a few declared Sandbox-only lazy imports.
+command handlers.
 """
 
 from __future__ import annotations
@@ -40,31 +40,6 @@ NON_COVERING_TEST_DIRECTORIES = ("tests/architecture/",)
 _IMPORT_SITES = "import-sites"
 _MODULE_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-
-
-@dataclass(frozen=True)
-class LazyImportCut:
-    """Function-level imports that run only on the Sandbox MCP call path.
-
-    ``callers`` is the exact set of host-reachable modules (other than ``source``) that
-    reference any function in ``functions`` by name. A new caller changes the set and fails
-    the guard until the cut is re-justified or dropped. ``internal_callers`` is the exact set
-    of top-level names inside ``source`` (``"<module>"`` for module-level statements) that
-    reference those functions from outside them; each was read to confirm it runs only on the
-    Sandbox MCP call path. Direct references only: an indirect host caller through one of
-    these modules is a reviewed residual risk.
-    """
-
-    source: str
-    targets: tuple[str, ...]
-    functions: tuple[str, ...]
-    callers: frozenset[str]
-    reason: str
-    internal_callers: frozenset[str] = frozenset()
-
-
-# Each cut was confirmed by reading every caller of its enclosing functions.
-SANDBOX_ONLY_LAZY_IMPORTS: tuple[LazyImportCut, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -190,6 +165,7 @@ def _literal_assignment(tree: ast.Module, name: str) -> ast.expr:
 
 def pre_venue_commands(tree: ast.Module) -> frozenset[str]:
     """Commands whose endpoint help runs on the host: the set literal in the help check."""
+    # Private name: the reach model reads the harness module's top-level functions by name.
     function = _top_level_functions(tree)["_endpoint_help_candidate"]
     literals = [node for node in ast.walk(function) if isinstance(node, ast.Set)]
     assert len(literals) == 1, "_endpoint_help_candidate must name its commands in one set"
@@ -202,6 +178,7 @@ def pre_venue_commands(tree: ast.Module) -> frozenset[str]:
 
 def sandbox_handlers(tree: ast.Module, session_runtime_commands: Iterable[str]) -> frozenset[str]:
     """Names of the handlers that dispatch ``SESSION_RUNTIME`` commands and run no help early."""
+    # Private name: no public alias exposes the harness module's command dispatch table.
     dispatch = _literal_assignment(tree, "_EARLY_COMMANDS")
     assert isinstance(dispatch, ast.Dict)
     handlers: dict[str, str] = {}
@@ -264,7 +241,7 @@ class HostReach:
     harness_functions: frozenset[str]
 
 
-def host_reach(cuts: Iterable[LazyImportCut] | None = None) -> HostReach:
+def host_reach() -> HostReach:
     """Compute host reachability from the harness, endpoint help, and host entry points."""
     from booley.harness.booley import COMMAND_LOCATIONS, CommandLocation
 
@@ -276,16 +253,8 @@ def host_reach(cuts: Iterable[LazyImportCut] | None = None) -> HostReach:
         if location is CommandLocation.SESSION_RUNTIME
     ]
     functions = reachable_harness_functions(tree, sandbox_handlers(tree, session_runtime))
-    removed = {
-        (cut.source, target, function)
-        for cut in (SANDBOX_ONLY_LAZY_IMPORTS if cuts is None else cuts)
-        for target in cut.targets
-        for function in cut.functions
-    }
     adjacency: dict[str, set[str]] = {}
     for edge in graph.edges:
-        if (edge.source, edge.target, edge.function) in removed:
-            continue
         if edge.source == HARNESS_MODULE and edge.function and edge.function not in functions:
             continue
         adjacency.setdefault(edge.source, set()).add(edge.target)
@@ -414,53 +383,3 @@ def uncovered_host_modules(
         for module, tests in sorted(coverage.items())
         if module in reachable and all(is_sandbox_only(test) for test in tests)
     }
-
-
-# --- Cut checks ------------------------------------------------------------------------
-
-
-@cache
-def _names_by_module() -> dict[str, frozenset[str]]:
-    """Every name each source module references: names, attributes, and imported aliases."""
-    names: dict[str, frozenset[str]] = {}
-    for module in _module_names():
-        parts = module.split(".")[1:]
-        path = SOURCE_ROOT.joinpath(*parts)
-        file = path / "__init__.py" if path.is_dir() else path.with_suffix(".py")
-        tree = ast.parse(file.read_text(encoding="utf-8"))
-        aliases = {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-        }
-        names[module] = frozenset(_referenced_names(tree) | aliases)
-    return names
-
-
-def referencing_modules(
-    reachable: Iterable[str], source: str, functions: Iterable[str]
-) -> frozenset[str]:
-    """Host-reachable modules other than ``source`` that name any of ``functions``."""
-    wanted = set(functions)
-    names = _names_by_module()
-    return frozenset(
-        module
-        for module in reachable
-        if module != source and wanted & names.get(module, frozenset())
-    )
-
-
-def internal_callers(source: str, functions: Iterable[str]) -> frozenset[str]:
-    """Top-level names of ``source`` outside ``functions`` that reference any of them."""
-    wanted = set(functions)
-    path = SOURCE_ROOT.joinpath(*source.split(".")[1:])
-    file = path / "__init__.py" if path.is_dir() else path.with_suffix(".py")
-    callers: set[str] = set()
-    for node in ast.parse(file.read_text(encoding="utf-8")).body:
-        if isinstance(node, _FUNCTIONS):
-            if node.name not in wanted and wanted & _referenced_names(node):
-                callers.add(node.name)
-        elif wanted & _referenced_names(node):
-            callers.add("<module>")
-    return frozenset(callers)

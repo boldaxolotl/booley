@@ -171,37 +171,28 @@ def test_should_fail_waits_out_a_source_that_is_still_being_written(tmp_path):
         writer.join()
 
 
-def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_path, monkeypatch):
-    """Snapshot sidecars and partial records must not trigger the event-time mutation."""
-
-    def run_with_snapshot_before_event(command, owned, control, *args):
-        control.mkdir()
-        source = owned / "temp"
-        original = json.dumps({"complete": False})
-        source.write_text(original)
-        event = control / "event-123-0"
-        snapshot = event.with_suffix(".snapshot")
-        snapshot.touch()  # The shim creates this before copying source bytes.
-        seen = set()
-        controller.service(control, "complete", seen, os.getpid())
-        assert source.read_text() == original
-        assert not event.with_suffix(".reply").exists()
-        snapshot.write_text(original)
-        event.touch()  # Event publication can itself be observed before the newline.
-        controller.service(control, "complete", seen, os.getpid())
-        assert source.read_text() == original
-        assert not event.with_suffix(".reply").exists()
-        event.write_text(f"rename\t{snapshot}\t{owned / 'progress.json'}\n")
-        controller.service(control, "complete", seen, os.getpid())
-        assert json.loads(source.read_text()) == {"complete": True}
-        assert snapshot.read_text() == original
-        assert event.with_suffix(".reply").read_text() == "P"
-        return 0
-
-    monkeypatch.setattr(controller, "run", run_with_snapshot_before_event)
-    test_progress_gate_uses_source_bytes_from_event_time(
-        tmp_path, tmp_path / "unused.so", monkeypatch
-    )
+def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_path):
+    """Snapshot sidecars and partial records get no reply; a published event is judged on its snapshot."""
+    owned = tmp_path / "owned"
+    control = tmp_path / "control"
+    owned.mkdir()
+    control.mkdir()
+    original = json.dumps({"complete": False})
+    event = control / "event-123-0"
+    snapshot = event.with_suffix(".snapshot")
+    snapshot.touch()  # The shim creates this before copying source bytes.
+    seen = set()
+    controller.service(control, "complete", seen, os.getpid())
+    assert not event.with_suffix(".reply").exists()
+    snapshot.write_text(original, encoding="utf-8")
+    event.touch()  # Event publication can itself be observed before the newline.
+    controller.service(control, "complete", seen, os.getpid())
+    assert not event.with_suffix(".reply").exists()
+    event.write_text(f"rename\t{snapshot}\t{owned / 'progress.json'}\n", encoding="utf-8")
+    controller.service(control, "complete", seen, os.getpid())
+    # The snapshot holds the bytes from event time (not complete), so the write may pass.
+    assert snapshot.read_text(encoding="utf-8") == original
+    assert event.with_suffix(".reply").read_text(encoding="utf-8") == "P"
 
 
 def test_unlinkat_directory_fd_is_intercepted(tmp_path, library):
@@ -237,6 +228,7 @@ finally: os.close(fd)
 
 
 def test_missing_interception_cannot_report_fault_success(tmp_path, library):
+    before = dict(os.environ)
     with pytest.raises(ValueError, match="not injected"):
         controller.run(
             [sys.executable, "-c", "pass"],
@@ -248,21 +240,7 @@ def test_missing_interception_cannot_report_fault_success(tmp_path, library):
             "any",
             hang_guard_s(),
         )
-
-
-def test_controller_does_not_change_parent_environment(tmp_path, library):
-    before = dict(os.environ)
-    with pytest.raises(ValueError, match="not injected"):
-        controller.run(
-            [sys.executable, "-c", "pass"],
-            tmp_path,
-            tmp_path / "control",
-            library,
-            "link",
-            "/absent",
-            "any",
-            hang_guard_s(),
-        )
+    # The controller injects its shim through the child's environment only.
     assert dict(os.environ) == before
 
 

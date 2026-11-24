@@ -7,30 +7,31 @@ from pathlib import Path
 
 FLOWS = Path(__file__).resolve().parents[2] / "src" / "booley" / "flows"
 
+# The Target-selection field only the Simulation Flow owns. One constant serves both
+# checks below.
+# `_prepared_target_selection` stays a string: the guarded bug is a by-name lookup of this
+# field, and no public boundary exposes the field name.
+PREPARED_TARGET_SELECTION = "_prepared_target_selection"  # no public alias: field read by name
+
 # Hooks and fields the shared lifecycle must call directly: every endpoint
 # declares them (EndpointState supplies the neutral default).
+# The underscore-prefixed entries stay: the guarded bug is a getattr/hasattr lookup of exactly
+# these private hook and field names, and no public boundary exposes them.
 DECLARED_NAMES = frozenset(
     {
         "refresh_report_detail",
         "transcript_path",
         "_transcript_path",
         "terminal_progress",
-        "_automatic_target_notice",
-        "_automatic_target_notice_published",
-        "_pre_run_head",
-        "_eda_tools",
+        "_automatic_target_notice",  # no public alias: looked up by name
+        "_automatic_target_notice_published",  # no public alias: looked up by name
+        "_pre_run_head",  # no public alias: looked up by name
+        "_eda_tools",  # no public alias: looked up by name
         "prepare_target_endpoint",
-        "_skip_report_detail_refresh",
+        "_skip_report_detail_refresh",  # no public alias: looked up by name
         "prepare_endpoint_invocation",
         "manifest_names_targets",
     }
-)
-
-# Session functions that choose the report root; none may branch on a Flow name.
-REPORT_ROOT_FUNCTIONS = (
-    "_prepare_endpoint_report_root",
-    "_apply_default_endpoint_report_root",
-    "_canonicalize_flow_report_root",
 )
 
 
@@ -56,16 +57,9 @@ def _compares_with_sim(node: ast.AST) -> list[int]:
 
 
 def test_shared_endpoint_report_code_has_no_sim_name_checks():
-    reporting = _compares_with_sim(_parse(FLOWS / "endpoint_reporting.py"))
-    assert reporting == [], f"endpoint_reporting.py compares a name with 'sim': {reporting}"
-
-    session = _parse(FLOWS / "endpoint_session.py")
-    functions = {
-        node.name: node for node in ast.walk(session) if isinstance(node, ast.FunctionDef)
-    }
-    for name in REPORT_ROOT_FUNCTIONS:
-        assert name in functions, f"endpoint_session.{name} is missing"
-        assert _compares_with_sim(functions[name]) == [], f"{name} compares a name with 'sim'"
+    for module in ("endpoint_reporting.py", "endpoint_session.py"):
+        compared = _compares_with_sim(_parse(FLOWS / module))
+        assert compared == [], f"{module} compares a name with 'sim': {compared}"
 
     # The Flow layer stays below the Specialist layer.
     importing = sorted(
@@ -84,44 +78,25 @@ def test_shared_endpoint_report_code_has_no_sim_name_checks():
     assert importing == [], f"booley.flows imports booley.specialists: {importing}"
 
 
-def test_shared_endpoint_code_calls_declared_hooks():
-    lookups = sorted(
-        f"{path.name}:{node.lineno} {node.func.id}({node.args[1].value!r})"
-        for path in FLOWS.glob("endpoint_*.py")
-        for node in ast.walk(_parse(path))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in {"getattr", "hasattr"}
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and node.args[1].value in DECLARED_NAMES
-    )
-    assert lookups == [], f"declared hooks looked up by name: {lookups}"
-
-
 # Simulation Record state the shared acceptance code must reach only through
 # the declared hooks, never by attribute name.
+# `_simulation_record_outcomes` stays: same by-name lookup bug, no public boundary exposes it.
 SIMULATION_ACCEPTANCE_NAMES = frozenset(
     {
-        "_simulation_record_outcomes",
+        "_simulation_record_outcomes",  # no public alias: looked up by name
         "publish_simulation_record_projections",
     }
 )
 
 
-def test_shared_acceptance_code_has_no_simulation_branches():
+def test_shared_endpoint_code_looks_up_no_declared_or_simulation_names():
+    names = DECLARED_NAMES | SIMULATION_ACCEPTANCE_NAMES
     lookups = sorted(
-        f"{path.name}:{node.lineno} {node.func.id}({node.args[1].value!r})"
+        f"{path.name}:{lookup}"
         for path in FLOWS.glob("endpoint_*.py")
-        for node in ast.walk(_parse(path))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in {"getattr", "hasattr"}
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and node.args[1].value in SIMULATION_ACCEPTANCE_NAMES
+        for lookup in _named_lookups(_parse(path), names)
     )
-    assert lookups == [], f"Simulation acceptance state looked up by name: {lookups}"
+    assert lookups == [], f"declared hooks or Simulation state looked up by name: {lookups}"
 
 
 # Simulation-only names the shared preparation may not look up by name: the
@@ -130,7 +105,7 @@ SIMULATION_PREPARATION_NAMES = frozenset(
     {
         "prepare_simulation_endpoint",
         "run_prepared_simulation",
-        "_prepared_target_selection",
+        PREPARED_TARGET_SELECTION,
         "resume_from",
         "mode",
         "coverage",
@@ -202,8 +177,8 @@ def test_shared_preparation_has_no_simulation_dispatch():
         tree = _parse(FLOWS / module)
         violations += shared_preparation_violations(module, tree)
         violations += [
-            f"{module}:{line}: reads _prepared_target_selection"
-            for line in _attribute_reads(tree, "_prepared_target_selection")
+            f"{module}:{line}: reads {PREPARED_TARGET_SELECTION}"
+            for line in _attribute_reads(tree, PREPARED_TARGET_SELECTION)
         ]
 
     # BuiltinFlow owns the Target-selection field, so only its dispatch is checked.

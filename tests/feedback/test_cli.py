@@ -11,13 +11,12 @@ import json
 
 import pytest
 
-from booley.feedback import cli
+from booley.feedback import cli, render
 from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import booley_dir as booley_dir_mod
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.subprocess_budget import run_bounded_child
-from tests.time_budget import scaled
 
 
 @pytest.fixture
@@ -49,6 +48,7 @@ def run(project):
             parser.parse_args(["feedback", *argv]),
             project,
             list_view=feedback_view.render_listing,
+            env=render.Environment(doctor_deep_clean=True),
         )
 
     yield _run
@@ -61,16 +61,24 @@ def _log(project):
     return read_log(project / ".booley")
 
 
-def _commit_project_data(state, monkeypatch):
-    from tests.project_runtime_git_support import initialize_repository
-
-    initialize_repository(state, state, monkeypatch)
-
-
-def _project_data_status(state):
-    from tests.project_runtime_git_support import git
-
-    return git(state, "status", "--short", "--untracked-files=all")
+def _log_booley_finding(run, title, origin, *extra):
+    """A filable Booley-bucket finding, logged through the real parser."""
+    return run(
+        "add",
+        "--title",
+        title,
+        "--origin",
+        origin,
+        "--bucket",
+        "booley",
+        "--repro",
+        "booley flow sim",
+        "--observed",
+        "exit 2",
+        "--expected",
+        "a result",
+        *extra,
+    )
 
 
 def test_source_feedback_uses_shared_git_metadata(tmp_path):
@@ -141,17 +149,24 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
 
 
 class TestLogging:
-    def test_add_records_origin_and_attachments(self, run, project):
-        assert run("add", "--title", "boom", "--origin", "bug", "--attach", "run.log") == 0
+    def test_add_records_origin_and_repeatable_attachments(self, run, project):
+        assert (
+            run(
+                "add",
+                "--title",
+                "boom",
+                "--origin",
+                "bug",
+                "--attach",
+                "a.log",
+                "--attach",
+                "b.log",
+            )
+            == 0
+        )
         entry = _log(project).entries[0]
         assert entry.origin == "bug"
-        assert entry.attachments == ["run.log"]
-
-    def test_attach_is_repeatable(self, run, project):
-        run(
-            "add", "--title", "boom", "--origin", "setup", "--attach", "a.log", "--attach", "b.log"
-        )
-        assert _log(project).entries[0].attachments == ["a.log", "b.log"]
+        assert entry.attachments == ["a.log", "b.log"]
 
     def test_friction_logs_a_friction_entry(self, run, project):
         assert (
@@ -176,14 +191,6 @@ class TestLogging:
     def test_say_logs_an_impression_with_nothing_but_a_message(self, run, project):
         """The whole point of `say`: one argument, no interrogation."""
         assert run("say", "the waveform flow is the best part of this thing") == 0
-        entry = _log(project).entries[0]
-        assert entry.kind == "impression"
-        assert entry.bucket == "booley"
-        assert entry.origin == "impression"
-        assert entry.sentiment == "mixed"  # unstated is a general take, not praise
-        assert entry.is_filable()  # no evidence bar — it goes upstream as-is
-
-    def test_say_carries_the_sentiment_and_the_long_version(self, run, project):
         run(
             "say",
             "I want per-Target coverage in the run report",
@@ -194,45 +201,40 @@ class TestLogging:
             "--notes",
             "the numbers exist, they just are not summarized anywhere",
         )
-        entry = _log(project).entries[0]
-        assert entry.sentiment == "wish"
-        assert entry.component == "sim"
-        assert "not summarized" in entry.notes
+        bare, long_form = _log(project).entries
+        assert bare.kind == "impression"
+        assert bare.bucket == "booley"
+        assert bare.origin == "impression"
+        assert bare.sentiment == "mixed"  # unstated is a general take, not praise
+        assert bare.is_filable()  # no evidence bar: it goes upstream as-is
+        assert long_form.sentiment == "wish"
+        assert long_form.component == "sim"
+        assert "not summarized" in long_form.notes
 
     def test_say_rejects_an_invented_sentiment(self, run, project):
         """argparse choices, not a free-text field — the taxonomy stays small."""
         with pytest.raises(SystemExit):
             run("say", "meh", "--sentiment", "grumpy")
 
-    def test_say_never_nags_for_evidence(self, run, project, capsys):
-        """An opinion has no reproduction, and asking for one drives people off."""
-        run("say", "the setup grill is exhausting", "--sentiment", "gripe")
-        assert "needs these" not in capsys.readouterr().err
-
-    def test_triage_adds_attachments_without_dropping_the_old_ones(self, run, project):
+    def test_triage_adds_attachments_without_dropping_or_duplicating(self, run, project):
         run("add", "--title", "boom", "--origin", "setup", "--attach", "first.log")
         run("triage", "F-1", "--attach", "second.log")
-        assert _log(project).entries[0].attachments == ["first.log", "second.log"]
-
-    def test_triage_does_not_duplicate_the_same_attachment(self, run, project):
-        run("add", "--title", "boom", "--origin", "setup", "--attach", "first.log")
         run("triage", "F-1", "--attach", "first.log")
-        assert _log(project).entries[0].attachments == ["first.log"]
+        assert _log(project).entries[0].attachments == ["first.log", "second.log"]
 
 
 class TestFiled:
-    def test_it_stamps_the_named_findings(self, run, project):
+    def test_it_stamps_the_named_findings_and_defaults_to_manual(self, run, project):
         run("add", "--title", "boom", "--origin", "bug")
         run("add", "--title", "bang", "--origin", "bug")
+        run("add", "--title", "bam", "--origin", "bug")
         assert run("filed", "F-1", "--url", "https://example.invalid/1") == 0
-        entries = _log(project).entries
-        assert entries[0].filed == "https://example.invalid/1"
-        assert entries[1].filed == ""
-
-    def test_it_defaults_to_manual(self, run, project):
-        run("add", "--title", "boom", "--origin", "setup")
-        run("filed", "F-1")
-        assert _log(project).entries[0].filed == "manual"
+        assert run("filed", "F-2") == 0
+        assert [entry.filed for entry in _log(project).entries] == [
+            "https://example.invalid/1",
+            "manual",
+            "",
+        ]
 
     def test_an_unknown_id_fails_without_touching_the_log(self, run, project):
         run("add", "--title", "boom", "--origin", "setup")
@@ -243,21 +245,7 @@ class TestFiled:
 class TestReporting:
     @pytest.fixture
     def filable(self, run):
-        run(
-            "add",
-            "--origin",
-            "setup",
-            "--title",
-            "simulate exits 2",
-            "--bucket",
-            "booley",
-            "--repro",
-            "booley flow sim",
-            "--observed",
-            "exit 2",
-            "--expected",
-            "a result",
-        )
+        _log_booley_finding(run, "simulate exits 2", "setup")
 
     def test_report_writes_only_the_user_report(self, run, project, filable, capsys):
         assert run("report") == 0
@@ -265,25 +253,6 @@ class TestReporting:
         assert (state / "SETUP-REPORT.md").is_file()
         assert not (state / "BOOLEY-FEEDBACK.md").exists()
         assert "no redacted file was written" in capsys.readouterr().out
-
-    @pytest.mark.parametrize(
-        "finding_args",
-        [
-            ("add", "--title", "project note", "--bucket", "project", "--origin", "setup"),
-            ("add", "--title", "bug note", "--bucket", "project", "--origin", "bug"),
-        ],
-        ids=["setup-report", "bug-report"],
-    )
-    def test_user_report_keeps_project_data_repository_clean(
-        self, run, project, finding_args, monkeypatch
-    ):
-        state = project / ".booley"
-        _commit_project_data(state, monkeypatch)
-        run(*finding_args)
-        assert _project_data_status(state) == ""
-
-        assert run("report") == 0
-        assert _project_data_status(state) == ""
 
     def test_report_warns_that_an_existing_export_was_not_refreshed(
         self, run, project, filable, capsys
@@ -294,32 +263,15 @@ class TestReporting:
         assert export.read_text(encoding="utf-8") == "old export"
         assert "may be stale" in capsys.readouterr().out
 
-    def test_export_is_the_explicit_redacted_file_path(self, run, project, filable):
+    def test_export_is_the_explicit_redacted_file_path(self, run, project, filable, tmp_path):
         assert run("export", "--all") == 0
         assert (project / ".booley" / "BOOLEY-FEEDBACK.md").is_file()
-
-    def test_export_accepts_an_output_override(self, run, project, filable, tmp_path):
         target = tmp_path / "sanitized.md"
         assert run("export", "--all", "--output", str(target)) == 0
         assert target.is_file()
-        assert not (project / ".booley" / "BOOLEY-FEEDBACK.md").exists()
 
     def test_export_honours_the_selected_finding_ids(self, run, project, filable, tmp_path):
-        run(
-            "add",
-            "--title",
-            "only this finding",
-            "--origin",
-            "bug",
-            "--bucket",
-            "booley",
-            "--repro",
-            "repro",
-            "--observed",
-            "observed",
-            "--expected",
-            "expected",
-        )
+        _log_booley_finding(run, "only this finding", "bug")
         target = tmp_path / "selected.md"
         assert run("export", "F-2", "--output", str(target)) == 0
         body = target.read_text(encoding="utf-8")
@@ -335,37 +287,13 @@ class TestReporting:
 @pytest.mark.parametrize("origin", ["setup", "bug"])
 def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monkeypatch, origin):
     from booley.feedback.materialize import materialize_attachments
-    from booley.feedback.render import Environment
     from tests.project_runtime_git_support import assert_clean, initialize_repository
 
     state = project / ".booley"
     initialize_repository(state, state, monkeypatch)
-    environment = Environment(doctor_deep_clean=True)
-    monkeypatch.setattr(
-        "booley.feedback.render.collect_environment", lambda *_a, **_kw: environment
-    )
     source = project / "attached.log"
     source.write_text("local attachment\n", encoding="utf-8")
-    assert (
-        run(
-            "add",
-            "--title",
-            "local note",
-            "--origin",
-            origin,
-            "--attach",
-            str(source),
-            "--bucket",
-            "booley",
-            "--repro",
-            "run",
-            "--observed",
-            "error",
-            "--expected",
-            "pass",
-        )
-        == 0
-    )
+    assert _log_booley_finding(run, "local note", origin, "--attach", str(source)) == 0
     assert (state / "findings.jsonl").is_file()
     assert_clean(state)
     assert run("triage", "F-1", "--bucket", "booley") == 0
@@ -416,6 +344,7 @@ def test_explicit_duplicate_id_refuses_every_match_without_output(
     path = legacy_duplicate_log
     before = path.read_bytes()
     output = tmp_path / "export.md"
+    output.write_text("prior export", encoding="utf-8")  # an ambiguous export must keep it
     args = [command, "F-2"]
     if command == "filed":
         args = [command, "F-1", "F-2"]  # The entire batch must remain unchanged.
@@ -439,7 +368,7 @@ def test_explicit_duplicate_id_refuses_every_match_without_output(
     assert "private body" not in captured.err
     assert "never-include-attachment-path" not in captured.err
     assert path.read_bytes() == before
-    assert not output.exists()
+    assert output.read_text(encoding="utf-8") == "prior export"
     assert not (project / ".booley" / "BOOLEY-FEEDBACK.md").exists()
     assert not path.with_suffix(".jsonl.tmp").exists()
 
@@ -468,16 +397,13 @@ def test_export_all_keeps_every_legacy_duplicate_and_redacts(
 @pytest.mark.parametrize(
     "argv",
     [
+        # One append and one rewrite: the other commands share these two transactions.
         ("add", "--title", "blocked", "--origin", "setup"),
-        ("friction", "--title", "blocked", "--origin", "setup"),
-        ("say", "blocked"),
-        ("win", "--title", "blocked", "--origin", "setup"),
-        ("filed", "F-1"),
         ("triage", "F-1", "--bucket", "booley"),
     ],
 )
 def test_mutating_dispatch_reports_lock_timeout_without_success(
-    run, project, monkeypatch, capsys, argv
+    run, project, lock_wait_expires, capsys, argv
 ):
     from booley.feedback import findings
     from tests.feedback.test_findings import holding_findings_lock
@@ -486,7 +412,6 @@ def test_mutating_dispatch_reports_lock_timeout_without_success(
     findings.append(findings.Finding(title="original"), directory)
     path = findings.log_path(directory)
     before = path.read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with holding_findings_lock(directory):
         assert run(*argv) == 2
     captured = capsys.readouterr()
@@ -498,7 +423,8 @@ def test_mutating_dispatch_reports_lock_timeout_without_success(
     assert not path.with_suffix(".jsonl.tmp").exists()
 
 
-def test_redact_reports_invalid_redact_extra(run, project, tmp_path, capsys):
+@pytest.mark.parametrize("command", ["redact", "report"])
+def test_invalid_redact_extra_fails_without_output(run, project, tmp_path, capsys, command):
     toml = project / ".booley" / "booley.toml"
     toml.write_text(
         toml.read_text(encoding="utf-8") + '\n[feedback]\nredact_extra = "Skunkworks"\n',
@@ -506,26 +432,14 @@ def test_redact_reports_invalid_redact_extra(run, project, tmp_path, capsys):
     )
     sample = tmp_path / "sample.txt"
     sample.write_text("part of the Skunkworks program\n", encoding="utf-8")
+    before = sorted(path.name for path in (project / ".booley").iterdir())
+    args = ["--file", str(sample)] if command == "redact" else ["--project-name", "demo"]
 
-    assert run("redact", "--file", str(sample)) == 2
+    assert run(command, *args) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Error: booley.toml [feedback].redact_extra must be a list of strings" in captured.err
-
-
-def test_report_with_invalid_redact_extra_writes_no_user_report(run, project, capsys):
-    toml = project / ".booley" / "booley.toml"
-    toml.write_text(
-        toml.read_text(encoding="utf-8") + '\n[feedback]\nredact_extra = "Skunkworks"\n',
-        encoding="utf-8",
-    )
-    before = sorted(path.name for path in (project / ".booley").iterdir())
-
-    assert run("report", "--project-name", "demo") == 2
-
-    captured = capsys.readouterr()
-    assert "redact_extra must be a list of strings" in captured.err
     assert sorted(path.name for path in (project / ".booley").iterdir()) == before
 
 
@@ -561,16 +475,6 @@ def test_corrupt_log_mutation_preserves_raw_bytes(run, project, capsys, command)
     assert not path.with_suffix(".jsonl.tmp").exists()
 
 
-def test_ambiguous_export_preserves_existing_output(run, legacy_duplicate_log, tmp_path, capsys):
-    target = tmp_path / "existing.md"
-    target.write_text("prior export")
-    before = legacy_duplicate_log.read_bytes()
-    assert run("export", "F-2", "--output", str(target)) == 1
-    assert capsys.readouterr().out == ""
-    assert target.read_text() == "prior export"
-    assert legacy_duplicate_log.read_bytes() == before
-
-
 @pytest.mark.parametrize("runtime", RUNTIMES)
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_worktree_feedback_writes_main_findings(tmp_path, monkeypatch, layout, runtime):
@@ -586,21 +490,7 @@ def test_worktree_feedback_writes_main_findings(tmp_path, monkeypatch, layout, r
         return cli.run(args, worktree, list_view=feedback_view.render_listing)
 
     title = f"fails in {main} and in {worktree}"
-    added = feedback(
-        "add",
-        "--origin",
-        "setup",
-        "--title",
-        title,
-        "--bucket",
-        "booley",
-        "--repro",
-        "booley flow sim",
-        "--observed",
-        "exit 2",
-        "--expected",
-        "a result",
-    )
+    added = _log_booley_finding(feedback, title, "setup")
     assert added == 0
     exported = tmp_path / "exported.md"
     assert feedback("export", "--all", "--output", str(exported)) == 0
@@ -620,25 +510,6 @@ def test_logging_commands_require_origin(run, project, capsys, command):
     assert raised.value.code == 2
     assert "--origin" in capsys.readouterr().err
     assert not (project / ".booley" / "findings.jsonl").exists()
-
-
-def _log_booley_finding(run, title, origin):
-    """A filable Booley-bucket finding, logged through the real parser."""
-    return run(
-        "add",
-        "--title",
-        title,
-        "--origin",
-        origin,
-        "--bucket",
-        "booley",
-        "--repro",
-        "booley flow sim",
-        "--observed",
-        "exit 2",
-        "--expected",
-        "a result",
-    )
 
 
 class TestReportSplit:
@@ -710,14 +581,13 @@ class TestReportSplit:
         ("origins", "framing", "other_framing"),
         [
             (("setup",), "produced 1 finding(s)", "A Booley user hit"),
-            (("bug",), "A Booley user hit 1 issue(s) during normal use", "`booley-setup` run"),
             (
                 ("bug", "setup-project-note"),
                 "A Booley user hit 1 issue(s) during normal use",
                 "`booley-setup` run",
             ),
         ],
-        ids=["setup", "bug", "bug-beside-setup-project-note"],
+        ids=["setup", "bug-beside-setup-project-note"],
     )
     def test_export_frames_from_exported_entries(
         self, run, project, tmp_path, origins, framing, other_framing

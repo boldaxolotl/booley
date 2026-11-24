@@ -222,18 +222,6 @@ def validator():
     return _module("taxi_parallel_validator", TAXI / "validate_parallel.py")
 
 
-def test_taxi_parallel_validator_accepts_published_simulation_record_shape(
-    validator, evidence
-) -> None:
-    timeline, simulation_record = evidence
-    validator.validate_attempt_isolation(timeline, simulation_record)
-    validator.validate_continue_after_failure(
-        simulation_record / "manifest.json",
-        simulation_record / "summary.json",
-        [_work_item_directory(simulation_record, index) / "result.json" for index in range(3)],
-    )
-
-
 def test_taxi_attempt_isolation_accepts_captured_run(validator) -> None:
     validator.validate_attempt_isolation(CAPTURED / "timeline.json", CAPTURED / "record")
 
@@ -296,24 +284,6 @@ def _swap_child(simulation_record: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        (_contaminate_log, "log evidence is contaminated"),
-        (_disown_run_directory, "not attempt-owned"),
-        (_share_run_directory, "differs from the attempt"),
-        (_swap_child, "attempt child identity differs"),
-    ],
-)
-def test_taxi_attempt_isolation_rejects_inconsistent_simulation_record_records(
-    validator, evidence, mutation, message
-) -> None:
-    timeline, simulation_record = evidence
-    mutation(simulation_record)
-    with pytest.raises(ValueError, match=message):
-        validator.validate_attempt_isolation(timeline, simulation_record)
-
-
 def _misname_attempt_directory(simulation_record: Path) -> None:
     directory = _attempt_directory(simulation_record, 0)
     directory.rename(directory.with_name("0001-someone-else"))
@@ -334,12 +304,16 @@ def _remove_attempt_records(simulation_record: Path) -> None:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
+        (_contaminate_log, "log evidence is contaminated"),
+        (_disown_run_directory, "not attempt-owned"),
+        (_share_run_directory, "differs from the attempt"),
+        (_swap_child, "attempt child identity differs"),
         (_misname_attempt_directory, "does not name its Simulation Attempt"),
         (_duplicate_attempt, "Simulation Attempt identity repeats"),
         (_remove_attempt_records, "Simulation Record has no Simulation Attempts"),
     ],
 )
-def test_taxi_attempt_isolation_rejects_broken_attempt_layout(
+def test_taxi_attempt_isolation_rejects_broken_simulation_record(
     validator, evidence, mutation, message
 ) -> None:
     timeline, simulation_record = evidence

@@ -152,52 +152,59 @@ def test_validator_rejects_stale_projection_manifest_reference(tmp_path: Path) -
         _validator().validate_backlinks(manifest, summary, projection)
 
 
-def test_validator_cli_exposes_every_check(tmp_path: Path) -> None:
-    manifest, summary, projection = _simulation_record_tree(tmp_path)
-    script = str(FIXTURE / "validate_campaign.py")
-    backlinks = subprocess.run(
-        [
-            sys.executable,
-            script,
+def _cli_arguments(subcommand: str, tmp_path: Path) -> list[str]:
+    """Return the validator CLI argv that exercises ``subcommand`` on fresh evidence."""
+    if subcommand == "backlinks":
+        manifest, summary, projection = _simulation_record_tree(tmp_path)
+        return [
             "backlinks",
             str(manifest),
             "--summary",
             str(summary),
             "--projection",
             str(projection),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert backlinks.returncode == 0, backlinks.stderr
-    assert json.loads(backlinks.stdout)["campaign_id"] == "campaign-1"
+        ]
     before = tmp_path / "before.txt"
     after = tmp_path / "after.txt"
     diagnostic = tmp_path / "diagnostic.txt"
     before.write_text("0001\n")
     after.write_text("0001\n0002\n")
     diagnostic.write_text("duplicate test quick\n")
-    rejection = subprocess.run(
+    return [
+        "rejection",
+        "--exit-code",
+        "2",
+        "--attempts-before",
+        str(before),
+        "--attempts-after",
+        str(after),
+        "--diagnostic",
+        str(diagnostic),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "expected_exit", "expected_output"),
+    [
+        ("backlinks", 0, '"campaign_id": "campaign-1"'),
+        ("rejection", 2, "rejection created an attempt"),
+    ],
+)
+def test_validator_cli_exposes_every_check(
+    tmp_path: Path, subcommand: str, expected_exit: int, expected_output: str
+) -> None:
+    result = subprocess.run(
         [
             sys.executable,
-            script,
-            "rejection",
-            "--exit-code",
-            "2",
-            "--attempts-before",
-            str(before),
-            "--attempts-after",
-            str(after),
-            "--diagnostic",
-            str(diagnostic),
+            str(FIXTURE / "validate_campaign.py"),
+            *_cli_arguments(subcommand, tmp_path),
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert rejection.returncode == 2
-    assert "rejection created an attempt" in rejection.stderr
+    assert result.returncode == expected_exit, result.stderr
+    assert expected_output in result.stdout + result.stderr
 
 
 def test_validator_checks_resume_and_rejection(tmp_path: Path) -> None:
