@@ -209,20 +209,16 @@ def _installed_image_version() -> str | None:
 
 
 def _image_is_stale(
-    fingerprint: str | None,
+    fingerprint: str,
     expected_version: str | None = None,
 ) -> bool:
     """Whether the present sandbox image no longer matches the local source.
 
-    - ``fingerprint is None`` (no source tree to compare): no source-staleness
-      verdict. Init checks release compatibility separately before calling here.
     - no fingerprint label: an image built before this guard existed (the exact
       stale-image bug this fixes) -> stale.
     - ``pulled:*`` label: current only when it names *expected_version*.
     - otherwise: stale iff the stamped hash differs from the current source.
     """
-    if fingerprint is None:
-        return False
     label = _image_label(DOCKER_IMAGE, LABEL_FINGERPRINT)
     if label is None:
         return True
