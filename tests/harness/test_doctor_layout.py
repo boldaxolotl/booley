@@ -15,31 +15,46 @@ from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import DoctorWaiver, DoctorWaivers
 from booley.harness import doctor
 from booley.presentation import colors
+from tests.harness.doctor_run_support import run_doctor
+from tests.harness.test_doctor import _patch_environment, _write_project
+
+
+@pytest.fixture(autouse=True)
+def _plain_output(monkeypatch):
+    """Plain text unless a test asks for colors."""
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+
+def _reporter() -> doctor._Reporter:
+    # private: the Reporter renders Doctor's rows and Summary, and a whole run cannot choose its
+    # findings, while these tests need one row of each kind and exact counts.
+    return doctor._Reporter.create()
 
 
 def _plain_reporter_run(capsys, monkeypatch, *, colored: bool) -> str:
     """Drive one reporter through every row kind and return its console output."""
     monkeypatch.setattr(colors, "COLORS_ENABLED", colored)
-    reporter = doctor._Reporter.create()
+    reporter = _reporter()
     reporter.pass_("docker found")
     reporter.note_("design is large", "split it up")
     reporter.skip_("optional probe unavailable")
-    reporter.warn_(
-        doctor.warning("sim.trace-unavailable", "trace unavailable", subject="sim_fast"),
-        "declare trace_files",
-    )
+    warning = doctor.warning("sim.trace-unavailable", "trace unavailable", subject="sim_fast")
+    reporter.warn_(warning, "declare trace_files")
     reporter.fail_("sandbox broken", "rebuild the image", check_id="sandbox.broken")
     reporter.finish()
     return capsys.readouterr().out
 
 
-def test_phase_sections_render_as_headers_with_glyph_rows(capsys, monkeypatch):
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    reporter = doctor._Reporter.create()
+def test_phase_sections_render_as_headers_with_glyph_rows(capsys, monkeypatch, tmp_path):
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "booley.toml").write_bytes(b"[project\n")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
-    doctor._run_flow_and_core_phase(None, None, reporter, lambda *_args: None)
+    run_doctor(tmp_path)
 
-    assert capsys.readouterr().out.splitlines() == [
+    lines = capsys.readouterr().out.splitlines()
+    start = lines.index("Booley Flow setup checks") - 1
+    assert lines[start : start + 6] == [
         "",
         "Booley Flow setup checks",
         "  ·  Flow dry-runs skipped - project config invalid",
@@ -49,8 +64,10 @@ def test_phase_sections_render_as_headers_with_glyph_rows(capsys, monkeypatch):
     ]
 
 
-def test_reporter_rows_drop_status_words_and_brackets(capsys, monkeypatch):
-    output = _plain_reporter_run(capsys, monkeypatch, colored=False).split("\nSummary")[0]
+def test_rows_drop_status_words_and_colors_strip_to_the_plain_layout(capsys, monkeypatch):
+    plain = _plain_reporter_run(capsys, monkeypatch, colored=False)
+    colored = _plain_reporter_run(capsys, monkeypatch, colored=True)
+    output = plain.split("\nSummary")[0]
     lines = output.splitlines()
 
     assert "  ✓  docker found" in lines
@@ -65,41 +82,17 @@ def test_reporter_rows_drop_status_words_and_brackets(capsys, monkeypatch):
     assert "     → rebuild the image" in lines
     assert "     → split it up" in lines
     assert not re.search(r"\b(PASS|WARN|FAIL|NOTE|SKIP)\b", output)
-
-
-def test_colored_output_strips_to_the_plain_layout(capsys, monkeypatch):
-    plain = _plain_reporter_run(capsys, monkeypatch, colored=False)
-    colored = _plain_reporter_run(capsys, monkeypatch, colored=True)
-
     assert "\033" not in plain
     assert "\033[2msim.trace-unavailable:sim_fast" in colored
     assert colors.strip_ansi(colored) == plain
-    assert "  ✓  docker found" in plain
-
-
-def test_long_check_announcement_uses_running_glyph(capsys, monkeypatch):
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-    doctor._announce_long_check("synth deep check", "real EDA run; timeout 10m")
-
-    assert capsys.readouterr().out == "  ▸  synth deep check (real EDA run; timeout 10m)\n"
-
-
-def _finish_with(capsys, monkeypatch, *, fail: int = 0, warn: int = 0, extra: bool = True):
-    """Finish a reporter holding the given active findings; return (exit code, lines)."""
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    reporter = doctor._Reporter.create()
-    if extra:
-        reporter.pass_("fine")
-        reporter.note_("just so you know")
-        reporter.skip_("not applicable")
-    for index in range(warn):
-        reporter.warn_(doctor.warning("test.warn", f"warning {index}", subject=f"s{index}"))
-    for index in range(fail):
-        reporter.fail_(f"failure {index}")
+    # A clean run, with colors still on, ends in a bold green verdict and Summary line.
+    reporter = _reporter()
+    reporter.pass_("fine")
     capsys.readouterr()
-    exit_code = reporter.finish()
-    return exit_code, capsys.readouterr().out.splitlines()
+    reporter.finish()
+    clean = capsys.readouterr().out
+    assert colors.bold_green("no failures or warnings") in clean
+    assert clean.rstrip("\n").endswith(colors.bold_green("  ✓ All clear. Booley is ready to use."))
 
 
 @pytest.mark.parametrize(
@@ -115,61 +108,57 @@ def _finish_with(capsys, monkeypatch, *, fail: int = 0, warn: int = 0, extra: bo
         (2, 0, "  ✗ 2 failures. Fix every failure before using Booley."),
     ],
 )
-def test_finish_ends_with_one_verdict_line(fail, warn, verdict, capsys, monkeypatch):
-    # The outcome is the last line, after a blank one, so it stands apart from
-    # the check rows and the counts table.
-    _, lines = _finish_with(capsys, monkeypatch, fail=fail, warn=warn)
-    assert lines[-2:] == ["", verdict]
-
-
-def test_clean_verdict_and_summary_line_are_bold_green(capsys, monkeypatch):
-    _finish_with(capsys, monkeypatch)  # disables colors; turn them back on below
-    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
-    reporter = doctor._Reporter.create()
+def test_finish_prints_verdict_problem_table_counts_and_exit_code(fail, warn, verdict, capsys):
+    reporter = _reporter()
     reporter.pass_("fine")
+    reporter.note_("just so you know")
+    reporter.skip_("not applicable")
+    for index in range(warn):
+        reporter.warn_(doctor.warning("test.warn", f"warning {index}", subject=f"s{index}"))
+    for index in range(fail):
+        reporter.fail_(f"failure {index}")
     capsys.readouterr()
-    reporter.finish()
-    out = capsys.readouterr().out
-    assert colors.bold_green("no failures or warnings") in out
-    assert out.rstrip("\n").endswith(colors.bold_green("  ✓ All clear. Booley is ready to use."))
 
+    exit_code = reporter.finish()
+    lines = capsys.readouterr().out.splitlines()
 
-@pytest.mark.parametrize("scenario", ["problems", "clean"])
-def test_finish_prints_problem_table_and_counts(scenario, capsys, monkeypatch):
-    fails, warns = (1, 1) if scenario == "problems" else (0, 0)
-    _, lines = _finish_with(capsys, monkeypatch, fail=fails, warn=warns)
-
+    # The outcome is the last line, after a blank one, so it stands apart from the check
+    # rows and the counts table. A warning does not raise the exit code past the failures.
+    assert lines[-2:] == ["", verdict]
+    assert exit_code == (1 if fail else 0)
     counts = [
         "  Status       Count",
         "  ──────────   ─────",
         "  ✓ passed     1",
-        f"  ! warnings   {warns}",
+        f"  ! warnings   {warn}",
         "  ~ waived     0",
         "  · notes      1",
         "  · skipped    1",
-        f"  ✗ failed     {fails}",
+        f"  ✗ failed     {fail}",
     ]
     assert lines[:2] == ["", "Summary"]
     start = lines.index(counts[0])
     assert lines[start : start + len(counts)] == counts
-    if scenario == "clean":
+    if not (fail or warn):
         assert lines[2] == "  ✓  no failures or warnings"
-    else:
-        problem_rows = lines[4:6]
-        assert problem_rows[0].startswith("  ✗ fail   failure 0")
-        assert problem_rows[1].startswith("  ! warn   warning 0")
-        assert problem_rows[1].rstrip().endswith("test.warn:s0")
-        assert "fine" not in "\n".join(lines[2:7])
-        assert "just so you know" not in "\n".join(lines[2:7])
+        return
+    problem_rows = lines[4 : 4 + fail + warn]
+    for index, row in enumerate(problem_rows[:fail]):
+        assert row.startswith(f"  ✗ fail   failure {index}")
+    for index, row in enumerate(problem_rows[fail:]):
+        assert row.startswith(f"  ! warn   warning {index}")
+        assert row.rstrip().endswith(f"test.warn:s{index}")
+    problem_text = "\n".join(lines[2 : 4 + fail + warn])
+    assert "fine" not in problem_text
+    assert "just so you know" not in problem_text
 
 
 @pytest.mark.parametrize("columns", [115, 18])
 def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
     # #5312: a 115-column terminal wrapped the problem table mid-ID; 18 also shrinks the counts.
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(shutil, "get_terminal_size", lambda *_: os.terminal_size((columns, 24)))
-    reporter = doctor._Reporter.create()
+    reporter = _reporter()
     message = "the destination branch named by project data is missing from the Project " * 2
     reporter.warn_(doctor.warning("project-data.destination-branch-missing", message, subject="s"))
     capsys.readouterr()
@@ -180,43 +169,19 @@ def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
     assert max(map(colors.len_visible, tables)) <= columns
 
 
-@pytest.mark.parametrize(
-    ("fails", "warns", "expected"),
-    [
-        pytest.param(2, 1, 1, id="fail"),
-        pytest.param(0, 2, 0, id="warn"),
-        pytest.param(0, 0, 0, id="clean"),
-    ],
-)
-def test_finish_exit_code_counts_only_failures(fails, warns, expected, capsys, monkeypatch):
-    exit_code, lines = _finish_with(capsys, monkeypatch, fail=fails, warn=warns)
-
-    assert exit_code == expected
-    assert f"  ✗ failed     {fails}" in lines
-    assert f"  ! warnings   {warns}" in lines
-
-
 def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path):
-    from booley.core.booley_layout import BooleyLayoutError
-
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-    def refuse(_root):
-        raise BooleyLayoutError("layout is stale")
-
-    monkeypatch.setattr("booley.core.booley_layout.validate_environment", lambda: None)
-    monkeypatch.setattr("booley.core.booley_layout.require_current_layout", refuse)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
 
     assert doctor.run_doctor(argparse.Namespace(), tmp_path) == 2
-    assert capsys.readouterr().out == "  ✗  layout is stale\n"
-
-
-def test_waived_findings_are_counted_but_not_listed_as_problems(capsys, monkeypatch):
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    reporter = doctor._Reporter.create()
-    reporter.waived_(
-        doctor.DiagnosticFinding(Severity.WAIVED, "old issue", "approved", "test.waived")
+    assert (
+        capsys.readouterr().out
+        == "  ✗  BOOLEY_PROJECT_DIR is retired; unset it and use BOOLEY_DIR\n"
     )
+
+
+def test_waived_findings_are_counted_but_not_listed_as_problems(capsys):
+    reporter = _reporter()
+    reporter.waived_(doctor.DiagnosticFinding(Severity.WAIVED, "old", "approved", "test.waived"))
     capsys.readouterr()
 
     reporter.finish()
@@ -226,9 +191,8 @@ def test_waived_findings_are_counted_but_not_listed_as_problems(capsys, monkeypa
     assert "  ~ waived     1" in lines
 
 
-def test_expired_waiver_note_sits_under_its_own_section(capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    reporter = doctor._Reporter.create()
+def test_expired_waiver_note_sits_under_its_own_section(capsys, tmp_path):
+    reporter = _reporter()
     reporter.waivers = DoctorWaivers(
         path=tmp_path / "doctor-waivers.toml",
         expired=(DoctorWaiver("sim.old", None, "stale", date(2026, 1, 1), False),),
@@ -244,9 +208,8 @@ def test_expired_waiver_note_sits_under_its_own_section(capsys, monkeypatch, tmp
     assert header < lines.index("Summary")
 
 
-def test_fail_row_and_problem_table_show_the_same_override(capsys, monkeypatch):
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    reporter = doctor._Reporter.create()
+def test_fail_row_and_problem_table_show_the_same_override(capsys):
+    reporter = _reporter()
     reporter.display_overrides["login expired 2026-01-01"] = "login expired 3 days ago"
 
     reporter.fail_("login expired 2026-01-01")
