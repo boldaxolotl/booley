@@ -69,7 +69,7 @@ def serve(store, command):
         store["counter"] += 1
         number = store["counter"]
         layers = images[parent]["Layers"] if parent in images else [f"sha256:layer-{number}"]
-        images[output] = {"Id": f"sha256:image-{number}", "Labels": labels, "Layers": layers}
+        images[output] = {"Id": f"sha256:image-{number}", "Labels": labels, "Layers": layers, "Parent": parent}
         edits, store["after_build"] = store["after_build"], {}
         for ref, fields in edits.items():
             images[output if ref == "<output>" else ref].update(fields)

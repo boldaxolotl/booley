@@ -140,6 +140,7 @@ def test_acquire_upgrades_metadata_on_pinned_parent(fake, current, plan) -> None
     assert image_id == record["Id"] != current["Id"]
     assert record["Labels"] == current["Labels"]
     assert record["Layers"] == current["Layers"]
+    assert record["Parent"].endswith(":parent")  # built on the pinned alias, not the moving tag
     (build,) = _builds(docker)
     assert build[build.index("-f") + 1] != str(RECIPE)  # a thin overlay, never a cold build
     assert list(docker.images) == [owner.REFERENCE]  # both transaction tags are gone
@@ -281,12 +282,17 @@ def test_cli_reports_acquisition_result(fake, current, monkeypatch, capsys, case
 
 
 @pytest.mark.parametrize(
-    ("installed", "free_gib", "refused"),
-    [(False, 37, True), (True, 20, False), (True, 11, True)],
-    ids=["full 37 GiB", "upgrade 20 GiB", "upgrade 11 GiB"],
+    ("installed", "free_gib", "refused", "with_base"),
+    [
+        (False, 37, True, True),
+        (True, 20, False, True),
+        (True, 11, True, True),
+        (True, 11, True, False),
+    ],
+    ids=["full 37 GiB", "upgrade 20 GiB", "upgrade 11 GiB", "upgrade 11 GiB, plan without base"],
 )
 def test_acquire_passes_capacity_plan_to_preflight(
-    fake, current, tmp_path, monkeypatch, installed, free_gib, refused
+    fake, current, tmp_path, monkeypatch, installed, free_gib, refused, with_base
 ) -> None:
     monkeypatch.delenv(SKIP_PREFLIGHT)
     monkeypatch.setattr(
@@ -296,7 +302,8 @@ def test_acquire_passes_capacity_plan_to_preflight(
     base = DockerBuildRequest(owner.REFERENCE, owner.REFERENCE)
     other = DockerBuildRequest("other", "other")  # a second cold build: the plan needs 40 GiB
     wheel = DockerBuildRequest("wheel", "wheel", BuildEstimateClass.THIN_OVERLAY)
-    plan = DockerBuildPlan((base, wheel if installed else other))
+    follow = wheel if installed else other
+    plan = DockerBuildPlan((base, follow) if with_base else (follow,))
     fake(replies, images=_stale(current) if installed else {})
 
     if refused:

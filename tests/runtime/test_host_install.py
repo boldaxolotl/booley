@@ -106,7 +106,8 @@ def test_current_installation_describes_running_executable(tmp_path, monkeypatch
 
 
 def test_current_installation_hashes_the_package_without_a_build_fingerprint(monkeypatch) -> None:
-    # The existing public patch: the real build metadata of a source checkout has no digest.
+    # A source checkout's real build metadata carries a digest, so the fallback that hashes
+    # the package is reachable only by replacing that Booley-owned metadata.
     monkeypatch.setattr(
         host_install,
         "current_build_metadata",
@@ -116,6 +117,8 @@ def test_current_installation_hashes_the_package_without_a_build_fingerprint(mon
 
     identity = host_install.current_host_installation(package_root / "data")
 
+    # Private on purpose: it is the one oracle for the digest of the imported package.
+    assert identity.payload_fingerprint == host_install._tree_fingerprint(package_root)
     assert re.fullmatch("[0-9a-f]{64}", identity.payload_fingerprint)
     assert identity.revision == "abc123"
 
@@ -256,6 +259,7 @@ def test_registration_records_once_and_requires_update(running, fields) -> None:
     for message in (error, str(caught.value)):
         assert "--update" in message
         assert all(difference in message for difference in differences)
+        assert ("distribution_root" in message) is ("distribution_root" in fields)
     assert state.read_bytes() == recorded
     assert host_install.register_host_installation(_SOURCE, update=True) == candidate
     assert host_install.host_install_error(_SOURCE) is None
@@ -353,7 +357,8 @@ def test_registration_cannot_succeed_without_persisted_validation(
         return original_replace(path, *args, **kwargs)
 
     # The write path has no public parameter that makes the loader, the temporary write
-    # or the final replacement fail at one chosen step.
+    # or the final replacement fail at one chosen step; the loader is the only Booley
+    # name patched, because a readback that fails or disagrees needs a chosen answer.
     monkeypatch.setattr(host_install, "load_host_installation", load)
     monkeypatch.setattr(Path, "write_text", write)
     monkeypatch.setattr(Path, "replace", replace_path)
