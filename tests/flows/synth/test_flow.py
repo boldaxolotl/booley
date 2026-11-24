@@ -2353,6 +2353,16 @@ _ECHOED_INPUT_ERROR = "    5 | // BOOLEY_INPUT_ERROR: echoed comment\n      | ^\
             [],
             id="inline-decoy",
         ),
+        # No stage marker and no stage log: no tool owns the failure.
+        pytest.param(
+            "logical",
+            {},
+            {"returncode": 2, "stdout": "make: *** Error 2\n"},
+            {"returncode": 2, "termination": "infrastructure_error"},
+            ["no diagnostic available"],
+            [],
+            id="no-stage-evidence",
+        ),
     ]
     + [
         # #1075: a loader failure of a tool the Yosys stage does not run is not its startup.
