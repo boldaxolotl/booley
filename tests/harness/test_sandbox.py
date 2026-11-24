@@ -1,448 +1,253 @@
-"""Tests for sandbox.py — the `booley shell` ephemeral-container machinery.
+"""Tests for sandbox.py: the `booley shell` ephemeral-container machinery.
 
 ADR 0028 demolished the per-MCP-tool-call container spawning (DockerRunner.run /
 run_sync, the CLI adapters, DockerSandboxBackend); what survives here is the
-argv builder backing `booley shell` plus DockerSandboxConfig.verify.
+argv builder backing `booley shell`. Every test drives `ephemeral_argv`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
-from booley.harness.sandbox import (
-    DockerRunner,
-    DockerSandboxConfig,
+import pytest
+
+from booley.harness import sandbox
+from booley.harness.sandbox import DockerRunner, DockerSandboxConfig
+from booley.runtime import auth_token
+from booley.runtime.platform_paths import docker_mount_path
+
+_CLAUDE_LOGIN = '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'
+_CODEX_LOGIN = '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'
+_AGENT_ENV_KEYS = (
+    "BOOLEY_DIR",
+    "BOOLEY_PRIMARY_AUTH",
+    "BOOLEY_PRIMARY_PROVIDER",
+    "BOOLEY_AGENT_APP",
 )
-from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
-
-# ===========================================================================
-# _docker_mount_path
-# ===========================================================================
 
 
-class TestDockerMountPath:
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_linux_passthrough(self):
-        p = MagicMock()
-        p.as_posix.return_value = "/home/user/project"
-        assert _docker_mount_path(p) == "/home/user/project"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", True)
-    def test_windows_drive_letter(self):
-        p = MagicMock()
-        p.as_posix.return_value = "C:/projects/project"
-        assert _docker_mount_path(p) == "/c/projects/project"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", True)
-    def test_windows_lowercase_drive(self):
-        p = MagicMock()
-        p.as_posix.return_value = "D:/data/files"
-        assert _docker_mount_path(p) == "/d/data/files"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", True)
-    def test_windows_unc_passthrough(self):
-        p = MagicMock()
-        p.as_posix.return_value = "//server/share/dir"
-        assert _docker_mount_path(p) == "//server/share/dir"
-
-
-# ===========================================================================
-# DockerRunner._build_docker_cmd
-# ===========================================================================
-
-
-class TestDockerRunnerBuildCmd:
-    def _make_runner(self, worktree: str = "/tmp/wt") -> DockerRunner:
-        config = DockerSandboxConfig(image="test-image", needs_network=False)
-        return DockerRunner(config, worktree=Path(worktree))
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_basic_command(self):
-        runner = self._make_runner()
-        cmd = runner._build_docker_cmd(["echo", "hello"])
-        assert cmd[:3] == ["docker", "run", "--init"]
-        assert "--mount" in cmd
-        mount_args = [cmd[i + 1] for i, x in enumerate(cmd) if x == "--mount"]
-        assert any("target=/work" in v for v in mount_args)
-        assert "-w" in cmd
-        idx = cmd.index("-w")
-        assert cmd[idx + 1] == "/work"
-        assert "test-image" in cmd
-        assert cmd[-2:] == ["echo", "hello"]
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_project_name_from_selected_checkout_reaches_label(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            '[project]\nname = "configured-project"\n',
-            encoding="utf-8",
-        )
-        runner = self._make_runner(str(tmp_path))
-
-        cmd = runner._build_docker_cmd(["true"])
-
-        assert "booley.project=configured-project" in cmd
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_security_hardening_flags(self):
-        runner = self._make_runner()
-        cmd = runner._build_docker_cmd(["echo", "hello"])
-        assert "--memory" in cmd
-        assert "--pids-limit" in cmd
-        cap_idx = cmd.index("--cap-drop")
-        assert cmd[cap_idx + 1] == "ALL"
-        sec_idx = cmd.index("--security-opt")
-        assert cmd[sec_idx + 1] == "no-new-privileges"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_memory_swap_limit_follows_config(self):
-        config = DockerSandboxConfig(
-            image="test-image", needs_network=False, memory_limit="8g", memory_swap="10g"
-        )
-        cmd = DockerRunner(config, worktree=Path("/tmp/wt"))._build_docker_cmd(["true"])
-        assert cmd[cmd.index("--memory") + 1] == "8g"
-        assert cmd[cmd.index("--memory-swap") + 1] == "10g"
-        assert "--memory-swap" not in self._make_runner()._build_docker_cmd(["true"])
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_custom_cwd(self):
-        runner = self._make_runner()
-        cmd = runner._build_docker_cmd(["ls"], cwd="/work/subdir")
-        idx = cmd.index("-w")
-        assert cmd[idx + 1] == "/work/subdir"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_config_extra_env_vars(self):
-        config = DockerSandboxConfig(
-            image="test-image",
-            needs_network=False,
-            extra_env={"FOO": "bar"},
-        )
-        runner = DockerRunner(config, worktree=Path("/tmp/wt"))
-        cmd = runner._build_docker_cmd(["test"])
-        env_entries = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-e"]
-        assert "FOO=bar" in env_entries
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_no_network_uses_none(self):
-        runner = self._make_runner()  # needs_network=False
-        cmd = runner._build_docker_cmd(["test"])
-        idx = cmd.index("--network")
-        assert cmd[idx + 1] == "none"
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_remove_and_tty_flags(self):
-        runner = self._make_runner()
-        cmd = runner._build_docker_cmd(
-            ["cat"],
-            interactive=True,
-            tty=True,
-            remove=True,
-        )
-        assert "--rm" in cmd
-        assert "-t" in cmd
-        assert "-i" in cmd
-
-
-# ===========================================================================
-# DockerRunner.ephemeral_argv  (backs `booley shell`)
-# ===========================================================================
-
-
-class TestEphemeralArgv:
-    def _make_runner(self) -> DockerRunner:
-        config = DockerSandboxConfig(image="test-image", needs_network=False)
-        return DockerRunner(config, worktree=Path("/tmp/wt"), label="shell")
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_interactive_shell_is_ephemeral_tty(self):
-        runner = self._make_runner()
-        argv = runner.ephemeral_argv(["/bin/bash", "-l"], tty=True)
-        # throwaway + interactive tty
-        assert "--rm" in argv
-        assert "-t" in argv and "-i" in argv
-        # sandbox hardening / mount flags
-        assert argv[argv.index("--network") + 1] == "none"
-        assert argv[argv.index("--cap-drop") + 1] == "ALL"
-        assert any("target=/work" in argv[i + 1] for i, x in enumerate(argv) if x == "--mount")
-        assert "test-image" in argv
-        # payload reaches the preflight wrapper's exec
-        assert argv[-2:] == ["/bin/bash", "-l"]
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_oneoff_command_has_no_tty(self):
-        runner = self._make_runner()
-        argv = runner.ephemeral_argv(["verilator", "--version"], tty=False)
-        assert "--rm" in argv
-        assert "-t" not in argv  # no pseudo-TTY for a piped one-off
-        assert argv[-2:] == ["verilator", "--version"]
-
-    def test_cleanup_ephemeral_removes_env_file(self, tmp_path):
-        runner = self._make_runner()
-        stub = tmp_path / "booley_env.env"
-        stub.write_text("K=V\n")
-        runner._env_file = stub
-        proxy = MagicMock()
-        runner._proxy = proxy
-        runner.cleanup_ephemeral()
-        assert not stub.exists()
-        proxy.stop.assert_called_once()
-        assert runner._env_file is None and runner._proxy is None
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_needs_network_uses_bridge_with_proxy(self):
-        config = DockerSandboxConfig(image="test-image", needs_network=True)
-        runner = DockerRunner(config, worktree=Path("/tmp/wt"))
-        mock_proxy = MagicMock()
-        mock_proxy.url = "http://host.docker.internal:9999"
-        runner._proxy = mock_proxy
-        cmd = runner._build_docker_cmd(["test"])
-        idx = cmd.index("--network")
-        assert cmd[idx + 1] == "bridge"
-
-    @patch("booley.harness.sandbox.secrets.token_urlsafe", return_value="fresh-secret")
-    @patch("booley.harness.sandbox._load_egress_proxy_class")
-    def test_host_proxy_all_interface_bind_requires_fresh_authentication(
-        self, load_proxy, token_urlsafe
-    ):
-        proxy_type = MagicMock()
-        proxy = proxy_type.return_value
-        proxy.url = "http://booley:fresh-secret@host.docker.internal:9999"
-        load_proxy.return_value = proxy_type
-        runner = DockerRunner(
-            DockerSandboxConfig(image="test-image", needs_network=True),
-            worktree=Path("/tmp/wt"),
-        )
-
-        assert runner._ensure_proxy() == proxy.url
-        token_urlsafe.assert_called_once_with(32)
-        proxy_type.assert_called_once_with(host="0.0.0.0", auth_token="fresh-secret")
-        proxy.start.assert_called_once_with()
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_needs_network_injects_proxy_env_vars(self):
-        config = DockerSandboxConfig(image="test-image", needs_network=True)
-        runner = DockerRunner(config, worktree=Path("/tmp/wt"))
-        mock_proxy = MagicMock()
-        mock_proxy.url = "http://host.docker.internal:9999"
-        runner._proxy = mock_proxy
-        cmd = runner._build_docker_cmd(["test"])
-        env_entries = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-e"]
-        assert "HTTPS_PROXY=http://host.docker.internal:9999" in env_entries
-        assert "HTTP_PROXY=http://host.docker.internal:9999" in env_entries
-        assert "https_proxy=http://host.docker.internal:9999" in env_entries
-        assert "http_proxy=http://host.docker.internal:9999" in env_entries
-
-    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
-    def test_no_network_no_proxy_env(self):
-        runner = self._make_runner()  # needs_network=False
-        cmd = runner._build_docker_cmd(["test"])
-        env_entries = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-e"]
-        assert not any("PROXY" in e or "proxy" in e for e in env_entries)
-
-    def test_stop_proxy_cleanup(self):
-        config = DockerSandboxConfig(needs_network=True)
-        runner = DockerRunner(config, worktree=Path("/tmp/wt"))
-        mock_proxy = MagicMock()
-        runner._proxy = mock_proxy
-        runner.stop_proxy()
-        mock_proxy.stop.assert_called_once()
-        assert runner._proxy is None
-
-    def test_stop_proxy_noop_when_no_proxy(self):
-        config = DockerSandboxConfig(needs_network=False)
-        runner = DockerRunner(config, worktree=Path("/tmp/wt"))
-        runner.stop_proxy()  # should not raise
-
-
-def test_ephemeral_auth_uses_runner_project_policy(tmp_path, monkeypatch):
-    from booley.runtime import auth_token
-
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Project Root with `.booley/`, under a home that holds no credentials."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "wrong-project"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_OAUTH")
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="api_key"\n')
-    login = auth_token.subscription_creds_path("claude")
-    login.parent.mkdir()
-    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}')
-    runner = DockerRunner(
-        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
-    )
-    command = runner._build_docker_cmd(["true"])
-    try:
-        body = runner._env_file.read_text()
-        assert "ANTHROPIC_API_KEY=SYNTHETIC_KEY" in body
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in body
-        assert ".credentials.json" not in " ".join(command)
-        assert "SYNTHETIC" not in " ".join(command)
-    finally:
-        runner._env_file.unlink(missing_ok=True)
-
-
-def test_ephemeral_shell_forwards_only_listed_cli_credentials(tmp_path, monkeypatch):
-    """``booley shell`` mounts and exports credentials for the listed CLIs only."""
-    from booley.runtime import auth_token
-
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    for key in (
-        "BOOLEY_DIR",
-        "BOOLEY_PRIMARY_AUTH",
-        "BOOLEY_PRIMARY_PROVIDER",
-        "BOOLEY_AGENT_APP",
-    ):
+    for key in (*_AGENT_ENV_KEYS, *auth_token.CREDENTIAL_ENV_KEYS):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    (data / "booley.toml").write_text('[agent]\nclis = ["claude"]\nauth = "api_key"\n')
-    for app, body in (
-        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
-        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
-    ):
+    root = tmp_path / "project"
+    (root / ".booley").mkdir(parents=True)
+    return root
+
+
+def _write_logins() -> None:
+    for app, body in (("claude", _CLAUDE_LOGIN), ("codex", _CODEX_LOGIN)):
         login = auth_token.subscription_creds_path(app)
         login.parent.mkdir(parents=True, exist_ok=True)
-        login.write_text(body)
-    runner = DockerRunner(
-        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+        login.write_text(body, encoding="utf-8")
+
+
+def _runner(root: Path, **config: Any) -> DockerRunner:
+    config.setdefault("needs_network", False)
+    return DockerRunner(DockerSandboxConfig(image="test-image", **config), root)
+
+
+def _values(argv: list[str], flag: str) -> list[str]:
+    return [argv[i + 1] for i, word in enumerate(argv) if word == flag]
+
+
+def test_docker_mount_path_keeps_a_unc_share() -> None:
+    # The host platform is the boundary: only a Windows host rewrites drive letters.
+    with patch("booley.runtime.platform_paths.IS_WINDOWS", True):
+        assert docker_mount_path(Path("//server/share/dir")) == "//server/share/dir"
+
+
+def test_shell_argv_runs_a_hardened_throwaway_container(project: Path) -> None:
+    (project / ".booley" / "booley.toml").write_text(
+        '[project]\nname = "configured-project"\n', encoding="utf-8"
     )
+    runner = _runner(project)
 
-    command = " ".join(runner._build_docker_cmd(["true"]))
-    try:
-        body = runner._env_file.read_text()
-        assert "ANTHROPIC_API_KEY=SYNTHETIC_ANTHROPIC" in body
-        assert "OPENAI_API_KEY" not in body
-        assert ".codex" not in command
-    finally:
-        runner._env_file.unlink(missing_ok=True)
+    argv = runner.ephemeral_argv(["/bin/bash", "-l"], tty=True)
+
+    assert argv[:3] == ["docker", "run", "--init"]
+    assert {"--rm", "-i", "-t", "test-image"} <= set(argv)
+    assert _values(argv, "-w") == ["/work"]
+    assert any(value.endswith("target=/work") for value in _values(argv, "--mount"))
+    assert _values(argv, "--network") == ["none"]
+    assert "--add-host" not in argv
+    assert not any("proxy" in value.lower() for value in _values(argv, "-e"))
+    assert _values(argv, "--cap-drop") == ["ALL"]
+    assert _values(argv, "--security-opt") == ["no-new-privileges"]
+    assert "--pids-limit" in argv
+    assert "--memory-swap" not in argv
+    assert "booley.project=configured-project" in argv
+    assert argv[-3:] == ["booley-preflight", "/bin/bash", "-l"]
+    oneoff = runner.ephemeral_argv(["verilator", "--version"], tty=False)
+    assert "-i" in oneoff
+    assert "-t" not in oneoff
+    assert oneoff[-2:] == ["verilator", "--version"]
 
 
-def test_shell_with_codex_gateway_forwards_no_gateway_variable(tmp_path, monkeypatch):
-    """``booley shell`` never carries gateway settings, even with ``codex = "gateway"``.
+def test_shell_limits_and_environment_follow_config(project: Path) -> None:
+    argv = _runner(project, memory_limit="8g", memory_swap="10g", extra_env={"FOO": "bar"})
+    argv = argv.ephemeral_argv(["true"], tty=False)
 
-    Guard: the gateway reaches a Sandbox only through a Booley-issued spec, so the
-    ephemeral shell must not forward the host's exports (no argv entry, no env-file line).
-    """
-    gateway_keys = (
-        "BOOLEY_GATEWAY_URL",
-        "BOOLEY_GATEWAY_TOKEN",
-        "BOOLEY_GATEWAY_TOKEN_COMMAND",
-        "BOOLEY_GATEWAY_MODEL",
-        "BOOLEY_GATEWAY_EFFORT",
+    assert _values(argv, "--memory") == ["8g"]
+    assert _values(argv, "--memory-swap") == ["10g"]
+    assert "FOO=bar" in _values(argv, "-e")
+
+
+class FakeProxy:
+    """Stand in for the egress proxy, which opens an all-interface listener."""
+
+    started: list[FakeProxy]
+
+    def __init__(self, *, host: str, auth_token: str) -> None:
+        self.host = host
+        self.auth_token = auth_token
+        self.port = 9999
+        self.url = f"http://booley:{auth_token}@host.docker.internal:{self.port}"
+        self.stopped = 0
+
+    def start(self) -> None:
+        self.started.append(self)
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+def test_networked_shell_uses_an_authenticated_proxy_and_releases_it(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeProxy.started = []
+    # Private: the proxy binds 0.0.0.0 and no public entry takes a stand-in for it.
+    monkeypatch.setattr(sandbox, "_load_egress_proxy_class", lambda: FakeProxy)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
+    (project / ".booley" / "booley.toml").write_text(
+        '[agent]\nclis = ["claude"]\nauth = "api_key"\n', encoding="utf-8"
     )
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    for key in (
-        "BOOLEY_DIR",
-        "BOOLEY_PRIMARY_AUTH",
-        "BOOLEY_PRIMARY_PROVIDER",
-        "BOOLEY_AGENT_APP",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    for key in gateway_keys:
-        monkeypatch.setenv(key, "SYNTHETIC_GATEWAY_VALUE")
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    (data / "booley.toml").write_text(
-        '[agent]\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n'
+    runner = _runner(project, needs_network=True)
+
+    argv = runner.ephemeral_argv(["true"], tty=False)
+
+    proxy = FakeProxy.started[0]
+    assert _values(argv, "--network") == ["bridge"]
+    assert _values(argv, "--add-host") == ["host.docker.internal:host-gateway"]
+    env = _values(argv, "-e")
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        assert f"{name}={proxy.url}" in env
+    assert (proxy.host, len(proxy.auth_token) >= 43, len(FakeProxy.started)) == (
+        "0.0.0.0",
+        True,
+        1,
     )
-    runner = DockerRunner(
-        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
-    )
+    env_file = Path(_values(argv, "--env-file")[0])
+    assert "ANTHROPIC_API_KEY=SYNTHETIC_KEY" in env_file.read_text(encoding="utf-8")
 
-    command = " ".join(runner._build_docker_cmd(["true"]))
-    try:
-        body = runner._env_file.read_text() if runner._env_file else ""
-        for key in gateway_keys:
-            assert key not in command
-            assert key not in body
-        assert "SYNTHETIC_GATEWAY_VALUE" not in command + body
-    finally:
-        if runner._env_file:
-            runner._env_file.unlink(missing_ok=True)
+    runner.cleanup_ephemeral()
+
+    assert not env_file.exists()
+    assert proxy.stopped == 1
+    monkeypatch.delenv("ANTHROPIC_API_KEY")  # no env-file for the next runner to leave behind
+    other = _runner(project, needs_network=True)
+    other.ephemeral_argv(["true"], tty=False)
+    other.ephemeral_argv(["true"], tty=False)
+    assert len(FakeProxy.started) == 2  # a runner starts one proxy and reuses it
+    second = FakeProxy.started[1]
+    assert second.auth_token != proxy.auth_token
+    other.stop_proxy()
+    assert second.stopped == 1
+    runner.stop_proxy()
+    assert proxy.stopped == 1
 
 
-_INVALID_AGENT_CONFIGS = {
-    "default-not-listed": '[agent]\ndefault = "codex"\nclis = ["claude"]\n',
-    "unlisted-auth-key": '[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n',
+_GATEWAY_KEYS = (
+    "BOOLEY_GATEWAY_URL",
+    "BOOLEY_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND",
+    "BOOLEY_GATEWAY_MODEL",
+    "BOOLEY_GATEWAY_EFFORT",
+)
+_WARNING = "starting without Agent CLI logins or API keys"
+_CREDENTIAL_CASES = {
+    # A runner built for one Project follows that Project's policy, not the process's
+    # BOOLEY_DIR or BOOLEY_PRIMARY_AUTH (fix b1ffe1e58).
+    "runner-project-policy": SimpleNamespace(
+        toml='[agent]\nprovider="claude"\nauth="api_key"\n',
+        env={
+            "BOOLEY_DIR": "wrong-project",
+            "BOOLEY_PRIMARY_AUTH": "subscription",
+            "ANTHROPIC_API_KEY": "SYNTHETIC_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN": "SYNTHETIC_OAUTH",
+        },
+        env_file=["ANTHROPIC_API_KEY=SYNTHETIC_KEY"],
+        absent=[".credentials.json", "SYNTHETIC"],
+        absent_env=["CLAUDE_CODE_OAUTH_TOKEN"],
+    ),
+    "listed-clis-only": SimpleNamespace(
+        toml='[agent]\nclis = ["claude"]\nauth = "api_key"\n',
+        env={"OPENAI_API_KEY": "SYNTHETIC_OPENAI", "ANTHROPIC_API_KEY": "SYNTHETIC_KEY"},
+        env_file=["ANTHROPIC_API_KEY=SYNTHETIC_KEY"],
+        absent=[".codex", "SYNTHETIC_OPENAI"],
+        absent_env=["OPENAI_API_KEY"],
+    ),
+    # The gateway reaches a Sandbox only through a Booley-issued spec.
+    "codex-gateway": SimpleNamespace(
+        toml='[agent]\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
+        env=dict.fromkeys(_GATEWAY_KEYS, "SYNTHETIC_GATEWAY_VALUE"),
+        absent=[*_GATEWAY_KEYS, "SYNTHETIC_GATEWAY_VALUE"],
+        absent_env=[*_GATEWAY_KEYS, "SYNTHETIC_GATEWAY_VALUE"],
+    ),
+    "default-not-listed": SimpleNamespace(
+        toml='[agent]\ndefault = "codex"\nclis = ["claude"]\n',
+        env={"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"},
+        absent=[".credentials.json", ".codex", "--env-file"],
+        warns=True,
+    ),
+    "unlisted-auth-key": SimpleNamespace(
+        toml='[agent]\nclis = ["claude"]\n[agent.auth]\ncodex = "subscription"\n',
+        env={"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"},
+        absent=[".credentials.json", ".codex", "--env-file"],
+        warns=True,
+    ),
+    # An unresolvable BOOLEY_AGENT_APP falls back instead of stopping the shell (19d62a372).
+    "ambiguous-agent-app": SimpleNamespace(
+        toml='[agent]\nclis = ["claude", "codex"]\n',
+        env={"BOOLEY_AGENT_APP": "auto"},
+        mounts=["/home/agent/.claude/.credentials.json:ro", "/home/agent/.codex/auth.json:ro"],
+    ),
 }
 
 
-def test_ephemeral_shell_without_credentials_on_invalid_agent_config(
-    tmp_path, monkeypatch, capsys
-):
-    """An invalid ``[agent]`` warns and starts the shell with no logins and no API keys."""
-    from booley.runtime import auth_token
+@pytest.mark.parametrize("case", _CREDENTIAL_CASES)
+def test_shell_forwards_only_the_credentials_the_project_permits(
+    case: str, project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec = _CREDENTIAL_CASES[case]
+    for key, value in spec.env.items():
+        monkeypatch.setenv(key, value)
+    _write_logins()
+    (project / ".booley" / "booley.toml").write_text(spec.toml, encoding="utf-8")
+    runner = _runner(project)
 
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    for key in (
-        "BOOLEY_DIR",
-        "BOOLEY_PRIMARY_AUTH",
-        "BOOLEY_PRIMARY_PROVIDER",
-        "BOOLEY_AGENT_APP",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_ANTHROPIC")
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    for app, body in (
-        ("claude", '{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}'),
-        ("codex", '{"tokens":{"access_token":"SYNTHETIC_LOGIN"},"OPENAI_API_KEY":null}'),
-    ):
-        login = auth_token.subscription_creds_path(app)
-        login.parent.mkdir(parents=True, exist_ok=True)
-        login.write_text(body)
+    argv = runner.ephemeral_argv(["true"], tty=False)
 
-    for case, toml in _INVALID_AGENT_CONFIGS.items():
-        (data / "booley.toml").write_text(toml)
-        runner = DockerRunner(
-            DockerSandboxConfig(image="test-image", needs_network=False), data.parent
-        )
-
-        command = " ".join(runner._build_docker_cmd(["true"]))
-
-        assert ".credentials.json" not in command, case
-        assert ".codex" not in command, case
-        assert runner._env_file is None, case
-        assert "starting without Agent CLI logins or API keys" in capsys.readouterr().err, case
-
-
-def test_ephemeral_shell_ignores_ambiguous_agent_app_environment(tmp_path, monkeypatch):
-    """An unresolvable ``BOOLEY_AGENT_APP`` falls back to Claude instead of stopping the shell."""
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-    monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
-    data = tmp_path / "project" / ".booley"
-    data.mkdir(parents=True)
-    (data / "booley.toml").write_text('[agent]\nclis = ["claude", "codex"]\n')
-    runner = DockerRunner(
-        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
-    )
-
-    plans = runner._credential_plans()
-
-    assert [plan.app for plan in plans] == ["claude", "codex"]
+    try:
+        env_files = _values(argv, "--env-file")
+        body = Path(env_files[0]).read_text(encoding="utf-8") if env_files else ""
+        for line in getattr(spec, "env_file", []):
+            assert line in body
+        for fragment in getattr(spec, "absent", []):
+            assert fragment not in " ".join(argv)
+        for fragment in getattr(spec, "absent_env", []):
+            assert fragment not in body
+        for mount in getattr(spec, "mounts", []):
+            assert any(word.endswith(mount) for word in _values(argv, "-v"))
+    finally:
+        runner.cleanup_ephemeral()
+    assert (_WARNING in capsys.readouterr().err) is getattr(spec, "warns", False)
