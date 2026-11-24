@@ -1134,6 +1134,12 @@ class TestBooleyStatus:
                 "Checkout: unknown\n",
             ),
             (
+                "state-error",
+                "Session: unknown (Booley could not read its session state)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            (
                 "no-handle",
                 "Session: unknown\nBranch: main\nCheckout: {repo} (main checkout)\n",
             ),
@@ -1146,7 +1152,14 @@ class TestBooleyStatus:
                 "Session: S1\nBranch: main\nCheckout: {repo} (main checkout)\n",
             ),
         ],
-        ids=["no-attribution", "unrecorded", "no-handle", "unreadable-checkout", "recorded"],
+        ids=[
+            "no-attribution",
+            "unrecorded",
+            "state-error",
+            "no-handle",
+            "unreadable-checkout",
+            "recorded",
+        ],
     )
     def test_format_status_card(self, monkeypatch, tmp_path, case, identity):
         from booley.mcp.session_registry import Attribution, SessionRegistry
@@ -1184,6 +1197,12 @@ class TestBooleyStatus:
             SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
         if case == "no-handle":
             HandleStore(booley).path.unlink()
+        if case == "state-error":
+
+            def unreadable(_registry):
+                raise RuntimeError("unreadable")
+
+            monkeypatch.setattr(SessionRegistry, "snapshot", unreadable)
 
         card = self.mcp_server._format_status_card(
             ["sim", "lint"], None if case == "no-attribution" else attribution

@@ -680,6 +680,13 @@ _UNRECORDED = (
 )
 
 
+_UNREADABLE = (
+    "Session: unknown (Booley could not read its session state)",
+    "Branch: unknown",
+    "Checkout: unknown",
+)
+
+
 def _checkout_kind(path: str) -> str:
     """Say whether *path* is in a main checkout or a linked worktree, as far as Git metadata shows."""
     try:
@@ -721,7 +728,7 @@ def _session_identity_lines(attribution: Attribution | None) -> tuple[str, ...]:
     try:
         return _recorded_identity_lines(attribution)
     except Exception:  # noqa: BLE001 — status must survive unreadable session state
-        return _UNATTRIBUTED
+        return _UNREADABLE
 
 
 def _format_status_card(mcp_tool_names: list[str], attribution: Attribution | None) -> str:
