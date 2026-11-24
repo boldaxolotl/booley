@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from booley.config.feature_flags import enabled_features
 from booley.harness import booley as tlr
-from booley.harness.dashboard import launch, run_form, web_run
+from booley.harness.dashboard import launch, run_form
 from tests.harness import test_dashboard_web as web_tests
 from tests.harness.test_dashboard_run import FLOW_NAMES, write_config, write_picker_project
 from tests.harness.test_dashboard_run_pickers import SIM_FIFO_RUNS, TARGETS_BY_FLOW
@@ -234,6 +234,8 @@ def _crash(*_args):
 
 
 def test_a_coverage_records_read_that_fails_lists_none(world, feature_flags, monkeypatch):
+    from booley.harness.dashboard import web_run  # a module the base lacks: import in the test
+
     def crash(*_args):
         raise OSError("unreadable")
 
