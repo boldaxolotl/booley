@@ -171,8 +171,9 @@ def _memory_claims(slots: Path | None, proc_root: Path) -> tuple[int, bool]:
     return round(reserved * _MIB), any(claim.run_alone for claim in claims)
 
 
-def _label(job: JobView) -> str:
-    return job.handle or job_prefix(job.record.endpoint) + "?"
+def job_label(handle: str, endpoint: str) -> str:
+    """What a Job's row shows: its handle, else ``J-SIM?`` for a live Job whose handle was not reserved."""
+    return handle or job_prefix(endpoint) + "?"
 
 
 def _owner(job: JobView, titles: Mapping[str, str]) -> str:
@@ -212,7 +213,7 @@ def _now_rows(
 ) -> list[dict[str, Any]]:
     return [
         {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
             "owner": _owner(job, titles),
@@ -242,7 +243,7 @@ def _results(
         passed += semantic in _PASSED
         failed += semantic in _FAILED
         row = {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
             "owner": _owner(job, titles),

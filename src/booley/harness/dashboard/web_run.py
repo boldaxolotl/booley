@@ -1,21 +1,33 @@
 """The Run form's choices for one worktree as plain JSON values.
 
 Textual-free and HTTP-free: ``web`` routes requests and calls these. They list what the
-Textual wizard offers (Flows, Specialists, Targets, Tests, forms) from the same sources.
-``UnknownEntryError`` names a Flow, Specialist or form kind that does not exist; any other
-trouble reading a worktree is a ``problem`` text beside what could still be read, as in the wizard.
+Textual wizard offers (Flows, Specialists, Targets, Tests, forms) from the same sources, and
+quote, check and start a run as the wizard's review and Submit do. ``UnknownEntryError`` names
+a Flow, Specialist or form kind that does not exist; any other trouble reading a worktree is a
+``problem`` text beside what could still be read, as in the wizard. ``InvalidRunError`` is a
+request body of the wrong shape and ``RunRefusedError`` a run the form, the parser or the Agent
+CLI's sign-in check refuses.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.harness.dashboard.launch import Launcher
-from booley.harness.dashboard.run_form import FormError, RunForm
+from booley.core.boundary import is_str_list
+from booley.harness.dashboard.launch import (
+    NO_FACTS,
+    ArgumentsError,
+    Launcher,
+    RunFacts,
+    review_check,
+    shell_command,
+)
+from booley.harness.dashboard.review import Occupants, agent_refusal, review_lines
+from booley.harness.dashboard.run_form import FormError, RunForm, form_argv
 from booley.harness.dashboard.specialist_form import (
     COVERAGE_ANALYST,
     REVIEWER,
@@ -30,12 +42,22 @@ from booley.harness.dashboard.targets import (
     first_line,
     targets_for,
 )
+from booley.harness.dashboard.web_snapshot import job_label
+from booley.runtime.handles import HandleStore
 
 logger = logging.getLogger(__name__)
 
 
 class UnknownEntryError(LookupError):
     """The request names a built-in Flow, Specialist or form kind that does not exist."""
+
+
+class InvalidRunError(ValueError):
+    """The request body of a run is not the shape the routes take."""
+
+
+class RunRefusedError(ValueError):
+    """The form, the argument check or the Agent CLI's sign-in check refuses to run the request."""
 
 
 def _cause(exc: Exception) -> str:
@@ -80,6 +102,21 @@ def tests(reader: TargetsReader, worktree: Path, selector: str) -> dict[str, Any
     return {"runs": list(choices.runs), "problem": choices.problem}
 
 
+def _known(launcher: Launcher, kind: str, name: str) -> None:
+    """Raise ``UnknownEntryError`` unless *name* is a built-in Flow or Specialist of that *kind*."""
+    known = {
+        "flow": {choice.name for choice in launcher.flows()},
+        "specialist": {REVIEWER, COVERAGE_ANALYST},
+    }
+    if name not in known.get(kind, ()):
+        raise UnknownEntryError(f"no such built-in {kind}: {name}")
+
+
+def _problem(exc: Exception) -> str:
+    """Why a form could not be built: its own sentence, else the exception type and first line."""
+    return str(exc) if isinstance(exc, FormError) else _cause(exc)
+
+
 def form(
     launcher: Launcher,
     worktree: Path,
@@ -92,17 +129,12 @@ def form(
 
     *coverage_records* reads the finished Simulation Jobs, called only for the coverage analyst.
     """
-    known = {
-        "flow": {choice.name for choice in launcher.flows()},
-        "specialist": {REVIEWER, COVERAGE_ANALYST},
-    }
-    if name not in known.get(kind, ()):
-        raise UnknownEntryError(f"no such built-in {kind}: {name}")
+    _known(launcher, kind, name)
     try:
         built = launcher.form(kind, name, worktree)
     except Exception as exc:
         logger.exception("Run form build failed")
-        return {"kind": kind, "problem": str(exc) if isinstance(exc, FormError) else _cause(exc)}
+        return {"kind": kind, "problem": _problem(exc)}
     if isinstance(built, RunForm):
         return {
             "kind": kind,
@@ -123,3 +155,107 @@ def form(
         "fields": [asdict(field) for field in built.fields(chosen)],
         "coverage_records": [asdict(record) for record in records],
     }
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    """What a launch request names: the endpoint, the form's values and the extra arguments."""
+
+    kind: str
+    name: str
+    values: Mapping[str, str | list[str]]
+    extra: str
+
+
+def run_request(body: Mapping[str, Any]) -> RunRequest:
+    """The run a JSON *body* asks for: ``kind``, ``name``, optional ``values`` and ``extra``."""
+    kind, name, extra = body.get("kind"), body.get("name"), body.get("extra", "")
+    values = body.get("values", {})
+    if not (isinstance(kind, str) and isinstance(name, str) and isinstance(extra, str)):
+        raise InvalidRunError("kind, name and extra must be text")
+    if not isinstance(values, dict) or not all(
+        isinstance(value, str) or is_str_list(value) for value in values.values()
+    ):
+        raise InvalidRunError("values must map each field to text (a list of text for tests)")
+    return RunRequest(kind, name, values, extra)
+
+
+def _argv(launcher: Launcher, worktree: Path, run: RunRequest) -> tuple[str, ...]:
+    """The words the form's values make, as the wizard builds them.
+
+    ``UnknownEntryError`` for an unknown endpoint, ``InvalidRunError`` for a value or extra
+    text the endpoint's form does not take, ``RunRefusedError`` for the form's own error.
+    """
+    _known(launcher, run.kind, run.name)
+    try:
+        built = launcher.form(run.kind, run.name, worktree)
+    except Exception as exc:
+        logger.exception("Run form build failed")
+        raise RunRefusedError(_problem(exc)) from exc
+    chosen: Mapping[str, str | tuple[str, ...]]
+    if isinstance(built, RunForm):
+        tests = {field.dest for field in built.fields if field.kind == "tests"}
+        if any(
+            isinstance(value, list) and dest not in tests for dest, value in run.values.items()
+        ):
+            raise InvalidRunError("only a Flow's tests field takes a list")
+        chosen = {
+            dest: tuple(value) if isinstance(value, list) else value
+            for dest, value in run.values.items()
+        }
+    else:
+        texts = {dest: value for dest, value in run.values.items() if isinstance(value, str)}
+        if run.extra or len(texts) != len(run.values):
+            raise InvalidRunError("a Specialist takes text values and no extra arguments")
+        chosen = built.changed({**built.initial(), **texts})
+    try:
+        return form_argv(built, chosen, run.extra)
+    except ArgumentsError as exc:
+        raise RunRefusedError(str(exc)) from exc
+
+
+def command(launcher: Launcher, worktree: Path, run: RunRequest) -> dict[str, Any]:
+    """The shell command of the run: it parses nothing and starts nothing."""
+    return {"command": shell_command(worktree, run.kind, run.name, _argv(launcher, worktree, run))}
+
+
+def _refusal(facts: RunFacts) -> str:
+    return agent_refusal(facts.specialist) if facts.specialist is not None else ""
+
+
+def check(
+    launcher: Launcher, worktree: Path, run: RunRequest, occupants: Callable[[], Occupants]
+) -> dict[str, Any]:
+    """The review screen of the run: its command, its lines and why it may not launch.
+
+    ``RunRefusedError`` when the endpoint's own parser rejects the arguments.
+    """
+    argv = _argv(launcher, worktree, run)
+    checked = review_check(launcher, worktree, run.kind, run.name, argv)
+    if checked.facts is None:
+        raise RunRefusedError(checked.error)
+    return {
+        "command": shell_command(worktree, run.kind, run.name, argv),
+        "lines": review_lines(checked.facts, occupants(), checked.uncommitted),
+        "refusal": _refusal(checked.facts),
+    }
+
+
+def submit(
+    launcher: Launcher, booley_dir: Path, worktree: Path, run: RunRequest
+) -> dict[str, Any]:
+    """Start the run as a Standalone Job and name its row as the next snapshot lists it.
+
+    ``RunRefusedError`` for a parser rejection or an Agent CLI that cannot sign in, which
+    start nothing; ``OSError`` when the Job record cannot be written.
+    """
+    argv = _argv(launcher, worktree, run)
+    checked = launcher.check(worktree, run.kind, run.name, argv)
+    if checked.facts is None:
+        raise RunRefusedError(checked.error or NO_FACTS)
+    refusal = _refusal(checked.facts)
+    if refusal:
+        raise RunRefusedError(refusal)
+    run_id = launcher.start(worktree, run.kind, run.name, argv)
+    handles, _diagnostics = HandleStore(booley_dir, jobs=True).snapshot()
+    return {"run_id": run_id, "handle": job_label(handles.get(run_id, ""), run.name)}

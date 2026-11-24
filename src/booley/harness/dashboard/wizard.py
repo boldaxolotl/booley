@@ -29,24 +29,19 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
-from booley.core.booley_layout import BooleyLayoutError
 from booley.harness.dashboard.launch import (
-    NO_FACTS,
     ArgumentsError,
-    CheckResult,
     FlowChoice,
     Launcher,
     RunFacts,
     SpecialistListing,
+    review_check,
     shell_command,
 )
 from booley.harness.dashboard.review import (
     Occupants,
     agent_refusal,
-    queue_line,
-    specialist_lines,
-    timeout_line,
-    warning_lines,
+    review_lines,
 )
 from booley.harness.dashboard.run_form import (
     AUTOMATIC,
@@ -55,7 +50,7 @@ from booley.harness.dashboard.run_form import (
     Field,
     FormError,
     RunForm,
-    command_argv,
+    form_argv,
 )
 from booley.harness.dashboard.specialist_form import (
     NO_COVERAGE_RECORDS,
@@ -76,7 +71,6 @@ from booley.harness.dashboard.targets import (
     first_line,
     targets_for,
 )
-from booley.harness.worktree_list import WorktreeListError
 
 logger = logging.getLogger(__name__)
 
@@ -754,14 +748,8 @@ class RunWizard(ModalScreen[str | None]):
 
     def _form_argv(self) -> tuple[str, ...] | None:
         """The command's words from the form, or ``None`` after showing why they cannot be built."""
-        form = self._form
         try:
-            if form is not None and not isinstance(form, RunForm):
-                problem = form.refusal(self._values)
-                if problem:
-                    raise ArgumentsError(problem)
-                return form.argv(self._values)
-            return command_argv(form or NO_FORM, self._all_values(), self._extra)
+            return form_argv(self._form or NO_FORM, self._all_values(), self._extra)
         except ArgumentsError as exc:
             self._show_error(str(exc))
             return None
@@ -814,16 +802,10 @@ class RunWizard(ModalScreen[str | None]):
 
         Runs in a worker thread: it spawns a child and reads Git.
         """
-        result: CheckResult = self._launcher.check(
-            request.worktree, request.kind, request.name, request.argv
+        result = review_check(
+            self._launcher, request.worktree, request.kind, request.name, request.argv
         )
-        if result.facts is None:
-            return _Checked(request, result.error or NO_FACTS)
-        try:
-            uncommitted: int | str = self._launcher.uncommitted(request.worktree)
-        except (WorktreeListError, BooleyLayoutError) as exc:
-            uncommitted = str(exc)
-        return _Checked(request, "", result.facts, uncommitted)
+        return _Checked(request, result.error, result.facts, result.uncommitted)
 
     def _form_built(self, event: Worker.StateChanged) -> None:
         """Apply a finished build for the form now wanted; a crash shows as the note."""
@@ -912,12 +894,9 @@ class RunWizard(ModalScreen[str | None]):
         checked = self._checked
         assert checked is not None and checked.facts is not None
         occupants = self._occupants(checked.request.worktree)
-        lines = [queue_line(checked.facts), timeout_line(checked.facts)]
+        lines = review_lines(checked.facts, occupants, checked.uncommitted)
         specialist = checked.facts.specialist
-        if specialist is not None:
-            lines += specialist_lines(specialist)
-        lines += warning_lines(occupants, checked.uncommitted)
-        self.query_one("#run-review", Static).update("\n".join(line for line in lines if line))
+        self.query_one("#run-review", Static).update("\n".join(lines))
         self._show_error(agent_refusal(specialist) if specialist is not None else "")
 
     def _apply_action(self, action: str) -> None:

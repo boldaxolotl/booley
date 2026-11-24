@@ -321,13 +321,47 @@ class Launcher:
 
         return count_uncommitted(worktree, own_booley_dir_repo_path(worktree).as_posix())
 
+    def start(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> str:
+        """Start the Standalone Job; return its run ID. ``OSError`` if it cannot be recorded."""
+        from booley.harness.standalone_worker import StandaloneRequest, submit
+
+        return submit(self._booley_dir, StandaloneRequest(worktree, kind, name, argv))
+
     def submit(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> str:
         """Start the Standalone Job; return its Jobs window row key. ``OSError`` if it cannot be recorded."""
         from booley.harness.standalone_job import standalone_jobs_dir
-        from booley.harness.standalone_worker import StandaloneRequest, submit
 
-        run_id = submit(self._booley_dir, StandaloneRequest(worktree, kind, name, argv))
+        run_id = self.start(worktree, kind, name, argv)
         return json.dumps([str(standalone_jobs_dir(self._booley_dir)), run_id])
+
+
+@dataclass(frozen=True)
+class ReviewCheck:
+    """The argument check and the reads the review shows: the shell's rejection or the run's facts.
+
+    ``uncommitted`` is a string when the changes cannot be counted.
+    """
+
+    error: str = ""
+    facts: RunFacts | None = None
+    uncommitted: int | str = 0
+
+
+def review_check(
+    launcher: Launcher, worktree: Path, kind: str, name: str, argv: tuple[str, ...]
+) -> ReviewCheck:
+    """The argument check, then (when it passes) the uncommitted count the review shows."""
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.harness.worktree_list import WorktreeListError
+
+    result = launcher.check(worktree, kind, name, argv)
+    if result.facts is None:
+        return ReviewCheck(result.error or NO_FACTS)
+    try:
+        uncommitted: int | str = launcher.uncommitted(worktree)
+    except (WorktreeListError, BooleyLayoutError) as exc:
+        uncommitted = str(exc)
+    return ReviewCheck("", result.facts, uncommitted)
 
 
 def _load_endpoint(base: type[_Endpoint], name: str) -> _Endpoint:
