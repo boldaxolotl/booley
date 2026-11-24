@@ -594,9 +594,9 @@ _PACKAGE_JOBS = {"build-dist", "package-artifacts"}
         pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
         pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
         # A changelog fragment is documentation, never the release category.
-        pytest.param(["changelog.d/3606.md"], _BASE_JOBS, id="changelog-fragment"),
+        pytest.param(["changelog.d/3606.fix.md"], _BASE_JOBS, id="changelog-fragment"),
         pytest.param(
-            ["changelog.d/README.md", "changelog.d/fix-typo.md"],
+            ["changelog.d/README.md", "changelog.d/fix-typo.fix.md"],
             _BASE_JOBS,
             id="changelog-fragment-readme",
         ),
@@ -616,7 +616,7 @@ def test_documentation_only_changes_select_the_narrow_job_set(
 
 def test_changelog_fragments_are_not_a_release_change() -> None:
     """Only the changelog and its mirror are the ``release`` category, not fragments."""
-    assert "release" not in classify(["changelog.d/3606.md", "changelog.d/README.md"])
+    assert "release" not in classify(["changelog.d/3606.fix.md", "changelog.d/README.md"])
 
 
 def test_readme_and_website_pull_request_outputs_the_narrow_set(tmp_path: Path) -> None:
