@@ -76,9 +76,8 @@ def sandbox_git(tmp_path, monkeypatch) -> _SandboxGit:
         pytest.skip("git is not installed")
     ambient = ("GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_DIR", "CLAUDECODE")
     ambient += ("GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES")
-    ambient += tuple(
-        f"GIT_CONFIG_{part}_{index}" for part in ("KEY", "VALUE") for index in range(8)
-    )
+    for index in range(8):
+        ambient += (f"GIT_CONFIG_KEY_{index}", f"GIT_CONFIG_VALUE_{index}")
     for name in ambient:
         monkeypatch.delenv(name, raising=False)
     return _SandboxGit(tmp_path, monkeypatch)
