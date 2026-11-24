@@ -218,15 +218,15 @@ def _base_build_arg(dockerfile: str, name: str) -> str:
     return dockerfile_syntax.argument_default(dockerfile, name)
 
 
-def test_bundled_vaporview_vsix_stays_in_lockstep_with_the_verified_build() -> None:
-    """The image bundles exactly the build the spec installs and Booley patches."""
-    from booley.runtime import vaporview
+def test_base_image_bundles_exactly_the_spec_extensions() -> None:
+    """The image bundles the VSIXs the spec installs, and no other."""
+    from booley.runtime import devcontainer
 
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
-    version = _base_build_arg(dockerfile, "VAPORVIEW_VERSION")
 
-    assert version == vaporview.VERIFIED_VERSION
-    assert vaporview.BUNDLED_VSIX in _bundled_vsix_install_targets(dockerfile)
+    assert _bundled_vsix_install_targets(dockerfile) == {
+        extension.vsix for extension in devcontainer.BUNDLED_EXTENSIONS
+    }
 
 
 def _bundled_vsix_install_targets(dockerfile: str) -> set[str]:
