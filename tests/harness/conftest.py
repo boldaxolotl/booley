@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-
 # Stub claude_agent_sdk before any booley imports touch it
 if "claude_agent_sdk" not in sys.modules:
     _sdk = ModuleType("claude_agent_sdk")
