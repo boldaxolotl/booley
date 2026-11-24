@@ -254,7 +254,9 @@ A `booley session` terminal command is supervised the same way: when it ends,
 every process it started ends with it, so none keeps running on memory that
 looks free. A detached Standalone Job started from it is the one exception: it
 keeps running, and its reservation is held and recovered by its own process
-([ADR 0095](../adr/0095-release-detached-job-workers-from-terminal-attachment-cleanup.md)).
+([ADR 0095][adr-0095]).
+
+[adr-0095]: ../adr/0095-release-detached-job-workers-from-terminal-attachment-cleanup.md
 
 ## Booley Flows
 

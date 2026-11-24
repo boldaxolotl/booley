@@ -72,11 +72,12 @@ fix when authentication is missing.
   records, satisfies or invalidates evidence, even in a worktree in Goal Mode.
   The Developer Agent must run its own check.
 - Standalone Jobs live as long as the Sandbox; a terminal attachment releases
-  them as [ADR 0095](0095-release-detached-job-workers-from-terminal-attachment-cleanup.md)
-  describes. `booley session down` lists the running ones and warns before it
-  proceeds.
+  them as [ADR 0095][adr-0095] describes. `booley session down` lists the
+  running ones and warns before it proceeds.
 
 ## Consequences
 
 - The Dashboard now starts processes. Two runners share one record format:
   foreground for the shell, detached for the Dashboard.
+
+[adr-0095]: 0095-release-detached-job-workers-from-terminal-attachment-cleanup.md
