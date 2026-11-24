@@ -4,16 +4,19 @@
 output pipes with no limit (on Windows a surviving descendant holds them), so a hung
 Docker CLI could hang Doctor, image upkeep and similar commands past their timeout.
 ``platform_paths.run_captured_bounded`` kills the whole tree and abandons held pipes.
-These tests pin that each audited call site uses it, keeps its caller-visible results,
-and that a hung probe really returns promptly with no descendant left running.
+This test pins that each audited call site uses it and keeps its caller-visible results;
+``tests/test_platform_paths.py`` proves the helper kills a hung tree.
+
+Some sites drive a ``_private`` function. The public route to each one (``booley init``,
+the capacity preflight, a Bootstrap base upgrade, image upkeep, runtime inspection, layout
+verification, the VaporView check) runs other Docker commands and checks around that call,
+so it cannot show this one call's helper, timeout and per-outcome result.
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,8 +24,6 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
-from tests.time_budget import scaled
 
 from booley.runtime import (
     booley_dir_migration,
@@ -65,8 +66,10 @@ def _same(shown: str) -> dict[str, str]:
 
 
 def _sites() -> list[_Site]:
+    # Private drive: no public route builds the Docker CLI wrapper without running Docker.
     cli = image_lifecycle._DockerCli()
     return [
+        # Private drive: booley init migration also checks layout and containers around this call, so the public route cannot show this call alone.
         _Site(
             "booley_dir_migration docker ps",
             booley_dir_migration,
@@ -79,6 +82,7 @@ def _sites() -> list[_Site]:
             | {"missing": "FileNotFoundError"}
             | {"timeout": "TimeoutExpired"},
         ),
+        # Private drive: booley init migration runs `docker ps` first and migrates after, so the public route cannot show this call alone.
         _Site(
             "booley_dir_migration docker inspect",
             booley_dir_migration,
@@ -90,6 +94,7 @@ def _sites() -> list[_Site]:
             | {"missing": "FileNotFoundError", "timeout": "TimeoutExpired"},
             prior_stdout="abc\n",
         ),
+        # Private drive: the capacity preflight runs three probes and disk checks around one, so the public route cannot show this call alone.
         _Site(
             "docker_capacity probe",
             docker_capacity,
@@ -100,6 +105,7 @@ def _sites() -> list[_Site]:
             {"ok": "returned:0", "nonzero": "returned:1"}
             | {"missing": "DockerCapacityError", "timeout": "DockerCapacityError"},
         ),
+        # Private drive: a Bootstrap base upgrade pulls and builds before and after this tag, so the public route cannot show this call alone.
         _Site(
             "host_base_acquisition tag",
             host_base_acquisition,
@@ -109,6 +115,7 @@ def _sites() -> list[_Site]:
             "",
             {"ok": "returned:None"} | _same("RuntimeError"),
         ),
+        # Private drive: a Bootstrap base upgrade reaches this cleanup only after other failures, so the public route cannot show this call alone.
         _Site(
             "host_base_acquisition image rm",
             host_base_acquisition,
@@ -154,6 +161,7 @@ def _sites() -> list[_Site]:
             "",
             {"ok": "returned:frozenset()"} | _same("ImageLifecycleError"),
         ),
+        # Private drive: image upkeep lists containers and images around this inspect, so the public route cannot show this call alone.
         _Site(
             "image_lifecycle container inspect",
             image_lifecycle,
@@ -163,6 +171,7 @@ def _sites() -> list[_Site]:
             _IMAGE_ID,
             {"ok": f"returned:frozenset({{'{_IMAGE_ID}'}})"} | _same("ImageLifecycleError"),
         ),
+        # Private drive: runtime inspection queries sessions and images around this list, so the public route cannot show this call alone.
         _Site(
             "inspection list issued containers",
             inspection,
@@ -200,6 +209,7 @@ def _sites() -> list[_Site]:
             '[{"Id": "x"}]',
             {"ok": "returned:{'Id': 'x'}"} | _same("RuntimeError"),
         ),
+        # Private drive: layout verification inspects and probes the image around this run, so the public route cannot show this call alone.
         _Site(
             "project_image probe layout directory",
             project_image,
@@ -209,6 +219,7 @@ def _sites() -> list[_Site]:
             "",
             {"ok": "returned:None"} | _same("RuntimeError"),
         ),
+        # Private drive: layout verification reads image history among other checks, so the public route cannot show this call alone.
         _Site(
             "project_image image history",
             project_image,
@@ -218,6 +229,7 @@ def _sites() -> list[_Site]:
             "one\ntwo\n",
             {"ok": "returned:['one', 'two']"} | _same("RuntimeError"),
         ),
+        # Private drive: the VaporView check runs several probes around this one, so the public route cannot show this call alone.
         _Site(
             "vaporview probe",
             vaporview,
@@ -301,22 +313,3 @@ def test_every_timed_docker_call_uses_the_bounded_helper(
         for problem in _check_site(site, outcome, tmp_path, monkeypatch)
     ]
     assert not failures, "\n".join(failures)
-
-
-def test_hung_vaporview_probe_kills_the_tree_and_returns_promptly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A probe whose command hangs ends soon as ``None`` and leaves no descendant running."""
-    monkeypatch.setattr(vaporview, "_PROBE_TIMEOUT_S", scaled(2), raising=False)
-    with heartbeat_tree(tmp_path) as paths:
-        # The parent script ignores the trailing ``python3 -c pass`` the probe appends.
-        prefix = parent_argv(tmp_path, sys.executable, paths, "live")
-        start = time.monotonic()
-        result = vaporview._run_probe(prefix, "pass")
-        elapsed = time.monotonic() - start
-        assert result is None
-        assert elapsed < scaled(25), f"probe hung {elapsed:.1f}s on a pipe held by a grandchild"
-        assert paths["heartbeat"].exists(), "grandchild never started"
-        assert wait_until_heartbeat_stops(paths["heartbeat"]), (
-            "grandchild still running after the timeout"
-        )
