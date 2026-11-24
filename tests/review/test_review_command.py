@@ -16,7 +16,6 @@ from typing import Any
 import pytest
 
 from booley.harness import booley as cli
-from booley.harness import review_command
 from booley.measurement import base as base_module
 from booley.specialists.review_change import ReviewChangeError
 from tests.conftest import FeatureFlagHelper
@@ -320,7 +319,7 @@ def test_a_failure_before_the_model_call_is_an_error_result_and_the_run_is_store
     def fail(*_: Any) -> Any:
         raise ReviewChangeError("`git diff` failed")
 
-    monkeypatch.setattr(review_command, "committed_review_change", fail)
+    monkeypatch.setattr("booley.harness.review_command.committed_review_change", fail)
 
     assert review(monkeypatch, root) == 2
 
