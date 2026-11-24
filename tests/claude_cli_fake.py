@@ -63,6 +63,7 @@ def record_sdk_options(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
             result="",
             total_cost_usd=0.01,
             usage={"input_tokens": 1, "output_tokens": 1},
+            structured_output=None,
         )
 
     monkeypatch.setattr(_claude_backend, "query", query)
