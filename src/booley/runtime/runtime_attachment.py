@@ -55,7 +55,7 @@ class SupervisedExecutionDriver:
         self,
         project_data: Path,
         *,
-        project_root: Path | None = None,
+        project_root: Path,
         cwd: str | None = None,
     ) -> None:
         self._project_data = project_data
@@ -250,16 +250,12 @@ def _drive_execution(
     return protocol_failure or ExecutionResult(125, "unrecoverable", False, "recovery_timeout")
 
 
-def _report_protocol_failure(result: ExecutionResult, project_root: Path | None = None) -> None:
+def _report_protocol_failure(result: ExecutionResult, project_root: Path) -> None:
     if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
         return
     from booley.runtime import session_runtime
 
-    remedy = (
-        session_runtime.sandbox_remedy(project_root)
-        if project_root is not None
-        else session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
-    )
+    remedy = session_runtime.sandbox_remedy(project_root)
     logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
 
 
