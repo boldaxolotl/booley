@@ -2012,9 +2012,8 @@ class DashboardApp(App[None]):
             return None
         here = worktree.resolve()
         return sim_runs(
-            job
-            for job in self.snapshot.jobs.jobs
-            if job.record.work_dir and Path(job.record.work_dir).resolve() == here
+            self.snapshot.jobs.jobs,
+            lambda job: bool(job.record.work_dir and Path(job.record.work_dir).resolve() == here),
         )
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:

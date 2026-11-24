@@ -515,6 +515,8 @@ async def test_sim_runs_are_the_finished_simulation_jobs_of_the_worktree(checkou
         sim_job("6", other),
         sim_job("7", checkout, endpoint="lint"),
         sim_job("8", checkout, report=False),
+        # A Job the filter rejects is never asked where it ran, so an unreadable directory is skipped.
+        sim_job("9", Path("not\0a-path"), endpoint="lint"),
     )
     current = replace(
         dashboard_tests.snapshot(0), sessions=(), session_handles={}, jobs=JobSnapshot(jobs)

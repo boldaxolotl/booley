@@ -11,7 +11,7 @@ it with a reason.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -163,14 +163,20 @@ class CoverageRecordChoice:
     label: str
 
 
-def sim_runs(jobs: Iterable[JobView]) -> tuple[SimRun, ...]:
-    """The finished Simulation Jobs among *jobs* that have a report: their invocation directories."""
+def sim_runs(
+    jobs: Iterable[JobView], keep: Callable[[JobView], bool] = lambda _job: True
+) -> tuple[SimRun, ...]:
+    """The finished Jobs of the Simulation Flow among *jobs* that have a report: their invocation directories.
+
+    *keep* is asked last, only of a Job that passed the other tests (it may read the file system).
+    """
     return tuple(
         SimRun(job.report_path.parent, job.record.ended_at or "")
         for job in jobs
         if job.record.endpoint == "sim"
         and job.state in FINISHED_JOB_STATES
         and job.report_path is not None
+        and keep(job)
     )
 
 

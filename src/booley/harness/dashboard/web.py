@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -109,64 +109,67 @@ def _page_routes() -> list[Route | Mount]:
     return [Route("/", _page(assets)), Mount("/assets", StaticFiles(directory=assets))]
 
 
-def _required(request: Request, name: str, meaning: str) -> str:
-    value = request.query_params.get(name)
+def _required(query: Mapping[str, str], name: str, meaning: str) -> str:
+    value = query.get(name)
     if not value:
         raise _RefusalError(400, f"{name} is required: {meaning}")
     return value
 
 
+def _run_form(
+    launcher: Launcher,
+    records: Callable[[Path], tuple[SimRun, ...]],
+    worktree: Path,
+    query: Mapping[str, str],
+) -> dict[str, Any]:
+    """The form route's answer: the values given are every parameter that is not the route's own."""
+    kind = _required(query, "kind", "flow or specialist")
+    name = _required(query, "name", "name a built-in Flow or Specialist")
+    given = {key: value for key, value in query.items() if key not in {"worktree", "kind", "name"}}
+    return web_run.form(launcher, worktree, kind, name, given, lambda: records(worktree))
+
+
 def _run_routes(
     main: Path, booley_dir: Path, reader: JobReader, lock: threading.Lock, features: frozenset[str]
 ) -> list[Route]:
-    """The ``/api/run/*`` routes while the Feature Flag is on, else none; read fresh per request."""
+    """The ``/api/run/*`` routes while the Feature Flag is on, else none.
+
+    Each accepts the worktree first, so its refusals are the snapshot's, then reads its own
+    parameters.
+    """
     if not feature_enabled("web-run-panel", features):
         return []
     launcher = Launcher(booley_dir)
     targets = TargetsReader(main)
 
-    def answer(request: Request, read: Callable[[Path], dict[str, Any]]) -> Response:
-        worktree, _branch = _accepted_worktree(main, request.query_params.get("worktree"))
-        try:
-            return JSONResponse(read(worktree))
-        except LookupError as exc:
-            raise _RefusalError(404, str(exc)) from exc
+    def records(worktree: Path) -> tuple[SimRun, ...]:
+        with lock:  # the Job reader's artifact cache is shared
+            return finished_sim_runs(reader, worktree)
 
-    def entries(request: Request) -> Response:
-        return answer(request, lambda worktree: web_run.entries(launcher, worktree))
+    reads: dict[str, Callable[[Path, Mapping[str, str]], dict[str, Any]]] = {
+        "entries": lambda worktree, _query: web_run.entries(launcher, worktree),
+        "targets": lambda worktree, query: web_run.targets(
+            launcher, targets, worktree, _required(query, "flow", "name a built-in Flow")
+        ),
+        "tests": lambda worktree, query: web_run.tests(
+            targets, worktree, _required(query, "target", "pass a Target selector")
+        ),
+        "form": lambda worktree, query: _run_form(launcher, records, worktree, query),
+    }
 
-    def flow_targets(request: Request) -> Response:
-        flow = _required(request, "flow", "name a built-in Flow")
-        return answer(request, lambda worktree: web_run.targets(launcher, targets, worktree, flow))
+    def served(
+        read: Callable[[Path, Mapping[str, str]], dict[str, Any]],
+    ) -> Callable[[Request], Response]:
+        def route(request: Request) -> Response:
+            worktree, _branch = _accepted_worktree(main, request.query_params.get("worktree"))
+            try:
+                return JSONResponse(read(worktree, request.query_params))
+            except web_run.UnknownEntryError as exc:
+                raise _RefusalError(404, str(exc)) from exc
 
-    def tests(request: Request) -> Response:
-        selector = _required(request, "target", "pass a Target selector")
-        return answer(request, lambda worktree: web_run.tests(targets, worktree, selector))
+        return route
 
-    def form(request: Request) -> Response:
-        kind = _required(request, "kind", "flow or specialist")
-        name = _required(request, "name", "name a built-in Flow or Specialist")
-        given = {
-            key: value
-            for key, value in request.query_params.items()
-            if key not in {"worktree", "kind", "name"}
-        }
-
-        def read(worktree: Path) -> dict[str, Any]:
-            def records() -> tuple[SimRun, ...]:
-                with lock:  # the Job reader's artifact cache is shared
-                    return finished_sim_runs(reader, worktree)
-
-            return web_run.form(launcher, worktree, kind, name, given, records)
-
-        return answer(request, read)
-
-    return [
-        Route("/api/run/entries", entries),
-        Route("/api/run/targets", flow_targets),
-        Route("/api/run/tests", tests),
-        Route("/api/run/form", form),
-    ]
+    return [Route(f"/api/run/{name}", served(read)) for name, read in reads.items()]
 
 
 def create_app(

@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from booley.config.feature_flags import enabled_features
 from booley.harness import booley as tlr
-from booley.harness.dashboard import launch, run_form
+from booley.harness.dashboard import launch, run_form, web_run
 from tests.harness import test_dashboard_web as web_tests
 from tests.harness.test_dashboard_run import FLOW_NAMES, write_config, write_picker_project
 from tests.harness.test_dashboard_run_pickers import SIM_FIFO_RUNS, TARGETS_BY_FLOW
@@ -150,8 +150,10 @@ def test_run_routes_refuse_an_unaccepted_worktree_like_the_snapshot(
             expected = client.get("/api/snapshot", params=params)
             assert expected.status_code == status
             for route, extra in ROUTES.items():
-                answer = client.get(f"/api/run/{route}", params={**params, **extra})
-                assert (answer.status_code, answer.json()) == (status, expected.json())
+                # The worktree is refused before the route's own parameters are read.
+                for given in (extra, {}):
+                    answer = client.get(f"/api/run/{route}", params={**params, **given})
+                    assert (answer.status_code, answer.json()) == (status, expected.json())
 
 
 def test_run_routes_are_unknown_while_the_flag_is_off(world, feature_flags):
@@ -211,3 +213,33 @@ def test_run_routes_refuse_unknown_entries_and_missing_parameters(
 
     assert answer.status_code == status
     assert list(answer.json()) == ["error"]
+
+
+def test_a_read_that_fails_is_the_problem_not_a_server_error(world, feature_flags, monkeypatch):
+    # A Booley Directory the layout rules refuse: the readers raise instead of listing a problem.
+    (world.wt / "booley.toml").write_bytes(b"[project]\ndir = '.booley_project'\n")
+    with _client(world, feature_flags) as client:
+        listing = _get(client, "targets", world.wt, flow="sim")
+        tests = _get(client, "tests", world.wt, target="sim_fifo")
+        monkeypatch.setattr(launch.Launcher, "form", _crash)
+        built = _get(client, "form", world.wt, kind="specialist", name="reviewer")
+
+    assert listing["targets"] == [] and listing["problem"]
+    assert tests["runs"] == [] and tests["problem"].startswith("Tests unavailable: ")
+    assert built == {"kind": "specialist", "problem": "RuntimeError: cannot build"}
+
+
+def _crash(*_args):
+    raise RuntimeError("cannot build")
+
+
+def test_a_coverage_records_read_that_fails_lists_none(world, feature_flags, monkeypatch):
+    def crash(*_args):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(web_run, "finished_coverage_records", crash)
+    with _client(world, feature_flags) as client:
+        coverage = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
+
+    assert coverage["coverage_records"] == []
+    assert next(f["dest"] for f in coverage["fields"]) == "coverage_record"
