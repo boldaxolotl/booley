@@ -315,6 +315,33 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
     assert stored.read_at is not None
 
 
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_argument_free_poll_finds_the_threads_jobs_from_a_new_agent_process(monkeypatch, client):
+    from booley.mcp.agent_thread import AgentThread
+    from booley.mcp.job_ownership import caller_for
+    from booley.mcp.session_registry import Attribution
+
+    def caller(thread: str, pid: int):
+        process = Attribution(f"pid:ns:{pid}:{pid}", "process", "/w", "wk")
+        agent = AgentThread(client, thread)
+        return caller_for(SERVER, McpRequestContext(attribution=process, agent=agent))
+
+    gates = {"a": asyncio.Event()}
+    gates["a"].set()
+    _gated(monkeypatch, gates)
+
+    async def scenario():
+        jobs = _JobManager(_FakeLifetime())
+        run_id = await _submit(jobs, "a", caller("th-1", 1))
+        other_thread = _all_text(await _poll(jobs, caller("th-2", 3)))
+        return run_id, other_thread, _all_text(await _poll(jobs, caller("th-1", 2)))
+
+    run_id, other_thread, same_thread = asyncio.run(scenario())
+    assert "NOTHING TO WAIT FOR" in other_thread and run_id not in other_thread
+    assert f"Result of job {run_id}" in same_thread
+    assert (_read(run_id).client, _read(run_id).thread) == (client, "th-1")
+
+
 def _stub_http_server(monkeypatch, build=None):
     """Stub everything but the bind and announcement of ``_run_http``; return the served list."""
     monkeypatch.setattr(mcp_server, "_interactive_session_id", lambda: "box")

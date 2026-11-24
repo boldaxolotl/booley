@@ -283,17 +283,20 @@ class JobLifecycle:
         timeout: int,
         *,
         context: CallContext,
-        owner: str | None = None,
+        caller: Caller | None = None,
     ) -> str:
         """Spawn *cmd* as a detached background job and return its run_id.
 
         Always spawns: admission (queue or run) is the child's own slot-store
         claim, not this server's decision. The record lives under the call
-        context's jobs root and names *owner*, the agent that started it.
+        context's jobs root and names *caller*, the agent that started it.
         """
         run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
-        rec.owner = owner
+        if caller is not None:
+            rec.owner = caller.owner
+            if caller.agent is not None:
+                rec.client, rec.thread = caller.agent.client, caller.agent.thread
         self._submitted[run_id] = rec
         self._stamp_context(rec, context)
         self._job_roots[run_id] = context.jobs_root
@@ -574,7 +577,7 @@ class JobLifecycle:
         *,
         context: CallContext,
         wait_seconds: float,
-        owner: str | None = None,
+        caller: Caller | None = None,
         attach: bool = True,
     ) -> JobSubmission:
         """Join identical live work or submit once, then wait within the inline budget.
@@ -585,7 +588,7 @@ class JobLifecycle:
         run_id = (
             attached
             if attached is not None
-            else self.submit(name, cmd, timeout, context=context, owner=owner)
+            else self.submit(name, cmd, timeout, context=context, caller=caller)
         )
         return JobSubmission(await self.poll(run_id, wait_seconds), attached is not None)
 

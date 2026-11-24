@@ -6,10 +6,11 @@ of a linked worktree of the server's repository as its cwd. Every other case
 (main checkout, which is the Sandbox server's cwd; unrelated directory;
 subdirectory; another repository; unreadable or deleted cwd) keeps the server cwd.
 
-The session process is the loopback peer of a non-Codex client (Claude Code's
-own process) or the marked ``booley chat`` Codex launch owner. Ordinary Codex
-(shared daemon, thread identity) and hand-started Codex never route: a daemon's
-cwd belongs to no particular tab.
+A non-Codex client's session process is its loopback peer (Claude Code's own
+process). A Codex caller's checkout is the workspace root in the call's ``_meta``
+``x-codex-turn-metadata.workspaces``, because one shared ``codex app-server``
+serves every thread and its process cwd names no thread. A Codex call whose
+metadata names no workspace is refused with a retry message.
 
 The result only seeds ``McpRequestContext.checkout``; the application then
 treats it exactly like an explicit ``work_dir`` argument.
@@ -24,36 +25,24 @@ from typing import Any
 
 from starlette.requests import Request
 
+from booley.core.boundary import as_dict
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import codex_client, git_checkout_metadata, process_client
-from booley.runtime.booley_dir import resolve_common_booley_dir
-from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.pid import ProcessIdentity
-from booley.runtime.session_activity import valid_thread_id
+
+NO_WORKSPACE_REFUSAL = (
+    "ERROR: Codex named no workspace for this call, so Booley cannot tell which checkout "
+    "it is for. Retry the call, or pass `work_dir`."
+)
 
 
 @dataclass(frozen=True)
 class CallerCheckout:
-    """One call's looked-up peer and the checkout it routes to (``None`` = server cwd)."""
+    """One call's looked-up peer, its checkout (``None`` = server cwd), and any refusal."""
 
     peer: ProcessIdentity | None
     checkout: Path | None
-
-
-def session_process(
-    peer: ProcessIdentity,
-    *,
-    client_name: str,
-    metadata: Mapping[str, Any],
-    proc_root: Path,
-) -> ProcessIdentity | None:
-    """The process whose cwd names the caller's checkout, mirroring session attribution."""
-    if codex_client(client_name, metadata):
-        if not valid_thread_id(metadata.get("threadId")):
-            return None
-        # The handle map lives in Common Booley State; only Codex needs it.
-        return codex_chat_owner(resolve_common_booley_dir(), peer, proc_root=proc_root)
-    return peer if process_client(client_name, peer) else None
+    refusal: str | None = None
 
 
 def process_checkout(
@@ -68,6 +57,11 @@ def process_checkout(
         cwd = Path(str(link_target).removeprefix("\\\\?\\"))
     except OSError:
         return None  # Exited or unreadable process entry.
+    return routable_checkout(cwd, server_cwd=server_cwd)
+
+
+def routable_checkout(cwd: Path, *, server_cwd: Path) -> Path | None:
+    """*cwd* when it is the root of a linked worktree the server can route to, else ``None``."""
     server, caller = git_checkout_metadata(server_cwd), git_checkout_metadata(cwd)
     if server is None or caller is None:
         return None  # Not Git checkouts: nothing to match against.
@@ -84,6 +78,24 @@ def process_checkout(
     return cwd if routable else None
 
 
+def codex_workspaces(metadata: Mapping[str, Any]) -> list[Path]:
+    """The workspace roots a Codex call's turn metadata names (none when absent or odd)."""
+    turn = as_dict(metadata.get("x-codex-turn-metadata"), default={}) or {}
+    return [Path(root) for root in as_dict(turn.get("workspaces"), default={}) or {}]
+
+
+def first_routable_workspace(roots: list[Path], *, server_cwd: Path) -> Path | None:
+    """The first of *roots* that routes; one whose Git marker cannot be read is skipped."""
+    for root in roots:
+        try:
+            routed = routable_checkout(root, server_cwd=server_cwd)
+        except (OSError, ValueError, RuntimeError, UnicodeError):
+            continue
+        if routed is not None:
+            return routed
+    return None
+
+
 def caller_checkout(
     request: Request | None,
     *,
@@ -93,18 +105,17 @@ def caller_checkout(
 ) -> CallerCheckout:
     """Look up the call's peer and the checkout it routes to; any failure routes nowhere."""
     peer = observed_peer(request, proc_root=proc_root)
-    if peer is None:
-        return CallerCheckout(None, None)
     try:
-        process = session_process(
-            peer,
-            client_name=client_name,
-            metadata=metadata,
-            proc_root=proc_root,
-        )
-        if process is None:
-            return CallerCheckout(peer, None)
-        checkout = process_checkout(process, server_cwd=Path.cwd().resolve(), proc_root=proc_root)
+        server_cwd = Path.cwd().resolve()
+        if codex_client(client_name, metadata):
+            roots = codex_workspaces(metadata)
+            if not roots:
+                return CallerCheckout(peer, None, NO_WORKSPACE_REFUSAL)
+            return CallerCheckout(peer, first_routable_workspace(roots, server_cwd=server_cwd))
+        if peer is not None and process_client(client_name, peer):
+            return CallerCheckout(
+                peer, process_checkout(peer, server_cwd=server_cwd, proc_root=proc_root)
+            )
     except (OSError, ValueError, RuntimeError, UnicodeError):
-        return CallerCheckout(peer, None)
-    return CallerCheckout(peer, checkout)
+        return CallerCheckout(peer, None)  # An unreadable lookup keeps the server cwd.
+    return CallerCheckout(peer, None)

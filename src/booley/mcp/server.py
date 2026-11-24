@@ -80,6 +80,7 @@ from booley.mcp import (
     measure_tool,
     peer_checkout,
 )
+from booley.mcp.agent_thread import resolve_agent_thread
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -1356,7 +1357,7 @@ async def _dispatch_async_job(
             mcp_tool_timeout,
             context=context,
             wait_seconds=_job_inline_wait_seconds() if inline_wait is None else inline_wait,
-            owner=None if caller is None else caller.owner,
+            caller=caller,
             attach=attach,
         )
         state = submission.poll
@@ -2134,6 +2135,10 @@ async def _call_application_tool(
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
     caller = await _caller_checkout(context, params)
+    if caller is not None and caller.refusal is not None:
+        return CallToolResult(
+            content=[TextContent(type="text", text=caller.refusal)], is_error=True
+        )
     request = await _observed_request_context(context, params, observer, caller)
     try:
         try:
@@ -2218,7 +2223,8 @@ async def _caller_checkout(
     """Look up the calling agent's checkout for a call that names none.
 
     ``None`` means no lookup was made: no SDK request (stdio, stateless) or an
-    explicit ``work_dir``. Routing never depends on presentation, so this runs
+    explicit ``work_dir``. A Codex call whose metadata names no workspace comes
+    back with ``refusal`` set. Routing never depends on presentation, so this runs
     outside the Session observer and its response budget.
     """
     if context is None or context.request is None or (params.arguments or {}).get("work_dir"):
@@ -2275,7 +2281,8 @@ async def _resolve_observed_request_context(
         caller=caller,
     )
     facts = await observer.resolved(facts)
-    return replace(request, attribution=facts)
+    agent = await resolve_agent_thread(name, meta, facts)
+    return replace(request, attribution=facts, agent=agent)
 
 
 def _application_request_context(

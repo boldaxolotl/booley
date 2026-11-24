@@ -24,6 +24,7 @@ from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.core.resources import package_data_dir
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
+from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.harness.dashboard.web_snapshot import find_report, read_snapshot
 from booley.harness.worktree_list import WorktreeListError, worktree_registrations
 from booley.runtime import job_slots, loopback_http
@@ -107,6 +108,7 @@ def create_app(
     slots = job_slots.slots_dir(booley_dir)
     reader = JobReader(booley_dir, slots_root=slots, proc_root=proc_root)
     sampler = ResourceSampler(cgroup)
+    titles = ThreadTitles()
     lock = threading.Lock()
 
     def snapshot(request: Request) -> Response:
@@ -119,6 +121,7 @@ def create_app(
                 proc_root=proc_root,
                 worktree=worktree,
                 branch=branch,
+                titles=titles,
             )
         return JSONResponse(body)
 

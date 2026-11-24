@@ -6,7 +6,7 @@ Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 st
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from time import monotonic
 from time import time as wall_clock
@@ -21,6 +21,7 @@ from booley.harness.dashboard.jobs import (
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
 from booley.harness.dashboard.sessions import session_key_label
+from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.presentation.report_results import present_job_report
 from booley.runtime import job_records, job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
@@ -44,6 +45,7 @@ def read_snapshot(
     proc_root: Path,
     worktree: Path,
     branch: str | None,
+    titles: ThreadTitles,
 ) -> dict[str, Any]:
     """Read every retained Job once and project the part that belongs to *worktree*."""
     now = wall_clock()
@@ -51,10 +53,16 @@ def read_snapshot(
     resources = sampler.sample(worktree, now=monotonic())
     admission = _admission(jobs, slots, proc_root)
     mine = _worktree_jobs(worktree, jobs)
+    unfinished, finished = _listed(mine)
+    names = titles.resolve(
+        job.record.thread
+        for job in (*unfinished, *finished)
+        if job.record.client == "claude" and job.record.thread
+    )
     return {
         "header": _header(worktree, branch, resources, admission),
-        "now": _now_rows(mine, now),
-        "results": _results(mine, worktree, now),
+        "now": _now_rows(unfinished, now, names),
+        "results": _results(finished, worktree, now, names),
     }
 
 
@@ -161,9 +169,16 @@ def _label(job: JobView) -> str:
     return job.handle or job_prefix(job.record.endpoint) + "?"
 
 
-def _owner(job: JobView) -> str:
-    """``you`` for a Standalone Job (no owning session), else the session's handle or key."""
-    key = job.record.session_key
+def _owner(job: JobView, titles: Mapping[str, str]) -> str:
+    """The title of the thread that started the Job, else its client and a short thread id.
+
+    A Job without a recorded thread is ``you`` when Standalone (no owning session), else
+    its session's handle or key.
+    """
+    record = job.record
+    if record.thread:
+        return titles.get(record.thread) or f"{record.client} · {record.thread[-8:]}"
+    key = record.session_key
     return "you" if not key else session_key_label(job.owner_handle or key)
 
 
@@ -175,16 +190,26 @@ def _finished_at(job: JobView) -> float:
     return parse_timestamp(job.record.ended_at or job.record.started_at).timestamp()
 
 
-def _now_rows(jobs: Sequence[JobView], now: float) -> list[dict[str, Any]]:
+def _listed(jobs: Sequence[JobView]) -> tuple[list[JobView], list[JobView]]:
+    """The unfinished Jobs, newest first, and the newest finished ones listed under Results."""
     unfinished = sorted(
         (job for job in jobs if job.state not in FINISHED_JOB_STATES), key=_started, reverse=True
     )
+    finished = sorted(
+        (job for job in jobs if job.state in FINISHED_JOB_STATES), key=_finished_at, reverse=True
+    )[:MAX_RESULTS]
+    return unfinished, finished
+
+
+def _now_rows(
+    unfinished: Sequence[JobView], now: float, titles: Mapping[str, str]
+) -> list[dict[str, Any]]:
     return [
         {
             "handle": _label(job),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
-            "owner": _owner(job),
+            "owner": _owner(job, titles),
             "state": job.state,
             "stage": job.stage,
             "elapsed_s": job_elapsed_seconds(job, now),
@@ -194,11 +219,10 @@ def _now_rows(jobs: Sequence[JobView], now: float) -> list[dict[str, Any]]:
     ]
 
 
-def _results(jobs: Sequence[JobView], worktree: Path, now: float) -> dict[str, Any]:
-    """The newest finished Jobs, with pass and fail counts over the listed ones."""
-    finished = sorted(
-        (job for job in jobs if job.state in FINISHED_JOB_STATES), key=_finished_at, reverse=True
-    )[:MAX_RESULTS]
+def _results(
+    finished: Sequence[JobView], worktree: Path, now: float, titles: Mapping[str, str]
+) -> dict[str, Any]:
+    """The listed finished Jobs, with pass and fail counts over them."""
     rows: list[dict[str, Any]] = []
     passed = failed = 0
     for job in finished:
@@ -215,7 +239,7 @@ def _results(jobs: Sequence[JobView], worktree: Path, now: float) -> dict[str, A
             "handle": _label(job),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
-            "owner": _owner(job),
+            "owner": _owner(job, titles),
             "result": presentation.flow_word.value,
             "ended_at": job.record.ended_at,
             "duration_s": job_elapsed_seconds(job, now),

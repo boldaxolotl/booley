@@ -6,5 +6,9 @@
     "@anthropic-ai/claude-code-linux-x64": "2.1.329",
     "@openai/codex": "0.171.0",
     "@openai/codex-linux-x64": "npm:@openai/codex@0.171.0-linux-x64"
+  },
+  "t3code": {
+    "version": "0.1.11",
+    "sha256": "2b691c07f5bcb5adea4a863d5324aae7db21bd6d82280cec7787836dcaa013e1"
   }
 }

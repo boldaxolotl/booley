@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
 import shlex
 import shutil
 import sys
+import tarfile
 import tomllib
 import zipfile
 from collections.abc import Iterator
@@ -173,6 +175,16 @@ def _download_runs() -> Iterator[tuple[str, str, str]]:
                 yield name, text, instruction.value
 
 
+def _checksum_value(dockerfile: str, body: str, name: str) -> str:
+    """Return the checksum ``name``: its ``ARG`` default or, for T3 Code, the manifest value."""
+    if f'{name}="$(t3code_pin sha256)"' in body:
+        manifest = json.loads(
+            (_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8")
+        )
+        return str(manifest["t3code"]["sha256"])
+    return dockerfile_syntax.argument_default(dockerfile, name)
+
+
 def test_sandbox_downloads_are_verified_before_use() -> None:
     """Each downloaded file meets its pinned checksum before any later command names it."""
     runs = list(_download_runs())
@@ -189,7 +201,7 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
                 later = next((item for item in segments[index + 1 :] if path in item), "")
                 check = _CHECKSUM.fullmatch(later)
                 assert check is not None and check[2] == path, f"{name}: {path} used unchecked"
-                digest = dockerfile_syntax.argument_default(text, check[1])
+                digest = _checksum_value(text, body, check[1])
                 assert re.fullmatch(r"[0-9a-f]{64}", digest), f"{name}: {check[1]}"
     for name in _SANDBOX_DOCKERFILES:
         text = (_DOCKER_DIR / name).read_text(encoding="utf-8")
@@ -395,26 +407,36 @@ _CLI_VERSION_ALLOWED = (
 )
 
 
+def _stray_files(pattern: str, *, manifest_matches: bool = True) -> list[str]:
+    """Return tracked files outside the allowlist that match ``pattern``."""
+    result = run_bounded_child(
+        ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
+    )
+    assert result.returncode in (0, 1), result.stderr
+    found = result.stdout.splitlines()
+    # The search must see the manifest itself, or an empty match proves nothing.
+    assert manifest_matches == ("src/booley/data/docker/agent-clis-package.json" in found)
+    return [path for path in found if not path.startswith(_CLI_VERSION_ALLOWED)]
+
+
 def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
     """No tracked file outside the allowlist names a pinned CLI version.
 
     Cargo.lock is excluded: Rust crate versions can coincide with a CLI version
-    and cannot hold a CLI pin.
+    and cannot hold a CLI pin. A short T3 Code version also occurs in unrelated
+    files, so only lines that name T3 Code are searched for it.
     """
     manifest = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     for name in ("@anthropic-ai/claude-code", "@openai/codex"):
         version = manifest["dependencies"][name]
         # Digit boundaries stop a version from matching inside a longer one.
-        pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
-        result = run_bounded_child(
-            ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
-        )
-        assert result.returncode in (0, 1), result.stderr
-        found = result.stdout.splitlines()
-        # The search must see the manifest itself, or an empty match proves nothing.
-        assert "src/booley/data/docker/agent-clis-package.json" in found
-        stray = [path for path in found if not path.startswith(_CLI_VERSION_ALLOWED)]
+        stray = _stray_files(rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)")
         assert stray == [], f"{name} {version} is written outside the manifest: {stray}"
+    t3code = manifest["t3code"]
+    assert _stray_files(t3code["sha256"]) == []
+    # The manifest's own version line names no T3, so it is not among the hits.
+    version_on_t3_line = rf"[Tt]3.*(^|[^0-9.]){re.escape(t3code['version'])}([^0-9]|$)"
+    assert _stray_files(version_on_t3_line, manifest_matches=False) == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the build check needs a POSIX shell")
@@ -424,7 +446,7 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
     checks = [
         instruction.value
         for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
-        if instruction.keyword == "RUN" and manifest_path in instruction.value
+        if instruction.keyword == "RUN" and "agent_cli_pin" in instruction.value
     ]
     assert len(checks) == 1, "exactly one RUN must compare the installed CLIs with the manifest"
 
@@ -456,6 +478,77 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
     assert exit_code("9.9.9", "8.8.8") == 0
     assert exit_code("9.9.8", "8.8.8") != 0, "claude mismatch must fail the build"
     assert exit_code("9.9.9", "8.8.7") != 0, "codex mismatch must fail the build"
+
+
+_T3_STUB = """#!/bin/sh
+echo "$NODE_USE_ENV_PROXY $*" >> "$T3_LOG"
+case "$1" in
+  --version) echo "t3 v9.9.9";;
+  policy) test -z "$T3_REFUSE" || exit 77;;
+esac
+"""
+_SANDBOX_PATHS = re.compile(r"(?<![\w.:-])(?=/(?:tmp/|opt/|usr/local/|etc/t3code))")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the build steps need a POSIX shell")
+@pytest.mark.parametrize("case", ["good", "checksum", "policy-refused"])
+def test_t3code_install_verifies_the_manifest_pin(tmp_path: Path, case: str) -> None:
+    """Run the shipped install and policy steps against a fixture manifest and tarball."""
+    runs = [
+        instruction.value
+        for instruction in logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+        if instruction.keyword == "RUN"
+    ]
+    install = next((run for run in runs if "/tmp/t3code.tar.gz" in run), "")
+    policy = next((run for run in runs if "t3 policy check" in run), "")
+    assert install, "Dockerfile.base never installs T3 Code"
+    assert policy, "Dockerfile.base never checks the T3 Code policy"
+    tarball = tmp_path / "fixture.tar.gz"
+    with tarfile.open(tarball, "w:gz") as archive:
+        stub = tarfile.TarInfo("t3-9.9.9-linux-x64/t3")
+        stub.mode = 0o755
+        stub.size = len(_T3_STUB)
+        archive.addfile(stub, io.BytesIO(_T3_STUB.encode()))
+    digest = "0" * 64 if case == "checksum" else hashlib.sha256(tarball.read_bytes()).hexdigest()
+    root = tmp_path / "root"
+    manifest = root / "opt/agent-clis/package.json"
+    policy_file = root / "etc/t3code/policy.json"
+    bin_dir = root / "usr/local/bin"
+    for path in (manifest.parent, policy_file.parent, bin_dir, root / "tmp"):
+        path.mkdir(parents=True)
+    manifest.write_text(json.dumps({"t3code": {"version": "9.9.9", "sha256": digest}}))
+    policy_file.write_text("{}")
+    (bin_dir / "python3").symlink_to(sys.executable)
+    env = {
+        **{key: value for key, value in os.environ.items() if key != "NODE_USE_ENV_PROXY"},
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FIXTURE": str(tarball),
+        "URL_LOG": str(tmp_path / "url"),
+        "T3_LOG": str(tmp_path / "t3.log"),
+        "T3_REFUSE": "1" if case == "policy-refused" else "",
+    }
+    # Substitute the network download only; run the shipped verification commands.
+    curl = (
+        'curl() { for a; do case "$a" in https://*) echo "$a" > "$URL_LOG";; esac; out="$a"; done;'
+        ' cp "$FIXTURE" "$out"; }; '
+    )
+
+    def run(body: str) -> int:
+        body = _SANDBOX_PATHS.sub(str(root), body)
+        return run_bounded_child(["sh", "-c", curl + body], env=env).returncode
+
+    installed = run(install) == 0
+    checked = installed and run(policy) == 0
+    assert (installed, checked) == {
+        "good": (True, True),
+        "checksum": (False, False),
+        "policy-refused": (True, False),
+    }[case]
+    assert (root / "opt/t3code").exists() == installed
+    if case == "good":
+        url = (tmp_path / "url").read_text().strip()
+        assert url.endswith("/v9.9.9/t3-9.9.9-linux-x64.tar.gz")
+        assert f"1 policy check {policy_file}" in (tmp_path / "t3.log").read_text().splitlines()
 
 
 def test_openroad_uses_verified_oci_artifact() -> None:

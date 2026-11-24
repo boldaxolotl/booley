@@ -3,19 +3,21 @@ schema = 1
 # Exact-byte ceilings retain roughly 10% headroom above the clean runtime
 # candidates (measured 2026-09-04, re-measured 2026-11-12 after the agent CLI
 # bump, whose native Claude Code binary grew by about 100 MB, and 2026-11-24
-# after adding headless Chrome: about 300 MB unpacked and 122 MB compressed in
-# each image). Every ceiling remains below the committed 0.2.10 control (the
-# RISC-V local-size ceiling by little: it stops under the control), so
-# accidental restoration of the OpenROAD development tree, Rust toolchain,
-# duplicate CLIs, or unstripped artifacts fails before promotion.
+# after adding T3 Code (about 500 MB unpacked and 186 MB compressed) and headless
+# Chrome (about 300 MB unpacked and 122 MB compressed in each image). Every
+# ceiling remains below the committed 0.2.10 control, so accidental restoration
+# of the OpenROAD development tree, Rust toolchain, duplicate CLIs, or unstripped
+# artifacts fails before promotion. The RISC-V docker_local_size_bytes stays
+# below that control (a test pins it), so its headroom over T3 Code and Chrome is
+# under 10%.
 [images.sandbox]
-registry_compressed_layer_bytes = 2_215_000_000
-docker_local_size_bytes = 3_830_000_000
-unpacked_layer_history_bytes = 4_380_000_000
-merged_visible_filesystem_bytes = 3_810_000_000
+registry_compressed_layer_bytes = 2_420_000_000
+docker_local_size_bytes = 4_385_000_000
+unpacked_layer_history_bytes = 4_935_000_000
+merged_visible_filesystem_bytes = 4_365_000_000
 
 [images.riscv]
-registry_compressed_layer_bytes = 2_710_000_000
+registry_compressed_layer_bytes = 2_915_000_000
 docker_local_size_bytes = 5_500_000_000
-unpacked_layer_history_bytes = 6_225_000_000
-merged_visible_filesystem_bytes = 5_645_000_000
+unpacked_layer_history_bytes = 6_780_000_000
+merged_visible_filesystem_bytes = 6_200_000_000
