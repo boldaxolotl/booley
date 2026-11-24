@@ -33,11 +33,11 @@ _GUIDANCE = (
 class _RecordingOutput:
     def __init__(self) -> None:
         self._condition = threading.Condition()
-        self._written = ""
+        self._captured = ""
 
     def write(self, text: str) -> int:
         with self._condition:
-            self._written += text
+            self._captured += text
             self._condition.notify_all()
         return len(text)
 
@@ -46,12 +46,12 @@ class _RecordingOutput:
 
     def wait_for(self, text: str, timeout: float = hang_guard_s()) -> bool:
         with self._condition:
-            return self._condition.wait_for(lambda: text in self._written, timeout=timeout)
+            return self._condition.wait_for(lambda: text in self._captured, timeout=timeout)
 
     @property
     def text(self) -> str:
         with self._condition:
-            return self._written
+            return self._captured
 
 
 class _BrokenOutput:
