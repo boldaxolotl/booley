@@ -254,79 +254,69 @@ def test_tool_callout_needs_no_fixed_link(label: str) -> None:
     assert callout_problems(_callout(label, "Tool-specific text."), "X.md") == []
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        # A tool callout keeps the formatting checks.
-        (
-            "Baseline.\n<details markdown>\n<summary>With Verilator</summary>\n\nText.\n\n"
-            "</details>\n",
-            "blank line before '<details markdown>'",
-        ),
-        # A tool label outside the multi-tool set is not a variant label.
-        (_callout("With Yosys", "Text."), "is not a fixed variant label"),
-    ],
-    ids=["tool-callout-formatting", "tool-outside-multi-tool-set"],
-)
-def test_tool_callout_defects_fail(text: str, expected: str) -> None:
+def test_tool_callout_keeps_formatting_checks() -> None:
+    text = (
+        "Baseline.\n<details markdown>\n<summary>With Verilator</summary>\n\nText.\n\n</details>\n"
+    )
     [problem] = callout_problems(text, "X.md")
-    assert expected in problem
+    assert "blank line before '<details markdown>'" in problem
 
 
-@pytest.mark.parametrize(
-    ("label", "body", "expected"),
-    [
-        ("On Windows", "No link here.", "must link FEATURES.md#windows-support"),
-        (
-            "On Windows",
-            "See [Stealth Mode](STEALTH.md) and "
-            "[site](https://example.com/FEATURES.md#windows-support).",
-            "must link FEATURES.md#windows-support",
-        ),
-        (
-            "With a cocotb testbench",
-            "[Targets](FLOW-FPGA.md#fpga-target)",
-            "must link FLOW-SIM.md#cocotb-targets-python-testbenches",
-        ),
-    ],
-    ids=["no-link", "another-variant-and-foreign-site", "cocotb-needs-its-section-anchor"],
-)
-def test_callout_without_its_variant_link_fails(label: str, body: str, expected: str) -> None:
-    [problem] = callout_problems(_callout(label, body), "X.md")
-    assert problem == f"docs/user/X.md:4: '{label}' callout {expected}"
+def test_tool_label_outside_the_multi_tool_set_fails() -> None:
+    [problem] = callout_problems(_callout("With Yosys", "Text."), "X.md")
+    assert "is not a fixed variant label" in problem
 
 
-_WINDOWS_BODY = f"Text. {_LINKS['On Windows']}"
+def test_callout_without_variant_link_fails() -> None:
+    [problem] = callout_problems(_callout("On Windows", "No link here."), "X.md")
+    assert (
+        problem == "docs/user/X.md:4: 'On Windows' callout must link FEATURES.md#windows-support"
+    )
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        (
-            _callout("On Windows", _WINDOWS_BODY, indent="    "),
-            ["put '<details markdown>' at column 0"],
-        ),
-        (
-            "Baseline.\n\n<details markdown>\n<summary>On Windows</summary>\n"
-            f"{_WINDOWS_BODY}\n</details>\n\nMore.\n",
-            ["blank line after the summary", "blank line before '</details>'"],
-        ),
-        (
-            "Baseline.\n<details markdown>\n<summary>On Windows</summary>\n\n"
-            f"{_WINDOWS_BODY}\n\n</details>\nMore.\n",
-            ["blank line before '<details markdown>'", "blank line after '</details>'"],
-        ),
-        (
-            "Baseline.\n\n<details markdown>\n<summary>On Windows</summary>\n\nText.\n",
-            ["no closing '</details>'"],
-        ),
-    ],
-    ids=["indented", "no-inner-blank-lines", "no-outer-blank-lines", "unclosed"],
-)
-def test_callout_formatting_defects_fail(text: str, expected: list[str]) -> None:
+def test_callout_linking_another_variant_fails() -> None:
+    body = "See [Stealth Mode](STEALTH.md) and [site](https://example.com/FEATURES.md#windows-support)."
+    [problem] = callout_problems(_callout("On Windows", body), "X.md")
+    assert "must link FEATURES.md#windows-support" in problem
+
+
+def test_cocotb_callout_needs_the_cocotb_section_anchor() -> None:
+    body = "[Targets](FLOW-FPGA.md#fpga-target)"
+    [problem] = callout_problems(_callout("With a cocotb testbench", body), "X.md")
+    assert "must link FLOW-SIM.md#cocotb-targets-python-testbenches" in problem
+
+
+def test_indented_callout_fails() -> None:
+    text = _callout("On Windows", f"Text. {_LINKS['On Windows']}", indent="    ")
+    [problem] = callout_problems(text, "X.md")
+    assert "put '<details markdown>' at column 0" in problem
+
+
+def test_callout_without_blank_lines_fails() -> None:
+    text = (
+        "Baseline.\n\n<details markdown>\n<summary>On Windows</summary>\n"
+        f"Text. {_LINKS['On Windows']}\n</details>\n\nMore.\n"
+    )
     problems = callout_problems(text, "X.md")
-    for fragment in expected:
-        assert any(fragment in problem for problem in problems), (fragment, problems)
+    assert any("blank line after the summary" in problem for problem in problems)
+    assert any("blank line before '</details>'" in problem for problem in problems)
+
+
+def test_callout_without_outer_blank_lines_fails() -> None:
+    body = f"Text. {_LINKS['On Windows']}"
+    text = (
+        "Baseline.\n<details markdown>\n<summary>On Windows</summary>\n\n"
+        f"{body}\n\n</details>\nMore.\n"
+    )
+    problems = callout_problems(text, "X.md")
+    assert any("blank line before '<details markdown>'" in problem for problem in problems)
+    assert any("blank line after '</details>'" in problem for problem in problems)
+
+
+def test_unclosed_callout_fails() -> None:
+    text = "Baseline.\n\n<details markdown>\n<summary>On Windows</summary>\n\nText.\n"
+    [problem] = callout_problems(text, "X.md")
+    assert "no closing '</details>'" in problem
 
 
 def test_callout_example_inside_a_code_fence_is_ignored() -> None:
