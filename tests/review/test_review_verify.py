@@ -90,6 +90,37 @@ def assert_waivers(
     assert by_id[ids[ENABLE]]["ruling"] == (None if errored else "the reason holds")
 
 
+def commit_source(root: Path, text: str, message: str) -> str:
+    """Commit only ``rtl/a.sv``: the stored Review Runs stay out of the branch."""
+    write(root / "rtl" / "a.sv", text)
+    git(root, "add", "rtl/a.sv")
+    return commit_all(root, message, staged_only=True)
+
+
+def stored_markdown(root: Path, commit: str, run: dict[str, Any]) -> str:
+    """The Markdown report stored beside the JSON of *run*."""
+    path = root / ".booley" / "reviews" / commit / f"{run['run_id']}.md"
+    return path.read_text(encoding="utf-8")
+
+
+def assert_sections(
+    shown: str, scenario: str, ids: dict[str, str], fixed_line_shown: bool
+) -> None:
+    """The report prints Waivers, Needs you and Fixed in that order, each when it has lines."""
+    expected = {
+        "leaves-one-open": ["Waivers", "Needs you", "Fixed"],
+        "clears-all": ["Waivers", "Fixed"],
+        "reviewer-error": ["Waivers", "Needs you"],
+    }[scenario]
+    titles = [title for title in ("Waivers", "Needs you", "Fixed") if title in shown]
+    assert titles == expected
+    assert [shown.index(title) for title in titles] == sorted(shown.index(t) for t in titles)
+    assert fixed_line_shown == (scenario != "reviewer-error")
+    assert (f"blocking: {NAMING}" in shown) == (scenario != "clears-all")
+    assert (f"blocking: {ENABLE}" in shown) == (scenario == "reviewer-error")
+    assert (f"blocking: {RESET}" in shown) == (scenario == "reviewer-error")
+
+
 @pytest.mark.parametrize(
     ("scenario", "exit_code", "statuses", "accepted", "status_exit"),
     [
@@ -175,12 +206,10 @@ def test_verify_rechecks_open_findings_and_links_its_discovery_run(
     assert {row["summary"]: row["status"] for row in rtl["introduced"]} == statuses
     assert_waivers(rtl["waivers"], ids, accepted, errored=exit_code == 2)
     out = capsys.readouterr()
-    assert (f"{ids[RESET]} rtl/a.sv:2 {RESET}: fixed" in out.out) == (exit_code != 2)
-    assert (f"{ids[ENABLE]} rtl/a.sv:3 {ENABLE}: waived" in out.out) == (exit_code != 2)
+    fixed = f"`{ids[RESET]}` rtl/a.sv:2 MAJOR fixed in `{first_fix[:12]}`, `{second_fix[:12]}`"
+    assert_sections(out.out, scenario, ids, fixed in out.out)
     assert ("re-check failed" in out.err) == (exit_code == 2)
-    assert (f"{ids[NAMING]} rtl/a.sv:4 {NAMING}: still open" in out.out) == (
-        scenario == "leaves-one-open"
-    )
+    assert "## Waivers" in stored_markdown(root, second_fix, verify)
     assert len(stored_runs(root, first)) == 1
     assert review(monkeypatch, root, "--status", second_fix) == status_exit
     assert ("not Reviewed" in capsys.readouterr().out) == bool(status_exit)
@@ -349,3 +378,35 @@ def test_the_latest_verify_run_decides_and_a_bad_run_is_an_error(
 
     assert review(monkeypatch, root, "--status", first) == 2
     assert "0-broken.json cannot be read" in capsys.readouterr().err
+
+
+def test_the_report_chains_earlier_verify_runs_of_ancestors_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_flags: FeatureFlagHelper,
+    agent: ScriptedAgent,  # noqa: F811
+) -> None:
+    """AC4: the report of a fix lists the waivers of its ancestors' verify runs, not a sibling's."""
+    root, _first, run = discovered(
+        tmp_path, monkeypatch, feature_flags, agent, {"issues": [finding(summary=RESET, line=2)]}
+    )
+    finding_id = ids_of(run)[RESET]
+    refused: Any = {"verdicts": [verdict(finding_id, "still_open", "weak")]}
+    agent.answer([refused])
+    assert review(monkeypatch, root, "--verify", "--waive", finding_id, "first reason") == 1
+    git(root, "checkout", "-q", "-b", "side")
+    sibling = commit_source(root, FIX_1, "Side work")
+    agent.answer([refused])
+    assert review(monkeypatch, root, "--verify", "--waive", finding_id, "sibling reason") == 1
+    git(root, "checkout", "-q", "feature")
+    fix = commit_source(root, FIX_2, "Fix on the feature branch")
+    agent.answer([{"verdicts": [verdict(finding_id, "fixed")]}])
+
+    assert review(monkeypatch, root, "--verify") == 0
+
+    (stored,) = stored_runs(root, fix)
+    report = stored_markdown(root, fix, stored)
+    assert "first reason" in report.split("## Waivers")[1]
+    assert "sibling reason" not in report
+    assert f"fixed in `{fix[:12]}`:" in report
+    assert sibling[:12] not in report

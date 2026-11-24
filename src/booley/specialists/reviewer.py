@@ -117,6 +117,13 @@ SEVERITY_MAJOR = "MAJOR"
 SEVERITY_MINOR = "MINOR"
 # ``--fail-on`` compares open findings by this rank: higher is more severe.
 _SEVERITY_RANK = {SEVERITY_MINOR: 1, SEVERITY_MAJOR: 2, SEVERITY_CRITICAL: 3}
+
+
+def at_or_above(severity: str, threshold: str) -> bool:
+    """Whether *severity* is at or above *threshold*; an unknown severity ranks below all."""
+    return _SEVERITY_RANK.get(severity.upper(), 0) >= _SEVERITY_RANK[threshold.upper()]
+
+
 ALL_SEVERITIES = frozenset({SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR})
 _SEVERITY_TAG = {SEVERITY_CRITICAL: "C", SEVERITY_MAJOR: "M", SEVERITY_MINOR: "m"}
 
@@ -1692,13 +1699,9 @@ object, even after calling the capability.
         fail_on = getattr(self.args, "fail_on", None)
         if fail_on is None:
             return EXIT_SUCCESS
-        threshold = _SEVERITY_RANK[fail_on.upper()]
         return (
             EXIT_FAILURE
-            if any(
-                _SEVERITY_RANK.get(severity.upper(), 0) >= threshold
-                for severity in open_severities
-            )
+            if any(at_or_above(severity, fail_on) for severity in open_severities)
             else EXIT_SUCCESS
         )
 
