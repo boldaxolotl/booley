@@ -46,25 +46,21 @@ def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> No
 def answer_doctor_commands(
     monkeypatch: pytest.MonkeyPatch,
     answer: Callable[[list[str], dict[str, str]], subprocess.CompletedProcess[str] | None],
-) -> list[tuple[list[str], dict[str, str]]]:
+) -> None:
     """Answer Doctor's commands with ``answer(argv, env)``; ``None`` passes one on.
 
     Layers over the fake already installed (``serve_healthy_doctor_host`` or
     ``_patch_environment``), so a test answers only the commands it is about.
-    Returns every ``(argv, env)`` seen.
     """
-    seen: list[tuple[list[str], dict[str, str]]] = []
     other_commands = subprocess.run
 
     def run(command, **kwargs):
         argv = [str(part) for part in command]
         env = dict(kwargs.get("env") or {})
-        seen.append((argv, env))
         answered = answer(argv, env)
         return answered if answered is not None else other_commands(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
-    return seen
 
 
 def answer_agent_calls(

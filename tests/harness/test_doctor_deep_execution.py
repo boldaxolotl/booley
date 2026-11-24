@@ -661,8 +661,8 @@ def test_session_up_reports_deep_once_through_all_health_branches(
 ):
     from booley.harness import booley as cli
 
-    # Private: `main()` would resolve the host Session context through Docker first, so the test
-    # enters the session step directly, as `tests/harness/test_booley.py` does.
+    # The Sandbox start and the three health reads below are replaced because the session step
+    # reaches them only through Docker and the host's health log, which a test cannot provide.
     monkeypatch.setattr(
         doctor.session_runtime,
         "ensure",
@@ -681,6 +681,8 @@ def test_session_up_reports_deep_once_through_all_health_branches(
         return_value=deep.evaluate_deep_status(None, version=booley.__version__, image_id=IMAGE)
     )
     monkeypatch.setattr(doctor, "observe_deep_status", observe)
+    # Private: `main()` would resolve the host Session context through Docker first, so the test
+    # enters the session step directly, as `tests/harness/test_booley.py` does.
     assert cli._session_up(argparse.Namespace(), tmp_path) == 0
     assert capsys.readouterr().out.count("deep Doctor due:") == 1
     observe.assert_called_once_with(tmp_path, container="sandbox")

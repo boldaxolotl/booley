@@ -326,6 +326,38 @@ def test_sim_bad_case_accepts_the_unselected_test_identity(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
+    ("selected", "test", "variant", "accepted"),
+    [
+        ("cocotb_test", "cocotb_test", None, True),
+        ("hello_world+fast", "hello_world", "fast", True),
+        ("hello_world+fast", "hello_world", "slow", False),
+    ],
+    ids=["test", "test-and-variant", "other-variant"],
+)
+def test_sim_bad_case_grades_the_selected_test_and_variant(
+    tmp_path, monkeypatch, selected, test, variant, accepted
+):
+    """The bad case is graded on the run carrying the selected Test and its Variant."""
+    booley_dir = _setup(tmp_path, monkeypatch, tests=None)
+    # A selector with a Variant is not a tests.toml entry; the legacy registry carries it.
+    (booley_dir / "configs.toml").write_text(
+        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\n'
+        f"tests = [{json.dumps(selected)}]\n",
+        encoding="utf-8",
+    )
+
+    def on_bad(_argv, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_simulation_failure_report(test=test, variant=variant)))
+
+    result, launches = _deep_run(booley_dir, monkeypatch, on_bad)
+
+    assert [argv[argv.index("--test") + 1] for _f, _k, argv, _p in launches] == [selected] * 2
+    assert _sim_rows(result)[1:] == [("pass", None) if accepted else _UNVALIDATED]
+    assert ("sim.selftest.bad" in _reasons(booley_dir)) is not accepted
+
+
+@pytest.mark.parametrize(
     ("case", "hints"),
     [
         ("sim", (".booley/selftest/sim/bad-overlay/", "Footprint:")),
