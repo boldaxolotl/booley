@@ -1427,6 +1427,7 @@ def test_completed_target_survives_later_matrix_crash(
     tmp_path: Path, vivado: dict, monkeypatch: pytest.MonkeyPatch, signalled: bool
 ) -> None:
     _write_project_config(tmp_path)
+    vivado["parsed"] = {"lut_count": 1, "ff_count": 1}  # no timing: the completion line omits it
     flow = _fpga_flow(tmp_path, targets="fpga_a,fpga_b")
     run_target = flow._run_single_target
     published: list[dict[str, object]] = []
