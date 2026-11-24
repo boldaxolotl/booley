@@ -202,6 +202,7 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
         assert (settings.default_cli, settings.auth_for(app)) == (app, policy)
     findings = _doctor_findings(_VISITOR_PROJECT)
     assert [f.message for f in findings if f.severity.value == "fail"] == []
+    assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == []
     assert _audited_clis(findings) == set(clis)
     assert _graded_on_the_gateway(findings) == (policy == "gateway")
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
