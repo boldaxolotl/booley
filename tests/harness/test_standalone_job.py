@@ -14,9 +14,10 @@ import pytest
 
 from booley.harness import booley as cli
 from booley.harness.dashboard.jobs import JobReader
-from booley.mcp.registry import McpToolInfo
+from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 from booley.runtime import job_records
 from booley.runtime.handles import job_handle_expired
+from booley.runtime.pid import DEAD, ProcessIdentity, ProcessObservation
 from tests.conftest import symlink_or_skip
 from tests.time_budget import hang_guard_s
 
@@ -31,54 +32,95 @@ CHILD_TIMEOUT_S = 2 * hang_guard_s()
 # fails with the child's output.
 CHILD_WAIT_S = hang_guard_s()
 
+# A real Project endpoint file per kind, discovered and loaded by the CLI like a user's own. Its
+# ``main`` prints on both streams, records the run id it ran under in ``$STUB_SEEN``, then acts
+# on ``--outcome``: an exit code, ``crash``, ``interrupt``, ``usage``, ``clean``, ``message``, or
+# ``block`` (sleep ``$STUB_BLOCK_S`` seconds).
+STUB = """
+import os, sys, time
+from pathlib import Path
+from {module} import {base}
 
-class StubEndpoint:
-    """A Flow or Specialist stand-in that prints on both streams and exits with ``outcome``."""
+OUTCOMES = dict(
+    crash=RuntimeError("boom"), interrupt=KeyboardInterrupt(), usage=SystemExit(2),
+    clean=SystemExit(None), message=SystemExit("msg"),
+)
 
+def run(argv):
+    print("\\x1b[31mred\\x1b[0m line")
+    print("err line", file=sys.stderr, flush=True)
+    Path(os.environ["STUB_SEEN"]).write_text(os.environ.get("BOOLEY_RUN_ID", ""), encoding="utf-8")
+    outcome = argv[argv.index("--outcome") + 1] if "--outcome" in argv else "0"
+    if outcome == "block":
+        time.sleep(float(os.environ["STUB_BLOCK_S"]))
+        return 0
+    if outcome in OUTCOMES:
+        raise OUTCOMES[outcome]
+    return int(outcome)
+
+class Stub({base}):
     name = "stub"
-    outcome: object = 0
-    seen_run_id: str | None = None
+    description = "Standalone Job fixture"
+{abstract}
+    def main(self, argv, **_kwargs):
+        return run(argv)
+"""
+KINDS = {
+    "flow": (
+        "booley.flows.base",
+        "BooleyFlow",
+        "    def _add_args(self, parser): pass\n    def _run(self): raise AssertionError\n",
+    ),
+    "specialist": (
+        "booley.specialists.specialist",
+        "Specialist",
+        "    def _build_prompt(self): return ''\n    def _interpret_output(self, *_): return None\n",
+    ),
+}
 
-    def main(self, argv):
-        type(self).seen_run_id = os.environ.get("BOOLEY_RUN_ID")
-        print("\x1b[31mred\x1b[0m line")
-        print("err line", file=sys.stderr)
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        return self.outcome
 
-
-@pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
-    """A shell run starts outside any Job and outside any MCP transport."""
-    monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
-    monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
-    StubEndpoint.outcome = 0
-    StubEndpoint.seen_run_id = None
+def write_project(root: Path, booley_dir: Path) -> None:
+    """Fill *booley_dir* with one Flow and one Specialist endpoint, mark *root* a Project, enter it."""
+    tools = booley_dir / "mcp_tools"
+    tools.mkdir(parents=True)
+    for kind, (module, base, abstract) in KINDS.items():
+        source = STUB.format(module=module, base=base, abstract=abstract)
+        (tools / f"stub_{kind}.py").write_bytes(source.encode("utf-8"))
+    (root / ".git").mkdir(exist_ok=True)
+    os.chdir(root)
 
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    """A Project directory with its Booley Directory."""
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    """A Project in a Sandbox, with its Booley Directory and a shell run outside any Job."""
+    for name in ("BOOLEY_DIR", "BOOLEY_RUN_ID", "RTL_PROJECT_ROOT"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+    monkeypatch.setenv("STUB_SEEN", str(tmp_path / "seen"))
+    # The real CLI reads per-user config: keep it away from the developer's own home.
+    for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(name, str(tmp_path / "home"))
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)  # ``main`` replaces it on Ctrl-C
+    monkeypatch.chdir(tmp_path)  # restored on teardown, whatever ``write_project`` enters
     root = tmp_path / "proj"
-    (root / ".booley").mkdir(parents=True)
+    root.mkdir()
+    write_project(root, root / ".booley")
     return root
 
 
-def command(argv):
-    parser = cli._build_parser()
-    return cli._normalize_args(parser, parser.parse_args(argv))
+def booley(monkeypatch, *argv):
+    """Run ``booley <argv>`` through the real ``main`` and return its exit code."""
+    monkeypatch.setattr(sys, "argv", ["booley", *argv])
+    return cli.main()
 
 
-def shell_run(monkeypatch, project, kind, argv=("--target", "t1"), make=StubEndpoint):
-    """Run ``booley <kind> stub <argv>`` through the real CLI dispatch with *make* as the endpoint."""
-    info = McpToolInfo(name="stub", path="stub.py", description="stub", kind=kind)
-    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
-    monkeypatch.setattr("booley.mcp.registry.discover_mcp_tools", lambda **_kw: [info])
-    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: make)
-    run = cli._cmd_flow if kind == "flow" else cli._cmd_specialist
-    return run(command([kind, "stub", *argv]), project)
+def prepare(root, endpoint="stub", **kwargs):
+    """Prepare a Job for *endpoint* in *root*, as a shell run does."""
+    return StandaloneJob.prepare(
+        root, endpoint, ["booley", endpoint], report_root=checkout_report_root(root), **kwargs
+    )
 
 
 def records(project):
@@ -94,30 +136,31 @@ def job_log(project, rec):
 @pytest.mark.parametrize("kind", ["flow", "specialist"])
 def test_shell_run_writes_standalone_job(monkeypatch, project, kind):
     for outcome in (0, 3):
-        StubEndpoint.outcome = outcome
-        assert shell_run(monkeypatch, project, kind) == outcome
+        assert booley(monkeypatch, kind, "stub", "--outcome", str(outcome)) == outcome
     done, failed = sorted(records(project), key=lambda rec: rec.exit_code)
     for rec, outcome, status in ((done, 0, "done"), (failed, 3, "failed")):
         assert (rec.status, rec.exit_code) == (status, outcome)
         assert rec.session_key is None
         assert rec.endpoint == "stub"
-        assert rec.argv == ["booley", kind, "stub", "--target", "t1"]
+        assert rec.argv == ["booley", kind, "stub", "--outcome", str(outcome)]
         assert rec.work_dir == str(project)
         assert rec.pid == os.getpid()
         assert rec.started_at
         assert rec.ended_at
-    assert StubEndpoint.seen_run_id == failed.run_id  # the endpoint ran under its Job's run id
+    assert (project.parent / "seen").read_text(
+        encoding="utf-8"
+    ) == failed.run_id  # the endpoint ran under its Job's run id
     assert "BOOLEY_RUN_ID" not in os.environ
 
 
 def test_job_log_copies_output_and_terminal_is_unchanged(monkeypatch, project, capfd):
     monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")  # unrecorded baseline
-    shell_run(monkeypatch, project, "flow")
+    booley(monkeypatch, "flow", "stub")
     unrecorded = capfd.readouterr()
     assert records(project) == []
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN")
 
-    shell_run(monkeypatch, project, "flow")
+    booley(monkeypatch, "flow", "stub")
 
     assert capfd.readouterr() == unrecorded
     (rec,) = records(project)
@@ -126,54 +169,63 @@ def test_job_log_copies_output_and_terminal_is_unchanged(monkeypatch, project, c
     )  # no ANSI styling, both streams in order
 
 
-def test_ctrl_c_records_cancelled(monkeypatch, project):
-    """The interrupt still reaches the caller and the Job is recorded ``cancelled`` / 130."""
-    for kind in ("flow", "specialist"):
-        StubEndpoint.outcome = KeyboardInterrupt()
-        with pytest.raises(KeyboardInterrupt):
-            shell_run(monkeypatch, project, kind)
-        assert "BOOLEY_RUN_ID" not in os.environ
-    recs = records(project)
-    assert len(recs) == 2
-    for rec in recs:
-        assert (rec.status, rec.exit_code) == ("cancelled", 130)
-        assert rec.ended_at
+@pytest.mark.parametrize("kind", ["flow", "specialist"])
+def test_ctrl_c_records_cancelled_and_reaches_main_as_a_plain_interrupt(
+    monkeypatch, project, capsys, kind
+):
+    """Python 3.11 dies by SIGINT only for the base class: ``main`` re-raises exactly that."""
+    with pytest.raises(KeyboardInterrupt) as raised:
+        booley(monkeypatch, kind, "stub", "--outcome", "interrupt")
+    assert type(raised.value) is KeyboardInterrupt
+    assert "BOOLEY_RUN_ID" not in os.environ
+    (rec,) = records(project)
+    assert (rec.status, rec.exit_code) == ("cancelled", 130)
+    assert rec.ended_at
+
+    capsys.readouterr()
+    sys.excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+    assert capsys.readouterr().err == ""
+    sys.excepthook(RuntimeError, RuntimeError("boom"), None)
+    assert "RuntimeError: boom" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected"),
-    [(RuntimeError("boom"), 1), (SystemExit(2), 2), (SystemExit(None), 0), (SystemExit("msg"), 1)],
-    ids=["crash", "usage-error", "clean-exit", "message-exit"],
+    ("outcome", "raised", "expected"),
+    [
+        ("crash", RuntimeError, 1),
+        ("usage", SystemExit, 2),
+        ("clean", SystemExit, 0),
+        ("message", SystemExit, 1),
+    ],
 )
-def test_crash_and_exit_are_recorded_and_reraised(monkeypatch, project, outcome, expected):
-    StubEndpoint.outcome = outcome
-    with pytest.raises(type(outcome)):
-        shell_run(monkeypatch, project, "flow")
+def test_crash_and_exit_are_recorded_and_reraised(monkeypatch, project, outcome, raised, expected):
+    with pytest.raises(raised):
+        booley(monkeypatch, "flow", "stub", "--outcome", outcome)
     (rec,) = records(project)
     assert rec.exit_code == expected
     assert rec.status == ("done" if expected == 0 else "failed")
 
 
-@pytest.mark.parametrize("case", ["transport", "nested", "no-booley-dir"])
-def test_run_outside_standalone_scope_is_unrecorded(monkeypatch, project, tmp_path, case):
-    target = project
+@pytest.mark.parametrize("case", ["transport", "nested"])
+def test_run_outside_standalone_scope_is_unrecorded(monkeypatch, project, case):
     if case == "transport":
         monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")
-    elif case == "nested":
-        monkeypatch.setenv("BOOLEY_RUN_ID", "sim-outer-1")
     else:
-        target = tmp_path / "bare"
-        target.mkdir()
-    StubEndpoint.outcome = 3
-    assert shell_run(monkeypatch, target, "flow") == 3
+        monkeypatch.setenv("BOOLEY_RUN_ID", "sim-outer-1")
+    assert booley(monkeypatch, "flow", "stub", "--outcome", "3") == 3
     assert records(project) == []
-    assert not (target / ".booley" / "job_logs").exists()
+    assert not (project / ".booley" / "job_logs").exists()
+
+
+def test_a_project_without_a_booley_directory_is_not_a_job(project, tmp_path):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert prepare(bare) is None
 
 
 def test_unwritable_record_warns_and_runs_unrecorded(monkeypatch, project, capfd):
     (project / ".booley" / "job_logs").write_bytes(b"in the way")
-    StubEndpoint.outcome = 3
-    assert shell_run(monkeypatch, project, "flow") == 3
+    assert booley(monkeypatch, "flow", "stub", "--outcome", "3") == 3
     err = capfd.readouterr().err
     assert "WARN: Standalone Job record unavailable:" in err
     assert "err line" in err
@@ -181,12 +233,7 @@ def test_unwritable_record_warns_and_runs_unrecorded(monkeypatch, project, capfd
 
 
 def test_custom_endpoint_help_is_not_a_job(monkeypatch, project):
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(runtime_context, "container_only_error", lambda _command: None)
-    monkeypatch.setattr(runtime_context, "ensure_proxy_env", lambda: None)
-    assert shell_run(monkeypatch, project, "flow", argv=("--help",)) == 0
+    assert booley(monkeypatch, "flow", "stub", "--help") == 0
     assert records(project) == []
 
 
@@ -224,24 +271,14 @@ sys.exit(job.run(block))
 """
 
 
-def run_child_until_signalled(project, tmp_path, signum, script=CHILD, extra_args=()):
-    """Start *script* in a child, signal it once it is blocked, and return ``(exit code, stderr)``."""
-    marker = tmp_path / "ready"
+def run_child_until_signalled(script, args, marker, signum):
+    """Run *script* with *args* in a child, signal it once *marker* exists, return ``(exit code, stderr)``."""
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
     for name in ("BOOLEY_DIR", "PYTHONWARNINGS", "PYTHONDEVMODE"):
         env.pop(name, None)  # stderr must hold only what Booley itself writes
-    # The real CLI reads per-user config: keep it away from the developer's own home.
-    env["HOME"] = str(tmp_path / "home")
-    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg")
+    env["STUB_BLOCK_S"] = str(CHILD_TIMEOUT_S)
     child = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            script.format(timeout=CHILD_TIMEOUT_S),
-            str(project),
-            str(marker),
-            *extra_args,
-        ],
+        [sys.executable, "-c", script.format(timeout=CHILD_TIMEOUT_S), *map(str, args)],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -270,50 +307,15 @@ def run_child_until_signalled(project, tmp_path, signum, script=CHILD, extra_arg
             child.wait()
 
 
-# The real ``cli.main()`` with discovery stubbed to one blocking endpoint: what a shell user runs.
+# The real ``main``, as a shell user runs it, started where a terminal's Ctrl-C finds Python's handler.
 CLI_CHILD = """
-import signal, sys, time
-from pathlib import Path
-from unittest import mock
-
-from booley.harness import booley as cli
-from booley.mcp.registry import McpToolInfo
-from booley.runtime import runtime_context
+import signal, sys
+from booley.harness.booley import main
 
 # A background runner may pass SIGINT ignored; a terminal Ctrl-C finds Python's handler.
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGHUP, signal.SIG_DFL)
-project, marker, kind = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-
-
-class BlockingEndpoint:
-    name = "stub"
-
-    def main(self, argv):
-        print("err line", file=sys.stderr, flush=True)
-        marker.write_text("ready")
-        time.sleep({timeout})
-        return 0
-
-
-info = McpToolInfo(name="stub", path="stub.py", description="stub", kind=kind)
-parser = cli._build_parser()
-args = cli._normalize_args(parser, parser.parse_args([kind, "stub", "--target", "t1"]))
-patches = [
-    mock.patch.object(runtime_context, "inside_session_runtime", return_value=True),
-    mock.patch.object(runtime_context, "ensure_proxy_env", return_value=False),
-    mock.patch.object(cli, "_parse_cli", return_value=args),
-    mock.patch.object(cli, "find_project_root", return_value=project),
-    mock.patch.object(cli, "_reject_source_project_command", return_value=None),
-    mock.patch.object(cli, "_require_command_project", return_value=None),
-    mock.patch.object(cli, "_host_install_authority_error", return_value=None),
-    mock.patch.object(cli, "_discover_project_mcp_tools", return_value=[info]),
-    mock.patch("booley.mcp.registry.discover_mcp_tools", return_value=[info]),
-    mock.patch.object(cli, "_load_mcp_tool_class", return_value=BlockingEndpoint),
-]
-for patch in patches:
-    patch.start()
-sys.exit(cli.main())
+sys.exit(main())
 """
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery")
@@ -325,7 +327,7 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
     signum = getattr(signal, name.upper())
     progress_path = tmp_path / "reports" / "stub" / "1" / "progress.json"
     returncode, _stderr = run_child_until_signalled(
-        project, tmp_path, signum, extra_args=(str(progress_path),)
+        CHILD, (project, tmp_path / "ready", progress_path), tmp_path / "ready", signum
     )
     assert returncode == -signum  # dies by the signal
     progress = json.loads(progress_path.read_text(encoding="utf-8"))
@@ -345,11 +347,7 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
     (view,) = JobReader(project / ".booley").read().jobs
     assert view.state == "failed"  # the Dashboard sees the dead process
 
-    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
-
-    job = StandaloneJob.prepare(
-        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
-    )
+    job = prepare(project)
     assert job is not None
     try:
         assert job.run(lambda: 0) == 0  # the next shell run repairs the dead record
@@ -364,13 +362,9 @@ def test_signal_leaves_terminal_record(project, tmp_path, name):
 def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, project):
     """A run that ends between the cleanup's listing and its rewrite keeps its own outcome."""
     from booley.harness import standalone_job
-    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
-    from booley.runtime.pid import DEAD, ProcessIdentity, ProcessObservation
 
     root = project / ".booley" / JOBS_ROOT
-    job = StandaloneJob.prepare(
-        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
-    )
+    job = prepare(project)
     assert job is not None
     job.discard()
     other = job_records.JobRecord(
@@ -398,11 +392,7 @@ def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, p
 
 def test_closed_standard_streams_do_not_fail_the_run(monkeypatch, project):
     """With fd 1 or 2 closed, Python leaves the stream None; print() drops silently as before."""
-    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
-
-    job = StandaloneJob.prepare(
-        project, "stub", ["booley", "flow", "stub"], report_root=checkout_report_root(project)
-    )
+    job = prepare(project)
     assert job is not None
     monkeypatch.setattr(sys, "stdout", None)
     monkeypatch.setattr(sys, "stderr", None)
@@ -414,69 +404,33 @@ def test_closed_standard_streams_do_not_fail_the_run(monkeypatch, project):
     assert rec.status == "done"
 
 
-def test_report_root_is_the_resolved_booley_directory(monkeypatch, tmp_path):
+def test_report_root_is_the_resolved_booley_directory(monkeypatch, project, tmp_path):
     """A symlinked ``.booley`` is recorded by its target: that is where the Dashboard looks."""
     real = tmp_path / "elsewhere" / "booley-dir"
     real.mkdir(parents=True)
-    root = tmp_path / "proj"
+    root = tmp_path / "linked"
     root.mkdir()
     symlink_or_skip(root / ".booley", real, target_is_directory=True)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    assert shell_run(monkeypatch, root, "flow") == 0
+    write_project(root, real)
+    assert booley(monkeypatch, "flow", "stub") == 0
     (rec,) = job_records.list_records(real / JOBS_ROOT)
     assert rec.report_root == str(real.resolve())
 
 
 @posix_only
-def test_ctrl_c_prints_one_line_and_dies_by_sigint(tmp_path):
-    """Ctrl-C on a shell run: no traceback, one interrupted line, and the process dies by SIGINT.
-
-    Dying by SIGINT (shell ``$?`` 130) rather than ``exit(130)`` keeps a calling shell loop or
-    script stopping, as it does for any interrupted program.
-    """
-    for kind in ("flow", "specialist"):
-        project = tmp_path / kind / "proj"
-        (project / ".booley").mkdir(parents=True)
-        returncode, stderr = run_child_until_signalled(
-            project, tmp_path / kind, signal.SIGINT, script=CLI_CHILD, extra_args=(kind,)
-        )
-        assert returncode == -signal.SIGINT, (kind, stderr)
-        assert "Traceback" not in stderr, stderr
-        assert "KeyboardInterrupt" not in stderr, stderr
-        lines = [line for line in stderr.splitlines() if line and line != "err line"]
-        assert lines == ["interrupted; run cancelled"], stderr
-        (rec,) = records(project)
-        assert (rec.status, rec.exit_code) == ("cancelled", 130)
-
-
-def test_cancelled_run_reaches_main_and_silences_only_the_interrupt_traceback(
-    monkeypatch, project, capsys
-):
-    """``main()`` re-raises a plain interrupt and leaves a hook that drops it but not other errors."""
-    info = McpToolInfo(name="stub", path="stub.py", description="stub", kind="flow")
-    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
-    monkeypatch.setattr(cli, "_parse_cli", lambda: command(["flow", "stub"]))
-    monkeypatch.setattr(cli, "find_project_root", lambda: project)
-    monkeypatch.setattr(cli, "_host_install_authority_error", lambda _command: None)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
-    monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
-    monkeypatch.setattr("booley.mcp.registry.discover_mcp_tools", lambda **_kw: [info])
-    monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: StubEndpoint)
-    StubEndpoint.outcome = KeyboardInterrupt()
-
-    with pytest.raises(KeyboardInterrupt) as raised:
-        cli.main()
-    # Exactly the base class: Python 3.11 dies by SIGINT only for that, not a subclass.
-    assert type(raised.value) is KeyboardInterrupt
-
-    capsys.readouterr()
-    hook = sys.excepthook
-    hook(KeyboardInterrupt, KeyboardInterrupt(), None)
-    hook(cli._CancelledRun, cli._CancelledRun(), None)
-    assert capsys.readouterr().err == ""
-    hook(RuntimeError, RuntimeError("boom"), None)
-    assert "RuntimeError: boom" in capsys.readouterr().err
+@pytest.mark.parametrize("kind", ["flow", "specialist"])
+def test_ctrl_c_prints_one_line_and_dies_by_sigint(project, tmp_path, kind):
+    """Ctrl-C: no traceback, one line, and death by SIGINT (not ``exit(130)``) so a caller stops."""
+    returncode, stderr = run_child_until_signalled(
+        CLI_CHILD, (kind, "stub", "--outcome", "block"), tmp_path / "seen", signal.SIGINT
+    )
+    assert returncode == -signal.SIGINT, stderr
+    assert "Traceback" not in stderr, stderr
+    assert "KeyboardInterrupt" not in stderr, stderr
+    lines = [line for line in stderr.splitlines() if line and line != "err line"]
+    assert lines == ["interrupted; run cancelled"], stderr
+    (rec,) = records(project)
+    assert (rec.status, rec.exit_code) == ("cancelled", 130)
 
 
 @pytest.mark.parametrize("inherited", ["outer-run", None])
@@ -484,21 +438,11 @@ def test_an_own_run_job_ignores_an_inherited_run_id_and_restores_it(
     monkeypatch, project, inherited
 ):
     """``own_run`` gives a run inside another Job its own record; the caller's id comes back."""
-    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
-
-    if inherited is None:
-        monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
-    else:
+    if inherited is not None:
         monkeypatch.setenv("BOOLEY_RUN_ID", inherited)
     monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")
 
-    job = StandaloneJob.prepare(
-        project,
-        "measure",
-        ["booley", "measure"],
-        report_root=checkout_report_root(project),
-        own_run=True,
-    )
+    job = prepare(project, "measure", own_run=True)
     assert job is not None
     try:
         assert os.environ["BOOLEY_RUN_ID"] == job.run_id != inherited
@@ -512,24 +456,9 @@ def test_an_own_run_job_ignores_an_inherited_run_id_and_restores_it(
     assert rec.argv == ["booley", "measure"]
 
 
-def test_a_nested_run_without_own_run_is_not_a_job(monkeypatch, project):
-    from booley.harness.standalone_job import StandaloneJob
-
-    monkeypatch.setenv("BOOLEY_RUN_ID", "outer-run")
-    assert (
-        StandaloneJob.prepare(project, "stub", ["booley", "flow", "stub"], report_root=None)
-        is None
-    )
-
-
-def test_progress_is_recorded_while_the_job_runs_and_never_after_it_ends(monkeypatch, project):
+def test_progress_is_recorded_while_the_job_runs_and_never_after_it_ends(project):
     """``record_progress`` rewrites the running record; a finished Job's record stays final."""
-    from booley.harness.standalone_job import StandaloneJob, checkout_report_root
-
-    monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)
-    job = StandaloneJob.prepare(
-        project, "measure", ["booley", "measure"], report_root=checkout_report_root(project)
-    )
+    job = prepare(project, "measure")
     assert job is not None
     seen: list[dict[str, int] | None] = []
 
