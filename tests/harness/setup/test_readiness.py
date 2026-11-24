@@ -14,6 +14,7 @@ from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.paths import skills_dir
+from tests.git_command_fake import GitCommandFake
 from tests.harness.test_doctor import _write_project
 from tests.subprocess_budget import run_bounded_child
 
@@ -236,7 +237,7 @@ def test_scaffold_core_warning_needs_git_to_say_what_is_tracked(
     _write_scaffold(tmp_path)
     if git == "no-git-executable":
         _commit_all(tmp_path)
-        monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
+        GitCommandFake.install(monkeypatch).crash("ls-files", error=FileNotFoundError("git"))
 
     assert _scaffold_core_findings(tmp_path) == []
 

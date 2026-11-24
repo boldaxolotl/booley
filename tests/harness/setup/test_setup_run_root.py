@@ -62,8 +62,9 @@ def test_prepare_rejects_unsafe_and_duplicate_run_ids(tmp_path, capsys):
     assert _cli(tmp_path, capsys, "prepare", "--run-id", "dup")[1].get("status") == "prepared"
     assert _cli(tmp_path, capsys, "prepare", "--run-id", "dup")[0] == 2
     for operation in ("preview", "apply"):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as refused:
             _cli(tmp_path, capsys, operation)  # only prepare may pick its own run id
+        assert refused.value.code == 2
 
 
 def test_apply_removes_only_the_run_root(tmp_path, capsys):
@@ -316,7 +317,8 @@ def test_apply_restores_marker_when_final_rmdir_fails(tmp_path, capsys, monkeypa
     assert (code, out["status"]) == (1, "kept") and (run_root / MARKER).is_file()
 
     monkeypatch.undo()
-    assert _cli(tmp_path, capsys, "apply", "--run-id", "r1")[1]["status"] == "removed"
+    code, text, _ = _run(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert code == 0 and text.startswith(f"removed: {run_root} (")
     assert not run_root.exists()
 
 
