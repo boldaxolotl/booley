@@ -16,6 +16,9 @@ from typing import Any
 import pytest
 
 from booley.harness import booley as cli
+from booley.harness import review_command
+from booley.measurement import base as base_module
+from booley.specialists.review_change import ReviewChangeError
 from tests.conftest import FeatureFlagHelper
 from tests.mcp_tools.reviewer_support import ScriptedAgent, install_agent, issue
 from tests.review.test_declared_reviews import SIM_CORE_ID, write_project
@@ -235,6 +238,96 @@ def test_a_submodule_pin_move_reviews_the_files_it_changed(
     assert "changed inside submodule sub" in prompt
     (run,) = stored_runs(parent, commit)
     assert run["changed_files"] == ["sub/lib.v"]
+
+
+SUB_CORE = (
+    "CAPI=2:\nname: ::sim_core:0\nfilesets:\n  rtl:\n    files: [{path}]\n"
+    "    file_type: verilogSource\ntargets:\n  sim_core:\n    flow: sim\n"
+    "    flow_options: {{tool: verilator}}\n    filesets: [rtl]\n    toplevel: lib\n"
+)
+
+
+def moved_submodule_project(
+    tmp_path: Path, feature_flags: FeatureFlagHelper, path: str, *, nested: bool
+) -> tuple[Path, str]:
+    """A project whose Target lists *path* inside a submodule, and a commit moving that pin."""
+    parent, _, _, _ = make_submodule(tmp_path)
+    write(parent / "sim.core", SUB_CORE.format(path=path))
+    write(parent / ".booley" / "booley.toml", "[project]\n")
+    write(parent / ".booley" / "reviews.toml", BUGS.format(resolve="major"))
+    feature_flags.enable(parent / ".booley", "reviewed-commits")
+    commit_all(parent, "baseline")
+    git(parent, "checkout", "-q", "-b", "feature")
+    if nested:
+        write(parent / "sub" / "inner" / "deep.v", "module lib;\nendmodule\n")
+        commit_all(parent / "sub" / "inner", "move inner")
+        commit_all(parent / "sub", "bump inner")
+    else:
+        write(parent / "sub" / "lib.v", "module lib;\nendmodule\n")
+        commit_all(parent / "sub", "move sub")
+    return parent, commit_all(parent, "bump sub")
+
+
+def test_a_nested_submodule_pin_move_reviews_the_files_beneath_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_flags: FeatureFlagHelper,
+    agent: ScriptedAgent,
+) -> None:
+    """A nested pin is one changed path: every declared file under it counts as changed."""
+    parent, commit = moved_submodule_project(
+        tmp_path, feature_flags, "sub/inner/deep.v", nested=True
+    )
+    agent.answer({"issues": []})
+
+    assert review(monkeypatch, parent) == 0
+
+    assert "sub/inner/deep.v" in agent.calls[0].prompt
+    (run,) = stored_runs(parent, commit)
+    assert "sub/inner/deep.v" in run["changed_files"]
+
+
+def test_a_submodule_with_unknown_changes_reviews_every_declared_file_under_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_flags: FeatureFlagHelper,
+    agent: ScriptedAgent,
+) -> None:
+    """The Base's pin missing from the submodule must not read as "nothing changed"."""
+    parent, commit = moved_submodule_project(tmp_path, feature_flags, "sub/lib.v", nested=False)
+    # No public entry point leaves the old pin out of an exportable submodule.
+    monkeypatch.setattr(base_module, "_submodule_files", lambda *_: None)
+    agent.answer({"issues": []})
+
+    assert review(monkeypatch, parent) == 0
+
+    (run,) = stored_runs(parent, commit)
+    assert run["changed_files"] == ["sub/lib.v"]
+    assert len(agent.calls) >= 1
+
+
+def test_a_failure_before_the_model_call_is_an_error_result_and_the_run_is_stored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    feature_flags: FeatureFlagHelper,
+    agent: ScriptedAgent,
+) -> None:
+    """AC6: a review that raises is an error result and the run is still stored."""
+    root = project_on_main(tmp_path, feature_flags, TABLE)
+    write(root / "rtl" / "a.sv", A_V2)
+    commit = commit_all(root, "Edit a")
+
+    def fail(*_: Any) -> Any:
+        raise ReviewChangeError("`git diff` failed")
+
+    monkeypatch.setattr(review_command, "committed_review_change", fail)
+
+    assert review(monkeypatch, root) == 2
+
+    (run,) = stored_runs(root, commit)
+    assert {r["outcome"] for r in run["reviews"]} == {"error", "not-needed"}
+    assert run["outcome"] == "error"
+    assert agent.calls == []
 
 
 BUGS_ONLY = '[sim_core.review]\nrtl = ["bugs"]\n'

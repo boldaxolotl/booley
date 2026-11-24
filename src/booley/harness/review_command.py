@@ -49,7 +49,7 @@ from booley.review.review_run import (
 from booley.runtime.commit_export import CommitExportError, export_commit
 from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.runtime.timefmt import rfc3339_from_datetime
-from booley.specialists.review_change import committed_review_change
+from booley.specialists.review_change import committed_review_change, under_folder
 from booley.specialists.reviewer import ReviewerSpecialist
 from booley.specialists.specialist_workspace import initialize_snapshot_git
 from booley.targets.catalog import TargetCatalog
@@ -136,17 +136,27 @@ def _load_reviews(checkout: Path, target: str | None) -> dict[str, frozenset[Dec
     return {key: value for key, value in declared.items() if identity in (None, key)}
 
 
-def _changed_paths(changes: ChangedFiles) -> set[str]:
-    """What the commit changed that can be reviewed: kept files, and files in moved submodules.
+def _changed_paths(
+    changes: ChangedFiles, checkout: Path, declared: dict[str, frozenset[DeclaredReview]]
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """What the commit changed that can be reviewed, and the submodules it moved.
 
-    A submodule is one entry in the superproject; the files changed inside it count. Its
-    changed files are unknown only when its objects are missing, and then the export
-    that precedes this refuses the commit.
+    A submodule is one entry in the superproject, so the files changed inside it count. Where
+    they are unknown (the Base's pin is not in the initialized submodule) or are themselves a
+    nested submodule's pin, every declared file under that folder counts as changed.
     """
     changed = {file.path for file in changes.files if file.status != "D"}
+    folders = [sub.path for sub in changes.submodules]
+    opaque = [sub.path for sub in changes.submodules if sub.files is None]
     for sub in changes.submodules:
         changed.update(sub.files or ())
-    return changed
+    nested = [path for path in changed if (checkout / path).is_dir()]
+    opaque += nested
+    folders += nested
+    for reviews in declared.values():
+        for review in reviews:
+            changed.update(f for f in review.files if any(under_folder(f, o) for o in opaque))
+    return frozenset(changed), tuple(folders)
 
 
 @dataclass(frozen=True)
@@ -165,6 +175,13 @@ def _run_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
     """Run one planned review in the export; a failed run is an ``error`` result."""
     if not planned.needed:
         return ReviewResult(NOT_NEEDED)
+    try:
+        return _call_reviewer(planned, under)
+    except (OSError, ValueError) as exc:  # Git, evidence or snapshot failure of this review only
+        return ReviewResult(ERROR, error=" ".join(str(exc).split())[:_ERROR_LINE])
+
+
+def _call_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
     files = planned.files
     change = committed_review_change(
         under.project_root,
@@ -219,16 +236,10 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
         keyed = _key_of(project_root, commit, export.paired_commit)
         _prepare_checkout(checkout, main, run_id)
         declared = _load_reviews(checkout, request.target)
-        changes = changed_files(project_root, base_commit, commit)
-        changed = frozenset(_changed_paths(changes))
-        under = _Commit(
-            project_root,
-            checkout,
-            base_commit,
-            commit,
-            changed,
-            tuple(sub.path for sub in changes.submodules),
+        changed, folders = _changed_paths(
+            changed_files(project_root, base_commit, commit), checkout, declared
         )
+        under = _Commit(project_root, checkout, base_commit, commit, changed, folders)
         results = tuple(
             (planned, _run_reviewer(planned, under)) for planned in plan_reviews(declared, changed)
         )

@@ -228,7 +228,7 @@ def resolve_review_change(work_dir: Path, base: str, scope: Sequence[str]) -> Re
     )
 
 
-def _under(path: str, folder: str) -> bool:
+def under_folder(path: str, folder: str) -> bool:
     return path == folder or path.startswith(f"{folder}/")
 
 
@@ -255,7 +255,9 @@ def committed_review_change(
     parts: list[str] = []
     plain: list[str] = []
     for path in touched:
-        inside = next((folder for folder in sorted(submodules) if _under(path, folder)), None)
+        inside = next(
+            (folder for folder in sorted(submodules) if under_folder(path, folder)), None
+        )
         if inside is None:
             plain.append(path)
         else:
