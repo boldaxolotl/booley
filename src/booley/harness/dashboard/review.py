@@ -101,3 +101,12 @@ def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
     elif uncommitted:
         lines.append(f"Warning: {_plural(uncommitted, 'uncommitted change')} in this worktree")
     return lines
+
+
+def review_lines(facts: RunFacts, occupants: Occupants, uncommitted: int | str) -> list[str]:
+    """The review screen's text, a line each: queue, timeout, Specialist, then the warnings."""
+    lines = [queue_line(facts), timeout_line(facts)]
+    if facts.specialist is not None:
+        lines += specialist_lines(facts.specialist)
+    lines += warning_lines(occupants, uncommitted)
+    return [line for line in lines if line]

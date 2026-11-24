@@ -17,11 +17,14 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from booley.flows.cli_help import option_groups
 from booley.flows.cli_selection import EndpointProjectAction
-from booley.harness.dashboard.launch import split_arguments
+from booley.harness.dashboard.launch import ArgumentsError, split_arguments
+
+if TYPE_CHECKING:
+    from booley.harness.dashboard.specialist_form import SpecialistForm
 
 FieldKind = Literal[
     "toggle", "three-way", "list", "text", "target", "tests", "more", "coverage_record"
@@ -284,3 +287,20 @@ def command_argv(
             words.extend(text_words(field.flag, value))
     extra = split_arguments(extra_text)
     return (*words, *(extra[1:] if extra[:1] == ("--",) else extra))
+
+
+def form_argv(
+    form: RunForm | SpecialistForm, values: Mapping[str, str | tuple[str, ...]], extra_text: str
+) -> tuple[str, ...]:
+    """The command's words for the *values* a Flow or Specialist form holds.
+
+    ``ArgumentsError`` is the form's own error: a Specialist form's refusal (a missing
+    required value) or a Flow's extra text with unbalanced quotes.
+    """
+    if isinstance(form, RunForm):
+        return command_argv(form, values, extra_text)
+    texts = {dest: value for dest, value in values.items() if isinstance(value, str)}
+    problem = form.refusal(texts)
+    if problem:
+        raise ArgumentsError(problem)
+    return form.argv(texts)
