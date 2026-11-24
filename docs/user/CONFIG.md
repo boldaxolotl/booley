@@ -30,6 +30,7 @@ here to look up what a setting means and what its default is.
 | Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `metrics.toml` | [Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml) |
+| `reviews.toml` | [Reviewer](REVIEWER.md#declare-reviews-in-reviewstoml) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
 ## booley.toml

@@ -257,7 +257,7 @@ class _Side:
     problem: str | None  # why the files could not be located
 
 
-def _blob(repository: Path, commit: str, path: str) -> bytes | None:
+def commit_file(repository: Path, commit: str, path: str) -> bytes | None:
     """The content of *path* at *commit*, or None when the commit has no such file."""
     try:
         kind = raw_git(repository, "cat-file", "-t", f"{commit}:{path}").strip()
@@ -281,8 +281,8 @@ def _read_side(
         return _Side(label, None, None, TESTS_FILE, f"{label} commit: {exc}")
     tests_path = (place / TESTS_FILE).as_posix()
     try:
-        metrics = _blob(repository, commit, (place / METRICS_FILE).as_posix())
-        tests = _blob(repository, commit, tests_path)
+        metrics = commit_file(repository, commit, (place / METRICS_FILE).as_posix())
+        tests = commit_file(repository, commit, tests_path)
     except FileCommitError as exc:  # e.g. a directory named like the file
         return _Side(label, None, None, tests_path, f"{label} commit: {exc}")
     return _Side(label, metrics, tests, tests_path, None)
