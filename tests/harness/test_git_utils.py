@@ -27,7 +27,7 @@ from tests.conftest import symlink_or_skip
 from tests.git_support import hostile
 from tests.harness.git_support import git_stdout
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
 
@@ -195,7 +195,8 @@ def test_active_git_owner_keeps_index_lock(wt: Path) -> None:
         with pytest.raises(BlockingError, match="git add failed"):
             commit_scope(wt, ["new.sv"], "feat: keep busy lock")
     finally:
-        owner.communicate(b"", timeout=SUBPROCESS_TIMEOUT_S)
+        owner.kill()  # never leave the blocked Git process running, whatever the outcome
+        owner.communicate()
 
     assert lock_path.exists()
 
