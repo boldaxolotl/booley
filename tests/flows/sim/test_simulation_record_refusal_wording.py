@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import threading
+import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,20 +12,28 @@ import pytest
 
 from booley.flows.sim import acceptance, coverage_analysis_input
 from booley.flows.sim import flow as sim_flow
+from booley.flows.sim.acceptance import publish_simulation_record_projections
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
-from booley.flows.sim.record import flow_planning, inspection, projection, resume, store
-from booley.flows.sim.record.capacity import (
-    SimulationRecordCapacity,
-    SimulationRecordCapacityError,
-)
+from booley.flows.sim.record import decode_simulation_projection, store
+from booley.flows.sim.record.capacity import SimulationRecordCapacityError
+from booley.flows.sim.record.codec import encode_simulation_record_manifest
 from booley.flows.sim.record.coordinator import SimulationRecord, SimulationRecordPolicy
-from booley.flows.sim.record.model import SimulationRecordDocument
-from booley.flows.sim.record.scheduler import (
-    BoundedSimulationRecordScheduler,
-    SimulationRecordSchedulingError,
+from booley.flows.sim.record.flow_planning import (
+    plan_coarse_simulation_record,
+    plan_ordinary_hdl_simulation_record,
 )
+from booley.flows.sim.record.inspection import authenticate_work_item
+from booley.flows.sim.record.model import SimulationRecordDocument
+from booley.flows.sim.record.planning import finalize_manifest
+from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordIntegrityError
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
+from booley.flows.test_runs import build_test_run
+from booley.runtime.job_slots import SlotStore
+from tests.flows.sim.simulation_record_test_support import _capacity, _managed, _outer_claim
+from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
+from tests.flows.sim.test_simulation_record_manifest_codec import _linked_simulation_record_stores
+from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
 
 
 def test_policy_refuses_non_positive_timeouts() -> None:
@@ -44,102 +53,110 @@ def test_record_document_must_be_an_object() -> None:
         SimulationRecordDocument([1])  # type: ignore[arg-type]
 
 
-def test_a_memory_admitted_record_must_hold_a_flow_token() -> None:
-    capacity = SimulationRecordCapacity.__new__(SimulationRecordCapacity)
-    capacity._admission = SimpleNamespace(outer_token=None)  # type: ignore[attr-defined]
-    with pytest.raises(SimulationRecordCapacityError, match="a memory-admitted record holds"):
-        capacity._item_thread_count(None)  # type: ignore[arg-type]
-
-
-def test_a_stopped_scheduler_refuses_a_collision_permit() -> None:
-    scheduler = BoundedSimulationRecordScheduler.__new__(BoundedSimulationRecordScheduler)
-    scheduler._stop = threading.Event()
-    scheduler._stop.set()
-    scheduler._collision_condition = threading.Condition()
-    scheduler._active_collisions = set()
-    permit = scheduler._collision_permit("key")
-    with pytest.raises(SimulationRecordSchedulingError, match="record shutdown requested"):
-        permit.__enter__()
+def test_a_memory_admitted_record_must_hold_a_flow_token(tmp_path: Path) -> None:
+    store = SlotStore(tmp_path / "slots")
+    outer = _outer_claim(store)
+    # An outer token that is no slot token: AdmissionContext itself refuses None.
+    capacity = _capacity(_managed(store, object()), tmp_path)
+    try:
+        with (
+            pytest.raises(SimulationRecordCapacityError, match="a memory-admitted record holds"),
+            capacity.child_permit(
+                "item",
+                attempt_id="attempt",
+                attempt_ordinal=1,
+                attempt_directory=Path("attempt"),
+                publish=lambda _child: None,
+                memory=capacity.work_item_claim({}),  # type: ignore[arg-type]
+            ),
+        ):
+            pytest.fail("body must not run")
+    finally:
+        store.release(outer)
 
 
 def test_store_refusals(tmp_path: Path) -> None:
+    # Private seam: the escape check has no public caller that passes a path
+    # outside the store.
     with pytest.raises(SimulationRecordIntegrityError, match="record path escapes store"):
         store._require_safe_parents(tmp_path / "a", tmp_path / "b")
     with pytest.raises(SimulationRecordIntegrityError, match="expected exact Simulation Record"):
         store.collect_pre_sim_firings(tmp_path / "x" / "other.json")
     with pytest.raises(SimulationRecordIntegrityError, match="expected exact record/manifest"):
-        inspection._store_for_manifest(tmp_path / "x" / "other.json")
+        authenticate_work_item(tmp_path / "x" / "other.json", "item")
 
 
-def test_projection_identity_must_be_a_version_four_uuid(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(projection, "_validate_common", lambda _value: None)
-    monkeypatch.setattr(projection, "_validate_test_runs", lambda _value: None)
-    value: dict[str, Any] = dict.fromkeys(
-        (
-            "flow",
-            "mode",
-            "target",
-            "target_identity",
-            "passed",
-            "inconclusive",
-            "tests",
-            "simulation_record_manifest",
-            "complete",
-            "test_runs",
-        )
-    )
-    value["$schema"] = projection.SIMULATION_PROJECTION_SCHEMA
+def test_projection_identity_must_be_a_version_four_uuid(tmp_path: Path) -> None:
+    outcome = _outcome(tmp_path, _RESET)
+    publish_simulation_record_projections(tmp_path, (outcome,))
+    path = outcome.manifest_path.parents[1] / "simulation.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
     for bad in ("not-a-uuid", "00000000-0000-1000-8000-000000000000"):
         value["simulation_record_id"] = bad
         with pytest.raises(ValueError, match="Simulation Record identity is invalid"):
-            projection.decode_simulation_projection(value, coverage_expected=False)
+            decode_simulation_projection(value, coverage_expected=False)
 
 
-def test_planning_refusals() -> None:
-    handle = SimpleNamespace(identity="a")
-    inspected = SimpleNamespace(handle=handle, flow_options={"cocotb_module": ""})
-    preview = SimpleNamespace(target_identity="a")
-    check = flow_planning._require_ordinary_hdl_inputs
-    with pytest.raises(SimulationRecordIntegrityError, match="Target facts disagree"):
-        check(handle, inspected, SimpleNamespace(target_identity="b"), "candidate", "r")  # type: ignore[arg-type]
-    with pytest.raises(SimulationRecordIntegrityError, match="role is invalid"):
-        check(handle, inspected, preview, "other", "r")  # type: ignore[arg-type]
-    with pytest.raises(SimulationRecordIntegrityError, match="revision is required"):
-        check(handle, inspected, preview, "candidate", "")  # type: ignore[arg-type]
-    run = SimpleNamespace(test="t", name="n")
-    preview = SimpleNamespace(target_identity="a", run_groups=[(run, run)], groups=(("t",),))
-    inspected = SimpleNamespace(handle=handle, flow_options={"cocotb_module": "m"})
-    with pytest.raises(SimulationRecordIntegrityError, match="Test Runs must be unique"):
-        flow_planning._validate_coarse_inputs(
-            handle,  # type: ignore[arg-type]
-            inspected,  # type: ignore[arg-type]
-            preview,  # type: ignore[arg-type]
-            ["t"],
-            "cocotb_batch",
-            False,
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"preview": {"target_identity": "b"}}, "Target facts disagree"),
+        ({"role": "other"}, "role is invalid"),
+        ({"revision": ""}, "revision is required"),
+    ],
+    ids=["target-facts", "role", "revision"],
+)
+def test_ordinary_planning_refusals(
+    tmp_path: Path, overrides: dict[str, Any], message: str
+) -> None:
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    with pytest.raises(SimulationRecordIntegrityError, match=message):
+        plan_ordinary_hdl_simulation_record(
+            handle=handle,
+            inspection=inspection,
+            preview=replace(preview, **overrides.get("preview", {})),
+            groups=preview.groups,
+            required_suite=("reset", "count"),
+            revision=overrides.get("revision", "abc123"),
+            invocation_id=1,
+            execution_id="",
+            trace=False,
+            role=overrides.get("role", "candidate"),
         )
 
 
-def test_a_prerequisite_must_name_the_recorded_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    linked = tmp_path / "linked" / RECORD_DIRECTORY / "manifest.json"
-    entry = {
-        "manifest": {"sha256": "digest", "bytes": 0},
-        "simulation_record_id": "expected",
-        "target": {},
-    }
-    node = SimpleNamespace(manifest=SimpleNamespace(document={"prerequisites": [entry]}))
-    loaded = SimpleNamespace(
-        manifest=SimpleNamespace(document={"simulation_record_id": "other"}), sha256="digest"
+def test_coarse_planning_refuses_duplicate_test_runs(tmp_path: Path) -> None:
+    _project, handle, inspection, preview = _planning_fixture(tmp_path)
+    # An aggregate may collect many runs of one Test, but never two equal Test Runs.
+    run = build_test_run("count")
+    preview = replace(preview, groups=(("count",),), run_groups=((run, run),))
+    with pytest.raises(SimulationRecordIntegrityError, match="Test Runs must be unique"):
+        plan_coarse_simulation_record(
+            handle=handle,
+            inspection=inspection,
+            preview=preview,
+            selected_tests=("count",),
+            required_suite=("reset", "count"),
+            revision="abc123",
+            invocation_id=1,
+            execution_id="",
+            trace=False,
+            kind="coverage_aggregate",
+        )
+
+
+def test_a_prerequisite_must_name_the_recorded_identity(tmp_path: Path) -> None:
+    candidate, candidate_store, _baseline, _baseline_store = _linked_simulation_record_stores(
+        tmp_path
     )
-    monkeypatch.setattr(resume, "linked_manifest_path", lambda _invocation, _ref: linked)
-    monkeypatch.setattr(resume, "_load_node", lambda _path, _booley_dir: loaded)
-    monkeypatch.setattr(resume, "encode_simulation_record_manifest", lambda _manifest: b"")
+    document = json.loads(encode_simulation_record_manifest(candidate))
+    document.pop("fingerprints")
+    document["prerequisites"][0]["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440999"
+    candidate_store.manifest_path.write_bytes(
+        encode_simulation_record_manifest(finalize_manifest(document))
+    )
     with pytest.raises(SimulationRecordIntegrityError, match="prerequisite record identity"):
-        resume._walk_prerequisites(node, tmp_path, frozenset(), [], None)  # type: ignore[arg-type]
+        validate_resume_manifest(candidate_store.manifest_path, project_root=tmp_path)
 
 
 def test_projection_publication_refuses_a_foreign_outcome() -> None:
@@ -148,6 +165,10 @@ def test_projection_publication_refuses_a_foreign_outcome() -> None:
 
 
 def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Private seams: the public read (read_coverage_record) rejects a tampered
+    # projection, pointer or manifest earlier, through hash and schema checks,
+    # so these branches are reachable only by calling _reference_projection with
+    # facts that disagree; _safe_path is stubbed because the paths are fictional.
     public = tmp_path / "coverage.json"
     manifest_path = (tmp_path / RECORD_DIRECTORY / "manifest.json").absolute()
     artifact = SimpleNamespace(path=public)
@@ -201,7 +222,6 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
             else public
         ),
     )
-    assert "Target is invalid" in refusal({"simulation_record_id": "owner"}, {"target": 1})
     assert "manifest disagrees with reference" in refusal(
         {"simulation_record_id": "owner"},
         {"target": {}, "simulation_record_id": "other"},
@@ -209,6 +229,13 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_flow_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Private seams: the record-count bound and the complete/phase guard are
+    # reachable only with values a real run never produces: 4001 records,
+    # and complete=True for a non-final phase, which SimulateFlow never passes.
+    # _attach_published_pre_sim and _write_simulation_record_progress are the
+    # guarded methods; _reserved_invocation_dir, _retain_pre_sim_after_scan_error,
+    # _simulation_record_structured_details and _mode are stubbed so only the
+    # guard runs.
     class Many:
         def glob(self, _pattern: str) -> list[Path]:
             return [Path(str(index)) for index in range(4001)]

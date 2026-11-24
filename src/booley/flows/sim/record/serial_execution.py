@@ -15,11 +15,12 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import BoundaryError
 from booley.flows.artifact_durability import (
     durable_copy,
@@ -29,6 +30,7 @@ from booley.flows.artifact_durability import (
     fsync_directory,
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
+from booley.flows.job_resources import judged_commands_failing_on_error
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.build_session import project_compile_surface
@@ -62,6 +64,7 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.test_runs import TestRun
 from booley.runtime.endpoint_execution import work_item_attempt_requeues
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -96,6 +99,7 @@ from .model import (
     SimulationResult,
     SimulatorBundle,
     frozen_pre_sim_commands,
+    frozen_resource_flags,
     grade_observations,
 )
 from .planning import manifest_digest
@@ -107,6 +111,7 @@ from .run_directory import (
     require_run_directory_outside,
 )
 from .test_run_binding import observation_test_runs, work_item_test_runs
+from .test_run_files import TRACE_WARNING_CODE
 
 #: Where a build directory keeps its Simulator Bundle manifest.
 _BUNDLE_MANIFEST_PATH = "evidence/bundle.json"
@@ -133,6 +138,8 @@ class _SharedReady:
     result: BundleBuildResult
     bundle: SimulatorBundle
     build_execution: Mapping[str, object]
+    # The retained launch preparation every other lane of this build derives from.
+    preparation: _OrdinaryGroup | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +209,9 @@ class _OrdinaryGroup(Protocol):
     def artifact_paths(self) -> tuple[Path, ...]: ...
 
     def planning_disclosure(self) -> dict[str, object]: ...
+    def for_work_item(
+        self, test_names: tuple[str, ...], test_runs: tuple[TestRun, ...] | None
+    ) -> _OrdinaryGroup: ...
     def compile(self) -> BuildOutcome: ...
     def finish_build_failure(self) -> SimulationTargetOutcome: ...
     def build_recovery_document(self) -> dict[str, object]: ...
@@ -287,49 +297,64 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         )
         started = time.monotonic()
         inputs = self._group_inputs(request)
-        handle, names = inputs.handle, inputs.names
-        execution, workload = inputs.execution, inputs.workload
+        handle = inputs.handle
         try:
             with self._shared_lock(key):
-                failed = self._shared_failure.get(key)
-                if failed is not None:
-                    return _blocked_shared_result(request, failed, time.monotonic() - started)
-                ready = self._recover_shared(request, key)
-                recovered_failure = self._shared_failure.get(key)
-                if recovered_failure is not None:
-                    return _blocked_shared_result(
-                        request, recovered_failure, time.monotonic() - started
-                    )
-                compiled_group = None
-                if ready is None:
-                    built = self._build_shared(
-                        request, key, handle, names, execution, workload, started
-                    )
-                    if isinstance(built, SimulationResult):
-                        return built
-                    ready, compiled_group = built
+                settled = self._settle_shared(request, key, inputs, started)
+                if isinstance(settled, SimulationResult):
+                    return settled
+                ready, launch_group = settled
         finally:
             # The shared build is settled (built, reused, recovered or failed). Pre-Sim
-            # Commands run unmeasured after it, so their Jobs keep the build estimate.
-            if not frozen_pre_sim_commands(request.manifest):
-                end_phase(handle.selector, "sim_build")
-        return self._launch_shared(
-            request,
-            run_directory,
-            ready,
-            compiled_group,
-            inputs,
-            started,
-        )
+            # Commands are a phase of their own, so the build's estimate ends here.
+            end_phase(handle.selector, "sim_build")
+        # A ready build lets the item take a claim of its own before it runs Pre-Sim
+        # Commands and simulates; waiting for it holds no lock of the variant.
+        if request.build_settled is not None:
+            request.build_settled()
+        return self._launch_shared(request, run_directory, ready, launch_group, inputs, started)
 
-    def _launch_shared(self, request, run_directory, ready, compiled_group, inputs, started):
-        launch_group = (
-            compiled_group
-            if compiled_group is not None
-            else self._prepare_shared_launch(
-                request, ready, inputs.execution, inputs.handle, inputs.names
+    def _settle_shared(
+        self, request, key, inputs, started
+    ) -> SimulationResult | tuple[_SharedReady, _OrdinaryGroup | None]:
+        """Settle the build under the shared lock; the one lane that configures gets its group.
+
+        A lane that finds the retained preparation already made gets ``None``
+        and derives its launch from it without the Target slot lease.
+        """
+        failed = self._shared_failure.get(key)
+        if failed is not None:
+            return _blocked_shared_result(request, failed, time.monotonic() - started)
+        ready = self._recover_shared(request, key)
+        recovered_failure = self._shared_failure.get(key)
+        if recovered_failure is not None:
+            return _blocked_shared_result(request, recovered_failure, time.monotonic() - started)
+        if ready is None:
+            return self._build_shared(
+                request,
+                key,
+                inputs.handle,
+                inputs.names,
+                inputs.execution,
+                inputs.workload,
+                started,
             )
+        if ready.preparation is not None:
+            return ready, None
+        # A recovered build is configured once here, by the first lane that needs it.
+        group = self._prepare_shared_launch(
+            request, ready, inputs.execution, inputs.handle, inputs.names
         )
+        self._shared_ready[key] = replace(ready, preparation=group)
+        return self._shared_ready[key], group
+
+    def _launch_shared(self, request, run_directory, ready, launch_group, inputs, started):
+        if launch_group is None:
+            assert ready.preparation is not None
+            launch_group = ready.preparation.for_work_item(
+                inputs.names, work_item_test_runs(request.work_item)
+            )
+            _authenticate_planning_disclosure(request, launch_group)
         return self._claim_and_launch(
             request,
             run_directory,
@@ -407,7 +432,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         result, bundle = self._publish_ready(
             request, directory, attempt, captured.artifacts, captured.execution_ref, started
         )
-        ready = _SharedReady(directory, result, bundle, captured.build_execution)
+        ready = _SharedReady(directory, result, bundle, captured.build_execution, group)
         self._shared_ready[key] = ready
         return ready, group
 
@@ -608,6 +633,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             True,
             commands=frozen_pre_sim_commands(request.manifest),
             test_runs=work_item_test_runs(request.work_item),
+            resource_flags=frozen_resource_flags(request.manifest),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -694,6 +720,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             run_cwd=run_cwd,
             declarations=declarations,
             owned_run_directory=run_directory.owned,
+            booley_dir=resolve_checkout_booley_dir(request.project_root),
         ) as bindings:
             self._publication_checkpoint("after:runtime_inputs")
             failure = _immutable_hook_failure(
@@ -769,6 +796,7 @@ def _immutable_hook_failure(
         False,
         commands=frozen_pre_sim_commands(request.manifest),
         test_runs=work_item_test_runs(request.work_item),
+        resource_flags=frozen_resource_flags(request.manifest),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -846,6 +874,7 @@ def _run_hook(
     run_cwd: Path | None,
     expose_build_root: bool,
     *,
+    resource_flags: tuple[str, ...],
     commands: tuple[str, ...] | None = None,
     test_runs: tuple[TestRun, ...] = (),
 ):
@@ -860,6 +889,7 @@ def _run_hook(
         expose_build_root=expose_build_root,
         commands=commands,
         test_runs=test_runs,
+        resource_flags=resource_flags,
     )
 
 
@@ -1382,8 +1412,11 @@ def _launch_bundle(
     """Launch the record's bundle in place, verifying it before launch and after exit."""
     pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
     evidence_root = request.attempt_directory / "execution-evidence"
-    outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
-    post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
+    # The run's recorded outcome waits for the post-exit check: a bundle changed
+    # by the run is refused there, after the run's own verdict.
+    with judged_commands_failing_on_error(joinable=True):
+        outcome = group.launch_bundle(build_directory, evidence_root, run_cwd)  # type: ignore[attr-defined]
+        post_exit = verify_bundle_in_place(bundle, build_result, build_directory)
     return _bundle_result(
         request,
         build_directory,
@@ -1445,6 +1478,12 @@ def _bundle_result(
         diagnostics=tuple(
             item for item in outcome.diagnostics if item.startswith("artifact_persistence:")
         ),
+        trace_warnings=tuple(
+            warning
+            for artifact in outcome.artifacts
+            if artifact.kind == "trace"
+            for warning in artifact.warnings
+        ),
     )
 
 
@@ -1472,6 +1511,7 @@ def simulation_result(
     evidence: list[dict[str, object]],
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
+    trace_warnings: tuple[str, ...] = (),
 ) -> SimulationResult:
     """Build the terminal simulation result for a completed run."""
     observations = _named_observations(request.work_item, observations)
@@ -1490,23 +1530,31 @@ def simulation_result(
         "runtime_inputs": runtime_inputs or [],
         "observations": observations,
         "grade": _result_grade(observations),
-        "diagnostics": [
-            {
-                "severity": "warning",
-                "code": "artifact_persistence"
-                if item.startswith("artifact_persistence:")
-                else "execution",
-                "pointer": "",
-                "message": _bounded_reason(item),
-            }
-            for item in (*outcome_diagnostics_safe(evidence, request), *diagnostics)
-        ],
+        "diagnostics": _result_diagnostics(diagnostics, trace_warnings),
         "evidence": [
             *evidence,
             *request.store.pre_sim_references(request.attempt_directory),
         ],
     }
     return SimulationResult(document)
+
+
+def _result_diagnostics(
+    diagnostics: tuple[str, ...], trace_warnings: tuple[str, ...]
+) -> list[dict[str, object]]:
+    """The Result's warning diagnostics: persistence notes, then the waveform's conversion warnings."""
+    entries = [
+        (
+            "artifact_persistence" if item.startswith("artifact_persistence:") else "execution",
+            item,
+        )
+        for item in diagnostics
+    ]
+    entries.extend((TRACE_WARNING_CODE, warning) for warning in trace_warnings)
+    return [
+        {"severity": "warning", "code": code, "pointer": "", "message": _bounded_reason(message)}
+        for code, message in entries
+    ]
 
 
 def _result_grade(observations: list[dict[str, object]]) -> str:
@@ -1523,13 +1571,6 @@ def _result_grade(observations: list[dict[str, object]]) -> str:
     ]
     precedence = {"pass": 0, "inconclusive": 1, "fail": 2, "error": 3}
     return max(grades, key=lambda item: precedence[item.value]).value
-
-
-def outcome_diagnostics_safe(
-    evidence: list[dict[str, object]], request: WorkExecutionRequest
-) -> tuple[str, ...]:
-    del evidence, request
-    return ()
 
 
 def observation_document(
@@ -1766,7 +1807,8 @@ def capture_private_image(
     """Copy the build artifacts into *destination* and return their evidence records."""
     if not paths:
         raise SimulationRecordIntegrityError("successful build has no authenticated image")
-    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
+    make_directories(destination.parent)
+    destination.mkdir(mode=0o700, exist_ok=True)
     sources: list[tuple[Path, str]] = []
     executable_assigned = False
     for source in paths:
@@ -1794,7 +1836,7 @@ def capture_private_image(
     for source, kind in sources:
         authenticated = _regular_child(source_root, source.relative_to(source_root).as_posix())
         target = destination / authenticated.relative_to(source_root)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(target.parent)
         durable_copy(authenticated, target, mode=_ARTIFACT_MODES[kind])
         raw = target.read_bytes()
         records.append(

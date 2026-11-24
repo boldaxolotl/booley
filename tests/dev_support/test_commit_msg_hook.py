@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import os
 import shutil
@@ -14,7 +15,19 @@ from unittest.mock import patch
 import pytest
 from tests.subprocess_budget import run_bounded_child
 
+from booley.core.host_shell import quote_arg
+from booley.dev_support import commit_msg_hook
 from booley.dev_support.commit_msg_hook import main
+
+
+def test_bundled_hook_falls_back_to_the_host_shell_beside_it(monkeypatch: pytest.MonkeyPatch):
+    """Outside the Booley package the hook imports the copy bundled next to it."""
+    monkeypatch.setitem(sys.modules, "booley.core.host_shell", None)
+    monkeypatch.setitem(sys.modules, "host_shell", type(sys)("host_shell"))
+    sys.modules["host_shell"].quote_arg = quote_arg  # type: ignore[attr-defined]
+    spec = importlib.util.spec_from_file_location("bundled_hook", commit_msg_hook.__file__)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
 @pytest.fixture(autouse=True)
@@ -169,13 +182,15 @@ class TestBannedTermRejection:
             ["git", "init", "-q", str(project)],
             ["git", "-C", str(project), "config", key, value],
         ):
-            assert run_bounded_child(argv, timeout=10).returncode == 0
+            assert run_bounded_child(argv).returncode == 0
 
     def test_merge_commit_message_file_gets_merge_hint(self, tmp_path: Path):
-        rc, err, _ = _run_hook(tmp_path, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
+        folder = tmp_path / "it's $HOME"
+        folder.mkdir()
+        rc, err, _ = _run_hook(folder, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
         assert rc == 1
         assert "git commit -m" in err and "git merge" in err
-        assert 'git commit -v -e -F "' in err
+        assert f"git commit -v -e -F {quote_arg(str((folder / 'MERGE_MSG').resolve()))}" in err
 
     def test_plain_rejection_has_no_merge_hint(self, tmp_path: Path):
         _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
@@ -378,7 +393,7 @@ class TestMain:
             "[tool.booley]\nsource_checkout = true\n",
             encoding="utf-8",
         )
-        init = run_bounded_child(["git", "init", "-q", str(root)], timeout=10)
+        init = run_bounded_child(["git", "init", "-q", str(root)])
         assert init.returncode == 0, init.stderr
         support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
@@ -398,7 +413,6 @@ class TestMain:
         result = run_bounded_child(
             [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
             cwd=root,
-            timeout=10,
         )
 
         assert result.returncode == 0, result.stderr

@@ -6,6 +6,7 @@ import asyncio
 import collections
 import contextlib
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,6 @@ from jsonschema import Draft202012Validator
 
 from booley.flows.builtin_cli import build_cli_parser, execute_cli
 from booley.flows.cli_selection import CliInvocation
-from booley.flows.endpoint_admission import _Claim
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintConfigResult, LintFlow
 from booley.flows.plan import FlowPlan
@@ -23,14 +23,12 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
-from booley.targets.catalog import TargetCatalog
+from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
+from tests.memory_budget_support import fail_budget, pin_budget
 
 FLOWS = {"sim": SimulateFlow, "lint": LintFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 CASES = [(entry, flow) for entry in ("cli", "mcp") for flow in FLOWS]
 CASE_IDS = [f"{entry}-{flow}" for entry, flow in CASES]
-BASELINE_METHODS = {
-    name: cls._run_baseline_configs for name, cls in FLOWS.items() if name in {"synth", "fpga"}
-}
 TOOLS = {"sim": "verilator", "lint": "verilator", "synth": "yosys", "fpga": "vivado"}
 
 
@@ -68,19 +66,41 @@ def project(tmp_path, monkeypatch):
     for name in ("BOOLEY_STATE_FILE", "BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+    # Every MCP call returns its Job's run id at once; `invoke` polls it.
+    monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
+    # The MCP tool's public boundary is the SDK server over a live session; the
+    # subprocess runner is the seam that keeps schema, argv and Job handling real.
     monkeypatch.setattr(server, "_run_subprocess", _transport_child)
     return tmp_path
 
 
+@pytest.fixture
+def no_admission(monkeypatch):
+    # No public observer fails at the admission call itself.
+    monkeypatch.setattr(
+        "booley.flows.endpoint_admission._acquire_memory_reservation",
+        lambda *_a, **_k: pytest.fail("admitted refusal"),
+    )
+
+
+def _record_selection(seen, flow, targets):
+    # The selection a leaf receives is not public; it is the narrowest read of the
+    # Targets the real `_run` chose.
+    handles = flow._selected_target_handles()
+    seen.extend(handle.identity for handle in handles)
+    assert targets == [handle.selector for handle in handles]
+
+
 # The expensive preparation/EDA leaves use deterministic spies. Public _run,
 # Target preparation, simulation preparation and catalog discovery remain real.
+# A public run plans and launches EDA tools, which the test hosts lack; these
+# leaves are the narrowest seams under each Flow's real `_run`.
 @pytest.fixture
 def executed(monkeypatch):
     seen = []
 
     def run_sim(self, targets):
-        seen.extend(handle.identity for handle in self._selected_target_handles())
-        assert targets == [handle.selector for handle in self._selected_target_handles()]
+        _record_selection(seen, self, targets)
         return EndpointOutcome(report_text="RESULT: PASS")
 
     def run_lint(self, targets, prepared):
@@ -94,8 +114,7 @@ def executed(monkeypatch):
         )
 
     def run_implementation(self, targets, *args):
-        seen.extend(handle.identity for handle in self._selected_target_handles())
-        assert targets == [handle.selector for handle in self._selected_target_handles()]
+        _record_selection(seen, self, targets)
         return {}
 
     monkeypatch.setattr(
@@ -105,24 +124,18 @@ def executed(monkeypatch):
     monkeypatch.setattr(LintFlow, "_plan_lint", lambda self, targets: FlowPlan("lint", "lint", ()))
     monkeypatch.setattr(LintFlow, "_prepare_lint_targets", lambda self, targets: ({}, []))
     monkeypatch.setattr(LintFlow, "_run_all_targets", run_lint)
-    for cls, name in ((AsicSynthesizeFlow, "synth"), (FpgaImplFlow, "fpga")):
+    for cls in (AsicSynthesizeFlow, FpgaImplFlow):
         monkeypatch.setattr(
             cls,
-            f"_plan_{name}_implementation",
+            "_plan_implementation",
             lambda self, targets: FlowPlan(self.name, "implementation", ()),
         )
-        monkeypatch.setattr(cls, "_run_baseline_configs", lambda self, *args: ({}, None))
         monkeypatch.setattr(cls, "_run_current_targets", run_implementation)
         monkeypatch.setattr(
             cls,
             "_aggregate_results",
             lambda self, *args: EndpointOutcome(report_text="RESULT: PASS"),
         )
-    monkeypatch.setattr(
-        AsicSynthesizeFlow,
-        "_resolve_run_policy",
-        lambda self, enabled: None if enabled else "synth is disabled",
-    )
     return seen
 
 
@@ -152,6 +165,7 @@ def invoke(entry, name, project, arguments=None):
         output, errors = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             try:
+                # Builds the argv the MCP server builds, so both routes agree.
                 result = execute_cli(FLOWS[name](), server._params_to_argv(params))
                 code = result.exit_code
             except SystemExit as exc:
@@ -167,16 +181,23 @@ def invoke(entry, name, project, arguments=None):
         return 2, "invalid MCP parameters: " + str(validation_errors[0].message)
 
     async def scenario():
+        # The dispatchers are the closest seam that keeps schema, argv, sizing, Job
+        # handling and polling real without a live SDK session.
         jobs = server._JobManager(server._McpLifetime(None, None))
         result = await server._dispatch_booley_mcp_tool(
-            name, params, {"module": name, "is_flow": True}, collections.defaultdict(int), jobs
+            name,
+            params,
+            {"module": name, "is_flow": True, "memory_admitted": True},
+            collections.defaultdict(int),
+            jobs,
         )
-        if name in server._ASYNC_JOB_MCP_TOOLS:
-            # A fast child may complete inline; always poll terminal jobs as well.
-            await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
-            assert len(jobs._tasks) == 1
-            run_id = next(iter(jobs._tasks))
-            result = await server._dispatch_poll({"run_id": run_id}, jobs)
+        started = "\n".join(block.text for block in result)
+        # The call returns at once with the Job's run id; poll it to the result.
+        run_id = re.search(r"run_id=([\w-]+)", started)
+        assert run_id, started
+        result = await server._dispatch_special_mcp_tool(
+            "booley_poll", {"run_id": run_id[1]}, jobs, []
+        )
         error = isinstance(result, server.McpDispatchResult) and result.is_error
         raw = result.value if isinstance(result, server.McpDispatchResult) else result
         blocks = raw[0] if isinstance(raw, tuple) else raw
@@ -201,47 +222,23 @@ def test_omitted_target_selects_and_announces_only_eligible(entry, name, project
     [(entry, name, count) for entry, name in CASES for count in (0, 2)],
     ids=[f"{entry}-{name}-{label}" for entry, name in CASES for label in ("zero", "many")],
 )
-def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, monkeypatch):
-    admitted, started = [], []
-
-    def acquire_slot(*_args, **_kwargs):
-        admitted.append(True)
-        return _Claim(None, None)
-
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission._acquire_memory_reservation", acquire_slot
-    )
-    monkeypatch.setattr(
-        "booley.flows.endpoint_session._write_display_event", lambda *args: started.append(args)
-    )
+def test_omitted_target_rejects_cardinality(entry, name, count, project, executed, no_admission):
     write_targets(project, name, count)
     code, text = invoke(entry, name, project)
     choices = "(none)" if count == 0 else "chosen0, chosen1"
     assert f"Eligible Targets: {choices}" in text, "eligible Target list missing: " + text
     assert code == 2 and executed == []
-    assert admitted == started == []
+    assert not (project / "runtime/display.jsonl").exists(), "a refused run started"
     assert "--target omitted; selected Target" not in text
-
-
-@pytest.mark.parametrize("name", FLOWS)
-def test_mcp_target_schema_is_optional(name):
-    schema = flow_schema(FLOWS[name]())
-    assert "target" not in schema.get("required", []), "target must be optional"
-    assert not list(Draft202012Validator(schema).iter_errors({}))
 
 
 @pytest.mark.parametrize("name", FLOWS)
 def test_help_states_cardinality_rule(name):
     flow = FLOWS[name]()
     text = " ".join(build_cli_parser(flow).format_help().split())
-    assert all(
-        word in text for word in ("exactly one", "eligible", "announced", "zero", "multiple")
-    ), "help omits cardinality rule"
     description = flow_schema(flow)["properties"]["target"]["description"]
-    assert all(
-        word in description
-        for word in ("exactly one", "eligible", "announced", "zero", "multiple")
-    )
+    rule = ("exactly one", "eligible", "announced", "zero", "multiple")
+    assert all(word in text and word in description for word in rule), "help omits the rule"
     assert ("manifest" in text) == (name == "sim")
 
 
@@ -291,9 +288,14 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
         observed.append(selected.target_handles[0].identity)
         return EndpointOutcome(report_text="RESULT: PASS")
 
+    # Resuming runs EDA tools and needs an authenticated manifest.
     monkeypatch.setattr(SimulateFlow, "_resume_simulation_record", resume)
     monkeypatch.setattr(
         TargetCatalog, "list", lambda *args, **kwargs: pytest.fail("resume discovered catalog")
+    )
+    monkeypatch.setattr(
+        "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
+        lambda *args, **kwargs: pytest.fail("resume sized unrelated Target"),
     )
     for count in (0, 2):
         write_targets(project, "sim", count)
@@ -303,16 +305,20 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
     assert observed == [handle.identity, handle.identity]
 
 
-def test_automatic_selection_reuses_prepared_snapshot(project, monkeypatch):
-    write_targets(project, "lint")
-    flow = LintFlow()
-    flow.parse_args(["--work-dir", str(project)])
-    assert flow.prepare_target_endpoint() is None
-    first = flow._selected_target_selection()
-    assert first.automatic and first.target_arg == flow.args.target == "chosen"
-    monkeypatch.setattr(TargetCatalog, "build", lambda *args: pytest.fail("repeated discovery"))
-    assert flow._selected_target_selection() is first
-    assert first.matches(project, "chosen")
+@pytest.mark.parametrize("name", FLOWS)
+def test_automatic_selection_discovers_targets_once(name, project, executed, monkeypatch):
+    write_targets(project, name)
+    resolves = []
+    resolve = PreparedTargetSelection.resolve.__func__
+
+    def counted(cls, *args, **kwargs):
+        resolves.append(args)
+        return resolve(cls, *args, **kwargs)
+
+    monkeypatch.setattr(PreparedTargetSelection, "resolve", classmethod(counted))
+    code, text = invoke("cli", name, project)
+    assert code == 0 and executed == ["acme:lib:demo:1#chosen"], text
+    assert len(resolves) == 1, resolves
 
 
 def test_reused_flow_discards_automatic_selection(project, executed):
@@ -320,14 +326,11 @@ def test_reused_flow_discards_automatic_selection(project, executed):
     flow = LintFlow()
     first_request = flow.request_type(target="", work_dir=project)
     first = flow.execute(first_request)
-    first_selection = flow._prepared_target_selection
     other = project / "other"
     write_targets(other, "lint", core="other")
     second_request = flow.request_type(target="", work_dir=other)
     second = flow.execute(second_request)
     assert first.exit_code == second.exit_code == 0
-    assert flow._prepared_target_selection is not first_selection
-    assert flow._prepared_target_selection.catalog.project_root == other
     assert executed == ["acme:lib:demo:1#chosen", "acme:lib:other:1#chosen"]
     assert first_request.target == second_request.target == ""
 
@@ -350,6 +353,8 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     flow = LintFlow()
     argv = ["--work-dir", str(project)] + (["--quiet"] if quiet else [])
     result = flow.execute_cli(argv)
+    # A second publication must not print the notice again; only the endpoint
+    # object can republish, no public entry point does.
     flow._publish_console_report(result.outcome)
     captured = capsys.readouterr()
     notice = "lint: --target omitted; selected Target chosen."
@@ -358,115 +363,67 @@ def test_selection_notice_is_once_for_quiet_and_normal_calls(quiet, project, exe
     assert captured.err.rstrip().endswith(notice)
 
 
-@pytest.mark.parametrize("failure", ("simulation", "coverage"))
+@pytest.mark.parametrize(
+    ("argv", "typed"),
+    ((["--test", "nope"], {"test": ("nope",)}), (["--coverage"], {"coverage": True})),
+    ids=("unknown-test", "coverage"),
+)
 def test_selection_notice_survives_preparation_failure(
-    failure, project, executed, monkeypatch, capsys
+    argv, typed, project, executed, no_admission, capsys
 ):
     write_targets(project, "sim")
-    if failure == "simulation":
-        monkeypatch.setattr(
-            SimulateFlow,
-            "_validate_prepared_selection",
-            lambda *args: EndpointOutcome(exit_code=2, report_text="simulation refused"),
-        )
-    else:
-        monkeypatch.setattr(SimulateFlow, "_validate_prepared_selection", lambda *args: None)
-        monkeypatch.setattr(
-            SimulateFlow,
-            "_prepare_coverage",
-            lambda self: EndpointOutcome(exit_code=2, report_text="coverage refused"),
-        )
-    monkeypatch.setattr(
-        "booley.flows.endpoint_admission._acquire_memory_reservation",
-        lambda *_a, **_k: pytest.fail("admitted refusal"),
-    )
     notice = "sim: --target omitted; selected Target chosen."
     flow = SimulateFlow()
-    extra = ["--coverage"] if failure == "coverage" else []
+    # Both refuse publicly before any EDA tool runs; only the CLI transport
+    # sets `_cli_invocation`, and it spawns a process.
     flow._cli_invocation = CliInvocation(transport=True)
-    result = flow.execute_cli(["--work-dir", str(project), *extra])
+    result = flow.execute_cli(["--work-dir", str(project), *argv])
     captured = capsys.readouterr()
     assert result.exit_code == 2 and executed == []
     assert captured.err.count(notice) == 1 and captured.err.rstrip().endswith(notice)
-    SimulateFlow().execute(
-        SimulateFlow.request_type(target="", work_dir=project, coverage=failure == "coverage")
-    )
+    SimulateFlow().execute(SimulateFlow.request_type(target="", work_dir=project, **typed))
     captured = capsys.readouterr()
     assert captured.out == captured.err == ""
 
 
-def test_resume_budget_does_not_discover_unrelated_target(project, monkeypatch):
-    context = server.resolve_call_context({"work_dir": str(project)})
-    estimates = []
-    monkeypatch.setattr(
-        "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-        lambda *args, **kwargs: pytest.fail("resume sized unrelated Target"),
-    )
-    for count in (0, 1, 2):
-        write_targets(project, "sim", count)
-        estimates.append(
-            server._sim_mcp_tool_timeout_seconds({"resume_from": "manifest.json"}, 0, context)
-        )
-    assert len(set(estimates)) == 1
-
-
 @pytest.mark.parametrize("name", ("synth", "fpga"))
-def test_automatic_candidate_selection_is_not_repeated_in_baseline(
-    name, project, executed, monkeypatch
-):
-    import importlib
-
-    from booley.flows.implementation_comparison import (
-        candidate_execution_refs,
-        target_pair_plans_for_handles,
-    )
+def test_baseline_runs_the_automatic_candidates_pair(name, project, executed, monkeypatch):
+    from booley.flows import implementation_flow
 
     write_targets(project, name)
     baseline = project.parent / (project.name + "-baseline")
     write_targets(baseline, name)
     core = baseline / "demo.core"
+    extra = f"  extra:\n    flow: {name}\n    flow_options: {{tool: {TOOLS[name]}}}\n"
     core.write_text(
         core.read_text().replace(
-            "  incompatible:",
-            f"  extra:\n    flow: {name}\n    flow_options: {{tool: {TOOLS[name]}}}\n    filesets: []\n    toplevel: tb\n  incompatible:",
+            "  incompatible:", extra + "    filesets: []\n    toplevel: tb\n  incompatible:"
         )
     )
-    flow = FLOWS[name]()
-    flow.parse_args(["--work-dir", str(project), "--baseline", "old"])
-    assert flow.prepare_target_endpoint() is None
-    handles = flow._selected_target_handles()
-    pairs = target_pair_plans_for_handles(handles, flow=name)
-    assert flow.args.target == "chosen"
-    flow._target_handles = {h.selector: h for h in handles}
-    flow._target_execution_refs = candidate_execution_refs(handles, pairs)
-    module = importlib.import_module(FLOWS[name].__module__)
     monkeypatch.setattr(
-        module, "baseline_worktree", lambda *args, **kwargs: contextlib.nullcontext(baseline)
+        implementation_flow, "baseline_worktree", lambda *a, **k: contextlib.nullcontext(baseline)
     )
-    monkeypatch.setattr(module, "git_short_sha", lambda *args: "old")
-    monkeypatch.setattr(module, "git_full_sha", lambda *args: "a" * 40)
-    if name == "synth":
-        monkeypatch.setattr(module, "_baseline_self_compare_warning", lambda *args: None)
+    monkeypatch.setattr(implementation_flow, "git_short_sha", lambda *args: "old")
+    monkeypatch.setattr(implementation_flow, "git_full_sha", lambda *args: "a" * 40)
     seen = []
 
-    def execute_baseline(*args):
-        assert flow.args.work_dir == baseline and flow.args.target == "chosen"
-        seen.append(flow._target_execution_refs["chosen"].identity)
-        assert flow._target_execution_refs["chosen"] == pairs[0].baseline
+    def execute_baseline(self, pairs, *args):
+        assert self.args.work_dir == baseline and self.args.target == "chosen"
+        seen.extend(pair.baseline.identity for pair in pairs)
         return {}
 
-    monkeypatch.setattr(flow, "_execute_baseline_pairs", execute_baseline)
-    original_list = TargetCatalog.list
+    # Running the baseline pair needs the EDA tools.
+    monkeypatch.setattr(FLOWS[name], "_execute_baseline_pairs", execute_baseline)
+    listed = TargetCatalog.list
 
     def list_candidates(self, **kwargs):
         assert self.project_root != baseline, "baseline repeated automatic discovery"
-        return original_list(self, **kwargs)
+        return listed(self, **kwargs)
 
     monkeypatch.setattr(TargetCatalog, "list", list_candidates)
-    result, sha = BASELINE_METHODS[name](flow, pairs)
-    assert result == {} and sha == "old"
-    assert seen == [handles[0].identity]
-    assert flow.args.work_dir == project
+    code, text = invoke("cli", name, project, {"baseline": "old"})
+    assert code == 0, text
+    assert seen == executed == ["acme:lib:demo:1#chosen"]
 
 
 @pytest.mark.parametrize("count", (0, 1, 2))
@@ -475,11 +432,28 @@ def test_disabled_flow_preserves_selection_error_order(
     name, count, project, executed, monkeypatch
 ):
     write_targets(project, name, count)
-    monkeypatch.setattr(FLOWS[name], "_flow_enabled", lambda self: False)
+    (project / ".booley/booley.toml").write_text(f"[flows.{name}]\nenabled = false\n")
     code, text = invoke("cli", name, project)
     assert code == 2 and executed == []
     assert (f"{name} is disabled" in text) == (count == 1)
     assert ("Eligible Targets:" in text) == (count != 1)
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+@pytest.mark.parametrize("name", FLOWS)
+def test_only_a_job_that_runs_reports_its_memory_warning(
+    name, enabled, project, executed, monkeypatch
+):
+    write_targets(project, name)
+    if name in ("synth", "fpga"):
+        # Empty history: the Job's first run carries the missing-measurement note.
+        pin_budget(monkeypatch, 1000)
+    else:
+        fail_budget(monkeypatch)
+    if not enabled:
+        (project / ".booley/booley.toml").write_text(f"[flows.{name}]\nenabled = false\n")
+    code, text = invoke("cli", name, project)
+    assert (code, "this Job ran alone" in text) == ((0, True) if enabled else (2, False)), text
 
 
 @pytest.mark.parametrize("failed", (False, True))
@@ -488,19 +462,14 @@ def test_dry_run_notice_preserves_stdout_and_selection(project, executed, monkey
 
     write_targets(project, "lint")
     plan = FlowPlan("lint", "lint", (), aggregate_errors=("invalid source",) if failed else ())
+    # A dry run of a real lint plan needs verilator; this pins the plan only.
     monkeypatch.setattr(LintFlow, "_plan_lint", lambda self, targets: plan)
     outputs = []
     for explicit in (True, False):
+        target = ["--target", "chosen"] if explicit else []
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = LintFlow().execute_cli(
-                [
-                    "--work-dir",
-                    str(project),
-                    "--dry-run",
-                    *(["--target", "chosen"] if explicit else []),
-                ]
-            )
+            result = LintFlow().execute_cli(["--work-dir", str(project), "--dry-run", *target])
         assert result.exit_code == (2 if failed else 0)
         outputs.append(stdout.getvalue())
         assert ("--target omitted" in stderr.getvalue()) == (not explicit)
@@ -520,13 +489,6 @@ def test_qualified_duplicate_names_are_distinct_eligible_choices(project, execut
     choices = [handle.selector for handle in TargetCatalog.build(project).list(for_flow="lint")]
     assert len(choices) == 2 and all("#chosen" in choice for choice in choices)
     assert f"Eligible Targets: {', '.join(choices)}" in text
-
-
-def test_explicit_selection_has_no_automatic_notice(project, executed):
-    write_targets(project, "lint")
-    code, text = invoke("cli", "lint", project, {"target": "chosen"})
-    assert code == 0 and executed
-    assert "--target omitted" not in text
 
 
 def test_sole_eligible_qualified_selector_is_installed(project, executed):

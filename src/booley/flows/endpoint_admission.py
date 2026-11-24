@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,10 +59,11 @@ class AdmissionContext:
     A Simulation Record sizes lanes from the container's cores and admits
     each work item by its own claim, once ``memory_sizing`` is set.
     ``memory_warning`` is the warning that Job's result carries (it ran alone
-    because its estimate exceeded the Memory Budget, or the budget was
-    unavailable). ``memory_sizing`` lets a Job give each Simulation Record work item
-    its own claim, and is set for every managed admission (a Job's work items,
-    such as a mutation campaign's builds and simulations, take claims too).
+    because its estimate exceeded the Memory Budget, the budget was
+    unavailable, or its Target had no measurement of a size-dependent phase).
+    ``memory_sizing`` lets a Job give each Simulation Record work item its own
+    claim, and is set for every managed admission (a Job's work items, such as
+    a mutation campaign's builds and simulations, take claims too).
     """
 
     mode: str
@@ -91,6 +92,15 @@ class AdmissionContext:
             execution_id or ExecutionId(uuid.uuid4().hex),
         )
 
+    def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
+        """The label for a work item's claim: the Job's own, narrowed to the item.
+
+        ``None`` when the Job's claim carries no label, so the item's holder reads ``pid N``.
+        """
+        token = self.outer_token
+        label = token.job if isinstance(token, job_slots.SlotToken) else None
+        return None if label is None else label.for_work_item(target, tests)
+
 
 @dataclass(frozen=True, slots=True)
 class _Claim:
@@ -103,7 +113,7 @@ class _Claim:
     """
 
     store: job_slots.SlotStore | None
-    token: object | None
+    token: job_slots.SlotToken | None
     plan: MemoryAdmissionPlan | None = None
     threads: int | None = None
     sizing: MemorySizing | None = None
@@ -143,7 +153,7 @@ class AdmissionGate:
             raise RuntimeError("AdmissionGate may be entered exactly once")
         self._entered = True
         store: job_slots.SlotStore | None = None
-        token: object | None = None
+        token: job_slots.SlotToken | None = None
         try:
             execution_id = _runtime_execution_id()
             claim = self._claim()
@@ -151,7 +161,7 @@ class AdmissionGate:
             token_execution_id = getattr(token, "execution_id", None)
             if token_execution_id is not None and token_execution_id != execution_id:
                 raise AdmissionIdentityError(
-                    f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
+                    f"managed Memory Reservation execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
                 )
             role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
@@ -216,9 +226,9 @@ def _admission_cancellation_cause(
 
     def cause() -> str | None:
         if token.lease_health.lost.is_set():
-            return f"Job Slot lease lost: {slot}"
+            return f"Memory Reservation lease lost: {slot}"
         if store.token_absent(token):
-            return f"Job Slot token missing: {slot}"
+            return f"Memory Reservation missing: {slot}"
         return None
 
     return cause
@@ -271,16 +281,16 @@ def _admission_rejection(
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.ClaimLostError):
-        logger.error("Queued %s run was cancelled before it started", endpoint.name)
+        logger.debug("Queued %s run was cancelled before it started", endpoint.name)
         text = (
             f"CANCELLED: this queued '{endpoint.name}' run was "
             f"withdrawn (booley_cancel) before it started."
         )
     elif isinstance(exc, SeatCapError):
-        logger.error("%s admission refused: %s", endpoint.name, exc)
+        logger.debug("%s admission refused: %s", endpoint.name, exc)
         text = f"{endpoint.name}: {exc}"
     else:
-        logger.error(
+        logger.debug(
             "%s admission refused: invalid %s: %s", endpoint.name, RUNTIME_EXECUTION_ENV, exc
         )
         text = f"{endpoint.name}: invalid {RUNTIME_EXECUTION_ENV}: {exc}"
@@ -296,7 +306,7 @@ def _admission_root(endpoint: EndpointState) -> tuple[Path | None, Path] | None:
     """
     inherited = os.environ.get(job_slots.INHERITED_SLOT_ENV)
     if inherited:
-        logger.debug("%s runs under its parent's %s slot", endpoint.name, inherited)
+        logger.debug("%s runs under its parent's %s Memory Reservation", endpoint.name, inherited)
         return None
     try:
         project = resolve_common_booley_dir()
@@ -331,10 +341,10 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 
     Direct Flow diagnostics run in-process without logging configured and
     without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
-    looking like a hang with no hint that another job held the slot (F-27).
+    looking like a hang with no hint that another job held the Memory Reservation (F-27).
     """
     logger.info("%s: %s", endpoint.name, line)
-    print(f"[slot] {endpoint.name}: {line}", file=sys.stderr, flush=True)
+    print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)
     _write_display_event(
         _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
     )
@@ -342,15 +352,13 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
 
 def _memory_narrator(
     endpoint: EndpointState, store: job_slots.SlotStore, pid: int
-) -> Callable[[int], None]:
-    """Narrate a queued memory claim: its need, the free memory, its position and the holders."""
+) -> Callable[[int | None], None]:
+    """Narrate a queued memory claim: what holds it, its position and the largest holders."""
 
-    def narrate(_position: int) -> None:
+    def narrate(_position: int | None) -> None:
         wait = store.memory_wait(pid)
         if wait is not None:  # None: promoted since the tick, nothing left to wait for
-            _narrate_line(
-                endpoint, f"waiting for memory (position {wait.position}): {wait.describe()}"
-            )
+            _narrate_line(endpoint, f"queued (position {wait.position}): {wait.describe()}")
 
     return narrate
 

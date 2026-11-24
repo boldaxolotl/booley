@@ -34,11 +34,9 @@ on:
       - "src/booley/config/**"
       - "src/booley/commit_policy/**"
       - "src/booley/core/**"
-      - "src/booley/criteria/**"
       - "src/booley/data/docker/**"
       - "src/booley/data/edalize/**"
       - "src/booley/data/__init__.py"
-      - "src/booley/data/criteria.toml"
       - "src/booley/dev_support/__init__.py"
       - "src/booley/dev_support/commit_msg_utils.py"
       - "src/booley/dev_support/demo_contract.py"
@@ -342,7 +340,7 @@ jobs:
             -e BOOLEY_IMAGE_DIGEST \
             -e BOOLEY_MEASUREMENT_EVIDENCE=/evidence/measurement.json \
             -e PYTHONPATH=/booley-source/src \
-            -e BOOLEY_MCP_MODE=interactive \
+            -e BOOLEY_MCP_DEVELOPER_AGENT=1 \
             booley-riscv-test bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '

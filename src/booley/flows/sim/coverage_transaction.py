@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .coverage_acceptance import coverage_test_run_rows
@@ -43,7 +44,7 @@ def _coverage_record(plan: CoverageTargetPlan, result: CoverageCollectionResult)
     points = () if incompatible else result.points
     scoreable = result.status == "complete" and not incompatible
     return CoverageRecord(
-        coverage_record_id=f"campaign:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
+        coverage_record_id=f"coverage-record:{plan.started_at}:{plan.invocation_dir.name}:{plan.handle.identity}",
         invocation=freeze_coverage_mapping(
             {"id": int(plan.invocation_dir.name), "started_at": plan.started_at}
         ),
@@ -201,7 +202,7 @@ def _execute_coverage_transaction(
 def _start_target(root: Path) -> None:
     if any((root / name).exists() for name in ("coverage.json", POINT_STORE_NAME, "native")):
         raise ValueError("Coverage attempts cannot resume; allocate a new invocation")
-    root.mkdir(parents=True, exist_ok=True)
+    make_directories(root)
     # Exclusive creation also rejects an interrupted build with no native output.
     with (root / ".collection-started").open("x", encoding="utf-8"):
         pass
@@ -262,7 +263,8 @@ def _evaluate(plan: CoverageTargetPlan, coverage_record: CoverageRecord) -> Cove
             evaluation=freeze_coverage_mapping(evaluation),
             findings=(*coverage_record.findings, *exc.findings),
         )
-    return evaluate_coverage_record(coverage_record, plan.criterion, waivers)
+    evaluated = evaluate_coverage_record(coverage_record, plan.criterion, waivers)
+    return replace(evaluated, findings=(*evaluated.findings, *waivers.advisories))
 
 
 def _transaction_error(

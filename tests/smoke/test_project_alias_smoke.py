@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.smoke.test_verilator_coverage_collector_smoke import _write_generated_target
+from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -46,7 +47,7 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
             report_dir=alias / "trace-reports",
             test=("good",),
             trace=True,
-            timeout_ms=90_000,
+            timeout_ms=3 * hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -84,7 +85,7 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
                 test=(name,),
                 coverage=True,
                 trace=True,
-                timeout_ms=90_000,
+                timeout_ms=3 * hang_guard_s() * 1000,
             )
         )
         assert result.exit_code == expected, result.outcome.report_text
@@ -109,7 +110,7 @@ def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
             work_dir=root,
             report_dir=alias / "linked/reports",
             test=("good",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert refused.exit_code == 2

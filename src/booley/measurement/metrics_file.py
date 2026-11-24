@@ -1,8 +1,9 @@
 """Load ``metrics.toml``: the Target Metrics a Project declares, and each table's effective rules.
 
 One table per Target and Flow, ``[<target>.<flow>]``, holds absolute bounds
-(``<metric>_max`` / ``<metric>_min``), ``track``, ``off`` and ``notes``;
-``[defaults.<flow>]`` adds bounds to every table of that Flow. A key is split on
+(``<metric>_max`` / ``<metric>_min``), ``track``, ``off`` and ``notes``, plus the
+integer settings a Flow declares (a ``mutation`` table's ``count`` and ``seed``);
+``[defaults.<flow>]`` adds bounds and settings to every table of that Flow. A key is split on
 its last dot; the prefix is a clock for a per-clock metric and a test selector
 for a per-test metric, as the Flow declares (ADR 0092, issue #3045).
 
@@ -23,17 +24,22 @@ import json
 import math
 import re
 import tomllib
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
-from booley.core.boundary import is_str_list, require_finite_number_value
-from booley.flows.metric_declarations import MetricKind
+from booley.core.boundary import is_str_list, require_finite_number_value, require_int
+from booley.flows.metric_declarations import FlowSetting, MetricDeclaration, MetricKind
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 from booley.flows.test_runs import SeedCount, parse_test_selector
-from booley.measurement.flow_metrics import flows_with_metric_declarations, metric_declarations
+from booley.measurement.flow_metrics import (
+    flow_settings,
+    flows_with_metric_declarations,
+    metric_declarations,
+)
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
@@ -49,6 +55,8 @@ _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 _RELATIVE_BOUND = re.compile(
     r"(?P<metric>.+?)_(?P<change>increase|reduce)_at_(?P<how>most|least)(?:_[a-z]+)?"
 )
+# A relative change such as "+10%" or "-5%", which a bound value cannot hold.
+_PERCENTAGE = re.compile(r"\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*%\s*")
 _RELATIVE_LIMIT: dict[tuple[str, str], Limit] = {
     ("increase", "most"): "max",
     ("reduce", "least"): "max",
@@ -91,6 +99,8 @@ class TableRules:
     flow: str
     bounds: tuple[Bound, ...]
     tracked: tuple[TrackedMetric, ...]
+    # The effective integer settings (``count``, ``seed``) the Flow child gets; ``{}`` if none.
+    settings: Mapping[str, int] = field(default_factory=dict[str, int])
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,7 @@ class _Body:
     tracked: list[TrackedMetric]
     off: list[_Ref]
     notes: list[tuple[_Ref, str]]
+    settings: dict[str, int] = field(default_factory=dict[str, int])
 
 
 def toml_key(part: str) -> str:
@@ -280,9 +291,9 @@ class _Loader:
         )
         return False
 
-    def _load_defaults(self, section: object) -> dict[str, list[Bound]]:
-        """The ``[defaults.<flow>]`` bounds by Flow."""
-        defaults: dict[str, list[Bound]] = {}
+    def _load_defaults(self, section: object) -> dict[str, _Body]:
+        """The ``[defaults.<flow>]`` bounds and settings by Flow."""
+        defaults: dict[str, _Body] = {}
         if not isinstance(section, dict):
             self.error("", "defaults", self._holds_only("defaults"))
             return defaults
@@ -293,9 +304,7 @@ class _Loader:
             if not isinstance(body, dict):
                 self.error(table_header("defaults"), flow, self._holds_only("defaults"))
                 continue
-            defaults[flow] = self._parse_body(
-                header, flow, cast(dict[str, Any], body), None
-            ).bounds
+            defaults[flow] = self._parse_body(header, flow, cast(dict[str, Any], body), None)
         return defaults
 
     def _load_table(
@@ -303,7 +312,7 @@ class _Loader:
         target: str,
         flow: str,
         body: dict[str, Any],
-        defaults: dict[str, list[Bound]],
+        defaults: dict[str, _Body],
         identities: dict[tuple[str, str], str],
     ) -> TableRules | None:
         """One ``[<target>.<flow>]`` table's effective rules, or ``None`` after an error."""
@@ -321,11 +330,18 @@ class _Loader:
         parsed = self._parse_body(header, flow, body, identity)
         if len(self.errors) != before:
             return None
-        rules = self._effective(header, parsed, defaults.get(flow, []))
+        default_body = defaults.get(flow, _Body([], [], [], []))
+        rules = self._effective(header, parsed, default_body.bounds)
         if rules is None:
             return None
+        settings = {
+            setting.name: parsed.settings.get(
+                setting.name, default_body.settings.get(setting.name, setting.default)
+            )
+            for setting in flow_settings(flow)
+        }
         self.switched_off[(target, flow)] = frozenset(ref.address for ref in parsed.off)
-        return TableRules(target, identity, flow, rules[0], rules[1])
+        return TableRules(target, identity, flow, rules[0], rules[1], settings)
 
     def _resolve_target(self, header: str, target: str) -> str | None:
         """The identity (``vlnv#name``) a Target key selects, or ``None`` after an error."""
@@ -366,6 +382,8 @@ class _Loader:
                     self._parse_reserved(header, flow, identity, key, value, parsed)
             elif isinstance(value, dict):
                 self._nested_error(header, key, value)
+            elif setting := next((item for item in flow_settings(flow) if item.name == key), None):
+                self._parse_setting(header, setting, value, parsed)
             else:
                 self._parse_bound(header, flow, identity, key, value, parsed)
         return parsed
@@ -383,6 +401,22 @@ class _Loader:
             "\n".join(corrected) or None,
         )
 
+    def _parse_setting(self, header: str, setting: FlowSetting, value: object, out: _Body) -> None:
+        """Parse a Flow setting: an integer of at least the setting's minimum."""
+        try:
+            number = require_int(value, field=setting.name)
+        except ValueError as exc:
+            self.error(header, setting.name, str(exc))
+            return
+        if number < setting.minimum:
+            self.error(
+                header,
+                setting.name,
+                f"{setting.name} must be at least {setting.minimum}, got {number}",
+            )
+            return
+        out.settings[setting.name] = number
+
     def _parse_bound(
         self, header: str, flow: str, identity: str | None, key: str, value: object, out: _Body
     ) -> None:
@@ -392,12 +426,39 @@ class _Loader:
         try:
             number = require_finite_number_value(value, field=key)
         except ValueError as exc:
-            self.error(header, key, str(exc))
+            message = str(exc)
+            if isinstance(value, str) and _PERCENTAGE.fullmatch(value):
+                message += (
+                    "; a bound is an absolute number, not a percentage, and a relative"
+                    " bound key such as `<metric>_increase_at_most` is rejected too"
+                )
+            self.error(header, key, message)
+            return
+        declaration = next(d for d in metric_declarations(flow) if d.name == ref.metric)
+        if self._range_error(header, key, declaration, number):
             return
         assert ref.limit is not None  # a bound key always ends in _max or _min
         out.bounds.append(
             Bound(key, ref.metric, ref.limit, number, ref.prefix, ref.test_run, None)
         )
+
+    def _range_error(
+        self, header: str, key: str, declaration: MetricDeclaration, number: float
+    ) -> bool:
+        """Record an error and return ``True`` when *number* lies outside the metric's range."""
+        low, high = declaration.minimum, declaration.maximum
+        if low is not None and number < low:
+            nearest = low
+        elif high is not None and number > high:
+            nearest = high
+        else:
+            return False
+        if low is not None and high is not None:
+            message = f"{declaration.name} must be within [{low}, {high}], got {number}"
+        else:
+            message = f"{declaration.name} must be at least {low}, got {number}"
+        self.error(header, key, message, f"{toml_key(key)} = {_toml_value(nearest)}")
+        return True
 
     def _parse_reserved(
         self, header: str, flow: str, identity: str, key: str, value: object, out: _Body
@@ -433,7 +494,7 @@ class _Loader:
                 self.error(header, bound_key, f"the note must be a string, got {note!r}")
 
     def _split_key(
-        self, header: str, key: str, *, bound: bool
+        self, header: str, flow: str, key: str, *, bound: bool
     ) -> tuple[str, Limit | None, str | None] | None:
         """Split a key on its last dot into ``(metric, limit, prefix)``; ``None`` after an error."""
         prefix, _, name = key.rpartition(".")
@@ -444,7 +505,9 @@ class _Loader:
             self._relative_error(header, key, prefix_text, relative)
             return None
         if not name.endswith(("_max", "_min")):
-            self.error(header, key, "a bound ends in `_max` or `_min`")
+            settings = ", ".join(item.name for item in flow_settings(flow))
+            hint = f"; settings: {settings}" if settings else ""
+            self.error(header, key, f"a bound ends in `_max` or `_min`{hint}")
             return None
         return (name[:-4], cast(Limit, name[-3:]), prefix_text)
 
@@ -452,7 +515,7 @@ class _Loader:
         self, header: str, flow: str, identity: str | None, key: str, *, bound: bool
     ) -> _Ref | None:
         """Parse a key into the metric it addresses; ``None`` after recording the error."""
-        split = self._split_key(header, key, bound=bound)
+        split = self._split_key(header, flow, key, bound=bound)
         if split is None:
             return None
         metric, limit, prefix = split

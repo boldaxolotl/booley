@@ -40,6 +40,7 @@ from booley.runtime.job_slots import (
 )
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 from tests.sharing_error_support import hold_unlinks
+from tests.time_budget import hang_guard_s, scaled
 
 
 class FakeWorld:
@@ -205,12 +206,12 @@ class TestSingleProcess:
         assert tok.is_holder
 
     def test_acquire_renews_production_lease_until_release(self, root, monkeypatch):
-        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", 2.0)
+        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", scaled(2.0))
         monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
         store = SlotStore(root)
         token = store.acquire(CLASS_MEMORY, memory=_ALONE, pid=os.getpid(), poll_interval=0.01)
         try:
-            deadline = time.monotonic() + 1.0
+            deadline = time.monotonic() + hang_guard_s()
             while token.lease_generation < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
             holder = store.snapshot(CLASS_MEMORY)[0][0]
@@ -627,7 +628,7 @@ class TestSingleProcess:
 
         def sleep(_seconds: float) -> None:
             if threading.current_thread() is not test_thread:
-                gate_free.wait(timeout=10)
+                gate_free.wait(timeout=2 * hang_guard_s())
                 time.sleep(0.01)  # a real backoff: Windows delays a freed gate's rmdir
 
         store._sleep = sleep
@@ -639,7 +640,7 @@ class TestSingleProcess:
         finally:
             gate_free.set()
         for thread in self._release_threads(token):
-            thread.join(timeout=10)
+            thread.join(timeout=hang_guard_s())
 
         assert self._release_threads(token) == []
         assert not token.path.exists()
@@ -664,12 +665,14 @@ class TestSingleProcess:
             assert held
             store.release(token)
             for thread in self._release_threads(token):
-                thread.join(timeout=10)
+                thread.join(timeout=hang_guard_s())
             assert self._release_threads(token) == []
             assert token.path.exists()
 
         messages = [r.getMessage() for r in caplog.records]
-        assert any("Could not release slot entry" in m and token.path.name in m for m in messages)
+        assert any(
+            "Could not release Memory Reservation" in m and token.path.name in m for m in messages
+        )
         assert sleeps.count(job_slots._RELEASE_RETRY_SECONDS) == job_slots._RELEASE_RETRY_ATTEMPTS
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
@@ -688,7 +691,9 @@ class TestSingleProcess:
         with other._lease_gate(token):
             store.release(token)
 
-        assert any("Could not release slot entry" in r.getMessage() for r in caplog.records)
+        assert any(
+            "Could not release Memory Reservation" in r.getMessage() for r in caplog.records
+        )
 
     def test_release_of_a_removed_entry_starts_no_retry(self, root, world, caplog):
         spawn(world, 100)
@@ -841,7 +846,7 @@ class TestSingleProcess:
         assert [i["result"] for i in entry_unlinks] == [False]
         assert [i["exhausted_runs"] for i in entry_unlinks] == [1]
         assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove slot entry after retries: {tok.path.name}"
+            f"Could not remove Memory Reservation after retries: {tok.path.name}"
         ]
 
     def test_undecodable_entry_reads_as_absent(self, root, world):
@@ -1145,7 +1150,7 @@ class TestGhostReaping:
 
         assert dead_tok.path.exists()
         assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove slot entry after retries: {dead_tok.path.name}"
+            f"Could not remove Memory Reservation after retries: {dead_tok.path.name}"
         ]
         assert attempts[dead_tok.path] == job_slots._ENTRY_IO_ATTEMPTS
         assert store.reap(CLASS_MEMORY) == [dead_tok.path.name]
@@ -1300,6 +1305,7 @@ class TestGhostReaping:
         record_project = (
             tmp_path / "foreign" / ".booley" if unverified_reason == "foreign_project" else project
         )
+        record_project.parent.mkdir(exist_ok=True)
         spawn(world, 50, ["supervisor"])
         spawn(world, 100, ["owner"])
         spawn(world, 200, ["waiter"])
@@ -1528,7 +1534,7 @@ class TestGhostReaping:
         token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         try:
             assert store.reap(CLASS_MEMORY) == [token.path.name]
-            assert process.wait(timeout=5) != 0
+            assert process.wait(timeout=hang_guard_s()) != 0
             assert unrelated.poll() is None
             terminal = read_json(paths.record)
             assert terminal["state"] == "terminal"
@@ -1536,9 +1542,9 @@ class TestGhostReaping:
         finally:
             if process.poll() is None:
                 process.kill()
-            process.wait(timeout=5)
+            process.wait(timeout=hang_guard_s())
             unrelated.kill()
-            unrelated.wait(timeout=5)
+            unrelated.wait(timeout=hang_guard_s())
             runtime_booley_dir.reset_cache()
 
     @pytest.mark.skipif(sys.platform != "linux", reason="process recovery scans Linux /proc")
@@ -1562,14 +1568,14 @@ class TestGhostReaping:
         token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         try:
             assert store.reap(CLASS_MEMORY) == [token.path.name]
-            assert process.wait(timeout=5) != 0
+            assert process.wait(timeout=hang_guard_s()) != 0
             assert unrelated.poll() is None
         finally:
             if process.poll() is None:
                 process.kill()
-            process.wait(timeout=5)
+            process.wait(timeout=hang_guard_s())
             unrelated.kill()
-            unrelated.wait(timeout=5)
+            unrelated.wait(timeout=hang_guard_s())
 
     @pytest.mark.parametrize("unknown_schema", [job_slots.SLOT_SCHEMA_VERSION + 1, "future"])
     def test_unknown_future_slot_schema_fails_closed(self, root, world, unknown_schema):
@@ -2138,18 +2144,18 @@ class _SecondActor:
             return
         self._thread = threading.Thread(target=self._attempt)
         self._thread.start()
-        assert self._settled.wait(10), "second actor never settled"
+        assert self._settled.wait(hang_guard_s()), "second actor never settled"
 
     def _attempt(self) -> None:
         with self._enter_gate() as acquired:
             self.acquired = acquired
             self._settled.set()
-            self._release.wait(10)
+            self._release.wait(2 * hang_guard_s())
 
     def finish(self) -> None:
         self._release.set()
         if self._thread is not None:
-            self._thread.join(10)
+            self._thread.join(hang_guard_s())
             assert not self._thread.is_alive()
 
 
@@ -2380,9 +2386,9 @@ class TestLeaseRenewal:
         try:
             with SlotStore(root)._lease_gate(token) as held:
                 assert held
-                assert missed.wait(10)
+                assert missed.wait(hang_guard_s())
                 generation = token.lease_generation
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + hang_guard_s()
             while token.lease_generation == generation and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert token.lease_generation > generation

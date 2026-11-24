@@ -25,7 +25,8 @@ def _definition(name: str) -> dict[str, object]:
     }
 
 
-def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path) -> None:
+@pytest.mark.parametrize("writable", [True, False], ids=["writable", "unwritable"])
+def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writable: bool) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text(
@@ -34,7 +35,7 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path) -> Non
     )
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
+    env["BOOLEY_MCP_DEVELOPER_AGENT"] = "1"
     env.pop("BOOLEY_LOGS_DIR", None)
     source_root = Path(__file__).parents[2] / "src"
     existing_pythonpath = env.get("PYTHONPATH")
@@ -42,17 +43,28 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path) -> Non
         part for part in (str(source_root), existing_pythonpath) if part
     )
 
-    result = run_bounded_child(
-        [sys.executable, "-m", "booley.mcp.probe"],
-        cwd=tmp_path,
-        env=env,
-    )
+    before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
+    if not writable:
+        booley_dir.chmod(0o555)
+    try:
+        if not writable and os.access(booley_dir, os.W_OK):
+            pytest.skip("directory permissions are not enforced for this user")
+        result = run_bounded_child(
+            [sys.executable, "-m", "booley.mcp.probe"],
+            cwd=tmp_path,
+            env=env,
+        )
+    finally:
+        booley_dir.chmod(0o755)
 
+    assert before == sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout.splitlines()[-1])
     assert payload["errors"] == []
     assert "bwave" in payload["tools"]
     assert payload["logs_dir_ok"] is True
+    assert payload["logs_dir_writable"] is writable
+    assert Path(payload["logs_dir"]).parent == booley_dir / "job_logs"
 
 
 @pytest.mark.parametrize(
@@ -89,7 +101,7 @@ def test_probe_and_live_server_share_catalog_validation(
         mcp_server._build_server()
 
 
-def test_mcp_probe_accepts_relocated_interactive_logs(
+def test_mcp_probe_accepts_relocated_job_logs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Logs under the checkout's relocated Booley Directory are ok; the default is not."""
@@ -99,7 +111,6 @@ def test_mcp_probe_accepts_relocated_interactive_logs(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
-    monkeypatch.setattr(mcp_server, "_maybe_configure_interactive_logs_dir", lambda: None)
     monkeypatch.setattr(mcp_server, "_load_agent_settings_from_toml", lambda: None)
     monkeypatch.setattr(
         mcp_server,
@@ -107,10 +118,10 @@ def test_mcp_probe_accepts_relocated_interactive_logs(
         lambda _lifetime: (SimpleNamespace(list_tools=list), [], []),
     )
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/.interactive_logs/abc"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "tools/booley/job_logs/abc"))
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is True
 
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / ".booley/.interactive_logs/abc"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / ".booley/job_logs/abc"))
     assert mcp_server.build_mcp_probe_payload()["logs_dir_ok"] is False
 
     # A retired layout in the working directory reads as "not ok", never a traceback.

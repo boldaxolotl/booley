@@ -6,7 +6,15 @@ import argparse
 import html
 import json
 import os
+import re
 import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -22,6 +30,8 @@ from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
+from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -30,7 +40,7 @@ MIB = 2**20
 SCOPE = "pid:[4026531836]"
 # 2026-10-08T10:00:20Z
 NOW = 1791453620.0
-# 8 GiB less the fixed headroom.
+# 8 GiB less a quarter, the no-swap headroom.
 BUDGET_BYTES = 6442450944
 STARTED = "2026-10-08T10:00:00Z"
 
@@ -143,7 +153,7 @@ def _job(
 
         root = standalone_jobs_dir(world.booley)
     else:
-        root = world.booley / ".interactive_logs" / session / ".runtime" / "jobs"
+        root = world.booley / "job_logs" / session / ".runtime" / "jobs"
     identity = _live_process(world, pid) if live and pid else None
     running = status == "running"
     job_records.write_record(
@@ -184,6 +194,12 @@ def _slot(world: World, kind: str, seq: int, pid: int, payload: dict) -> None:
     (directory / name).write_bytes(json.dumps({"created_at": STARTED, **payload}).encode())
 
 
+def _own(pid: int, run_id: str, **extra) -> dict:
+    """What Job admission writes for a Job's own claim: its owner and its run ID label."""
+    label = job_slots.JobLabel(run_id, "sim", "").to_payload()
+    return {"owner_identity": _identity(pid), "job": label, **extra}
+
+
 def _claim(mib: float, **kw) -> dict:
     return job_slots.MemoryClaim(6144.0, reservation_mb=mib, **kw).to_payload()
 
@@ -202,20 +218,65 @@ def _dashboard_args(*words: str) -> argparse.Namespace:
     return tlr._build_parser().parse_args(["dashboard", *words])
 
 
-@pytest.mark.parametrize(("words", "port"), [([], 8090), (["--port", "9123"], 9123)])
-def test_web_flag_serves_loopback_on_8090_or_port(world, monkeypatch, capsys, words, port):
-    import uvicorn
-    from starlette.applications import Starlette
+_SERVE_SCRIPT = "import sys; from pathlib import Path; from booley.harness.dashboard import web; raise SystemExit(web.serve(Path(sys.argv[1]), 0))"
 
-    served: list[tuple[object, dict]] = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: served.append((app, kwargs)))
 
-    assert tlr._cmd_dashboard(_dashboard_args("--web", *words), world.main) == 0
+@pytest.mark.skipif(sys.platform == "win32", reason="stops the child with SIGINT, a POSIX signal")
+def test_web_flag_serves_loopback_after_binding(world):
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _SERVE_SCRIPT, str(world.main)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    guard = threading.Timer(hang_guard_s(), proc.kill)
+    guard.start()
+    try:
+        assert proc.stdout is not None
+        banner = proc.stdout.readline()
+        match = re.fullmatch(r"Booley Dashboard \(web\): http://127\.0\.0\.1:(\d+)\n", banner)
+        assert match, banner
+        port = int(match.group(1))
+        base = f"http://127.0.0.1:{port}"
+        with urllib.request.urlopen(f"{base}/", timeout=hang_guard_s()) as page:
+            assert page.status == 200
+            assert "html" in page.headers["Content-Type"]
+        query = urllib.parse.urlencode({"worktree": str(world.main)})
+        with urllib.request.urlopen(
+            f"{base}/api/snapshot?{query}", timeout=hang_guard_s()
+        ) as snapshot:
+            assert snapshot.status == 200
+            assert {"header", "now", "results"} <= set(json.load(snapshot))
+        proc.send_signal(signal.SIGINT)
+        _out, err = proc.communicate(timeout=hang_guard_s())
+        assert proc.returncode == 0
+        assert "Traceback" not in err
+    finally:
+        guard.cancel()
+        proc.kill()
+        proc.wait()
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
 
-    ((app, kwargs),) = served
-    assert isinstance(app, Starlette)
-    assert (kwargs["host"], kwargs["port"]) == ("127.0.0.1", port)
-    assert f"http://127.0.0.1:{port}" in capsys.readouterr().out
+
+def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
+    served = capture_serving(monkeypatch)
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        port = holder.getsockname()[1]
+
+        assert tlr._cmd_dashboard(_dashboard_args("--web", "--port", str(port)), world.main) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"127.0.0.1:{port}" in captured.err
+    assert "--port" in captured.err
+    assert len(captured.err.splitlines()) == 1
+    for noise in ("Errno", "Traceback", "ERROR:"):
+        assert noise not in captured.err
+    assert served == []
 
 
 def test_dashboard_help_documents_web_and_port(capsys):
@@ -390,7 +451,7 @@ def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypat
     _job(world, "run-wt", world.wt, report={"passed": True})
     _job(world, "run-other", world.other, report={"secret": 1})
     (world.wt / "secret.json").write_bytes(b'{"secret": 2}')
-    other_report = world.booley / ".interactive_logs/sess1/.runtime/flow-reports/sim/run-other"
+    other_report = world.booley / "job_logs/sess1/.runtime/flow-reports/sim/run-other"
 
     with _client(world, monkeypatch) as client:
         url = _snapshot(client, world.wt)["results"]["jobs"][0]["report_url"]
@@ -443,7 +504,7 @@ def test_now_lists_running_and_queued_jobs_with_queue_position(world, monkeypatc
     )
     for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
         _slot(world, "h", seq, pid, {"memory": _claim(mib)})
-    _slot(world, "w", 3, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 3, 7002, _own(7002, "run-q", memory=_claim(400.0)))
 
     with _client(world, monkeypatch) as client:
         body = _snapshot(client, world.wt)
@@ -559,7 +620,7 @@ def test_standalone_job_of_the_worktree_is_owned_by_you(world, monkeypatch):
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
     for index in range(65):
-        newer = world.booley / ".interactive_logs" / f"new{index}" / ".runtime" / "jobs"
+        newer = world.booley / "job_logs" / f"new{index}" / ".runtime" / "jobs"
         newer.mkdir(parents=True)
     _job(world, "run-s", world.wt, target="t_spawn", status="running", ended=None)
     _job(
@@ -594,9 +655,9 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
         live=True,
     )
     _slot(world, "h", 1, 7101, {"memory": _claim(200.0)})
-    _slot(world, "w", 2, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 2, 7002, _own(7002, "run-q", memory=_claim(400.0)))
     # The roots holding the unfinished Jobs are the oldest of all 66.
-    for root in (world.booley / ".interactive_logs").glob("*/.runtime/jobs"):
+    for root in (world.booley / "job_logs").glob("*/.runtime/jobs"):
         old = root.parent.parent.name in {"sess1", "standalone"}
         stamp = 1_000 if old else 2_000_000_000
         os.utime(root, (stamp, stamp))
@@ -614,6 +675,43 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
     assert (admission["running_jobs"], admission["queued_jobs"]) == (2, 1)
 
 
+def test_cli_jobs_waiting_for_memory_are_queued_and_counted(world, monkeypatch):
+    # `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
+    execution = {"owner_kind": "execution", "execution_id": "b2" * 16}
+    for run_id, pid in (("run-h", 7030), ("run-w1", 7031), ("run-w2", 7032), ("run-rec", 7033)):
+        _job(
+            world,
+            run_id,
+            world.wt,
+            target=run_id,
+            session=None,
+            status="running",
+            ended=None,
+            pid=pid,
+            live=True,
+        )
+    _slot(world, "h", 1, 7030, _own(7030, "run-h", **execution, memory=_claim(200.0)))
+    _slot(world, "h", 2, 7033, _own(7033, "run-rec", **execution, memory=_claim(100.0)))
+    _slot(world, "w", 3, 7031, _own(7031, "run-w1", **execution, memory=_claim(6000.0)))
+    _slot(world, "w", 4, 7032, _own(7032, "run-w2", **execution, memory=_claim(6000.0)))
+    # A Simulation Record lane of run-rec: unlabelled, another execution, never the Job's state.
+    lane = {"owner_identity": _identity(7033), "owner_kind": "execution"}
+    _slot(world, "w", 5, 7033, {**lane, "execution_id": "c3" * 16, "memory": _claim(6000.0)})
+
+    with _client(world, monkeypatch) as client:
+        body = _snapshot(client, world.wt)
+
+    states = {row["target"]: (row["state"], row["queue_position"]) for row in body["now"]}
+    assert states == {
+        "run-h": ("running", None),
+        "run-rec": ("running", None),
+        "run-w1": ("queued", 1),
+        "run-w2": ("queued", 2),
+    }
+    admission = body["header"]["admission"]
+    assert (admission["running_jobs"], admission["queued_jobs"]) == (2, 2)
+
+
 def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatch):
     ticks = iter((100.0, 110.0))
     # One Job holding a companion claim and two work-item claims.
@@ -624,7 +722,11 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
             "h",
             seq,
             7010,
-            {"owner_identity": _identity(7010), "memory": _claim(mib, **extra)},
+            (
+                _own(7010, "run-a", memory=_claim(mib, **extra))
+                if extra
+                else {"owner_identity": _identity(7010), "memory": _claim(mib)}
+            ),
         )
     # A running Job whose child-lane claim waits is still running.
     _job(world, "run-c", world.main, status="running", ended=None, pid=7011, live=True)
@@ -637,7 +739,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
     )
     # A queued Job counts as queued, not reserved.
     _job(world, "run-b", world.other, status="running", ended=None, pid=7012, live=True)
-    _slot(world, "w", 5, 7012, {"owner_identity": _identity(7012), "memory": _claim(400.0)})
+    _slot(world, "w", 5, 7012, _own(7012, "run-b", memory=_claim(400.0)))
     # A stale holder of a dead owner reserves nothing.
     _slot(world, "h", 6, 7013, {"owner_identity": _identity(7013), "memory": _claim(1000.0)})
     before = sorted(path.name for path in (world.booley / "runtime/jobs/slots/memory").iterdir())
@@ -670,7 +772,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
 def test_run_alone_holder_is_reported_not_summed(world, monkeypatch):
     _job(world, "run-a", world.wt, status="running", ended=None, pid=7020, live=True)
     alone = job_slots.MemoryClaim(6144.0, run_alone=True).to_payload()
-    _slot(world, "h", 1, 7020, {"owner_identity": _identity(7020), "memory": alone})
+    _slot(world, "h", 1, 7020, _own(7020, "run-a", memory=alone))
 
     with _client(world, monkeypatch) as client:
         admission = _snapshot(client, world.wt)["header"]["admission"]
@@ -771,7 +873,7 @@ def _queued_world(world: World) -> None:
     )
     for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
         _slot(world, "h", seq, pid, {"memory": _claim(mib)})
-    _slot(world, "w", 3, 7002, {"owner_identity": _identity(7002), "memory": _claim(400.0)})
+    _slot(world, "w", 3, 7002, _own(7002, "run-q", memory=_claim(400.0)))
 
 
 def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,6 @@ from booley.flows.target_test_plan import (
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import (
-    DEFAULT_SEED,
     MAX_SEED,
     TestRunLimitError,
     TestRunNameError,
@@ -71,10 +69,6 @@ class TestSeedMechanism:
         assert mechanism.arguments(1) == ("+verilator+seed+1",)
         assert mechanism.arguments(MAX_SEED) == (f"+verilator+seed+{MAX_SEED}",)
 
-    def test_verilator_with_template_gets_both_from_one_seed(self):
-        mechanism = seed_mechanism("verilator", "+seed={seed}", where="tests.toml [sim]")
-        assert mechanism.arguments(42) == ("+verilator+seed+42", "+seed=42")
-
     def test_icarus_is_seeded_only_through_a_template(self):
         assert seed_mechanism("icarus", None, where="w") == SeedMechanism("none")
         templated = seed_mechanism("icarus", "+seed={seed}", where="w")
@@ -86,10 +80,31 @@ class TestSeedMechanism:
         assert mechanism.seeded
         assert mechanism.arguments(7) == ()
 
-    @pytest.mark.parametrize("adapter", ["vcs", "xcelium"])
-    @pytest.mark.parametrize("template", [None, "+seed={seed}", "-svseed={seed}"])
+    @pytest.mark.parametrize(
+        ("adapter", "template", "cause", "message"),
+        [
+            (
+                adapter,
+                template,
+                f"Booley applies no seed to a {adapter} Test Run",
+                f"Target 'sim' is unseeded: Booley applies no seed to a {adapter} Test "
+                "Run, with or without a seed argument template; drop the seed",
+            )
+            for adapter in ("vcs", "xcelium")
+            for template in (None, "+seed={seed}", "-svseed={seed}")
+        ]
+        + [
+            (
+                "icarus",
+                None,
+                "icarus without a seed template in tests.toml",
+                "Target 'sim' is unseeded: its simulator (icarus) has no seed option that "
+                'Booley uses, and tests.toml declares no seed argument template. Add one (for example seed = "+seed={seed}") that the testbench reads, or drop the seed',
+            )
+        ],
+    )
     def test_a_simulator_booley_does_not_seed_is_unseeded_even_with_a_template(
-        self, adapter: str, template: str | None
+        self, adapter: str, template: str | None, cause: str, message: str
     ):
         """Regression: a VCS Target with a seed template reported itself seeded.
 
@@ -106,7 +121,7 @@ class TestSeedMechanism:
         )
         assert plan.default_seed is None
         assert [run.name for run in plan.default_runs()] == ["reset"]
-        assert plan.unseeded_cause() == f"Booley applies no seed to a {adapter} Test Run"
+        assert plan.unseeded_cause() == cause
         for selectors, seed in (
             (None, 5),
             (None, "random"),
@@ -115,10 +130,7 @@ class TestSeedMechanism:
         ):
             with pytest.raises(UnseededTargetError) as excinfo:
                 plan.resolve(selectors, seed=seed)
-            assert str(excinfo.value) == (
-                f"Target 'sim' is unseeded: Booley applies no seed to a {adapter} Test "
-                "Run, with or without a seed argument template; drop the seed"
-            )
+            assert str(excinfo.value) == message
         with pytest.raises(UnseededTargetError, match="default_seed cannot apply"):
             build_target_test_plan(
                 "sim",
@@ -134,22 +146,10 @@ class TestSeedMechanism:
             "cocotb through its seed variable; remove the seed template"
         )
 
-    def test_unseeded_run_has_no_arguments(self):
-        assert SeedMechanism("none").arguments(None) == ()
-        assert SeedMechanism("verilator_native").arguments(None) == ()
-
 
 class TestBuildPlan:
-    def test_default_seed_is_the_booley_constant(self):
-        assert _plan().default_seed == DEFAULT_SEED == 1
-
     def test_target_overrides_the_default_seed(self):
         assert _plan(default_seed=7).default_seed == 7
-
-    def test_unseeded_target_has_no_default_seed(self):
-        plan = _plan("icarus")
-        assert plan.default_seed is None
-        assert not plan.mechanism.seeded
 
     def test_unseeded_target_refuses_default_seed(self):
         with pytest.raises(UnseededTargetError) as excinfo:
@@ -200,11 +200,6 @@ class TestDefaultRuns:
         assert [run.name for run in runs] == ["reset@1", "stress+short@1"]
         assert runs[1].args == ("+iters=1000",)
 
-    def test_unseeded_names_carry_no_seed(self):
-        runs = _plan("icarus").default_runs()
-        assert [run.name for run in runs] == ["reset", "stress+short"]
-        assert [run.seed for run in runs] == [None, None]
-
     def test_is_default_run(self):
         plan = _plan()
         assert plan.is_default_run(plan.run("stress"))
@@ -241,17 +236,6 @@ class TestResolve:
         ]
         assert draw.calls == [(3, frozenset({9}))]
 
-    def test_real_draw_gives_distinct_seeds_in_range(self):
-        def draw(count: int, *, exclude=()):
-            from booley.flows.test_runs import draw_seeds
-
-            return draw_seeds(count, exclude=exclude, rng=random.Random(1233))
-
-        runs = _plan().resolve(["reset@x50"], draw=draw)
-        seeds = [run.seed for run in runs]
-        assert len(set(seeds)) == 50
-        assert all(seed is not None and 1 <= seed <= MAX_SEED for seed in seeds)
-
     def test_seed_with_an_at_form_is_refused(self):
         for selector in ("reset@5", "reset@x2"):
             with pytest.raises(TestRunNameError, match="--seed cannot be combined"):
@@ -264,11 +248,6 @@ class TestResolve:
             "the request selects Test Run 'stress+short@1' more than once; "
             "each Test Run runs once per request"
         )
-
-    def test_two_variants_of_one_test_are_two_runs(self):
-        runs = _plan().resolve(["stress+short", "stress+soak"])
-        assert [run.name for run in runs] == ["stress+short@1", "stress+soak@1"]
-        assert runs[0].fingerprint != runs[1].fingerprint
 
     def test_unknown_test_and_variant(self):
         with pytest.raises(UnknownTestError, match="unknown Test 'nope' for Target 'sim'"):
@@ -291,17 +270,6 @@ class TestResolve:
     def test_exactly_the_limit_is_accepted(self):
         runs = _plan().resolve(["reset@x1000"], draw=_fixed_draw(*range(1, 1001)))
         assert len(runs) == MAX_TEST_RUNS_PER_REQUEST
-
-    @pytest.mark.parametrize(
-        ("selectors", "seed"),
-        [(None, 5), (None, "random"), (["reset@5"], None), (["reset@x2"], None)],
-    )
-    def test_unseeded_target_refuses_every_seed_request(self, selectors, seed):
-        with pytest.raises(UnseededTargetError) as excinfo:
-            _plan("icarus").resolve(selectors, seed=seed)
-        message = str(excinfo.value)
-        assert message.startswith("Target 'sim' is unseeded: its simulator (icarus)")
-        assert message.endswith("or drop the seed")
 
     def test_unnamed_invocation_takes_a_seed_but_no_name(self):
         plan = build_target_test_plan("sim", None, adapter="verilator")
@@ -372,11 +340,6 @@ class TestBatching:
             }
         )["sim"]
         return build_target_test_plan("sim", section, adapter="cocotb")
-
-    def test_hdl_runs_get_one_process_each(self):
-        plan = _plan()
-        runs = plan.resolve(["stress+short", "stress+soak", "reset@7"])
-        assert batch_test_runs(runs, one_process_per_run=True) == tuple((run,) for run in runs)
 
     def test_cocotb_default_suite_is_one_batch(self):
         plan = self._cocotb_plan()

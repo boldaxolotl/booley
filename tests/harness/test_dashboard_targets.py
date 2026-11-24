@@ -16,12 +16,14 @@ from textual.widgets import DataTable, Static
 
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.harness.dashboard.jobs import JobSnapshot
+from booley.harness.dashboard.targets import enabled_flows
 from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.targets.domain import CoreCollisionError
 from tests.harness.test_dashboard import STAMP, open_session, snapshot
 from tests.harness.test_dashboard_keys import assert_retired_keys_change_nothing
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 FIFO_CORE = """CAPI=2:
 name: acme:ip:fifo:1.0
@@ -96,7 +98,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Main checkout ``main`` plus linked worktrees ``wt-a`` (alpha), ``wt-b`` (beta),
     ``wt-c`` (no core) and a prunable ``gone``."""
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
     main = tmp_path / "main"
     init_repository(main)
     for name in ("wt-a", "wt-b", "wt-c", "gone"):
@@ -463,7 +465,7 @@ UNRESOLVABLE_CASES = {
 @pytest.mark.asyncio
 async def test_unresolvable_target_stays_listed_and_detail_explains_why(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
     for case in UNRESOLVABLE_CASES:
         await check_unresolvable(tmp_path / case, case)
 
@@ -506,7 +508,7 @@ async def test_empty_worktree_names_it(repo):
 async def test_failed_git_is_explained_and_the_window_falls_back_to_the_root(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     root = tmp_path / "plain"  # Not a Git repository: the worktree list fails.
     write_files(root, {"top.v": "module top; endmodule\n"})
@@ -537,7 +539,7 @@ def test_hung_git_is_explained_without_a_traceback(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_failed_listing_is_explained(tmp_path, monkeypatch):
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     root = tmp_path / "project"
     init_repository(root)
@@ -558,7 +560,7 @@ async def test_failed_listing_is_explained(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_leftover_projections_do_not_block_detail_when_stealth_is_off(tmp_path, monkeypatch):
-    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", 30.0)
+    monkeypatch.setattr("booley.harness.dashboard.app.READ_BUDGET", hang_guard_s())
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     root = tmp_path / "project"
     init_repository(root)
@@ -633,3 +635,18 @@ async def test_targets_navigation_uses_arrows_enter_and_escape_only(repo):
         assert app.navigation.view == "targets"
         await pilot.press("left", "left")
         assert app.window == "sessions"
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {".booley/booley.toml": "[flows.sim]\nbackend = 'x'\n"},
+        {".booley/booley.toml": "", ".booley_project/booley.toml": ""},
+    ],
+    ids=["retired-key", "two-booley-directories"],
+)
+def test_enabled_flows_keeps_a_flow_whose_setting_cannot_be_read(tmp_path, layout):
+    for name, text in layout.items():
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_bytes(text.encode())
+    assert enabled_flows(("fpga", "sim"), tmp_path) == ("fpga", "sim")

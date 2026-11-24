@@ -49,7 +49,6 @@ class _Endpoint:
         reject_gate: bool = False,
         reject_admission: bool = False,
         unexpected_failure: bool = False,
-        publication_failure: bool = False,
         requeue_after_oom: bool = False,
     ) -> None:
         self.events: list[str] = []
@@ -58,7 +57,6 @@ class _Endpoint:
         self.reject_gate = reject_gate
         self.reject_admission = reject_admission
         self.unexpected_failure = unexpected_failure
-        self.publication_failure = publication_failure
         self.borrowed = object()
 
     def admission(
@@ -107,22 +105,15 @@ class _Endpoint:
         outcome: EndpointOutcome,
         *,
         started: float | None,
-        records_published: bool,
     ) -> ExecutionResult:
         assert prepared == "prepared"
         if not outcome.report_text.startswith(("admission refused", "unbound target")):
             assert started is not None
-        self.events.append(f"finish:{outcome.exit_code}:{records_published}")
+        self.events.append(f"finish:{outcome.exit_code}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
 
-    def publish_records(self, prepared: object, outcome: EndpointOutcome) -> None:
-        assert prepared == "prepared"
-        self.events.append(f"publish:{outcome.exit_code}")
-        if self.publication_failure:
-            raise RuntimeError("publication failed")
 
-
-def test_execute_endpoint_owns_admit_invoke_publish_finish_order() -> None:
+def test_execute_endpoint_owns_admit_invoke_finish_order() -> None:
     endpoint = _Endpoint()
 
     result = execute_endpoint(endpoint, "prepared")
@@ -133,8 +124,7 @@ def test_execute_endpoint_owns_admit_invoke_publish_finish_order() -> None:
     assert endpoint.events == [
         "admit",
         "invoke",
-        "publish:0",
-        "finish:0:True",
+        "finish:0",
         "release",
     ]
 
@@ -150,8 +140,7 @@ def test_execute_endpoint_normalizes_failure_and_releases_admission() -> None:
         "admit",
         "invoke",
         "normalize-error",
-        "publish:2",
-        "finish:2:True",
+        "finish:2",
         "release",
     ]
 
@@ -166,6 +155,18 @@ def test_completion_error_message_is_bounded() -> None:
     assert message.endswith("…")
 
 
+def test_identical_completion_error_is_recorded_once() -> None:
+    outcome = EndpointOutcome()
+    for _ in range(2):
+        normalize_completion_error(outcome, OSError(5, "disk"), "publish report", path="r.json")
+    normalize_completion_error(outcome, OSError(28, "full"), "publish report", path="r.json")
+    assert outcome.report_text.count("Completion failure") == 2
+    assert outcome.exit_code == EXIT_ERROR
+    assert [error["message"] for error in outcome.detail["completion_errors"]] == [
+        "[Errno 28] full"
+    ]
+
+
 def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     endpoint = _Endpoint(reject_admission=True)
 
@@ -175,8 +176,7 @@ def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
     assert result.outcome.report_text == "admission refused"
     assert endpoint.events == [
         "admission-rejected",
-        "publish:2",
-        "finish:2:True",
+        "finish:2",
     ]
 
 
@@ -189,30 +189,6 @@ def test_unexpected_adapter_failure_propagates_and_releases_admission() -> None:
     assert endpoint.events == ["admit", "invoke", "release"]
 
 
-def test_publication_failure_runs_non_persisting_finish_and_releases_admission() -> None:
-    endpoint = _Endpoint(publication_failure=True)
-
-    result = execute_endpoint(endpoint, "prepared")
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.detail["completion_error"] == {
-        "operation": "publish Simulation Record projections",
-        "type": "RuntimeError",
-        "message": "publication failed",
-    }
-    assert result.outcome.report_text == (
-        "ok\nCompletion failure (publish Simulation Record projections): "
-        "RuntimeError: publication failed"
-    )
-    assert endpoint.events == [
-        "admit",
-        "invoke",
-        "publish:0",
-        "finish:2:False",
-        "release",
-    ]
-
-
 def test_gate_rejection_finishes_before_admission() -> None:
     endpoint = _Endpoint(reject_gate=True)
 
@@ -220,7 +196,7 @@ def test_gate_rejection_finishes_before_admission() -> None:
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "unbound target"
-    assert endpoint.events == ["gate-rejected", "publish:2", "finish:2:True"]
+    assert endpoint.events == ["gate-rejected", "finish:2"]
 
 
 class _CommandEndpoint(_Endpoint):
@@ -241,18 +217,18 @@ class _CommandEndpoint(_Endpoint):
 def test_job_outcome_records_only_its_own_oom_kill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.flows.test_flow_base import EchoFlow, _env_with_state
+    from tests.flows.test_flow_base import EchoFlow, _flow_env
 
-    from booley.criteria.state import DevelopmentState
-
-    state_file = tmp_path / "state.json"
-    DevelopmentState.load(state_file).save()
     flow = EchoFlow()
-    with patch.dict(os.environ, _env_with_state(state_file)):
+    with patch.dict(os.environ, _flow_env()):
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
     # The container's OOM-kill counter moves during both Jobs' commands.
     counts = iter([0, 1, 1, 2])
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counts))
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(*[next(counts)] * 2),
+    )
     killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
 
     own_kill = execute_endpoint(_CommandEndpoint(flow, killed), "prepared")
@@ -300,12 +276,12 @@ def _final_success() -> EndpointOutcome:
     return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="attempt 2 verdict")
 
 
-def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> None:
+def test_requeue_releases_the_claim_before_reporting_the_final_attempt() -> None:
     endpoint = _RequeueEndpoint(_oom_failure, _final_success)
 
     result = execute_endpoint(endpoint, "prepared")
 
-    # The killed attempt publishes nothing: publication and finish see attempt 2 only.
+    # The killed attempt reports nothing: finish sees attempt 2 only.
     assert endpoint.events == [
         "admit",
         "invoke",
@@ -313,8 +289,7 @@ def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> Non
         "release",
         "admit(requeued)",
         "invoke",
-        "publish:0",
-        "finish:0:True",
+        "finish:0",
         "release",
     ]
     # Attempt 1 was armed (stopped after its kill); attempt 2 never is.
@@ -327,6 +302,246 @@ def test_requeue_releases_the_claim_before_publishing_the_final_attempt() -> Non
         "attempts": 2,
     }
     assert result.outcome.oom_killed is False
+
+
+_REQUEUE_NOTE = (
+    "Requeued after out-of-memory: this result is from the Job's second attempt, which ran alone."
+)
+_SECOND_KILL_LINE = "Killed for out-of-memory: the second attempt was OOM-killed too, so the Job is not retried again."
+_UNARMED_KILL_LINE = "Killed for out-of-memory: this Job may not be requeued after an OOM kill, so it is not retried."
+
+
+def _second_oom_failure() -> EndpointOutcome:
+    """The requeued attempt, OOM-killed too."""
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    note_job_oom_kill()
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 2 verdict")
+
+
+def test_job_oom_killed_on_both_attempts_names_the_second_kill() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure, _second_oom_failure)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 2
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text == f"attempt 2 verdict\n{_REQUEUE_NOTE}\n{_SECOND_KILL_LINE}"
+    assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+    assert result.outcome.oom_killed is True
+
+
+def test_unarmed_job_oom_kill_names_the_kill_and_no_retry() -> None:
+    endpoint = _RequeueEndpoint(_oom_failure)
+    endpoint.requeue_after_oom = False
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 1
+    assert result.outcome.report_text == f"attempt 1 verdict\n{_UNARMED_KILL_LINE}"
+    assert "oom_requeue" not in result.outcome.detail
+
+
+def test_requeued_job_that_passes_keeps_todays_text() -> None:
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    def survived_kill() -> EndpointOutcome:
+        note_job_oom_kill()  # a command was killed, yet the Job succeeded
+        return _final_success()
+
+    for second in (_final_success, survived_kill):
+        endpoint = _RequeueEndpoint(_oom_failure, second)
+        result = execute_endpoint(endpoint, "prepared")
+        assert result.outcome.report_text == f"attempt 2 verdict\n{_REQUEUE_NOTE}"
+
+
+def test_final_work_item_oom_kill_is_named_in_the_job_result() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        note_final_work_item_oom_kill,
+        note_job_oom_kill,
+    )
+
+    def run_items() -> EndpointOutcome:
+        note_final_work_item_oom_kill("outside-item", passed=False)  # no work item attempt
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill()
+            note_final_work_item_oom_kill("gamma", passed=False)
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill()  # armed: it is requeued, not final
+            note_final_work_item_oom_kill("armed", passed=False)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill()
+            note_final_work_item_oom_kill("passed", passed=True)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_final_work_item_oom_kill("unkilled", passed=False)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="verdict")
+
+    endpoint = _RequeueEndpoint(run_items)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert result.outcome.report_text == (
+        "verdict\nKilled for out-of-memory: work item gamma's last attempt was OOM-killed, "
+        "so it is not retried again."
+    )
+
+
+_HOST_JOB_LINE = (
+    "Killed for host out-of-memory: the host ran out of memory while the Sandbox stayed within "
+    "its [sandbox].memory limit, so the Job is not retried. Free memory on the host, "
+    "or lower [sandbox].memory and recreate the Sandbox, then run it again."
+)
+
+
+def _host_oom_failure() -> EndpointOutcome:
+    """An attempt whose command the host's OOM killer took and which failed."""
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    note_job_oom_kill(host=True)
+    return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 1 verdict")
+
+
+def test_host_oom_kill_is_not_requeued_and_names_host_memory() -> None:
+    endpoint = _RequeueEndpoint(_host_oom_failure, _final_success)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    # Armed for a requeue, yet nothing runs again: the host's pressure stays.
+    assert endpoint.events.count("invoke") == 1
+    assert endpoint.armed == [True]
+    assert result.exit_code == EXIT_ERROR
+    # The host line leads; the Flow's own error stays visible below it.
+    assert result.outcome.report_text == f"{_HOST_JOB_LINE}\nattempt 1 verdict"
+    assert "oom_requeue" not in result.outcome.detail
+    assert result.outcome.oom_killed is True
+
+
+def test_host_oom_kill_of_a_work_item_is_named_and_not_requeued() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        note_final_work_item_oom_kill,
+        note_job_oom_kill,
+        work_item_attempt_requeues,
+    )
+
+    def run_items() -> EndpointOutcome:
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill(host=True)
+            # Armed, yet a host kill never requeues the item.
+            assert not work_item_attempt_requeues(passed=False)
+            note_final_work_item_oom_kill("alpha", passed=False)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill(host=True)
+            note_final_work_item_oom_kill("beta", passed=False, raised=True)
+        with job_attempt(stop_on_oom=False, work_item=True):
+            note_job_oom_kill(host=True)
+            note_final_work_item_oom_kill("passed", passed=True)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="verdict")
+
+    result = execute_endpoint(_RequeueEndpoint(run_items), "prepared")
+
+    assert result.outcome.report_text == (
+        "Killed for host out-of-memory: the host ran out of memory while the Sandbox stayed "
+        "within its [sandbox].memory limit, so work item alpha, work item beta are not retried. "
+        "Free memory on the host, or lower [sandbox].memory and recreate the Sandbox, "
+        "then run it again.\nverdict"
+    )
+
+
+def test_a_host_kill_vetoes_the_requeue_of_a_limit_kill_in_the_same_attempt() -> None:
+    from booley.runtime.endpoint_execution import (
+        job_attempt,
+        job_stopped_after_oom,
+        note_job_oom_kill,
+        work_item_attempt_requeues,
+    )
+
+    def host_then_limit() -> EndpointOutcome:
+        note_job_oom_kill(host=True)
+        note_job_oom_kill()
+        # The host's pressure stays, so the attempt neither stops nor requeues.
+        assert not job_stopped_after_oom()
+        with job_attempt(stop_on_oom=True, work_item=True):
+            note_job_oom_kill(host=True)
+            note_job_oom_kill()
+            assert not work_item_attempt_requeues(passed=False)
+        return EndpointOutcome(exit_code=EXIT_ERROR, report_text="attempt 1 verdict")
+
+    endpoint = _RequeueEndpoint(host_then_limit, _final_success)
+
+    result = execute_endpoint(endpoint, "prepared")
+
+    assert endpoint.events.count("invoke") == 1
+    assert result.outcome.report_text == f"{_HOST_JOB_LINE}\nattempt 1 verdict"
+    assert "oom_requeue" not in result.outcome.detail
+
+
+def test_a_host_kill_the_job_survived_adds_no_line() -> None:
+    from booley.runtime.endpoint_execution import note_job_oom_kill
+
+    def survived() -> EndpointOutcome:
+        note_job_oom_kill(host=True)
+        return _final_success()
+
+    result = execute_endpoint(_RequeueEndpoint(survived), "prepared")
+
+    assert result.outcome.report_text == "attempt 2 verdict"
+
+
+def _run_killed_command_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_events: list[int]
+) -> tuple[list[str], ExecutionResult]:
+    """A Job whose first command kills itself, with the Sandbox limit events given."""
+    tmp_path.mkdir()
+    import itertools
+
+    from tests.flows.test_flow_base import EchoFlow, _flow_env
+
+    flow = EchoFlow()
+    with patch.dict(os.environ, _flow_env()):
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+    kills = itertools.chain([0, 1], itertools.repeat(1))
+    limits = iter(limit_events)
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(next(kills), next(limits)),
+    )
+    runs: list[str] = []
+    killed = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+
+    def command(code: str) -> Callable[[], EndpointOutcome]:
+        def attempt() -> EndpointOutcome:
+            runs.append(code)
+            result = flow._execute_local([sys.executable, "-c", code])
+            return EndpointOutcome(
+                exit_code=EXIT_ERROR if result.returncode else EXIT_SUCCESS,
+                report_text="verdict",
+            )
+
+        return attempt
+
+    endpoint = _RequeueEndpoint(command(killed), command("raise SystemExit(0)"))
+
+    return runs, execute_endpoint(endpoint, "prepared")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_sandbox_limit_kill_requeues_and_host_kill_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Sandbox reached its limit during the kill: requeued once, alone.
+    runs, result = _run_killed_command_job(tmp_path / "limit", monkeypatch, [0, 1, 1, 1])
+    assert len(runs) == 2
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.outcome.detail["oom_requeue"]["attempts"] == 2
+
+    # The Sandbox stayed below its limit: the host's kill, never retried.
+    runs, result = _run_killed_command_job(tmp_path / "host", monkeypatch, [0, 0])
+    assert len(runs) == 1
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text.startswith("Killed for host out-of-memory")
 
 
 def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> None:
@@ -351,8 +566,7 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
         "invoke",
         "begin-requeued-attempt",
         "release",
-        "publish:2",
-        "finish:2:True",
+        "finish:2",
     ]
     assert result.outcome.report_text == (
         "admission refused\nRequeued after out-of-memory: the Job did not start again."
@@ -396,6 +610,7 @@ def test_only_a_failed_or_stopped_oom_killed_job_is_requeued() -> None:
         result = execute_endpoint(endpoint, "prepared")
         assert endpoint.events.count("invoke") == 1, name
         assert "oom_requeue" not in result.outcome.detail, name
+        assert "Killed for out-of-memory" not in result.outcome.report_text, name
 
     # Contrast: succeeding after a skipped command is requeued, so the result is attempt 2's.
     endpoint = _RequeueEndpoint(stopped_but_succeeded, _final_success)

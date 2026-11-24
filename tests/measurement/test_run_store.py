@@ -74,6 +74,7 @@ def make_run(
     verdict: str = "met",
     toolchain: ToolchainFingerprint | None = None,
     per_clock: dict[str, dict[str, float]] | None = None,
+    clocks: tuple[str, ...] = (),
     omit_results: bool = False,
     identity: str = IDENTITY,
     flow: str = "syn",
@@ -89,7 +90,7 @@ def make_run(
     results = (
         () if omit_results else (MetricResult("cell_count_max", 100, 90, Verdict(verdict), None),)
     )
-    values = FlowMetricValues({}, per_clock or {})
+    values = FlowMetricValues({}, per_clock or {}, clocks=clocks)
     table = TableRun(identity, flow, 1.5, values, results)
     finished = EPOCH + timedelta(minutes=minute)
     started = finished - timedelta(seconds=30)
@@ -208,9 +209,7 @@ def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) 
         assert store.measured(keyed.key) is None
 
 
-def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_base_run(
-    tmp_path: Path,
-) -> None:
+def test_base_run_prefers_the_run_under_the_given_rules_tree(tmp_path: Path) -> None:
     from booley.measurement.run_store import MeasurementStore
 
     repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
@@ -228,15 +227,21 @@ def test_rule_change_in_versioned_booley_directory_changes_the_key_but_not_the_b
     assert after.key.booley_tree != before.key.booley_tree
     assert after.booley_commit == git(booley, "rev-parse", "HEAD")
     assert store.measured(after.key) is None
-    base = store.base_run(after.key.project_tree)
-    assert base is not None and base.run_id == "r1"
-    assert base.document["booley_commit"] == before.booley_commit
-
-    # The base is the latest run of the project tree whatever its rules tree or status.
+    tree, old, new = after.key.project_tree, before.key.booley_tree, after.key.booley_tree
     store.write(make_run(after, "r2", minute=1, status="stopped"), [])
-    base = store.base_run(after.key.project_tree)
-    assert base is not None and base.run_id == "r2"
-    assert base.document["booley_commit"] == after.booley_commit
+
+    def chosen(preferred: str | None) -> str | None:
+        run = store.base_run(tree, preferred)
+        return None if run is None else run.run_id
+
+    assert chosen(old) == "r1"
+    assert chosen(new) == "r2"
+    assert chosen("0" * 40) == "r2"  # no run under that tree: the latest run
+    assert chosen(None) == "r2"  # no preference: the latest run, whatever its rules tree
+    store.write(make_run(before, "r3", minute=2), [])
+    assert chosen(None) == "r3"
+    assert chosen(new) == "r2"
+    assert store.base_run("1" * 40, new) is None
 
 
 def test_stored_key_follows_the_exported_booley_commit(tmp_path: Path) -> None:
@@ -466,6 +471,31 @@ def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> N
 
     assert store.clock_names(IDENTITY, "syn") == ("clk_i",)
     assert store.clock_names(IDENTITY, "sim") == ()
+
+
+def test_reported_clocks_union_every_run_and_skip_damaged_clock_data(tmp_path: Path) -> None:
+    import json
+
+    from booley.measurement.run_store import MeasurementStore
+
+    repo, head = in_tree_repository(tmp_path / "repo")
+    store = MeasurementStore(repo / ".booley")
+    keyed = key_of(repo, head)
+    assert store.reported_clocks(IDENTITY, "syn") == frozenset()
+    store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"clk_a": 1.0}}), [])
+    store.write(make_run(keyed, "b", minute=2, clocks=("clk_b",)), [])
+    store.write(make_run(keyed, "c", minute=3), [])
+    store.write(make_run(keyed, "d", minute=4), [])
+    runs = repo / ".booley" / "measurements" / keyed.key.project_tree
+    damaged = json.loads((runs / "c.json").read_text(encoding="utf-8"))
+    damaged["tables"][0]["values"] = {"clocks": [123, "clk_c"], "per_clock": {"m": 5, "n": [1]}}
+    (runs / "c.json").write_bytes(json.dumps(damaged).encode())
+    broken = json.loads((runs / "d.json").read_text(encoding="utf-8"))
+    broken["tables"] = [{}, *broken["tables"]]
+    (runs / "d.json").write_bytes(json.dumps(broken).encode())
+
+    assert store.reported_clocks(IDENTITY, "syn") == {"clk_a", "clk_b", "clk_c"}
+    assert store.reported_clocks(IDENTITY, "sim") == frozenset()
 
 
 def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> None:

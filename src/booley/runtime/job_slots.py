@@ -39,7 +39,9 @@ does not count toward a run-alone claim's wait, the first other claim starts
 when only companions hold, and a companion that does not fit never becomes the
 front. An entry whose claim cannot be read
 counts as not fitting and ends jumping. A holder may lower its own reservation
-as its phases finish (``shrink_reservation``), never raise it. A claim may also hold
+as its phases finish (``shrink_reservation``), never raise it. A claim may take
+over a holder's reservation and queue place (``submit(succeeds=...)``): it queues at
+the holder's place and the holder drops to zero in one promotion-gate hold. A claim may also hold
 a **seat** of a licensed EDA tool, judged against the tool's Seat Cap: it
 starts only while fewer seats of that tool are held than the cap, and keeps the
 cap it was created with, so a cap changed while Jobs wait applies to new claims
@@ -64,9 +66,10 @@ import threading
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from booley.core.boundary import as_int, require_finite_number
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
@@ -183,6 +186,13 @@ class ClaimLostError(RuntimeError):
     """
 
 
+class TakeoverBusyError(RuntimeError):
+    """The class promotion gate stayed busy, so a takeover submitted and dropped nothing.
+
+    Raised by ``submit`` with ``succeeds``; ``acquire`` retries it each poll.
+    """
+
+
 class ClaimAbortedError(RuntimeError):
     """The caller's ``should_abort`` hook fired while queued.
 
@@ -222,6 +232,9 @@ class MemoryClaim:
     seats: tuple[tuple[str, int], ...] = ()
     wall_s: float | None = None
     companion: bool = False
+    #: The phases a run-alone claim has no measurement of; shown in the wait line,
+    #: never read by admission.
+    unmeasured: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.run_alone, bool):
@@ -257,6 +270,7 @@ class MemoryClaim:
             "seats": dict(self.seats),
             "wall_s": self.wall_s,
             "companion": self.companion,
+            "unmeasured": self.unmeasured,
         }
 
     @staticmethod
@@ -275,6 +289,7 @@ class MemoryClaim:
                 seats=tuple(seats.items()),
                 wall_s=value.get("wall_s"),
                 companion=value.get("companion") is True,
+                unmeasured=_optional_text(value.get("unmeasured")),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None
@@ -286,25 +301,57 @@ class JobLabel:
 
     Presentation only: it never takes part in admission, so it lives on the
     entry beside ``argv`` rather than inside the ``MemoryClaim``. ``target`` is
-    empty when the Job names none.
+    empty when the Job names none. A work item's claim carries its Job's label
+    through :meth:`for_work_item`: ``work_item`` marks it as not the Job's own
+    claim and ``test`` names the item's tests (empty for a Job's own claim or a
+    build).
     """
 
     run_id: str
     flow: str
     target: str
+    test: str = ""
+    work_item: bool = False
 
-    def to_payload(self) -> dict[str, str]:
-        return {"run_id": self.run_id, "flow": self.flow, "target": self.target}
+    def for_work_item(self, target: str, tests: Sequence[str]) -> JobLabel:
+        """This Job's label for one of its work items: the item's own Target and tests."""
+        return replace(self, target=target, test=short_test_list(tests), work_item=True)
+
+    def to_payload(self) -> dict[str, str | bool]:
+        return {
+            "run_id": self.run_id,
+            "flow": self.flow,
+            "target": self.target,
+            "test": self.test,
+            "work_item": self.work_item,
+        }
 
     @staticmethod
     def from_payload(value: object) -> JobLabel | None:
         """The label an entry persisted, or None when absent or malformed."""
         if not isinstance(value, dict):
             return None
-        run_id, flow, target = (value.get(name) for name in ("run_id", "flow", "target"))
-        if isinstance(run_id, str) and isinstance(flow, str) and isinstance(target, str):
-            return JobLabel(run_id, flow, target)
+        fields = cast("dict[str, object]", value)
+        run_id, flow, target = (fields.get(name) for name in ("run_id", "flow", "target"))
+        test = fields.get("test", "")
+        work_item = fields.get("work_item", False)
+        if (
+            isinstance(run_id, str)
+            and isinstance(flow, str)
+            and isinstance(target, str)
+            and isinstance(test, str)
+            and isinstance(work_item, bool)
+        ):
+            return JobLabel(run_id, flow, target, test, work_item)
         return None
+
+
+def short_test_list(names: Sequence[str]) -> str:
+    """At most three test names then ``+N`` for the rest, joined by ``,``."""
+    shown = list(names[:3])
+    if len(names) > 3:
+        shown.append(f"+{len(names) - 3}")
+    return ",".join(shown)
 
 
 #: How many of the largest memory holders a queue report names.
@@ -316,10 +363,14 @@ class MemoryWait:
     """What one queued memory claim waits for, in the terms a queue report gives.
 
     ``position`` is 1-based among the blocked claims. ``free_mb`` is the Memory
-    Budget headroom the running holders leave (what admission judges), not host
-    free memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
-    taken. ``holders`` are up to three running claims, largest first
-    (run-alone first, shown with ``None`` for the whole budget).
+    Budget headroom left once the running holders and the waiters ahead that
+    start now hold their reservations (what admission judges), not host free
+    memory. ``seats`` lists each ``(tool, held, cap)`` whose seats are all
+    taken. ``holders`` are up to three claims that reserve memory (the running
+    ones and the waiters ahead that start now), largest first (run-alone first,
+    shown with ``None`` for the whole budget). ``memory_fits`` is True when the
+    claim's memory fits beside those holders, seats aside. ``ahead`` names the
+    Job ahead whose place in queue order holds the claim, else ``None``.
     """
 
     position: int
@@ -328,32 +379,43 @@ class MemoryWait:
     seats: tuple[tuple[str, int, int], ...]
     holders: tuple[tuple[str, float | None], ...]
     reason: str | None = None  # why the claim exists again (a requeued Job), else None
+    memory_fits: bool = False
+    ahead: str | None = None
 
     def describe(self) -> str:
-        """One line: the need, the free memory, any blocked seat and the largest holders."""
-        claim = self.claim
-        if claim.run_alone:
-            reason = (
-                "Memory Budget unavailable"
-                if claim.budget_mb == 0
-                else "memory estimate unknown or above the Memory Budget"
-            )
-            text = f"waits to run alone ({reason})"
-        else:
-            text = (
-                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
-                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
-            )
-        text += "".join(
-            f"; waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
-        )
+        """One line: what holds the claim, leading reason first, then the largest holders."""
+        memory = self._memory_clause()
+        others = [
+            f"waits for a {tool} seat ({held} of {cap} held)" for tool, held, cap in self.seats
+        ]
+        if self.ahead is not None:
+            others.append(f"waits in queue order behind {self.ahead}")
+        clauses = [memory, *others] if not (self.memory_fits and others) else [*others, memory]
         if self.holders:
             named = ", ".join(
                 f"{name} {'whole budget' if mb is None else f'{mb:,.0f} MiB'}"
                 for name, mb in self.holders
             )
-            text += f"; largest holders: {named}"
-        return text if self.reason is None else f"{text}; {self.reason}"
+            clauses.append(f"largest holders: {named}")
+        return "; ".join(clauses)
+
+    def _memory_clause(self) -> str:
+        """The run-alone wait with its reason, or the need and the free memory."""
+        claim = self.claim
+        if not claim.run_alone:
+            return (
+                f"needs {claim.reservation_mb or 0.0:,.0f} MiB; {self.free_mb:,.0f} MiB free "
+                f"of the {claim.budget_mb:,.0f} MiB Memory Budget"
+            )
+        if self.reason is not None:
+            why = self.reason
+        elif claim.budget_mb == 0:
+            why = "Memory Budget unavailable"
+        elif claim.unmeasured:
+            why = f"no memory measurement yet for {claim.unmeasured}"
+        else:
+            why = "memory estimate unknown or above the Memory Budget"
+        return f"waits to run alone ({why})"
 
 
 def _holder_name(token: SlotToken) -> str:
@@ -361,7 +423,7 @@ def _holder_name(token: SlotToken) -> str:
     label = token.job
     if label is None:
         return f"pid {token.pid}"
-    detail = ", ".join(part for part in (label.flow, label.target) if part)
+    detail = ", ".join(part for part in (label.flow, label.target, label.test) if part)
     name = label.run_id or f"pid {token.pid}"
     return f"{name} ({detail})" if detail else name
 
@@ -371,40 +433,77 @@ def memory_wait(
 ) -> MemoryWait | None:
     """What the memory waiter *own* waits for, or None when it holds no memory claim.
 
-    Position counts like the narrator always did: the blocked claims ahead of
-    *own* among the *waiters* ranked before it, behind the running *holders*.
-    "Free" is the Memory Budget minus the holders' reservations (nothing while
-    a run-alone Job runs); waiters ahead that are about to start are not
-    subtracted, so it can overstate what is free the instant a holder leaves.
+    Position counts the blocked claims ahead of *own* among the *waiters*
+    ranked before it, behind the running *holders*. The waiters ahead that
+    start now count as holders: "free" is the Memory Budget minus their
+    reservations and the holders' (nothing while a run-alone Job runs), so
+    position and free memory agree the instant a holder leaves.
     """
     claim = own.memory
     if claim is None:
         return None
-    ahead = [waiter.memory for waiter in waiters if waiter.path.name < own.path.name]
+    ahead = [waiter for waiter in waiters if waiter.path.name < own.path.name]
     running = [
         (held.memory, parse_stamp(held.promoted_at) or parse_stamp(held.created_at))
         for held in holders
     ]
-    _starts, blocked_ahead = _memory_queue(running, ahead, claim, now)
-    # Holders whose claim cannot be read say nothing about the budget: skip them.
-    claimed = [(held, held.memory) for held in holders if held.memory is not None]
-    alone = any(held_claim.run_alone for _held, held_claim in claimed)
-    used_mb = sum(held_claim.reservation_mb or 0.0 for _held, held_claim in claimed)
-    seats_held = Counter(tool for _held, held_claim in claimed for tool, _cap in held_claim.seats)
-    largest = sorted(claimed, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    load, started, front = _project_ahead(running, [waiter.memory for waiter in ahead], claim, now)
+    admitted = [token for token, starts in zip(ahead, started, strict=True) if starts]
+    memory_fits = load.fits_memory(claim)
+    seats = tuple(
+        (tool, load.seats_used.get(tool, 0), cap)
+        for tool, cap in claim.seats
+        if load.seats_used.get(tool, 0) >= cap
+    )
+    free_mb = 0.0 if load.alone else max(0.0, claim.budget_mb - load.used_mb)
+    stopped = load.stopped
+    starts_now = load.admit(claim, now)
     return MemoryWait(
-        position=blocked_ahead + 1,
+        position=1 if starts_now else started.count(False) + 1,
         claim=claim,
         reason=own.queue_reason,
-        free_mb=0.0 if alone else max(0.0, claim.budget_mb - used_mb),
-        seats=tuple(
-            (tool, seats_held[tool], cap) for tool, cap in claim.seats if seats_held[tool] >= cap
-        ),
-        holders=tuple(
-            (_holder_name(held), None if held_claim.run_alone else held_claim.reservation_mb)
-            for held, held_claim in largest
-        ),
+        free_mb=free_mb,
+        seats=seats,
+        holders=_largest_holders(holders, admitted),
+        memory_fits=memory_fits,
+        ahead=_job_ahead(ahead, started, front, starts_now=starts_now, stopped=stopped),
     )
+
+
+def _largest_holders(
+    holders: list[SlotToken], started: list[SlotToken]
+) -> tuple[tuple[str, float | None], ...]:
+    """The largest reserving claims among the running *holders* and the *started* waiters."""
+    reserving = [
+        (token, token.memory)
+        for token in [*holders, *started]
+        if token.memory is not None and _reserves(token.memory)
+    ]
+    largest = sorted(reserving, key=lambda pair: _holder_weight(pair[1]))[:_WAIT_HOLDERS]
+    return tuple(
+        (_holder_name(token), None if held.run_alone else held.reservation_mb)
+        for token, held in largest
+    )
+
+
+def _job_ahead(
+    ahead: list[SlotToken],
+    started: list[bool],
+    front: int | None,
+    *,
+    starts_now: bool,
+    stopped: bool,
+) -> str | None:
+    """The name of the Job whose place in queue order holds the claim, else ``None``.
+
+    A claim that starts now goes right after the nearest waiter ahead that
+    starts; one that does not is held by the front when that front is a
+    waiter ahead (not an unreadable holder, and not itself).
+    """
+    if starts_now:
+        nearest = [token for token, starts in zip(ahead, started, strict=True) if starts]
+        return _holder_name(nearest[-1]) if nearest else None
+    return _holder_name(ahead[front]) if stopped and front is not None else None
 
 
 def _holder_weight(claim: MemoryClaim) -> tuple[int, float]:
@@ -485,6 +584,10 @@ class _MemoryLoad:
             self.seats_used[tool] = self.seats_used.get(tool, 0) + 1
         self.finishes.append((finish, claim))
 
+    def fits_memory(self, claim: MemoryClaim) -> bool:
+        """True when *claim* fits the memory budget, whatever its seats."""
+        return self._fits(replace(claim, seats=()))
+
     def _fits(self, claim: MemoryClaim) -> bool:
         """True when *claim* fits the memory budget and a seat of each tool it holds is free."""
         if any(self.seats_used.get(tool, 0) >= cap for tool, cap in claim.seats):
@@ -555,16 +658,38 @@ def _memory_queue(
     first, and the claim starts); ``position`` counts the blocked claims ahead
     of it, and is 0 for a claim that fits.
     """
+    load, started_ahead, _front = _project_ahead(holders, ahead, claim, now)
+    fits = load.admit(claim, now)
+    blocked_ahead = started_ahead.count(False)
+    return (fits and not any(started_ahead), 0 if fits else blocked_ahead)
+
+
+def _project_ahead(
+    holders: list[tuple[MemoryClaim | None, float | None]],
+    ahead: list[MemoryClaim | None],
+    claim: MemoryClaim,
+    now: float,
+) -> tuple[_MemoryLoad, list[bool], int | None]:
+    """The load after the running *holders* and the waiters *ahead* of *claim* are walked.
+
+    Returns the load, which waiters ahead start, and the index of the front
+    (the waiter ahead that first blocked the queue; ``None`` when none did,
+    e.g. an unreadable holder stopped the walk).
+    """
     load = _MemoryLoad(claim.budget_mb)
     for held, started in holders:
         if held is None:
             load.stopped = True
         else:
             load.start(held, _finish(started, held.wall_s))
-    started_ahead = [load.admit(waiting, now) for waiting in ahead]
-    fits = load.admit(claim, now)
-    blocked_ahead = started_ahead.count(False)
-    return (fits and not any(started_ahead), 0 if fits else blocked_ahead)
+    started_ahead: list[bool] = []
+    front: int | None = None
+    for index, waiting in enumerate(ahead):
+        was_stopped = load.stopped
+        started_ahead.append(load.admit(waiting, now))
+        if load.stopped and not was_stopped:
+            front = index
+    return load, started_ahead, front
 
 
 @dataclass
@@ -644,6 +769,7 @@ class _WaiterRequest:
     memory: MemoryClaim | None = None
     queue_reason: str | None = None
     job: JobLabel | None = None
+    seq: int | None = None  # a place taken over from a holder (else the next sequence)
 
 
 def project_slots_dir(booley_dir: Path) -> Path:
@@ -834,6 +960,7 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Join *job_class* admission; the claim waits in queue order until admitted or withdrawn.
 
@@ -842,6 +969,14 @@ class SlotStore:
         the entry so the caller can read it while the Job waits or runs.
         A claim that opens as zero is refused (only a holder reaches zero),
         except a companion claim, which may reserve nothing.
+
+        *succeeds* is a holder of this process whose reservation the claim takes
+        over. While it still reserves memory, the claim queues at its place (its
+        priority and sequence) and the holder then drops to zero, so a claim
+        submitted after the holder cannot start first. A holder that reserves
+        nothing passes no place. ``TakeoverBusyError`` means the promotion gate
+        stayed busy: nothing was submitted or dropped. ``ClaimLostError`` means
+        the holder's lease is no longer this process's: nothing is left queued.
         """
         if memory is None or job_class != CLASS_MEMORY:
             raise ValueError(f"only the {CLASS_MEMORY} class admits, with a memory claim")
@@ -854,22 +989,39 @@ class SlotStore:
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
         created = self._now()
         linked_execution = self._linked_execution(execution_id, pid)
-        token = self._create_entry(
-            _WaiterRequest(
-                cls_dir=cls_dir,
-                priority=priority,
-                pid=pid,
-                argv=argv or [],
-                role=role,
-                timeout_s=timeout_s,
-                created=created,
-                execution_id=linked_execution,
-                memory=memory,
-                queue_reason=queue_reason,
-                job=job,
-            )
+        request = _WaiterRequest(
+            cls_dir=cls_dir,
+            priority=priority,
+            pid=pid,
+            argv=argv or [],
+            role=role,
+            timeout_s=timeout_s,
+            created=created,
+            execution_id=linked_execution,
+            memory=memory,
+            queue_reason=queue_reason,
+            job=job,
         )
-        return token
+        if succeeds is None or succeeds.memory is None or not _reserves(succeeds.memory):
+            return self._create_entry(request)
+        return self._take_over(
+            succeeds, replace(request, priority=succeeds.priority, seq=succeeds.seq)
+        )
+
+    def _take_over(self, holder: SlotToken, request: _WaiterRequest) -> SlotToken:
+        """Queue *request* at *holder*'s place and drop *holder* to zero, in one promotion-gate hold.
+
+        Every ranking runs inside the gate, so none lists the entries before the
+        claim exists and reads the holder after its drop.
+        """
+        with self._promotion_gate(holder) as acquired:
+            if not acquired:
+                raise TakeoverBusyError("the promotion gate stayed busy during a takeover")
+            token = self._create_entry(request)
+            if self.shrink_reservation(holder, 0):
+                return token
+        self.release(token)
+        raise ClaimLostError(f"the claim it succeeds is no longer held: {holder.path.name}")
 
     def _linked_execution(
         self, execution_id: str | ExecutionId | None, pid: int
@@ -940,7 +1092,7 @@ class SlotStore:
         lease_id = uuid.uuid4().hex
         payload_base = self._new_waiter_payload(request, lease_id, owner_identity)
         for _attempt in range(_ENTRY_CREATE_ATTEMPTS):
-            seq = self._next_seq(request.cls_dir)
+            seq = request.seq if request.seq is not None else self._next_seq(request.cls_dir)
             # A lease owns its filename across waiter/holder transitions and
             # cancellation. Independent stores must never recycle that name.
             entry_number = int(lease_id, 16)
@@ -957,7 +1109,7 @@ class SlotStore:
                 with contextlib.suppress(OSError):
                     tmp.unlink(missing_ok=True)
             return self._new_waiter_token(path, payload, request)
-        raise RuntimeError("could not allocate a unique Job slot entry")
+        raise RuntimeError("could not allocate a unique Memory Reservation entry")
 
     @staticmethod
     def _new_waiter_payload(
@@ -1232,22 +1384,30 @@ class SlotStore:
         memory: MemoryClaim | None = None,
         queue_reason: str | None = None,
         job: JobLabel | None = None,
+        succeeds: SlotToken | None = None,
     ) -> SlotToken:
         """Submit and wait for a holder, withdrawing on cancellation or failure.
 
         Queue narration repeats when its interval elapses. ``should_abort``
         lets signal handlers end a wait without leaking the caller's entry.
+        A *succeeds* takeover (see ``submit``) retries each poll while the
+        promotion gate is busy, until ``should_abort`` fires.
         """
-        token = self.submit(
-            job_class,
-            pid=pid,
-            argv=argv,
-            role=role,
-            timeout_s=timeout_s,
-            execution_id=execution_id,
-            memory=memory,
-            queue_reason=queue_reason,
-            job=job,
+        token = self._submit_until_free(
+            lambda: self.submit(
+                job_class,
+                pid=pid,
+                argv=argv,
+                role=role,
+                timeout_s=timeout_s,
+                execution_id=execution_id,
+                memory=memory,
+                queue_reason=queue_reason,
+                job=job,
+                succeeds=succeeds,
+            ),
+            should_abort,
+            poll_interval,
         )
         if on_submitted is not None:
             on_submitted(token)
@@ -1263,6 +1423,23 @@ class SlotStore:
             self.release(token)  # idempotent; no-op on the LOST path
             raise
 
+    def _submit_until_free(
+        self,
+        submit: Callable[[], SlotToken],
+        should_abort: Callable[[], bool] | None,
+        poll_interval: float,
+    ) -> SlotToken:
+        """``submit()``, retried each poll while a takeover finds the promotion gate busy."""
+        while True:
+            try:
+                return submit()
+            except TakeoverBusyError:
+                if should_abort is not None and should_abort():
+                    raise ClaimAbortedError(
+                        "aborted while waiting for a memory slot (shutdown requested)"
+                    ) from None
+                self._sleep(poll_interval)
+
     def _wait_for_promotion(
         self,
         token: SlotToken,
@@ -1277,7 +1454,7 @@ class SlotStore:
         while token.path.exists():
             if should_abort is not None and should_abort():
                 raise ClaimAbortedError(
-                    f"aborted while waiting for a {token.job_class} slot (shutdown requested)"
+                    f"aborted while waiting for {token.job_class} admission (shutdown requested)"
                 )
             state = self.refresh(token)
             if state.state == HOLDING:
@@ -1314,7 +1491,7 @@ class SlotStore:
         if self._release_entry(token):
             return
         logger.warning(
-            "Release of slot entry %s deferred: it could not take its lease gate. Retrying in the "
+            "Release of Memory Reservation %s deferred: it could not take its lease gate. Retrying in the "
             "background; if this process exits first, the entry keeps its reservation "
             "until reap removes it",
             token.path.name,
@@ -1368,7 +1545,7 @@ class SlotStore:
     @staticmethod
     def _warn_release_gave_up(token: SlotToken) -> None:
         logger.warning(
-            "Could not release slot entry %s: it could not take its lease gate; "
+            "Could not release Memory Reservation %s: it could not take its lease gate; "
             "the entry keeps its reservation until reaped",
             token.path.name,
         )
@@ -1628,7 +1805,7 @@ class SlotStore:
         return self._retry_entry_io(
             lambda: path.unlink(missing_ok=True),
             on_exhausted=lambda: logger.warning(
-                "Could not remove slot entry after retries: %s", path.name
+                "Could not remove Memory Reservation after retries: %s", path.name
             ),
         )
 
@@ -1784,7 +1961,9 @@ class SlotStore:
             except FileNotFoundError:
                 return False  # promoted (renamed) or already removed: the race is lost
             except OSError as exc:
-                logger.warning("Refusing to withdraw queued slot entry %s: %s", path.name, exc)
+                logger.warning(
+                    "Refusing to withdraw queued Memory Reservation %s: %s", path.name, exc
+                )
                 return False
             return True
 
@@ -1865,7 +2044,7 @@ class SlotStore:
         for path in list(cls_dir.glob("*.json")):
             if self._is_stale(path) and self._unlink_entry(path):
                 reaped.append(path.name)
-                logger.info("Reaped stale slot entry %s", path.name)
+                logger.info("Reaped stale Memory Reservation %s", path.name)
         return reaped
 
     def _is_stale(self, path: Path) -> bool:

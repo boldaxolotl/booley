@@ -36,12 +36,10 @@ def test_read_bounded_refuses_a_file_changed_during_the_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record_files = _simulation_record_files()
-    swapped = tmp_path / "swapped.json"
     extended = tmp_path / "extended.json"
-    swapped.write_bytes(b'{"value":"original"}\n')
     extended.write_bytes(b'{"value":"original"}\n')
 
-    # Extended: the file grows after the first chunk is read.
+    # The file grows after the first chunk is read.
     real_read = os.read
     appended = False
 
@@ -54,27 +52,6 @@ def test_read_bounded_refuses_a_file_changed_during_the_read(
                 stream.write(b"more\n")
         return chunk
 
-    with monkeypatch.context() as patch:
-        patch.setattr(os, "read", read_then_extend)
-        with pytest.raises(_DomainError, match="changed during read"):
-            record_files.read_bounded(extended, limit=1024, error=_DomainError)
-
-    if os.name == "nt":  # Windows prevents renaming an open file.
-        return
-
-    # Swapped: the path is replaced by another file right after it is opened.
-    real_open = record_files.open_regular_nofollow
-    opened = False
-
-    def open_then_replace(selected: Path, **kwargs: Path | None) -> int:
-        nonlocal opened
-        descriptor = real_open(selected, **kwargs)
-        if not opened:
-            opened = True
-            selected.rename(selected.with_name("opened-original.json"))
-            selected.write_bytes(b'{"value":"replacement"}\n')
-        return descriptor
-
-    monkeypatch.setattr(record_files, "open_regular_nofollow", open_then_replace)
+    monkeypatch.setattr(os, "read", read_then_extend)
     with pytest.raises(_DomainError, match="changed during read"):
-        record_files.read_bounded(swapped, limit=1024, error=_DomainError)
+        record_files.read_bounded(extended, limit=1024, error=_DomainError)

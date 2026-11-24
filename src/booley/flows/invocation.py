@@ -28,7 +28,7 @@ _BUILTIN_TIMEOUT_DEFAULTS_MS: Final[Mapping[str, int]] = MappingProxyType(
 
 
 def default_timeout_ms(flow_name: str) -> int:
-    """Return the canonical per-work-unit timeout for a shipped Flow."""
+    """Return the canonical default timeout for a shipped Flow."""
     name = canonical(flow_name)
     try:
         return _BUILTIN_TIMEOUT_DEFAULTS_MS[name]

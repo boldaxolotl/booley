@@ -20,7 +20,6 @@ import pytest
 import yaml
 
 from booley.core.build_paths import work_root_for
-from booley.criteria.state import DevelopmentState
 from booley.flows import edam as edam_layer
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow
@@ -161,9 +160,6 @@ def real_fusesoc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
-    state = tmp_path / "state.json"
-    DevelopmentState.load(state).save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
     scratch = tmp_path.parent / f"{tmp_path.name}-fusesoc"
     scratch.mkdir()
     _real_fusesoc(monkeypatch, scratch)
@@ -183,6 +179,7 @@ def _fpga_flow(root: Path) -> FpgaImplFlow:
     return flow
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 def _fpga_dirs(flow: FpgaImplFlow) -> list[Path]:
     """Every folder Vivado resolves a relative include in."""
     recipe = flow._resolve_fpga_recipe("fpga")
@@ -190,6 +187,7 @@ def _fpga_dirs(flow: FpgaImplFlow) -> list[Path]:
     return [Path(folder) for folder in folders]
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 def _fpga_fingerprint(flow: FpgaImplFlow) -> str:
     with patch.object(edam_layer, "configure", side_effect=_fake_vivado_tcl):
         return flow._prepare_fpga_command("fpga").fingerprint
@@ -203,6 +201,7 @@ def _holds(folders: list[Path], name: str) -> bool:
     return any((folder / name).exists() for folder in folders)
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 def _lint_incdirs(root: Path) -> tuple[Path, list[Path], str]:
     """Run lint setup; return the build root, its ``+incdir+`` folders and the .vc text."""
     handle = TargetCatalog.build(root).select("lint", for_flow="lint")
@@ -225,16 +224,23 @@ def _lint_incdirs(root: Path) -> tuple[Path, list[Path], str]:
 
 
 @pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_fpga_include_dirs_hold_only_listed_headers(tmp_path: Path) -> None:
+@pytest.mark.parametrize("flow_name", ["fpga", "lint"])
+def test_isolated_include_dirs_hold_only_listed_headers(tmp_path: Path, flow_name: str) -> None:
     root = _write_project(tmp_path / "proj", "isolated")
-    folders = _fpga_dirs(_fpga_flow(root))
-    export = _fpga_fusesoc_root(root).resolve()
+    if flow_name == "fpga":
+        folders, export = _fpga_dirs(_fpga_flow(root)), _fpga_fusesoc_root(root).resolve()
+    else:
+        build_root, folders, vc = _lint_incdirs(root)
+        export = build_root.resolve()
+        # AC2: lint's generated ``.vc`` names only export folders.
+        assert str(root) not in vc
     assert folders
     assert all(folder.resolve().is_relative_to(export) for folder in folders), folders
     assert _holds(folders, "listed.vh")
     assert not _holds(folders, "unlisted.vh")
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("layout", ["plain-dir", "symlinked-booley-dir"])
 @pytest.mark.parametrize("folder", ["rtl/inc", "tb"])
@@ -285,6 +291,7 @@ def test_isolated_absolute_in_checkout_include_folder_is_in_vivado_key(tmp_path:
     assert _fpga_fingerprint(flow) != before
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_synth_include_dirs_hold_only_listed_headers(tmp_path: Path) -> None:
     """AC1: synthesis ``--inc-dir`` and ``--extra-rtl`` stay inside the synth work root."""
@@ -300,22 +307,11 @@ def test_isolated_synth_include_dirs_hold_only_listed_headers(tmp_path: Path) ->
             (root / cmd[i + 1]).parent for i, arg in enumerate(cmd) if arg == "--extra-rtl"
         ],
     }
-    work_root = flow._synth_work_root("synth").resolve()
+    work_root = work_root_for(root, "synth", "synth").resolve()
     for flag, paths in folders.items():
         assert paths, flag
         assert all(path.resolve().is_relative_to(work_root) for path in paths), (flag, paths)
         assert not _holds(paths, "unlisted.vh"), flag
-
-
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_lint_vc_names_only_listed_headers(tmp_path: Path) -> None:
-    """AC2: lint's generated ``.vc`` names only export folders."""
-    root = _write_project(tmp_path / "proj", "isolated")
-    build_root, incdirs, vc = _lint_incdirs(root)
-    assert incdirs
-    assert all(folder.is_relative_to(build_root.resolve()) for folder in incdirs), incdirs
-    assert not _holds(incdirs, "unlisted.vh")
-    assert str(root) not in vc
 
 
 @pytest.mark.usefixtures("real_fusesoc")
@@ -373,6 +369,7 @@ def test_lint_tool_error_names_unlisted_header(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 @pytest.mark.usefixtures("real_fusesoc")
 def test_isolated_outside_checkout_fpga_name_fails_loudly(tmp_path: Path) -> None:
     root = _write_project(tmp_path / "proj", "isolated")
@@ -393,6 +390,7 @@ def _export_inc(work_root: Path, target: str) -> Path:
     return (work_root / "design_0" / target / "src" / "design_0" / "rtl" / "inc").resolve()
 
 
+# Private seam: a public run needs Vivado or Yosys, so only the preparation half shows this.
 @pytest.mark.usefixtures("real_fusesoc")
 @pytest.mark.parametrize("variant", ["projected", "plain"])
 def test_non_isolated_builds_are_unchanged(tmp_path: Path, variant: str) -> None:
@@ -422,7 +420,7 @@ def test_non_isolated_builds_are_unchanged(tmp_path: Path, variant: str) -> None
     synth.parse_args(["--target", "synth", "--work-dir", str(root)])
     resolved = synth._resolve_synth_target("synth")
     assert [d.resolve() for d in resolved.rtl_include_dirs] == [
-        _export_inc(synth._synth_work_root("synth"), "synth")
+        _export_inc(work_root_for(root, "synth", "synth"), "synth")
     ]
     assert not list(tmp_path.rglob("core-mirror"))
     assert (fpga_root / "sentinel").is_dir()

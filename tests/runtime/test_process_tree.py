@@ -11,6 +11,7 @@ import textwrap
 import time
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import process_tree
 
@@ -87,7 +88,7 @@ class TestDescendantPids:
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(grandchild, signal.SIGKILL)
             proc.kill()
-            proc.wait(timeout=10)
+            proc.wait(timeout=hang_guard_s())
             if proc.stdout is not None:
                 proc.stdout.close()
 

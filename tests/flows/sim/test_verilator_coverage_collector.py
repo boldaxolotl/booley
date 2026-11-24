@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows import job_resources
+from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import PreSimEvidence
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
@@ -20,6 +22,9 @@ from booley.flows.sim.verilator_coverage import (
     VerilatorCollectorIdentity,
     collect,
 )
+from booley.flows.test_runs import build_test_run
+from booley.runtime import resource_history
+from tests.canned_process_support import canned_command, measured_flow
 from tests.conftest import symlink_or_skip
 
 _HEADER = "# SystemC::Coverage-3\n"
@@ -29,13 +34,19 @@ _LINE_POINT = (
 )
 
 
+_START = {"hook": "start", "sequence": 1, "success": True}
+_SOURCES = (CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),)
+
+
 def _request(
     tmp_path: Path,
-    test: str,
-    *,
+    *tests: str | SelectedCoverageRun,
     harness: str = "generated_main",
     hooks: tuple[str, ...] = (),
     reset_included: bool = True,
+    sources: tuple[CoverageSource, ...] = _SOURCES,
+    trace: bool = False,
+    artifact_root: Path | None = None,
 ) -> CoverageCollectionRequest:
     return CoverageCollectionRequest(
         target=CoverageTarget(
@@ -43,12 +54,15 @@ def _request(
             selector="sim_counter",
             toplevel="counter",
             harness=harness,
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
+            sources=sources,
             custom_main_hooks=hooks,
         ),
-        selected_tests=(SelectedCoverageRun(test),),
-        artifact_root=tmp_path / "record",
+        selected_tests=tuple(
+            SelectedCoverageRun(test) if isinstance(test, str) else test for test in tests
+        ),
+        artifact_root=artifact_root or tmp_path / "record",
         reset_included=reset_included,
+        trace=trace,
     )
 
 
@@ -200,33 +214,16 @@ class _StagedSourceExecution(_PresenceExecution):
         )
 
 
-class _PostResetExecution(_GeneratedMainExecution):
-    def run(self, request) -> SimulationRunResult:
-        assert request.hook_evidence_path is not None
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        request.raw_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
-        request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
-        request.hook_evidence_path.write_text(
-            json.dumps(
-                {
-                    "$schema": "booley.coverage-hook/v1",
-                    "run_id": request.run_id,
-                    "events": [{"hook": "start", "sequence": 1, "success": True}],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return SimulationRunResult(verdict="pass")
-
-
 class _HookFailureExecution(_GeneratedMainExecution):
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(self, events: list[dict[str, object]] | None) -> None:
         self.events = events
 
     def run(self, request) -> SimulationRunResult:
         assert request.hook_evidence_path is not None
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(_HEADER + _LINE_POINT, encoding="utf-8")
+        if self.events is None:
+            return SimulationRunResult(verdict="pass")
         request.hook_evidence_path.parent.mkdir(parents=True, exist_ok=True)
         request.hook_evidence_path.write_text(
             json.dumps(
@@ -242,7 +239,7 @@ class _HookFailureExecution(_GeneratedMainExecution):
 
 
 class _HookAndRawFailureExecution(_HookFailureExecution):
-    def __init__(self, events: list[dict[str, object]], raw_payload: str | None) -> None:
+    def __init__(self, events: list[dict[str, object]] | None, raw_payload: str | None) -> None:
         super().__init__(events)
         self.raw_payload = raw_payload
 
@@ -510,17 +507,7 @@ def _assert_line_point(point) -> None:
 
 
 def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("wrap"),),
-        artifact_root=tmp_path,
-    )
+    request = _request(tmp_path, "wrap", artifact_root=tmp_path)
 
     result = collect(request, _StagedSourceExecution())
 
@@ -532,25 +519,16 @@ def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None
 def test_missing_raw_database_is_a_collector_error_without_losing_simulation_truth(
     tmp_path: Path,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset", sources=(), harness="custom_main", hooks=("write_hook",))
+    events = [{"hook": "write", "sequence": 1, "success": True}]
 
-    result = collect(request, _MissingRawExecution())
+    result = collect(request, _HookAndRawFailureExecution(events, None))
 
     assert result.status == "collector_error"
     assert [(run.simulation_verdict, run.collection) for run in result.runs] == [
         ("pass", "collector_error")
     ]
-    assert result.artifacts == ()
+    assert [artifact.kind for artifact in result.artifacts] == ["coverage_hook_evidence"]
     assert result.merge.status == "not_run"
     assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_MISSING"]
 
@@ -562,17 +540,7 @@ def test_missing_raw_database_is_a_collector_error_without_losing_simulation_tru
 def test_unsafe_raw_database_is_reported_as_unsafe(
     tmp_path: Path, mode: str, message_fragment: str
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset", sources=())
 
     result = collect(request, _UnsafeRawExecution(mode, tmp_path / "outside" / "raw.dat"))
 
@@ -584,18 +552,14 @@ def test_unsafe_raw_database_is_reported_as_unsafe(
     assert result.artifacts == ()
 
 
-def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("wrap"),),
-        artifact_root=tmp_path / "record",
-    )
+@pytest.mark.parametrize(
+    ("expected_code", "reset_included"),
+    [("COV_RAW_FILE_STALE", True), ("COV_WINDOW_HOOK_MISSING", False)],
+)
+def test_stale_raw_database_is_retained_but_excluded_from_collection(
+    tmp_path: Path, expected_code: str, reset_included: bool
+) -> None:
+    request = _request(tmp_path, "wrap", reset_included=reset_included)
 
     raw = request.artifact_root / "native" / "raw" / "001-wrap.dat"
     raw.parent.mkdir(parents=True)
@@ -608,12 +572,13 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
     assert result.runs[0].collection == "collector_error"
     assert [artifact.state for artifact in result.artifacts] == ["stale"]
     assert result.points == ()
-    assert [finding.code for finding in result.findings] == ["COV_RAW_FILE_STALE"]
+    assert [finding.code for finding in result.findings] == [expected_code]
 
 
 @pytest.mark.parametrize(
     "payload",
     [
+        _HEADER + "not a native counter entry\n",
         _HEADER + "C '\x01f\x02rtl/counter.sv\x01f\x02duplicate\x01t\x02line' 1\n",
         _HEADER + "C '\x01f\x02rtl/counter.sv\x01l\x02ten\x01t\x02line' 1\n",
         _HEADER.encode() + b"C '\x01t\x02line\xff' 1\n",
@@ -628,26 +593,6 @@ def test_malformed_native_attributes_are_structured_errors(
 
     assert result.status == "collector_error"
     assert result.runs[0].simulation_verdict == "timeout"
-    assert [finding.code for finding in result.findings] == ["COV_RAW_NOT_QUERYABLE"]
-
-
-def test_malformed_raw_database_is_unqueryable_and_preserves_timeout(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("hang"),),
-        artifact_root=tmp_path / "record",
-    )
-
-    result = collect(request, _MalformedRawExecution())
-
-    assert result.status == "collector_error"
-    assert result.runs[0].simulation_verdict == "timeout"
     assert result.runs[0].collection == "collector_error"
     assert [artifact.state for artifact in result.artifacts] == ["unqueryable"]
     assert [finding.code for finding in result.findings] == ["COV_RAW_NOT_QUERYABLE"]
@@ -656,17 +601,7 @@ def test_malformed_raw_database_is_unqueryable_and_preserves_timeout(tmp_path: P
 def test_incompatible_native_format_blocks_normalization_with_stable_evidence(
     tmp_path: Path,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset", sources=())
 
     result = collect(request, _IncompatibleRawExecution())
 
@@ -681,17 +616,7 @@ def test_incompatible_native_format_blocks_normalization_with_stable_evidence(
 def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
     tmp_path: Path,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("all_metrics"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "all_metrics")
 
     result = collect(request, _RichNativeExecution())
 
@@ -757,20 +682,12 @@ def test_supported_but_unobserved_record_classes_are_explicitly_absent(
 
 
 def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("post_reset"),),
-        artifact_root=tmp_path / "record",
-        reset_included=False,
-    )
+    request = _request(tmp_path, "post_reset", reset_included=False)
 
-    result = collect(request, _PostResetExecution())
+    result = collect(
+        request,
+        _HookFailureExecution([{"hook": "start", "sequence": 1, "success": True}]),
+    )
 
     assert result.status == "complete", _collection_detail(result)
     assert result.coverage_window.mode == "post_reset"
@@ -785,18 +702,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
 def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(
     tmp_path: Path,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("forgot_hook"),),
-        artifact_root=tmp_path / "record",
-        reset_included=False,
-    )
+    request = _request(tmp_path, "forgot_hook", reset_included=False)
 
     result = collect(request, _GeneratedMainExecution())
 
@@ -854,18 +760,7 @@ def test_invalid_start_hook_is_a_collector_error(
     events: list[dict[str, object]],
     expected_code: str,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("bad_hook"),),
-        artifact_root=tmp_path / "record",
-        reset_included=False,
-    )
+    request = _request(tmp_path, "bad_hook", reset_included=False)
 
     result = collect(request, _HookFailureExecution(events))
 
@@ -874,68 +769,78 @@ def test_invalid_start_hook_is_a_collector_error(
     assert result.runs[0].simulation_verdict == "pass"
 
 
-@pytest.mark.parametrize(
-    ("hooks", "reset_included", "expected_code"),
-    [
-        ((), True, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED"),
-        (("write_hook",), False, "COV_CUSTOM_MAIN_START_HOOK_REQUIRED"),
-        (("write_hook", "start_hook"), True, "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY"),
-        (("write_hook", "write_hook"), True, "COV_CUSTOM_MAIN_HOOK_DUPLICATE"),
-        (("write_hook", "mystery"), True, "COV_CUSTOM_MAIN_HOOK_UNKNOWN"),
-    ],
-)
-def test_invalid_custom_main_hook_declarations_fail_before_execution(
-    tmp_path: Path,
-    hooks: tuple[str, ...],
-    reset_included: bool,
-    expected_code: str,
-) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="custom_main",
+_INVALID_HOOK_CASES = [
+    (
+        "generated_main",
+        ("write_hook",),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
+        "remove it",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "write_hook"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_DUPLICATE",
+        "more than once",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "mystery"),
+        True,
+        "COV_CUSTOM_MAIN_HOOK_UNKNOWN",
+        "['mystery']",
+    ),
+    (
+        "custom_main",
+        (),
+        True,
+        "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED",
+        "booley_coverage_write() once on every normal exit path",
+    ),
+    (
+        "custom_main",
+        ("write_hook",),
+        False,
+        "COV_CUSTOM_MAIN_START_HOOK_REQUIRED",
+        "booley_coverage_start() once after reset",
+    ),
+    (
+        "custom_main",
+        ("write_hook", "start_hook"),
+        True,
+        "COV_CUSTOM_MAIN_START_HOOK_UNNECESSARY",
+        "reset_included: false",
+    ),
+]
+
+
+def test_invalid_custom_main_hook_declarations_fail_before_execution(tmp_path: Path) -> None:
+    for index, (harness, hooks, reset_included, expected_code, expected_fix) in enumerate(
+        _INVALID_HOOK_CASES
+    ):
+        request = _request(
+            tmp_path / str(index),
+            "custom",
+            harness=harness,
+            hooks=hooks,
+            reset_included=reset_included,
             sources=(),
-            custom_main_hooks=hooks,
-        ),
-        selected_tests=(SelectedCoverageRun("custom"),),
-        artifact_root=tmp_path / "record",
-        reset_included=reset_included,
-    )
+        )
 
-    result = collect(request, _NoExecution())
+        result = collect(request, _NoExecution())
 
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == [expected_code]
-
-
-def test_non_custom_target_rejects_custom_main_hooks_before_execution(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path, "generated", hooks=("write_hook",))
-
-    result = collect(request, _NoExecution())
-
-    assert result.status == "collector_error"
-    assert result.runs == ()
-    assert [finding.code for finding in result.findings] == ["COV_CUSTOM_MAIN_HOOK_FORBIDDEN"]
+        assert result.status == "collector_error", expected_code
+        assert result.runs == ()
+        assert [finding.code for finding in result.findings] == [expected_code]
+        message = result.findings[0].message
+        assert message.startswith("sim_counter: "), expected_code
+        assert "flow_options.booley.coverage.custom_main_hooks" in message, expected_code
+        assert expected_fix in message, expected_code
 
 
 def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="custom_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-            custom_main_hooks=("write_hook",),
-        ),
-        selected_tests=(SelectedCoverageRun("custom"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "custom", harness="custom_main", hooks=("write_hook",))
 
     result = collect(
         request,
@@ -988,7 +893,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
 
 
 @pytest.mark.parametrize(
-    ("events", "expected_code"),
+    ("events", "expected_code", "reset_included"),
     [
         (
             [
@@ -997,6 +902,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": 3, "success": True},
             ],
             "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+            False,
         ),
         (
             [
@@ -1005,6 +911,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": 3, "success": True},
             ],
             "COV_WRITE_HOOK_DUPLICATE",
+            False,
         ),
         (
             [
@@ -1012,6 +919,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "start", "sequence": 2, "success": True},
             ],
             "COV_WRITE_HOOK_FAILED",
+            False,
         ),
         (
             [
@@ -1019,6 +927,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "start", "sequence": 2, "success": False},
             ],
             "COV_WINDOW_HOOK_FAILED",
+            False,
         ),
         (
             [
@@ -1026,6 +935,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "start", "sequence": 2, "success": True},
             ],
             "COV_CUSTOM_MAIN_HOOK_OUT_OF_ORDER",
+            False,
         ),
         (
             [
@@ -1033,6 +943,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": 2, "success": True},
             ],
             "COV_WINDOW_HOOK_INVALID",
+            False,
         ),
         (
             [
@@ -1040,6 +951,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": "first", "success": True},
             ],
             "COV_WINDOW_HOOK_INVALID",
+            False,
         ),
         (
             [
@@ -1048,63 +960,50 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
                 {"hook": "write", "sequence": "later", "success": True},
             ],
             "COV_WRITE_HOOK_DUPLICATE",
+            False,
         ),
+        (
+            [
+                {"hook": "write", "sequence": 1, "success": True},
+                {"hook": "start", "sequence": 2, "success": True},
+                {"hook": "write", "sequence": 3, "success": True},
+            ],
+            "COV_WRITE_HOOK_DUPLICATE",
+            True,
+        ),
+        ([_START], "COV_WRITE_HOOK_MISSING", False),
+        ([_START, _START], "COV_WINDOW_HOOK_DUPLICATE", False),
+        (None, "COV_WINDOW_HOOK_MISSING", False),
+        (None, "COV_WRITE_HOOK_MISSING", True),
     ],
 )
+@pytest.mark.parametrize("raw_payload", [_HEADER + _LINE_POINT, None], ids=["raw", "no_raw"])
 def test_post_reset_custom_main_hook_event_precedence(
     tmp_path: Path,
-    events: list[dict[str, object]],
+    events: list[dict[str, object]] | None,
     expected_code: str,
+    reset_included: bool,
+    raw_payload: str | None,
 ) -> None:
     request = _request(
         tmp_path,
         "ordered_hooks",
         harness="custom_main",
-        hooks=("start_hook", "write_hook"),
-        reset_included=False,
+        hooks=("write_hook",) if reset_included else ("start_hook", "write_hook"),
+        reset_included=reset_included,
     )
 
-    result = collect(request, _HookFailureExecution(events))
+    result = collect(request, _HookAndRawFailureExecution(events, raw_payload))
 
     assert result.status == "collector_error"
     assert [finding.code for finding in result.findings] == [expected_code]
-
-
-def test_reset_included_custom_main_keeps_duplicate_write_precedence(tmp_path: Path) -> None:
-    request = _request(
-        tmp_path,
-        "whole_run_hooks",
-        harness="custom_main",
-        hooks=("write_hook",),
-    )
-    events = [
-        {"hook": "write", "sequence": 1, "success": True},
-        {"hook": "start", "sequence": 2, "success": True},
-        {"hook": "write", "sequence": 3, "success": True},
-    ]
-
-    result = collect(request, _HookFailureExecution(events))
-
-    assert result.status == "collector_error"
-    assert [finding.code for finding in result.findings] == ["COV_WRITE_HOOK_DUPLICATE"]
 
 
 def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_data(
     tmp_path: Path,
 ) -> None:
     execution = _CocotbExecution()
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="cocotb",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("increments"), SelectedCoverageRun("wraps")),
-        artifact_root=tmp_path / "record",
-        trace=True,
-    )
+    request = _request(tmp_path, "increments", "wraps", harness="cocotb", trace=True)
 
     result = collect(request, execution)
 
@@ -1120,17 +1019,7 @@ def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_da
 
 
 def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset")
 
     result = collect(request, _MergeFailureExecution())
 
@@ -1160,17 +1049,7 @@ def test_bad_native_merge_never_discards_per_run_evidence(
     merge_status: str,
     merged_state: str | None,
 ) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset")
     if mode == "stale":
         merged = request.artifact_root / "native" / "merged" / "coverage.dat"
         merged.parent.mkdir(parents=True)
@@ -1196,17 +1075,7 @@ def test_bad_native_merge_never_discards_per_run_evidence(
 
 
 def test_build_failure_reports_elaboration_truth_for_every_selected_test(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("a"), SelectedCoverageRun("b")),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "a", "b", sources=())
 
     result = collect(request, _BuildFailureExecution())
 
@@ -1220,17 +1089,7 @@ def test_build_failure_reports_elaboration_truth_for_every_selected_test(tmp_pat
 
 
 def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path: Path) -> None:
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="acme:demo:counter:1.0#sim_counter",
-            selector="sim_counter",
-            toplevel="counter",
-            harness="generated_main",
-            sources=(),
-        ),
-        selected_tests=(SelectedCoverageRun("reset"),),
-        artifact_root=tmp_path / "record",
-    )
+    request = _request(tmp_path, "reset", sources=())
 
     result = collect(request, _WrongVerilatorExecution())
 
@@ -1301,24 +1160,56 @@ def test_native_entry_in_the_authored_source_matches_through_the_mirror_name(
     assert point.identity.source == "rtl/counter.sv"
 
 
-def test_mirror_export_name_settles_inputs_that_share_a_name_suffix() -> None:
+def test_mirror_export_name_settles_inputs_that_share_a_name_suffix(tmp_path: Path) -> None:
     """``tb.sv`` beside ``rtl/tb.sv`` stay two sources, not a header-looking foreign file."""
-    from booley.flows.sim.verilator_coverage import _match_source
-
-    top = CoverageSource("tb.sv", "tb.sv", "testbench")
-    nested = CoverageSource("rtl/tb.sv", "rtl/tb.sv", "rtl")
+    prefix = "src/acme_demo_counter-booleycoverage_1/"
     exports = {
-        "src/acme_demo_counter-booleycoverage_1/tb.sv": "tb.sv",
-        "src/acme_demo_counter-booleycoverage_1/rtl/tb.sv": "rtl/tb.sv",
+        prefix + "tb.sv": "tb.sv",
+        prefix + "rtl/tb.sv": "rtl/tb.sv",
+        prefix + "rtl/tb.vh": "rtl/tb.vh",
     }
-    sources = {"tb.sv": top, "rtl/tb.sv": nested}
+    sources = (
+        CoverageSource("tb.sv", "tb.sv", "testbench"),
+        CoverageSource("rtl/tb.sv", "rtl/tb.sv", "rtl"),
+    )
+    request = _request(tmp_path, "mirror", sources=sources)
+    request = replace(request, target=replace(request.target, foreign_paths=exports))
+    payload = _HEADER + "".join(
+        _native_entry("line", "block").replace("rtl/counter.sv", prefix + name)
+        for name in ("rtl/tb.sv", "rtl/tb.vh")
+    )
 
-    matched = _match_source(sources, "src/acme_demo_counter-booleycoverage_1/rtl/tb.sv", exports)
+    result = collect(request, _PresenceExecution(payload))
 
-    assert matched is nested
-    header = "src/acme_demo_counter-booleycoverage_1/rtl/tb.vh"
-    named = _match_source(sources, header, {**exports, header: "rtl/tb.vh"})
-    assert (named.kind, named.path) == ("foreign", "rtl/tb.vh")
+    assert result.status == "complete", _collection_detail(result)
+    assert result.native_sources == ("rtl/tb.sv", "rtl/tb.vh")
+    assert {point.identity.source: point.disposition["kind"] for point in result.points} == {
+        "rtl/tb.sv": "eligible",
+        "rtl/tb.vh": "unscored",
+    }
+
+
+def test_run_stems_and_ids_name_the_raw_files_collect_asks_for(tmp_path: Path) -> None:
+    class Recording(_GeneratedMainExecution):
+        def __init__(self) -> None:
+            self.requests = []
+
+        def run(self, request) -> SimulationRunResult:
+            self.requests.append(request)
+            return super().run(request)
+
+    execution = Recording()
+    stress = SelectedCoverageRun("stress", build_test_run("stress", variant="soak", seed=42))
+    request = _request(
+        tmp_path, SelectedCoverageRun("smoke test"), SelectedCoverageRun("smoke_test"), stress
+    )
+
+    collect(request, execution)
+
+    stems = [item.raw_path.stem for item in execution.requests]
+    assert stems[0].startswith("001-~sha256-")
+    assert stems[1:] == ["002-smoke_test", "003-stress+soak@42"]
+    assert execution.requests[2].run_id == "run:003:stress+soak@42"
 
 
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
@@ -1326,34 +1217,25 @@ def test_mirror_export_name_settles_inputs_that_share_a_name_suffix() -> None:
 def test_authenticated_cleanup_warning_survives_collection(
     tmp_path, monkeypatch, verdict, artifact_error
 ) -> None:
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.adapter_transport import AdapterResult, AdapterTestResult
-    from booley.flows.sim.execution.attempt import AdapterAttemptOutcome
-    from booley.flows.sim.verilator_coverage_execution import _simulation_run_result
+    from booley.flows.sim.coverage_record import CoverageFinding
 
     class Execution(_GeneratedMainExecution):
         def run(self, request):
             super().run(request)
-            result = AdapterResult(
-                verdict == "pass",
-                False,
-                0,
-                (request.test.name,),
-                detail="primary diagnostic",
-                test_results=(AdapterTestResult(request.test.name, verdict),),
+            warning = CoverageFinding(
+                "warning",
+                "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED",
+                "/tests/runs",
+                "partial cleanup denied",
             )
-            return _simulation_run_result(
-                AdapterAttemptOutcome(
-                    SubprocessResult(returncode=0), result, "partial cleanup denied", "cleanup"
-                ),
-                request.test.name,
-            )
+            return SimulationRunResult(verdict, "primary diagnostic", diagnostics=(warning,))
 
     if artifact_error:
 
         def denied_artifact(*_args, **_kwargs):
             raise OSError("raw evidence read denied")
 
+        # No portable input makes reading a raw database fail after it was written.
         monkeypatch.setattr("booley.flows.sim.verilator_coverage._artifact", denied_artifact)
     result = collect(_request(tmp_path, "smoke"), Execution())
     assert result.runs[0].simulation_verdict == verdict
@@ -1366,3 +1248,49 @@ def test_authenticated_cleanup_warning_survives_collection(
     )
     assert warning.severity == "warning"
     assert warning.message == "partial cleanup denied"
+
+
+class _MeasuredMerge:
+    """Replays the wrapped port's merge result through the Flow's measured run."""
+
+    def __init__(self, inner: _GeneratedMainExecution, root: Path) -> None:
+        self.inner = inner
+        self.flow = measured_flow(root)
+
+    def build(self, request) -> SimulationBuildResult:
+        return self.inner.build(request)
+
+    def run(self, request) -> SimulationRunResult:
+        return self.inner.run(request)
+
+    def command(self, request) -> SimulationCommandResult:
+        result = self.inner.command(request)
+        process = SubprocessResult(result.returncode, result.stdout, result.stderr)
+        with job_resources.resource_phase("sim", "sim_postprocess"):
+            self.flow._execute_boundary(canned_command(process), timeout=30)
+        return result
+
+
+@pytest.mark.parametrize(
+    ("mode", "outcome"),
+    [
+        pytest.param("accepted", "exit_zero", id="accepted"),
+        pytest.param("missing", "exit_nonzero", id="missing-merged-file"),
+        pytest.param("mismatch", "exit_nonzero", id="mismatched-counts"),
+    ],
+)
+def test_merge_record_outcome_follows_the_merged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, outcome: str
+) -> None:
+    """The merge records a failure when Booley rejects the file the zero-exit merge wrote (#4964)."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    inner = (
+        _GeneratedMainExecution()
+        if mode == "accepted"
+        else _BadMergeExecution(mode, tmp_path / "outside" / "merged.dat")
+    )
+
+    collect(_request(tmp_path, "reset"), _MeasuredMerge(inner, tmp_path))
+
+    records = resource_history.load_records(tmp_path / ".booley")
+    assert [(r["outcome"], r["returncode"]) for r in records] == [(outcome, 0)]

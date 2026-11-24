@@ -2,7 +2,8 @@
 
 The budget is the container's memory limit (``[sandbox].memory``, or installed
 memory when the container has none) minus a reserve for what the Jobs do not own:
-the running Developer Agents, the MCP server, the Dashboard, and fixed headroom.
+the running Developer Agents, the MCP server, the Dashboard, and, without a swap
+allowance, a quarter of the base as headroom.
 Memory admission holds each Job's Memory Reservation against this number; the
 module computes and explains it.
 """
@@ -17,8 +18,10 @@ from pathlib import Path
 
 from booley.audit.resource_policy import (
     GIB_BYTES,
-    MEMORY_HEADROOM_BYTES,
+    SWAP_SHARE_DIVISOR,
     cgroup_memory_limit_bytes,
+    cgroup_swap_limit_bytes,
+    parse_meminfo,
 )
 from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES
 from booley.runtime.pid import capture_process_identity
@@ -58,7 +61,7 @@ class ReserveSource(StrEnum):
     MEASURED = "measured"  # the process's current VmRSS
     UNREADABLE = "unreadable"  # found, but its memory could not be read: 1 GiB
     ABSENT = "absent"  # no such process is running: 0
-    FIXED = "fixed"  # the fixed headroom
+    FIXED = "fixed"  # the no-swap headroom, a quarter of the base
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +83,7 @@ class MemoryBudget:
     limit_bytes: int | None  # the container limit; None when the container has none
     installed_bytes: int | None  # read only when the container has no limit
     reserve: tuple[ReservePart, ...]
+    swap_bytes: int = 0  # the swap the container may use; 0 without a limit or swap
 
     @property
     def reserve_bytes(self) -> int:
@@ -92,16 +96,28 @@ def resolve_memory_budget(
     limit_bytes: int | None,
     installed_bytes: int | None,
     processes: Sequence[ReservePart],
+    swap_bytes: int = 0,
 ) -> MemoryBudget:
-    """Apply the budget rules to already-measured inputs (pure policy)."""
+    """Apply the budget rules to already-measured inputs (pure policy).
+
+    A swap allowance counts only with a container limit; with one, swap absorbs
+    a short overshoot, so no headroom is held back. Without one, a quarter of the
+    base is held back instead: the room the default swap would give.
+    """
     if limit_bytes is not None:
         rule, base = BudgetRule.LIMIT, limit_bytes
     elif installed_bytes is not None:
         rule, base = BudgetRule.NO_LIMIT, installed_bytes
     else:
         raise ValueError("memory budget needs a container limit or the installed memory")
-    headroom = ReservePart(ReserveRole.HEADROOM, MEMORY_HEADROOM_BYTES, ReserveSource.FIXED, None)
-    reserve = (*processes, headroom)
+    swap = swap_bytes if limit_bytes is not None else 0
+    reserve = tuple(processes)
+    if swap <= 0:
+        reserve += (
+            ReservePart(
+                ReserveRole.HEADROOM, base // SWAP_SHARE_DIVISOR, ReserveSource.FIXED, None
+            ),
+        )
     # A reserve above the base clamps to 0; both stay in the result so it shows.
     budget = max(0, base - sum(part.bytes for part in reserve))
     return MemoryBudget(
@@ -110,6 +126,7 @@ def resolve_memory_budget(
         limit_bytes,
         installed_bytes if rule is BudgetRule.NO_LIMIT else None,
         reserve,
+        max(0, swap),
     )
 
 
@@ -259,6 +276,22 @@ def measure_reserve(*, proc_root: Path = Path("/proc")) -> tuple[ReservePart, ..
     return tuple(parts)
 
 
+def _swap_allowance_bytes(limit_bytes: int, proc_root: Path) -> int:
+    """Return the swap the container may use: its cgroup allowance capped at the host's.
+
+    0 when the cgroup states no swap limit (no swap accounting) or ``meminfo``
+    is unreadable, which holds back a quarter of the base.
+    """
+    allowed = cgroup_swap_limit_bytes(limit_bytes)
+    if allowed is None:
+        return 0
+    try:
+        host = parse_meminfo((proc_root / "meminfo").read_text(encoding="utf-8")).swap_bytes
+    except (OSError, ValueError):
+        return 0
+    return min(allowed, host)
+
+
 def compute_memory_budget(*, proc_root: Path = Path("/proc")) -> MemoryBudget:
     """Compute the Memory Budget now.
 
@@ -271,4 +304,5 @@ def compute_memory_budget(*, proc_root: Path = Path("/proc")) -> MemoryBudget:
         limit_bytes=limit,
         installed_bytes=installed,
         processes=measure_reserve(proc_root=proc_root),
+        swap_bytes=0 if limit is None else _swap_allowance_bytes(limit, proc_root),
     )

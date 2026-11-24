@@ -51,7 +51,10 @@ def test_text_tails_and_whole_line_deduplication(monkeypatch):
     text = ReportEncoder().text_result(1, "noise\nRESULT: FAIL", "warning", report)
 
     assert text.startswith("EXIT_CODE: 1")
-    assert "truncated, showing last 13 bytes" in text
+    assert (
+        "... (truncated: at least 5 earlier bytes dropped, showing last 13 bytes; "
+        "the cap is fixed \u2014 narrow the request rather than rerun it)\n"
+    ) in text
     assert text.count("RESULT: FAIL") == 1
     assert "detail.reason: invalid design" in text
 

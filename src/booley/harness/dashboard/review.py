@@ -19,7 +19,7 @@ class Occupants:
     """Who is in a worktree: connected-session labels and unfinished-Job handles, or why unknown."""
 
     sessions: tuple[str, ...] = ()
-    running_jobs: tuple[str, ...] = ()
+    unfinished_jobs: tuple[str, ...] = ()
     problem: str = ""
 
 
@@ -30,17 +30,18 @@ def _plural(count: int, noun: str) -> str:
 def queue_line(facts: RunFacts) -> str:
     """Whether the Job runs now or is admitted by memory, whose fit depends on an estimate the preview lacks."""
     if not facts.takes_slot:
-        return "Runs now (takes no Job slot)"
+        return "Runs now (not admitted by memory)"
     return "Admitted by memory: waits while its estimate does not fit the Memory Budget"
 
 
 def timeout_line(facts: RunFacts) -> str:
-    """The per-work-unit timeout of a long-running Flow, or its problem; empty for the others."""
+    """The timeout of a long-running Flow (per work unit, or for the whole run), or its problem; empty for the others."""
     if facts.timeout_problem:
         return f"Timeout problem: {facts.timeout_problem}; the Flow will reject this run"
     if facts.timeout_ms is None:
         return ""
-    return f"Timeout: {format_duration(facts.timeout_ms / 1000)} per work unit"
+    covers = "for the whole run" if facts.timeout_whole_run else "per work unit"
+    return f"Timeout: {format_duration(facts.timeout_ms / 1000)} {covers}"
 
 
 def model_line(model: str, cli: str) -> str:
@@ -79,20 +80,20 @@ def agent_refusal(facts: SpecialistFacts) -> str:
 
 
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
-    """Warnings, not blocks: sessions, running Jobs and changes in the worktree.
+    """Warnings, not blocks: sessions, unfinished Jobs and changes in the worktree.
 
     A string *uncommitted* is why the changes cannot be counted; ``occupants.problem``
     is why sessions and Jobs cannot be told.
     """
     lines: list[str] = []
     if occupants.problem:
-        lines.append(f"Cannot check sessions and running Jobs: {occupants.problem}")
+        lines.append(f"Cannot check sessions and unfinished Jobs: {occupants.problem}")
     for label in occupants.sessions:
         lines.append(f"Warning: session {label} is connected to this worktree")
-    if occupants.running_jobs:
-        handles = ", ".join(occupants.running_jobs)
+    if occupants.unfinished_jobs:
+        handles = ", ".join(occupants.unfinished_jobs)
         lines.append(
-            f"Warning: {_plural(len(occupants.running_jobs), 'running Job')} in this worktree"
+            f"Warning: {_plural(len(occupants.unfinished_jobs), 'unfinished Job')} in this worktree"
             f" ({handles})"
         )
     if isinstance(uncommitted, str):

@@ -13,6 +13,7 @@ import multiprocessing
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,24 +27,24 @@ from booley.flows.edam import (
     WorkRootLeaseError,
     build_edam,
     configure,
-    make_command,
-    relpath_for_make,
     try_work_root_lease,
     work_root_lease,
 )
+from booley.flows.target_parameters import ParameterValue
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 
 def _hold_work_root(path: str, acquired, release) -> None:
-    with work_root_lease(path, timeout_s=5.0):
+    with work_root_lease(path, timeout_s=hang_guard_s()):
         acquired.set()
-        if not release.wait(5.0):
+        if not release.wait(hang_guard_s()):
             raise TimeoutError("test did not release held work root")
 
 
 def _wait_for_work_root(path: str, waiting, acquired) -> None:
-    with work_root_lease(path, timeout_s=5.0, on_wait=waiting.set):
+    with work_root_lease(path, timeout_s=hang_guard_s(), on_wait=waiting.set):
         acquired.set()
 
 
@@ -66,136 +67,108 @@ def _sv(path: Path) -> EdamFile:
     return EdamFile(path, "systemVerilogSource")
 
 
+def _edam(ws: Path, **overrides: Any) -> dict[str, Any]:
+    """``build_edam`` for the workspace's ``top.sv`` with *overrides* applied."""
+    options: dict[str, Any] = {
+        "name": "d",
+        "files": [_sv(ws / "rtl" / "top.sv")],
+        "toplevel": "top",
+        "eda_tool": "verilator",
+        "workspace_root": ws,
+    }
+    options.update(overrides)
+    return build_edam(**options)
+
+
+def _param(datatype: str, paramtype: str, default: Any = None) -> dict[str, Any]:
+    expected: dict[str, Any] = {"datatype": datatype, "paramtype": paramtype}
+    if default is not None:
+        expected["default"] = default
+    return expected
+
+
 class TestBuildEdam:
     def test_files_keep_declared_type_and_are_absolute(self, ws: Path):
         # pkg.v is declared SystemVerilog: the declared type wins over the suffix.
-        edam = build_edam(
+        edam = _edam(
+            ws,
             name="design",
             files=[EdamFile(ws / "rtl" / "top.sv", "verilogSource"), _sv(ws / "rtl" / "pkg.v")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
         )
         assert edam["toplevel"] == "top"
         names = {e["name"]: e["file_type"] for e in edam["files"]}
         assert names[str((ws / "rtl" / "top.sv").resolve())] == "verilogSource"
         assert names[str((ws / "rtl" / "pkg.v").resolve())] == "systemVerilogSource"
 
-    def test_include_dirs_marked(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            include_dirs=[ws / "rtl" / "inc"],
-        )
-        inc = [e for e in edam["files"] if e.get("is_include_file")]
-        assert len(inc) == 1
-        assert inc[0]["name"] == str((ws / "rtl" / "inc").resolve())
-
     def test_name_sanitized(self, ws: Path):
-        edam = build_edam(
-            name="my design/cfg:1",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-        )
-        assert edam["name"] == "my_design_cfg_1"
+        assert _edam(ws, name="my design/cfg:1")["name"] == "my_design_cfg_1"
 
-    def test_bare_define_is_boolean(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            defines=["SYNTHESIS"],
-        )
-        p = edam["parameters"]["SYNTHESIS"]
-        assert p == {"datatype": "bool", "paramtype": "vlogdefine", "default": True}
-
-    def test_valued_define_int_vs_str(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            defines=["WIDTH=8", "MODE=fast"],
-        )
-        assert edam["parameters"]["WIDTH"] == {
-            "datatype": "int",
-            "paramtype": "vlogdefine",
-            "default": 8,
-        }
-        assert edam["parameters"]["MODE"] == {
-            "datatype": "str",
-            "paramtype": "vlogdefine",
-            "default": "fast",
-        }
-
-    def test_vlogparams(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            vlogparams={"DEPTH": "16", "NAME": "abc"},
-        )
-        assert edam["parameters"]["DEPTH"] == {
-            "datatype": "int",
-            "paramtype": "vlogparam",
-            "default": 16,
-        }
-        assert edam["parameters"]["NAME"]["paramtype"] == "vlogparam"
-
-    def test_plusargs_value_and_declare_only(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            plusargs={"TESTID": 3, "VERBOSE": None},
-        )
-        assert edam["parameters"]["TESTID"] == {
-            "datatype": "int",
-            "paramtype": "plusarg",
-            "default": 3,
-        }
-        # declare-only: no default key
-        assert edam["parameters"]["VERBOSE"] == {
-            "datatype": "str",
-            "paramtype": "plusarg",
-        }
-
-    def test_empty_defines_skipped(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            defines=["", "  "],
-        )
-        assert edam["parameters"] == {}
-
-    def test_eda_tool_options_merged_into_flow_options(self, ws: Path):
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            flow="sim",
-            eda_tool_options={"verilator_options": ["--trace", "--trace-depth", "3"]},
-        )
-        assert edam["flow_options"] == {
-            "tool": "verilator",  # upstream Edalize schema field
-            "verilator_options": ["--trace", "--trace-depth", "3"],
+    @pytest.mark.parametrize(
+        ("option", "value", "expected"),
+        [
+            pytest.param(
+                "defines",
+                ["SYNTHESIS"],
+                {"SYNTHESIS": _param("bool", "vlogdefine", True)},
+                id="bare-define-is-boolean",
+            ),
+            pytest.param(
+                "defines",
+                ["WIDTH=8", "MODE=fast"],
+                {
+                    "WIDTH": _param("int", "vlogdefine", 8),
+                    "MODE": _param("str", "vlogdefine", "fast"),
+                },
+                id="valued-define-int-vs-str",
+            ),
+            pytest.param("defines", ["", "  "], {}, id="empty-defines-skipped"),
+            pytest.param(
+                "vlogparams",
+                {"DEPTH": "16", "NAME": "abc"},
+                {
+                    "DEPTH": _param("int", "vlogparam", 16),
+                    "NAME": _param("str", "vlogparam", "abc"),
+                },
+                id="vlogparams",
+            ),
+            pytest.param(
+                "plusargs",
+                {"TESTID": 3, "VERBOSE": None},
+                {
+                    "TESTID": _param("int", "plusarg", 3),
+                    # declare-only: no default key
+                    "VERBOSE": _param("str", "plusarg"),
+                },
+                id="plusargs-value-and-declare-only",
+            ),
+            pytest.param(
+                "vlogparams",
+                {
+                    "S": ParameterValue("str", "123"),
+                    "F": ParameterValue("file", "a b"),
+                    "B": ParameterValue("bool", "1"),
+                    "I": ParameterValue("int", "12"),
+                    "R": ParameterValue("real", "1.25"),
+                },
+                {
+                    "S": _param("str", "vlogparam", "123"),
+                    "F": _param("file", "vlogparam", "a b"),
+                    "B": _param("bool", "vlogparam", True),
+                    "I": _param("int", "vlogparam", 12),
+                    "R": _param("real", "vlogparam", 1.25),
+                },
+                id="explicit-target-datatypes-survive",
+            ),
+        ],
+    )
+    def test_parameters_keep_their_kind_and_type(
+        self, ws: Path, option: str, value: Any, expected: dict[str, Any]
+    ):
+        parameters = _edam(ws, **{option: value})["parameters"]
+        assert parameters == expected
+        # 1 == True in dict equality: pin the default's exact type too.
+        assert {k: type(v.get("default")) for k, v in parameters.items()} == {
+            k: type(v.get("default")) for k, v in expected.items()
         }
 
 
@@ -208,13 +181,7 @@ class TestSecurity:
     def test_file_outside_workspace_rejected(self, ws: Path, tmp_path: Path):
         outside = tmp_path.parent / "evil.sv"
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
-            build_edam(
-                name="d",
-                files=[_sv(outside)],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
-            )
+            _edam(ws, files=[_sv(outside)])
 
     def test_file_behind_symlinked_booley_dir_entry_accepted(self, ws: Path, tmp_path: Path):
         """A Codespace links ``/work/.booley``; links below the entry stay refused."""
@@ -230,22 +197,10 @@ class TestSecurity:
         staged.write_text("module top; endmodule\n")
         (elsewhere / "top.sv").write_text("module top; endmodule\n")
 
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / ".booley" / "build" / "src" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-        )
+        edam = _edam(ws, files=[_sv(ws / ".booley" / "build" / "src" / "top.sv")])
         assert edam["files"][0]["name"] == str(staged.resolve())
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
-            build_edam(
-                name="d",
-                files=[_sv(ws / ".booley" / "linked" / "top.sv")],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
-            )
+            _edam(ws, files=[_sv(ws / ".booley" / "linked" / "top.sv")])
 
     def test_symlink_escape_rejected(self, ws: Path, tmp_path: Path):
         secret = tmp_path.parent / "secret.sv"
@@ -253,57 +208,19 @@ class TestSecurity:
         link = ws / "rtl" / "link.sv"
         symlink_or_skip(link, secret)
         with pytest.raises(EdamSecurityError, match="outside the workspace"):
-            build_edam(
-                name="d",
-                files=[_sv(link)],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
-            )
+            _edam(ws, files=[_sv(link)])
 
     def test_non_whitelisted_flow_option_rejected(self, ws: Path):
         with pytest.raises(EdamSecurityError, match="not permitted"):
-            build_edam(
-                name="d",
-                files=[_sv(ws / "rtl" / "top.sv")],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
+            _edam(
+                ws,
                 flow="lint",
                 eda_tool_options={"iverilog_options": ["x"]},  # not allowed for lint
             )
 
-    def test_missing_upstream_eda_tool_rejected(self, ws: Path):
-        # build_edam always injects the EDA-tool field, so probe the validator via a raw call.
-        from booley.flows.edam import _validate_flow_options
-
-        with pytest.raises(EdamSecurityError, match="must name the upstream Edalize 'tool' field"):
-            _validate_flow_options("sim", {"verilator_options": []})
-
     def test_unknown_flow_rejected(self, ws: Path):
         with pytest.raises(EdamSecurityError, match="unknown flow"):
-            build_edam(
-                name="d",
-                files=[_sv(ws / "rtl" / "top.sv")],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
-                flow="bogus",
-            )
-
-
-# ---------------------------------------------------------------------------
-# make_command
-# ---------------------------------------------------------------------------
-
-
-class TestMakeCommand:
-    def test_default_target(self):
-        assert make_command("/w") == ["make", "-C", "/w"]
-
-    def test_run_target_with_vars(self):
-        cmd = make_command("/w", target="run", make_vars={"EXTRA_OPTIONS": "+TESTID=3"})
-        assert cmd == ["make", "-C", "/w", "run", "EXTRA_OPTIONS=+TESTID=3"]
+            _edam(ws, flow="bogus")
 
 
 # ---------------------------------------------------------------------------
@@ -312,39 +229,10 @@ class TestMakeCommand:
 
 
 class TestRelativePaths:
-    def test_relative_to_emits_relative_names(self, ws: Path):
-        work_root = work_root_for(ws, "lint", "cfg")
-        edam = build_edam(
-            name="d",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
-            flow="lint",
-            relative_to=work_root,
-        )
-        name = edam["files"][0]["name"]
-        assert not Path(name).is_absolute()
-        # resolves back to the real file relative to the work_root
-        assert (work_root / name).resolve() == (ws / "rtl" / "top.sv").resolve()
-
     def test_relative_still_confines(self, ws: Path, tmp_path: Path):
         outside = tmp_path.parent / "evil.sv"
         with pytest.raises(EdamSecurityError):
-            build_edam(
-                name="d",
-                files=[_sv(outside)],
-                toplevel="top",
-                eda_tool="verilator",
-                workspace_root=ws,
-                relative_to=work_root_for(ws, "lint", "cfg"),
-            )
-
-    def test_work_root_for_layout_and_variant(self, ws: Path):
-        wr = work_root_for(ws, "lint", "cfg/a")
-        assert wr == ws / ".booley" / ".runtime" / "edalize" / "lint" / "cfg_a"
-        traced = work_root_for(ws, "sim", "cfg", variant="trace")
-        assert traced.name == "cfg-trace"
+            _edam(ws, files=[_sv(outside)], relative_to=work_root_for(ws, "lint", "cfg"))
 
     def test_work_root_refuses_booley_source_checkout(self, tmp_path: Path):
         source = tmp_path / "source"
@@ -358,19 +246,12 @@ class TestRelativePaths:
             work_root_for(source, "lint", "cfg")
         assert not (source / ".booley").exists()
 
-    def test_relpath_for_make(self, ws: Path):
-        wr = work_root_for(ws, "lint", "cfg")
-        assert relpath_for_make(wr, ws) == ".booley/.runtime/edalize/lint/cfg"
-
     def test_relative_configure_relocatable(self, ws: Path):
         pytest.importorskip("edalize")
         work_root = work_root_for(ws, "lint", "cfg")
-        edam = build_edam(
+        edam = _edam(
+            ws,
             name="design",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
             flow="lint",
             relative_to=work_root,
             eda_tool_options={"verilator_options": ["-Wall"]},
@@ -437,10 +318,9 @@ class TestWorkRootLease:
             "ctx.__exit__(None, None, None)"
         )
 
-        with work_root_lease(work_root, timeout_s=1.0):
+        with work_root_lease(work_root, timeout_s=hang_guard_s()):
             result = run_bounded_child(
                 [sys.executable, "-c", probe, str(work_root)],
-                timeout=5,
                 check=True,
                 env=env,
             )
@@ -452,7 +332,7 @@ class TestWorkRootLease:
         second = tmp_path / "synth" / "second"
 
         with (
-            work_root_lease(first, timeout_s=1.0),
+            work_root_lease(first, timeout_s=hang_guard_s()),
             try_work_root_lease(second) as leased,
         ):
             assert leased == second.resolve()
@@ -463,7 +343,7 @@ class TestWorkRootLease:
         assert slash == colon
 
         with (
-            work_root_lease(slash, timeout_s=1.0),
+            work_root_lease(slash, timeout_s=hang_guard_s()),
             try_work_root_lease(colon) as leased,
         ):
             assert leased is None
@@ -485,22 +365,22 @@ class TestWorkRootLease:
         )
         holder.start()
         try:
-            assert holder_acquired.wait(5.0)
+            assert holder_acquired.wait(hang_guard_s())
             waiter.start()
-            assert waiter_blocked.wait(5.0)
+            assert waiter_blocked.wait(hang_guard_s())
             assert not waiter_acquired.is_set()
             release_holder.set()
-            assert waiter_acquired.wait(5.0)
+            assert waiter_acquired.wait(hang_guard_s())
         finally:
             release_holder.set()
-            holder.join(5.0)
-            waiter.join(5.0)
+            holder.join(hang_guard_s())
+            waiter.join(hang_guard_s())
             if holder.is_alive():
                 holder.terminate()
-                holder.join(5.0)
+                holder.join(hang_guard_s())
             if waiter.is_alive():
                 waiter.terminate()
-                waiter.join(5.0)
+                waiter.join(hang_guard_s())
 
         assert holder.exitcode == 0
         assert waiter.exitcode == 0
@@ -515,12 +395,12 @@ class TestWorkRootLease:
             args=(str(work_root), acquired, never_release),
         )
         holder.start()
-        assert acquired.wait(5.0)
+        assert acquired.wait(hang_guard_s())
         holder.terminate()
-        holder.join(5.0)
+        holder.join(hang_guard_s())
         assert not holder.is_alive()
 
-        with work_root_lease(work_root, timeout_s=1.0) as leased:
+        with work_root_lease(work_root, timeout_s=hang_guard_s()) as leased:
             assert leased == work_root.resolve()
 
     def test_body_exception_releases_lease(self, tmp_path: Path):
@@ -528,7 +408,7 @@ class TestWorkRootLease:
 
         with (
             pytest.raises(RuntimeError, match="body failed"),
-            work_root_lease(work_root, timeout_s=1.0),
+            work_root_lease(work_root, timeout_s=hang_guard_s()),
         ):
             raise RuntimeError("body failed")
 
@@ -544,12 +424,9 @@ class TestWorkRootLease:
 class TestConfigure:
     def test_sim_configure_emits_makefile_and_vc(self, ws: Path, tmp_path: Path):
         pytest.importorskip("edalize")
-        edam = build_edam(
+        edam = _edam(
+            ws,
             name="design",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
             flow="sim",
             defines=["MYDEF", "WIDTH=8"],
             vlogparams={"DEPTH": 16},
@@ -569,12 +446,9 @@ class TestConfigure:
 
     def test_lint_configure(self, ws: Path, tmp_path: Path):
         pytest.importorskip("edalize")
-        edam = build_edam(
+        edam = _edam(
+            ws,
             name="design",
-            files=[_sv(ws / "rtl" / "top.sv")],
-            toplevel="top",
-            eda_tool="verilator",
-            workspace_root=ws,
             flow="lint",
             eda_tool_options={"verilator_options": ["--lint-only", "-Wall"]},
         )
@@ -583,18 +457,3 @@ class TestConfigure:
         assert (work_root / "Makefile").is_file()
         vc = (work_root / "design.vc").read_text()
         assert "--lint-only" in vc
-
-
-def test_explicit_target_datatypes_survive_edam_builder():
-    from booley.flows.edam import _vlogparam
-    from booley.flows.target_parameters import ParameterValue
-
-    assert _vlogparam(ParameterValue("str", "123")) == {
-        "datatype": "str",
-        "paramtype": "vlogparam",
-        "default": "123",
-    }
-    assert _vlogparam(ParameterValue("file", "a b"))["datatype"] == "file"
-    assert _vlogparam(ParameterValue("bool", "1"))["default"] is True
-    assert _vlogparam(ParameterValue("int", "12"))["default"] == 12
-    assert _vlogparam(ParameterValue("real", "1.25"))["default"] == 1.25

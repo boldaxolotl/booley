@@ -62,6 +62,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_image_bakes_current_booley",
             "_check_image_freshness",
             "_check_riscv_toolchain",
+            "_check_sandbox_image_provenance",
             "_run_container_tool_checks",
         }
     ),
@@ -94,7 +95,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     "_run_project_checks": frozenset(
         {
             "_check_agent_backend_health",
-            "_check_custom_endpoints_and_criteria",
+            "_check_custom_endpoints",
             "_check_disabled_endpoints",
             "_check_git_state",
             "_check_handle_map_size",
@@ -140,6 +141,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_upgrade_review",
             "_check_legacy_source_stashes",
             "_check_goal_leftovers",
+            "_check_job_logs_leftover",
             "_check_worktree_booley_pairing",
             "_check_common_state_in_worktrees",
             "_check_worktree_core_shadow_guard",
@@ -149,6 +151,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     "_run_runtime_phase": frozenset(
         {
             "_check_sandbox_memory",
+            "_check_sandbox_swap",
             "_check_seat_caps",
             "_check_runtime_location",
             "inspect_worktree_portability",
@@ -176,6 +179,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "run_doctor_result": frozenset(
         {
+            "_check_sandbox_recovery",
             "_run_deep_phase",
             "_run_project_phase",
             "_run_runtime_phase",

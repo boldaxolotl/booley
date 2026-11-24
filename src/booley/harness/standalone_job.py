@@ -2,7 +2,7 @@
 
 A run typed in a Sandbox shell is foreground and in-process, so it used to leave
 no Job record. :class:`StandaloneJob` gives it one: a Job record with no session
-under ``<common Booley Directory>/.interactive_logs/standalone/.runtime/jobs`` (a
+under ``<common Booley Directory>/job_logs/standalone/.runtime/jobs`` (a
 root the Dashboard already scans) and a ``job.log`` copy of the run's output next
 to it. The terminal output is unchanged and the process exits exactly as before.
 
@@ -23,8 +23,9 @@ from pathlib import Path
 from types import FrameType
 from typing import BinaryIO, TextIO
 
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+from booley.flows.progress_lifecycle import abort_open_progress, after_progress_publication
 from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime import job_records
 from booley.runtime.handles import register_job
@@ -50,7 +51,7 @@ _SignalHandler = signal.Handlers | int | Callable[[int, FrameType | None], objec
 
 def standalone_log_root(booley_dir: Path) -> Path:
     """Human-facing log root of every Standalone Job."""
-    return booley_dir / INTERACTIVE_LOGS_DIR_NAME / _STANDALONE_DIR
+    return booley_dir / JOB_LOGS_DIR_NAME / _STANDALONE_DIR
 
 
 def standalone_jobs_dir(booley_dir: Path) -> Path:
@@ -292,6 +293,8 @@ class StandaloneJob:
     def _install_signal_handlers(self) -> Callable[[], None]:
         """Record SIGTERM and SIGHUP as ``cancelled`` and still die by the signal.
 
+        The handler also aborts the progress of every open Flow lifecycle.
+
         Only a default disposition is replaced, and only from the main thread.
         Installed before the first record write so no signal can land between a
         written ``running`` record and its handler.
@@ -311,7 +314,12 @@ class StandaloneJob:
         return restore
 
     def _on_signal(self, signum: int, _frame: FrameType | None) -> None:
-        """Lock-free: write the terminal record, restore the default and re-send the signal."""
+        """Die by the signal once an in-flight progress publication has ended."""
+        after_progress_publication(lambda: self._die_by(signum))
+
+    def _die_by(self, signum: int) -> None:
+        """Abort open Flow progress, write the terminal record, restore the default, re-send."""
+        abort_open_progress()
         if not self._finished:
             self._end(job_records.STATUS_CANCELLED, 128 + signum)
         signal.signal(signum, signal.SIG_DFL)

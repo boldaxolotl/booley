@@ -39,12 +39,25 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.execution_test_support import wait_for
+from tests.time_budget import hang_guard_s
 
 _REPO = Path(__file__).parents[2]
 _HOOK = _REPO / "src" / "booley" / "data" / "docker" / "session_activity_hook.py"
-_WAIT_SECONDS = 15.0
+_WAIT_SECONDS = hang_guard_s()
 _SETTLE_SECONDS = 0.3
 _AGENT_EXIT_CODE = 7
+
+
+def _with_budgets(source: str) -> str:
+    """Fill a child's hang guard and outer deadline into its *source*.
+
+    The child cannot import the time-budget policy, so the parent formats the values in:
+    ``__HANG_S__`` is the hang guard and ``__OUTER_S__`` twice that, outlasting a parent wait.
+    """
+    return source.replace("__HANG_S__", str(hang_guard_s())).replace(
+        "__OUTER_S__", str(2 * hang_guard_s())
+    )
+
 
 # The fake agent. Runs as the `claude` script and, in a copy of the interpreter
 # named `codex`, via `-c`. Its identity (agent.json) is written before AGENT-READY.
@@ -56,7 +69,7 @@ OUT = Path(os.environ["AGENT_OUT"])
 VARIANT = os.environ["AGENT_VARIANT"]
 KIND = os.environ["AGENT_KIND"]
 BOOLEY_DIR = Path(os.environ["AGENT_BOOLEY_DIR"])
-DEADLINE = time.monotonic() + 40
+DEADLINE = time.monotonic() + __OUTER_S__
 SETTLE = 0.5
 counts = {"INT": 0, "HUP": 0, "TERM": 0, "CONT": 0}
 state = {"first": None, "first_name": None, "resumed": False}
@@ -106,7 +119,7 @@ if KIND == "claude":  # what the MCP server's registry row would be
 hook_run = subprocess.run(
     [os.environ["AGENT_HOOK_PYTHON"], "-I", "-c", os.environ["AGENT_HOOK_PROGRAM"],
      os.environ["AGENT_HOOK"], KIND, str(BOOLEY_DIR)],
-    capture_output=True, text=True, timeout=30,
+    capture_output=True, text=True, timeout=__HANG_S__,
 )
 cmdline = Path("/proc/self/cmdline").read_bytes().split(b"\0")[:-1]
 write_json("agent.json", {
@@ -124,7 +137,7 @@ def trip_when_blocked(main_tid):
     # check) once the main thread sleeps in the kernel waiting for input. A real
     # kernel signal would interrupt read(2); this one lands "just before" it.
     task = Path("/proc/self/task") / str(main_tid)
-    stop = time.monotonic() + 10
+    stop = time.monotonic() + __HANG_S__
     state_name, wchan = "?", "?"
     while time.monotonic() < stop:
         try:
@@ -176,6 +189,7 @@ elif VARIANT == "wait":
         time.sleep(30)
 sys.exit(7)
 """
+_AGENT_SOURCE = _with_budgets(_AGENT_SOURCE)
 
 # Runs as the hook does (isolated interpreter, hook loaded by path) from a
 # grandchild of the agent, so the hook's real ancestor walk is exercised.
@@ -330,7 +344,7 @@ while True:
         continue
     os.killpg(job, signal.SIGCONT)  # `bg`
     if mode == "bg-fg":  # a later `fg` of the running job: no SIGCONT
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + __HANG_S__
         while not (OUT / "trigger").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         os.tcsetpgrp(0, job)
@@ -340,6 +354,7 @@ owner_is_shell = os.tcgetpgrp(0) == os.getpgrp()
     "stops": stops, "code": os.waitstatus_to_exitcode(status), "owner_is_shell": owner_is_shell,
 }))
 """
+_SHELL_SOURCE = _with_budgets(_SHELL_SOURCE)
 
 
 class _Terminal:
@@ -862,7 +877,7 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
 
 _THREAD_ID = "019a0000-0000-7000-8000-000000000000"
 _SLOW_HOOK = (
-    "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep(60)\n"
+    "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep({outer!r})\n"
 )
 
 
@@ -1033,7 +1048,7 @@ def test_interrupted_worktree_setup_rolls_back(scene: _Scene, interrupt: str) ->
     # Bug caught: a signal during setup leaves worktree s1 and branch booley/s1 behind (and
     # Ctrl-C then dumps a traceback), or lets the agent start in a half-made worktree.
     marker = scene.out / "hook-started"
-    scene.git_project(hook=_SLOW_HOOK.format(marker=str(marker)))
+    scene.git_project(hook=_SLOW_HOOK.format(marker=str(marker), outer=2 * hang_guard_s()))
     terminal = scene.start("claude", flag="always", ready=False)
     wait_for(marker.exists, failure="the post-setup hook never started", timeout_s=_WAIT_SECONDS)
 

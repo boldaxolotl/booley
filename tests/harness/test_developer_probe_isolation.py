@@ -49,7 +49,7 @@ def sandbox(tmp_path, monkeypatch):
 def _project(root: Path, provider: str) -> None:
     (root / ".booley").mkdir(parents=True)
     (root / ".booley" / "booley.toml").write_text(
-        f'[agent]\nprovider = "{provider}"\n', encoding="utf-8"
+        f'[agent]\nprovider = "{provider}"\nauth = "visitor"\n', encoding="utf-8"
     )
 
 

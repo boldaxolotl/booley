@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import logging
 import os
 import re
 import secrets
@@ -28,6 +29,7 @@ from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
 from booley.core.file_lock import (
+    LockTimeoutError,
     release_file_lock,
     reset_child_lease_fd,
     set_child_lease_fd,
@@ -35,7 +37,10 @@ from booley.core.file_lock import (
 )
 from booley.flows import edam as edam_layer
 from booley.flows.run_log import RUN_LOG_NAME
+from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.runtime.filesystem_utils import make_directories
+from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog, TargetCompileSurface
 from booley.targets.domain import TargetHandle
 
@@ -47,6 +52,14 @@ from .record_reports import simulation_booley_dir
 
 class SimulationBuildSlotError(RuntimeError):
     """A Simulation build slot cannot be used safely."""
+
+
+class SimulationBuildLeaseTimeoutError(SimulationBuildSlotError):
+    """The Target slot lease stayed busy for the whole bounded wait."""
+
+
+class SimulationBuildLeaseStoppedError(SimulationBuildSlotError):
+    """The supervised execution stopped while waiting for the Target slot lease."""
 
 
 class CacheDecision(StrEnum):
@@ -61,7 +74,13 @@ class CacheDecision(StrEnum):
     CHANGED_ARTIFACT = "changed artifact"
 
 
+logger = logging.getLogger(__name__)
+
 _GENERATION_DIR = "g"
+# The names ``new_generation`` allocates; Doctor's run views share ``g/``.
+_GENERATION_NAME = re.compile(r"[0-9a-f]{16}")
+# How long one lease attempt blocks before the wait rechecks cancellation.
+_LEASE_SLICE_S = 0.5
 
 
 def _runtime_artifacts(prepared: PreparedSimulationBuild) -> tuple[Path, ...]:
@@ -446,7 +465,7 @@ def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -
     )
     if core_path.is_symlink() or not core_file.is_relative_to(project_root.resolve()):
         return None
-    core_data = yaml.safe_load(core_file.read_text(encoding="utf-8"))
+    core_data = fusesoc_registry.read_core(core_file)
     if (
         build_reuse.has_generated_core_behavior(core_data)
         or _has_unsupported_source(prepared, core_file)
@@ -512,6 +531,7 @@ def _reuse_input_key(
         KeyError,
         UnicodeError,
         yaml.YAMLError,
+        fusesoc_registry.FuseSocError,
         importlib.metadata.PackageNotFoundError,
     ):
         return None
@@ -643,8 +663,17 @@ def preview_generation_root(handle: TargetHandle, variant: str = "") -> Path:
 class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     """Hold one Target slot across preparation, selected tests, and artifact capture."""
 
-    def __init__(self, handle: TargetHandle, variant: str = "") -> None:
+    def __init__(
+        self, handle: TargetHandle, variant: str = "", *, wait_s: float, prune: bool = True
+    ) -> None:
+        """Lease one slot; leaving the lease deletes every generation the pointer does not name.
+
+        ``prune=False`` is for a caller that still launches its unpromoted
+        generation in place after the lease.
+        """
         self.handle = handle
+        self._prune = prune
+        self._wait_s = wait_s
         self.variant = variant
         self.slot = simulation_build_slot(handle, variant)
         self._lock: IO[str] | None = None
@@ -657,20 +686,48 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
 
     def __enter__(self) -> SimulationBuildSession:
         try:
-            self.slot.mkdir(parents=True, exist_ok=True)
+            make_directories(self.slot)
             lock = (self.slot / "lease.lock").open("a+", encoding="utf-8")
             try:
-                wait_for_file_lock(lock, timeout_s=60)
+                self._wait_for_lease(lock)
             except BaseException:
                 lock.close()
                 raise
             self._lock = lock
             self._lease_token = set_child_lease_fd(lock.fileno())
             return self
+        except SimulationBuildSlotError:
+            raise
         except (OSError, RuntimeError) as exc:
             raise SimulationBuildSlotError(
                 f"cannot lease Simulation slot {self.slot}: {exc}"
             ) from exc
+
+    def _wait_for_lease(self, lock: IO[str]) -> None:
+        """Wait up to the build timeout for the lease, reporting and watching for a stop."""
+        deadline = time.monotonic() + self._wait_s
+        reported = False
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                wait_for_file_lock(lock, timeout_s=min(_LEASE_SLICE_S, remaining))
+                return
+            except LockTimeoutError:
+                pass
+            if not reported:
+                announce_unit("waiting for the Simulation build slot")
+                reported = True
+            scope = current_supervised_execution()
+            if scope is not None and scope.cancelled():
+                raise SimulationBuildLeaseStoppedError(
+                    f"stopped waiting for Simulation slot {self.slot}: "
+                    f"{scope.describe_cancellation()}"
+                )
+            if time.monotonic() >= deadline:
+                raise SimulationBuildLeaseTimeoutError(
+                    f"Simulation slot {self.slot} stayed busy for {self._wait_s:g}s "
+                    "(the build timeout)"
+                )
 
     def new_generation(self) -> Path:
         """Allocate an empty, never-reused FuseSoC output root under the lease."""
@@ -821,6 +878,10 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 raise SimulationBuildSlotError("Simulation build input changed during compilation")
             closure, reason = self._fresh_read_closure(prepared, key)
             if closure is None:
+                if key is not None:
+                    logger.info(
+                        "Simulation build %s is not reusable: %s", prepared.work_root.name, reason
+                    )
                 key = None
             artifacts = _runtime_artifacts(prepared)
             hashes = {
@@ -907,13 +968,43 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
             reset_child_lease_fd(token)
         if lock is not None:
             try:
+                if self._prune:
+                    self._prune_generations()
                 release_file_lock(lock)
             finally:
                 lock.close()
 
+    def _prune_generations(self) -> None:
+        """Delete every generation ``current.json`` does not name; log what cannot go."""
+        try:
+            pointer = json.loads((self.slot / "current.json").read_text(encoding="utf-8"))
+            current = pointer["generation"]
+        except (OSError, ValueError, KeyError, TypeError):
+            current = None
+        generations = self.slot / _GENERATION_DIR
+        if generations.is_symlink():
+            logger.warning("not pruning Simulation generations through the link %s", generations)
+            return
+        try:
+            entries = list(generations.iterdir())
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning("cannot list Simulation generations in %s: %s", generations, exc)
+            return
+        for entry in entries:
+            if entry.name == current or not _GENERATION_NAME.fullmatch(entry.name):
+                continue
+            try:
+                shutil.rmtree(entry)
+            except OSError as exc:
+                logger.warning("cannot delete unused Simulation generation %s: %s", entry, exc)
+
 
 __all__ = [
     "CacheDecision",
+    "SimulationBuildLeaseStoppedError",
+    "SimulationBuildLeaseTimeoutError",
     "SimulationBuildSession",
     "SimulationBuildSlotError",
     "TargetCompileSurface",

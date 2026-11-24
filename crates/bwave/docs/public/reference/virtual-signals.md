@@ -97,15 +97,8 @@ Examples:
 
 ## Values
 
-Inside expressions, use Verilog literals:
-
-- `'d255` (decimal 255)
-- `'hFF` (hex FF)
-- `'b1010` (binary)
-- `8'd255`, `4'hF`, `1'b1` (width-prefixed)
-- Bare integers (`0`, `1`, `255`) are accepted as decimal.
-
-Bare hex without a base (`FF`) is rejected. See
+Values inside a definition are Verilog literals (`'d255`, `'hFF`,
+`8'd255`), the same as on the command line. See
 `reference/verilog-literals`.
 
 ## Comparisons
@@ -118,8 +111,8 @@ signals are different widths; there is no implicit
 zero-extension. Slice one side to match: `*sig_a ==
 *sig_b[7:0]`.
 
-Signal-to-literal comparisons coerce the literal to the
-signal width.
+A literal that needs more bits than the signal triggers a
+warning; see `reference/verilog-literals`.
 
 ## Boolean operators
 

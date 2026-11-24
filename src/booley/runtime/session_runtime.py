@@ -1,6 +1,6 @@
 """Headless lifecycle for the Sandbox container (``booley session``).
 
-ADR 0018 enters Interactive Mode through VS Code's "Reopen in Container", which
+ADR 0018 enters the Sandbox through VS Code's "Reopen in Container", which
 reads the generated ``.devcontainer/devcontainer.json``. That is the only
 supported door, and it needs a UI: there is no ``devcontainer`` CLI on a stock
 Windows host, and Booley shipped no equivalent. An agent-driven or CI setup had
@@ -10,7 +10,7 @@ user, and the ``postCreateCommand`` — and keep that translation in sync by eye
 This module is that translation, done once and tested: it reads the spec Booley
 already generates and derives the ``docker run`` argv from it, so the two doors
 open onto the same container. It is emphatically *not* the ``booley up`` daemon
-the lineage rejected (see ``interactive_docker``): nothing is supervised here.
+the lineage rejected (see ``host_docker``): nothing is supervised here.
 The container carries the same ``booley.role=interactive`` label as the VS Code
 one, so the idle reaper owns its lifecycle either way.
 
@@ -35,7 +35,7 @@ from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.platform_paths import (
     docker_mount_path,
@@ -45,10 +45,10 @@ from booley.runtime.platform_paths import (
 )
 from booley.runtime.sandbox_apply import (
     REBUILD_CONTAINER,
-    UNKNOWN_SANDBOX_STEPS,
     Attachment,
     apply_steps,
     image_is_managed,
+    in_sandbox_steps,
 )
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
@@ -121,10 +121,10 @@ def _docker_stdout(argv: list[str]) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _running_interactive_containers() -> list[str]:
-    """Names of every running container carrying the Interactive Mode role label.
+def _running_sandbox_containers() -> list[str]:
+    """Names of every running container carrying the Sandbox role label.
 
-    Covers both doors onto Interactive Mode: the container VS Code's Dev
+    Covers both doors onto the Sandbox: the container VS Code's Dev
     Containers CLI creates and the headless one `booley session up` runs.
     """
     names = _docker_stdout(
@@ -156,7 +156,7 @@ def _vscode_local_folder(name: str) -> str | None:
 
 
 def _serves_workspace(name: str, workspace: Path) -> bool:
-    """True if container *name* is Interactive Mode for *workspace*.
+    """True if container *name* is the Sandbox for *workspace*.
 
     Two shapes to recognise: our own Sandbox is named after the
     workspace, while VS Code's carries the host folder in a label, compared by
@@ -182,7 +182,7 @@ def vscode_session_container(workspace: Path) -> str | None:
 
 
 def sessions_on_stale_image(workspace: Path, image: str) -> list[str]:
-    """Running Interactive Mode containers for *workspace* not on *image*'s current ID.
+    """Running Sandbox containers for *workspace* not on *image*'s current ID.
 
     A rebuild moves the tag; it does not touch a container already created from
     the old image, which keeps serving the layers it was born with. The tag being
@@ -202,7 +202,7 @@ def sessions_on_stale_image(workspace: Path, image: str) -> list[str]:
     if not image_id:
         return []
     stale = []
-    for name in _running_interactive_containers():
+    for name in _running_sandbox_containers():
         if not _serves_workspace(name, workspace):
             continue
         container_image = _docker_stdout(["docker", "inspect", "--format", "{{.Image}}", name])
@@ -1127,6 +1127,37 @@ def up(
         )
 
 
+class RecoveryPendingError(SessionError):
+    """Sandbox recovery is pending; only a lifecycle command completes it."""
+
+    def __init__(self) -> None:
+        super().__init__("Sandbox recovery is pending on this host")
+
+
+def recovery_pending() -> bool:
+    """Report, without changing host state, whether any Project has a pending invalidation."""
+    from booley.runtime import issuance_invalidation
+
+    try:
+        return issuance_invalidation.shared_recovery_blocks_command(read_only=True)
+    except issuance_invalidation.InvalidationError as exc:
+        raise SessionError(str(exc)) from exc
+
+
+def up_without_recovery(workspace: Path) -> str:
+    """Create or start the Project's Sandbox, refusing instead of completing pending recovery.
+
+    The check runs under the lifecycle lock, so an invalidation journaled after
+    a caller's own check is refused, never completed.
+    """
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("Doctor Sandbox start"):
+        if recovery_pending():
+            raise RecoveryPendingError
+        return _up_unlocked(workspace)
+
+
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
     from booley.runtime import session_issuance as runtime_spec
@@ -1246,6 +1277,8 @@ def _spec_refusal_remedy(workspace: Path, exc: Exception, *, vscode: bool) -> st
 
     if isinstance(exc, runtime_spec.HostPolicyError):
         return f"fix {exc.path} on the host, then start the Sandbox again"
+    if isinstance(exc, runtime_spec.ProjectConfigError):
+        return f"fix {exc.location}, then start the Sandbox again"
     if vscode:
         return _owner_steps(workspace, Attachment.VSCODE, refreshable=False)
     return sandbox_remedy(workspace)
@@ -1325,7 +1358,7 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
     expected = {"booley.project-id": project_label_id(str(workspace.resolve()))}
     identified: list[str] = []
     ambiguous: list[str] = []
-    for name, raw in _strict_running_interactive_states():
+    for name, raw in _strict_running_sandbox_states():
         if not _inspected_container_serves_workspace(
             name, raw, workspace
         ) or _project_data_mount_root_is_pinned(raw, workspace, pending, layout=layout):
@@ -1352,8 +1385,8 @@ def _refuse_outdated_vscode_containers(workspace: Path, spec: dict[str, Any]) ->
         )
 
 
-def _strict_running_interactive_states() -> list[tuple[str, str]]:
-    return _strict_interactive_states(
+def _strict_running_sandbox_states() -> list[tuple[str, str]]:
+    return _strict_sandbox_states(
         [
             "docker",
             "ps",
@@ -1366,9 +1399,9 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
     )
 
 
-def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
-    """Inspect this Project's running or stopped Interactive Mode containers."""
-    return _strict_interactive_states(
+def _strict_all_sandbox_states(project_id: str) -> list[tuple[str, str]]:
+    """Inspect this Project's running or stopped Sandbox containers."""
+    return _strict_sandbox_states(
         [
             "docker",
             "ps",
@@ -1384,10 +1417,10 @@ def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
     )
 
 
-def _strict_interactive_states(
+def _strict_sandbox_states(
     inventory_argv: list[str], *, inventory_error: str
 ) -> list[tuple[str, str]]:
-    """Inspect every container returned by a strict Interactive Mode inventory."""
+    """Inspect every container returned by a strict Sandbox inventory."""
     names = _docker_stdout(inventory_argv)
     if names is None:
         raise SessionError(inventory_error)
@@ -1494,7 +1527,7 @@ def _stopped_vscode_reconcile_candidates(
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     project_id = expected["booley.project-id"]
     candidates: list[str] = []
-    for name, raw in _strict_all_interactive_states(project_id):
+    for name, raw in _strict_all_sandbox_states(project_id):
         state = _decode_container_inspect(raw)
         assert state is not None
         labels = _vscode_runtime_labels_for_workspace(state, workspace, expected)
@@ -1643,7 +1676,7 @@ def _relay_matches_issuance(
 
 def _assert_no_other_project_sessions(project_id: str, *, excluding: str = "") -> None:
     names = tuple(
-        name for name, _raw in _strict_all_interactive_states(project_id) if name != excluding
+        name for name, _raw in _strict_all_sandbox_states(project_id) if name != excluding
     )
     if names:
         joined = ", ".join(repr(name) for name in names)
@@ -1830,9 +1863,7 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
         return False
     if not _session_hardening_matches(config, host):
         return False
-    memory = _flag_values(spec.get("runArgs", []), "--memory")
-    expected_memory = 0 if not memory else _memory_bytes(memory[0])
-    if expected_memory is None or host.get("Memory") != expected_memory:
+    if not _memory_limits_match(spec, host):
         return False
     expected_networks = _flag_values(spec.get("runArgs", []), "--network")
     if set(networks) != set(expected_networks):
@@ -1899,6 +1930,23 @@ def _session_hardening_matches(config: dict, host: dict) -> bool:
         and len(security) == 1
         and security[0] in {"no-new-privileges", "no-new-privileges:true"}
         and host.get("PidsLimit") == 4096
+    )
+
+
+def _memory_limits_match(spec: Mapping[str, object], host: Mapping[str, object]) -> bool:
+    """The container's memory limit, and its swap limit when the spec sets one, are the issued."""
+    run_args = spec.get("runArgs", [])
+    memory = _flag_values(run_args, "--memory")
+    expected_memory = 0 if not memory else _memory_bytes(memory[0])
+    if expected_memory is None or host.get("Memory") != expected_memory:
+        return False
+    memory_swap = _flag_values(run_args, "--memory-swap")
+    if not memory_swap or host.get("MemorySwap") == _memory_bytes(memory_swap[0]):
+        return True
+    # A Docker host without swap-limit support drops the issued limit to -1.
+    return (
+        host.get("MemorySwap") == -1
+        and _docker_stdout(["docker", "info", "--format", "{{.SwapLimit}}"]) == "false"
     )
 
 
@@ -2577,7 +2625,7 @@ def sandbox_attachment(workspace: Path) -> Attachment | None:
     project_id = project_label_id(str(workspace.resolve()))
     expected = {"booley.project-id": project_id}
     found: set[Attachment] = set()
-    for name, raw in _strict_all_interactive_states(project_id):
+    for name, raw in _strict_all_sandbox_states(project_id):
         state = _decode_container_inspect(raw)
         assert state is not None
         if _vscode_runtime_labels_for_workspace(state, workspace, expected) is not None:
@@ -2615,7 +2663,7 @@ def sandbox_remedy(workspace: Path) -> str:
     from booley.runtime.runtime_context import inside_session_runtime
 
     if inside_session_runtime():
-        return UNKNOWN_SANDBOX_STEPS
+        return in_sandbox_steps()
     refreshable = True
     try:
         runtime_spec.load_issued_snapshot(workspace)

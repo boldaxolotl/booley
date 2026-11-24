@@ -1,0 +1,55 @@
+{
+ "intervals": [
+  {
+   "test": "slow-first",
+   "pid": 369,
+   "start_ns": 1794967780497305816,
+   "end_ns": 1794967782482583116,
+   "work_item_id": "item:0000:52cc0254ee4988ca",
+   "attempt_id": "9759425d-2e5c-4a0f-bbdc-038ab16d9c4f",
+   "child_execution_id": null,
+   "run_directory": "/work/.booley-qa/campaign/6cfc045e-6797-453b-a99b-f6c66803f2ad/0001-52cc0254ee4988ca/0001-9759425d-2e5c-4a0f-bbdc-038ab16d9c4f",
+   "relative_output": "qa-shared-name.txt",
+   "token": "slow-first",
+   "output_text": "slow-first",
+   "output": {
+    "path": "outputs/9759425d-2e5c-4a0f-bbdc-038ab16d9c4f/qa-shared-name.txt",
+    "sha256": "sha256:f7e3f3afd638b32f94fde5e65d3e486931226404b7c7c5c81738b1b0890e8715"
+   }
+  },
+  {
+   "test": "slow-fail",
+   "pid": 415,
+   "start_ns": 1794967783719988607,
+   "end_ns": 1794967785701864383,
+   "work_item_id": "item:0001:ce488bfcd9e30971",
+   "attempt_id": "f2b6c30d-285c-4aaa-90a6-767fe6ced66d",
+   "child_execution_id": "fcc5308288e04a6fb76ad19a6fa6a894",
+   "run_directory": "/work/.booley-qa/campaign/6cfc045e-6797-453b-a99b-f6c66803f2ad/0002-ce488bfcd9e30971/0001-f2b6c30d-285c-4aaa-90a6-767fe6ced66d",
+   "relative_output": "qa-shared-name.txt",
+   "token": "slow-fail",
+   "output_text": "slow-fail",
+   "output": {
+    "path": "outputs/f2b6c30d-285c-4aaa-90a6-767fe6ced66d/qa-shared-name.txt",
+    "sha256": "sha256:a6155401176af54b337efa2802bb293db99dfd1c1b324b2925969ec5683c3343"
+   }
+  },
+  {
+   "test": "slow-last",
+   "pid": 424,
+   "start_ns": 1794967784439830237,
+   "end_ns": 1794967786430753389,
+   "work_item_id": "item:0002:072cc0d8b14b9bcb",
+   "attempt_id": "428cb293-ec15-4993-9655-5c1a1d82433b",
+   "child_execution_id": "4c261b771d1240258fdfedc5607d29e3",
+   "run_directory": "/work/.booley-qa/campaign/6cfc045e-6797-453b-a99b-f6c66803f2ad/0003-072cc0d8b14b9bcb/0001-428cb293-ec15-4993-9655-5c1a1d82433b",
+   "relative_output": "qa-shared-name.txt",
+   "token": "slow-last",
+   "output_text": "slow-last",
+   "output": {
+    "path": "outputs/428cb293-ec15-4993-9655-5c1a1d82433b/qa-shared-name.txt",
+    "sha256": "sha256:8837f45b8091caf533f5fdfe2fe091e76a58140f68af24baa86e4c0828a298da"
+   }
+  }
+ ]
+}

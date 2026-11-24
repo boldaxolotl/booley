@@ -1,4 +1,4 @@
-"""Interactive Mode MCP server probe: the one owner of its rules (ADR 0018).
+"""Sandbox MCP server probe: the one owner of its rules (ADR 0018).
 
 Runs ``python -m booley.mcp.probe`` once in the Sandbox image and returns the
 complete observations as a :class:`DiagnosticReport`: the probe command and its
@@ -9,9 +9,10 @@ covers it), advisory endpoints with their explicit opt-outs, and the verbose-onl
 tool list.
 
 Permitted effects: one ``docker run --init --rm`` of the probe with the Project
-Root mounted at ``/work`` (60-second timeout). The probe may create its
-interactive log directory under the Booley Directory. The owner prints nothing
-and never raises on a failed probe; the caller renders the report.
+Root mounted at ``/work`` (60-second timeout). The probe creates nothing: it
+resolves its interactive log directory and checks that it could be written. The
+owner prints nothing and never raises on a failed probe; the caller renders the
+report.
 
 The caller decides whether the probe is worth running (container runtime and
 image present) and what the optional FPGA axis covers; this module holds the
@@ -33,6 +34,7 @@ from booley.audit.output_excerpt import output_excerpt_lines
 from booley.config.flow_enablement import flow_enabled_from_config
 from booley.core.boundary import is_str_list
 from booley.runtime.booley_dir import sandbox_booley_dir
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, run_captured_bounded
 from booley.targets.flow_names import config_section
 
@@ -70,7 +72,7 @@ def inspect_mcp_server(request: McpServerInspectionRequest) -> DiagnosticReport:
     findings = Findings()
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(request.booley_dir)
-    env["BOOLEY_MCP_MODE"] = "interactive"
+    env[DEVELOPER_AGENT_ENV] = "1"
     try:
         result = run_captured_bounded(
             _probe_command(request),
@@ -98,7 +100,7 @@ def _probe_command(request: McpServerInspectionRequest) -> list[str]:
         "-e",
         f"BOOLEY_DIR={sandbox_booley_dir(request.project_root)}",
         "-e",
-        "BOOLEY_MCP_MODE=interactive",
+        f"{DEVELOPER_AGENT_ENV}=1",
         request.image,
         "python",
         "-m",
@@ -155,7 +157,9 @@ def _grade_payload(
     if errors:
         findings.fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
         return
-    if payload.get("logs_dir_ok") is not True:
+    # Only an explicit false fails: an older image's probe made the directory, so
+    # its payload (without this field) already proves it was writable.
+    if payload.get("logs_dir_ok") is not True or payload.get("logs_dir_writable") is False:
         findings.fail("MCP interactive log setup failed", "check .booley mount and permissions")
         return
     missing = _required_tools(request) - set(mcp_tools)

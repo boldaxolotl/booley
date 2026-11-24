@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from booley.mcp import (
     report_encoding,
 )
 from booley.runtime import health_presentation
+from tests.time_budget import hang_guard_s, scaled
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -167,7 +169,7 @@ class TestMcpLifetime:
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         lifetime = mod._McpLifetime.from_env()
         assert lifetime.idle_timeout_seconds is None
         assert lifetime.max_age_seconds is None
@@ -187,7 +189,7 @@ class TestMcpLifetime:
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         lifetime = mod._McpLifetime.from_env(self_exit=False)
         assert lifetime.idle_timeout_seconds is None
         assert lifetime.max_age_seconds is None
@@ -197,7 +199,7 @@ class TestMcpLifetime:
         import booley.mcp.server as mod
 
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(tmp_path / "hb"))
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         lifetime = mod._McpLifetime.from_env()
         assert lifetime.idle_timeout_seconds is not None
         assert lifetime.max_age_seconds is not None
@@ -362,7 +364,7 @@ class TestRunSubprocess:
         code, _out, err, timed_out = asyncio.run(
             self._run_subprocess(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
-                timeout=1,
+                timeout=scaled(1),
             ),
         )
         assert code == 2
@@ -394,7 +396,7 @@ class TestRunSubprocess:
         script = (
             "import os, sys, time, subprocess, pathlib\n"
             "subprocess.Popen([sys.executable, '-c',"
-            f' "import time, pathlib; time.sleep(1.5);'
+            f' "import time, pathlib; time.sleep({scaled(1.5)});'
             f" pathlib.Path({str(survived)!r}).write_text('x')\"])\n"
             f"pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
             "time.sleep(30)\n"
@@ -402,9 +404,10 @@ class TestRunSubprocess:
 
         async def drive():
             task = asyncio.create_task(
-                self._run_subprocess([sys.executable, "-c", script], timeout=30)
+                self._run_subprocess([sys.executable, "-c", script], timeout=hang_guard_s())
             )
-            for _ in range(250):  # up to ~5s for the child to come up
+            child_deadline = time.monotonic() + hang_guard_s()
+            while time.monotonic() < child_deadline:  # wait for the child to come up
                 if started.exists():
                     break
                 await asyncio.sleep(0.02)
@@ -412,7 +415,7 @@ class TestRunSubprocess:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            await asyncio.sleep(2.0)  # past the grandchild's 1.5s write attempt
+            await asyncio.sleep(scaled(2.0))  # past the grandchild's write attempt
 
         asyncio.run(drive())
         assert not survived.exists(), (
@@ -992,7 +995,7 @@ class TestMcpExposureFiltering:
     def test_default_mode_exposes_autonomous_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
         assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
@@ -1003,7 +1006,7 @@ class TestMcpExposureFiltering:
     def test_interactive_mode_keeps_interactive_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
         assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
         assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
@@ -1031,7 +1034,7 @@ class TestMcpExposureFiltering:
 
     def test_explicit_allowlist_overrides_interactive_defaults(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,sim")
 
         assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
@@ -1148,7 +1151,7 @@ class TestBooleyStatus:
     def test_status_mcp_tool_def_only_interactive_by_default(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
 
         assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
 
@@ -1156,7 +1159,7 @@ class TestBooleyStatus:
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
         mcp_tools = catalog.visible_definitions(
             catalog.Exposure.from_mapping(os.environ),
@@ -1218,7 +1221,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1237,7 +1240,7 @@ class TestBooleyStatus:
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
             health_presentation,
@@ -1301,7 +1304,7 @@ class TestBooleySleep:
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
 
         mcp_tools = catalog.visible_definitions(
@@ -1415,6 +1418,9 @@ class TestBooleyTargets:
         payload = json.loads(result[0].text)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert sorted(names) == ["fpga_core", "sim", "synth"]
+        synth = next(t for c in payload["cores"] for t in c["targets"] if t["name"] == "synth")
+        assert synth["synth_mode"] == "physical"
+        assert synth["eda_tools"] == ["sv2v", "yosys", "openroad"]
 
     def test_dispatch_applies_filters(self, tmp_path, monkeypatch):
         import json
@@ -1664,12 +1670,12 @@ class TestBwaveDispatch:
 
 
 # ---------------------------------------------------------------------------
-# _load_agent_settings_from_toml (Interactive Mode honors [agent] in booley.toml)
+# _load_agent_settings_from_toml (the Sandbox honors [agent] in booley.toml)
 # ---------------------------------------------------------------------------
 
 
 class TestLoadAgentSettingsFromToml:
-    """Interactive Mode must preload agent settings from booley.toml.
+    """The Sandbox MCP server must preload agent settings from booley.toml.
 
     Regression guard: without this, Runtime may lazily use defaults even when
     the Project selected another provider.
@@ -1763,7 +1769,7 @@ class TestBuiltinDiscoveryGate:
     @pytest.fixture(autouse=True)
     def _import(self, monkeypatch):
         # MCP visibility filters must not leak in from the invoking shell.
-        for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
+        for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_DEVELOPER_AGENT"):
             monkeypatch.delenv(var, raising=False)
 
     def test_helper_module_skipped_without_import(self, tmp_path, monkeypatch):
@@ -1810,6 +1816,16 @@ class TestBuiltinDiscoveryGate:
 
         assert errors == []
         assert {r["name"] for r in results} == {endpoint.name for endpoint in discovered}
+
+    def test_implementation_flows_are_discovered_as_flows(self):
+        # Synth and FPGA derive from ImplementationFlow, not BuiltinFlow directly:
+        # the import-free scan must still list them, or their CLI and MCP tools vanish.
+        from booley.mcp.registry import discover_mcp_tools
+
+        kinds = {info.name: info.kind for info in discover_mcp_tools()}
+
+        assert kinds["synth"] == "flow"
+        assert kinds["fpga"] == "flow"
 
 
 # ---------------------------------------------------------------------------
@@ -1903,7 +1919,7 @@ class TestMainProxySelfHeal:
 
 
 # ---------------------------------------------------------------------------
-# Interactive Mode: honest answer for a deliberately hidden MCP tool (F-38)
+# Sandbox MCP server: honest answer for a deliberately hidden MCP tool (F-38)
 # ---------------------------------------------------------------------------
 
 
@@ -2039,7 +2055,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         write_progress_json(tmp_path / "flow-reports/sim/2/progress.json", foreign)
         checkpoints[run_id] = checkpoint
         entered.set()
-        await asyncio.wait_for(release.wait(), timeout=5)
+        await asyncio.wait_for(release.wait(), timeout=hang_guard_s())
         return 0, "", "", False
 
     monkeypatch.setattr(server, "_run_subprocess", gated_child)
@@ -2048,7 +2064,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
     original_wait = jobs.wait
 
     async def inline_wait(run_id, seconds):
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.wait_for(entered.wait(), timeout=hang_guard_s())
         return await original_wait(run_id, seconds)
 
     monkeypatch.setattr(jobs, "wait", inline_wait)
@@ -2062,7 +2078,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         _assert_live_checkpoint(structured, checkpoints[run_id])
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=5)
+        await asyncio.wait_for(asyncio.gather(*jobs._tasks.values()), timeout=hang_guard_s())
 
 
 async def _live_checkpoint_response(
@@ -2121,7 +2137,7 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
 
     def blocked_launch(_launch):
         entered.set()
-        assert release.wait(30), "test failed to release simulator launch"
+        assert release.wait(hang_guard_s()), "test failed to release simulator launch"
         return PASS_PROCESS
 
     def submit(pool):
@@ -2171,7 +2187,7 @@ def _poll_blocked_flow(
     with pool_type(max_workers=1) as pool:
         future = submit(pool)
         try:
-            assert entered.wait(30), "simulator launch was not reached"
+            assert entered.wait(hang_guard_s()), "simulator launch was not reached"
             application = server._build_mcp_application([], [], server._McpLifetime(None, None))
             payload = asyncio.run(
                 application.call_tool(
@@ -2197,7 +2213,7 @@ def _poll_blocked_flow(
         finally:
             release.set()
             # The released run must finish cleanly, not merely stop blocking.
-            assert future.result(timeout=30).result.exit_code == 0
+            assert future.result(timeout=hang_guard_s()).result.exit_code == 0
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():

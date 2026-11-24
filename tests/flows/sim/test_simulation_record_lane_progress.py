@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.flows.job_resources import ResourceLabel
 from booley.flows.sim.execution.pre_sim import _run_pre_sim_process
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
@@ -29,12 +30,14 @@ from tests.flows.sim.simulation_record_test_support import (
     _item_capacity,
     _managed,
     _outer_claim,
+    _scheduled_attempt,
     _two_item_manifest,
 )
 from tests.flows.test_terminal_progress import settled_lines
+from tests.time_budget import hang_guard_s
 
 # Bound for every cross-lane wait so a regression fails instead of hanging.
-WAIT_S = 5
+WAIT_S = hang_guard_s()
 
 
 class Screen(io.StringIO):
@@ -53,9 +56,17 @@ def _wait(event: threading.Event) -> None:
 
 
 def _child(tmp_path: Path, code: str) -> None:
-    """Run one observed child through the production Pre-Sim process path."""
+    """Run one observed child through the production Pre-Sim process path.
+
+    ``_run_pre_sim_process`` is private: it is the one process runner whose pipe readers report
+    to the installed sink without an EDA tool or a Pre-Sim hook.
+    """
     result = _run_pre_sim_process(
-        [sys.executable, "-c", code], cwd=tmp_path, env=dict(os.environ), timeout=30
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=hang_guard_s(),
+        resource=(ResourceLabel("t", "sim_pre_run"), ()),
     )
     assert result.returncode == 0, result.stderr
 
@@ -89,12 +100,8 @@ def _run_two_lanes(
     outer = _outer_claim(slot_store)
 
     def allocate(item) -> ScheduledAttempt:
-        attempt_id = os.urandom(16).hex()
-        ordinal, directory = simulation_record_store.allocate_attempt_directory(
-            str(item["work_item_id"]), attempt_id
-        )
-        # A unique collision key lets both lanes run at once.
-        return ScheduledAttempt(item, attempt_id, ordinal, directory, f"key-{attempt_id}")
+        # _scheduled_attempt's collision key is the unique attempt ID, so both lanes run at once.
+        return _scheduled_attempt(simulation_record_store, item)
 
     def execute(attempt, _child_id) -> None:
         name = str(attempt.item["selection"]["names"][0])  # type: ignore[index]
@@ -129,6 +136,38 @@ def _segments_with(sink: TerminalProgress, line: str) -> list[str]:
     return [header for header, body in _transcript_segments(sink) if line in body.splitlines()]
 
 
+def _assert_each_line_shown_once_under_its_lane(
+    sink: TerminalProgress, labels: dict[str, str], cases: tuple[tuple[str, str, str], ...]
+) -> None:
+    """Each ``(test, line, stage)`` is shown once, in one transcript chunk, under its own lane."""
+    records = _records(sink)
+    for test, line, stage in cases:
+        shown = [record for record in records if record.endswith(f": {line}")]
+        assert len(shown) == 1, f"{line!r} shown {len(shown)} times"
+        assert f"lane={labels[test]} " in shown[0]
+        assert stage in shown[0]
+        headers = _segments_with(sink, line)
+        assert len(headers) == 1, f"{line!r} in {len(headers)} transcript chunks"
+        assert f"lane={labels[test]} " in headers[0]
+        assert stage in headers[0]
+
+
+def _tty_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rows: int, now: list[float]):
+    """A sink writing to an in-memory terminal 120 columns wide."""
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
+    screen = Screen(tty=True)
+    sink = TerminalProgress(
+        "sim",
+        "sim_demo",
+        tmp_path,
+        stream=screen,
+        clock=lambda: now[0],
+        dimensions=lambda: os.terminal_size((120, rows)),
+    )
+    return screen, sink
+
+
 def test_overlapping_lanes_show_each_pre_sim_line_once_under_its_own_lane(
     tmp_path: Path,
 ) -> None:
@@ -154,28 +193,22 @@ def test_overlapping_lanes_show_each_pre_sim_line_once_under_its_own_lane(
         _child(tmp_path, _print_lines("sim beta", 20))
         beta_done.set()
 
-    # Freeze the writer so every observation is consumed at the final drain,
-    # after the lanes have moved on to other stages.
-    with patch.object(sink, "_run"):
+    # Freeze the writer so every observation is consumed at the final drain (ending the
+    # last command), after the lanes have moved on to other stages.
+    with patch.object(sink, "_run"):  # Private: freezes the writer thread; no public pause
         _run_two_lanes(
-            tmp_path, sink, {"alpha": alpha, "beta": beta}, labels, finish=sink._drain_end
+            tmp_path, sink, {"alpha": alpha, "beta": beta}, labels, finish=sink.end_command
         )
 
-    records = _records(sink)
-    for test, line in (
-        ("alpha", "pre alpha 1"),
-        ("alpha", "pre alpha 2"),
-        ("beta", "pre beta 1"),
-    ):
-        stage = f"stage=Pre-Sim Commands: {test} "
-        shown = [record for record in records if record.endswith(f"output: {line}")]
-        assert len(shown) == 1, f"{line!r} shown {len(shown)} times"
-        assert f"lane={labels[test]} " in shown[0]
-        assert stage in shown[0]
-        headers = _segments_with(sink, line)
-        assert len(headers) == 1, f"{line!r} in {len(headers)} transcript chunks"
-        assert f"lane={labels[test]} " in headers[0]
-        assert stage in headers[0]
+    _assert_each_line_shown_once_under_its_lane(
+        sink,
+        labels,
+        (
+            ("alpha", "pre alpha 1", "stage=Pre-Sim Commands: alpha "),
+            ("alpha", "pre alpha 2", "stage=Pre-Sim Commands: alpha "),
+            ("beta", "pre beta 1", "stage=Pre-Sim Commands: beta "),
+        ),
+    )
 
 
 def test_lane_coverage_and_simulation_output_keep_their_own_labels(tmp_path: Path) -> None:
@@ -197,36 +230,21 @@ def test_lane_coverage_and_simulation_output_keep_their_own_labels(tmp_path: Pat
 
     _run_two_lanes(tmp_path, sink, {"alpha": alpha, "beta": beta}, labels)
 
-    records = _records(sink)
-    for test, line, stage in (
-        ("alpha", "cov alpha", "stage=coverage: build/elaboration "),
-        ("beta", "sim beta", "stage=simulation: beta attempt=t2 "),
-    ):
-        shown = [record for record in records if record.endswith(f": {line}")]
-        assert len(shown) == 1, f"{line!r} shown {len(shown)} times"
-        assert f"lane={labels[test]} " in shown[0]
-        assert stage in shown[0]
-        headers = _segments_with(sink, line)
-        assert len(headers) == 1
-        assert f"lane={labels[test]} " in headers[0]
-        assert stage in headers[0]
+    _assert_each_line_shown_once_under_its_lane(
+        sink,
+        labels,
+        (
+            ("alpha", "cov alpha", "stage=coverage: build/elaboration "),
+            ("beta", "sim beta", "stage=simulation: beta attempt=t2 "),
+        ),
+    )
 
 
 def test_one_lane_command_start_keeps_other_lane_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
     now = [0.0]
-    screen = Screen(tty=True)
-    sink = TerminalProgress(
-        "sim",
-        "sim_demo",
-        tmp_path,
-        stream=screen,
-        clock=lambda: now[0],
-        dimensions=lambda: os.terminal_size((120, 40)),
-    )
+    screen, sink = _tty_sink(tmp_path, monkeypatch, rows=40, now=now)
     labels: dict[str, str] = {}
     beta_ready = threading.Event()
     alpha_done = threading.Event()
@@ -245,11 +263,11 @@ def test_one_lane_command_start_keeps_other_lane_tail(
     def beta() -> None:
         announce_unit("simulation: beta")
         _child(tmp_path, "print('beta tail line')")
-        sink._poll()
+        sink._poll()  # Private: the frozen writer needs one explicit poll
         beta_ready.set()
         _wait(alpha_done)
 
-    with patch.object(sink, "_run"):
+    with patch.object(sink, "_run"):  # Private: freezes the writer thread; no public pause
         _run_two_lanes(tmp_path, sink, {"alpha": alpha, "beta": beta}, labels)
 
     assert "beta tail line" in frame[0], "alpha's command start cleared beta's tail"
@@ -273,8 +291,8 @@ def test_closed_lane_output_is_not_dropped_before_the_final_drain(tmp_path: Path
             sink.observe("stdout:1", b"alpha last, no newline")
         with progress_lane("beta/2"):
             now[0] += 6  # the heartbeat fires while alpha's lane is already closed
-            sink._poll()
-            sink._drain_end()
+            sink._poll()  # Private: the heartbeat poll has no public trigger
+            sink.end_command()  # no command is open: drains the final backlog
     text = "\n".join(_records(sink))
     assert "alpha line 599" in text
     assert "alpha last, no newline" in text
@@ -285,17 +303,7 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
 ) -> None:
     """A terminal keeps one result line per lane, even when one lane's command ends
     while the other lane is open but has not started a command (#2885)."""
-    monkeypatch.setenv("TERM", "xterm")
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
-    screen = Screen(tty=True)
-    sink = TerminalProgress(
-        "sim",
-        "sim_demo",
-        tmp_path,
-        stream=screen,
-        clock=lambda: 0.0,
-        dimensions=lambda: os.terminal_size((120, 24)),
-    )
+    screen, sink = _tty_sink(tmp_path, monkeypatch, rows=24, now=[0.0])
     labels: dict[str, str] = {}
     alpha_done = threading.Event()
 
@@ -330,3 +338,19 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
         labels["alpha"]: ["alpha out"],
         labels["beta"]: ["beta one", "beta two"],
     }
+
+
+def test_silent_heartbeat_reports_the_output_lines_it_has_not_shown_yet(tmp_path: Path) -> None:
+    """A redirected record that stays quiet still shows its new output at each heartbeat."""
+    now = [100.0]
+    console = Screen()
+    sink = TerminalProgress("sim", "sim_demo", tmp_path, stream=console, clock=lambda: now[0])
+    sink.stage_changed("simulation")
+    sink.observe("stdout", b"line 0\n")
+
+    now[0] += 5
+    sink.end_command()
+
+    shown = console.getvalue()
+    assert "heartbeat" in shown
+    assert "output: line 0" in shown

@@ -320,6 +320,77 @@ fn test_no_clock_fallback() {
     );
 }
 
+#[test]
+fn test_no_clock_find_honors_window_in_ticks() {
+    let store = build_bwave("test_no_clock.vcd", "no_clock_find_window");
+    let store_arg = store.to_string_lossy().to_string();
+    let virtual_def = "en = tb.enable";
+    let rows: [(&[&str], &str); 11] = [
+        (&["*", "'h1", "--after", "99999"], ""),
+        (&["*", "'h1", "--after", "0"], "10 enable 1\n"),
+        (&["*", "'h1", "-t", "5:20"], "10 enable 1\n"),
+        (&["*", "'h1", "--before", "5"], ""),
+        (&["*", "'h1", "--before", "20"], "10 enable 1\n"),
+        (&["enable", "rising", "-t", "30:200"], "75 enable 1\n"),
+        (&["enable", "falling", "-t", "0:40"], ""),
+        (
+            &["*", "change", "-t", "30:60"],
+            "50 enable 0\n50 count[3:0] 2\n",
+        ),
+        (&["en", "'h1", "-t", "30:60", "--virtual", virtual_def], ""),
+        (
+            &["en", "rising", "-t", "30:200", "--virtual", virtual_def],
+            "75 en 1\n",
+        ),
+        (
+            &[
+                "en",
+                "rising",
+                "-t",
+                "30t:200t",
+                "--async",
+                "--virtual",
+                virtual_def,
+            ],
+            "75 en 1\n",
+        ),
+    ];
+    for (args, expected) in rows {
+        let mut full: Vec<&str> = vec!["find", &store_arg];
+        full.extend_from_slice(args);
+        let (stdout, stderr, code) = run_bwave(&full);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert_eq!(stdout, expected, "{args:?}: {stderr}");
+    }
+    let _ = std::fs::remove_file(store);
+}
+
+#[test]
+fn test_no_clock_find_reports_ticks_past_i64_max() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("big.vcd");
+    std::fs::write(
+        &vcd,
+        b"$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! en $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#9223372036854775808\n1!\n",
+    )
+    .unwrap();
+    let store = dir.path().join("big.fst");
+    let (_, stderr, code) = run_bwave(&[
+        "build",
+        vcd.to_str().unwrap(),
+        "-o",
+        store.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    for extra in [&[][..], &["--async"][..]] {
+        let mut args = vec!["find", store.to_str().unwrap(), "en", "'h1"];
+        args.extend_from_slice(extra);
+        let (stdout, stderr, code) = run_bwave(&args);
+        assert_eq!(code, 0, "{extra:?}: {stderr}");
+        assert_eq!(stdout, "9223372036854775808 en 1\n", "{extra:?}: {stderr}");
+    }
+}
+
 // -- X/Z handling -----------------------------------------------------
 
 #[test]
@@ -2209,6 +2280,28 @@ fn test_schema_subcommand() {
 }
 
 #[test]
+fn test_schema_subcommand_prints_generated_schema() {
+    let (stdout, _stderr, code) = run_bwave(&["schema"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout == bwave::output::schema_json(),
+        "`bwave schema` should print the schema generated from the output structs"
+    );
+}
+
+#[test]
+fn test_committed_schema_matches_generated() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/schema/bwave.json");
+    let committed = std::fs::read_to_string(path).expect("read schema/bwave.json");
+    assert!(
+        committed == bwave::output::schema_json(),
+        "schema/bwave.json differs from the schema generated from the output structs; \
+         regenerate it with `cargo run -q --manifest-path crates/bwave/Cargo.toml -- schema > \
+         crates/bwave/schema/bwave.json`"
+    );
+}
+
+#[test]
 fn test_envelope_list() {
     let bwave = build_bwave("test_basic.vcd", "env_list");
     let bp = bwave.to_string_lossy().to_string();
@@ -2317,6 +2410,36 @@ fn test_docs_show_unknown_topic_exits_1() {
     let (_stdout, stderr, code) = run_bwave(&["docs", "show", "this_topic_does_not_exist"]);
     assert_eq!(code, 1);
     assert!(stderr.contains("unknown topic"), "stderr: {}", stderr);
+}
+
+#[test]
+fn test_docs_references_resolve() {
+    // Every topic named in backticks by a topic must exist, and the retired
+    // reset-skipping, clock-detection and empty-results topics are gone (their
+    // rules live in the `reference/` pages).
+    let (topics, _stderr, code) = run_bwave(&["docs", "topics"]);
+    assert_eq!(code, 0);
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
+        assert!(!topics.lines().any(|l| l.contains(retired)), "{retired}");
+    }
+    for topic in topics.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (body, stderr, code) = run_bwave(&["docs", "show", topic]);
+        assert_eq!(code, 0, "{topic}: {stderr}");
+        for span in body.split('`').skip(1).step_by(2) {
+            let is_topic = ["commands/", "reference/", "troubleshooting/"]
+                .iter()
+                .any(|prefix| span.starts_with(prefix))
+                && !span.contains(char::is_whitespace);
+            if is_topic {
+                let (_, stderr, code) = run_bwave(&["docs", "show", span]);
+                assert_eq!(code, 0, "{topic} links to `{span}`: {stderr}");
+            }
+        }
+    }
+    for retired in ["reset-skipping", "clock-detection", "empty-results"] {
+        let (_, stderr, code) = run_bwave(&["docs", "show", &format!("troubleshooting/{retired}")]);
+        assert_eq!(code, 1, "{retired}: {stderr}");
+    }
 }
 
 #[test]
@@ -2565,8 +2688,8 @@ fn test_native_verilator_fst_clock_rederivation() {
         .to_string();
     let (stdout, stderr, code) = run_query(&["stats", &fst]);
     assert_eq!(code, 0, "stderr: {}", stderr);
-    // clock meta is re-derived from FST content: 10ns period, 36 cycles
-    assert!(stdout.contains("36 cycles"), "got: {}", stdout);
+    // clock meta is re-derived from FST content: 10ns period, 38 cycles
+    assert!(stdout.contains("38 cycles"), "got: {}", stdout);
     assert!(stdout.contains("10ns period"), "got: {}", stdout);
 }
 
@@ -2635,7 +2758,7 @@ impl Issue1098Store {
         let name = if active_low { "rst_n" } else { "rst" };
         let asserted = if active_low { '0' } else { '1' };
         let inactive = if active_low { '1' } else { '0' };
-        let declarations = format!("$var wire 1 ! clk $end\n$var wire 1 \" {name} $end\n$var wire 1 # stable $end\n$var wire 1 $ reset_only $end\n$var wire 8 % count $end\n");
+        let declarations = format!("$var wire 1 ! clk $end\n$var wire 1 \" {name} $end\n$var wire 1 # stable $end\n$var wire 1 $ init_only $end\n$var wire 8 % count $end\n");
         let mut events = format!("#0\n0!\n{asserted}\"\n1#\n0$\nb00000000 %\n");
         for tick in (5..=1200).step_by(5) {
             events.push_str(&format!("#{tick}\n"));
@@ -2671,11 +2794,10 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             let store = Issue1098Store::reset(active_low, clock_first);
             let high = if active_low { "'h0" } else { "'h1" };
             let low = if active_low { "'h1" } else { "'h0" };
-            for (mode, total) in [
-                (vec!["--with-reset"], 1200),
-                (vec![], 200),
-                (vec!["--async"], 1200),
-                (vec!["--reset", "missing"], 1200),
+            for (mode, total, cycles) in [
+                (vec!["--with-reset"], 1200, 120),
+                (vec![], 200, 21),
+                (vec!["--async"], 1200, 120),
             ] {
                 let mut args = vec!["-s", "tb.rst*"];
                 args.extend(mode);
@@ -2683,7 +2805,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
                 let data = &json["data"];
                 assert_eq!(data["total_ticks"], total);
                 assert_eq!(data["simulation_ns"], total);
-                assert_eq!(data["total_cycles"], total / 10);
+                assert_eq!(data["total_cycles"], cycles);
                 let signal = &data["signals"][0];
                 assert_eq!(signal["transitions"], 1);
                 assert_eq!(signal["time_in_state_ticks"][low], 200);
@@ -2697,7 +2819,7 @@ fn issue_1098_stats_reset_window_and_initial_occupancy() {
             }
             assert!(store
                 .query("stats", &["-s", "stable"])
-                .contains("200ns, 20 cycles"));
+                .contains("200ns, 21 cycles"));
             assert!(store
                 .query("stats", &["-s", "stable", "--with-reset"])
                 .contains("1200ns, 120 cycles"));
@@ -2730,12 +2852,12 @@ fn issue_1098_stuck_seed_and_whole_window() {
         );
     }
     assert!(store
-        .query("stuck", &["-s", "reset_only"])
-        .contains("reset_only"));
+        .query("stuck", &["-s", "init_only"])
+        .contains("init_only"));
     assert!(!store
-        .query("stuck", &["-s", "reset_only", "--with-reset"])
+        .query("stuck", &["-s", "init_only", "--with-reset"])
         .lines()
-        .any(|l| l.starts_with("reset_only")));
+        .any(|l| l.starts_with("init_only")));
 }
 
 #[test]
@@ -2746,7 +2868,7 @@ fn issue_1098_list_raw_end_and_predicate_reset_phase() {
         "virt",
         "rising",
         "--virtual",
-        "virt = tb.reset_only == 'h1",
+        "virt = tb.init_only == 'h1",
         "--with-reset",
         "--async",
     ];
@@ -2754,7 +2876,7 @@ fn issue_1098_list_raw_end_and_predicate_reset_phase() {
     assert!(out.contains("100"), "{out}");
     let out = store.query(
         "find",
-        &["virt", "rising", "--virtual", "virt = tb.reset_only == 'h1"],
+        &["virt", "rising", "--virtual", "virt = tb.init_only == 'h1"],
     );
     assert!(
         !out.lines()
@@ -2799,7 +2921,7 @@ fn issue_1098_occupancy_edges_without_clock_or_reset() {
 #[test]
 fn issue_1098_predicate_samples_and_edges_are_actual_events() {
     let store = Issue1098Store::reset(false, false);
-    let definition = "virt = tb.reset_only == 'h1";
+    let definition = "virt = tb.init_only == 'h1";
     let sampled = store.query(
         "sample",
         &[
@@ -3225,6 +3347,7 @@ fn test_time_token_exact_cli_overflow() {
                 "beyond simulation range"
             };
             assert!(err.contains(discriminator), "{token}: {err}");
+            assert!(err.contains(token), "{token}: {err}");
         }
     }
 }
@@ -3366,10 +3489,10 @@ fn test_time_token_exact_parent_composition() {
     };
     let store = build_bwave("test_time_token_phase.vcd", "exact_parent");
     let mut cache = ColumnCache::load_from_file(&store).unwrap();
+    cache.select_reset("qa.rstn").unwrap();
     for included in [false, true] {
         let policy = ExtractConfig {
             with_reset: included,
-            reset_pattern: Some("qa.rstn".into()),
             ..Default::default()
         };
         assert_eq!(
@@ -3458,11 +3581,11 @@ fn test_time_token_phase_config_fields_and_boundaries() {
     };
     let store = build_bwave("test_time_token_phase.vcd", "phase_config");
     let mut cache = ColumnCache::load_from_file(&store).unwrap();
+    cache.select_reset("qa.rstn").unwrap();
     for included in [false, true] {
         let c = if included { 3 } else { 1 };
         let policy = ExtractConfig {
             with_reset: included,
-            reset_pattern: Some("qa.rstn".into()),
             ..Default::default()
         };
         for token in [
@@ -3617,10 +3740,8 @@ fn test_time_token_phase_config_fields_and_boundaries() {
     cache.clock_period_ticks = u64::MAX;
     assert!(resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(3)).is_err());
     cache.clock_period_ticks = 10;
-    let no_reset = ExtractConfig {
-        reset_pattern: Some("absent".into()),
-        ..Default::default()
-    };
+    cache.reset = None;
+    let no_reset = ExtractConfig::default();
     assert_eq!(
         resolve_time_token(&cache, &no_reset, &TimeToken::Tick(25)),
         Ok(3)

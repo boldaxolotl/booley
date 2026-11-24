@@ -164,11 +164,17 @@ def test_relative_glob_selects_the_list_tree(store: Path, command: str) -> None:
     assert selected == DUT_TREE  # excludes TOP.tb.other.dut.flag: anchored, not a suffix
 
 
-def test_gui_resolves_relative_glob(store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC1/AC3: ``gui --signals dut.*`` resolves the same tree."""
+@pytest.mark.parametrize(
+    "globs",
+    [pytest.param(["dut.*"], id="all-match"), pytest.param(["dut.*", "nope"], id="one-missing")],
+)
+def test_gui_resolves_relative_glob(
+    store: Path, monkeypatch: pytest.MonkeyPatch, globs: list[str]
+) -> None:
+    """AC1/AC3: ``gui --signals dut.*`` resolves the same tree, even beside a missing selector."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
     try:
-        signals, _listing = cli._resolve_signal_globs(str(store), ["dut.*"], 100)
+        signals, _listing = cli._resolve_signal_globs(str(store), globs, 100)
     except SystemExit as error:
         outcome: object = error.code
     else:
@@ -235,3 +241,23 @@ def test_gui_keeps_anchored_and_bare_matching(
 ) -> None:
     """AC2/AC4: ``gui`` resolves full-path, ``*``-led and bare names as before."""
     assert _resolve_gui(store, glob, monkeypatch) == expected
+
+
+@pytest.mark.parametrize("group", [False, True])
+def test_gui_refuses_bit_slice(
+    store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    group: bool,
+) -> None:
+    """#4898: ``gui`` takes whole signals, so a bit-slice selector exits 2."""
+    monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    with pytest.raises(SystemExit) as raised:
+        if group:
+            cli._resolve_signal_groups(str(store), ["G=dut.count[3:0]"], 100)
+        else:
+            cli._resolve_signal_globs(str(store), ["dut.count[3:0]"], 100)
+    assert raised.value.code == 2
+    err = capsys.readouterr().err
+    assert "bwave gui" in err
+    assert "TOP.tb.dut.count" in err

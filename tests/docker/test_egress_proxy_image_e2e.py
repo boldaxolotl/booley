@@ -14,12 +14,13 @@ from tests.sidecar_image_helpers import (
     candidate_image,
     docker,
 )
+from tests.time_budget import hang_guard_s
 
-_UPSTREAM_SERVER = """\
+_UPSTREAM_SERVER = f"""\
 import socket
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.settimeout(10)
+s.settimeout({hang_guard_s()})
 s.bind((\"0.0.0.0\", 9443))
 s.listen()
 connection, _ = s.accept()
@@ -28,15 +29,17 @@ connection.sendall(b\"reply:\" + data)
 connection.close()
 s.close()
 """
-_CLIENT = """\
+_CLIENT = f"""\
 import socket
 import time
-for attempt in range(50):
+# Wait for the proxy to listen: retry every 0.1 s until the hang guard expires.
+deadline = time.monotonic() + {hang_guard_s()}
+while True:
     try:
-        connection = socket.create_connection((\"proxy\", 8080), timeout=2)
+        connection = socket.create_connection((\"proxy\", 8080), timeout={hang_guard_s()})
         break
     except OSError:
-        if attempt == 49:
+        if time.monotonic() >= deadline:
             raise
         time.sleep(0.1)
 connection.sendall(b\"CONNECT upstream:9443 HTTP/1.1\\r\\nHost: upstream:9443\\r\\n\\r\\n\")
@@ -128,7 +131,7 @@ def _exercise_proxy(image: str, resources: _Resources) -> None:
 
 
 def _assert_shutdown_stats(resources: _Resources) -> None:
-    assert_ok(docker("stop", "--time", "5", resources.proxy, timeout=15))
+    assert_ok(docker("stop", "--time", "5", resources.proxy, timeout=hang_guard_s()))
     logs = docker("logs", resources.proxy)
     assert_ok(logs)
     stats = json.loads(logs.stdout.strip().splitlines()[-1])

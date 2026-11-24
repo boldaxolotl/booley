@@ -1,43 +1,12 @@
 # bwave signal
 
-## Synopsis
-
-```bash
-bwave signal <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
-            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--format text|json] [--limit N]
-```
-
 ## Semantics
 
-Cycle-by-cycle (or transition-by-transition in async)
-trace of selected signals. The default query view: one
-line per cycle, columns are the signals, only cycles where
-*something changed* are emitted (no blank-cycle padding).
-Good for narrative debugging: "what happens around cycle
-1000?".
-
-In sync mode (default) values are sampled at the rising
-clock edge and reflect post-edge state. In async mode each
-VCD transition is its own row with the raw timestamp.
-
-## Defaults and requiredness
-
-- `<FST_FILE>` required.
-- `-s PATTERN` optional, repeatable. Omitted means all
-  signals (warning: that's typically too many; clap
-  caps via `--limit`). A bare name (no `*`, `?` or `[`) is a suffix
-  match. A glob matches the full path or the path relative to the common
-  scope that an unfiltered `bwave list` prints (`# scope: TOP.tb`), so
-  `dut.*` finds `TOP.tb.dut.*` at any depth and nothing outside that
-  scope. A total miss suggests the full-path form
-  (`did you mean 'TOP.tb.dut.u_core.*'?`).
-- `-t START:END` optional. Open-ended works:
-  `-t 100:`, `-t :500`. A single `-t 100` is treated as
-  `[100, 100]` (one cycle).
-- Time units: bare integers are cycles in sync mode;
-  async mode requires a unit suffix (`100t`, `100ns`).
-  See `reference/time-tokens`.
+Trace of selected signals over time: one row per change, so cycles where
+nothing changed are omitted. Use it for narrative debugging: "what happens
+around cycle 1000?". Sync mode samples at clock edges; `--async` prints
+every VCD transition with its raw tick (`reference/sync-vs-async`). Without
+`-s`, every signal is traced, which is usually too many.
 
 ## Output shape
 
@@ -49,8 +18,8 @@ Text mode prints time/name/value change rows:
 5000 b 2
 ```
 
-In async mode the first column is `time` (timescale units)
-rather than `cycle`.
+In async mode the first column is the raw tick rather
+than the cycle.
 
 `signal` prints *transitions*. When nothing changes inside
 the requested window — the common `-t N:N` "what is it
@@ -58,7 +27,7 @@ holding right now?" query — it falls back to the held
 value at the window start and says so on stderr:
 
 ```
-# no transitions in cycles 3:3 — showing held values at cycle 3
+# no transitions in range — showing held values at cycle 3
 3 data_a[7:0] 39
 ```
 
@@ -69,20 +38,13 @@ question, and snapshots every matching signal.
 
 ## Common errors
 
-- **Output starts at cycle 6 instead of 0**: reset phase
-  was auto-skipped. Pass `--with-reset` to include it. See
-  `troubleshooting/reset-skipping`.
-- **Off-by-one vs. waveform viewer**: sync mode samples
-  *post-edge*. The value on cycle N is what flip-flops
-  drive after capturing input. This matches GTKWave's
-  default cursor behaviour. See `reference/sync-vs-async`.
-- **Too many rows, output truncated**: `--limit` is
-  2000 by default. Either narrow with `-s`, tighten `-t`,
-  or raise `--limit` (max 10000 in the wrapper).
-- **`-s "data%h"` shows binary anyway**: radix suffix
-  must come AFTER the pattern, with no space. `data%h`
-  not `data %h`. See `reference/verilog-literals` and
-  `troubleshooting/radix-pitfalls`.
+- **The reset phase is missing**: sync mode skips it, and output starts at
+  cycle 0 (the tick before reset deasserts) or cycle 1. Pass
+  `--with-reset` to include it; the `# reset:` header says what was
+  skipped (`reference/sync-vs-async`).
+- **Off by one cycle against a waveform viewer**: sync
+  mode reads post-edge values by default. See the sampling
+  modes in `reference/sync-vs-async`.
 
 ## Examples
 

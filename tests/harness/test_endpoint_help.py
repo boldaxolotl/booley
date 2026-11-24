@@ -19,7 +19,7 @@ from tests.subprocess_budget import run_bounded_child
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
+    run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):

@@ -19,6 +19,7 @@ Stdlib-only.
 
 from __future__ import annotations
 
+import glob
 import os
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
@@ -112,6 +113,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         # bwave's session store: its sessions name this checkout's traces (#3483).
         ".runtime/bwave/": _SOURCE_TIED,
         "tmp/fusesoc-isolated-cores/": _SOURCE_TIED,
+        "tmp/core-projection-publication/": _SOURCE_TIED,
         # Common: ADR rows.
         "goals/": _COMMON,
         "runtime/jobs/": _COMMON,
@@ -119,7 +121,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/sessions/": _COMMON,
         "runtime/session_activity/": _COMMON,
         "runtime/dashboard-task.lock": _COMMON,
-        ".interactive_logs/": _COMMON,
+        "job_logs/": _COMMON,
         "runtime/doctor_stamp.json": _COMMON,
         "runtime/doctor_deep_stamp.json": _COMMON,
         "runtime/upgrade_review.json": _COMMON,
@@ -145,6 +147,8 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,
         "runtime/synth_probe.json": _COMMON,
+        "runtime/chat-main.lock": _COMMON,
+        ".runtime/sandbox-mounts.json": _COMMON,
         "runtime/resources/": _COMMON,
         ".runtime/executions/": _COMMON,
         ".runtime/jobs/": _COMMON,
@@ -194,20 +198,22 @@ def booley_dir_class(relative: str | PurePath) -> BooleyDirClass:
     path = PurePath(relative)
     if path.anchor or ".." in path.parts:
         raise UnclassifiedBooleyPathError(f"not relative to the Booley Directory: {relative}")
-    best = _class_of(tuple(segment for segment in path.parts if segment != "."))
+    best = _class_of(tuple(segment for segment in path.parts if segment != "."), BOOLEY_DIR_PATHS)
     if best is None:
         raise UnclassifiedBooleyPathError(f"unclassified Booley Directory path: {relative}")
     return best
 
 
-def _class_of(segments: tuple[str, ...]) -> BooleyDirClass | None:
+def _class_of(
+    segments: tuple[str, ...], rows: Mapping[str, BooleyDirClass]
+) -> BooleyDirClass | None:
     """Return the class covering *segments*, an atomic-write temporary taking its target's."""
-    best = _best_class(segments)
+    best = _best_class(segments, rows)
     # An atomic write's temporary file (``.<name>.<pid>.tmp``) belongs to ``<name>``.
     for target in _temp_file_targets(segments[-1] if segments else ""):
         if best is not None:
             break
-        best = _best_class((*segments[:-1], target))
+        best = _best_class((*segments[:-1], target), rows)
     return best
 
 
@@ -225,24 +231,28 @@ def _temp_file_targets(leaf: str) -> Iterator[str]:
         yield f".{candidate}"
 
 
-def _best_class(segments: tuple[str, ...]) -> BooleyDirClass | None:
+def _best_class(
+    segments: tuple[str, ...], rows: Mapping[str, BooleyDirClass]
+) -> BooleyDirClass | None:
     """Return the class of the deepest table pattern covering *segments*, if any."""
     best_depth = 0
     best: BooleyDirClass | None = None
-    for pattern, booley_class in BOOLEY_DIR_PATHS.items():
+    for pattern, booley_class in rows.items():
         depth = _covering_depth(pattern, segments)
         if depth is not None and depth > best_depth:
             best_depth, best = depth, booley_class
     return best
 
 
-def _splits_below(segments: tuple[str, ...], own: BooleyDirClass | None) -> bool:
+def _splits_below(
+    segments: tuple[str, ...], own: BooleyDirClass | None, rows: Mapping[str, BooleyDirClass]
+) -> bool:
     """Return whether a table row below *segments* has a class other than *own*.
 
     An unclassified directory (*own* is ``None``) is a container: any row below
     it splits it.
     """
-    for pattern, booley_class in BOOLEY_DIR_PATHS.items():
+    for pattern, booley_class in rows.items():
         pattern_segments = pattern.rstrip("/").split("/")
         if len(pattern_segments) <= len(segments) or booley_class is own:
             continue
@@ -253,7 +263,24 @@ def _splits_below(segments: tuple[str, ...], own: BooleyDirClass | None) -> bool
     return False
 
 
-def iter_booley_dir(root: Path) -> Iterator[tuple[str, BooleyDirClass | None]]:
+def with_versioned_directory(directory: str) -> Mapping[str, BooleyDirClass]:
+    """Return the table plus a versioned row for the configured *directory*.
+
+    A configured directory never reclassifies Booley state: the table comes back
+    unchanged when it already classifies *directory* or anything below it (a
+    versioned row already copies it; a Common or source-tied row keeps it out).
+    """
+    segments = tuple(directory.split("/"))
+    if _class_of(segments, BOOLEY_DIR_PATHS) is not None or _splits_below(
+        segments, None, BOOLEY_DIR_PATHS
+    ):
+        return BOOLEY_DIR_PATHS
+    return {**BOOLEY_DIR_PATHS, f"{glob.escape(directory)}/": _VERSIONED}
+
+
+def iter_booley_dir(
+    root: Path, *, rows: Mapping[str, BooleyDirClass] = BOOLEY_DIR_PATHS
+) -> Iterator[tuple[str, BooleyDirClass | None]]:
     """Yield the top-most entries of a Booley Directory whose whole subtree has one class.
 
     Paths are ``/``-separated and relative to *root*; ``None`` marks an entry no
@@ -265,16 +292,18 @@ def iter_booley_dir(root: Path) -> Iterator[tuple[str, BooleyDirClass | None]]:
     Raises:
         OSError: *root* or a walked directory cannot be listed.
     """
-    yield from _walk(root, ())
+    yield from _walk(root, (), rows)
 
 
-def _walk(directory: Path, prefix: tuple[str, ...]) -> Iterator[tuple[str, BooleyDirClass | None]]:
+def _walk(
+    directory: Path, prefix: tuple[str, ...], rows: Mapping[str, BooleyDirClass]
+) -> Iterator[tuple[str, BooleyDirClass | None]]:
     with os.scandir(directory) as entries:
         children = sorted(entries, key=lambda entry: entry.name)
     for child in children:
         segments = (*prefix, child.name)
-        own = _class_of(segments)
-        if child.is_dir(follow_symlinks=False) and _splits_below(segments, own):
-            yield from _walk(Path(child.path), segments)
+        own = _class_of(segments, rows)
+        if child.is_dir(follow_symlinks=False) and _splits_below(segments, own, rows):
+            yield from _walk(Path(child.path), segments, rows)
         else:
             yield "/".join(segments), own

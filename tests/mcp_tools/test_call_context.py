@@ -267,6 +267,7 @@ class TestDispatchWithoutCwd:
             "module_path": "booley.specialists.reviewer",
             "is_specialist": True,
             "default_timeout": 60,
+            "memory_admitted": True,
         }
 
         async def scenario() -> tuple[str, str]:

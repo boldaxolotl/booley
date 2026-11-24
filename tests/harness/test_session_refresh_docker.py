@@ -18,6 +18,7 @@ from booley.core.private_store import PrivateStore
 from booley.runtime import image_lifecycle, session_runtime
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from tests.docker_cli_guard import route_session_helpers_through_subprocess_run
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_RUN_REFRESH_DOCKER_PROOF") != "1",
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 def _docker(*args: str) -> str:
     # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
     result = subprocess.run(
-        ["docker", *args], capture_output=True, text=True, timeout=180, check=False
+        ["docker", *args], capture_output=True, text=True, timeout=hang_guard_s(), check=False
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -81,6 +82,8 @@ def _cleanup(tags, containers, owned) -> None:
 def _instrument(monkeypatch, name, tags, containers, owned):
     original = subprocess.run
     mutations = []
+    # Caps the production Docker budgets this proof runs; 180 s at factor 1.
+    cap = 6 * hang_guard_s()
 
     def run(argv, *args, **kwargs):
         if argv[0] == "docker":
@@ -103,7 +106,7 @@ def _instrument(monkeypatch, name, tags, containers, owned):
             assert set(targets) <= allowed, f"foreign Docker mutation refused: {argv}"
             if targets:
                 mutations.append(tuple(argv))
-            kwargs["timeout"] = min(kwargs.get("timeout") or 180, 180)
+            kwargs["timeout"] = min(kwargs.get("timeout") or cap, cap)
         return original(argv, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
@@ -162,7 +165,7 @@ def _failed_start_convergence(workspace, token, name, tags, containers, new_imag
     containers.append(candidate)
     # Kept on subprocess.run: the `_instrument` guard patches it to refuse foreign Docker mutations.
     failed = subprocess.run(
-        ["docker", "exec", name, "sh", "-c", "exit 7"], timeout=180, check=False
+        ["docker", "exec", name, "sh", "-c", "exit 7"], timeout=hang_guard_s(), check=False
     )
     assert failed.returncode == 7  # the start hook failed; nothing cleaned the candidate up
 

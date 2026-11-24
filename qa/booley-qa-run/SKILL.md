@@ -135,9 +135,10 @@ Write each finding the moment you observe it, before any workaround or retry.
 6. **Triage.** Make sure `findings.md` and `log.md` are complete. Unless the
    user passed `no-triage`, read `booley-qa-triage/SKILL.md` under the derived
    `qa/` directory and run its automatic mode on this run directory,
-   passing any `jury=` argument. A triage stop (no T3 Code, a juror
-   unavailable) leaves the run complete: record it in `log.md` and carry its
-   reason and rerun command into the report.
+   passing any `jury=` argument. Seat the jury from this top-level thread,
+   not a sub-agent (AUTO.md, "Seat the jury"). A triage stop (no T3 Code, a
+   juror unavailable) leaves the run complete: record it in `log.md` and
+   carry its reason and rerun command into the report.
 7. **Report.** Tell the user: finding count by kind and severity, areas
    skipped, cleanup failures, smoke verdict, and the triage report (or that
    `/booley-qa-triage` turns the findings into issues, when triage was skipped

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import copy
 import fnmatch
+import itertools
 import json
 import os
 import re
@@ -25,10 +26,12 @@ from pathlib import Path
 import pytest
 
 from booley.bwave import vaporview_bridge as bwave_bridge
+from booley.core.host_shell import quote_arg
 from booley.runtime import vaporview
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -241,11 +244,29 @@ def test_gui_directory_discovers_trace(tmp_path, launched):
 def test_gui_directory_without_trace_errors(tmp_path, launched):
     sim_dir = tmp_path / "empty_sim"
     sim_dir.mkdir()
+    (sim_dir / "sim.log").write_text("no dump\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
         _gui(str(sim_dir))
 
-    assert "No trace file found" in str(exc.value)
+    assert str(exc.value) == f"ERROR: No trace file found in {sim_dir}"
+    assert launched == []
+
+
+def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
+    sim_dir = tmp_path / "it's work"
+    sim_dir.mkdir()
+    dump = sim_dir / "sim.vcd"
+    dump.write_bytes(b"")
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(str(sim_dir))
+
+    message = str(exc.value)
+    assert "not named trace.vcd: sim.vcd" in message
+    assert "[flows.sim].trace_files" in message
+    assert f"bwave register {quote_arg(str(dump))} --as ALIAS --build" in message
+    assert f"bwave gui {quote_arg(str(dump))}" in message
     assert launched == []
 
 
@@ -568,6 +589,8 @@ def _fake_async_target_tick(token: str) -> int:
         return int(token[:-2]) * _TICKS_PER_NS * 1_000_000
     if token.endswith("t"):
         return int(token[:-1])
+    if token.endswith("c"):
+        return int(token[:-1]) * _TICKS_PER_CYCLE
     raise AssertionError(f"unexpected async time token: {token}")
 
 
@@ -755,7 +778,7 @@ def fake_rust(monkeypatch):
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-rust"])
     # The viewer model answers synchronously, so only a genuine drop waits out
     # the settle poll; keep that wait short enough not to drag the suite.
-    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", 0.3)
+    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", scaled(0.3))
     state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 1_000_000, "clock": "tb.clk"}
     calls: list[list[str]] = []
 
@@ -812,6 +835,8 @@ def fake_rust(monkeypatch):
                 "time_label": token,
                 "signals": [],
             }
+        elif sub == "find":
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         elif sub == "stats":
             data = {
                 "simulation_ns": 1000,
@@ -1892,9 +1917,9 @@ def test_max_signals_raises_the_cap(tmp_path, monkeypatch, fake_rust):
     assert viewer.shown() == bus
 
 
-def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust):
+def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust, capsys):
     trace = _make_trace(tmp_path)
-    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200})})
+    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200, "1400c": 7})})
     viewer = _viewer_for(trace, monkeypatch)
 
     _gui("@dut", time="overflow:1400c")
@@ -1908,6 +1933,7 @@ def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust):
         "start": 1200 * _TICKS_PER_CYCLE,
         "end": 1400 * _TICKS_PER_CYCLE,
     }
+    assert "marker '1400c' on @dut does not apply" in capsys.readouterr().err
 
 
 def test_gui_ended_range_uses_list_total_ticks(tmp_path, monkeypatch, fake_rust):
@@ -2149,7 +2175,8 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     msg = str(exc.value)
     assert "`bwave open` is now `bwave gui`" in msg
     # …and hands back the exact command to rerun.
-    assert "bwave gui @dut -s tb.dut.fifo.*" in msg
+    retry_args = " ".join(quote_arg(arg) for arg in ["@dut", "-s", "tb.dut.fifo.*"])
+    assert f"bwave gui {retry_args}" in msg
 
 
 # ── venue guard ─────────────────────────────────────────────────────────────
@@ -2429,3 +2456,37 @@ def test_clock_grid_options_forward_to_registered_store(args):
         "trace.fst",
         *args[1:],
     ]
+
+
+def test_list_envelope_refuses_native_usage_error(monkeypatch, capsys):
+    """#4898: a native exit 2 (a bit-slice selector) makes ``gui`` exit 2."""
+    from booley.bwave import cli as bwave
+
+    failed = subprocess.CompletedProcess([], 2, "", "bit range [9:8] exceeds width 8")
+    monkeypatch.setattr(bwave, "_run_query", lambda _args: failed)
+
+    with pytest.raises(SystemExit) as raised:
+        bwave._list_envelope("trace.fst", ["data[9:8]"])
+
+    assert raised.value.code == 2
+    assert "exceeds width 8" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("cycle", "bound"), [(25, "250"), (200_000, "1000001")])
+def test_async_marker_bound_is_its_cycles_tick(fake_rust, tmp_path, cycle, bound):
+    """Async `--before` takes a tick: a Marker is passed as the tick of its cycle."""
+    from booley.bwave import cli as bwave
+
+    _write_sessions({"dut": _make_entry(str(_make_trace(tmp_path)), {"m": cycle})})
+
+    argv = ["@dut", "find", "sig", "1", "--before", "m", "--async", "--with-reset"]
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=argv))
+
+    assert exc.value.code == 0
+    *probes, final = fake_rust["calls"]
+    assert final[1] == "find"
+    assert ("--before", bound) in itertools.pairwise(final)
+    value_probe = next(call for call in probes if call[1] == "value")
+    assert "--async" in value_probe
+    assert "--with-reset" in value_probe

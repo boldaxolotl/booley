@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,7 +22,6 @@ from booley.flows.sim.coverage_invocation import (
 from booley.flows.sim.coverage_json import coverage_mapping_document
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import (
     SelectedCoverageRun,
     SimulationRunResult,
@@ -30,6 +30,8 @@ from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.test_coverage_flow import (
+    _coverage,
+    _pin_revision,
     _prepare_sim_custom_project,
     _SplitMetricsExecution,
 )
@@ -159,19 +161,6 @@ def test_one_failing_run_fails_the_coverage_simulation_record(tmp_path, monkeypa
     ]
 
 
-def test_a_run_name_outside_the_safe_set_becomes_a_digest_not_a_lossy_name(tmp_path):
-    from booley.flows.sim.verilator_coverage import _run_id, _run_stem
-
-    plain = SelectedCoverageRun("smoke test")
-    other = SelectedCoverageRun("smoke_test")
-
-    assert _run_stem(1, plain).startswith("001-~sha256-")
-    assert _run_stem(1, plain) != _run_stem(1, other) == "001-smoke_test"
-    seeded = SelectedCoverageRun("stress", build_test_run("stress", variant="soak", seed=42))
-    assert _run_stem(7, seeded) == "007-stress+soak@42"
-    assert _run_id(7, seeded) == "run:007:stress+soak@42"
-
-
 def test_a_selected_run_must_be_a_run_of_its_test():
     with pytest.raises(ValueError, match="not a run of selected Test"):
         SelectedCoverageRun("reset", build_test_run("wrap", seed=1))
@@ -187,27 +176,26 @@ def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):
 
     assert prepared.plan is None
     assert [finding.code for finding in prepared.findings] == ["COV_SUITE_INVALID"]
+    assert prepared.findings[0].message.endswith("does not register for the Target: ghost")
 
 
-def _flow_result(tmp_path: Path, execution: NativeExecution, *tests: str):
-    return SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: execution
-    ).execute(
-        SimRequest(
-            target="sim_0",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-            test=tests or None,
-        )
+def test_preflight_names_the_tests_when_the_registry_is_emptied(tmp_path, monkeypatch):
+    context = replace(_project(tmp_path, monkeypatch), test_names={})
+    runs = _runs(tmp_path, "reset")
+
+    prepared = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), test_runs={"sim_0": runs}), context
     )
+
+    assert prepared.plan is None
+    assert prepared.findings[0].message.endswith("does not register for the Target: reset")
 
 
 def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
     execution = NativeExecution()
 
-    result = _flow_result(tmp_path, execution, "reset+short", "reset+soak", "wrap@x3")
+    result = _coverage(tmp_path, execution, test=("reset+short", "reset+soak", "wrap@x3"))
 
     assert result.exit_code == 0, result.outcome
     manifest = json.loads(next((tmp_path / "reports").rglob("record/manifest.json")).read_text())
@@ -236,25 +224,10 @@ def test_flow_records_every_test_run_in_one_coverage_aggregate(tmp_path, monkeyp
     assert [run["test_run"] for run in nested["tests"]["runs"]] == recorded
 
 
-def _coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *tests: str):
-    """Run coverage of ``sim_custom`` (one Test, ``gap``) with *tests*."""
-    _prepare_sim_custom_project(tmp_path, monkeypatch)
-    return SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
-    ).execute(
-        SimRequest(
-            target="sim_custom",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-            test=tests or None,
-        )
-    )
-
-
 @pytest.mark.parametrize("tests", [(), ("gap",), ("gap@1",)])
 def test_default_coverage_runs_keep_recording_evidence(tmp_path, monkeypatch, tests):
-    result = _coverage_result(tmp_path, monkeypatch, *tests)
+    _prepare_sim_custom_project(tmp_path, monkeypatch)
+    result = _coverage(tmp_path, _SplitMetricsExecution(), target="sim_custom", test=tests or None)
 
     assert "diagnostic_test_runs" not in result.outcome.detail
     assert list((tmp_path / "reports").rglob("simulation.json"))
@@ -263,7 +236,7 @@ def test_default_coverage_runs_keep_recording_evidence(tmp_path, monkeypatch, te
 def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
 
-    result = _flow_result(tmp_path, _FailingRun("reset+soak@1"), "reset", "reset+soak")
+    result = _coverage(tmp_path, _FailingRun("reset+soak@1"), test=("reset", "reset+soak"))
 
     assert result.exit_code == 1, result.outcome
     rows = result.outcome.detail["records"]["sim_0"]["test_runs"]
@@ -278,7 +251,7 @@ def test_coverage_refuses_more_test_runs_than_one_request_allows(tmp_path, monke
     _project(tmp_path, monkeypatch)
     execution = NativeExecution()
 
-    result = _flow_result(tmp_path, execution, "wrap@x1000", "reset")
+    result = _coverage(tmp_path, execution, test=("wrap@x1000", "reset"))
 
     assert result.exit_code != 0
     assert f"more than {MAX_TEST_RUNS_PER_REQUEST} Test Runs" in result.outcome.report_text
@@ -299,10 +272,7 @@ class _InterruptedAfterFirstRun(NativeExecution):
 
 def _resumable_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The multi-Variant Project at one fixed revision, as resume requires."""
-    revision = "c" * 40
-    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: revision)
-    monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: revision)
+    _pin_revision(monkeypatch, "c" * 40)
     _project(tmp_path, monkeypatch)
 
 
@@ -317,6 +287,7 @@ def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*_args, **_kwargs):
         raise AssertionError("a resumed record resolved its Test Runs again")
 
+    # A deterministic re-resolution gives the same Test Runs; only this patch shows resume never resolves again.
     monkeypatch.setattr(SimulateFlow, "_resolve_test_runs", refuse)
     monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
 
@@ -334,15 +305,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     reports = tmp_path / "reports"
     execution = _InterruptedAfterFirstRun()
     with pytest.raises(KeyboardInterrupt):
-        SimulateFlow(coverage_execution=lambda *_args: execution).execute(
-            SimRequest(
-                target="sim_0",
-                work_dir=tmp_path,
-                coverage=True,
-                report_dir=reports,
-                test=_MULTI_RUN,
-            )
-        )
+        _coverage(tmp_path, execution, test=_MULTI_RUN)
     assert len(execution.runs) == 1
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
@@ -350,9 +313,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     assert names[:2] == ["reset+short@1", "reset+soak@1"] and len(set(names)) == 5
     _forbid_resolution(monkeypatch)
 
-    resumed = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
+    resumed = _coverage(tmp_path, resume_from=manifest)
 
     assert resumed.exit_code == 2, resumed.outcome.report_text
     assert manifest.read_bytes() == frozen
@@ -364,7 +325,7 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     assert command == (
         "booley flow sim --target sim_0 "
         + " ".join(f"--test={name}" for name in names)
-        + " --coverage"
+        + f" --coverage --report-dir {shlex.quote(str(reports))}"
     )
     # The named command resolves to exactly the frozen Test Runs: nothing is drawn.
     replayed = load_target_test_plan(
@@ -389,13 +350,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
             armed[0] = False
             raise OSError("injected crash before:summary_replace")
 
-    interrupted = SimulateFlow(
-        coverage_execution=lambda *_args: execution, simulation_record_publication_checkpoint=crash
-    ).execute(
-        SimRequest(
-            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports, test=_MULTI_RUN
-        )
-    )
+    interrupted = _coverage(tmp_path, execution, checkpoint=crash, test=_MULTI_RUN)
     assert interrupted.exit_code == 2
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
@@ -405,9 +360,7 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
     assert launched == names and len(names) == 5
     _forbid_resolution(monkeypatch)
 
-    resumed = SimulateFlow(coverage_execution=lambda *_args: execution).execute(
-        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-    )
+    resumed = _coverage(tmp_path, execution, resume_from=manifest)
 
     assert resumed.exit_code == 0, resumed.outcome.report_text
     assert manifest.read_bytes() == frozen

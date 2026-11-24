@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import sys
@@ -400,8 +401,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     _disable_git_auto_maintenance_for_children()
     _configure_test_profile(config)
-    _begin_coverage_stamp(config)
     prune_orphan_basetemps(config)
+    _begin_coverage_stamp(config)
     # Imported here: pytest_plugins must load it first for assertion rewriting.
     from tests.timeout_headroom import timeout_plugin_loaded
 
@@ -443,16 +444,21 @@ def _configure_time_budgets(config: pytest.Config, timeout_loaded: bool) -> None
 
 
 def prune_orphan_basetemps(config: pytest.Config) -> None:
-    """Record this checkout's tools-cache basetemp and prune those of removed checkouts.
+    """Claim and record this checkout's tools-cache basetemp; prune those of removed checkouts.
 
     Controller only: xdist workers share the controller's basetemp, and one
     prune per session is enough. See ``booley.dev_support.pytest_basetemp``.
     """
     if hasattr(config, "workerinput"):
         return
-    from booley.dev_support.pytest_basetemp import record_and_prune
+    from booley.dev_support.pytest_basetemp import BasetempLockError, record_and_prune
 
-    record_and_prune(config.option.basetemp, _SOURCE_ROOT)
+    stack = ExitStack()
+    try:
+        stack.enter_context(record_and_prune(config.option.basetemp, _SOURCE_ROOT))
+    except BasetempLockError as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    config.add_cleanup(stack.close)
 
 
 # (report, fingerprint) of a controller run that writes Cobertura XML; see
@@ -656,6 +662,67 @@ def _isolate_booley_dir_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture(autouse=True)
+def _fresh_booley_dir_selection() -> Iterator[None]:
+    """A cached selection names the previous test's tmp_path; clear it around every test (#5261)."""
+    from booley.runtime.booley_dir import reset_cache
+
+    reset_cache()
+    yield
+    reset_cache()
+
+
+class FeatureFlagHelper:
+    """Registers test Feature Flags and enables them in a Project's ``booley.toml``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def register(self, *names: str) -> None:
+        # Production registers no flag and no public entry point adds one, so a
+        # test replaces the registry for its own duration.
+        from booley.config import feature_flags
+
+        self._monkeypatch.setattr(
+            feature_flags,
+            "FEATURE_FLAGS",
+            (
+                *feature_flags.FEATURE_FLAGS,
+                *(feature_flags.FeatureFlag(n, "Test flag", 1) for n in names),
+            ),
+        )
+
+    def enable(self, booley_dir: Path, *names: str) -> None:
+        self.register(*names)
+        listed = ", ".join(f'"{name}"' for name in names)
+        toml = booley_dir / "booley.toml"
+        existing = toml.read_bytes().decode("utf-8") if toml.exists() else ""
+        toml.write_bytes(f"{existing}\n[features]\nenable = [{listed}]\n".encode())
+
+
+@pytest.fixture
+def feature_flags(monkeypatch: pytest.MonkeyPatch) -> FeatureFlagHelper:
+    """Not autouse: the default suite runs with the empty production registry."""
+    return FeatureFlagHelper(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with an empty process-wide Target catalog cache.
+
+    The cache is keyed by Project Root and authored-input digest. A later test whose
+    ``tmp_path`` reuses a deleted earlier path (pytest before 9.2 with the "failed"
+    retention policy) and writes the same cores would otherwise get the earlier
+    test's catalog, whose FuseSoC library view was prepared once and is never
+    reconciled again. Private: no production entry point drops the cache.
+    """
+    try:
+        from booley.targets.catalog import TargetCatalog
+    except ModuleNotFoundError:  # minimal CI images lack FuseSoC dependencies
+        return
+    monkeypatch.setattr(TargetCatalog, "_cache", {})
+
+
+@pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admission tests must not depend on the host exposing ``/proc/meminfo``.
 
@@ -686,6 +753,20 @@ def pin_memory_budget(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], None]:
     no key there sets it, and the host's memory must not matter.
     """
     return lambda mib: pin_budget(monkeypatch, mib)
+
+
+@pytest.fixture(autouse=True)
+def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under ``pytest -s`` stdin and stdout are the terminal: start as under capture."""
+    from booley.presentation import colors
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
 
 @pytest.fixture(autouse=True)
@@ -736,6 +817,12 @@ import sys
 import time
 
 args = sys.argv[1:]
+if args[0] == "list":
+    sys.stdout.write(
+        '{{"data": {{"scope_prefix": "tb", "root_scopes": ["tb"], '
+        '"signal_count": 1, "total_ticks": 1}}}}'
+    )
+    sys.exit(0)
 store = args[args.index("-o") + 1]
 mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
 if mode == "never_read":
@@ -747,6 +834,13 @@ data = sys.stdin.buffer.read()
 if b"$enddefinitions" not in data:
     sys.stderr.write("fake bwave: no VCD header\\n")
     sys.exit(1)
+if not data.endswith(b"\\n"):
+    offset = data.rfind(b"\\n") + 1
+    sys.stderr.write(
+        "WARNING: input does not end with a newline; the final line "
+        f"(byte {{offset}}) may be a truncated record\\n"
+    )
+sys.stderr.write(f"# wrote {{store}}\\n")
 with open(store, "wb") as out:
     out.write({store_bytes!r})
 '''
@@ -757,7 +851,9 @@ def fake_bwave(tmp_path, monkeypatch):
     """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
 
     It reads stdin to EOF and writes a minimal store when it saw a VCD header,
-    else exits 1. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
+    else exits 1; like the real tool it warns on stderr about input without a final
+    newline and reports ``# wrote <store>``, and ``list`` answers a one-signal
+    hierarchy. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
     stdin) or ``exit_early`` (exits 1 at once).
     """
     from booley.bwave import waveform_store
@@ -788,3 +884,34 @@ def fake_sandbox_attachment(
 
     attach(None)
     return attach
+
+
+def _point_mountinfo_at(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    from booley.runtime import runtime_context
+
+    mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
+    mountinfo.write_bytes(text.encode())
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+
+
+@pytest.fixture(autouse=True)
+def _issued_sandbox_mounts(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
+
+    The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
+    issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
+    """
+    issued = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
+    _point_mountinfo_at(tmp_path_factory, monkeypatch, issued)
+
+
+@pytest.fixture
+def hand_written_sandbox(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
+    _point_mountinfo_at(tmp_path_factory, monkeypatch, "")

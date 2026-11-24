@@ -1,7 +1,8 @@
 """List every Target's metrics as ``metrics.toml`` text (``booley cheat --metrics``).
 
 One block per Target and runnable Flow: the ``[<target>.<flow>]`` header and, per
-declared metric, an empty ``<key> =`` line with its unit and kind in a comment.
+declared metric, an empty ``<key> =`` line with its unit and kind in a comment, then a
+line with the default of each integer setting the Flow takes.
 The user types a number after each ``=`` they keep and deletes the rest, so every
 printed header and key is one :mod:`booley.measurement.metrics_file` accepts:
 
@@ -21,7 +22,7 @@ from booley.core.booley_dir import main_booley_dir_of
 from booley.flows.metric_declarations import Better, MetricDeclaration, MetricKind
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
-from booley.measurement.flow_metrics import metric_declarations
+from booley.measurement.flow_metrics import flow_settings, metric_declarations
 from booley.measurement.metrics_file import TABLE_FLOWS, table_header, toml_key
 from booley.measurement.run_store import MeasurementStore
 from booley.targets.catalog import TargetCatalog
@@ -61,13 +62,17 @@ def render_metrics_listing(project_root: Path) -> str:
 def _runnable_flows(handle: TargetHandle) -> tuple[str, ...]:
     """The Flows with a ``metrics.toml`` table that *handle* can run, in table order.
 
-    Coverage is not a Target-aware Flow of its own: a Verilator Simulation Target runs it.
+    Coverage and Mutation are not Target-aware Flows of their own: a Simulation Target runs
+    Mutation, and a Verilator one runs coverage.
     """
-    coverage = "sim" in handle.drivable_by and handle.eda_tool == "verilator"
+    simulates = "sim" in handle.drivable_by
+    coverage = simulates and handle.eda_tool == "verilator"
     return tuple(
         flow
         for flow in TABLE_FLOWS
-        if flow in handle.drivable_by or (flow == "coverage" and coverage)
+        if flow in handle.drivable_by
+        or (flow == "coverage" and coverage)
+        or (flow == "mutation" and simulates)
     )
 
 
@@ -148,6 +153,10 @@ def _flow_block(
             fallback_printed = fallback_printed or not clocks
         else:
             lines.append(_key_line(None, declaration))
+    lines.extend(
+        f"{setting.name} = {setting.default}  # setting: {setting.meaning}"
+        for setting in flow_settings(flow)
+    )
     return "\n".join(lines)
 
 

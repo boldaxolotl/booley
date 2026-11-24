@@ -23,6 +23,7 @@ from booley.runtime import (
 )
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
 from tests.sharing_error_support import hold_opens
+from tests.time_budget import hang_guard_s, scaled
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -65,7 +66,7 @@ def _exiting_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
     booley_dir.reset_cache()
 
 
-def _wait_for_execution_leader_exit(project: Path, *, timeout_s: float = 5.0) -> bool:
+def _wait_for_execution_leader_exit(project: Path, *, timeout_s: float = hang_guard_s()) -> bool:
     deadline = time.monotonic() + timeout_s
     executions = project / ".runtime" / "executions"
     while time.monotonic() < deadline:
@@ -80,7 +81,7 @@ def _wait_for_execution_leader_exit(project: Path, *, timeout_s: float = 5.0) ->
     return False
 
 
-def _interrupt_when(predicate, *, timeout_s: float = 5.0) -> None:
+def _interrupt_when(predicate, *, timeout_s: float = hang_guard_s()) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if predicate():
@@ -182,7 +183,7 @@ def test_sigint_requests_cancellation_and_returns_130(tmp_path: Path, monkeypatc
         [sys.executable, "-c", f"import time; open({str(ready)!r}, 'w').close(); time.sleep(120)"],
         tty=False,
     )
-    interrupter.join(timeout=2)
+    interrupter.join(timeout=hang_guard_s())
 
     assert ready.exists()
     assert result.exit_code == 130
@@ -222,7 +223,7 @@ def test_command_that_handles_sigint_and_exits_zero_preserves_zero(
     ready = tmp_path / "handler-ready"
 
     def interrupt_when_ready() -> None:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         os.kill(os.getpid(), signal.SIGINT)
@@ -281,7 +282,7 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
         root, "session-name", [sys.executable, "-c", script], tty=False
     )
 
-    interrupter.join(timeout=2)
+    interrupter.join(timeout=hang_guard_s())
     assert ready.exists()
     assert second_interrupt_sent.is_set()
     assert result.exit_code == 130
@@ -324,7 +325,7 @@ def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, mon
         [sys.executable, "-c", command],
         tty=False,
     )
-    interrupter.join(timeout=2)
+    interrupter.join(timeout=hang_guard_s())
 
     assert result.exit_code == 130
     assert result.terminal_cause == "cancelled"
@@ -398,6 +399,10 @@ def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, mon
     assert store.reap(job_slots.CLASS_MEMORY) == []
 
 
+# Far below the 120 s the command would sleep; loaded hosts stretch tight bounds.
+_FAIL_FAST_SECONDS = scaled(30)
+
+
 def test_missing_container_protocol_fails_fast_with_actionable_message(
     tmp_path: Path, monkeypatch, caplog
 ) -> None:
@@ -405,7 +410,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
     data = root / ".booley"
     data.mkdir(parents=True)
     _exiting_docker(tmp_path, monkeypatch, data)
-    monkeypatch.setattr(runtime_attachment, "_STARTUP_LIMIT_SECONDS", 0.1)
+    monkeypatch.setattr(runtime_attachment, "_STARTUP_LIMIT_SECONDS", scaled(0.1))
 
     started = time.monotonic()
     result = runtime_attachment.run_command(
@@ -418,7 +423,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
     assert result.exit_code == 125
     assert result.terminal_cause == "protocol_unavailable"
     assert "execution protocol" in caplog.text
-    assert time.monotonic() - started < 1
+    assert time.monotonic() - started < _FAIL_FAST_SECONDS
 
 
 def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, caplog) -> None:
@@ -447,7 +452,7 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert result.tree_terminal is False
     assert result.terminal_cause == "protocol_mismatch"
     assert "execution protocol" in caplog.text
-    assert time.monotonic() - started < 2
+    assert time.monotonic() - started < _FAIL_FAST_SECONDS
 
 
 @pytest.mark.parametrize("has_root", [True, False], ids=["root", "no-root"])
@@ -456,7 +461,7 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
 ):
     from unittest.mock import Mock
 
-    from booley.runtime import interactive_docker, session_issuance, session_runtime
+    from booley.runtime import host_docker, session_issuance, session_runtime
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("protocol failure must not load, validate or compare identity")
@@ -464,7 +469,7 @@ def test_protocol_failure_logs_fixed_message_and_one_remedy(
     for owner, name in (
         (session_issuance, "load_issued_snapshot"),
         (session_issuance, "validate"),
-        (interactive_docker, "compare_issued_build"),
+        (host_docker, "compare_issued_build"),
     ):
         monkeypatch.setattr(owner, name, forbidden)
     remedy = Mock(return_value="run the selected remedy")

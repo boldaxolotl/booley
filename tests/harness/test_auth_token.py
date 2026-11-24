@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
 from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
@@ -464,11 +465,11 @@ class TestDoctorCheck:
                 claude if provider == "claude" else codex, None
             ),
         )
-        sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": []}
+        sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": [], "fix": []}
         doctor._check_oauth_token(
             provider,
             sink["pass"].append,
-            lambda msg, fix=None: sink["warn"].append(msg),
+            lambda msg, fix=None: (sink["warn"].append(msg), sink["fix"].append(fix or "")),
             sink["skip"].append,
             auth_token.VISITOR_AUTH,
         )
@@ -508,12 +509,15 @@ class TestDoctorCheck:
         assert any("outranks" in m for m in sink["pass"])
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
-    def test_warns_when_stored_token_is_world_readable(self, isolated_home, monkeypatch):
-        auth_token.store_token(_TOKEN).chmod(0o644)
+    def test_warns_when_stored_token_is_world_readable(self, isolated_home, home, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "it's cfg"))
+        path = auth_token.store_token(_TOKEN)
+        path.chmod(0o644)
 
         sink = self._run(monkeypatch)
 
         assert any("readable by others" in m for m in sink["warn"])
+        assert sink["fix"] == [f"chmod 600 {quote_arg(str(path))}"]
 
     def test_codex_is_checked_on_a_codex_project(self, isolated_home, monkeypatch):
         # Claude covered, Codex not: on a codex project the warning is Codex's.
@@ -638,7 +642,7 @@ class TestConfiguredProvider:
 class TestDeclaredProvider:
     """``_declared_provider`` backs the devcontainer app-drift check, so unlike
     ``_configured_provider`` it must report *only* what booley.toml declares —
-    that is the sole input ``init_cmd._select_interactive_app`` re-seeds from."""
+    that is the sole input ``init_cmd._select_agent_app`` re-seeds from."""
 
     _audit = staticmethod(TestConfiguredProvider._audit)
 
@@ -934,6 +938,20 @@ class TestClaudeMintLocation:
             == stored
         )
 
+    def test_store_outside_a_project_conditions_the_revocation_promise(
+        self, home, monkeypatch, capsys
+    ):
+        rc = _auth_stdin(monkeypatch, None, app=auth_token.APP_CODEX)
+
+        revoke = [
+            line.strip() for line in capsys.readouterr().out.splitlines() if "revoke" in line
+        ]
+        assert rc == 0
+        assert revoke == [
+            "In those Projects it does not refresh, so a host-side login can no longer "
+            "revoke a running agent."
+        ]
+
     def test_reseed_failure_keeps_stored_token_but_returns_failure(self, home, monkeypatch):
         tmp_path = home
         stored = tmp_path / "config" / "booley" / "claude-oauth-token"
@@ -1191,11 +1209,11 @@ def auth_project(home, monkeypatch):
     return project
 
 
-def _auth_stdin(monkeypatch, project):
+def _auth_stdin(monkeypatch, project, app=auth_token.APP_CLAUDE):
     from io import StringIO
 
     monkeypatch.setattr(auth_cmd.sys, "stdin", StringIO(_TOKEN + "-replacement\n"))
-    return auth_cmd.run_auth(SimpleNamespace(token_stdin=True), project)
+    return auth_cmd.run_auth(SimpleNamespace(token_stdin=True, app=app), project)
 
 
 def _foreign_owner(monkeypatch, target):
@@ -1256,7 +1274,7 @@ class TestAuthStorePreflight:
         assert "owned" in capsys.readouterr().out
 
 
-def _auth_interactive_ports(monkeypatch):
+def _auth_sandbox_ports(monkeypatch):
     from booley.harness.setup import interactive
     from booley.runtime import dashboard_tasks
 
@@ -1317,7 +1335,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
         return issued
 
     monkeypatch.setattr(session_issuance, "issue_prepared", issue)
-    _auth_interactive_ports(monkeypatch)
+    _auth_sandbox_ports(monkeypatch)
     return bootstrap_calls, captured
 
 
@@ -1333,6 +1351,79 @@ class TestAuthReseed:
             for mount in captured[0].spec["mounts"]
         )
         assert captured[0].spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
+
+    @pytest.mark.parametrize(
+        ("agent", "revokes", "expected"),
+        [
+            pytest.param(
+                'default = "codex"\nauth = "subscription"',
+                False,
+                [
+                    "This Project's codex auth policy 'subscription' does not use the stored "
+                    "credential, so its agents will not use it.",
+                    'to use it here: set [agent.auth] codex = "api_key" in booley.toml, '
+                    "then run booley session refresh",
+                ],
+                id="subscription",
+            ),
+            pytest.param(
+                'default = "codex"\nauth = "api_key"',
+                True,
+                [
+                    "This Project's codex auth policy 'api_key' uses the stored credential.",
+                    "It does not refresh, so a host-side login can no longer revoke a running agent.",
+                ],
+                id="api_key",
+            ),
+            pytest.param(
+                'default = "claude"\nauth = "subscription"',
+                False,
+                [
+                    "This Project does not list codex in [agent] clis, so its agents will not "
+                    "use the stored credential.",
+                    "to use it here: add codex to [agent] clis, set [agent.auth] codex = "
+                    '"api_key", then run booley session refresh',
+                ],
+                id="unlisted",
+            ),
+        ],
+    )
+    def test_codex_store_says_whether_the_project_uses_it(
+        self, auth_project, isolated_home, monkeypatch, capsys, agent, revokes, expected
+    ):
+        (auth_project / ".booley" / "booley.toml").write_text(f"[agent]\n{agent}\n")
+        auth_token.store_token(_TOKEN)
+        codex_home = isolated_home / ".codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
+        _auth_reseed_boundaries(auth_project, monkeypatch)
+
+        rc = _auth_stdin(monkeypatch, auth_project, app=auth_token.APP_CODEX)
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert rc == 0
+        for text in expected:
+            assert text in output
+        assert ("can no longer revoke" in output) is revokes
+
+    def test_codex_store_reads_the_policy_of_the_trusted_booley_dir(
+        self, auth_project, isolated_home, monkeypatch, capsys
+    ):
+        (auth_project / ".booley" / "booley.toml").write_text(
+            '[agent]\ndefault = "codex"\nauth = "api_key"\n'
+        )
+        trusted = isolated_home / "trusted-data"
+        trusted.mkdir()
+        (trusted / "booley.toml").write_text('[agent]\ndefault = "codex"\nauth = "subscription"\n')
+        monkeypatch.setenv("BOOLEY_DIR", str(trusted))
+        _auth_reseed_boundaries(auth_project, monkeypatch)
+
+        rc = _auth_stdin(monkeypatch, auth_project, app=auth_token.APP_CODEX)
+
+        output = " ".join(capsys.readouterr().out.split())
+        assert rc == 0
+        assert "auth policy 'subscription' does not use the stored credential" in output
+        assert "can no longer revoke" not in output
 
     def test_clear_never_runs_full_bootstrap(self, auth_project, monkeypatch, capsys):
         auth_token.store_token(_TOKEN)

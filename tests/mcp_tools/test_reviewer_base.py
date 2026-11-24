@@ -1,20 +1,26 @@
 """Reviewer ``--base``: review only the changes since a base commit (issue #3270).
 
 Every test drives the real Reviewer against an isolated Git repository with a
-scripted agent response (``_invoke_agent`` is a ``MagicMock``), never a live model.
+scripted agent (the shared ``ScriptedAgent``), never a live model.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
-from booley.mcp.base import McpToolResult
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.mcp_tools.reviewer_support import (
+    ScriptedAgent,
+    guide_of,
+    install_agent,
+    issue,
+    open_findings,
+    run_review,
+)
 from tests.project_runtime_git_support import git
 
 A_SV = "module a(input logic x);\nendmodule\n"
@@ -23,24 +29,15 @@ C_SV = "module c;\nendmodule\n"
 E_SV = "module e;\nendmodule\n"
 
 
-def finding(
-    file: str = "rtl/a.sv",
-    line: int = 2,
-    summary: str = "Wrong reset value",
-    origin: str | None = "introduced",
-) -> dict[str, Any]:
-    """One schema-valid scripted Reviewer finding."""
-    row: dict[str, Any] = {
-        "severity": "MAJOR",
-        "confidence": "HIGH",
-        "category": "bugs",
-        "file": file,
-        "line": line,
-        "summary": summary,
-        "kind": "code_defect",
-        "disposition": "current",
-        "ticket_clause": "Reset clears output",
-    }
+@pytest.fixture
+def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
+    return install_agent(monkeypatch)
+
+
+def finding(origin: str | None = "introduced", **overrides: Any) -> dict[str, Any]:
+    """One schema-valid scripted finding in ``rtl/a.sv`` (no ``origin`` key when None)."""
+    defaults = {"file": "rtl/a.sv", "line": 2, "ticket_clause": "Reset clears output"}
+    row = issue(**{**defaults, **overrides})
     if origin is not None:
         row["origin"] = origin
     return row
@@ -72,15 +69,6 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
-    """The corrective rows of a review detail."""
-    return [
-        row
-        for row in detail["issue_list"]
-        if row["disposition"] == "current" and row.get("origin") != "pre_existing"
-    ]
-
-
 def commit_edit(root: Path, name: str, text: str, message: str) -> None:
     """Commit *text* as the content of ``rtl/<name>.sv`` on the current branch."""
     (root / "rtl" / name).write_text(text, newline="\n")
@@ -88,27 +76,23 @@ def commit_edit(root: Path, name: str, text: str, message: str) -> None:
     git(root, "commit", "-qm", message)
 
 
+def base_argv(root: Path, *args: str) -> list[str]:
+    return ["--work-dir", str(root), "--category", "rtl", "--focus", "bugs", *args]
+
+
 def review(
     root: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    agent: ScriptedAgent,
     args: list[str],
     issues: list[dict[str, Any]] | None = None,
-) -> tuple[McpToolResult, ReviewerSpecialist, MagicMock]:
-    """Run one discovery review with a scripted response; return result, endpoint, mock."""
-    reviewer = ReviewerSpecialist()
-    reviewer.parse_args(["--work-dir", str(root), "--category", "rtl", "--focus", "bugs", *args])
-    invoke = MagicMock(
-        return_value=MagicMock(
-            output=json.dumps({"issues": issues or []}),
-            captured_agent_capability_calls={},
-        )
-    )
-    monkeypatch.setattr(reviewer, "_invoke_agent", invoke)
-    return reviewer._run(), reviewer, invoke
+) -> EndpointOutcome:
+    """Run one discovery review whose agent reports *issues*."""
+    agent.answer({"issues": issues or []})
+    return run_review(base_argv(root, *args))[0]
 
 
-def prompt_of(invoke: MagicMock) -> str:
-    return invoke.call_args.args[0].prompt
+def prompt_of(agent: ScriptedAgent) -> str:
+    return agent.calls[0].prompt
 
 
 def review_list(prompt: str) -> list[str]:
@@ -117,105 +101,126 @@ def review_list(prompt: str) -> list[str]:
     return [line.strip()[2:] for line in head.splitlines() if line.strip().startswith("- ")]
 
 
-def test_base_reviews_only_changed_scope_files(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_base_reviews_only_changed_scope_files(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// committed edit\n", "Edit a")
     (repo / "rtl/e.sv").write_text(E_SV + "// uncommitted, outside scope\n", newline="\n")
     (repo / "rtl/d.sv").write_text("module d;\nendmodule\n", newline="\n")
     scope = "rtl/a.sv,rtl/c.sv,rtl/d.sv"
 
-    result, reviewer, invoke = review(repo, monkeypatch, ["--scope", scope, "--base", "main"])
+    result, reviewer = run_review(base_argv(repo, "--scope", scope, "--base", "main"))
 
     assert result.exit_code == 0
-    assert review_list(prompt_of(invoke)) == ["rtl/a.sv", "rtl/d.sv"]
-    assert "rtl/c.sv" not in prompt_of(invoke)
-    assert "rtl/e.sv" not in prompt_of(invoke)
+    assert review_list(prompt_of(agent)) == ["rtl/a.sv", "rtl/d.sv"]
+    assert "rtl/c.sv" not in prompt_of(agent)
+    assert "rtl/e.sv" not in prompt_of(agent)
     assert result.detail["contract"]["scope"] == ["rtl/a.sv", "rtl/d.sv"]
     assert result.report_text.startswith("Reviewing changes since main")
     assert "2 file(s)" in result.report_text
-    assert '"origin"' in invoke.call_args.args[0].system_prompt
+    assert '"origin"' in agent.calls[0].system_prompt
+    # Private seam: the snapshot scope is visible only inside a real snapshot, which this
+    # module skips.
     assert reviewer._workspace_isolation_scope() == ("rtl/a.sv", "rtl/c.sv", "rtl/d.sv")
 
 
 @pytest.mark.parametrize("base", ["no-such-ref", "--version"])
 def test_bad_base_is_refused_without_model_call(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, base: str
+    repo: Path, agent: ScriptedAgent, base: str
 ) -> None:
-    result, _, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", f"--base={base}"])
+    result = review(repo, agent, ["--scope", "rtl/a.sv", f"--base={base}"])
 
     assert result.exit_code == 2
     assert f"--base {base}" in result.report_text
-    invoke.assert_not_called()
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize(
+    ("mode", "exit_code", "report"),
+    [
+        (["--base", "main"], 0, "No changes in scope since main"),
+        (["--dry-run"], 0, "reviewer dry-run: rtl/bugs; 1 file(s)"),
+        (["--fail-on", "major"], 1, "RESULT: REVIEWED WITH FINDINGS"),
+    ],
+)
+def test_cli_prints_the_report_once(
+    repo: Path,
+    agent: ScriptedAgent,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: list[str],
+    exit_code: int,
+    report: str,
+) -> None:
+    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    monkeypatch.delenv("BOOLEY_DIR")  # the endpoints conftest points it at a non-Project
+    (repo / ".booley").mkdir()
+    (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")
+    agent.answer({"issues": [finding()]})
+    argv = ["--project", str(repo), "--category", "rtl", "--focus", "bugs", "--scope", "rtl/a.sv"]
+
+    assert ReviewerSpecialist().main([*argv, *mode]) == exit_code
+
+    assert "".join(capsys.readouterr()).count(report) == 1
 
 
 def test_base_without_changes_in_scope_exits_zero_without_model_call(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, agent: ScriptedAgent
 ) -> None:
     (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")
 
-    result, _, invoke = review(
-        repo, monkeypatch, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main"]
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main"])
 
     assert result.exit_code == 0
     assert "No changes in scope since main" in result.report_text
-    invoke.assert_not_called()
+    assert agent.calls == []
 
 
 def test_missing_spec_is_refused_even_when_nothing_changed(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, agent: ScriptedAgent
 ) -> None:
-    result, _, invoke = review(
-        repo, monkeypatch, ["--scope", "rtl/a.sv", "--focus", "spec", "--base", "main"]
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv", "--focus", "spec", "--base", "main"])
 
     assert result.exit_code == 2
     assert "needs a spec" in result.report_text
-    invoke.assert_not_called()
+    assert agent.calls == []
 
 
-def test_base_without_changes_makes_no_call(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result, _, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", "--base", "main"])
+def test_base_without_changes_makes_no_call(repo: Path, agent: ScriptedAgent) -> None:
+    result = review(repo, agent, ["--scope", "rtl/a.sv", "--base", "main"])
 
     assert result.exit_code == 0
-    invoke.assert_not_called()
+    assert agent.calls == []
     assert "audit_evidence" not in result.detail
 
 
 def test_base_ignores_changes_that_reached_base_after_merge_base(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, agent: ScriptedAgent
 ) -> None:
     git(repo, "checkout", "-q", "main")
     commit_edit(repo, "c.sv", C_SV + "// main-only-change\n", "Main moves on")
     git(repo, "checkout", "-q", "feature")
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result, _, invoke = review(
-        repo, monkeypatch, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main"]
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main"])
 
     assert result.exit_code == 0
-    prompt = prompt_of(invoke)
+    prompt = prompt_of(agent)
     assert review_list(prompt) == ["rtl/a.sv"]
     assert "rtl/c.sv" not in prompt
     assert "main-only-change" not in prompt
     assert "Main moves on" not in prompt
 
 
-def test_unchanged_users_are_context_not_reviewed(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unchanged_users_are_context_not_reviewed(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result, _, invoke = review(
+    result = review(
         repo,
-        monkeypatch,
+        agent,
         ["--scope", "rtl/a.sv,rtl/b.sv,rtl/c.sv", "--base", "main"],
-        [finding("rtl/b.sv", 2, "Bad connection at the instance")],
+        [finding(file="rtl/b.sv", summary="Bad connection at the instance")],
     )
 
-    prompt = prompt_of(invoke)
+    prompt = prompt_of(agent)
     reviewed, change_section = prompt.split("## Change under review", 1)
     assert review_list(prompt) == ["rtl/a.sv"]
     assert "rtl/b.sv" not in reviewed
@@ -227,15 +232,13 @@ def test_unchanged_users_are_context_not_reviewed(
     assert [row["reason"] for row in result.detail["filtered"]] == ["source_scope"] * 2
 
 
-def test_commit_messages_and_diff_are_in_prompt(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_commit_messages_and_diff_are_in_prompt(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// introduced marker\n", "Tighten reset of a\n\nBody line.")
     commit_edit(repo, "a.sv", A_SV + "// introduced marker\n// second\n", "Second commit")
 
-    _, _, invoke = review(repo, monkeypatch, ["--scope", "rtl/a.sv", "--base", "main"])
+    review(repo, agent, ["--scope", "rtl/a.sv", "--base", "main"])
 
-    prompt = prompt_of(invoke)
+    prompt = prompt_of(agent)
     assert "Tighten reset of a" in prompt
     assert "Body line." in prompt
     assert "Second commit" in prompt
@@ -243,27 +246,23 @@ def test_commit_messages_and_diff_are_in_prompt(
     assert "+// second" in prompt
 
 
-def test_untracked_only_change_says_no_commits(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_untracked_only_change_says_no_commits(repo: Path, agent: ScriptedAgent) -> None:
     (repo / "rtl/d.sv").write_text("module d;\nendmodule\n", newline="\n")
 
-    _, _, invoke = review(repo, monkeypatch, ["--scope", "rtl/c.sv,rtl/d.sv", "--base", "main"])
+    review(repo, agent, ["--scope", "rtl/c.sv,rtl/d.sv", "--base", "main"])
 
-    prompt = prompt_of(invoke)
+    prompt = prompt_of(agent)
     assert "No commits in range; uncommitted changes only." in prompt
     assert "new untracked file: rtl/d.sv" in prompt
 
 
-def test_pre_existing_findings_are_observations(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pre_existing_findings_are_observations(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
     args = ["--scope", "rtl/a.sv", "--base", "main"]
     introduced = finding(line=3, summary="Introduced bug")
     old = finding(line=1, summary="Old bug", origin="pre_existing")
 
-    result, _, _ = review(repo, monkeypatch, args, [introduced, old])
+    result = review(repo, agent, args, [introduced, old])
 
     assert result.exit_code == 0
     assert result.detail["issues"] == 1
@@ -279,13 +278,13 @@ def test_pre_existing_findings_are_observations(
 
 
 def test_same_finding_reported_as_introduced_and_pre_existing_stays_open(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, agent: ScriptedAgent
 ) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
     args = ["--scope", "rtl/a.sv", "--base", "main"]
     twin = finding(line=3, summary="Twin")
 
-    result, _, _ = review(repo, monkeypatch, args, [twin, {**twin, "origin": "pre_existing"}])
+    result = review(repo, agent, args, [twin, {**twin, "origin": "pre_existing"}])
 
     assert result.detail["issues"] == 1
     assert sorted(row["origin"] for row in result.detail["issue_list"]) == [
@@ -294,14 +293,12 @@ def test_same_finding_reported_as_introduced_and_pre_existing_stays_open(
     ]
 
 
-def test_pre_existing_findings_do_not_fail_the_review(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pre_existing_findings_do_not_fail_the_review(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result, _, _ = review(
+    result = review(
         repo,
-        monkeypatch,
+        agent,
         ["--scope", "rtl/a.sv", "--base", "main"],
         [finding(line=1, summary="Old bug", origin="pre_existing")],
     )
@@ -312,14 +309,12 @@ def test_pre_existing_findings_do_not_fail_the_review(
     assert "PRE-EXISTING (non-blocking; present before this change):" in result.report_text
 
 
-def test_diff_review_rejects_finding_without_origin(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_diff_review_rejects_finding_without_origin(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result, _, _ = review(
+    result = review(
         repo,
-        monkeypatch,
+        agent,
         ["--scope", "rtl/a.sv", "--base", "main"],
         [finding(origin=None)],
     )
@@ -328,10 +323,10 @@ def test_diff_review_rejects_finding_without_origin(
     assert "failed the schema" in result.report_text
 
 
-def test_origin_is_ignored_without_base(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    result, _, invoke = review(
+def test_origin_is_ignored_without_base(repo: Path, agent: ScriptedAgent) -> None:
+    result = review(
         repo,
-        monkeypatch,
+        agent,
         ["--scope", "rtl/a.sv"],
         [finding(origin="pre_existing")],
     )
@@ -339,62 +334,42 @@ def test_origin_is_ignored_without_base(repo: Path, monkeypatch: pytest.MonkeyPa
     assert result.exit_code == 0
     assert result.detail["issues"] == 1
     assert "PRE-EXISTING" not in result.report_text
-    assert "origin" not in invoke.call_args.args[0].system_prompt
-    assert "Change under review" not in prompt_of(invoke)
+    assert "origin" not in agent.calls[0].system_prompt
+    assert "Change under review" not in prompt_of(agent)
     assert all("origin" not in row for row in result.detail["issue_list"])
 
 
-def test_dry_run_with_base_previews_only_changed_files(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dry_run_with_base_previews_only_changed_files(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result, _, invoke = review(
-        repo, monkeypatch, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main", "--dry-run"]
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv,rtl/c.sv", "--base", "main", "--dry-run"])
 
     assert result.exit_code == 0
     assert result.detail["scope"] == ["rtl/a.sv"]
-    invoke.assert_not_called()
+    assert agent.calls == []
 
 
 def test_base_gives_every_guide_call_the_same_change_section(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, agent: ScriptedAgent
 ) -> None:
     """The bugs review's checklist and hunt calls share one change section and origin rule."""
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
-    reviewer = ReviewerSpecialist()
-    reviewer.parse_args(
-        [
-            *("--work-dir", str(repo), "--category", "rtl", "--focus", "bugs"),
-            *("--scope", "rtl/a.sv", "--base", "main"),
-        ]
+    agent.answer(
+        {
+            "bugs-checklist": {"issues": [finding(line=3, summary="Introduced bug")]},
+            "bugs-hunt": {"issues": [finding(line=1, summary="Old bug", origin="pre_existing")]},
+        }
     )
-    answers = {
-        "bugs-checklist": [finding(line=3, summary="Introduced bug")],
-        "bugs-hunt": [finding(line=1, summary="Old bug", origin="pre_existing")],
-    }
-    prompts: dict[str, Any] = {}
 
-    def fake_agent(params: Any) -> MagicMock:
-        guide = next(g for g in answers if f"({g})" in params.system_prompt)
-        prompts[guide] = params
-        return MagicMock(
-            output=json.dumps({"issues": answers[guide]}), captured_agent_capability_calls={}
-        )
-
-    monkeypatch.setattr(reviewer, "_invoke_agent", fake_agent)
-    result = reviewer._run()
+    result = run_review(base_argv(repo, "--scope", "rtl/a.sv", "--base", "main"))[0]
 
     assert result.exit_code == 0, result.report_text
-    assert set(prompts) == set(answers)
-    user_prompts = {params.prompt for params in prompts.values()}
-    assert len(user_prompts) == 1
-    (prompt,) = user_prompts
+    assert {guide_of(call) for call in agent.calls} == {"bugs-checklist", "bugs-hunt"}
+    (prompt,) = {call.prompt for call in agent.calls}
     assert "## Change under review" in prompt
     assert "Feature edit" in prompt
-    for params in prompts.values():
-        assert '"origin"' in params.system_prompt  # the origin rule reaches every call
+    for call in agent.calls:
+        assert '"origin"' in call.system_prompt  # the origin rule reaches every call
     # A hunt finding that predates the change stays a non-blocking observation.
     rows = {row["summary"]: row for row in result.detail["issue_list"]}
     assert rows["Old bug"]["status"] == "reported"

@@ -12,6 +12,7 @@ import pytest
 from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
 from booley.presentation import colors
+from tests.fusesoc_test_support import INHERITED_CORE_TEXT
 
 _CORE = textwrap.dedent(
     """\
@@ -56,12 +57,6 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.fixture(autouse=True)
-def _colors_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin plain output so FORCE_COLOR on a developer machine cannot break substrings."""
-    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-
-
 _EXTRA_CORE = textwrap.dedent(
     """\
     CAPI=2:
@@ -74,6 +69,27 @@ _EXTRA_CORE = textwrap.dedent(
       sim_cocotb:
         flow: sim
         flow_options: {tool: verilator, cocotb_module: tb_alpha_tests}
+    """
+)
+
+_SYNTH_CORE = textwrap.dedent(
+    """\
+    CAPI=2:
+    name: acme:ip:modes:1.0
+
+    targets:
+      synth_physical:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: physical, frontend: slang}
+      synth_logical:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: logical, frontend: slang}
+      synth_bad:
+        flow: generic
+        flow_options: {tool: yosys, arch: xilinx, synth_mode: fast}
+      sim_sv2v:
+        flow: sim
+        flow_options: {tool: icarus, frontends: [sv2v]}
     """
 )
 
@@ -170,6 +186,62 @@ class TestTargetsListing:
         payload = json.loads(capsys.readouterr().out)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert sorted(names) == ["sim", "synth"]
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert rows["synth"]["synth_mode"] == "physical"  # defaulted: no synth_mode in the core
+        assert rows["synth"]["frontend"] == "sv2v"
+        assert rows["synth"]["eda_tools"] == ["sv2v", "yosys", "openroad"]
+        assert rows["sim"]["synth_mode"] is None
+        assert rows["sim"]["frontend"] is None
+        assert rows["sim"]["eda_tools"] is None
+
+    def test_json_listing_reads_inherited_flow_options(self, project: Path, capsys):
+        (project / "inherit.core").write_text(INHERITED_CORE_TEXT, encoding="utf-8")  # #5077
+        assert _run(project, "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert rows["synth_child"]["synth_mode"] == "logical"
+        assert rows["synth_child"]["frontend"] == "slang"
+        assert rows["synth_child"]["doctor_flows"] == ["synth"]
+        assert rows["sim_child"]["cocotb_module"] == "test_top"
+
+    def test_listing_names_each_synth_targets_eda_tools(self, project: Path, capsys):
+        (project / "modes.core").write_text(_SYNTH_CORE, encoding="utf-8")
+        assert _run(project) == 0
+        out = capsys.readouterr().out
+        cells = {
+            _cells(line)[0]: _cells(line)[2] for line in out.splitlines() if line.startswith("  ")
+        }
+        assert cells["synth_physical"] == "yosys+openroad"
+        assert cells["synth_logical"] == "yosys"
+        assert cells["synth_bad"] == "yosys"
+        assert cells["synth"] == "sv2v+yosys+openroad"
+        assert cells["sim_sv2v"] == "sv2v+icarus"
+        assert cells["sim"] == "verilator"
+        assert (
+            "WARNING: Target 'synth_bad' flow_options.synth_mode must be one of "
+            "physical, logical; got 'fast'"
+        ) in out
+
+        assert _run(project, "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        rows = {t["name"]: t for c in payload["cores"] for t in c["targets"]}
+        assert [rows["synth_logical"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            "logical",
+            "slang",
+            ["yosys"],
+        ]
+        assert [rows["synth_physical"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            "physical",
+            "slang",
+            ["yosys", "openroad"],
+        ]
+        assert [rows["synth_bad"][k] for k in ("synth_mode", "frontend", "eda_tools")] == [
+            None,
+            None,
+            None,
+        ]
+        assert rows["sim_sv2v"]["synth_mode"] is None
+        assert rows["sim_sv2v"]["eda_tools"] == ["sv2v", "icarus"]
 
     # --for is a declared option string, not an argparse prefix abbreviation;
     # --for-flow remains an accepted long-form alias.
@@ -205,6 +277,21 @@ class TestTargetsListing:
 
 
 class TestTargetsDetail:
+    def test_host_detail_shows_effective_synth_mode(self, project: Path, capsys):
+        (project / "modes.core").write_text(_SYNTH_CORE, encoding="utf-8")
+        assert _run(project, "synth") == 0
+        out = capsys.readouterr().out
+        assert "EDA tool      sv2v+yosys+openroad" in out
+        assert "synth mode    physical" in out
+        assert "frontend      sv2v" in out
+
+        assert _run(project, "synth", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["synth_mode"] == "physical"
+        assert _run(project, "synth_logical", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["synth_mode"] == "logical"
+        assert payload["frontend"] == "slang"
+
     def test_unknown_target_is_exit_2(self, project: Path, capsys):
         assert _run(project, "ghost") == 2
         err = capsys.readouterr().err
@@ -297,7 +384,7 @@ class TestTargetsDetail:
             raise AssertionError("host detail must not invoke fusesoc")
 
         monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
-        monkeypatch.setattr(fusesoc_registry, "_resolve_target", unexpected_resolve)
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", unexpected_resolve)
 
         assert _run(project, "sim", "--json") == 0
         payload = json.loads(capsys.readouterr().out)

@@ -2,6 +2,7 @@
 
 import errno
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,15 +13,19 @@ from booley.flows.sim import record_reports
 from booley.flows.sim.coverage_record import CoverageRollup
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
+
+# Private seam: the card text and the MCP detail are built only by these functions, and the
+# public path (a full run) would need one run per hand-built observation set.
 from booley.flows.sim.record_presentation import (
-    _compact_coverage_number,
-    _coverage_report_suffix,
     _simulation_record_report_lines,
     _simulation_record_structured_details,
 )
 from booley.flows.sim.record_reports import simulation_record_invocation_lock
 from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run
+
+# Private seam: the MCP reader of report.json is the consumer these regressions pin; it has no
+# public alias.
 from booley.mcp.job_results import _read_report_json
 from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
@@ -31,6 +36,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
+from tests.time_budget import hang_guard_s
 
 __all__ = ["flow_project", "project_alias"]
 
@@ -39,10 +45,8 @@ __all__ = ["flow_project", "project_alias"]
 def test_project_alias_simulation_executes_simulation_record(
     flow_project, tmp_path, monkeypatch, relative
 ):
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
     from booley.harness import doctor
-    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.conftest import require_symlinks
 
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
@@ -61,7 +65,7 @@ def test_project_alias_simulation_executes_simulation_record(
             work_dir=flow_project,
             report_dir=Path("booley/reports") if relative else alias / "reports",
             test=("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     if result.exit_code:
@@ -105,77 +109,8 @@ def test_failed_projection_replacement_preserves_previous_complete_document(
     assert list(tmp_path.iterdir()) == [path]
 
 
-def _no_files(count: int) -> list[Any]:
-    """*count* Test Runs without a log or waveform."""
-    from booley.flows.sim.record.test_run_files import TestRunFiles
-
-    return [TestRunFiles(None, None)] * count
-
-
-def test_infrastructure_termination_is_reported_beyond_observation_preview() -> None:
-    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
-
-    observation = {
-        "test": "first",
-        "execution": "completed",
-        "failure_class": None,
-        "functional": "pass",
-        "assertions": "clean",
-        "assertion_count": 0,
-        "detail": {},
-    }
-    aborted = dict(
-        observation,
-        test="last",
-        execution="aborted",
-        failure_class="infrastructure",
-        functional="not_observed",
-        assertions="not_observed",
-        detail={"termination": "disk_budget", "reason": "disk guard"},
-    )
-    preview = _simulation_record_observation_preview(
-        [observation] * 32 + [aborted], _no_files(33), Path("target")
-    )
-    assert preview["observations_truncated"] is True
-    assert preview["termination_counts"] == {"disk_budget": 1}
-    assert preview["observations"][0]["failure_class"] is None
-
-
-def test_simulation_record_build_diagnostics_survive_preview_limit() -> None:
-    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
-
-    observation = {
-        "test": "ok",
-        "execution": "completed",
-        "failure_class": None,
-        "functional": "pass",
-        "assertions": "clean",
-        "assertion_count": 0,
-        "detail": {},
-    }
-    stage = {
-        "failure_kind": "infrastructure",
-        "timed_out": True,
-        "returncode": -9,
-        "reason": "build exceeded timeout",
-    }
-    failed = dict(
-        observation,
-        failure_class="infrastructure",
-        execution="aborted",
-        detail={"termination": "build_infrastructure", "build_stage": stage},
-    )
-    preview = _simulation_record_observation_preview(
-        [observation] * 32 + [failed], _no_files(33), Path("target")
-    )
-    assert preview["build_stage"] == [stage]
-
-
 @pytest.mark.parametrize("budget", [80, 300, 4000, 12000])
 def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.record_presentation import _simulation_record_report_lines
 
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", str(budget * 2))
     monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", str(budget))
@@ -214,31 +149,26 @@ def test_cycle_card_global_limits_and_utf8_names(tmp_path, monkeypatch, budget):
         assert "cycle counts omitted" in rendered
 
 
+def test_simulation_record_card_renders_each_target_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12000")
+    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12000")
+    smoke = build_test_run("smoke")
+    recorded = _recorded_simulation_record(tmp_path, (smoke,))
+    outcomes = [
+        SimpleNamespace(
+            target={"selector": name},
+            manifest_path=Path("/manifest.json"),
+            aggregate_grade="pass",
+            observations=[recorded.fact(smoke, test="smoke", cycle_count=0, detail={})],
+        )
+        for name in ("one", "two")
+    ]
+    text = "\n".join(_simulation_record_report_lines(outcomes))
+    assert text.count("smoke: cycles=0") == 2
+
+
 @pytest.mark.parametrize("reason", ["x\n", "x\r\nz", "x\u2028z"])
-def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.flows.sim import record_presentation
-
-    resolved = []
-    monkeypatch.setattr(
-        record_presentation,
-        "_resolved_coverage_records",
-        lambda _outcomes: (
-            resolved.append(True)
-            or {"sim": SimpleNamespace(collection={"status": "collector_error"})}
-        ),
-    )
-    monkeypatch.setattr(
-        record_presentation, "_coverage_report_suffix", lambda _coverage_record: "coverage"
-    )
-    monkeypatch.setattr(
-        record_presentation, "_waiver_block_hint_lines", lambda _coverage_record: ["coverage hint"]
-    )
-    monkeypatch.setattr(
-        record_presentation, "source_gap_report_lines", lambda _coverage_record: []
-    )
-
+def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path):
     one, two = build_test_run("one"), build_test_run("two")
     recorded = _recorded_simulation_record(tmp_path, (one, two))
     outcome = SimpleNamespace(
@@ -251,24 +181,29 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path, monkeypa
             recorded.fact(two, test="two", cycle_count=None, detail={"reason": "y"}),
         ],
     )
-    rendered = record_presentation._simulation_record_report_lines([outcome])[0]
-    assert f"\n  {reason}\n  y\n  one: cycles=7\ncoverage hint" in rendered
-    assert resolved == [True]
+    coverage_record = _coverage_record([], status="collector_error")
+    rendered = _simulation_record_report_lines([outcome], {"sim": coverage_record})[0]
+    assert f"\n  {reason}\n  y\n  one: cycles=7" in rendered
 
 
-@pytest.mark.parametrize("failure", [None, "retention", "supersede"])
+@pytest.mark.parametrize("failure", [None, "retention", "supersede", "projection"])
 def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
+    # Private seam: a resumed run that fails after completing can only be made to fail by
+    # patching `_checkpoint_coverage_record` or `supersede_progress`, and
+    # `_simulation_record_outcomes` is the only place the discarded outcomes are observable.
     from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
 
     reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     execution = NativeExecution()
     if failure:
-        symbol = "_checkpoint_coverage_record" if failure == "retention" else "supersede_progress"
+        target = {
+            "retention": "booley.flows.sim.flow_resume._checkpoint_coverage_record",
+            "supersede": "booley.flows.sim.flow_resume.supersede_progress",
+            "projection": "booley.flows.sim.acceptance.write_compatibility_projection",
+        }[failure]
         monkeypatch.setattr(
-            "booley.flows.sim.flow_resume." + symbol,
+            target,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
         )
     resumed = tmp_path / "resumed"
@@ -284,6 +219,10 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
     assert report == json.loads((resumed / "sim.json").read_text())
     progress = json.loads((resumed / "sim/1/progress.json").read_text())
     assert "cycle_counts" not in json.dumps(progress)
+    if failure == "projection":
+        # The Target stays pending: no Coverage Record line names an unpublished projection.
+        assert progress["phase"] == "aborted" and progress["pending_targets"] == ["sim_0"]
+        assert "Coverage Record:" not in result.outcome.report_text
     if failure:
         assert flow._simulation_record_outcomes == ()
     else:
@@ -295,12 +234,12 @@ def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch
 
 
 def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeypatch):
+    # Private seam: `_simulation_record_endpoint_outcome` builds the outcome from 2,000 hand-
+    # made observations per Target, which a real run cannot produce, and
+    # `_structured_from_report` is the MCP reader the regression pins.
     from dataclasses import replace
 
     from booley.flows.endpoint_reporting import write_report
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.record_presentation import _simulation_record_observation_preview
-    from booley.flows.sim.request import SimRequest
     from booley.mcp.server import _structured_from_report
     from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
@@ -332,9 +271,6 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
     assert report["cycle_counts"]["one"][0] == {"test": None, "cycle_count": 0}
     assert len(json.dumps(_structured_from_report(report)).encode()) < 65536
     assert "cycle_counts" not in report["detail"]
-    preview = _simulation_record_observation_preview(observations[:40], _no_files(40), tmp_path)
-    assert len(preview["observations"]) == 32 and preview["observations"][-1]["cycle_count"] == 31
-    assert "cycle_counts" not in preview
 
 
 def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, external=False):
@@ -381,9 +317,8 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
 def test_resume_separates_historical_hooks_from_real_new_firings(
     tmp_path, monkeypatch, interrupted, external
 ):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow
+    # Private seam: the endpoint outcome is built inside `SimulateFlow.run_prepared_simulation`;
+    # this regression needs the hook counts of a record resumed directly from the coordinator.
 
     original, resumed, counters, invocation = _resume_hook_simulation_record(
         tmp_path, monkeypatch, interrupted, external=external
@@ -398,7 +333,7 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
     assert len(resumed.pre_sim_firings) == 1 + expected_runs
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
     result = flow._simulation_record_endpoint_outcome([resumed])
     assert len(result.detail["pre_sim_lines"]) == expected_runs
     assert result.report_text.count("pre_run_commands") == expected_runs
@@ -410,6 +345,9 @@ def test_resume_separates_historical_hooks_from_real_new_firings(
 def test_hook_reference_resolves_from_numbered_report_and_requires_external_context(
     tmp_path, monkeypatch
 ):
+    # Private seam: the hook reference is built at publication for a destination directory the
+    # public run cannot choose, so the test builds it for a numbered and an external
+    # destination.
     from booley.flows.sim.record import ArtifactReferenceError, resolve_report_artifact_reference
     from booley.flows.sim.record_presentation import (
         _pre_sim_projection,
@@ -447,9 +385,12 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
 
 
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
-    from types import SimpleNamespace
+    # Private seam: the resume needs a typed execution without destination admission or origin
+    # locking, so the test replaces `_simulation_record_policy`,
+    # `_lock_simulation_record_resume_origin`, `_resume_simulation_record_plan` and
+    # `_resume_simulation_record_executor`.
 
-    from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
+    from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record.coordinator import SimulationRecordPolicy
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.planning import manifest_digest
@@ -465,7 +406,6 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(
         target=["sim"],
-        result_verbosity="brief",
         work_dir=tmp_path / "project",
         report_dir=invocation.parent,
         dry_run=False,
@@ -519,11 +459,13 @@ def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
 
 
 def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
+    # Private seam: the concurrency test must block the waiter before store admission, and
+    # `_run_validated_resume_simulation_record` is the only point before it.
     run = flow._run_validated_resume_simulation_record
 
     def wait_for_owner(*args, **kwargs):
         waiting.set()
-        assert completed.wait(10)
+        assert completed.wait(hang_guard_s())
         return run(*args, **kwargs)
 
     monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", wait_for_owner)
@@ -552,12 +494,12 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
     _serialize_resume_waiter(monkeypatch, waiter, waiting, completed)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(waiter.run_prepared_simulation, waiter_prepared, _admission())
-        assert waiting.wait(10)
+        assert waiting.wait(hang_guard_s())
         try:
             owner_result = owner.run_prepared_simulation(owner_prepared, _admission())
         finally:
             completed.set()
-        waiter_result = future.result(timeout=10)
+        waiter_result = future.result(timeout=hang_guard_s())
     assert first_counts["launch"] == 1
     assert second_counts["launch"] == 0
     assert owner_result.detail["pre_sim_current"] == 1
@@ -566,28 +508,12 @@ def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_pat
     assert waiter_result.detail["pre_sim_historical"] == 2
 
 
-def test_simulation_record_scan_error_retains_independently_authenticated_hook_lines():
-    from booley.flows.sim.record_presentation import _pre_sim_integrity_failure
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    line = "pre_run_commands rc=0 duration=0.01s"
-    result = EndpointOutcome(
-        exit_code=0,
-        report_text=line,
-        detail={"pre_sim_lines": [line], "pre_sim_current": 1},
-    )
-    result = _pre_sim_integrity_failure(
-        result, ValueError("unrelated result corruption"), retain_authenticated=True
-    )
-    assert result.exit_code == 2
-    assert result.detail["pre_sim_lines"] == [line]
-    assert result.report_text.count(line) == 1
-    assert "Simulation Record integrity failure" in result.report_text
-
-
 def test_production_postscan_corruption_preserves_authenticated_current_evidence(
     tmp_path, monkeypatch
 ):
+    # Private seam: the regression needs a corrupted record between the authenticated projection
+    # and the endpoint, which the public run cannot pause at; the test wraps
+    # `_simulation_record_endpoint_outcome`.
     from tests.flows.sim.simulation_record_test_support import _admission
 
     original, flow, prepared, counters = _third_invocation_resume(
@@ -612,6 +538,7 @@ def test_production_postscan_corruption_preserves_authenticated_current_evidence
     assert len(result.detail["pre_sim_lines"]) == 1
     assert result.report_text.count("pre_run_commands") == 1
     assert "Simulation Record integrity failure" in result.report_text
+    assert "record_integrity_error" in result.detail
 
 
 def _observed_hook_request(tmp_path, observer):
@@ -637,7 +564,8 @@ def _observed_hook_request(tmp_path, observer):
         test_names=("alpha",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=5,
+        timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=commands,
         run_cwd=".",
     )
@@ -671,6 +599,8 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 
 
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
+    # Private seam: the observer that records each Pre-Sim firing a published run saw is
+    # `_record_pre_sim_firing`; only the Flow's own observer proves its authority.
     from booley.flows.sim.record.model import create_simulation_record_plan
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
@@ -711,14 +641,19 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     return candidate
 
 
-def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow
-
+@pytest.fixture
+def observed_hook_flow(tmp_path, monkeypatch) -> tuple[SimulateFlow, Any]:
+    """A Simulation Flow that published a candidate record and its Cycle Count baseline."""
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    flow._args = SimpleNamespace(target=["sim"])
+    return flow, _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+
+
+def test_retained_current_baseline_uses_actual_flow_publication_authority(observed_hook_flow):
+    # Private seam: `_simulation_record_endpoint_outcome` and `_attach_published_pre_sim` run
+    # inside `run_prepared_simulation` after a real simulation; the regression corrupts a record
+    # between them.
+    flow, candidate = observed_hook_flow
     result = flow._simulation_record_endpoint_outcome([candidate])
     assert result.detail["pre_sim_current"] == 1
     firing = next(f for f in candidate.pre_sim_firings if f.document["role"] == "candidate")
@@ -733,17 +668,17 @@ def test_retained_current_baseline_uses_actual_flow_publication_authority(tmp_pa
     assert all(record["terminal"] is False for record in result.detail["pre_sim_runs"])
 
 
-def test_published_hook_collection_scans_each_simulation_record_once(tmp_path, monkeypatch):
+def test_published_hook_collection_scans_each_simulation_record_once(
+    observed_hook_flow, monkeypatch
+):
+    # Private seam: `_attach_published_pre_sim` is the call that scans hook storage, and it runs
+    # only inside a full run after the endpoint outcome.
     from collections import Counter
-    from types import SimpleNamespace
 
-    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.record.store import SimulationRecordStore
     from booley.runtime.endpoint_execution import EndpointOutcome
 
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    flow, candidate = observed_hook_flow
     scans = Counter()
     scan = SimulationRecordStore.scan
 
@@ -761,6 +696,9 @@ def test_published_hook_collection_scans_each_simulation_record_once(tmp_path, m
 
 
 def _published_hook_budget_boundary(flow, candidate, roomy):
+    # Private seam: the budget is measured between `_simulation_record_report_lines`,
+    # `_cycle_display_line`, `_attach_published_pre_sim` and
+    # `_simulation_record_endpoint_outcome`, which a public run calls in one step.
     from booley.flows.sim import record_presentation
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -784,12 +722,13 @@ def _published_hook_budget_boundary(flow, candidate, roomy):
 
 
 def _published_hook_budget_run(tmp_path, monkeypatch, *, roomy=False, corrupt=False):
+    # Private seam: the test replaces `_ordinary_simulation_record` to publish its own hook DAG,
+    # then reads `_simulation_record_endpoint_outcome` before the final report is attached.
     from booley.flows.sim import flow as module
     from booley.flows.sim import record
-    from booley.flows.sim.request import SimRequest
 
     flow = module.SimulateFlow()
-    flow._args = SimRequest(target="sim", coverage=False, mode=None, result_verbosity="compact")
+    flow._args = SimRequest(target="sim", coverage=False, mode=None)
     evidence = {}
 
     def run(_prepared):
@@ -836,21 +775,17 @@ def test_final_published_baseline_hooks_bound_cycle_text(tmp_path, monkeypatch, 
     assert result.report_text.count("Candidate:") == 1
     assert result.report_text.count("Cycle Count baseline:") == 1
     size = len(result.report_text.encode())
-    print(
-        f"published baseline={len(evidence['baseline'].report_text.encode())} final={size} budget={evidence['budget']}"
-    )
     assert size + 2 <= evidence["budget"]
     assert result.report_text.count("cycles=17") == int(roomy)
     if not roomy:
         assert result.report_text == evidence["baseline"].report_text
 
 
-def test_missing_published_hook_key_suppresses_optional_budget(tmp_path, monkeypatch):
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
-
-    flow = SimulateFlow()
-    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+def test_missing_published_hook_key_suppresses_optional_budget(observed_hook_flow):
+    # Private seam: a published key that no record holds cannot be produced by a public run, so
+    # the test calls `_simulation_record_endpoint_outcome` and reads
+    # `_simulation_record_outcomes` directly.
+    flow, candidate = observed_hook_flow
     flow._args = SimRequest(target="sim")
     flow._current_published_pre_sim_keys.add(("missing", "key", "id", 1))
     before = candidate.pre_sim_firings
@@ -862,11 +797,11 @@ def test_missing_published_hook_key_suppresses_optional_budget(tmp_path, monkeyp
 
 @pytest.mark.parametrize("count", [None, 0, 1234])
 def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, monkeypatch, count):
+    # Private seam: `_simulation_record_endpoint_outcome` is the call under test, with an empty
+    # hook authority that a public run never leaves behind.
     from dataclasses import replace
 
     from booley.flows.sim import record
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
     from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
     outcome = _public_cycle_simulation_record(tmp_path, monkeypatch)
@@ -887,6 +822,8 @@ def test_initialized_empty_hook_authority_keeps_authenticated_counts(tmp_path, m
 
 
 def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monkeypatch):
+    # Private seam: `_simulation_record_outcomes` shows the outcomes the integrity failure
+    # discarded; a public run exposes only the final report text.
     flow, result, evidence = _published_hook_budget_run(
         tmp_path, monkeypatch, roomy=True, corrupt=True
     )
@@ -903,6 +840,8 @@ def test_corruption_before_endpoint_keeps_final_integrity_policy(tmp_path, monke
 def test_resume_count_budget_uses_only_actual_current_hook_keys(
     tmp_path, monkeypatch, interrupted
 ):
+    # Private seam: `_simulation_record_report_lines` is wrapped to read the budget it is given
+    # mid-run; the public report only shows the final text.
     from booley.flows.sim import flow as module
     from tests.flows.sim.simulation_record_test_support import _admission
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
@@ -937,7 +876,7 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     tmp_path, monkeypatch
 ):
     from booley.flows.sim.record import SimulationRecordIntegrityError
-    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.conftest import require_symlinks
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     require_symlinks(tmp_path)
@@ -962,8 +901,6 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
 
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
 def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defect):
-    from booley.flows.sim.flow import SimulateFlow
-    from booley.flows.sim.request import SimRequest
 
     alias, data = project_alias
     reports = data / "reports"
@@ -989,7 +926,7 @@ def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defec
             work_dir=flow_project,
             report_dir=report_dir,
             test=("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 2
@@ -1001,9 +938,7 @@ def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defec
 def test_alias_normalization_precedes_simulation_preparation(
     flow_project, project_alias, monkeypatch, selection
 ):
-    from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.mode import SimulationMode
-    from booley.flows.sim.request import SimRequest
 
     alias, data = project_alias
     monkeypatch.setattr(
@@ -1018,37 +953,26 @@ def test_alias_normalization_precedes_simulation_preparation(
             dry_run=selection == "dry_run",
             mode=SimulationMode.ELAB_ONLY if selection == "elab" else None,
             test=None if selection == "elab" else ("first",),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
     assert flow.args.report_dir == data / ("flow-reports" if selection == "default" else "reports")
 
 
-@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+@pytest.mark.parametrize("error", ["schema", "missing"])
 def test_projection_rejects_corrupt_record(tmp_path, error):
-    from booley.flows.sim.acceptance import _simulation_record_projection
     from booley.flows.sim.record import decode_simulation_projection
-    from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
+    from tests.flows.sim.test_test_run_evidence_rows import _v3_document
 
-    document = json.loads(
-        json.dumps(
-            {
-                **_simulation_record_projection(_outcome(tmp_path, _RESET)),
-                "complete": True,
-            }
-        )
-    )
-    path = tmp_path / "simulation.json"
-    path.write_text(json.dumps(document))
-    decode_simulation_projection(json.loads(path.read_bytes()), coverage_expected=False)
+    document = _v3_document(tmp_path)
+    decode_simulation_projection(document, coverage_expected=False)
     if error == "schema":
         document["$schema"] = "unknown"
-    elif error == "missing":
+    else:
         del document["complete"]
-    path.write_text("{" if error == "truncated" else json.dumps(document))
     with pytest.raises(ValueError):
-        decode_simulation_projection(json.loads(path.read_bytes()), coverage_expected=False)
+        decode_simulation_projection(document, coverage_expected=False)
 
 
 def _two_firing_store(tmp_path):
@@ -1079,9 +1003,15 @@ def _two_firing_store(tmp_path):
 
 
 def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
+    """A re-read returns only the prior firings it was given, decoding each sidecar once."""
     from tests.flows.sim.simulation_record_test_support import _observe_pre_sim_reads
 
     firings = _two_firing_store(tmp_path)
+    first, second = firings
+    assert first.path.parent == second.path.parent
+    fresh = collect_pre_sim_firings(prior=(first,))
+    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
+
     accesses, decodes, _results = _observe_pre_sim_reads(monkeypatch)
     collect_pre_sim_firings(prior=firings)
     assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
@@ -1090,22 +1020,14 @@ def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeyp
     assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
 
 
-def test_prior_firing_reread_returns_only_prior_firings(tmp_path):
-    first, second = _two_firing_store(tmp_path)
-    assert first.path.parent == second.path.parent
-    fresh = collect_pre_sim_firings(prior=(first,))
-    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
-
-
-def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.flows.sim.flow import SimulateFlow
+def test_shared_collection_bound_counts_distinct_prerequisite_references(
+    observed_hook_flow, monkeypatch
+):
+    # Private seam: `_PRE_SIM_DAG_BOUND` is 4,096 roots, not buildable in a unit test, so the
+    # test lowers it.
     from booley.flows.sim.record import SimulationRecordIntegrityError, store
 
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    candidate = _current_observed_hook_dag(tmp_path, monkeypatch, flow)
+    _flow, candidate = observed_hook_flow
     invocation = candidate.manifest_path.parents[3]
     # Three roots reach one baseline reference: only distinct references count.
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
@@ -1117,35 +1039,6 @@ def test_shared_collection_bound_counts_distinct_prerequisite_references(tmp_pat
     monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
     with pytest.raises(SimulationRecordIntegrityError, match="exceeds DAG bound"):
         collect_pre_sim_firings(*roots)
-
-
-def test_simulation_record_card_renders_each_target_once(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.flows.sim import record_presentation
-
-    calls = []
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12000")
-    monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12000")
-    monkeypatch.setattr(
-        record_presentation,
-        "_simulation_record_test_run_lines",
-        lambda selector, *args: calls.append(selector) or [],
-    )
-    smoke = build_test_run("smoke")
-    recorded = _recorded_simulation_record(tmp_path, (smoke,))
-    outcomes = [
-        SimpleNamespace(
-            target={"selector": name},
-            manifest_path=Path("/manifest.json"),
-            aggregate_grade="pass",
-            observations=[recorded.fact(smoke, test="smoke", cycle_count=0, detail={})],
-        )
-        for name in ("one", "two")
-    ]
-    text = "\n".join(record_presentation._simulation_record_report_lines(outcomes))
-    assert text.count("smoke: cycles=0") == 2
-    assert calls == ["one", "two"]
 
 
 @pytest.mark.parametrize("linked", ["entry", "below", "above"])
@@ -1195,33 +1088,32 @@ def test_invocation_booley_dir_ignores_a_refused_layout_beside_a_custom_root(
 
 
 @pytest.mark.parametrize(
-    "reports_name",
+    ("reports_name", "expect_refused"),
     [
-        "flow-reports",
-        ".runtime/flow-reports",
-        "tmp/doctor/flow-reports",
-        ".interactive_logs/session-1/.runtime/flow-reports",
-        "goals/demo-20261027T000000Z/.runtime/flow-reports",
-        "custom",
-        "tmp/flow-reports",
-        ".interactive_logs/flow-reports",
-        ".interactive_logs/a/b/.runtime/flow-reports",
-        "goals/flow-reports",
-        "other/run-1/.runtime/flow-reports",
+        ("flow-reports", False),
+        (".runtime/flow-reports", False),
+        ("tmp/doctor/flow-reports", False),
+        ("job_logs/session-1/.runtime/flow-reports", False),
+        ("goals/demo-20261027T000000Z/.runtime/flow-reports", False),
+        ("custom", True),
+        ("tmp/flow-reports", True),
+        ("job_logs/flow-reports", True),
+        ("job_logs/a/b/.runtime/flow-reports", True),
+        ("goals/flow-reports", True),
+        ("other/run-1/.runtime/flow-reports", True),
     ],
 )
 def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reports_name: str, expect_refused: bool
 ) -> None:
     """#2191: a custom report root under a linked entry is refused at the lock, not later.
 
     Booley-owned roots are derivable: the default ones, deep Doctor's own
-    ``tmp/doctor/flow-reports``, and the per-run runtime roots of Interactive Mode
-    MCP sessions (``.interactive_logs/<session>/.runtime/flow-reports``) and Goal
+    ``tmp/doctor/flow-reports``, and the per-run runtime roots of in-Sandbox MCP sessions
+    MCP sessions (``job_logs/<session>/.runtime/flow-reports``) and Goal
     Records (``goals/<goal-id>/.runtime/flow-reports``). A Codespace links
     ``/work/.booley``.
     """
-    from booley.flows.sim.flow import SimulateFlow
     from booley.runtime.booley_dir import reset_cache
 
     project = tmp_path / "project"
@@ -1233,109 +1125,55 @@ def test_host_run_reserves_through_the_entry_only_for_a_derivable_report_root(
     report_dir = project / ".booley" / reports_name
 
     flow = SimulateFlow()
-    if reports_name in {
-        "custom",
-        "tmp/flow-reports",
-        ".interactive_logs/flow-reports",
-        ".interactive_logs/a/b/.runtime/flow-reports",
-        "goals/flow-reports",
-        "other/run-1/.runtime/flow-reports",
-    }:
+    flow._args = SimRequest(report_dir=report_dir)
+    if expect_refused:
         with pytest.raises(ValueError, match="must not contain symlinks"):
-            flow._next_invocation_dir(report_dir)
+            flow.reserve_invocation_dir()
         return
     with flow.publication_resources:
-        assert flow._next_invocation_dir(report_dir) == report_dir / "sim" / "1"
+        assert flow.reserve_invocation_dir() == report_dir / "sim" / "1"
 
 
-def test_simulation_record_json_write_survives_transient_replace_sharing_error(
-    tmp_path, monkeypatch
-):
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "simulation.json"
-    attempts = hold_replaces(monkeypatch, {path: 1})
-    record_reports.write_simulation_record_json(path, {"passed": True})
-    assert json.loads(path.read_text(encoding="utf-8")) == {"passed": True}
-    assert attempts[path] == 2
+_BUILD_STAGE = {
+    "failure_kind": "infrastructure",
+    "timed_out": True,
+    "returncode": -9,
+    "reason": "build exceeded timeout",
+}
 
 
-def test_simulation_record_json_write_retries_before_raising_lasting_sharing_error(
-    tmp_path, monkeypatch
-):
-    from tests.sharing_error_support import hold_replaces
-
-    path = tmp_path / "simulation.json"
-    attempts = hold_replaces(monkeypatch, {path: 100})
-    with pytest.raises(PermissionError):
-        record_reports.write_simulation_record_json(path, {"passed": True})
-    assert attempts[path] > 1
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(50.0, "50"), (200 / 3, "66.66666666666667"), (1e-5, "0.00001")],
-)
-def test_coverage_report_numbers_are_compact_and_non_scientific(value, expected) -> None:
-    assert _compact_coverage_number(value) == expected
+def _mixed_axes(index: int) -> dict[str, Any]:
+    """Observations that differ on every axis; the last one timed out."""
+    return {
+        "test": f"test_{index:02d}",
+        "execution": "timeout" if index == 39 else "completed",
+        "failure_class": "design" if index == 39 else None,
+        "functional": "fail" if index % 2 else "pass",
+        "assertions": "dirty" if index % 3 == 0 else "clean",
+        "assertion_count": index,
+        "cycle_count": None,  # every real observation carries one; the metrics read it
+        "detail": {"reason": f"detail-{index}"},
+    }
 
 
-@pytest.mark.parametrize(
-    ("collection", "evaluation", "expected"),
-    [
-        (
-            {"status": "collector_error", "diagnostics": ()},
-            {"status": "not_requested", "diagnostics": (), "metrics": ()},
-            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
-        ),
-        (
-            {"status": "complete", "diagnostics": ()},
-            {"status": "fail", "diagnostics": (), "metrics": ()},
-            "coverage collection COMPLETE · evaluation FAIL",
-        ),
-    ],
-)
-def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
-    collection, evaluation, expected
-) -> None:
-    coverage_record = SimpleNamespace(collection=collection, evaluation=evaluation)
-
-    assert _coverage_report_suffix(coverage_record) == expected
+_CLEAN_PASS: dict[str, Any] = {
+    "execution": "completed",
+    "failure_class": None,
+    "functional": "pass",
+    "assertions": "clean",
+    "assertion_count": 0,
+    "cycle_count": None,
+    "detail": {},
+}
 
 
-def test_mcp_simulation_record_details_bound_observations_without_collapsing_axes(
-    tmp_path: Path,
-) -> None:
-    runs = [build_test_run(f"test_{index:02d}") for index in range(40)]
-    recorded = _recorded_simulation_record(tmp_path, runs)
-    observations = tuple(
-        recorded.fact(
-            run,
-            test=f"test_{index:02d}",
-            execution="timeout" if index == 39 else "completed",
-            failure_class="design" if index == 39 else None,
-            functional="fail" if index % 2 else "pass",
-            assertions="dirty" if index % 3 == 0 else "clean",
-            assertion_count=index,
-            cycle_count=None,  # every real observation carries one; the metrics read it
-            detail={"reason": f"detail-{index}"},
-        )
-        for index, run in enumerate(runs)
-    )
-    outcome = SimpleNamespace(
-        target={"selector": "sim"},
-        manifest_path=tmp_path / "targets/sim/record/manifest.json",
-        summary_path=tmp_path / "targets/sim/record/summary.json",
-        coverage_reference=None,
-        aggregate_grade="fail",
-        complete=True,
-        observations=observations,
-    )
+def _passing_then(last: dict[str, Any]) -> Callable[[int], dict[str, Any]]:
+    """32 clean passing observations, then the 33rd, which is past the preview."""
+    return lambda index: {**_CLEAN_PASS, **last} if index == 32 else _CLEAN_PASS
 
-    details = _simulation_record_structured_details((outcome,))["sim"]
 
+def _check_mixed_axes(details: dict[str, Any]) -> None:
     assert details["observation_total"] == 40
-    assert details["observations_truncated"] is True
     assert len(details["observations"]) == 32
     assert set(details["observations"][0]) == {
         "test",
@@ -1350,6 +1188,84 @@ def test_mcp_simulation_record_details_bound_observations_without_collapsing_axe
         "trace",
     }
     assert details["observation_counts"]["execution"] == {"completed": 39, "timeout": 1}
+
+
+def _check_infrastructure_termination(details: dict[str, Any]) -> None:
+    assert details["termination_counts"] == {"disk_budget": 1}
+    assert details["observations"][0]["failure_class"] is None
+
+
+def _check_build_diagnostics(details: dict[str, Any]) -> None:
+    assert details["build_stage"] == [_BUILD_STAGE]
+
+
+def _check_cycle_counts(details: dict[str, Any]) -> None:
+    assert details["observations"][-1]["cycle_count"] == 31
+    assert "cycle_counts" not in details
+
+
+_INFRASTRUCTURE = {
+    "execution": "aborted",
+    "failure_class": "infrastructure",
+    "functional": "not_observed",
+    "assertions": "not_observed",
+}
+
+
+@pytest.mark.parametrize(
+    ("count", "fields", "check"),
+    [
+        (40, _mixed_axes, _check_mixed_axes),
+        (
+            33,
+            _passing_then(
+                {
+                    **_INFRASTRUCTURE,
+                    "detail": {"termination": "disk_budget", "reason": "disk guard"},
+                }
+            ),
+            _check_infrastructure_termination,
+        ),
+        (
+            33,
+            _passing_then(
+                {
+                    **_INFRASTRUCTURE,
+                    "detail": {"termination": "build_infrastructure", "build_stage": _BUILD_STAGE},
+                }
+            ),
+            _check_build_diagnostics,
+        ),
+        (40, lambda index: {**_CLEAN_PASS, "cycle_count": index}, _check_cycle_counts),
+    ],
+    ids=["mixed-axes", "infrastructure-termination", "build-diagnostics", "cycle-counts"],
+)
+def test_mcp_simulation_record_details_bound_observations_without_collapsing_axes(
+    tmp_path: Path, count: int, fields: Callable[[int], dict[str, Any]], check: Callable[..., None]
+) -> None:
+    runs = [build_test_run(f"test_{index:02d}") for index in range(count)]
+    recorded = _recorded_simulation_record(tmp_path, runs)
+    observations = tuple(
+        recorded.fact(run, **{"test": f"test_{index:02d}", **fields(index)})
+        for index, run in enumerate(runs)
+    )
+    outcome = SimpleNamespace(
+        target={"selector": "sim"},
+        manifest_path=tmp_path / "targets/sim/record/manifest.json",
+        summary_path=tmp_path / "targets/sim/record/summary.json",
+        coverage_reference=None,
+        aggregate_grade="fail",
+        complete=True,
+        observations=observations,
+    )
+
+    # Private seam: the 32-observation preview is the MCP detail of a record; only a full
+    # run's report.json reaches it, and each case needs 33 to 40 hand-built observations.
+    details = _simulation_record_structured_details((outcome,))["sim"]
+
+    assert details["observation_total"] == count
+    assert details["observations_truncated"] is True
+    check(details)
 
 
 def test_simulation_record_report_preserves_the_failed_simulator_reason(tmp_path: Path) -> None:
@@ -1372,12 +1288,19 @@ def test_simulation_record_report_preserves_the_failed_simulator_reason(tmp_path
     )
 
 
-def test_simulation_reservation_locks_before_directory_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def reservation_flow(tmp_path: Path) -> tuple[SimulateFlow, Path]:
+    """A Simulation Flow reserving numbers under ``tmp_path / "reports"``, and that root."""
     reports = tmp_path / "reports"
     flow = SimulateFlow()
     flow._args = SimRequest(report_dir=reports)
+    return flow, reports
+
+
+def test_simulation_reservation_locks_before_directory_publication(
+    reservation_flow: tuple[SimulateFlow, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow, reports = reservation_flow
     mkdir = type(reports).mkdir
     observed = False
 
@@ -1400,12 +1323,10 @@ def test_simulation_reservation_locks_before_directory_publication(
 
 
 def test_simulation_reservation_skips_contended_and_raced_numbers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    reservation_flow: tuple[SimulateFlow, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    reports = tmp_path / "reports"
+    flow, reports = reservation_flow
     (reports / "sim").mkdir(parents=True)
-    flow = SimulateFlow()
-    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def lose_race_for_two(path: Path, *args: object, **kwargs: object) -> None:
@@ -1423,13 +1344,11 @@ def test_simulation_reservation_skips_contended_and_raced_numbers(
 
 
 def test_simulation_reservation_releases_its_lock_when_publication_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    reservation_flow: tuple[SimulateFlow, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A non-race mkdir failure (EACCES, ENOSPC) must not leave the number busy."""
-    reports = tmp_path / "reports"
+    flow, reports = reservation_flow
     (reports / "sim").mkdir(parents=True)
-    flow = SimulateFlow()
-    flow._args = SimRequest(report_dir=reports)
     mkdir = type(reports).mkdir
 
     def disk_full_for_one(path: Path, *args: object, **kwargs: object) -> None:
@@ -1451,11 +1370,11 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
         pass
 
 
-def test_simulation_reservation_stops_at_the_invocation_ceiling(tmp_path: Path) -> None:
-    reports = tmp_path / "reports"
+def test_simulation_reservation_stops_at_the_invocation_ceiling(
+    reservation_flow: tuple[SimulateFlow, Path],
+) -> None:
+    flow, reports = reservation_flow
     (reports / "sim" / "1000000").mkdir(parents=True)
-    flow = SimulateFlow()
-    flow._args = SimRequest(report_dir=reports)
 
     with (
         flow.publication_resources,
@@ -1478,18 +1397,18 @@ def _rollup(metric: str, covered: int, eligible: int) -> CoverageRollup:
     )
 
 
-def _coverage_card(
-    tmp_path: Path,
+def _coverage_record(
     rollups: list[CoverageRollup],
     thresholds: dict[str, float | None] | None = None,
     *,
     status: str = "complete",
-) -> list[str]:
-    """Render one coverage Target's card block from a stub Coverage Record."""
-    coverage_record = SimpleNamespace(
+    evaluation: str = "not_requested",
+) -> SimpleNamespace:
+    """A stub Coverage Record whose collection and evaluation ended as given."""
+    return SimpleNamespace(
         collection={"status": status, "diagnostics": ()},
         evaluation={
-            "status": "not_requested",
+            "status": evaluation,
             "diagnostics": (),
             "metrics": (),
             "thresholds": thresholds or {},
@@ -1498,6 +1417,10 @@ def _coverage_card(
         source_closure={},
         findings=(),
     )
+
+
+def _coverage_card(tmp_path: Path, coverage_record: SimpleNamespace) -> list[str]:
+    """Render one coverage Target's card block from *coverage_record*."""
     outcome = SimpleNamespace(
         target={"selector": "sim_soc"},
         manifest_path=tmp_path / "targets/sim_soc/record/manifest.json",
@@ -1513,76 +1436,122 @@ def _coverage_card(
     )[0].splitlines()
 
 
-def test_coverage_card_lists_every_collected_metric(tmp_path: Path) -> None:
-    lines = _coverage_card(
-        tmp_path,
-        [_rollup("line", 9239, 10000), _rollup("branch", 81, 100), _rollup("toggle", 642, 1000)],
-    )
+@pytest.mark.parametrize(
+    ("rollups", "thresholds", "expected"),
+    [
+        (
+            [
+                _rollup("line", 9239, 10000),
+                _rollup("branch", 81, 100),
+                _rollup("toggle", 642, 1000),
+            ],
+            None,
+            "  coverage: line 92.3% · branch 81.0% · toggle 64.2%",
+        ),
+        (
+            [
+                _rollup("line", 7999, 10000),
+                _rollup("branch", 81, 100),
+                _rollup("expression", 8526, 10000),
+                _rollup("toggle", 8524, 10000),
+            ],
+            {"line": 80, "branch": 80, "expression": 85.25, "toggle": 85.25},
+            "  coverage: "
+            + " · ".join(
+                [
+                    "line 79.9% (min 80%, missed)",
+                    "branch 81.0% (min 80%, met)",
+                    "expression 85.26% (min 85.25%, met)",
+                    "toggle 85.24% (min 85.25%, missed)",
+                ]
+            ),
+        ),
+        # 1/3 is below the float 100/3; a float division would print it equal to the minimum.
+        (
+            [_rollup("line", 1, 3)],
+            {"line": 100 / 3},
+            "  coverage: line 33.333333333333333% (min 33.333333333333336%, missed)",
+        ),
+        (
+            [_rollup("line", 1, 2)],
+            {"line": 200 / 3},
+            "  coverage: line 50.00000000000000% (min 66.66666666666667%, missed)",
+        ),
+        (
+            [_rollup("line", 1, 2)],
+            {"line": 1e-5},
+            "  coverage: line 50.00000% (min 0.00001%, met)",
+        ),
+        (
+            [_rollup("line", 1, 2), _rollup("toggle", 0, 0)],
+            {"toggle": 80},
+            "  coverage: line 50.0% · toggle n/a (min 80%, missed)",
+        ),
+        ([_rollup("toggle", 0, 0)], None, "  coverage: toggle n/a"),
+    ],
+    ids=[
+        "every-metric",
+        "thresholds-met-and-missed",
+        "long-minimum-never-rounds-up",
+        "repeating-minimum",
+        "tiny-minimum-not-scientific",
+        "na-with-minimum",
+        "na-alone",
+    ],
+)
+def test_coverage_card_metric_line(
+    tmp_path: Path,
+    rollups: list[CoverageRollup],
+    thresholds: dict[str, float | None] | None,
+    expected: str,
+) -> None:
+    lines = _coverage_card(tmp_path, _coverage_record(rollups, thresholds))
 
     assert lines[-2:] == [
-        "  coverage: line 92.3% · branch 81.0% · toggle 64.2%",
+        expected,
         f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}",
     ]
 
 
-def test_coverage_card_shows_threshold_met_and_missed(tmp_path: Path) -> None:
-    lines = _coverage_card(
-        tmp_path,
-        [
-            _rollup("line", 7999, 10000),
-            _rollup("branch", 81, 100),
-            _rollup("expression", 8526, 10000),
-            _rollup("toggle", 8524, 10000),
-        ],
-        {"line": 80, "branch": 80, "expression": 85.25, "toggle": 85.25},
-    )
-
-    assert (
-        "  coverage: "
-        + " · ".join(
-            [
-                "line 79.9% (min 80%, missed)",
-                "branch 81.0% (min 80%, met)",
-                "expression 85.26% (min 85.25%, met)",
-                "toggle 85.24% (min 85.25%, missed)",
-            ]
-        )
-        in lines
-    )
-
-
-def test_coverage_card_long_minimum_never_rounds_up_to_it(tmp_path: Path) -> None:
-    # 1/3 is below the float 100/3; a float division would print it equal to the minimum.
-    lines = _coverage_card(tmp_path, [_rollup("line", 1, 3)], {"line": 100 / 3})
-    assert "  coverage: line 33.333333333333333% (min 33.333333333333336%, missed)" in lines
-
-
-def test_coverage_card_prints_na_without_eligible_points(tmp_path: Path) -> None:
-    lines = _coverage_card(
-        tmp_path,
-        [_rollup("line", 1, 2), _rollup("toggle", 0, 0)],
-        {"toggle": 80},
-    )
-    assert "  coverage: line 50.0% · toggle n/a (min 80%, missed)" in lines
-
-    lines = _coverage_card(tmp_path, [_rollup("toggle", 0, 0)])
-    assert "  coverage: toggle n/a" in lines
-
-
 def test_coverage_card_omits_metrics_unless_collection_complete(tmp_path: Path) -> None:
-    lines = _coverage_card(tmp_path, [_rollup("line", 1, 2)], status="collector_error")
+    lines = _coverage_card(
+        tmp_path, _coverage_record([_rollup("line", 1, 2)], status="collector_error")
+    )
     assert not any(line.startswith("  coverage: ") for line in lines)
     assert f"  Coverage Record: {(tmp_path / 'targets/sim_soc/coverage.json').resolve()}" in lines
 
     # A complete collection with no points at all has nothing to list either.
-    lines = _coverage_card(tmp_path, [])
+    lines = _coverage_card(tmp_path, _coverage_record([]))
     assert not any(line.startswith("  coverage: ") for line in lines)
 
 
-def test_new_invocation_number_is_above_every_pruned_marker(tmp_path):
-    sim = tmp_path / "reports/sim"
+@pytest.mark.parametrize(
+    ("collection", "evaluation", "expected"),
+    [
+        (
+            "collector_error",
+            "not_requested",
+            "coverage collection COLLECTOR_ERROR · evaluation NOT_REQUESTED",
+        ),
+        ("complete", "fail", "coverage collection COMPLETE · evaluation FAIL"),
+    ],
+)
+def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
+    tmp_path: Path, collection: str, evaluation: str, expected: str
+) -> None:
+    lines = _coverage_card(
+        tmp_path, _coverage_record([], status=collection, evaluation=evaluation)
+    )
+
+    assert lines[0].startswith(f"sim_soc: simulation PASS · {expected} (Simulation Record ")
+
+
+def test_new_invocation_number_is_above_every_pruned_marker(
+    reservation_flow: tuple[SimulateFlow, Path],
+):
+    flow, reports = reservation_flow
+    sim = reports / "sim"
     for name in ("1", ".pruned-2", ".pruned-7"):
         (sim / name).mkdir(parents=True)
-    flow = SimulateFlow()
     with flow.publication_resources:
-        assert flow._next_invocation_dir(tmp_path / "reports") == sim / "8"
+        assert flow.reserve_invocation_dir() == sim / "8"

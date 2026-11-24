@@ -53,7 +53,7 @@ class Observer:
 
 @pytest.fixture(autouse=True)
 def _env(tmp_path, monkeypatch):
-    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
+    for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_DEVELOPER_AGENT"):
         monkeypatch.delenv(name, raising=False)
     project = tmp_path / ".booley"
     project.mkdir()
@@ -172,7 +172,7 @@ RESPONSE_KINDS: list[tuple[str, dict[str, Any], bool | None]] = [
 
 @pytest.mark.asyncio
 async def test_notice_on_every_response_kind(monkeypatch):
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     _write(
         "foreign-running",
         owner=OTHER_TAB,

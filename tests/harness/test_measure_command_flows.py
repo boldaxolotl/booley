@@ -39,6 +39,7 @@ from tests.harness.test_measure_children_flows import (
     declare_stub_metrics,
     started_targets,
 )
+from tests.time_budget import hang_guard_s
 
 __all__ = ["make_world"]
 
@@ -60,12 +61,20 @@ TARGETS = ("metrics_ok", "metrics_b", "crash", "linger")
 ONE_AT_A_TIME = ""
 
 
-def metrics_project(make_world: WorldBuilder, metrics: str, config: str = ONE_AT_A_TIME) -> World:
+def metrics_project(
+    make_world: WorldBuilder,
+    metrics: str,
+    config: str = ONE_AT_A_TIME,
+    symlinks: dict[str, str] | None = None,
+) -> World:
     """A committed Project with the Targets above and *metrics* as its ``metrics.toml``."""
     files = {f"{name}.core": CORE.format(name=name) for name in TARGETS}
     files["top.v"] = "module top; endmodule\n"
     files[".booley/metrics.toml"] = metrics
-    return make_world(files=files, config=config)
+    return make_world(files=files, symlinks=symlinks, config=config)
+
+
+LINKED_HOOK = {".booley/hooks/post-setup.sh": "{live}/hook.sh"}
 
 
 @pytest.fixture(autouse=True)
@@ -119,12 +128,77 @@ def test_a_met_commit_exits_zero_stores_one_run_and_is_measured(
     assert stored.run_id == record.run_id
     assert store_of(world).measured(key) == stored
     assert stored.path.with_suffix(".md").is_file()  # the Markdown report
-    assert "Measurement Report" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "Measurement Report" in captured.out
+    assert "post-setup" not in captured.err  # no hook, nothing runs or is logged
+    assert not list(standalone_log_root(world.main).rglob("post-setup.log"))
     # Each child's text reports are stored beside the document.
     (kept,) = [d["reports"] for d in stored_documents(world)]
     assert any(report["name"] == "report.json" for report in kept)  # type: ignore[union-attr]
     for report in kept:  # type: ignore[union-attr]
         assert (stored.path.parent / report["path"]).is_file()
+
+
+@linux_only
+def test_a_hook_built_input_is_built_in_the_checkout_and_measured(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook builds an ignored file in the checkout, in the measurement environment."""
+    hook = (
+        "! git --version >/dev/null 2>&1 && "
+        '[ "$BOOLEY_PROJECT_ROOT" = "$(pwd -P)" ] && printf "module gen; endmodule\\n" > gen.v\n'
+    )
+    world = make_world(
+        files={
+            "metrics_gen.core": CORE.format(name="metrics_gen").replace(
+                "[top.v]", "[top.v, gen.v]"
+            ),
+            "top.v": "module top; endmodule\n",
+            ".gitignore": "gen.v\n",
+            ".booley/hooks/post-setup.sh": hook,
+            ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
+        }
+    )
+
+    assert measure(monkeypatch, world) == 0
+
+    assert len(stored_documents(world)) == 1
+    assert not (world.live / "gen.v").exists()
+
+
+@linux_only
+def test_a_hook_built_core_defines_a_target_the_rules_name(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hook runs before the rules are read, so a core it writes can hold a Target."""
+    core = CORE.format(name="metrics_gen").replace("\n", "\\n")
+    hook = f'printf "{core}" > metrics_gen.core\n'
+    world = make_world(
+        files={
+            "top.v": "module top; endmodule\n",
+            ".booley/hooks/post-setup.sh": hook,
+            ".booley/metrics.toml": "[metrics_gen.checkout_stub]\nmarker_max = 10\n",
+        }
+    )
+
+    assert measure(monkeypatch, world) == 0
+
+    assert len(stored_documents(world)) == 1
+
+
+@linux_only
+def test_a_post_setup_hook_linked_into_the_live_tree_never_runs(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = metrics_project(
+        make_world, "[metrics_ok.checkout_stub]\nmarker_max = 10\n", symlinks=LINKED_HOOK
+    )
+    (world.live / "hook.sh").write_bytes(f"touch {world.ctl / 'hook-ran'}\n".encode())
+
+    assert measure(monkeypatch, world) == 2
+
+    assert "links to" in capsys.readouterr().err
+    assert not (world.ctl / "hook-ran").exists()
 
 
 @linux_only
@@ -243,6 +317,22 @@ def test_a_goals_section_in_the_commit_does_not_stop_its_measurement(
 
 
 @linux_only
+def test_live_paths_in_files_no_flow_reads_do_not_stop_the_measurement(
+    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Files no checkout run reads; a waiver's subject is copied from the warning ID (DOCTOR.md).
+    waiver = 'version = 1\n[[waiver]]\ncheck = "interactive.devcontainer-drift"\nreason = "ok"\n'
+    waiver += 'subject = "{live}/.devcontainer/devcontainer.json"\npermanent = true\n'
+    names = ("doctor-waivers", "configs", "criteria", "reviews", "pipeline", "notes")
+    files = {f".booley/{name}.toml": waiver for name in names}
+    files[".booley/metrics.toml"] = "[metrics_ok.checkout_stub]\nmarker_max = 10\n"
+    files.update({f"{name}.core": CORE.format(name=name) for name in TARGETS})
+    files["top.v"] = "module top; endmodule\n"
+
+    assert measure(monkeypatch, make_world(files=files)) == 0
+
+
+@linux_only
 def test_a_target_run_measures_one_target_and_keeps_its_reports_with_the_job(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -326,14 +416,16 @@ def test_an_mcp_cancel_stops_the_measurement_and_its_children(
 
     async def scenario() -> tuple[str | None, float, str]:
         jobs = _JobManager(_FakeLifetime())
-        run_id = jobs.submit("measure", command, 600, context=resolve_call_context({}))
-        deadline = time.monotonic() + 60
+        run_id = jobs.submit(
+            "measure", command, 3 * hang_guard_s(), context=resolve_call_context({})
+        )
+        deadline = time.monotonic() + hang_guard_s()
         while not (world.ctl / "lingering").exists():
             assert run_id in jobs._tasks and not jobs._tasks[run_id].done(), "measure ended early"
             assert time.monotonic() < deadline, "the child Flow never started"
             await asyncio.sleep(0.05)
         began = time.monotonic()
-        phase = await asyncio.wait_for(jobs.cancel(run_id), timeout=60)
+        phase = await asyncio.wait_for(jobs.cancel(run_id), timeout=hang_guard_s())
         record = job_records.read_record(run_id, jobs._job_roots[run_id])
         assert record is not None
         return phase, time.monotonic() - began, record.status

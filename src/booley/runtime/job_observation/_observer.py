@@ -98,12 +98,30 @@ class JobObserver:
         return tokens, memory
 
 
-def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_root: Path) -> str:
+def _state(
+    rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_root: Path
+) -> tuple[str, job_slots.SlotToken | None]:
+    """The Job's state, and for ``queued`` the claim whose wait it reports."""
+    identity = ProcessIdentity.from_payload(rec.process_identity)
+    settled = _process_state(rec, identity, proc_root)
+    if settled is not None:
+        return settled, None
+    claims = _job_claims(rec.run_id, identity, slots)
+    if len(claims) > 1:
+        return "unavailable", None
+    if claims:
+        return ("running", None) if claims[0].is_holder else ("queued", claims[0])
+    return ("running" if rec.run_started_at else "spawning"), None
+
+
+def _process_state(
+    rec: job_records.JobRecord, identity: ProcessIdentity | None, proc_root: Path
+) -> str | None:
+    """The state the record and its process alone decide; ``None`` when its claims do."""
     if rec.status != job_records.STATUS_RUNNING:
         return "completed" if rec.status == job_records.STATUS_DONE else rec.status
     if rec.pid is None:
         return "spawning"
-    identity = ProcessIdentity.from_payload(rec.process_identity)
     observed = (
         ProcessState.UNKNOWN
         if identity is None
@@ -111,45 +129,38 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
     )
     if observed in {ProcessState.DEAD, ProcessState.REUSED, ProcessState.ZOMBIE}:
         return "orphaned"
-    if observed == ProcessState.UNKNOWN:
-        return "unavailable"
-    # Child lanes (one execution each) run under the Job's PID but are not the Job's own entry.
-    matched = [
-        token
-        for token in slots
-        if token.owner_identity == identity and token.owner_kind != "execution"
-    ]
-    if len(matched) > 1:
-        matched = _with_item_claims(matched)
-    if matched:
-        return (
-            "unavailable"
-            if len(matched) > 1
-            else ("running" if matched[0].is_holder else "queued")
-        )
-    return "running" if rec.run_started_at else "spawning"
+    return "unavailable" if observed == ProcessState.UNKNOWN else None
 
 
-def _with_item_claims(matched: list[job_slots.SlotToken]) -> list[job_slots.SlotToken]:
-    """The Job's own entry, standing for a waiting work-item claim when one waits.
+def _job_claims(
+    run_id: str, identity: ProcessIdentity | None, slots: list[job_slots.SlotToken]
+) -> list[job_slots.SlotToken]:
+    """The claim that speaks for the Job: its own, or a waiting work item's stand-in.
 
-    A Job holding a claim may also hold Memory Reservations for its work items, in
-    its own PID. One non-memory entry or companion memory entry (a mutation
-    coordinator) with item claims beside it is the Job: it is ``queued`` while an
-    item claim waits.
+    Job admission labels the Job's own claim with the run ID; a work item's claim
+    (a Simulation Record lane, a campaign tool run) carries its Job's label marked
+    as a work item. The label, not the owner kind, tells them apart: a CLI Job's
+    own claim is execution-owned because ``booley session enter`` exports the
+    execution ID. A Job holding a
+    companion claim (a mutation coordinator) is ``queued`` while a work item's claim
+    in its process waits, so that item's claim is returned instead.
     """
-
-    def is_own(token: job_slots.SlotToken) -> bool:
-        return token.job_class != job_slots.CLASS_MEMORY or (
-            token.memory is not None and token.memory.companion
-        )
-
-    own = [token for token in matched if is_own(token)]
-    items = [token for token in matched if not is_own(token)]
-    if len(own) != 1 or not items:
-        return matched
-    waiting = [token for token in items if not token.is_holder]
-    return [waiting[0]] if waiting and own[0].is_holder else own
+    mine = [token for token in slots if token.owner_identity == identity]
+    own = [
+        token
+        for token in mine
+        if token.job is not None and token.job.run_id == run_id and not token.job.work_item
+    ]
+    if (
+        len(own) == 1
+        and own[0].is_holder
+        and own[0].memory is not None
+        and own[0].memory.companion
+    ):
+        waiting = [token for token in mine if token is not own[0] and not token.is_holder]
+        if waiting:
+            return [waiting[0]]
+    return own
 
 
 def _snapshot_records(
@@ -296,13 +307,14 @@ def _project_job(
     cache: JobArtifactCache,
     validate_record: RecordValidator | None,
 ) -> JobObservation:
-    state = _state(rec, tokens, proc_root)
+    state, claim = _state(rec, tokens, proc_root)
     if state == "orphaned":
         # The record was read before its owner finished: it may have written its
         # terminal record and exited since, so show that outcome, not a false orphan.
         current = _read_job(root / f"{rec.run_id}.json", validate_record)
         if current is not None and current.status != job_records.STATUS_RUNNING:
-            rec, state = current, _state(current, tokens, proc_root)
+            rec = current
+            state, claim = _state(current, tokens, proc_root)
     reports_parent = None if rec.report_root is None else Path(rec.report_root)
     artifact = cache.find(root, rec.endpoint, rec.run_id, "report", reports_parent=reports_parent)
     report, report_path = (None, None) if artifact is None else artifact
@@ -314,7 +326,8 @@ def _project_job(
         report or {},
         (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
-    wait = _queue_wait(rec, state, memory)
+    holders, waiters = memory
+    wait = None if claim is None else job_slots.memory_wait(claim, holders, waiters, time.time())
     return JobObservation(
         root,
         rec,
@@ -326,22 +339,6 @@ def _project_job(
         queue="" if wait is None else f"position {wait.position}: {wait.describe()}",
         queue_position=None if wait is None else wait.position,
     )
-
-
-def _queue_wait(
-    rec: job_records.JobRecord,
-    state: str,
-    memory: tuple[list[job_slots.SlotToken], list[job_slots.SlotToken]],
-) -> job_slots.MemoryWait | None:
-    """What the Job's queued memory claim waits for; ``None`` unless it is such a waiter."""
-    if state != "queued":
-        return None
-    identity = ProcessIdentity.from_payload(rec.process_identity)
-    holders, waiters = memory
-    for waiter in waiters:
-        if waiter.owner_identity == identity:
-            return job_slots.memory_wait(waiter, holders, waiters, time.time())
-    return None
 
 
 def _reported_stage(progress: dict[str, Any] | None) -> str:

@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode devcontainer spec generator (ADR 0018 WS0)."""
+"""Tests for the Sandbox devcontainer spec generator (ADR 0018 WS0)."""
 
 from __future__ import annotations
 
@@ -69,13 +69,16 @@ class TestBuildSpec:
             assert int(args[args.index("--pids-limit") + 1]) == dc.SESSION_PIDS_LIMIT
 
     def test_memory_limit_rendered_when_set(self):
-        """ADR 0028 Decision 12: [sandbox] memory feeds a --memory run arg."""
-        spec = build_spec(dc.APP_NONE, memory="8g")
+        """ADR 0087: [sandbox] memory feeds a --memory run arg, its swap a --memory-swap one."""
+        spec = build_spec(dc.APP_NONE, memory="8g", memory_swap="8g")
         args = spec["runArgs"]
         assert args[args.index("--memory") + 1] == "8g"
+        assert args[args.index("--memory-swap") + 1] == "8g"
+        assert args.index("--memory-swap") == args.index("--memory") + 2
+        assert "--memory-swap" not in build_spec(dc.APP_NONE, memory="8g")["runArgs"]
 
     def test_no_memory_limit_by_default(self):
-        """Empty memory (the default) sets no limit — pre-0028 parity."""
+        """Empty memory (the default) sets no limit."""
         assert "--memory" not in build_spec(dc.APP_NONE)["runArgs"]
 
     def test_credential_plan_is_required(self):
@@ -87,7 +90,7 @@ class TestBuildSpec:
         env = build_spec(dc.APP_NONE)["remoteEnv"]
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert env[key] == dc.PROXY_URL
-        assert env["BOOLEY_MCP_MODE"] == "interactive"
+        assert env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
         assert env["BOOLEY_DIR"] == dc.BOOLEY_DIR_TARGET
 
     def test_agent_app_env_matches_app(self):

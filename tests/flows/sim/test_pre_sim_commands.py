@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.flows import job_resources
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
+from tests.time_budget import hang_guard_s
 
 
 def _handle(root: Path) -> TargetHandle:
@@ -30,8 +33,65 @@ def _handle(root: Path) -> TargetHandle:
     )
 
 
-def _completed(returncode: int = 0, *, stderr: str = "") -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+class _HookProcess:
+    """A spawned hook: the pid is above the kernel limit, so sampling it finds nothing."""
+
+    pid = 4_194_305
+    reaped_peak_bytes = None
+
+    def __init__(
+        self,
+        returncode: int = 0,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        timeout: subprocess.TimeoutExpired | None = None,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout, self.stderr = MagicMock(), MagicMock()
+        self._answers: list[Any] = [timeout] if timeout is not None else []
+        self._output = (stdout, stderr)
+        self.communicate = MagicMock(side_effect=self._communicate)
+
+    def _communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        if self._answers:
+            raise self._answers.pop()
+        return self._output
+
+
+def _fire(
+    handle: TargetHandle,
+    process: _HookProcess | None = None,
+    *,
+    spawn_error: OSError | None = None,
+    **overrides: Any,
+) -> tuple[Any, MagicMock]:
+    """Run the Pre-Sim Commands of *handle* with a mocked ``MeasuredPopen``."""
+    return _fire_with(handle, process, spawn_error, overrides)[:2]
+
+
+def _fire_with(
+    handle: TargetHandle,
+    process: _HookProcess | None,
+    spawn_error: OSError | None,
+    overrides: dict[str, Any],
+) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
+    """:func:`_fire` that also returns the mocked tree kill and the history record call."""
+    spawn = MagicMock(return_value=process or _HookProcess(), side_effect=spawn_error)
+    options: dict[str, Any] = {
+        "test_names": ("smoke",),
+        "build_root": handle.project_root / "build" / "lite",
+        "eda_tool": "icarus",
+        "timeout_s": 5,
+        "resource_flags": (),
+        **overrides,
+    }
+    with (
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", spawn),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
+    ):
+        return run_pre_sim_commands(handle, **options), spawn, kill, record
 
 
 def test_single_test_environment_is_project_scoped_and_reserved_values_win(
@@ -39,17 +99,12 @@ def test_single_test_environment_is_project_scoped_and_reserved_values_win(
 ) -> None:
     handle = _handle(tmp_path)
     build_root = tmp_path / "build" / "lite"
-    run = MagicMock(return_value=_completed())
 
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=build_root,
-            eda_tool="verilator",
-            timeout_s=5,
-            simulator_environment={"FLAVOR": "vanilla", "BOOLEY_TARGET": "hijack"},
-        )
+    evidence, run = _fire(
+        handle,
+        eda_tool="verilator",
+        simulator_environment={"FLAVOR": "vanilla", "BOOLEY_TARGET": "hijack"},
+    )
 
     assert evidence is not None and evidence.status == "passed"
     environment = run.call_args.kwargs["env"]
@@ -62,21 +117,11 @@ def test_single_test_environment_is_project_scoped_and_reserved_values_win(
     assert environment["BOOLEY_RUN_CWD"] == str(tmp_path / "util" / "sim")
     assert environment["BOOLEY_SIM_EDA_TOOL"] == "verilator"
     assert run.call_args.kwargs["cwd"] == tmp_path
-    assert run.call_args.kwargs["timeout"] == 5
+    assert run.return_value.communicate.call_args.kwargs["timeout"] == 5
 
 
 def test_batch_environment_has_selected_set_without_single_test_name(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    run = MagicMock(return_value=_completed())
-
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("reset", "count"),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=7,
-        )
+    evidence, run = _fire(_handle(tmp_path), test_names=("reset", "count"), timeout_s=7)
 
     assert evidence is not None and evidence.test_names == ("reset", "count")
     environment = run.call_args.kwargs["env"]
@@ -100,10 +145,8 @@ def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> N
     """Only a list of strings is a command list; anything else runs nothing."""
     handle = _handle(tmp_path)
     _write_pre_run_commands(tmp_path, value)
-    run = MagicMock(return_value=_completed())
-
     with (
-        patch("booley.flows.sim.execution.pre_sim.subprocess.run", run),
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen") as spawn,
         pytest.raises(
             ValueError, match=r"\[flows\.sim\]\.pre_run_commands must be a list of strings"
         ),
@@ -111,28 +154,21 @@ def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> N
         run_pre_sim_commands(
             handle,
             test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
+            build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=5,
+            resource_flags=(),
         )
 
-    run.assert_not_called()
+    spawn.assert_not_called()
 
 
 @pytest.mark.parametrize("table", ["[flows.sim]\n", "[flows.sim]\npre_run_commands = []\n"])
 def test_unset_or_empty_pre_run_commands_run_nothing(tmp_path: Path, table: str) -> None:
     handle = _handle(tmp_path)
     (tmp_path / ".booley" / "booley.toml").write_text(table, encoding="utf-8")
-    run = MagicMock(return_value=_completed())
 
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
+    evidence, run = _fire(handle)
 
     assert evidence is None
     run.assert_not_called()
@@ -150,17 +186,8 @@ def test_uninitialized_checkout_uses_build_cache_fallback(
         SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
     )
     build_root = tmp_path / "build" / "lite"
-    run = MagicMock(return_value=_completed())
 
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=build_root,
-            eda_tool="icarus",
-            timeout_s=5,
-            commands=("true",),
-        )
+    evidence, run = _fire(handle, commands=("true",))
 
     assert evidence is not None and evidence.status == "passed"
     environment = run.call_args.kwargs["env"]
@@ -168,18 +195,7 @@ def test_uninitialized_checkout_uses_build_cache_fallback(
 
 
 def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    run = MagicMock(return_value=_completed())
-
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-            run_cwd="frozen/sim",
-        )
+    evidence, run = _fire(_handle(tmp_path), run_cwd="frozen/sim")
 
     assert evidence is not None and evidence.status == "passed"
     assert run.call_args.kwargs["env"]["BOOLEY_RUN_CWD"] == str(tmp_path / "frozen" / "sim")
@@ -188,21 +204,15 @@ def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -
 def test_immutable_simulation_record_hook_runs_from_project_root_without_build_access(
     tmp_path: Path,
 ) -> None:
-    handle = _handle(tmp_path)
     actual_cwd = tmp_path / "attempt-run"
     actual_cwd.mkdir()
-    run = MagicMock(return_value=_completed())
 
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "private-build",
-            eda_tool="icarus",
-            timeout_s=5,
-            run_cwd=str(actual_cwd),
-            expose_build_root=False,
-        )
+    evidence, run = _fire(
+        _handle(tmp_path),
+        build_root=tmp_path / "private-build",
+        run_cwd=str(actual_cwd),
+        expose_build_root=False,
+    )
 
     assert evidence is not None and evidence.status == "passed"
     assert run.call_args.kwargs["cwd"] == tmp_path
@@ -211,95 +221,64 @@ def test_immutable_simulation_record_hook_runs_from_project_root_without_build_a
     assert "BOOLEY_BUILD_ROOT" not in environment
 
 
-def test_nonzero_pre_sim_is_a_design_stage_failure(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    with patch(
-        "booley.flows.sim.execution.pre_sim.subprocess.run",
-        return_value=_completed(3, stderr="firmware build failed"),
-    ):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
+@pytest.mark.parametrize(
+    ("answer", "status", "detail", "exact"),
+    [
+        pytest.param(
+            {"process": _HookProcess(3, stderr="firmware build failed")},
+            "failed",
+            "firmware build failed",
+            True,
+            id="nonzero-is-a-design-stage-failure",
+        ),
+        pytest.param(
+            {
+                "process": _HookProcess(
+                    127, stderr="/bin/bash: line 2: riscv64-unknown-elf-gcc: command not found"
+                )
+            },
+            "spawn_error",
+            "riscv64-unknown-elf-gcc",
+            False,
+            id="missing-executable",
+        ),
+        pytest.param(
+            {"spawn_error": OSError("resource temporarily unavailable")},
+            "failed",
+            "resource temporarily unavailable",
+            False,
+            id="process-spawn-error",
+        ),
+        pytest.param(
+            {"process": lambda: _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))},
+            "timed_out",
+            "",
+            False,
+            id="timeout",
+        ),
+    ],
+)
+def test_pre_sim_process_outcomes_become_evidence(
+    tmp_path: Path, answer: dict[str, Any], status: str, detail: str, exact: bool
+) -> None:
+    # A one-shot timeout lives on the process, so build it per run: a repeated run
+    # (flake-stress) must not reuse the instance the first run already consumed.
+    process = answer.get("process")
+    if callable(process):
+        answer = {**answer, "process": process()}
+    evidence, _run = _fire(_handle(tmp_path), **answer)
 
     assert evidence is not None
-    assert evidence.status == "failed"
-    assert evidence.detail == "firmware build failed"
-
-
-def test_missing_pre_sim_executable_is_a_spawn_error(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    missing = _completed(
-        127,
-        stderr="/bin/bash: line 2: riscv64-unknown-elf-gcc: command not found",
-    )
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", return_value=missing):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
-
-    assert evidence is not None
-    assert evidence.status == "spawn_error"
-    assert "riscv64-unknown-elf-gcc" in evidence.detail
-
-
-def test_pre_sim_process_spawn_error_is_an_ordinary_failure(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    with patch(
-        "booley.flows.sim.execution.pre_sim.subprocess.run",
-        side_effect=OSError("resource temporarily unavailable"),
-    ):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
-
-    assert evidence is not None
-    assert evidence.status == "failed"
-    assert "resource temporarily unavailable" in evidence.detail
-
-
-def test_timeout_is_preserved_as_pre_sim_evidence(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
-    with patch(
-        "booley.flows.sim.execution.pre_sim.subprocess.run",
-        side_effect=subprocess.TimeoutExpired("bash", 5),
-    ):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build" / "lite",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
-
-    assert evidence is not None
-    assert evidence.status == "timed_out"
+    assert evidence.status == status
+    assert (evidence.detail == detail) if exact else (detail in evidence.detail)
 
 
 def _booley_dir_seen_by_pre_sim(root: Path, tmp_path: Path) -> dict[str, str]:
     """Run one Pre-Sim Command for *root* with a mocked subprocess; return its environment."""
     handle = cast(TargetHandle, SimpleNamespace(project_root=root.resolve(), selector="lite"))
-    run = MagicMock(return_value=_completed())
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", run):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build",
-            eda_tool="verilator",
-            timeout_s=5,
-            commands=("true",),
-        )
+    evidence, run = _fire(
+        handle, build_root=tmp_path / "build", eda_tool="verilator", commands=("true",)
+    )
     assert evidence is not None and evidence.status == "passed"
     return run.call_args.kwargs["env"]
 
@@ -356,7 +335,8 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
         test_names=("smoke",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=30,
+        timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=(
             f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
             f'"{sys.executable}" -m pytest --lf -q "{nested}"',
@@ -376,16 +356,8 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
 def test_hook_preserves_actual_rc_and_independent_utf8_tails(
     tmp_path: Path, returncode: int
 ) -> None:
-    handle = _handle(tmp_path)
-    process = subprocess.CompletedProcess([], returncode, "\u03b1" * 10000, "β" * 10000)
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", return_value=process):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
+    process = _HookProcess(returncode, stdout="\u03b1" * 10000, stderr="β" * 10000)
+    evidence, _run = _fire(_handle(tmp_path), process)
     assert evidence is not None
     assert evidence.returncode == returncode
     assert evidence.stdout_tail == "\u03b1" * 4096
@@ -394,16 +366,8 @@ def test_hook_preserves_actual_rc_and_independent_utf8_tails(
 
 
 def test_timeout_partial_byte_streams_preserve_unknown_exit_code(tmp_path: Path) -> None:
-    handle = _handle(tmp_path)
     timeout = subprocess.TimeoutExpired("bash", 5, output=b"hook-out\n", stderr=b"hook-err\n")
-    with patch("booley.flows.sim.execution.pre_sim.subprocess.run", side_effect=timeout):
-        evidence = run_pre_sim_commands(
-            handle,
-            test_names=("smoke",),
-            build_root=tmp_path / "build",
-            eda_tool="icarus",
-            timeout_s=5,
-        )
+    evidence, _run = _fire(_handle(tmp_path), _HookProcess(-9, timeout=timeout))
     assert evidence is not None and evidence.status == "timed_out"
     assert evidence.returncode is None
     assert evidence.stdout_tail == "hook-out\n"
@@ -421,7 +385,7 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
     scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with (
         supervised_execution_scope(scope),
-        patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen") as spawn,
         pytest.raises(PreSimScopeStoppedError),
     ):
         run_pre_sim_commands(
@@ -430,6 +394,7 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=5,
+            resource_flags=(),
         )
     spawn.assert_not_called()
 
@@ -442,7 +407,7 @@ def test_pre_sim_spawn_failure_records_no_command_start(tmp_path: Path) -> None:
     with (
         sink.installed(),
         patch(
-            "booley.flows.sim.execution.pre_sim.subprocess.Popen",
+            "booley.flows.sim.execution.pre_sim.MeasuredPopen",
             side_effect=OSError("resource temporarily unavailable"),
         ),
     ):
@@ -452,6 +417,7 @@ def test_pre_sim_spawn_failure_records_no_command_start(tmp_path: Path) -> None:
             build_root=tmp_path / "build",
             eda_tool="icarus",
             timeout_s=5,
+            resource_flags=(),
         )
     assert evidence is not None and evidence.status == "failed"
     assert "command started" not in sink.stream.getvalue(), (
@@ -467,7 +433,8 @@ def test_actual_hook_normalizes_invalid_utf8_output(tmp_path: Path) -> None:
         test_names=("smoke",),
         build_root=tmp_path / "build",
         eda_tool="icarus",
-        timeout_s=5,
+        timeout_s=hang_guard_s(),
+        resource_flags=(),
         commands=("printf '\\377hook-out\\n'; printf '\\376hook-err\\n' >&2",),
     )
     assert evidence is not None and evidence.returncode == 0
@@ -490,7 +457,8 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
             test_names=("smoke",),
             build_root=tmp_path / "build",
             eda_tool="icarus",
-            timeout_s=30,
+            timeout_s=hang_guard_s(),
+            resource_flags=(),
             commands=(touch,),
         )
 
@@ -508,3 +476,103 @@ def test_pre_sim_commands_do_not_run_after_the_jobs_oom_kill(tmp_path: Path) -> 
         ran = run_hook()
     assert ran is not None and ran.status == "passed", ran
     assert marker.exists()
+
+
+def test_a_timed_out_firing_is_recorded_as_a_lower_bound(tmp_path: Path) -> None:
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+
+    evidence, _spawn, _kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    (_flow, label, flags, _measurement, result), _ = record.call_args
+    assert (label.phase, flags, result.timed_out) == ("sim_pre_run", (), True)
+
+
+def test_a_firing_that_never_spawned_records_nothing(tmp_path: Path) -> None:
+    evidence, _spawn, _kill, record = _fire_with(
+        _handle(tmp_path), None, OSError("resource temporarily unavailable"), {}
+    )
+
+    assert evidence is not None and evidence.status == "failed"
+    record.assert_not_called()
+
+
+def test_each_firing_gets_a_private_tmpdir_removed_afterwards(tmp_path: Path) -> None:
+    _evidence, spawn, _kill, _record = _fire_with(_handle(tmp_path), None, None, {})
+
+    private = Path(spawn.call_args.kwargs["env"]["TMPDIR"])
+    assert private.name and not private.exists()
+
+
+def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(
+    tmp_path: Path,
+) -> None:
+    """The drain after the tree kill is bounded; the pipes are dropped and the firing recorded."""
+    hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
+    hook._answers.insert(0, subprocess.TimeoutExpired("bash", 5))  # the drain times out too
+
+    evidence, _spawn, kill, record = _fire_with(_handle(tmp_path), hook, None, {})
+
+    assert evidence is not None and evidence.status == "timed_out"
+    kill.assert_called_once()
+    hook.stdout.close.assert_called_once()
+    hook.stderr.close.assert_called_once()
+    record.assert_called_once()
+
+
+def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: Path) -> None:
+    hook = _HookProcess()
+    with (
+        patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", return_value=hook),
+        patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
+        patch("booley.flows.sim.execution.pre_sim.record_command") as record,
+        patch(
+            "booley.flows.sim.execution.pre_sim.JobResourceMonitor.start",
+            side_effect=RuntimeError("can't start new thread"),
+        ),
+        pytest.raises(RuntimeError, match="can't start new thread"),
+    ):
+        run_pre_sim_commands(
+            _handle(tmp_path),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=5,
+            resource_flags=(),
+        )
+
+    kill.assert_called_once_with(hook)
+    record.assert_not_called()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_firing_records_the_peak_of_a_child_that_exited_between_samples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Private seam: the host /proc sample; an empty tree is what a 0.25 s sampler
+    # sees of a child that exits between samples.
+    monkeypatch.setattr(job_resources, "process_tree", lambda pid, **_: {})
+    import resource  # POSIX only; the test is Linux-only
+
+    # Bigger than this process's own peak: a reaped child's peak counts its parent's.
+    mib = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+    allocate = f'b = b"x" * ({mib} << 20)'
+    child = f"{shlex.quote(sys.executable)} -c {shlex.quote(allocate)}"
+
+    with patch("booley.flows.sim.execution.pre_sim.record_command") as record:
+        evidence = run_pre_sim_commands(
+            cast(
+                TargetHandle,
+                SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
+            ),
+            test_names=("smoke",),
+            build_root=tmp_path / "build",
+            eda_tool="icarus",
+            timeout_s=hang_guard_s(),
+            resource_flags=(),
+            commands=(child,),
+        )
+
+    assert evidence is not None and evidence.status == "passed"
+    measurement = record.call_args.args[3]
+    assert measurement.peak_rss_mb is not None and measurement.peak_rss_mb >= mib

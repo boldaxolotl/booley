@@ -74,7 +74,8 @@ Two project-side extension points:
   extensionless `post-setup` runs in each new sandboxed worktree that
   `booley worktree new` creates, and a failure removes the
   worktree again; make it idempotent. It may install/build dependencies, copy
-  files, create symlinks, or prepare generated inputs.
+  files, create symlinks, or prepare generated inputs. `booley measure` also
+  runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that
   must exist in every Sandbox, build an image extending `booley-sandbox` from
   `.booley/docker/Dockerfile` and point `[sandbox].image` at it.
@@ -219,8 +220,7 @@ not a CAPI2 composition mechanism, and YAML anchors do not cross files.
 Use this split only when there are at least two real adapters. For one core,
 local shared filesets keep the interface smaller. When refactoring an existing
 Project, preserve both parts of every selectable Target's durable identity: the
-declaring core's VLNV and the Target name. Criteria and durable evidence bind to
-that pair.
+declaring core's VLNV and the Target name. Durable evidence binds to that pair.
 
 Authoring rules:
 
@@ -248,7 +248,7 @@ Authoring rules:
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
   `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
-  FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
+  FPGA-axis Target does not also carry sim/lint/synth inputs. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
   families follow their declared flow/tool: Verilator or Icarus simulation ⇒
   `SIM:{target}`; Verilator or Verible lint ⇒ `LINT:{target}`; Yosys synthesis ⇒
@@ -352,8 +352,8 @@ Authoring rules:
   deleted cone, and the authoring rules above are the primary guard.
 - **`fpga` Targets:** `flow: generic`, `flow_options: {tool: vivado, …}`;
   `xdc` is a typed fileset, `top` is `toplevel`, and the board `part` plus
-  `out_of_context` live in Target `flow_options`. **No `hooks:`** (decision 21,
-  below).
+  `out_of_context` live in Target `flow_options`. **No `hooks:`** (see the
+  validator rules below).
 - **Trace: Icarus needs no wiring; an owned-main Verilator Target needs
   `trace_files`.** For **Icarus** sim Targets (including cocotb on Icarus),
   `booley flow sim --trace` works without any fileset change — the trace overlay
@@ -622,9 +622,11 @@ Rules that differ from SV Targets:
   lint/synth — a different wrapper, with plain signal ports; see the
   non-scalar-toplevel-ports determinant in `0-plan.md`. Packed-struct ports are
   *not* this case and need no wrapper.)
-- **`tests.toml` lists cocotb test-function names**, and must **not** declare
-  a `select` plusarg template — selection is an env-var filter Booley builds;
-  a `select` on a Cocotb Target is a setup-time error (see
+- **`tests.toml` lists cocotb test IDs** (a plain test's function name; a
+  generated test's rendered ID, such as `run_test_tx/ifg=12`; its bare function
+  name matches no test and the run comes back inconclusive), and must **not**
+  declare a `select` plusarg template — selection is an env-var filter Booley
+  builds; a `select` on a Cocotb Target is a setup-time error (see
   TESTS_TEMPLATE.toml's cocotb section). `skip` works unchanged.
 - **No sentinels.** The verdict comes from cocotb's `results.xml`; do not add
   `pass_sentinels`/`fail_sentinels` for a Cocotb Target's sake.
@@ -787,7 +789,8 @@ What goes here:
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured
   first Doctor Target. For simulation, mirror replacement build-tree files beneath
-  `.booley/selftest/sim/bad-overlay/`; the overlay must build and then fail the
+  `.booley/selftest/sim/bad-overlay/` (Project input: commit it with the
+  rest of the Booley Directory); the overlay must build and then fail the
   selected smoke Test behaviorally — a compile-only failure is insufficient.
   Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a

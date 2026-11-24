@@ -1,32 +1,42 @@
-"""Tests for `booley init` git-side steps in the setup.git_hooks module.
-
-Currently covers Step 10c — the worktree prune guard (ADR 0028 Decision 10):
-Ticket Mode worktrees are created in-container, so their git metadata records
-container paths; `gc.worktreePruneExpire=never` keeps a host-side `git gc`
-from pruning those registrations.
-"""
+"""Tests for `booley init` git-side steps: Project Git hooks and worktree policies."""
 
 from __future__ import annotations
 
+import io
 import os
 import shlex
 import subprocess
-from collections.abc import Iterator
+import zipfile
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
-from booley.harness.setup import git_hooks
-from booley.harness.setup.common import InitContext
+from booley.core.host_shell import quote_arg
+from booley.harness import init_cmd
+from booley.harness.setup import git_hooks, line_endings
+from booley.harness.setup import project_git_hook_reconcile as reconcile
+from booley.harness.setup.common import InitContext, StepResult
 from booley.harness.setup.git_hooks import (
     WORKTREE_PRUNE_KEY,
     WORKTREE_PRUNE_VALUE,
     WORKTREE_RELATIVE_KEY,
-    _step_worktree_link_policy,
-    _step_worktree_prune_guard,
     read_worktree_prune_expire,
+)
+from booley.harness.setup.guidance_links import plan_guidance_links
+from booley.harness.setup.line_endings import (
+    AutocrlfSetting,
+    LineEndingMode,
+    LineEndingRefusalReason,
+    LineEndingReport,
+    LineEndingRepository,
+    LineEndingStatus,
+    RepositoryLineEndingReport,
+    discover_line_ending_repositories,
+    read_autocrlf_setting,
+    reconcile_project_line_endings,
+    sample_worktree_cleanliness,
 )
 from booley.harness.setup.line_endings import (
     LineEndingActionKind as ActionKind,
@@ -43,18 +53,14 @@ from booley.harness.setup.line_endings import (
 from booley.harness.setup.line_endings import (
     LineEndingObservationCode as ObservationCode,
 )
-from booley.harness.setup.line_endings import (
-    LineEndingRepository,
-    LineEndingStatus,
-    RepositoryLineEndingReport,
+from booley.harness.setup.plan import InitPlan
+from booley.harness.setup.project_git_hook_bundle import (
+    BUNDLE_NAME,
+    build_project_git_hook_bundle,
 )
-from booley.harness.setup.project_git_hook_reconcile import (
-    _LEGACY_MANAGED_HOOKS,
-    _build_commit_msg_hook_body,
-    _build_pre_push_hook_body,
-    _shell_bundle_resolution,
-    step_project_git_hooks,
-)
+from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
+from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache, resolve_booley_dir
+from booley.runtime.sandbox_apply import shell_command
 from tests.conftest import symlink_or_skip
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.subprocess_budget import run_bounded_child
@@ -64,36 +70,6 @@ pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
 def _git_init(root: Path) -> None:
     run_bounded_child(["git", "init", "-q", str(root)], check=True)
-
-
-def _autocrlf(root: Path) -> str:
-    proc = run_bounded_child(["git", "-C", str(root), "config", "--get", "core.autocrlf"])
-    return proc.stdout.strip()
-
-
-def _local_autocrlf(root: Path) -> str:
-    proc = run_bounded_child(
-        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"]
-    )
-    return proc.stdout.strip()
-
-
-def _git_commit(root: Path) -> None:
-    run_bounded_child(
-        [
-            "git",
-            "-C",
-            str(root),
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "wip",
-        ],
-        check=True,
-    )
 
 
 def _ctx(root: Path, *, check_only: bool = False, fix_line_endings: bool = False) -> InitContext:
@@ -114,278 +90,217 @@ def _run_git(
     return run_bounded_child(["git", "-C", str(root), *args], check=check)
 
 
-class TestWorktreePruneGuardStep:
-    def test_sets_config_on_git_repo(self, tmp_path: Path):
-        _git_init(tmp_path)
-        ctx = _ctx(tmp_path)
-
-        _step_worktree_prune_guard(ctx)
-
-        assert read_worktree_prune_expire(tmp_path) == WORKTREE_PRUNE_VALUE
-        assert ctx.results[-1].name == "worktree_prune_guard"
-        assert ctx.results[-1].status == "ok"
-
-    def test_skips_when_already_set(self, tmp_path: Path):
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", WORKTREE_PRUNE_KEY, WORKTREE_PRUNE_VALUE],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        _step_worktree_prune_guard(ctx)
-
-        assert ctx.results[-1].status == "current"
-        assert ctx.results[-1].detail == "already set"
-
-    def test_overwrites_wrong_value(self, tmp_path: Path):
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", WORKTREE_PRUNE_KEY, "3.months.ago"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        _step_worktree_prune_guard(ctx)
-
-        assert read_worktree_prune_expire(tmp_path) == WORKTREE_PRUNE_VALUE
-        assert ctx.results[-1].status == "ok"
-
-    def test_check_only_does_not_write(self, tmp_path: Path):
-        _git_init(tmp_path)
-        ctx = _ctx(tmp_path, check_only=True)
-
-        _step_worktree_prune_guard(ctx)
-
-        assert read_worktree_prune_expire(tmp_path) is None
-        assert ctx.results[-1].status == "warn"
-
-    def test_not_a_git_repo_skips(self, tmp_path: Path):
-        ctx = _ctx(tmp_path)
-
-        _step_worktree_prune_guard(ctx)
-
-        assert ctx.results[-1].status == "skip"
-        assert ctx.results[-1].detail == "not a git repo"
+def _policy_project(root: Path, *, data_repository: bool = True) -> Path:
+    """Initialize *root* as a Git repository with a `.booley` directory; return that directory."""
+    _git_init(root)
+    data = root / ".booley"
+    data.mkdir()
+    if data_repository:
+        _git_init(data)
+    return data
 
 
-class TestWorktreeLinkPolicyStep:
-    def test_both_capable_enables_outer_and_standalone_project_data(self, tmp_path: Path):
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        ctx = _ctx(tmp_path)
+def _initialize(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    check_only: bool = False,
+    host: tuple[int, int, int] | None = (2, 53, 0),
+    sandbox: tuple[int, int, int] | None = (2, 53, 0),
+    guidance_plan: InitPlan | None = None,
+    line_ending_baseline: Mapping[Path, bool | None] | None = None,
+) -> dict[str, StepResult]:
+    """Run one Project Initialization and return its step results by name."""
+    # Private seam: the host Git version is the real `git --version`; no Project
+    # Initialization input sets it.
+    monkeypatch.setattr(git_hooks, "_host_git_version", lambda: host)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    ctx = InitContext(
+        project_root=root, check_only=check_only, interactive=False, show_step_banners=False
+    )
+    request = init_cmd.ProjectInitialization(
+        None,
+        root / ".booley" / "booley.toml",
+        lambda: init_cmd.ProjectFacts(sandbox),
+        reconcile_interactive_files=False,
+        guidance_plan=guidance_plan,
+        line_ending_baseline=line_ending_baseline,
+    )
+    try:
+        with init_booley_dir_scope(root):
+            init_cmd.initialize_project(ctx, request)
+    finally:
+        reset_cache()
+    return {result.name: result for result in ctx.results}
 
-        _step_worktree_link_policy(
-            ctx,
-            host_git_version=(2, 48, 0),
-            sandbox_git_version=(2, 53, 0),
-        )
 
-        assert (
-            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
-            == "true"
-        )
-        assert (
-            _run_git(
-                booley_dir, "config", "--local", "--get", WORKTREE_RELATIVE_KEY
-            ).stdout.strip()
-            == "true"
-        )
-        assert ctx.results[-1].status == "ok"
+@pytest.mark.parametrize(
+    ("before", "status"),
+    [(None, "ok"), ("3.months.ago", "ok"), (WORKTREE_PRUNE_VALUE, "current")],
+)
+def test_prune_guard_disables_pruning_in_both_repositories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str | None, status: str
+):
+    data = _policy_project(tmp_path)
+    for repository in (tmp_path, data):
+        if before is not None:
+            _run_git(repository, "config", WORKTREE_PRUNE_KEY, before)
 
-    @pytest.mark.parametrize("sandbox_version", [(2, 47, 9), None])
-    def test_old_or_unknown_side_uses_pre_opt_in_fallback(
-        self,
-        tmp_path: Path,
-        sandbox_version: tuple[int, int, int] | None,
-    ):
-        _git_init(tmp_path)
-        ctx = _ctx(tmp_path)
+    results = _initialize(tmp_path, monkeypatch)
 
-        _step_worktree_link_policy(
-            ctx,
-            host_git_version=(2, 53, 0),
-            sandbox_git_version=sandbox_version,
-        )
+    assert results["worktree_prune_guard"].status == status
+    assert read_worktree_prune_expire(tmp_path) == WORKTREE_PRUNE_VALUE
+    assert read_worktree_prune_expire(data) == WORKTREE_PRUNE_VALUE
 
-        assert (
-            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
-            == "false"
-        )
-        assert ctx.results[-1].status == "warn"
-        assert "absolute-link fallback" in ctx.results[-1].detail
 
-    def test_check_only_reports_without_mutation(self, tmp_path: Path):
-        _git_init(tmp_path)
-        ctx = _ctx(tmp_path, check_only=True)
+def test_check_only_reports_worktree_policies_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    data = _policy_project(tmp_path)
 
-        _step_worktree_link_policy(
-            ctx,
-            host_git_version=(2, 53, 0),
-            sandbox_git_version=(2, 53, 0),
-        )
+    results = _initialize(tmp_path, monkeypatch, check_only=True)
 
-        assert (
-            _run_git(
-                tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY, check=False
-            ).returncode
-            != 0
-        )
-        assert ctx.results[-1].status == "warn"
+    assert results["worktree_prune_guard"].detail == "would set"
+    assert results["worktree_link_policy"].detail == "would set true"
+    for repository in (tmp_path, data):
+        assert read_worktree_prune_expire(repository) is None
+        assert git_hooks.read_local_config(repository, WORKTREE_RELATIVE_KEY) is None
 
-    def test_relative_extension_rejects_incompatible_downgrade(self, tmp_path: Path):
-        _git_init(tmp_path)
-        _run_git(tmp_path, "config", "core.repositoryFormatVersion", "1")
-        _run_git(tmp_path, "config", "extensions.relativeWorktrees", "true")
-        _run_git(tmp_path, "config", WORKTREE_RELATIVE_KEY, "true")
-        ctx = _ctx(tmp_path)
 
-        _step_worktree_link_policy(
-            ctx,
-            host_git_version=(2, 47, 9),
-            sandbox_git_version=(2, 53, 0),
-        )
+def test_prune_guard_skips_a_project_root_outside_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / ".booley").mkdir()
 
-        assert (
-            _run_git(tmp_path, "config", "--local", "--get", WORKTREE_RELATIVE_KEY).stdout.strip()
-            == "true"
-        )
-        assert ctx.results[-1].status == "warn"
-        assert ctx.results[-1].detail == "incompatible Git downgrade"
+    results = _initialize(tmp_path, monkeypatch)
 
-    def test_second_repository_failure_rolls_back_first(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        original = git_hooks._set_local_config
+    prune = results["worktree_prune_guard"]
+    assert (prune.status, prune.detail) == ("skip", "not a git repo")
 
-        def fail_second(repository: Path, value: str | None) -> str | None:
-            if repository == booley_dir and value == "true":
-                return "injected failure"
-            return original(repository, value)
 
-        monkeypatch.setattr(git_hooks, "_set_local_config", fail_second)
-        ctx = _ctx(tmp_path)
+@pytest.mark.parametrize(
+    ("host", "sandbox", "relative", "status", "detail"),
+    [
+        ((2, 48, 0), (2, 53, 0), "true", "ok", "relative links enabled"),
+        ((2, 53, 0), (2, 47, 9), "false", "warn", "absolute-link fallback"),
+        ((2, 53, 0), None, "false", "warn", "absolute-link fallback"),
+    ],
+)
+def test_link_policy_follows_the_older_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: tuple[int, int, int],
+    sandbox: tuple[int, int, int] | None,
+    relative: str,
+    status: str,
+    detail: str,
+):
+    data = _policy_project(tmp_path)
 
-        _step_worktree_link_policy(
-            ctx,
-            host_git_version=(2, 53, 0),
-            sandbox_git_version=(2, 53, 0),
-        )
+    results = _initialize(tmp_path, monkeypatch, host=host, sandbox=sandbox)
 
-        assert (
-            _run_git(
-                tmp_path,
-                "config",
-                "--local",
-                "--get",
-                WORKTREE_RELATIVE_KEY,
-                check=False,
-            ).returncode
-            != 0
-        )
-        assert ctx.results[-1].status == "warn"
+    link = results["worktree_link_policy"]
+    assert (link.status, link.detail) == (status, detail)
+    for repository in (tmp_path, data):
+        assert git_hooks.read_local_config(repository, WORKTREE_RELATIVE_KEY) == relative
 
-    def test_custom_project_data_repository_is_included(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        _git_init(tmp_path)
-        custom = tmp_path / "state"
-        custom.mkdir()
-        _git_init(custom)
-        monkeypatch.setattr(git_hooks, "resolve_checkout_booley_dir", lambda _root: custom)
 
-        repositories = git_hooks.worktree_policy_repositories(tmp_path)
+def test_link_policy_keeps_relative_worktrees_after_a_git_downgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _policy_project(tmp_path, data_repository=False)
+    _run_git(tmp_path, "config", "core.repositoryFormatVersion", "1")
+    _run_git(tmp_path, "config", "extensions.relativeWorktrees", "true")
+    _run_git(tmp_path, "config", WORKTREE_RELATIVE_KEY, "true")
 
-        assert repositories == (tmp_path, custom)
+    results = _initialize(tmp_path, monkeypatch, host=(2, 47, 9))
 
-    def test_missing_project_data_keeps_outer_repository(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setattr(
-            git_hooks,
-            "resolve_checkout_booley_dir",
-            lambda _root: (_ for _ in ()).throw(FileNotFoundError),
-        )
+    link = results["worktree_link_policy"]
+    assert (link.status, link.detail) == ("warn", "incompatible Git downgrade")
+    assert git_hooks.read_local_config(tmp_path, WORKTREE_RELATIVE_KEY) == "true"
 
-        assert git_hooks.worktree_policy_repositories(tmp_path) == (tmp_path,)
 
-    def test_git_probe_errors_are_bounded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(
-            git_hooks.subprocess,
-            "run",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
-        )
+def test_config_write_failure_rolls_back_the_link_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    data = _policy_project(tmp_path)
+    # Git refuses to write a locked config, so the second repository's write fails.
+    (data / ".git" / "config.lock").write_bytes(b"")
 
-        assert git_hooks.read_local_config(tmp_path, WORKTREE_RELATIVE_KEY) is None
-        assert git_hooks._host_git_version() is None
-        assert git_hooks._set_local_config(tmp_path, "true") == "unavailable"
+    results = _initialize(tmp_path, monkeypatch)
 
-    def test_rollback_failure_is_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        first = tmp_path / "first"
-        second = tmp_path / "second"
-        calls: list[tuple[Path, str | None]] = []
-        monkeypatch.setattr(git_hooks, "read_local_config", lambda *_args: None)
+    assert results["worktree_prune_guard"].detail == "git config failed"
+    assert results["worktree_link_policy"].detail == "git config failed"
+    assert git_hooks.read_local_config(tmp_path, WORKTREE_RELATIVE_KEY) is None
 
-        def fail_second_and_rollback(repository: Path, value: str | None) -> str | None:
-            calls.append((repository, value))
-            if repository == second:
-                return "write failed"
-            if repository == first and value is None:
-                return "rollback failed"
-            return None
 
-        monkeypatch.setattr(git_hooks, "_set_local_config", fail_second_and_rollback)
+@pytest.mark.parametrize("project_data", ["custom", "missing"])
+def test_policy_repositories_follow_the_resolved_booley_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project_data: str
+):
+    _git_init(tmp_path)
+    custom = tmp_path / "state"
+    custom.mkdir()
+    _git_init(custom)
 
-        failures = git_hooks._reconcile_relative_policy((first, second), "true")
+    def resolve(_root: Path) -> Path:
+        if project_data == "missing":
+            raise FileNotFoundError
+        return custom
 
-        assert failures == [f"{second}: write failed", f"rollback {first}: rollback failed"]
-        assert calls == [(first, "true"), (second, "true"), (first, None)]
+    monkeypatch.setattr(git_hooks, "resolve_checkout_booley_dir", resolve)
 
-    def test_prune_guard_reports_config_write_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        def run(args, **_kwargs):
-            if "rev-parse" in args:
-                return subprocess.CompletedProcess(args, 0, stdout=".git\n", stderr="")
-            if "--get" in args:
-                return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
-            return subprocess.CompletedProcess(args, 1, stdout="", stderr="write failed")
+    repositories = git_hooks.worktree_policy_repositories(tmp_path)
 
-        monkeypatch.setattr(git_hooks.subprocess, "run", run)
-        ctx = _ctx(tmp_path)
+    assert repositories == ((tmp_path, custom) if project_data == "custom" else (tmp_path,))
 
-        _step_worktree_prune_guard(ctx)
 
-        assert ctx.results[-1].status == "warn"
-        assert ctx.results[-1].detail == "git config failed"
+# Private seam: Git failing to start (OSError) cannot be staged per call; a Project
+# Initialization runs Git in every step.
+def test_git_probe_errors_are_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        git_hooks.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+    )
 
-    def test_prune_guard_covers_standalone_project_data(self, tmp_path: Path):
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
+    assert git_hooks.read_local_config(tmp_path, WORKTREE_RELATIVE_KEY) is None
+    assert git_hooks._host_git_version() is None
+    assert git_hooks._set_local_config(tmp_path, "true") == "unavailable"
 
-        _step_worktree_prune_guard(_ctx(tmp_path))
 
-        assert read_worktree_prune_expire(tmp_path) == WORKTREE_PRUNE_VALUE
-        assert read_worktree_prune_expire(booley_dir) == WORKTREE_PRUNE_VALUE
+# Private seam: a rollback write failing after its forward write succeeded needs a
+# per-call failure; real Git takes the same config lock for both.
+def test_rollback_failure_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    data = _policy_project(tmp_path)
+    original = git_hooks._set_local_config
+    calls: list[tuple[Path, str | None]] = []
+
+    def fail_second_and_rollback(repository: Path, value: str | None) -> str | None:
+        calls.append((repository.resolve(), value))
+        if repository.resolve() == data.resolve():
+            return "write failed"
+        if repository.resolve() == tmp_path.resolve() and value is None:
+            return "rollback failed"
+        return original(repository, value)
+
+    monkeypatch.setattr(git_hooks, "_set_local_config", fail_second_and_rollback)
+
+    results = _initialize(tmp_path, monkeypatch)
+
+    assert results["worktree_link_policy"].detail == "git config failed"
+    root, booley_dir = tmp_path.resolve(), data.resolve()
+    assert calls == [(root, "true"), (booley_dir, "true"), (root, None)]
+    assert f"rollback {tmp_path}: rollback failed" in capsys.readouterr().out
 
 
 class TestProjectCommitMsgHookVendoring:
     """Project Git policy is one managed bundle plus two outer adapters."""
 
     def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path, monkeypatch, request):
-        from booley.harness.setup.project_git_hook_bundle import BUNDLE_NAME
-        from booley.runtime.booley_dir import resolve_booley_dir
-
         select_booley_dir(request, monkeypatch, tmp_path)
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
@@ -394,8 +309,8 @@ class TestProjectCommitMsgHookVendoring:
 
         booley_dir = resolve_booley_dir(tmp_path)
         assert (booley_dir / ".managed" / BUNDLE_NAME).is_file()
-        hooks = booley_dir / "hooks"
-        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+        # The step creates only `.managed/`; no retired helper is vendored under `hooks/`.
+        assert not (booley_dir / "hooks").exists()
         assert ctx.results[-1].name == "project_git_hooks"
         assert ctx.results[-1].status == "ok"
 
@@ -422,30 +337,12 @@ class TestProjectCommitMsgHookVendoring:
         self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest
     ):
         """The standalone bundle hook rejects before either attribution form is altered."""
-        from booley.runtime.booley_dir import reset_cache
-
-        repo = tmp_path / "project"
-        booley_dir = tmp_path / "project-state"
-        _run_git(tmp_path, "init", "-q", "-b", "main", str(repo))
-        _run_git(repo, "config", "user.name", "T")
-        _run_git(repo, "config", "user.email", "t@example.test")
-        (repo / ".gitignore").write_text(".booley/\n", encoding="utf-8")
-        config = repo / ".booley" / "booley.toml"
-        config.parent.mkdir()
-        config.write_text(
+        repo, baseline = self._stealth_hook_repo(
+            tmp_path,
+            monkeypatch,
+            request,
             '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
-            encoding="utf-8",
         )
-        (repo / "baseline.txt").write_text("baseline\n", encoding="utf-8")
-        _run_git(repo, "add", ".gitignore", "baseline.txt")
-        _run_git(repo, "commit", "-qm", "baseline")
-        baseline = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
-
-        booley_dir.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        reset_cache()
-        request.addfinalizer(reset_cache)
-        step_project_git_hooks(_ctx(repo))
 
         (repo / "change.txt").write_text("change\n", encoding="utf-8")
         _run_git(repo, "add", "change.txt")
@@ -472,8 +369,6 @@ class TestProjectCommitMsgHookVendoring:
         self, tmp_path: Path, monkeypatch, request: pytest.FixtureRequest, config_text: str
     ) -> tuple[Path, str]:
         """Return a repository with the installed commit-msg hook and its baseline commit."""
-        from booley.runtime.booley_dir import reset_cache
-
         repo = tmp_path / "project"
         _run_git(tmp_path, "init", "-q", "-b", "main", str(repo))
         _run_git(repo, "config", "user.name", "T")
@@ -510,11 +405,9 @@ class TestProjectCommitMsgHookVendoring:
             (repo / "change.txt").write_text("change\n", encoding="utf-8")
             _run_git(repo, "add", "change.txt")
             options = ["commit"]
-            retry_options = ["commit"]
         else:
             (repo / "baseline.txt").write_text("changed\n", encoding="utf-8")
             options = ["commit", "-a"]
-            retry_options = ["commit", "-a"]
         original = "fix(core): repair quokka path\n\nBody line.\n"
         message = tmp_path / "message.txt"
         message.write_text(original, encoding="utf-8")
@@ -525,7 +418,7 @@ class TestProjectCommitMsgHookVendoring:
         assert rejected.returncode != 0
         assert _run_git(repo, "rev-parse", "HEAD").stdout.strip() == baseline
         assert kept.read_text(encoding="utf-8") == original
-        assert f'-v -e -F "{kept}"' in rejected.stderr
+        assert f"-v -e -F {quote_arg(str(kept))}" in rejected.stderr
         assert "-a" in rejected.stderr and "--amend" in rejected.stderr
         assert "'quokka' in the subject" in rejected.stderr
 
@@ -535,7 +428,7 @@ class TestProjectCommitMsgHookVendoring:
         )
         env = {**os.environ, "GIT_EDITOR": "true"}
         retried = run_bounded_child(
-            ["git", "-C", str(repo), *retry_options, "-v", "-e", "-F", str(kept)], env=env
+            ["git", "-C", str(repo), *options, "-v", "-e", "-F", str(kept)], env=env
         )
         assert retried.returncode == 0, retried.stderr
         assert _run_git(repo, "log", "-1", "--format=%B").stdout.strip() == original.strip()
@@ -566,94 +459,71 @@ class TestProjectCommitMsgHookVendoring:
         # The merge is still in progress, so a message from -m is also a merge message.
         again = _run_git(repo, "commit", "-m", "fix(core): booley merge", check=False)
         assert again.returncode != 0
-        assert 'git commit -v -e -F "' in again.stderr
+        assert "git commit -v -e -F " in again.stderr
 
         _run_git(repo, "commit", "-m", "Merge feature work")
         parents = _run_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
         assert len(parents) == 3
 
 
-class TestInstalledPrePushGuard:
-    def test_launcher_derives_booley_dir_when_environment_is_absent(
-        self, tmp_path: Path, monkeypatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        main = tmp_path / "main"
-        origin = tmp_path / "origin"
-        _run_git(tmp_path, "init", "-q", str(main))
-        _run_git(tmp_path, "init", "-q", "--bare", str(origin))
-        _run_git(main, "remote", "add", "origin", str(origin))
-        (main / ".booley").mkdir()
-        (main / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+@pytest.mark.parametrize("runtime_dir", [None, "runtime-project-state"])
+def test_tracked_project_state_is_refused_at_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, runtime_dir
+):
+    main = tmp_path / "main"
+    origin = tmp_path / "origin"
+    _run_git(tmp_path, "init", "-q", str(main))
+    _run_git(tmp_path, "init", "-q", "--bare", str(origin))
+    _run_git(main, "remote", "add", "origin", str(origin))
+    (main / ".booley").mkdir()
+    (main / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    if runtime_dir is None:
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        reset_cache()
-        step_project_git_hooks(_ctx(main))
+    else:
+        (tmp_path / runtime_dir).mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / runtime_dir))
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    step_project_git_hooks(_ctx(main))
 
-        leaked = main / ".booley" / "docs" / "example.md"
-        leaked.parent.mkdir(parents=True)
-        leaked.write_text("private project state\n", encoding="utf-8")
-        _run_git(main, "add", "-f", ".booley/docs/example.md")
-        _run_git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "docs")
-
-        result = _run_git(main, "push", "origin", "HEAD:main", check=False)
-
-        assert result.returncode != 0
-        assert "tracked path exposes project state" in result.stderr
-
-    def test_external_runtime_alias_cannot_hide_tracked_project_state(
-        self, tmp_path: Path, monkeypatch, request
-    ):
-        from booley.runtime.booley_dir import reset_cache
-
-        main = tmp_path / "main"
-        origin = tmp_path / "origin"
-        booley_dir = tmp_path / "runtime-project-state"
-        _run_git(tmp_path, "init", "-q", str(main))
-        _run_git(tmp_path, "init", "-q", "--bare", str(origin))
-        _run_git(main, "remote", "add", "origin", str(origin))
-        (main / ".booley").mkdir()
-        (main / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
-        booley_dir.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        reset_cache()
-        request.addfinalizer(reset_cache)
-        step_project_git_hooks(_ctx(main))
-
-        leaked = main / ".booley" / "docs" / "example.md"
-        leaked.parent.mkdir(parents=True)
-        leaked.write_text("private project state\n", encoding="utf-8")
-        _run_git(main, "add", "-f", ".booley/docs/example.md")
-        _run_git(
-            main,
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-qm",
-            "docs: add example",
-            "--no-verify",
-        )
-
-        result = _run_git(main, "push", "origin", "HEAD:main", check=False)
-
-        assert result.returncode != 0, "tracked Project state reached the remote"
-        assert "tracked path exposes project state" in result.stderr
-        assert ".booley/docs/example.md" in result.stderr
-        refs = _run_git(origin, "for-each-ref", "--format=%(refname)")
-        assert not refs.stdout.strip()
-
-
-def _legacy_source(name: str) -> bytes:
-    """Return Booley's canonical bytes for one retired hook file name."""
-    from booley.harness.setup.project_git_hook_bundle import (
-        _SOURCE_INVENTORY,
-        _normalized_source,
-        _source_package_root,
+    leaked = main / ".booley" / "docs" / "example.md"
+    leaked.parent.mkdir(parents=True)
+    leaked.write_text("private project state\n", encoding="utf-8")
+    _run_git(main, "add", "-f", ".booley/docs/example.md")
+    _run_git(
+        main,
+        *("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "docs", "--no-verify"),
     )
 
-    return _normalized_source(_source_package_root() / dict(_SOURCE_INVENTORY)[name])
+    result = _run_git(main, "push", "origin", "HEAD:main", check=False)
+
+    assert result.returncode != 0, "tracked Project state reached the remote"
+    assert "tracked path exposes project state" in result.stderr
+    assert ".booley/docs/example.md" in result.stderr
+    assert not _run_git(origin, "for-each-ref", "--format=%(refname)").stdout.strip()
+
+
+# File names older releases vendored into the Booley Directory's `hooks/`; the migration
+# step removes or backs them up.
+LEGACY_HOOKS = (
+    "boundary.py",
+    "checkout_role.py",
+    "run_command.py",
+    "commit_msg_utils.py",
+    "validate_commit_msg.py",
+    "commit_msg_hook.py",
+    "pre_push_hook.py",
+)
+
+
+def _bundle_sources() -> dict[str, bytes]:
+    """Return the canonical bytes of every hook source the bundle ships, by file name."""
+    with zipfile.ZipFile(io.BytesIO(build_project_git_hook_bundle().content)) as archive:
+        return {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name.endswith(".py") and name != "__main__.py"
+        }
 
 
 def _tree_snapshot(root: Path) -> dict[Path, tuple[bytes | None, int]]:
@@ -667,8 +537,6 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bytes | None, int]]:
 class TestProjectGitHookMigration:
     @pytest.fixture(autouse=True)
     def booley_directory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-        from booley.runtime.booley_dir import reset_cache
-
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
         (tmp_path / ".booley").mkdir()
         reset_cache()
@@ -742,8 +610,6 @@ class TestProjectGitHookMigration:
     def test_git_hook_path_timeout_skips_reconciliation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.harness.setup import project_git_hook_reconcile as reconcile
-
         def timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(kwargs.get("args", args[0]), 10)
 
@@ -754,55 +620,66 @@ class TestProjectGitHookMigration:
         assert ctx.results[-1].status == "skip"
         assert "timed out" in ctx.results[-1].detail
 
-    def test_shell_bundle_resolution_supports_external_bundle(self, tmp_path: Path) -> None:
-        result = _shell_bundle_resolution(
-            tmp_path / "project", tmp_path / "managed" / "bundle.pyz"
-        )
+    @staticmethod
+    def _installed_bundle_line(root: Path) -> str:
+        """Install the adapters in *root* and return the `BUNDLE=` line of the commit-msg one."""
+        reset_cache()
+        _git_init(root)
+        step_project_git_hooks(_ctx(root))
+        hook = (root / ".git" / "hooks" / "commit-msg").read_text(encoding="utf-8")
+        return next(line for line in hook.splitlines(keepends=True) if line.startswith("BUNDLE="))
 
-        bundle = tmp_path / "managed" / "bundle.pyz"
-        assert result == f"BUNDLE={shlex.quote(str(bundle))}\n"
-
-    def test_shell_bundle_resolution_follows_only_the_booley_dir_entry(
-        self, tmp_path: Path
+    def test_adapter_reaches_an_external_bundle_by_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        external = tmp_path / "external"
+        external.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(external))
+        reset_cache()
+
+        line = self._installed_bundle_line(tmp_path / "project")
+
+        bundle = external / ".managed" / BUNDLE_NAME
+        assert line == f"BUNDLE={shlex.quote(str(bundle.resolve()))}\n"
+
+    def test_adapter_follows_only_the_booley_dir_entry_link(self, tmp_path: Path) -> None:
         root = tmp_path / "project"
         root.mkdir()
-        real = tmp_path / "real-booley-dir"
-        (real / ".managed").mkdir(parents=True)
-        (real / ".managed" / "bundle.pyz").write_bytes(b"bundle")
-        symlink_or_skip(root / ".booley", real)
+        symlink_or_skip(root / ".booley", self._real_directory(tmp_path))
 
-        linked = _shell_bundle_resolution(root, root / ".booley" / ".managed" / "bundle.pyz")
-        assert linked.splitlines()[0] == 'BUNDLE="$ROOT/.booley/.managed/bundle.pyz"'
+        linked = self._installed_bundle_line(root)
+
+        assert linked == f'BUNDLE="$ROOT/.booley/.managed/{BUNDLE_NAME}"\n'
 
         # A link below the entry still points outside the checkout: absolute fallback.
         plain = tmp_path / "plain"
         (plain / ".booley").mkdir(parents=True)
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        (elsewhere / "bundle.pyz").write_bytes(b"bundle")
         symlink_or_skip(plain / ".booley" / ".managed", elsewhere)
-        below = _shell_bundle_resolution(plain, plain / ".booley" / ".managed" / "bundle.pyz")
-        assert below == f"BUNDLE={shlex.quote(str(elsewhere / 'bundle.pyz'))}\n"
+        below = self._installed_bundle_line(plain)
+        assert below == f"BUNDLE={shlex.quote(str(elsewhere / BUNDLE_NAME))}\n"
 
-    def test_shell_bundle_resolution_through_symlinked_relocated_entry(
-        self, tmp_path: Path
-    ) -> None:
+    def test_adapter_follows_a_symlinked_relocated_entry(self, tmp_path: Path) -> None:
         root = tmp_path / "project"
         root.mkdir()
         (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+        symlink_or_skip(root / "state", self._real_directory(tmp_path))
+
+        linked = self._installed_bundle_line(root)
+
+        assert linked == f'BUNDLE="$ROOT/state/.managed/{BUNDLE_NAME}"\n'
+
+    @staticmethod
+    def _real_directory(tmp_path: Path) -> Path:
         real = tmp_path / "real-booley-dir"
-        (real / ".managed").mkdir(parents=True)
-        (real / ".managed" / "bundle.pyz").write_bytes(b"bundle")
-        symlink_or_skip(root / "state", real)
-
-        linked = _shell_bundle_resolution(root, root / "state" / ".managed" / "bundle.pyz")
-
-        assert linked.splitlines()[0] == 'BUNDLE="$ROOT/state/.managed/bundle.pyz"'
+        real.mkdir()
+        return real
 
     def test_check_only_lists_every_pending_action_without_writing(self, tmp_path: Path) -> None:
         hooks = self._seed(
-            tmp_path, {"boundary.py": _legacy_source("boundary.py"), "run_command.py": b"edit\n"}
+            tmp_path,
+            {"boundary.py": _bundle_sources()["boundary.py"], "run_command.py": b"edit\n"},
         )
         (hooks / "__pycache__").mkdir()
         (hooks / "__pycache__" / "boundary.cpython-314.pyc").write_bytes(b"managed")
@@ -830,7 +707,7 @@ class TestProjectGitHookMigration:
     def test_crlf_only_legacy_sources_are_not_backed_up(self, tmp_path: Path) -> None:
         hooks = self._seed(
             tmp_path,
-            {name: _legacy_source(name).replace(b"\n", b"\r\n") for name in _LEGACY_MANAGED_HOOKS},
+            {name: _bundle_sources()[name].replace(b"\n", b"\r\n") for name in LEGACY_HOOKS},
         )
         (hooks / "__pycache__").mkdir()
         (hooks / "__pycache__" / "boundary.cpython-314.pyc").write_bytes(b"managed")
@@ -838,13 +715,11 @@ class TestProjectGitHookMigration:
         step_project_git_hooks(_ctx(tmp_path))
 
         assert not list(hooks.glob("*.pre-booley*"))
-        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+        assert not any((hooks / name).exists() for name in LEGACY_HOOKS)
         assert not (hooks / "__pycache__").exists()
 
     def test_legacy_sources_and_managed_bytecode_are_removed(self, tmp_path: Path) -> None:
-        from booley.harness.setup.project_git_hook_bundle import _SOURCE_INVENTORY
-
-        sources = {name: _legacy_source(name) for name, _relative in _SOURCE_INVENTORY}
+        sources = _bundle_sources()
         hooks = self._seed(tmp_path, {**sources, "post-setup.sh": b"#!/bin/sh\n"})
         cache = hooks / "__pycache__"
         cache.mkdir()
@@ -853,8 +728,8 @@ class TestProjectGitHookMigration:
 
         step_project_git_hooks(_ctx(tmp_path))
 
-        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
-        assert all((hooks / name).is_file() for name in set(sources) - set(_LEGACY_MANAGED_HOOKS))
+        assert not any((hooks / name).exists() for name in LEGACY_HOOKS)
+        assert all((hooks / name).is_file() for name in set(sources) - set(LEGACY_HOOKS))
         assert (hooks / "post-setup.sh").is_file()
         assert not (cache / "boundary.cpython-314.pyc").exists()
         assert (cache / "booley_commit_policy.cpython-314.pyc").is_file()
@@ -884,7 +759,7 @@ class TestProjectGitHookMigration:
     @pytest.mark.skipif(os.name == "nt", reason="symlink privileges are unavailable on CI")
     def test_non_regular_legacy_paths_are_preserved(self, tmp_path: Path, capsys) -> None:
         hooks = self._seed(tmp_path, {})
-        (tmp_path / "boundary-copy.py").write_bytes(_legacy_source("boundary.py"))
+        (tmp_path / "boundary-copy.py").write_bytes(_bundle_sources()["boundary.py"])
         (hooks / "boundary.py").symlink_to(tmp_path / "boundary-copy.py")
         (hooks / "checkout_role.py").mkdir()
         (hooks / "run_command.py").symlink_to(tmp_path / "missing.py")
@@ -901,12 +776,8 @@ class TestProjectGitHookMigration:
     def test_adapter_write_failure_keeps_hooks_working_and_rerun_converges(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.harness.setup import project_git_hook_reconcile as reconcile
-
         _run_git(tmp_path, "init", "-q", "--bare", str(tmp_path / ".booley" / "origin.git"))
-        hooks = self._seed(
-            tmp_path, {name: _legacy_source(name) for name in _LEGACY_MANAGED_HOOKS}
-        )
+        hooks = self._seed(tmp_path, {name: _bundle_sources()[name] for name in LEGACY_HOOKS})
         (tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
         pre_push = tmp_path / ".git" / "hooks" / "pre-push"
         pre_push.write_bytes(pre_push.read_bytes() + b"# older revision\n")
@@ -922,7 +793,7 @@ class TestProjectGitHookMigration:
         step_project_git_hooks(failed)
 
         assert failed.results[-1].status == "err"
-        assert all((hooks / name).is_file() for name in _LEGACY_MANAGED_HOOKS)
+        assert all((hooks / name).is_file() for name in LEGACY_HOOKS)
         (tmp_path / ".gitignore").write_text(".booley/\n", encoding="utf-8")
         _run_git(tmp_path, "add", ".gitignore")
         commit = _run_git(
@@ -939,36 +810,27 @@ class TestProjectGitHookMigration:
         check = _ctx(tmp_path, check_only=True)
         step_project_git_hooks(check)
         assert check.results[-1].detail == "current"
-        assert not any((hooks / name).exists() for name in _LEGACY_MANAGED_HOOKS)
+        assert not any((hooks / name).exists() for name in LEGACY_HOOKS)
 
 
-def _bundle_repo(root: Path) -> Path:
+@pytest.fixture
+def bundle_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A repository with a bare origin, the managed bundle, and both adapters."""
-    from booley.harness.setup.project_git_hook_bundle import (
-        BUNDLE_NAME,
-        build_project_git_hook_bundle,
-    )
-
-    main = root / "main"
-    _run_git(root, "init", "-q", "-b", "main", str(main))
-    _run_git(root, "init", "-q", "--bare", str(root / "origin"))
-    _run_git(main, "remote", "add", "origin", str(root / "origin"))
+    main = tmp_path / "main"
+    _run_git(tmp_path, "init", "-q", "-b", "main", str(main))
+    _run_git(tmp_path, "init", "-q", "--bare", str(tmp_path / "origin"))
+    _run_git(main, "remote", "add", "origin", str(tmp_path / "origin"))
     for key, val in (("user.email", "t@example.com"), ("user.name", "T")):
         _run_git(main, "config", key, val)
-    bundle = main / ".booley" / ".managed" / BUNDLE_NAME
-    bundle.parent.mkdir(parents=True)
-    bundle.write_bytes(build_project_git_hook_bundle().content)
-    for name, build in (
-        ("commit-msg", _build_commit_msg_hook_body),
-        ("pre-push", _build_pre_push_hook_body),
-    ):
-        hook = main / ".git" / "hooks" / name
-        hook.write_text(build(main, bundle), encoding="utf-8", newline="\n")
-        hook.chmod(0o755)
+    (main / ".booley").mkdir()
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    step_project_git_hooks(_ctx(main))
     (main / ".gitignore").write_text(".booley/\n", encoding="utf-8")
     _run_git(main, "add", ".gitignore")
     _run_git(main, "commit", "-qm", "init")
-    return main
+    yield main
+    reset_cache()
 
 
 def _commit(repo: Path, msg: str) -> subprocess.CompletedProcess[str]:
@@ -980,8 +842,8 @@ def _commit(repo: Path, msg: str) -> subprocess.CompletedProcess[str]:
 class TestHookInSecondaryWorktree:
     """A user-made secondary worktree resolves the main checkout's bundle."""
 
-    def test_commit_succeeds_in_a_secondary_worktree(self, tmp_path: Path):
-        main = _bundle_repo(tmp_path)
+    def test_commit_succeeds_in_a_secondary_worktree(self, tmp_path: Path, bundle_repo: Path):
+        main = bundle_repo
         wt = tmp_path / "wt"
         _run_git(main, "worktree", "add", "-q", str(wt), "-b", "side")
 
@@ -992,8 +854,10 @@ class TestHookInSecondaryWorktree:
         assert "bundle not found" not in result.stderr
         assert _run_git(wt, "log", "-1", "--format=%s").stdout.strip() == "from-worktree"
 
-    def test_missing_script_skips_instead_of_blocking_the_commit(self, tmp_path: Path):
-        main = _bundle_repo(tmp_path)
+    def test_missing_script_skips_instead_of_blocking_the_commit(
+        self, tmp_path: Path, bundle_repo: Path
+    ):
+        main = bundle_repo
         (main / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
 
         result = _commit(main, "no-script")
@@ -1001,8 +865,8 @@ class TestHookInSecondaryWorktree:
         assert result.returncode == 0, result.stderr
         assert "project-git-hooks.pyz" in result.stderr
 
-    def test_main_worktree_still_runs_the_hook(self, tmp_path: Path):
-        main = _bundle_repo(tmp_path)
+    def test_main_worktree_still_runs_the_hook(self, tmp_path: Path, bundle_repo: Path):
+        main = bundle_repo
 
         result = _commit(main, "from-main")
 
@@ -1022,15 +886,15 @@ class TestPrePushFailsClosed:
     both checks with one stderr line.
     """
 
-    def test_push_succeeds_while_the_guard_is_installed(self, tmp_path: Path):
-        main = _bundle_repo(tmp_path)
+    def test_push_succeeds_while_the_guard_is_installed(self, tmp_path: Path, bundle_repo: Path):
+        main = bundle_repo
 
         result = _run_git(main, "push", "-u", "origin", "main", check=False)
 
         assert result.returncode == 0, result.stderr
 
-    def test_missing_pre_push_script_blocks_the_push(self, tmp_path: Path):
-        main = _bundle_repo(tmp_path)
+    def test_missing_pre_push_script_blocks_the_push(self, tmp_path: Path, bundle_repo: Path):
+        main = bundle_repo
         (main / ".booley" / ".managed" / "project-git-hooks.pyz").unlink()
 
         result = _run_git(main, "push", "-u", "origin", "main", check=False)
@@ -1041,1213 +905,609 @@ class TestPrePushFailsClosed:
         # And nothing reached the remote.
         assert not _run_git(tmp_path / "origin", "for-each-ref").stdout.strip()
 
-    def test_only_pre_push_fails_closed(self, tmp_path: Path):
-        """The two bodies are built by one helper — pin the divergence.
+    def test_adapters_probe_an_isolated_python(self, bundle_repo: Path):
+        """F-7: a bare `exec python3` breaks every commit on stock Windows (the Store
+        alias exits non-zero), so each candidate interpreter is RUN in the isolated mode
+        used for the real invocation."""
+        for name in ("commit-msg", "pre-push"):
+            adapter = (bundle_repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
 
-        F-7: a bare `exec python3` breaks every commit on stock Windows (the
-        Store alias exits non-zero), so each candidate interpreter is RUN in
-        the isolated mode used for the real invocation.
-        """
-        bundle = tmp_path / ".booley" / ".managed" / "project-git-hooks.pyz"
-        commit_msg = _build_commit_msg_hook_body(tmp_path, bundle)
-        pre_push = _build_pre_push_hook_body(tmp_path, bundle)
-
-        assert commit_msg.startswith("#!/bin/sh\n")
-        assert "    exit 0\n" in commit_msg.split("bundle not found")[1]
-        assert "    exit 1\n" in pre_push.split("bundle not found")[1]
-        assert "for cand in python3 python" in commit_msg
-        assert "-I -S -c ''" in commit_msg
-        assert "py -3" in commit_msg
-        assert '"$ROOT/.booley/.managed/project-git-hooks.pyz"' in commit_msg
-        assert 'exec $PY -I -S "$BUNDLE" commit-msg "$@"' in commit_msg
-        # Both still resolve through the shared git dir (F-42 stays fixed).
-        for body in (commit_msg, pre_push):
-            assert "git rev-parse --path-format=absolute --git-common-dir" in body
+            assert adapter.startswith("#!/bin/sh\n")
+            assert (
+                "    if \"$cand\" -I -S -c '' >/dev/null 2>&1; then PY=$cand; break; fi\n"
+                in adapter
+            )
+            assert "py -3 -I -S -c ''" in adapter
+            assert f'exec $PY -I -S "$BUNDLE" {name} "$@"' in adapter
 
 
-class TestLineEndingsStep:
-    """Step 10d (F-15): keep host checkouts container-safe."""
+LF = b"module a;\nendmodule\n"
+CRLF = b"module a;\r\nendmodule\r\n"
+GUIDANCE = b"guidance\n"
+_NEEDS_HARDLINKS = pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
 
-    @staticmethod
-    def _add_file(root: Path, name: str, data: bytes) -> None:
+
+def _repo(
+    root: Path,
+    autocrlf: str | None = "true",
+    files: dict[str, bytes] | None = None,
+    *,
+    crlf: tuple[str, ...] = (),
+) -> Path:
+    """Create a repository with *files* committed; Git itself checks the *crlf* names out.
+
+    A hand-written CRLF file leaves a stale stat cache, so `git status` would report it
+    modified, which a real CRLF checkout does not; delete and `checkout --` instead.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    _git_init(root)
+    if autocrlf is not None:
+        _run_git(root, "config", "core.autocrlf", autocrlf)
+    for name, data in (files or {}).items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_bytes(data)
-        run_bounded_child(["git", "-C", str(root), "add", "-f", name], check=True)
+        _run_git(root, "add", "-f", name)
+    if files:
+        _run_git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed")
+    for name in crlf:
+        (root / name).unlink()
+        _run_git(root, "checkout", "--", name)
+    return root
 
-    def test_lf_tree_passes(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
 
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        self._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].name == "line_endings"
-        assert ctx.results[-1].status == "ok"
-
-    def test_check_only_names_the_pending_eol_pin(self, tmp_path: Path, capsys):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        # A repository an earlier Booley pinned: only core.autocrlf is set locally.
-        _git_init(tmp_path)
-        _run_git(tmp_path, "config", "core.autocrlf", "false")
-        self._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
-        ctx = _ctx(tmp_path, check_only=True)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "ok"
-        assert ctx.results[-1].detail == "core.autocrlf/core.eol pin pending"
-        assert "working tree is container-safe" in capsys.readouterr().out
-
-    def test_dirty_crlf_tree_is_left_untouched(self, tmp_path: Path, capsys):
-        # The real F-15 shape: core.autocrlf=true stores LF in the index and
-        # checks CRLF out, so index and worktree disagree (`i/lf w/crlf`) and
-        # the container's git — which does no conversion — reports every such
-        # file as modified.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        self._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
-        (tmp_path / "a.v").write_bytes(b"module a;\r\nendmodule\r\n")
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "dirty tree"
-        output = capsys.readouterr().out
-        assert "!  1 tracked file(s) are checked out with CRLF" in output
-        # The pin is withheld: flipping autocrlf over a CRLF checkout would create phantom diffs.
-        assert "would set core.autocrlf=false and core.eol=lf" in output
-
-    def test_failed_autocrlf_update_blocks_readiness(self, tmp_path: Path, capsys):
-        from booley.harness.setup import line_endings as init_git_hooks
-        from booley.harness.setup.git_hooks import _step_line_endings
-        from booley.harness.setup.line_endings import (
-            LineEndingActionKind,
-            LineEndingActionResult,
-            LineEndingActionState,
-        )
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        failure = LineEndingActionResult(
-            LineEndingActionKind.PIN_AUTOCRLF,
-            LineEndingActionState.FAILED,
-            detail="simulated config failure",
-        )
-        with patch.object(init_git_hooks, "_pin_line_ending_config", return_value=failure):
-            _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "autocrlf update failed"
-        output = capsys.readouterr().out
-        assert "!  core.autocrlf=true" in output
-        assert "·  detected core.autocrlf=true" not in output
-
-    def test_crlf_matching_the_index_is_not_a_phantom_diff(self, tmp_path: Path):
-        # B5. With autocrlf=false git stores the CRLF bytes as-is: index and
-        # worktree agree (`i/crlf w/crlf`), so `git status` is clean on the host
-        # AND in the container. Counting these as phantom diffs is a false
-        # positive — the check used to warn here purely because the worktree
-        # said "crlf", never asking whether the index disagreed.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        self._add_file(tmp_path, "a.v", b"module a;\r\nendmodule\r\n")
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "ok"
-
-    def test_gitattributes_minus_text_files_are_exempt(self, tmp_path: Path):
-        # B5, the shape that actually bit taxi: upstream marks CRLF-native
-        # payloads carried as text (`*.bat`, vendor register dumps) `-text`, so
-        # git never converts them — `i/crlf w/crlf attr/-text`, byte-identical
-        # to the index. init flagged 8 such files with a blanket text rule plus
-        # a delete + re-checkout, which would have corrupted them.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        self._add_file(tmp_path, ".gitattributes", b"* text eol=lf\n*.bat -text\n")
-        self._add_file(tmp_path, "run.bat", b"@echo off\r\n")
-        self._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "ok"
-
-    def test_autocrlf_true_with_lf_tree_is_auto_fixed(self, tmp_path: Path):
-        # Nothing on disk is CRLF yet — autocrlf alone is the whole problem,
-        # and flipping it is repo-local and reversible, so init just does it.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "ok"
-        assert _autocrlf(tmp_path) == "false"
-
-    def test_not_a_git_repo_skips(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "skip"
-
-    def test_separate_project_data_repository_is_normalized(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        global_config = tmp_path / "global.gitconfig"
-        global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
-        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
-        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        hooks = booley_dir / "hooks"
-        hooks.mkdir(parents=True)
-        _git_init(booley_dir)
-        assert _local_autocrlf(tmp_path) == ""
-        assert _local_autocrlf(booley_dir) == ""
-        self._add_file(booley_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
-        _git_commit(booley_dir)
-        hook = hooks / "post-setup.sh"
-        hook.unlink()
-        subprocess.run(
-            ["git", "-C", str(booley_dir), "checkout", "--", "hooks/post-setup.sh"],
-            capture_output=True,
-            check=True,
-        )
-        assert b"\r\n" in hook.read_bytes()
-
-        _step_line_endings(_ctx(tmp_path), booley_dir)
-
-        assert _local_autocrlf(tmp_path) == "false"
-        assert _local_autocrlf(booley_dir) == "false"
-        assert hook.read_bytes() == b"#!/bin/sh\nset -euo pipefail\n"
-        for repository in (tmp_path, booley_dir):
-            staged = subprocess.run(
-                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
-                capture_output=True,
-                check=False,
-            )
-            assert staged.returncode == 0
-
-    def test_unset_effective_policy_is_pinned_locally_in_both_repositories(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        assert _local_autocrlf(tmp_path) == ""
-        assert _local_autocrlf(booley_dir) == ""
-
-        _step_line_endings(_ctx(tmp_path), booley_dir)
-
-        assert _local_autocrlf(tmp_path) == "false"
-        assert _local_autocrlf(booley_dir) == "false"
-
-    @pytest.mark.parametrize(
-        ("effective", "local", "detail"),
-        [
-            (None, None, "autocrlf unreadable"),
-            (False, None, "local autocrlf unreadable"),
-        ],
+def _tracked_clean(root: Path) -> bool:
+    status = _run_git(root, "status", "--porcelain", "--untracked-files=no").stdout
+    return (
+        status == "" and _run_git(root, "diff", "--cached", "--quiet", check=False).returncode == 0
     )
-    def test_unreadable_autocrlf_policy_fails_safe(
-        self,
-        tmp_path: Path,
-        effective: bool | None,
-        local: bool | None,
-        detail: str,
+
+
+def _init(root: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> dict[str, StepResult]:
+    """Run Project Initialization with a Booley Directory present."""
+    (root / ".booley").mkdir(exist_ok=True)
+    return _initialize(root, monkeypatch, **kwargs)
+
+
+def _guidance_project(root: Path) -> Path:
+    """Project whose CRLF canonical guidance carries Booley's root hardlinks."""
+    _repo(root, None)
+    data = _repo(root / ".booley", "true", {"AGENTS.md": GUIDANCE}, crlf=("AGENTS.md",))
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        os.link(data / "AGENTS.md", root / name)
+    return data
+
+
+def _initialize_with_report(
+    root: Path, monkeypatch: pytest.MonkeyPatch, report: LineEndingReport
+) -> dict[str, StepResult]:
+    """Run Project Initialization with the line-ending reconciliation returning *report*."""
+    monkeypatch.setattr(git_hooks, "reconcile_project_line_endings", lambda *_a, **_k: report)
+    return _init(root, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("autocrlf", "files", "crlf"),
+    [
+        pytest.param("false", {"a.v": LF}, (), id="lf-tree"),
+        pytest.param("false", {"a.v": CRLF}, (), id="crlf-in-index"),
+        pytest.param(
+            "false",
+            {".gitattributes": b"* text eol=lf\n*.bat -text\n", "run.bat": b"@echo off\r\n"},
+            (),
+            id="minus-text",
+        ),
+        pytest.param(
+            "false",
+            {".gitattributes": b"*.txt text eol=crlf\n", "a.txt": b"alpha\nbeta\n"},
+            ("a.txt",),
+            id="eol-crlf-attribute",
+        ),
+    ],
+)
+def test_safe_checkouts_pass_untouched(tmp_path, monkeypatch, autocrlf, files, crlf):
+    _repo(tmp_path, autocrlf, files, crlf=crlf)
+    before = {path: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert results["line_endings"].status == "ok"
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_check_only_names_the_pending_eol_pin(tmp_path, monkeypatch, capsys):
+    # A repository an earlier Booley pinned: only core.autocrlf is set locally.
+    _repo(tmp_path, "false", {"a.v": LF})
+
+    results = _init(tmp_path, monkeypatch, check_only=True)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "ok",
+        "core.autocrlf/core.eol pin pending",
+    )
+    assert "working tree is container-safe" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dirt", ["crlf-edit", "staged-addition"])
+def test_dirty_tree_blocks_the_repair(tmp_path, monkeypatch, capsys, dirt):
+    # The F-15 shape: core.autocrlf=true stores LF and checks CRLF out, so the container's
+    # Git, which converts nothing, would report every such file modified.
+    _repo(tmp_path, "true", {"a.v": LF}, crlf=("a.v",) if dirt == "staged-addition" else ())
+    if dirt == "crlf-edit":
+        (tmp_path / "a.v").write_bytes(CRLF)
+    else:
+        (tmp_path / "b.v").write_bytes(LF)
+        _run_git(tmp_path, "add", "b.v")
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "err",
+        "dirty tree",
+    )
+    out = capsys.readouterr().out
+    assert "!  1 tracked file(s) are checked out with CRLF" in out
+    # The pin is withheld: flipping autocrlf over a CRLF checkout would create phantom diffs.
+    assert "would set core.autocrlf=false and core.eol=lf" in out
+    assert (tmp_path / "a.v").read_bytes() == CRLF
+    assert git_hooks.read_local_config(tmp_path, "core.autocrlf") == "true"
+
+
+def test_failed_autocrlf_update_blocks_readiness(tmp_path, monkeypatch, capsys):
+    _repo(tmp_path, "true")
+    (tmp_path / ".git" / "config.lock").write_bytes(b"")
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "err",
+        "autocrlf update failed",
+    )
+    out = capsys.readouterr().out
+    assert "!  core.autocrlf=true" in out
+    assert "·  detected core.autocrlf=true" not in out
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "on", "1", None])
+def test_repair_pins_autocrlf_false_in_both_repositories(tmp_path, value):
+    data = _repo(tmp_path / ".booley", value)
+    _repo(tmp_path, value)
+
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    for repository in (tmp_path, data):
+        assert git_hooks.read_local_config(repository, "core.autocrlf") == "false"
+
+
+def test_not_a_git_repository_skips_the_step(tmp_path, monkeypatch):
+    results = _initialize(tmp_path, monkeypatch)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "skip",
+        "not a git repo",
+    )
+
+
+def test_separate_project_data_repository_is_normalized(tmp_path, monkeypatch):
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_bytes(b"[core]\n\tautocrlf = true\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    _repo(tmp_path, None)
+    data = _repo(
+        tmp_path / ".booley",
+        None,
+        {"hooks/post-setup.sh": b"#!/bin/sh\nset -u\n"},
+        crlf=("hooks/post-setup.sh",),
+    )
+    hook = data / "hooks" / "post-setup.sh"
+    assert b"\r\n" in hook.read_bytes()
+
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    assert hook.read_bytes() == b"#!/bin/sh\nset -u\n"
+    for repository in (tmp_path, data):
+        assert git_hooks.read_local_config(repository, "core.autocrlf") == "false"
+        assert _tracked_clean(repository)
+
+
+@pytest.mark.parametrize(
+    ("effective", "local", "code"),
+    [
+        (None, None, ObservationCode.AUTOCRLF_UNREADABLE),
+        (False, None, ObservationCode.LOCAL_AUTOCRLF_UNREADABLE),
+    ],
+)
+def test_unreadable_autocrlf_policy_fails_safe(tmp_path, monkeypatch, effective, local, code):
+    values = {False: effective, True: local}
+
+    def read_setting(_root: Path, *, local: bool = False) -> AutocrlfSetting | None:
+        value = values[local]
+        return None if value is None else AutocrlfSetting(value, is_set=True)
+
+    _repo(tmp_path, None)
+    monkeypatch.setattr(line_endings, "read_autocrlf_setting", read_setting)
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.INSPECT)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert code in {item.code for item in report.repositories[0].observations}
+
+
+def test_invalid_autocrlf_boolean_is_unreadable(tmp_path, monkeypatch):
+    garbage = subprocess.CompletedProcess(
+        ["git", "config"], 0, stdout="not-a-boolean\n", stderr=""
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: garbage)
+
+    assert read_autocrlf_setting(tmp_path) is None
+
+
+@pytest.mark.parametrize("separate", [False, True])
+def test_line_ending_repositories_are_discovered_once(tmp_path, separate):
+    _repo(tmp_path, None)
+    data = tmp_path / ".booley"
+    if separate:
+        _repo(data, None)
+    else:
+        data.mkdir()
+
+    discovery = discover_line_ending_repositories(tmp_path, data)
+
+    assert discovery.failures == ()
+    expected = [("project-checkout", tmp_path.resolve())]
+    if separate:
+        expected.append(("project-data", data.resolve()))
+    assert [(repo.role, repo.root) for repo in discovery.repositories] == expected
+
+
+def test_missing_project_data_prevents_aggregate_success(tmp_path, monkeypatch):
+    _repo(tmp_path, "false", {"a.v": LF})
+
+    results = _initialize(tmp_path, monkeypatch, check_only=True)
+
+    assert results["line_endings"].status == "warn"
+    assert "project-data: directory does not exist" in results["line_endings"].detail
+
+
+def test_check_only_previews_without_touching_either_repository(tmp_path, monkeypatch, capsys):
+    data = _repo(tmp_path / ".booley", "true")
+    _repo(tmp_path, "true", {"a.v": LF}, crlf=("a.v",))
+
+    results = _init(tmp_path, monkeypatch, check_only=True)
+
+    assert results["line_endings"].status == "warn"
+    out = capsys.readouterr().out
+    assert "!  1 tracked file(s) are checked out with CRLF" in out
+    assert "!  core.autocrlf=true" in out
+    assert "would normalize 1 tracked file(s) to LF" in out
+    assert "·  detected" not in out
+    assert (tmp_path / "a.v").read_bytes() == CRLF
+    for repository in (tmp_path, data):
+        assert git_hooks.read_local_config(repository, "core.autocrlf") == "true"
+        assert _tracked_clean(repository)
+
+
+def test_user_dirty_project_data_is_refused_while_outer_is_repaired(tmp_path, monkeypatch):
+    """#611: user work present before init keeps the repair refused."""
+    _repo(tmp_path, "true")
+    data = _repo(tmp_path / ".booley", "true", {"notes.md": b"notes\n"}, crlf=("notes.md",))
+    with (data / "notes.md").open("ab") as notes:
+        notes.write(b"user work\r\n")
+    baseline = sample_worktree_cleanliness(tmp_path, data)
+    assert baseline[data] is False
+
+    results = _init(tmp_path, monkeypatch, line_ending_baseline=baseline)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "err",
+        "project-data: dirty tree",
+    )
+    assert (data / "notes.md").read_bytes() == b"notes\r\nuser work\r\n"
+    assert git_hooks.read_local_config(tmp_path, "core.autocrlf") == "false"
+    assert _tracked_clean(tmp_path)
+
+
+def test_clean_crlf_checkout_is_auto_fixed_in_one_run(tmp_path, monkeypatch, capsys):
+    _repo(tmp_path, "true", {"a.v": LF}, crlf=("a.v",))
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert results["line_endings"].status == "ok"
+    assert git_hooks.read_local_config(tmp_path, "core.autocrlf") == "false"
+    assert (tmp_path / "a.v").read_bytes() == LF
+    assert _tracked_clean(tmp_path)
+    out = capsys.readouterr().out
+    assert "·  detected 1 tracked file(s) are checked out with CRLF" in out
+    assert "·  detected core.autocrlf=true" in out
+    assert "!  " not in out
+    rerun = _init(tmp_path, monkeypatch)
+    assert (rerun["line_endings"].status, rerun["line_endings"].detail) == ("ok", "no CRLF")
+
+
+def test_rerun_heals_stale_index_from_earlier_normalization(tmp_path, monkeypatch):
+    _repo(tmp_path, "true", {"a.v": LF}, crlf=("a.v",))
+    _run_git(tmp_path, "config", "core.autocrlf", "false")
+    (tmp_path / "a.v").write_bytes(LF)
+    assert not _tracked_clean(tmp_path)
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "ok",
+        "index refreshed",
+    )
+    assert _tracked_clean(tmp_path)
+
+
+def test_partial_normalization_reports_normalized_and_left_files(tmp_path, monkeypatch, capsys):
+    _repo(tmp_path, "true", {"a.v": LF, "b.v": LF}, crlf=("a.v", "b.v"))
+    baseline = sample_worktree_cleanliness(tmp_path)
+    edited = b"module b;\r\n  localparam KEEP = 1;\r\nendmodule\r\n"
+    (tmp_path / "b.v").write_bytes(edited)
+
+    results = _init(tmp_path, monkeypatch, line_ending_baseline=baseline)
+
+    assert results["line_endings"].status == "err"
+    assert (tmp_path / "a.v").read_bytes() == LF
+    assert (tmp_path / "b.v").read_bytes() == edited
+    out = capsys.readouterr().out
+    assert "normalized 1 file(s) to LF" in out
+    assert "'b.v' (changed)" in out
+    assert "would leave tracked files untouched" not in out
+
+
+def test_phantom_status_failure_includes_git_context(tmp_path, monkeypatch):
+    _repo(tmp_path, "false")
+    real_run = subprocess.run
+
+    def run(args: list[str], *a: Any, **k: Any) -> subprocess.CompletedProcess[Any]:
+        if "status" in args and "--porcelain" in args:
+            raise OSError("git unavailable")
+        return real_run(args, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.INSPECT)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    (observation,) = [
+        item
+        for item in report.repositories[0].observations
+        if item.code is ObservationCode.STATUS_UNREADABLE
+    ]
+    assert f"git -C {tmp_path} status --porcelain" in observation.detail
+    assert "git unavailable" in observation.detail
+
+
+def _skip_worktree_edit(root: Path) -> None:
+    _run_git(root, "update-index", "--skip-worktree", "local.v")
+    (root / "local.v").write_bytes(b"module local;\n  localparam int KEEP = 1;\nendmodule\n")
+
+
+def _assume_unchanged_edit(root: Path) -> None:
+    _run_git(root, "update-index", "--assume-unchanged", "a1.txt")
+    (root / "a1.txt").write_bytes(b"LOCAL EDIT THAT MUST SURVIVE\n")
+
+
+def _untracked_note(root: Path) -> None:
+    (root / "notes.txt").write_bytes(b"keep me\n")
+
+
+def _foreign_hardlink(root: Path) -> None:
+    os.link(root / "a.v", root / "untracked-mirror.v")
+
+
+_PNG = b"\x89PNG\r\n\x1a\n\x00binary\r\npayload\x00"
+_BAT = {".gitattributes": b"*.bat -text\n", "run.bat": b"@echo off\r\n"}
+
+
+@pytest.mark.parametrize(
+    ("files", "crlf", "setup", "kept"),
+    [
+        pytest.param({"image.png": _PNG}, (), None, {"image.png": _PNG}, id="binary"),
+        pytest.param(
+            {".gitattributes": b"*.bat -text\n"},
+            (),
+            None,
+            {".gitattributes": b"*.bat -text\n"},
+            id="tracked-gitattributes",
+        ),
+        pytest.param(_BAT, (), None, {"run.bat": b"@echo off\r\n"}, id="minus-text"),
+        pytest.param({}, (), _untracked_note, {"notes.txt": b"keep me\n"}, id="untracked"),
+        pytest.param(
+            {"local.v": b"module local;\nendmodule\n"},
+            (),
+            _skip_worktree_edit,
+            {"local.v": b"module local;\n  localparam int KEEP = 1;\nendmodule\n"},
+            id="skip-worktree",
+        ),
+        pytest.param(
+            {"a[1].txt": b"candidate\n", "a1.txt": b"neighbor\n"},
+            ("a[1].txt", "a1.txt"),
+            _assume_unchanged_edit,
+            {"a1.txt": b"LOCAL EDIT THAT MUST SURVIVE\n"},
+            id="literal-names",
+        ),
+        pytest.param(
+            {"bad-\udcff.txt": b"alpha\nbeta\n"},
+            ("bad-\udcff.txt",),
+            None,
+            {},
+            id="non-utf8-name",
+            marks=pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode"),
+        ),
+        pytest.param(
+            {},
+            (),
+            _foreign_hardlink,
+            {"untracked-mirror.v": CRLF},
+            id="foreign-hardlink",
+            marks=_NEEDS_HARDLINKS,
+        ),
+    ],
+)
+def test_repair_normalizes_crlf_and_keeps_other_bytes(tmp_path, files, crlf, setup, kept):
+    _repo(tmp_path, "true", {"a.v": LF, **files}, crlf=("a.v", *crlf))
+    if setup is not None:
+        setup(tmp_path)
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.SAFE
+    for name in ("a.v", *crlf):
+        assert b"\r" not in (tmp_path / name).read_bytes()
+    for name, data in kept.items():
+        assert (tmp_path / name).read_bytes() == data
+    assert _tracked_clean(tmp_path)
+
+
+def test_unreadable_eol_scan_never_reports_container_safe(tmp_path, monkeypatch):
+    _repo(tmp_path, "false", {"a.v": LF})
+    real_run = subprocess.run
+
+    def run(args: list[str], *a: Any, **k: Any) -> subprocess.CompletedProcess[Any]:
+        if "--eol" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"index unreadable")
+        return real_run(args, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    results = _init(tmp_path, monkeypatch)
+
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "err",
+        "EOL scan unreadable",
+    )
+
+
+# Usually ~3 s on Windows CI, but runner contention has stretched it to 48.6 s;
+# the budget keeps the timeout-headroom guard's 3x margin over that peak.
+@pytest.mark.timeout(150)
+def test_failed_smudge_filter_leaves_original_file_present(tmp_path):
+    _repo(tmp_path, "true", {"a.v": LF, ".gitattributes": b"a.v filter=fail\n"}, crlf=("a.v",))
+    for key, value in (
+        ("clean", "cat"),
+        ("smudge", "git booley-filter-must-fail"),
+        ("required", "true"),
     ):
-        from booley.harness.setup import line_endings as init_git_hooks
-        from booley.harness.setup.line_endings import (
-            AutocrlfSetting,
-            LineEndingMode,
-            LineEndingObservationCode,
-            LineEndingStatus,
-            reconcile_project_line_endings,
-        )
+        _run_git(tmp_path, "config", f"filter.fail.{key}", value)
+
+    report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == CRLF
+
+
+@_NEEDS_HARDLINKS
+def test_init_releases_own_guidance_hardlinks_for_normalization(tmp_path, monkeypatch, capsys):
+    data = _guidance_project(tmp_path)
+    canonical = data / "AGENTS.md"
+    foreign = tmp_path / "notes-mirror.md"
+    os.link(canonical, foreign)
+
+    _init(tmp_path, monkeypatch, check_only=True)
+
+    assert canonical.read_bytes() == b"guidance\r\n"
+    assert all((tmp_path / name).samefile(canonical) for name in ("AGENTS.md", "CLAUDE.md"))
+    capsys.readouterr()
+    # The preflight plan saw the links; the repair releases them and must not reuse it.
+    plan = plan_guidance_links(tmp_path, data)
+
+    results = _init(tmp_path, monkeypatch, guidance_plan=plan)
+
+    assert [(results[n].status, n) for n in ("line_endings", "guidance_links")] == [
+        ("ok", "line_endings"),
+        ("ok", "guidance_links"),
+    ]
+    assert canonical.read_bytes() == GUIDANCE
+    assert all((tmp_path / name).samefile(canonical) for name in ("AGENTS.md", "CLAUDE.md"))
+    assert foreign.read_bytes() == b"guidance\r\n"
+    assert not foreign.samefile(canonical)
+    assert "released guidance hardlink CLAUDE.md" in capsys.readouterr().out
+    final = _init(tmp_path, monkeypatch, check_only=True)
+    assert (final["line_endings"].status, final["guidance_links"].status) == ("ok", "ok")
+
+
+@_NEEDS_HARDLINKS
+def test_partial_release_failure_keeps_the_locked_links_bytes_and_reports_it(
+    tmp_path, monkeypatch
+):
+    data = _guidance_project(tmp_path)
+    canonical = data / "AGENTS.md"
+    plan = plan_guidance_links(tmp_path, data)
+    original_unlink = Path.unlink
+
+    def locked_claude(path: Path, missing_ok: bool = False) -> None:
+        if path == tmp_path / "CLAUDE.md":
+            raise PermissionError("guidance is open in another application")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_claude)
+
+    results = _init(tmp_path, monkeypatch, guidance_plan=plan)
+
+    # A Booley link that could not be released holds the repair back: replacing the
+    # canonical file would strand that link on stale bytes and block the next run.
+    assert (results["line_endings"].status, results["line_endings"].detail) == (
+        "err",
+        "guidance hardlink not released",
+    )
+    assert results["guidance_links"].status == "ok"
+    assert canonical.read_bytes() == b"guidance\r\n"
+    assert all((tmp_path / name).samefile(canonical) for name in ("AGENTS.md", "CLAUDE.md"))
+
+
+@_NEEDS_HARDLINKS
+def test_linked_project_data_guidance_is_repaired(tmp_path, monkeypatch):
+    original = _guidance_project(tmp_path)
+    data = tmp_path / "project-data"
+    original.rename(data)
+    symlink_or_skip(original, data, target_is_directory=True)
+    plan = plan_guidance_links(tmp_path, original)
+    baseline = sample_worktree_cleanliness(tmp_path, original)
+
+    results = _init(tmp_path, monkeypatch, guidance_plan=plan, line_ending_baseline=baseline)
+
+    assert (results["line_endings"].status, results["guidance_links"].status) == ("ok", "ok")
+    assert (data / "AGENTS.md").read_bytes() == GUIDANCE
+    assert all(
+        (tmp_path / name).samefile(data / "AGENTS.md") for name in ("AGENTS.md", "CLAUDE.md")
+    )
+    final = _init(tmp_path, monkeypatch, check_only=True)
+    assert (final["line_endings"].status, final["guidance_links"].status) == ("ok", "ok")
+
+
+@_NEEDS_HARDLINKS
+def test_release_keeps_links_when_canonical_needs_no_normalization(tmp_path, monkeypatch, capsys):
+    _repo(tmp_path, None)
+    data = _repo(tmp_path / ".booley", None, {"AGENTS.md": GUIDANCE})
+    os.link(data / "AGENTS.md", tmp_path / "AGENTS.md")
+
+    _init(tmp_path, monkeypatch)
+
+    assert "released guidance hardlink" not in capsys.readouterr().out
+    assert (tmp_path / "AGENTS.md").samefile(data / "AGENTS.md")
+
+
+@_NEEDS_HARDLINKS
+def test_release_warns_when_inspection_fails(tmp_path, monkeypatch, capsys):
+    _guidance_project(tmp_path)
 
-        def read_setting(_root: Path, *, local: bool = False):
-            value = local_value if local else effective_value
-            return None if value is None else AutocrlfSetting(value, is_set=True)
+    def unreadable(*_args: object) -> tuple[Path, ...]:
+        raise OSError("index unreadable")
 
-        effective_value = effective
-        local_value = local
-        _git_init(tmp_path)
-        with patch.object(init_git_hooks, "read_autocrlf_setting", side_effect=read_setting):
-            outcome = reconcile_project_line_endings(
-                tmp_path,
-                None,
-                mode=LineEndingMode.INSPECT,
-            )
+    # Private seam: the guidance release asks this helper for pending paths; the real
+    # inspection has no input that makes the index unreadable only for that call.
+    monkeypatch.setattr(init_cmd, "pending_normalization_paths", unreadable)
 
-        assert outcome.status is LineEndingStatus.UNSAFE
-        expected = {
-            "autocrlf unreadable": LineEndingObservationCode.AUTOCRLF_UNREADABLE,
-            "local autocrlf unreadable": LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
-        }[detail]
-        assert expected in {item.code for item in outcome.repositories[0].observations}
+    _init(tmp_path, monkeypatch)
 
-    def test_invalid_autocrlf_boolean_is_unreadable(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
-
-        probe = subprocess.CompletedProcess(
-            args=["git", "config"],
-            returncode=0,
-            stdout="not-a-boolean\n",
-            stderr="",
-        )
-        with patch.object(init_git_hooks.subprocess, "run", return_value=probe):
-            setting = init_git_hooks.read_autocrlf_setting(tmp_path)
-
-        assert setting is None
-
-
-class TestLineEndingRepositoryDiscovery:
-    def test_project_data_inside_outer_repository_is_deduplicated(self, tmp_path: Path):
-        from booley.harness.setup.line_endings import discover_line_ending_repositories
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-
-        discovery = discover_line_ending_repositories(tmp_path, booley_dir)
-
-        assert discovery.failures == ()
-        assert [(repo.role, repo.root) for repo in discovery.repositories] == [
-            ("project-checkout", tmp_path.resolve())
-        ]
-
-    def test_separate_project_data_repository_is_discovered(self, tmp_path: Path):
-        from booley.harness.setup.line_endings import discover_line_ending_repositories
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-
-        discovery = discover_line_ending_repositories(tmp_path, booley_dir)
-
-        assert discovery.failures == ()
-        assert [(repo.role, repo.root) for repo in discovery.repositories] == [
-            ("project-checkout", tmp_path.resolve()),
-            ("project-data", booley_dir.resolve()),
-        ]
-
-    def test_missing_project_data_prevents_aggregate_success(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx, tmp_path / "missing project data")
-
-        assert ctx.results[-1].status == "err"
-        assert "project-data: directory does not exist" in ctx.results[-1].detail
-
-    def test_check_only_does_not_mutate_either_repository(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        for repository in (tmp_path, booley_dir):
-            subprocess.run(
-                ["git", "-C", str(repository), "config", "core.autocrlf", "true"],
-                capture_output=True,
-                check=True,
-            )
-        ctx = _ctx(tmp_path, check_only=True)
-
-        _step_line_endings(ctx, booley_dir)
-
-        assert ctx.results[-1].status == "warn"
-        for repository in (tmp_path, booley_dir):
-            assert _local_autocrlf(repository) == "true"
-            staged = subprocess.run(
-                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
-                capture_output=True,
-                check=False,
-            )
-            assert staged.returncode == 0
-
-    def test_dirty_project_data_is_refused_while_outer_is_repaired(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        hooks = booley_dir / "hooks"
-        hooks.mkdir(parents=True)
-        _git_init(booley_dir)
-        for repository in (tmp_path, booley_dir):
-            subprocess.run(
-                ["git", "-C", str(repository), "config", "core.autocrlf", "true"],
-                capture_output=True,
-                check=True,
-            )
-        TestLineEndingsStep._add_file(
-            booley_dir,
-            "hooks/post-setup.sh",
-            b"#!/bin/sh\nset -euo pipefail\n",
-        )
-        _git_commit(booley_dir)
-        hook = hooks / "post-setup.sh"
-        dirty = b"#!/bin/sh\r\nset -euo pipefail\r\necho local edit\r\n"
-        hook.write_bytes(dirty)
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx, booley_dir)
-
-        assert _local_autocrlf(tmp_path) == "false"
-        assert hook.read_bytes() == dirty
-        assert ctx.results[-1].status == "err"
-        assert "project-data: dirty tree" in ctx.results[-1].detail
-        for repository in (tmp_path, booley_dir):
-            staged = subprocess.run(
-                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
-                capture_output=True,
-                check=False,
-            )
-            assert staged.returncode == 0
-
-
-class TestLineEndingsAutoFix:
-    """Step 10d repairs clean trees and never overwrites local work."""
-
-    def _crlf_repo(self, tmp_path: Path) -> Path:
-        """A Git-for-Windows-shaped repo: LF in the index, CRLF on disk.
-
-        git does the CRLF checkout itself (delete + restore) rather than the
-        test hand-writing the bytes. It has to: a hand-written CRLF file
-        leaves a stale stat cache, and `git status` then reports it modified —
-        which a real Windows checkout does not do, and which would hide the
-        dirty-tree refusal behind a false positive.
-        """
-        _git_init(tmp_path)
-        run_bounded_child(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"], check=True
-        )
-        TestLineEndingsStep._add_file(tmp_path, "a.v", b"module a;\nendmodule\n")
-        _git_commit(tmp_path)
-        (tmp_path / "a.v").unlink()
-        run_bounded_child(["git", "-C", str(tmp_path), "checkout", "--", "a.v"], check=True)
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
-        return tmp_path
-
-    def test_autocrlf_pin_leaves_binary_files_untouched(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        png_bytes = b"\x89PNG\r\n\x1a\n\x00binary\r\npayload\x00"
-        TestLineEndingsStep._add_file(tmp_path, "image.png", png_bytes)
-        _git_commit(tmp_path)
-
-        _step_line_endings(_ctx(tmp_path))
-
-        assert (tmp_path / "image.png").read_bytes() == png_bytes
-        diff = subprocess.run(
-            ["git", "-C", str(tmp_path), "diff", "--name-only", "--", "image.png"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert diff.stdout == ""
-
-    def test_check_only_previews_the_one_run_normalization(self, tmp_path: Path, capsys):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        ctx = _ctx(tmp_path, check_only=True)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "warn"
-        assert _autocrlf(tmp_path) == "true"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
-        output = capsys.readouterr().out
-        assert "!  1 tracked file(s) are checked out with CRLF" in output
-        assert "!  core.autocrlf=true" in output
-        assert "·  detected" not in output
-        assert "would normalize 1 tracked file(s) to LF" in output
-        assert "atomically" not in output
-        assert "--fix-line-endings" not in output
-
-    def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path, capsys):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        ctx = _ctx(tmp_path)
-
-        _step_line_endings(ctx)
-
-        assert _autocrlf(tmp_path) == "false"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        tracked_status = subprocess.run(
-            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        staged_diff = subprocess.run(
-            ["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"],
-            capture_output=True,
-            check=False,
-        )
-        assert tracked_status.stdout == ""
-        assert staged_diff.returncode == 0
-        assert ctx.results[-1].status == "ok"
-        output = capsys.readouterr().out
-        assert "·  detected 1 tracked file(s) are checked out with CRLF" in output
-        assert "·  detected core.autocrlf=true" in output
-        assert "!  " not in output
-
-    def test_rerun_heals_stale_index_from_earlier_normalization(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
-        assert (
-            subprocess.run(
-                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-            == " M a.v\n"
-        )
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (
-            subprocess.run(
-                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-            == ""
-        )
-        assert ctx.results[-1].status == "ok"
-        assert ctx.results[-1].detail == "index refreshed"
-
-    def test_partial_normalization_reports_normalized_and_left_files(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ):
-        from booley.harness.setup.git_hooks import _step_line_endings
-        from booley.harness.setup.line_endings import sample_worktree_cleanliness
-
-        self._crlf_repo(tmp_path)
-        TestLineEndingsStep._add_file(tmp_path, "b.v", b"module b;\nendmodule\n")
-        _git_commit(tmp_path)
-        (tmp_path / "b.v").unlink()
-        run_bounded_child(["git", "-C", str(tmp_path), "checkout", "--", "b.v"], check=True)
-        baseline = sample_worktree_cleanliness(tmp_path)
-        edited = b"module b;\r\n  localparam KEEP = 1;\r\nendmodule\r\n"
-        (tmp_path / "b.v").write_bytes(edited)
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx, clean_baseline=baseline)
-
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert (tmp_path / "b.v").read_bytes() == edited
-        assert ctx.results[-1].status == "err"
-        output = capsys.readouterr().out
-        assert "normalized 1 file(s) to LF" in output
-        assert "'b.v' (changed)" in output
-        assert "would leave tracked files untouched" not in output
-
-    def test_phantom_status_failure_includes_git_context(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
-
-        with patch.object(
-            init_git_hooks.subprocess,
-            "run",
-            side_effect=OSError("git unavailable"),
-        ):
-            paths, error = init_git_hooks._tracked_phantom_paths(tmp_path)
-
-        assert paths is None
-        assert error is not None
-        assert f"git -C {tmp_path} status --porcelain" in error
-        assert "git unavailable" in error
-
-    def test_fix_flag_is_harmless_after_a_normal_run(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        # The compatibility flag remains harmless on the already-fixed output
-        # of an ordinary first run.
-        self._crlf_repo(tmp_path)
-        _step_line_endings(_ctx(tmp_path))
-
-        ctx = _ctx(tmp_path, fix_line_endings=True)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert ctx.results[-1].status == "ok"
-
-    def test_fix_flag_refuses_on_a_dirty_tree(self, tmp_path: Path):
-        # Replacing even only the affected paths could lose uncommitted work,
-        # so a dirty tree is a hard stop.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        (tmp_path / "b.v").write_bytes(b"module b;\nendmodule\n")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", "b.v"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path, fix_line_endings=True)
-
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "dirty tree"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
-
-    def test_tracked_gitattributes_is_normalized_without_a_rule(self, tmp_path: Path):
-        # A tracked .gitattributes is re-checked out from the index like any other
-        # file, and Booley adds no rule to it.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.bat -text\n")
-        _git_commit(tmp_path)
-        ctx = _ctx(tmp_path, fix_line_endings=True)
-
-        _step_line_endings(ctx)
-
-        assert (tmp_path / ".gitattributes").read_text().splitlines() == ["*.bat -text"]
-        assert ctx.results[-1].status == "ok"
-
-    def test_minus_text_files_keep_their_crlf_through_normalization(self, tmp_path: Path):
-        # The taxi shape. `*.bat -text` files are stored CRLF and checked out
-        # CRLF deliberately; normalization must leave them byte-identical rather
-        # than "fix" a payload that was never broken.
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.bat -text\n")
-        TestLineEndingsStep._add_file(tmp_path, "run.bat", b"@echo off\r\n")
-        _git_commit(tmp_path)
-        ctx = _ctx(tmp_path, fix_line_endings=True)
-
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "run.bat").read_bytes() == b"@echo off\r\n"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert ctx.results[-1].status == "ok"
-
-    def test_untracked_files_survive_normalization(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        (tmp_path / "notes.txt").write_bytes(b"keep me\n")
-        assert (
-            "?? notes.txt"
-            in subprocess.run(
-                ["git", "-C", str(tmp_path), "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        ctx = _ctx(tmp_path, fix_line_endings=True)
-
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "notes.txt").read_bytes() == b"keep me\n"
-        assert ctx.results[-1].status == "ok"
-
-    def test_auto_fix_leaves_unaffected_skip_worktree_edits_untouched(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        TestLineEndingsStep._add_file(tmp_path, "local.v", b"module local;\nendmodule\n")
-        _git_commit(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "update-index", "--skip-worktree", "local.v"],
-            capture_output=True,
-            check=True,
-        )
-        local_edit = b"module local;\n  localparam int KEEP = 1;\nendmodule\n"
-        (tmp_path / "local.v").write_bytes(local_edit)
-        assert not subprocess.run(
-            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "local.v").read_bytes() == local_edit
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert ctx.results[-1].status == "ok"
-
-    def test_auto_fix_treats_tracked_names_as_literals(self, tmp_path: Path):
-        """A candidate filename must not expand onto a hidden neighboring edit."""
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        TestLineEndingsStep._add_file(tmp_path, "a[1].txt", b"candidate\n")
-        TestLineEndingsStep._add_file(tmp_path, "a1.txt", b"neighbor\n")
-        _git_commit(tmp_path)
-        (tmp_path / "a[1].txt").unlink()
-        (tmp_path / "a1.txt").unlink()
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "checkout", "--", "a[1].txt", "a1.txt"],
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "update-index", "--assume-unchanged", "a1.txt"],
-            capture_output=True,
-            check=True,
-        )
-        hidden_edit = b"LOCAL EDIT THAT MUST SURVIVE\n"
-        (tmp_path / "a1.txt").write_bytes(hidden_edit)
-
-        _step_line_endings(_ctx(tmp_path))
-
-        assert (tmp_path / "a[1].txt").read_bytes() == b"candidate\n"
-        assert (tmp_path / "a1.txt").read_bytes() == hidden_edit
-
-    def test_explicit_crlf_attribute_is_not_a_phantom_diff(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.txt text eol=crlf\n")
-        TestLineEndingsStep._add_file(tmp_path, "intentional.txt", b"alpha\nbeta\n")
-        _git_commit(tmp_path)
-        (tmp_path / "intentional.txt").unlink()
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "checkout", "--", "intentional.txt"],
-            capture_output=True,
-            check=True,
-        )
-        assert (tmp_path / "intentional.txt").read_bytes() == b"alpha\r\nbeta\r\n"
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "intentional.txt").read_bytes() == b"alpha\r\nbeta\r\n"
-        assert ctx.results[-1].status == "ok"
-
-    @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
-    def test_autocrlf_true_aliases_are_disabled(self, tmp_path: Path, true_value: str):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", true_value],
-            capture_output=True,
-            check=True,
-        )
-
-        _step_line_endings(_ctx(tmp_path))
-
-        assert _autocrlf(tmp_path) == "false"
-
-    def test_unreadable_eol_scan_never_reports_container_safe(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
-            capture_output=True,
-            check=True,
-        )
-        ctx = _ctx(tmp_path)
-
-        with patch.object(init_git_hooks, "_crlf_worktree_files", return_value=None):
-            _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "EOL scan unreadable"
-
-    def test_unreadable_post_normalization_scan_never_reports_success(self, tmp_path: Path):
-        from booley.harness.setup import line_endings as init_git_hooks
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        real_scan = init_git_hooks._crlf_worktree_files
-        calls = 0
-
-        def lose_verification(root: Path) -> list[str] | None:
-            nonlocal calls
-            calls += 1
-            return None if calls == 2 else real_scan(root)
-
-        with patch.object(init_git_hooks, "_crlf_worktree_files", side_effect=lose_verification):
-            ctx = _ctx(tmp_path)
-            _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "EOL verification unreadable"
-
-    @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
-    def test_non_utf8_tracked_filename_is_normalized(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        _git_init(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
-            capture_output=True,
-            check=True,
-        )
-        name = os.fsdecode(b"bad-\xff.txt")
-        TestLineEndingsStep._add_file(tmp_path, name, b"alpha\nbeta\n")
-        _git_commit(tmp_path)
-        (tmp_path / name).unlink()
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "checkout", "--", name],
-            capture_output=True,
-            check=True,
-        )
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / name).read_bytes() == b"alpha\nbeta\n"
-        assert ctx.results[-1].status == "ok"
-
-    # Usually ~3 s on Windows CI, but runner contention has stretched it to 48.6 s;
-    # the budget keeps the timeout-headroom guard's 3x margin over that peak.
-    @pytest.mark.timeout(150)
-    def test_failed_smudge_filter_leaves_original_file_present(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"a.v filter=fail\n")
-        _git_commit(tmp_path)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "filter.fail.clean", "cat"],
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(tmp_path),
-                "config",
-                "filter.fail.smudge",
-                "git booley-filter-must-fail",
-            ],
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "filter.fail.required", "true"],
-            capture_output=True,
-            check=True,
-        )
-        original = (tmp_path / "a.v").read_bytes()
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert (tmp_path / "a.v").read_bytes() == original
-        assert ctx.results[-1].status == "err"
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_foreign_hardlink_keeps_its_bytes_and_does_not_block_repair(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        self._crlf_repo(tmp_path)
-        mirror = tmp_path / "untracked-mirror.v"
-        os.link(tmp_path / "a.v", mirror)
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx)
-
-        assert ctx.results[-1].status == "ok"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
-        assert mirror.read_bytes() == b"module a;\r\nendmodule\r\n"
-        assert not (tmp_path / "a.v").samefile(mirror)
-
-    @staticmethod
-    def _hardlinked_guidance_project(tmp_path: Path) -> Path:
-        """Project whose CRLF canonical guidance carries Booley's root hardlinks."""
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        _run_git(booley_dir, "config", "core.autocrlf", "true")
-        TestLineEndingsStep._add_file(booley_dir, "AGENTS.md", b"guidance\n")
-        _git_commit(booley_dir)
-        canonical = booley_dir / "AGENTS.md"
-        canonical.unlink()
-        _run_git(booley_dir, "checkout", "--", "AGENTS.md")
-        assert canonical.read_bytes() == b"guidance\r\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            os.link(canonical, tmp_path / name)
-        return booley_dir
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_init_releases_own_guidance_hardlinks_for_normalization(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        from booley.harness.init_cmd import (
-            _print_summary,
-            _release_guidance_for_line_endings,
-            _step_guidance_links,
-        )
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-        canonical = booley_dir / "AGENTS.md"
-
-        ctx = _ctx(tmp_path)
-        assert _release_guidance_for_line_endings(ctx, booley_dir).detached
-        _step_line_endings(ctx, booley_dir)
-        _step_guidance_links(ctx)
-
-        assert [(r.name, r.status) for r in ctx.results] == [
-            ("line_endings", "ok"),
-            ("guidance_links", "ok"),
-        ]
-        assert canonical.read_bytes() == b"guidance\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
-        assert _print_summary(ctx) == 0
-        capsys.readouterr()
-
-        inspection = _ctx(tmp_path, check_only=True)
-        _step_line_endings(inspection, booley_dir)
-        _step_guidance_links(inspection)
-        assert [r.status for r in inspection.results] == ["ok", "ok"]
-        assert _print_summary(inspection) == 0
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_check_only_leaves_guidance_hardlinks_in_place(self, tmp_path: Path) -> None:
-        from booley.harness.init_cmd import _release_guidance_for_line_endings
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-
-        assert not _release_guidance_for_line_endings(
-            _ctx(tmp_path, check_only=True), booley_dir
-        ).detached
-        assert (tmp_path / "AGENTS.md").samefile(booley_dir / "AGENTS.md")
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_foreign_hardlink_to_guidance_keeps_its_bytes_after_release(
-        self, tmp_path: Path
-    ) -> None:
-        from booley.harness.init_cmd import (
-            _release_guidance_for_line_endings,
-            _step_guidance_links,
-        )
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-        canonical = booley_dir / "AGENTS.md"
-        foreign = tmp_path / "notes-mirror.md"
-        os.link(canonical, foreign)
-
-        ctx = _ctx(tmp_path)
-        assert _release_guidance_for_line_endings(ctx, booley_dir).detached
-        _step_line_endings(ctx, booley_dir)
-        _step_guidance_links(ctx)
-
-        assert [(r.name, r.status) for r in ctx.results] == [
-            ("line_endings", "ok"),
-            ("guidance_links", "ok"),
-        ]
-        assert canonical.read_bytes() == b"guidance\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
-        assert foreign.read_bytes() == b"guidance\r\n"
-        assert not foreign.samefile(canonical)
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_combined_step_discards_stale_guidance_plan_after_release(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """The preflight plan saw the detached links; the step must re-plan."""
-        from booley.harness.init_cmd import _step_line_endings_and_guidance
-        from booley.harness.setup.guidance_links import plan_guidance_links
-
-        # Project-dir resolution is process-cached; start from this project.
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr("booley.core.booley_dir._cache", None)
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-        canonical = booley_dir / "AGENTS.md"
-        stale_plan = plan_guidance_links(tmp_path, booley_dir)
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings_and_guidance(ctx, stale_plan)
-
-        assert [(r.name, r.status) for r in ctx.results] == [
-            ("line_endings", "ok"),
-            ("guidance_links", "ok"),
-        ]
-        assert canonical.read_bytes() == b"guidance\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
-        assert "released guidance hardlink CLAUDE.md" in capsys.readouterr().out
-
-    def test_release_ignores_canonical_without_hardlinks(self, tmp_path: Path) -> None:
-        from booley.harness.init_cmd import _release_guidance_for_line_endings
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            (tmp_path / name).unlink()
-
-        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_partial_release_failure_keeps_the_locked_links_bytes_and_reports_it(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.harness.init_cmd import _step_line_endings_and_guidance
-        from booley.harness.setup.guidance_links import plan_guidance_links
-
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr("booley.core.booley_dir._cache", None)
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-        canonical = booley_dir / "AGENTS.md"
-        plan = plan_guidance_links(tmp_path, booley_dir)
-        original_unlink = Path.unlink
-
-        def locked_claude(path: Path, missing_ok: bool = False) -> None:
-            if path == tmp_path / "CLAUDE.md":
-                raise PermissionError("guidance is open in another application")
-            original_unlink(path, missing_ok=missing_ok)
-
-        monkeypatch.setattr(Path, "unlink", locked_claude)
-        ctx = _ctx(tmp_path)
-        _step_line_endings_and_guidance(ctx, plan)
-
-        # A Booley link that could not be released holds the repair back: replacing the
-        # canonical file would strand that link on stale bytes and block the next run.
-        assert ctx.results[0].status == "err"
-        assert ctx.results[-1].status == "ok"
-        assert canonical.read_bytes() == b"guidance\r\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_linked_project_data_guidance_is_repaired(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.harness.init_cmd import (
-            _plan_existing_guidance,
-            _sample_line_ending_baseline,
-            _step_line_endings_and_guidance,
-            init_booley_dir_scope,
-        )
-
-        original_dir = self._hardlinked_guidance_project(tmp_path)
-        booley_dir = tmp_path / "project-data"
-        original_dir.rename(booley_dir)
-        symlink_or_skip(original_dir, booley_dir, target_is_directory=True)
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr("booley.core.booley_dir._cache", None)
-        ctx = _ctx(tmp_path)
-        plan, ready = _plan_existing_guidance(ctx)
-        assert ready and plan is not None
-
-        with init_booley_dir_scope(tmp_path):
-            baseline = _sample_line_ending_baseline(ctx)
-            _step_line_endings_and_guidance(ctx, plan, baseline)
-
-        assert all(result.status == "ok" for result in ctx.results)
-        canonical = booley_dir / "AGENTS.md"
-        assert canonical.read_bytes() == b"guidance\n"
-        for name in ("AGENTS.md", "CLAUDE.md"):
-            assert (tmp_path / name).samefile(canonical)
-        inspection = _ctx(tmp_path, check_only=True)
-        _step_line_endings_and_guidance(inspection, None)
-        assert all(result.status == "ok" for result in inspection.results)
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_release_keeps_links_when_canonical_needs_no_normalization(
-        self, tmp_path: Path
-    ) -> None:
-        from booley.harness.init_cmd import _release_guidance_for_line_endings
-
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        TestLineEndingsStep._add_file(booley_dir, "AGENTS.md", b"guidance\n")
-        _git_commit(booley_dir)
-        canonical = booley_dir / "AGENTS.md"
-        os.link(canonical, tmp_path / "AGENTS.md")
-
-        assert not _release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
-        assert (tmp_path / "AGENTS.md").samefile(canonical)
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
-    def test_release_warns_and_keeps_links_when_inspection_fails(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        from booley.harness import init_cmd
-
-        booley_dir = self._hardlinked_guidance_project(tmp_path)
-
-        def unreadable(*_args: object) -> tuple[Path, ...]:
-            raise OSError("index unreadable")
-
-        monkeypatch.setattr(init_cmd, "pending_normalization_paths", unreadable)
-
-        assert not init_cmd._release_guidance_for_line_endings(_ctx(tmp_path), booley_dir).detached
-        assert "could not release guidance hardlinks" in capsys.readouterr().out
-        assert (tmp_path / "AGENTS.md").samefile(booley_dir / "AGENTS.md")
-
-    @staticmethod
-    def _crlf_config_project(tmp_path: Path) -> Path:
-        """Booley Directory checked out CRLF (autocrlf=true) with no [agent] table."""
-        _git_init(tmp_path)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        _git_init(booley_dir)
-        _run_git(booley_dir, "config", "core.autocrlf", "true")
-        TestLineEndingsStep._add_file(booley_dir, "booley.toml", b"[flows.sim]\nenabled = true\n")
-        TestLineEndingsStep._add_file(booley_dir, "notes.md", b"notes\n")
-        _git_commit(booley_dir)
-        for name in ("booley.toml", "notes.md"):
-            (booley_dir / name).unlink()
-        _run_git(booley_dir, "checkout", "--", ".")
-        assert (booley_dir / "notes.md").read_bytes() == b"notes\r\n"
-        return booley_dir
-
-    @staticmethod
-    def _write_agent_selection(tmp_path: Path, booley_dir: Path) -> None:
-        from booley.harness.init_cmd import AgentSelection, _step_agent_config
-
-        selection = AgentSelection("claude", "subscription", True, "subscription")
-        assert _step_agent_config(_ctx(tmp_path), selection, booley_dir / "booley.toml")
-
-    def test_baseline_lets_repair_ignore_booleys_own_config_edit(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_line_endings
-        from booley.harness.setup.line_endings import sample_worktree_cleanliness
-
-        booley_dir = self._crlf_config_project(tmp_path)
-        baseline = sample_worktree_cleanliness(tmp_path, booley_dir)
-        assert baseline[booley_dir] is True
-        self._write_agent_selection(tmp_path, booley_dir)
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx, booley_dir, clean_baseline=baseline)
-
-        assert ctx.results[-1].status == "ok"
-        assert (booley_dir / "notes.md").read_bytes() == b"notes\n"
-        config = (booley_dir / "booley.toml").read_bytes()
-        assert b"\r" not in config
-        assert config.endswith(b'[agent]\ndefault = "claude"\nauth = "subscription"\n')
-
-    def test_without_baseline_booleys_config_edit_blocks_repair(self, tmp_path: Path) -> None:
-        from booley.harness.setup.git_hooks import _step_line_endings
-
-        booley_dir = self._crlf_config_project(tmp_path)
-        self._write_agent_selection(tmp_path, booley_dir)
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx, booley_dir)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "project-data: dirty tree"
-
-    def test_baseline_still_refuses_a_tree_the_user_left_dirty(self, tmp_path: Path) -> None:
-        """#611: user work present before init keeps the repair refused."""
-        from booley.harness.setup.git_hooks import _step_line_endings
-        from booley.harness.setup.line_endings import sample_worktree_cleanliness
-
-        booley_dir = self._crlf_config_project(tmp_path)
-        with (booley_dir / "notes.md").open("ab") as notes:
-            notes.write(b"user work\r\n")
-        baseline = sample_worktree_cleanliness(tmp_path, booley_dir)
-        assert baseline[booley_dir] is False
-
-        ctx = _ctx(tmp_path)
-        _step_line_endings(ctx, booley_dir, clean_baseline=baseline)
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "project-data: dirty tree"
-        assert (booley_dir / "notes.md").read_bytes() == b"notes\r\nuser work\r\n"
+    out = capsys.readouterr().out
+    assert "could not release guidance hardlinks" in out
+    assert "released guidance hardlink" not in out
+    assert (tmp_path / "AGENTS.md").exists()
 
 
 class TestDetachGuidanceHardlinks:
@@ -2324,11 +1584,7 @@ class TestDetachGuidanceHardlinks:
         _git_init(tmp_path)
         canonical = self._canonical(tmp_path)
         os.link(canonical, tmp_path / "AGENTS.md")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", "-f", "AGENTS.md"],
-            capture_output=True,
-            check=True,
-        )
+        _run_git(tmp_path, "add", "-f", "AGENTS.md")
         try:
             (tmp_path / "CLAUDE.md").symlink_to(canonical)
         except OSError:
@@ -2349,90 +1605,49 @@ class TestDetachGuidanceHardlinks:
         assert (tmp_path / "CLAUDE.md").exists()
 
 
-@pytest.mark.parametrize(
-    "keys",
-    [
-        ("GIT_DIR",),
-        ("GIT_WORK_TREE",),
-        ("GIT_COMMON_DIR",),
-        ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"),
-    ],
-)
-@pytest.mark.parametrize("rollback", [False, True])
-def test_policy_git_environment_reads_writes_discovery_and_rollback(
-    tmp_path, monkeypatch, keys, rollback, request
+@pytest.mark.parametrize("locked", [False, True])
+def test_link_policy_ignores_ambient_git_repository_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, locked: bool
 ):
-    from booley.runtime.booley_dir import reset_cache
-
-    reset_cache()
-    request.addfinalizer(reset_cache)
-    root, data, foreign = (tmp_path / name for name in ("root", "data", "foreign"))
-    for repository in (root, data, foreign):
-        _git_init(repository)
-    (root / ".booley").mkdir()
-    for repository, value in ((root, "false"), (foreign, "true")):
-        assert git_hooks._set_local_config(repository, value) is None
+    # Private seam: a whole Project Initialization also runs the prune guard, which
+    # follows ambient GIT_DIR, so only the link-policy step shows this isolation.
+    root, foreign = tmp_path / "root", tmp_path / "foreign"
+    data = _policy_project(root)
+    _git_init(foreign)
+    _run_git(root, "config", WORKTREE_RELATIVE_KEY, "false")
+    _run_git(foreign, "config", WORKTREE_RELATIVE_KEY, "true")
+    if locked:
+        (data / ".git" / "config.lock").write_bytes(b"")
     foreign_before = (foreign / ".git" / "config").read_bytes()
-    for key in keys:
-        monkeypatch.setenv(key, str(foreign if key == "GIT_WORK_TREE" else foreign / ".git"))
-    assert git_hooks.read_local_config(root, WORKTREE_RELATIVE_KEY) == "false"
-    assert git_hooks.read_local_config(data, WORKTREE_RELATIVE_KEY) is None
-    repositories = git_hooks.worktree_policy_repositories(root, booley_dir=data)
-    assert repositories == (root, data)
-    real_run = subprocess.run
-    writes = []
-
-    def run(argv, **kwargs):
-        if "config" in argv and "--get" not in argv:
-            writes.append(tuple(argv))
-            if rollback and str(data) in argv:
-                return subprocess.CompletedProcess(
-                    argv, 1, "", "injected second repository failure"
-                )
-        return real_run(argv, **kwargs)
-
-    monkeypatch.setattr(git_hooks.subprocess, "run", run)
     ctx = _ctx(root)
-    git_hooks._step_worktree_link_policy(
-        ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0), booley_dir=data
-    )
-    assert ctx.results[-1].status == ("warn" if rollback else "ok")
+
+    with monkeypatch.context() as ambient:
+        ambient.setenv("GIT_DIR", str(foreign / ".git"))
+        ambient.setenv("GIT_COMMON_DIR", str(foreign / ".git"))
+        ambient.setenv("GIT_WORK_TREE", str(foreign))
+        git_hooks._step_worktree_link_policy(
+            ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0), booley_dir=data
+        )
+
+    assert ctx.results[-1].status == ("warn" if locked else "ok")
     assert git_hooks.read_local_config(root, WORKTREE_RELATIVE_KEY) == (
-        "false" if rollback else "true"
+        "false" if locked else "true"
     )
-    assert git_hooks.read_local_config(data, WORKTREE_RELATIVE_KEY) == (
-        None if rollback else "true"
-    )
-    assert len(writes) == (3 if rollback else 2)
+    assert git_hooks.read_local_config(data, WORKTREE_RELATIVE_KEY) == (None if locked else "true")
     assert (foreign / ".git" / "config").read_bytes() == foreign_before
 
 
-def test_policy_local_config_reads_linked_checkout_shared_config(tmp_path):
+def test_link_policy_set_by_init_is_read_from_a_linked_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root, linked = tmp_path / "root", tmp_path / "linked"
-    _git_init(root)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(root),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "seed",
-        ],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(root), "worktree", "add", "-b", "linked", str(linked)],
-        check=True,
-        capture_output=True,
-    )
-    assert git_hooks._set_local_config(root, "true") is None
+    _policy_project(root, data_repository=False)
+    commit = ("-c", "user.name=Test", "-c", "user.email=test@example.com")
+    _run_git(root, *commit, "commit", "--allow-empty", "-m", "seed")
+    _run_git(root, "worktree", "add", "-b", "linked", str(linked))
+
+    _initialize(root, monkeypatch)
+
     assert git_hooks.read_local_config(linked, WORKTREE_RELATIVE_KEY) == "true"
 
 
@@ -2461,34 +1676,37 @@ def test_policy_discovery_rejects_missing_repository_identity(tmp_path, monkeypa
     assert git_hooks.worktree_policy_repositories(root, booley_dir=data) == (root,)
 
 
-def test_init_writes_no_attributes_file_in_or_out_of_stealth(tmp_path, capsys):
-    from booley.harness.setup.git_hooks import _step_line_endings
+@pytest.mark.parametrize("stealth", [False, True])
+def test_init_writes_no_attributes_file(tmp_path, monkeypatch, capsys, stealth):
+    _repo(tmp_path, "true")
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+    attribute_files = (tmp_path / ".gitattributes", tmp_path / ".git/info/attributes")
 
-    for stealth in (False, True):
-        root = tmp_path / f"stealth-{stealth}"
-        root.mkdir()
-        _git_init(root)
-        _run_git(root, "config", "core.autocrlf", "true")
-        data = root / ".booley"
-        data.mkdir()
-        (data / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
-        attribute_files = (root / ".gitattributes", root / ".git/info/attributes")
+    for check_only, autocrlf in ((True, "true"), (False, "false")):
+        results = _initialize(tmp_path, monkeypatch, check_only=check_only)
 
-        _step_line_endings(_ctx(root, check_only=True), data)
-        planned = capsys.readouterr().out
-        assert "would add" not in planned and "text=auto" not in planned
-        assert _local_autocrlf(root) == "true"
-        assert not any(path.exists() for path in attribute_files)
-
-        ctx = _ctx(root)
-        _step_line_endings(ctx, data)
-        completed = capsys.readouterr().out
-        assert "added '" not in completed and "text=auto" not in completed
-        assert ctx.results[-1].status == "ok"
-        assert _local_autocrlf(root) == "false"
+        assert results["line_endings"].status == ("warn" if check_only else "ok")
+        out = capsys.readouterr().out
+        assert "text=auto" not in out and "added '" not in out
+        assert git_hooks.read_local_config(tmp_path, "core.autocrlf") == autocrlf
         assert not any(path.exists() for path in attribute_files)
 
 
+def test_completed_normalization_of_no_files_renders_nothing(tmp_path, monkeypatch, capsys):
+    done = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED, count=0)
+    _repo(tmp_path, "false")
+
+    _initialize_with_report(tmp_path, monkeypatch, _report(LineEndingStatus.SAFE, actions=(done,)))
+
+    out = capsys.readouterr().out
+    assert "0 tracked file(s)" not in out
+    assert "normalized 0" not in out
+
+
+_PIN_DONE = ActionResult(ActionKind.PIN_AUTOCRLF, ActionState.COMPLETED)
+_NORMALIZED = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED)
 _UNSAFE_DETAILS = {
     ObservationCode.AUTOCRLF_UNREADABLE: "autocrlf unreadable",
     ObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "local autocrlf unreadable",
@@ -2499,94 +1717,98 @@ _UNSAFE_DETAILS = {
     ObservationCode.CRLF_MISMATCH: "CRLF working tree",
     ObservationCode.STALE_INDEX: "stale index metadata",
 }
-_UNSAFE_CODES = tuple(ObservationCode)
 
 
-def _summary_report(observations=(), actions=(), status=LineEndingStatus.UNSAFE):
-    return RepositoryLineEndingReport(
-        LineEndingRepository("project-checkout", Path("/repo")), status, observations, actions
+def _report(
+    status: LineEndingStatus,
+    observations: tuple[Observation, ...] = (),
+    actions: tuple[ActionResult, ...] = (),
+) -> LineEndingReport:
+    repository = LineEndingRepository("project-checkout", Path("/repo"))
+    return LineEndingReport(
+        status, (RepositoryLineEndingReport(repository, status, observations, actions),), ()
     )
 
 
-def test_completed_normalization_of_no_files_renders_nothing(capsys):
-    done = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED, count=0)
-
-    git_hooks._render_line_ending_action(done)
-
-    assert capsys.readouterr().out == ""
-
-
-def test_dirty_tree_summary_comes_from_refusal_reason():
-    from booley.harness.setup import line_endings
-
-    reasons = line_endings.LineEndingRefusalReason
-    dirty = ActionResult(
-        ActionKind.NORMALIZE_FILES,
-        ActionState.REFUSED,
-        count=1,
-        detail="Das Arbeitsverzeichnis hat nicht festgeschriebene Änderungen",
-        reason=reasons.DIRTY_TREE,
-    )
-    lookalike = ActionResult(
-        ActionKind.NORMALIZE_FILES,
-        ActionState.REFUSED,
-        count=1,
-        detail="working tree has changes of its own kind",
-        reason=reasons.NOT_LINE_ENDING_ONLY,
-    )
-
-    assert git_hooks._line_ending_result_detail(_summary_report(actions=(dirty,))) == "dirty tree"
-    assert git_hooks._line_ending_result_detail(_summary_report(actions=(lookalike,))) == (
-        "working tree has changes of its own kind"
+def _refused(reason: LineEndingRefusalReason, detail: str) -> ActionResult:
+    return ActionResult(
+        ActionKind.NORMALIZE_FILES, ActionState.REFUSED, count=1, detail=detail, reason=reason
     )
 
 
-@pytest.mark.parametrize("code", _UNSAFE_CODES)
-@pytest.mark.parametrize("completed", [False, True])
-def test_line_ending_result_detail_unsafe_codes(code, completed):
-    assert set(_UNSAFE_DETAILS) == set(_UNSAFE_CODES)
-    detail = "raw detail sentinel"
-    expected = _UNSAFE_DETAILS[code]
-    assert expected != code.value
-    assert expected != "raw detail sentinel"
-    actions = (ActionResult(ActionKind.PIN_AUTOCRLF, ActionState.COMPLETED),) if completed else ()
-    report = _summary_report((Observation(code, detail=detail),), actions)
-    assert git_hooks._line_ending_result_detail(report) == expected
-
-
-def test_line_ending_result_detail_refusal():
-    report = _summary_report(
-        actions=(
+_UNSAFE, _SAFE = LineEndingStatus.UNSAFE, LineEndingStatus.SAFE
+_SUMMARY_CASES = [
+    # A completed pin must not mask the observation (the precedence #4857a6235 restored);
+    # indexing by every code makes a new code without a detail fail collection.
+    *(
+        pytest.param(
+            _UNSAFE,
+            (Observation(code, detail="raw detail sentinel"),),
+            pin,
+            _UNSAFE_DETAILS[code],
+            id=f"{code.value}-{name}",
+        )
+        for code in ObservationCode
+        for name, pin in (("no-pin", ()), ("pin-done", (_PIN_DONE,)))
+    ),
+    pytest.param(
+        _UNSAFE,
+        (),
+        (_refused(LineEndingRefusalReason.DIRTY_TREE, "Das Arbeitsverzeichnis ist geändert"),),
+        "dirty tree",
+        id="dirty-tree-reason",
+    ),
+    pytest.param(
+        _UNSAFE,
+        (),
+        (
+            _refused(
+                LineEndingRefusalReason.NOT_LINE_ENDING_ONLY,
+                "working tree has changes of its own kind",
+            ),
+        ),
+        "working tree has changes of its own kind",
+        id="own-refusal-detail",
+    ),
+    pytest.param(
+        _UNSAFE,
+        (),
+        (
             ActionResult(ActionKind.REFRESH_INDEX, ActionState.COMPLETED),
             ActionResult(ActionKind.PIN_AUTOCRLF, ActionState.REFUSED, detail="pin unsafe"),
-        )
-    )
-    assert git_hooks._line_ending_result_detail(report) == "pin unsafe"
+        ),
+        "pin unsafe",
+        id="refused-pin",
+    ),
+    pytest.param(_SAFE, (), (), "no CRLF", id="no-crlf"),
+    pytest.param(_SAFE, (), (_NORMALIZED,), "normalized", id="normalized"),
+    pytest.param(
+        _UNSAFE,
+        (Observation(ObservationCode.EOL_SCAN_UNREADABLE),),
+        (_NORMALIZED,),
+        "EOL verification unreadable",
+        id="eol-verification-unreadable",
+    ),
+    pytest.param(_UNSAFE, (), (), "unsafe line-ending state", id="unsafe-without-observation"),
+]
 
 
-def test_line_ending_result_detail_safe_and_verification():
-    assert (
-        git_hooks._line_ending_result_detail(_summary_report(status=LineEndingStatus.SAFE))
-        == "no CRLF"
+@pytest.mark.parametrize(("status", "observations", "actions", "detail"), _SUMMARY_CASES)
+def test_line_ending_summary_detail(tmp_path, monkeypatch, status, observations, actions, detail):
+    _repo(tmp_path, "false")
+
+    results = _initialize_with_report(
+        tmp_path, monkeypatch, _report(status, observations, actions)
     )
-    action = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED)
-    assert (
-        git_hooks._line_ending_result_detail(
-            _summary_report(actions=(action,), status=LineEndingStatus.SAFE)
-        )
-        == "normalized"
-    )
-    report = _summary_report((Observation(ObservationCode.EOL_SCAN_UNREADABLE),), (action,))
-    assert git_hooks._line_ending_result_detail(report) == "EOL verification unreadable"
-    assert git_hooks._line_ending_result_detail(_summary_report()) == "unsafe line-ending state"
+
+    assert results["line_endings"].detail == detail
 
 
 def _tracking_git(root: Path, *args: str) -> str:
-    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
-    from booley.runtime.booley_dir import reset_cache
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
@@ -2618,9 +1840,6 @@ def _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged):
 def test_tracked_bundle_reports_untrack_command(
     tmp_path, monkeypatch, capsys, topology, staged, outdated, check_only
 ):
-    from booley.harness.init_cmd import _print_summary
-    from booley.runtime.booley_dir import reset_cache
-
     root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, topology, staged)
     if outdated:
         bundle.write_bytes(b"outdated bundle")
@@ -2630,26 +1849,24 @@ def test_tracked_bundle_reports_untrack_command(
     capsys.readouterr()
     ctx = InitContext(project_root=root, check_only=check_only)
     step_project_git_hooks(ctx)
-    command = shlex.join(
-        [
-            "git",
-            "-C",
-            str(owner.resolve()),
-            "rm",
-            "--cached",
-            "--",
-            bundle.relative_to(owner).as_posix(),
-        ]
-    )
+    relative = bundle.relative_to(owner).as_posix()
+    command = shell_command(["git", "-C", str(owner.resolve()), "rm", "--cached", "--", relative])
     assert command in capsys.readouterr().out
-    tracking = [result for result in ctx.results if result.name == "project_git_hook_tracking"]
-    assert len(tracking) == 1
-    assert tracking[0].status == "skip"
-    assert command in tracking[0].detail
-    assert "Commit the intentional removal" in tracking[0].detail
-    assert "rerun init" in tracking[0].detail
-    assert ctx.results[-1].name == "project_git_hooks"
-    assert _print_summary(ctx) == int(check_only and outdated)
+    # `booley init` exits 1 only for a check-mode `warn`, which an outdated bundle yields.
+    expected = {
+        (False, False): "current",
+        (False, True): "ok",
+        (True, False): "current",
+        (True, True): "warn",
+    }[check_only, outdated]
+    assert [(r.name, r.status) for r in ctx.results] == [
+        ("project_git_hook_tracking", "skip"),
+        ("project_git_hooks", expected),
+    ]
+    detail = ctx.results[0].detail
+    assert command in detail
+    assert "Commit the intentional removal" in detail
+    assert "rerun init" in detail
     assert _tracking_git(owner, "ls-files", "--stage", "-z") == index
     assert _tracking_git(owner, "diff", "--cached", "--binary") == diff
     if check_only:
@@ -2657,34 +1874,8 @@ def test_tracked_bundle_reports_untrack_command(
     reset_cache()
 
 
-def test_tracked_bundle_probe_failure_does_not_block_publication(tmp_path, monkeypatch, capsys):
-    from booley.harness.setup import project_git_hook_reconcile as reconcile
-    from booley.runtime.booley_dir import reset_cache
-
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
-    _git_init(tmp_path)
-    (tmp_path / ".booley").mkdir()
-    original = reconcile.subprocess.run
-
-    def fail_owner_probe(args, **kwargs):
-        if "--show-toplevel" in args:
-            return subprocess.CompletedProcess(args, 128, "", "fatal: detected dubious ownership")
-        return original(args, **kwargs)
-
-    monkeypatch.setattr(reconcile.subprocess, "run", fail_owner_probe)
-    ctx = _ctx(tmp_path)
-    reconcile.step_project_git_hooks(ctx)
-    assert "dubious ownership" in capsys.readouterr().out
-    assert ctx.results[-1].status == "ok"
-    assert ctx.results[-2].name == "project_git_hook_tracking"
-    assert ctx.results[-2].status == "skip"
-    assert (tmp_path / ".booley/.managed/project-git-hooks.pyz").is_file()
-
-
 def _paired_hook_fixture(tmp_path, monkeypatch):
     from booley.harness import worktree_cmd
-    from booley.runtime.booley_dir import reset_cache
     from tests.harness.test_worktree_cmd import _new, python_outer, versioned_project
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
@@ -2723,8 +1914,6 @@ def _paired_hook_fixture(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("checkout", ["main", "paired"])
 def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, checkout):
-    from booley.runtime.booley_dir import reset_cache
-
     root, linked = _paired_hook_fixture(tmp_path, monkeypatch)
     repo = root if checkout == "main" else linked
     for key, value in (("user.name", "Fixture"), ("user.email", "fixture@example.invalid")):
@@ -2734,7 +1923,6 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
     head = _tracking_git(repo, "rev-parse", "HEAD")
     rejected = run_bounded_child(
         ["git", "-C", str(repo), "commit", "-qm", "fix(core): primaryphrase pairedphrase"],
-        timeout=10,
     )
     # Each checkout's own policy rejects its own phrase and names only that one.
     present, absent = (
@@ -2769,9 +1957,6 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
 def test_tracked_bundle_advisory_absent_without_index_entry(
     tmp_path, monkeypatch, capsys, location
 ):
-    from booley.harness.setup import project_git_hook_reconcile as reconcile
-    from booley.runtime.booley_dir import reset_cache
-
     root = tmp_path / "root"
     root.mkdir()
     _git_init(root)
@@ -2796,13 +1981,10 @@ def test_tracked_bundle_advisory_absent_without_index_entry(
     reset_cache()
 
 
-@pytest.mark.parametrize("failure", ["timeout", "empty-owner", "index-error"])
+@pytest.mark.parametrize("failure", ["timeout", "empty-owner", "index-error", "owner-error"])
 def test_tracked_bundle_unexpected_probe_diagnostic_continues(
     tmp_path, monkeypatch, capsys, failure
 ):
-    from booley.harness.setup import project_git_hook_reconcile as reconcile
-    from booley.runtime.booley_dir import reset_cache
-
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "root"
     root.mkdir()
@@ -2816,6 +1998,8 @@ def test_tracked_bundle_unexpected_probe_diagnostic_continues(
             raise subprocess.TimeoutExpired(args, 10)
         if "--show-toplevel" in args and failure == "empty-owner":
             return subprocess.CompletedProcess(args, 0, "", "")
+        if "--show-toplevel" in args and failure == "owner-error":
+            return subprocess.CompletedProcess(args, 128, "", "fatal: detected dubious ownership")
         if "ls-files" in args and failure == "index-error":
             return subprocess.CompletedProcess(args, 128, "", "fatal: corrupt index")
         return original(args, **kwargs)
@@ -2823,7 +2007,9 @@ def test_tracked_bundle_unexpected_probe_diagnostic_continues(
     monkeypatch.setattr(reconcile.subprocess, "run", fail_probe)
     ctx = InitContext(project_root=root)
     reconcile.step_project_git_hooks(ctx)
-    assert "Could not inspect" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Could not inspect" in output
+    assert ("dubious ownership" in output) == (failure == "owner-error")
     assert ctx.results[-2].name == "project_git_hook_tracking"
     assert ctx.results[-2].status == "skip"
     assert ctx.results[-1].status == "ok"
@@ -2835,9 +2021,6 @@ def test_tracked_bundle_unexpected_probe_diagnostic_continues(
 def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
     tmp_path, monkeypatch, capsys, selectors
 ):
-    from booley.harness.setup import project_git_hook_reconcile as reconcile
-    from booley.runtime.booley_dir import reset_cache
-
     root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, "nested", False)
     foreign = tmp_path / "foreign"
     foreign.mkdir()
@@ -2855,30 +2038,30 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
             GIT_DISCOVERY_ACROSS_FILESYSTEM="0",
             GIT_ATTR_SOURCE="HEAD",
         )
-    ctx = InitContext(project_root=root, check_only=True)
-    locations = reconcile._locations(ctx)
-    assert locations is not None
+    (root / ".git" / "hooks" / "commit-msg").unlink()
     capsys.readouterr()
+    ctx = InitContext(project_root=root)
     with monkeypatch.context() as ambient:
         for name, value in overrides.items():
             ambient.setenv(name, value)
-        assert reconcile._locations(ctx) == locations
-        reconcile._report_bundle_tracking(ctx, locations)
+        step_project_git_hooks(ctx)
     output = capsys.readouterr().out
-    command = shlex.join(
-        ["git", "-C", str(owner), "rm", "--cached", "--", bundle.relative_to(owner).as_posix()]
-    )
+    relative = bundle.relative_to(owner).as_posix()
+    command = shell_command(["git", "-C", str(owner), "rm", "--cached", "--", relative])
     assert command in output
     assert "Could not inspect" not in output
-    assert ctx.results[-1].name == "project_git_hook_tracking"
-    assert ctx.results[-1].status == "skip"
+    assert [(r.name, r.status) for r in ctx.results] == [
+        ("project_git_hook_tracking", "skip"),
+        ("project_git_hooks", "ok"),
+    ]
+    assert (root / ".git" / "hooks" / "commit-msg").is_file()
+    assert not list((foreign / ".git" / "hooks").glob("commit-msg"))
+    assert not list((foreign / ".git" / "hooks").glob("pre-push"))
     assert _tracking_git(owner, "ls-files", "--error-unmatch", str(bundle))
     reset_cache()
 
 
 def test_tracked_bundle_broken_gitfile_reports_diagnostic(tmp_path, monkeypatch, capsys):
-    from booley.runtime.booley_dir import reset_cache
-
     root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, "nested", False)
     (bundle.parent.parent / ".git").write_text(f"gitdir: {tmp_path / 'missing-git-dir'}\n")
     index = _tracking_git(owner, "ls-files", "--stage", "-z")

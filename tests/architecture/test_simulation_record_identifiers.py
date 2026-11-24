@@ -113,29 +113,6 @@ def _defined_names(tree: ast.AST) -> list[tuple[int, str, str]]:
     return collector.found
 
 
-# Coverage Record names kept on purpose: shared QA helpers (#2911 owns QA mission assets) and the
-# persisted waiver keys (#2909 keeps the waiver candidate identity and path fields and the
-# Coverage reference kind in waivers).
-_COVERAGE_RECORD_NAMES: dict[str, frozenset[str]] = {
-    "qa/shared/coverage/evaluator/measurements.py": frozenset(
-        {
-            "CAMPAIGN_SCHEMA",
-            "read_campaign",
-        }
-    ),
-    "qa/shared/coverage/faults/approvals.py": frozenset(
-        {
-            "bind:campaign",
-        }
-    ),
-    "qa/shared/coverage/faults/campaign.py": frozenset(
-        {
-            "nested_campaign",
-            "rebind_reference:campaign",
-        }
-    ),
-}
-
 # Mutation Tester and Target campaign names, which keep their name.
 _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
     "src/booley/agent_workspace/isolation.py": frozenset(
@@ -143,18 +120,11 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "_campaign_roots",
         }
     ),
-    "src/booley/criteria/templates.py": frozenset(
-        {
-            "TARGET_CAMPAIGN_CRITERIA",
-            "_TARGET_CAMPAIGN_PARAM_REGISTRY",
-        }
-    ),
     "src/booley/flows/mutation/flow.py": frozenset(
         {
             "_apply_campaign_defaults",
             "_attach_campaign_artifacts",
             "_attach_campaign_directories",
-            "_campaign_for_target",
             "_campaign_manifest",
             "_copy_campaign_dir",
             "_copy_campaign_file",
@@ -180,36 +150,20 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "resolve_target_campaign",
         }
     ),
-    "tests/criteria/test_campaign_templates.py": frozenset(
-        {
-            "campaign",
-            "test_coverage_campaign_expands_shared_policy_per_target",
-            "test_coverage_campaign_rejects_duplicate_target_ownership",
-            "test_coverage_campaign_rejects_invalid_authoring",
-            "test_mutation_campaign_expands_target_and_parameters",
-            "test_mutation_campaign_rejects_incoherent_counts",
-        }
-    ),
     "tests/flows/mutation/test_flow.py": frozenset(
         {
             "_assert_durable_campaign",
             "_campaign",
-            "_target_campaign",
             "campaign",
             "campaign_dir",
-            "test_campaign_artifacts_show_each_tests_baseline_duration_and_time_limit",
-            "test_campaign_without_build_failures_names_no_replacement",
-            "test_campaign_runs_the_baseline_then_each_mutant",
+            "test_campaign_report_gives_the_typed_mutation_metrics",
             "test_happy_path_publishes_campaign_artifacts",
         }
     ),
     "tests/flows/mutation/test_memory_claims.py": frozenset(
         {
-            "_campaign",
             "test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result",
             "test_campaign_processes_rank_as_the_held_claim",
-            "test_queued_claim_is_withdrawn_when_the_campaign_is_cancelled",
-            "test_queued_simulation_claim_is_withdrawn_when_the_campaign_is_cancelled",
         }
     ),
     "tests/flows/test_target_campaign.py": frozenset(
@@ -219,6 +173,11 @@ _MUTATION_TARGET_NAMES: dict[str, frozenset[str]] = {
             "test_batched_campaign_launches_one_process_per_given_batch",
             "test_campaign_aggregation_cannot_pass_vacuously",
             "test_campaign_domain_does_not_import_presentation_layers",
+        }
+    ),
+    "tests/runtime/test_job_observation.py": frozenset(
+        {
+            "test_a_cli_campaign_waiting_for_an_item_claim_is_queued",
         }
     ),
 }
@@ -248,7 +207,7 @@ _GOAL_NAMES: dict[str, frozenset[str]] = {
 def _kept_entries() -> dict[str, frozenset[str]]:
     """Merge the keep lists by file. An entry is name or Scope.qualname:name."""
     merged: dict[str, set[str]] = {}
-    for kept in (_COVERAGE_RECORD_NAMES, _MUTATION_TARGET_NAMES, _GOAL_NAMES):
+    for kept in (_MUTATION_TARGET_NAMES, _GOAL_NAMES):
         for relative, entries in kept.items():
             merged.setdefault(relative, set()).update(entries)
     return {relative: frozenset(entries) for relative, entries in merged.items()}

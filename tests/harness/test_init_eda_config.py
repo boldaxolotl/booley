@@ -24,12 +24,12 @@ def test_init_rejects_host_provisioning_on_windows(
     )
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setattr(eda_config.sys, "platform", "win32")
-    monkeypatch.setattr(init_cmd, "_devcontainer_is_tracked", lambda _project: False)
-    monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda _project, _source=None: "none")
     reset_cache()
     try:
         context = InitContext(project_root=project)
-        init_cmd._step_interactive(context, nangate_pdk_root=tmp_path / "pdk")
+        # private: `booley init` reaches this step only after Docker-backed host
+        # preparation, so no public entry point runs it on a host without Docker.
+        init_cmd._step_sandbox(context, nangate_pdk_root=tmp_path / "pdk")
     finally:
         reset_cache()
 

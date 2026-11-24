@@ -13,9 +13,13 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from booley.runtime import runtime_context
+from booley.runtime import runtime_context, worktree_paths
+from tests.docs.test_sandbox_doc_citations import citation_problems
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
+
+_REMOVAL_CITATION = '/booley-docs/WORKTREES.md → "Removing a worktree"'
 
 # ---------------------------------------------------------------------------
 # Parser and venue
@@ -172,7 +176,8 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert command in steps, "Snapshot removal instructions missing"
     assert "Snapshot" in steps and "same Sandbox" in steps and "Sandbox paths" in steps
     assert "WARNING" not in steps
-    assert "preserve" in steps and "WORKTREES.md (host doc, not shipped)" in steps
+    assert "preserve" in steps
+    assert _REMOVAL_CITATION in steps and citation_problems(steps, "Snapshot steps") == []
     assert steps.count("git -C") == 2 and "booley-worktree/" not in steps
     assert shlex.join(["git", "-C", str(project), "branch", "-D", "booley/goal-entry"]) in steps
     assert "populated submodules" in steps and "--force" in steps
@@ -182,7 +187,7 @@ def test_creates_a_worktree_on_its_own_branch_and_prints_its_path(
     assert head == _git(project, "rev-parse", "HEAD").stdout
     # Discard the disposable Snapshot's copied and generated files before removal.
     assert _git(worktree, "clean", "-fdx").returncode == 0
-    run_bounded_child(shlex.split(command), check=True, timeout=10)
+    run_bounded_child(shlex.split(command), check=True)
     assert not worktree.exists()
     assert str(worktree) not in _git(project, "worktree", "list", "--porcelain").stdout
 
@@ -513,12 +518,12 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     for command, removed in zip(commands[:2], (paired, worktree), strict=True):
-        run_bounded_child(shlex.split(command), check=True, timeout=10)
+        run_bounded_child(shlex.split(command), check=True)
         assert not removed.exists()
     assert str(paired) not in git(source, "worktree", "list", "--porcelain")
     assert str(worktree) not in git(root, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-worktree/real-paired")
-    run_bounded_child(shlex.split(commands[2]), check=True, timeout=10)
+    run_bounded_child(shlex.split(commands[2]), check=True)
     assert _git(source, "rev-parse", "--verify", "booley-worktree/real-paired").returncode != 0
 
 
@@ -616,12 +621,20 @@ def test_project_branch_collision_preserves_existing_branch(
     assert git(source, "rev-parse", "booley-worktree/collision") == head
 
 
-def test_paired_caller_is_refused_before_outer_creation(versioned_project, python_outer, capsys):
+def test_paired_caller_is_refused_before_outer_creation(
+    versioned_project, python_outer, capsys, tmp_path, monkeypatch
+):
     root = versioned_project
     assert _new("paired-caller", root) == 0
     caller = worktree_cmd.worktree_path(root, "paired-caller")
+    external = tmp_path / "external"
+    external.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
     assert _new("nested", caller) == 1
-    assert "run booley worktree new from the primary workspace" in capsys.readouterr().err
+    assert (
+        "cannot create a worktree from a Paired Checkout; "
+        "run booley worktree new from the main checkout"
+    ) in capsys.readouterr().err
     assert not worktree_cmd.worktree_path(caller, "nested").exists()
 
 
@@ -747,9 +760,19 @@ def test_snapshot_copies_only_versioned_checkout_state(project, capsys):
 
 
 @_real_script
-def test_snapshot_skips_and_names_unclassified_paths(project, capsys):
+def test_snapshot_skips_and_names_unclassified_paths(project, capsys, tmp_path):
+    excludes = tmp_path / "empty-excludes"
+    excludes.touch()
+    assert _git(project, "config", "core.excludesFile", str(excludes)).returncode == 0
     data = project / ".booley"
+    _write(data / ".gitignore", "tmp/\nruntime/\n")
+    _write(data / "committed" / "x", "tracked\n")
+    _write(data / "mixed" / "tracked", "tracked\n")
+    assert _git(project, "add", "-f", ".booley/committed", ".booley/mixed").returncode == 0
+    assert _git(project, "commit", "-m", "tracked configuration").returncode == 0
     _write(data / "eval_tmp" / "x", "stale\n")
+    _write(data / "mixed" / "new", "untracked\n")
+    _write(data / "tmp" / "qa" / "x", "ignored\n")
     _write(data / "runtime" / "unknown.json", "{}\n")
 
     assert _new("unclassified", project) == 0
@@ -759,9 +782,39 @@ def test_snapshot_skips_and_names_unclassified_paths(project, capsys):
     assert not (copied / "runtime" / "unknown.json").exists()
     skipped = [line for line in capsys.readouterr().err.splitlines() if "skipped" in line]
     assert len(skipped) == 2
-    assert any("eval_tmp" in line and "runtime" not in line for line in skipped)
-    assert any("runtime/unknown.json" in line for line in skipped)
+    assert any("eval_tmp" in line for line in skipped)
+    assert any("mixed" in line for line in skipped)
+    assert not any(name in line for line in skipped for name in ("committed", "tmp/qa", "runtime"))
     assert (data / "eval_tmp" / "x").is_file()
+
+
+@_real_script
+@pytest.mark.parametrize("anchor", ["project_data_repository", "rtl_repository", "elsewhere"])
+def test_snapshot_carries_the_project_data_waiver_directory(project, capsys, anchor):
+    from booley.flows.sim.coverage_flow_context import coverage_project_context
+    from booley.flows.sim.coverage_waivers import CoverageRepositoryRoots, load_approved_waiver_set
+    from tests.flows.sim.test_coverage_policy import _TARGET
+    from tests.flows.sim.test_coverage_waivers import _write_valid_approval
+
+    data = project / ".booley"
+    with (data / "booley.toml").open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(f'[coverage.waivers]\nanchor = "{anchor}"\ndirectory = "coverage-waivers"\n')
+    _write_valid_approval(CoverageRepositoryRoots(project, data))
+    assert _git(project, "add", "rtl/counter.sv").returncode == 0
+    assert _git(project, "commit", "-m", "rtl").returncode == 0
+
+    assert _new("waivers", project) == 0
+
+    worktree = worktree_cmd.worktree_path(project, "waivers")
+    approval = worktree / ".booley" / "coverage-waivers" / "rtl" / "counter.sv.toml"
+    assert approval.exists() is (anchor == "project_data_repository")
+    skipped = [line for line in capsys.readouterr().err.splitlines() if "skipped" in line]
+    if anchor == "project_data_repository":
+        assert not any("coverage-waivers" in line for line in skipped)
+        context = coverage_project_context(worktree)
+        roots = CoverageRepositoryRoots(context.rtl_repository, context.project_data_repository)
+        waivers = load_approved_waiver_set(context.waiver_config, roots, known_targets=(_TARGET,))
+        assert [waiver.waiver_id for waiver in waivers.waivers] == ["counter-basic-block"]
 
 
 @_real_script
@@ -1009,7 +1062,7 @@ def test_post_setup_hook_runs_outside_the_layout_gate(
     entered = []
 
     def probe(root, worktree, name):
-        with layout_gate(root, timeout_s=1):  # raises if the creation still holds the gate
+        with layout_gate(root, timeout_s=scaled(1)):  # raises if the creation still holds the gate
             entered.append(name)
 
     monkeypatch.setattr(worktree_cmd, "_run_post_setup", probe)
@@ -1273,6 +1326,8 @@ def test_existing_project_registration_is_refused_and_preserved(
     assert shlex.join(["git", "-C", str(source), "worktree", "remove", str(nested)]) in error
     assert "preserve" in error and "locks" in error and "forcing removal" in error
     assert "remove --force" not in error
+    flat = " ".join(error.split())
+    assert _REMOVAL_CITATION in flat and citation_problems(flat, "Pairing refusal") == []
     assert nested.as_posix() in git(source, "worktree", "list", "--porcelain")
     assert git(source, "rev-parse", "booley-ticket/taken")
 
@@ -1361,11 +1416,10 @@ def test_worktree_new_after_managed_bundle_runtime_init(
 def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     versioned_project, python_outer, capsys, monkeypatch
 ):
-    import shlex
-
     from booley.harness.init_cmd import InitContext, _step_booley_dir
     from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
     from booley.runtime.booley_dir import reset_cache
+    from booley.runtime.sandbox_apply import shell_command
     from tests.harness.test_init_rerun import _managed_git
 
     root = versioned_project
@@ -1384,12 +1438,10 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     capsys.readouterr()
     before = _managed_git(data, "ls-files", "--stage", "-z")
     step_project_git_hooks(InitContext(project_root=root))
-    command = shlex.join(
-        ["git", "-C", str(data), "rm", "--cached", "--", ".managed/project-git-hooks.pyz"]
-    )
-    assert command in capsys.readouterr().out
+    argv = ["git", "-C", str(data), "rm", "--cached", "--", ".managed/project-git-hooks.pyz"]
+    assert shell_command(argv) in capsys.readouterr().out
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    run_bounded_child(shlex.split(command), check=True, timeout=10)
+    run_bounded_child(argv, check=True)
     assert bundle.is_file()
     _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
     _step_booley_dir(InitContext(project_root=root))
@@ -1661,14 +1713,21 @@ def test_booley_dir_outside_checkout_is_refused_without_leftovers(
         tmp_path, monkeypatch, external.as_posix() if source == "project-dir" else "state"
     )
     _write(root / "state" / "booley.toml", "[submodules]\npaths = []\n")
+    # A linked-worktree marker must not turn a configured escape into the Paired Checkout refusal.
+    _write(external / ".git", "gitdir: elsewhere\n")
     if source == "ambient":
         monkeypatch.setenv("BOOLEY_DIR", str(external))
     branches = _git(root, "branch", "--list").stdout
 
     assert _new("demo", root) == 1
+    assert worktree_paths.main([str(root), "--ambient"]) == 1
 
     err = capsys.readouterr().err
-    assert str(external) in err and "relative [project].dir" in err
+    if source == "ambient":
+        assert err.count(f"BOOLEY_DIR={external} is not this checkout's Booley Directory") == 2
+        assert "[project].dir" not in err
+    else:
+        assert err.count("relative [project].dir") == 2
     assert _worktree_paths(root) == [f"worktree {root}"]
     assert _git(root, "branch", "--list").stdout == branches
     assert not (root / ".booley").exists()

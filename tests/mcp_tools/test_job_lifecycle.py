@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import errno
 import json
+import math
 import os
 import sys
 import textwrap
@@ -25,11 +27,15 @@ from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.conftest import symlink_or_skip
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
-pytestmark = pytest.mark.timeout(120)
-JOB_TIMEOUT = 30
-WAIT_TIMEOUT = 20
+pytestmark = pytest.mark.timeout(math.ceil(4 * hang_guard_s()))
+JOB_TIMEOUT = hang_guard_s()
+WAIT_TIMEOUT = hang_guard_s()
+# Job timeouts the tests assert fire; whole seconds because the message formats them.
+_KILL_AFTER_S = math.ceil(scaled(1))
+_MEASURE_KILL_AFTER_S = math.ceil(scaled(4))
 
 
 @pytest.fixture
@@ -76,7 +82,7 @@ async def stop_jobs(jobs):
     for task in tasks:
         if not task.done():
             task.cancel()
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15)
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=hang_guard_s())
 
 
 def gated_command(context):
@@ -86,7 +92,7 @@ def gated_command(context):
         ready = Path({str(context.work_dir / "ready")!r})
         release = Path({str(context.work_dir / "release")!r})
         ready.write_text('ready')
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + {2 * hang_guard_s()}
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         if not release.exists():
@@ -247,14 +253,14 @@ async def test_timeout_persists_failure_and_balances_activity(context):
     jobs = JobLifecycle(activity)
     submission = await jobs.submit_and_wait(
         "lint",
-        command("import time; time.sleep(10)"),
-        1,
+        command(f"import time; time.sleep({10 * _KILL_AFTER_S})"),
+        _KILL_AFTER_S,
         context=context,
         wait_seconds=WAIT_TIMEOUT,
     )
     result = submission.poll.result
     assert result.exit_code == 2
-    assert "timed out after 1s" in result.stderr
+    assert f"timed out after {_KILL_AFTER_S}s" in result.stderr
     rec = job_records.read_record(submission.poll.run_id, context.jobs_root)
     assert rec.status == "failed" and not is_pid_alive(rec.pid)
     assert activity.starts == activity.ends == 1
@@ -278,6 +284,72 @@ async def test_running_cancel_is_terminal_after_process_stops_and_root_stays_pin
         assert "CANCELLED" in result.result.stderr
         assert activity.starts == activity.ends == 1
         assert not (context.work_dir / "different-runtime/jobs").exists()
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_job_staged_inputs_are_removed_on_recovery(context, monkeypatch):
+    """A cancelled Job's staged input is swept once the child is reaped."""
+    build, run, booley_dir = (context.work_dir / name for name in ("build", "run", "booley"))
+    for directory in (build, run, booley_dir):
+        directory.mkdir()
+    (build / "firmware.hex").write_text("01\n", encoding="utf-8")
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: booley_dir)
+    jobs = JobLifecycle()
+    script = f"""
+        from pathlib import Path
+        import time
+        from booley.flows.sim.runtime_inputs import materialize_runtime_inputs
+        with materialize_runtime_inputs(
+            Path({str(build)!r}), Path({str(run)!r}), ("firmware.hex",),
+            booley_dir=Path({str(booley_dir)!r}),
+        ):
+            Path({str(context.work_dir / "ready")!r}).write_text("ready")
+            time.sleep({2 * hang_guard_s()})
+    """
+    run_id = jobs.submit("lint", command(script), JOB_TIMEOUT, context=context)
+    try:
+        await wait_until((context.work_dir / "ready").exists)
+        assert (run / "firmware.hex").is_symlink()
+        records = booley_dir / ".runtime/staged-runtime-inputs"
+        assert len(list(records.glob("*.json"))) == 1
+        assert await jobs.cancel(run_id) == "running"
+        await jobs.poll(run_id)
+        assert not (run / "firmware.hex").is_symlink()
+        assert list(run.iterdir()) == []
+        assert list(records.glob("*.json")) == []
+    finally:
+        await stop_jobs(jobs)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_job_projection_temporary_is_removed_on_recovery(context):
+    """A cancelled Job's half-published core projection is swept in the Job's checkout."""
+    from tests.test_core_projection import _project, _temporaries
+
+    root, _core = _project(context.work_dir)
+    job_context = dataclasses.replace(context, explicit_work_dir=root)
+    jobs = JobLifecycle()
+    script = f"""
+        from pathlib import Path
+        import time
+        from booley.fusesoc.core_projection import reconcile_projected_cores
+
+        def block(*_args):
+            Path({str(root / "ready")!r}).write_text("ready")
+            time.sleep({2 * hang_guard_s()})
+
+        Path.replace = block
+        reconcile_projected_cores(Path({str(root)!r}))
+    """
+    run_id = jobs.submit("lint", command(script), JOB_TIMEOUT, context=job_context)
+    try:
+        await wait_until((root / "ready").exists)
+        assert len(_temporaries(root)) == 1
+        assert await jobs.cancel(run_id) == "running"
+        await jobs.poll(run_id)
+        assert _temporaries(root) == []
     finally:
         await stop_jobs(jobs)
 
@@ -448,7 +520,9 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         asyncio.run(run())
         assert 'mcp' not in sys.modules and 'booley.mcp.server' not in sys.modules
     """)
-    result = run_bounded_child([sys.executable, "-c", script], cwd=context.work_dir, timeout=40)
+    result = run_bounded_child(
+        [sys.executable, "-c", script], cwd=context.work_dir, timeout=2 * hang_guard_s()
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -470,8 +544,8 @@ def queued_command(context):
         import os, time
         from booley.runtime.job_slots import MemoryClaim, SlotStore, slots_dir
         store = SlotStore(slots_dir())
-        deadline = time.monotonic() + 60
-        token = store.acquire("memory", pid=os.getpid(), timeout_s=30, poll_interval=0.01,
+        deadline = time.monotonic() + {2 * hang_guard_s()}
+        token = store.acquire("memory", pid=os.getpid(), timeout_s={hang_guard_s()}, poll_interval=0.01,
             memory=MemoryClaim(budget_mb=1024.0, run_alone=True),
             on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
             should_abort=lambda: time.monotonic() > deadline)
@@ -487,7 +561,9 @@ def queued_command(context):
 @pytest.mark.parametrize("withdraw", [False, True])
 async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("memory", pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
+    holder = store.acquire(
+        "memory", pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
     jobs = FastSupervisor()
     try:
         run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
@@ -518,9 +594,9 @@ def requeued_command(context):
         import os, time
         from booley.runtime import job_slots
         store = job_slots.SlotStore(job_slots.slots_dir())
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + {2 * hang_guard_s()}
         claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=None, run_alone=True)
-        token = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=30,
+        token = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s={hang_guard_s()},
             poll_interval=0.01, memory=claim, queue_reason='requeued after out-of-memory',
             on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
             should_abort=lambda: time.monotonic() > deadline)
@@ -533,15 +609,16 @@ async def test_cancelled_requeued_job_names_the_requeue(context):
     store = job_slots.SlotStore(job_slots.slots_dir())
     holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
     holder = store.acquire(
-        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=holder_claim
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=holder_claim
     )
     jobs = FastSupervisor()
     try:
         run_id = jobs.submit("lint", requeued_command(context), JOB_TIMEOUT, context=context)
         await wait_until((context.work_dir / "queued").exists)
         queued = await jobs.poll(run_id)
-        assert queued.phase.startswith("QUEUED (position 1): waits to run alone")
-        assert queued.phase.endswith("; requeued after out-of-memory")
+        assert queued.phase.startswith(
+            "QUEUED (position 1): waits to run alone (requeued after out-of-memory)"
+        )
         rec = job_records.read_record(run_id, context.jobs_root)
         assert jobs._child_requeued(rec) is True
         assert await jobs.cancel(run_id) == "queued"
@@ -559,7 +636,7 @@ async def test_unrecorded_cancellation_keeps_no_requeue_reason(context, monkeypa
     store = job_slots.SlotStore(job_slots.slots_dir())
     holder_claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)
     holder = store.acquire(
-        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=holder_claim
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=holder_claim
     )
     jobs = FastSupervisor()
     try:
@@ -603,7 +680,9 @@ async def test_child_requeued_needs_a_claim_with_a_reason(context):
         status=job_records.STATUS_RUNNING,
     )
     assert jobs._child_requeued(mine) is False  # no claim at all
-    plain = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
+    plain = store.acquire(
+        job_slots.CLASS_MEMORY, pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
     try:
         assert jobs._child_requeued(mine) is False  # a first claim has no reason
     finally:
@@ -611,7 +690,7 @@ async def test_child_requeued_needs_a_claim_with_a_reason(context):
     reasoned = store.acquire(
         job_slots.CLASS_MEMORY,
         pid=os.getpid(),
-        timeout_s=60,
+        timeout_s=2 * hang_guard_s(),
         memory=_RUN_ALONE,
         queue_reason="requeued after out-of-memory",
     )
@@ -640,7 +719,9 @@ async def test_queued_cancel_withdrawal_unlink_faults(context, monkeypatch, faul
     """A transient sharing error on the withdrawal unlink is retried (queued, #2089);
     a missing entry means promotion won the race (running)."""
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("memory", pid=os.getpid(), timeout_s=60, memory=_RUN_ALONE)
+    holder = store.acquire(
+        "memory", pid=os.getpid(), timeout_s=2 * hang_guard_s(), memory=_RUN_ALONE
+    )
     jobs = FastSupervisor()
     real_unlink = Path.unlink
     raised: list[Path] = []
@@ -675,21 +756,21 @@ import os, signal, time
 from pathlib import Path
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 Path({str(descendant_ready)!r}).write_text(str(os.getpid()))
-time.sleep(10)
+time.sleep({2 * WAIT_TIMEOUT})
 """
     return command(f"""
         import subprocess, sys, time
         from pathlib import Path
         child = subprocess.Popen([sys.executable, '-c', {child_script!r}],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + {hang_guard_s()}
         while not Path({str(descendant_ready)!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         ready = Path({str(context.work_dir / "ready")!r})
         pending = ready.with_suffix('.tmp')
         pending.write_text(str(child.pid))
         pending.replace(ready)
-        time.sleep(10)
+        time.sleep({2 * WAIT_TIMEOUT})
     """)
 
 
@@ -701,7 +782,7 @@ def test_event_loop_shutdown_aborts_real_process_group(context, monkeypatch):
     jobs = FastSupervisor(activity)
 
     async def start():
-        run_id = jobs.submit("lint", descendant_command(context), 10, context=context)
+        run_id = jobs.submit("lint", descendant_command(context), JOB_TIMEOUT, context=context)
         await wait_until((context.work_dir / "ready").exists)
         return run_id
 
@@ -958,7 +1039,7 @@ def log_gate_command(context, first="started", second="finished"):
         import sys, time
         release = Path({str(context.work_dir / "release")!r})
         sys.stdout.buffer.write(b'{first}\\n'); sys.stdout.buffer.flush()
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + {2 * hang_guard_s()}
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         sys.stdout.buffer.write(b'{second}\\n'); sys.stdout.buffer.flush()
@@ -1121,7 +1202,7 @@ async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_pat
     script = textwrap.dedent(f"""
         import signal, subprocess, sys, time
         child = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+            [sys.executable, "-c", "import time; time.sleep({15 * _MEASURE_KILL_AFTER_S})"], start_new_session=True
         )
         open({str(pid_file)!r}, "w").write(str(child.pid))
 
@@ -1131,15 +1212,17 @@ async def test_a_timed_out_measure_job_is_terminated_before_it_is_killed(tmp_pat
             sys.exit(0)
 
         signal.signal(signal.SIGTERM, stop)
-        time.sleep(60)
+        time.sleep({15 * _MEASURE_KILL_AFTER_S})
     """)
     try:
         _, _, stderr, timed_out = await endpoint_process._run_subprocess(
-            [sys.executable, "-c", script], timeout=4, stop_grace=10.0
+            [sys.executable, "-c", script],
+            timeout=_MEASURE_KILL_AFTER_S,
+            stop_grace=hang_guard_s(),
         )
         grandchild = int(pid_file.read_text(encoding="utf-8"))
 
-        assert timed_out and "timed out after 4s" in stderr
+        assert timed_out and f"timed out after {_MEASURE_KILL_AFTER_S}s" in stderr
         assert not is_pid_alive(grandchild)
     finally:
         if pid_file.exists():

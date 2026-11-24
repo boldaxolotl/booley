@@ -11,6 +11,7 @@ import pytest
 from tests.booley_checkouts_support import isolate_git, main_project
 from tests.conftest import symlink_or_skip
 from tests.project_runtime_git_support import git
+from tests.time_budget import hang_guard_s
 
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
@@ -166,7 +167,7 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
 
 
 def _allocate_worker(root, number, start):
-    start.wait(timeout=10)
+    start.wait(timeout=hang_guard_s())
     handles.register_job(Path(root), f"job-{number}", "sim", None)
     handles.register_job(Path(root), "shared", "lint", None)
 
@@ -180,9 +181,10 @@ def test_concurrent_processes_allocate_unique_stable_jobs(tmp_path):
 
 
 def _register_session_worker(root, number, start):
-    start.wait(timeout=10)
+    start.wait(timeout=hang_guard_s())
     registry = SessionRegistry(Path(root))
-    for _ in range(100):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             registry.upsert(attribution(f"codex:{number}"), "sim", "completed", now=100)
             return
@@ -301,7 +303,7 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
         registry.upsert(attribution(), "sim", "completed", now=100)
         job = job_records.JobRecord("job-one", "sim", STAMP, 60, session_key="codex:one")
         handles.register_job(tmp_path, job.run_id, job.endpoint, job.session_key)
-        job_records.write_record(job, tmp_path / ".interactive_logs/old/.runtime/jobs")
+        job_records.write_record(job, tmp_path / "job_logs/old/.runtime/jobs")
         store = handles.HandleStore(tmp_path)
         if map_state == "empty":
             store.save(handles.HandleMap())
@@ -413,14 +415,14 @@ def run_workers(tmp_path, target):
         worker.start()
     try:
         for worker in workers:
-            worker.join(timeout=20)
+            worker.join(timeout=2 * hang_guard_s())
             assert not worker.is_alive()
             assert worker.exitcode == 0
     finally:
         for worker in workers:
             if worker.is_alive():
                 worker.terminate()
-            worker.join(timeout=5)
+            worker.join(timeout=hang_guard_s())
 
 
 def test_shape_valid_maps_remain_usable(tmp_path_factory, caplog):
@@ -465,7 +467,7 @@ def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_facto
         else:
             store.path.unlink()
         job = job_records.JobRecord("old", "sim", STAMP, 60, session_key="codex:disconnected")
-        root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+        root = tmp_path / "job_logs/old/.runtime/jobs"
         job_records.write_record(job, root)
         before = (root / "old.json").read_bytes()
         observer = SessionObserver(now=lambda: 200)
@@ -513,7 +515,7 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
     from booley.runtime.timefmt import rfc3339_from_epoch
 
     now = 1_800_000_000.0
-    root = tmp_path / ".interactive_logs/old/.runtime/jobs"
+    root = tmp_path / "job_logs/old/.runtime/jobs"
     for run_id, ended_ago in [
         ("sim-expired", 2 * 86400),
         ("sim-recent", 3600),
@@ -604,7 +606,7 @@ def test_dropping_a_handle_drops_its_name(tmp_path):
     store = handles.HandleStore(tmp_path)
     store.reserve("pid:one", "S", name="uart-fix")
     store.reserve("pid:two", "S")
-    store.prune(lambda _map: {"pid:one"}, wait_s=1)
+    store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
     assert store.load().names == {}
     assert json.loads(store.path.read_bytes())["names"] == {}
     store.reserve("pid:three", "S")
@@ -642,7 +644,7 @@ def test_non_string_names_are_diagnosed_and_never_reset(tmp_path):
     with pytest.raises(ValueError, match="strings"):
         store.reserve("pid:two", "S", name="x")
     with pytest.raises(ValueError, match="strings"):
-        store.prune(lambda _map: {"pid:one"}, wait_s=1)
+        store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
     assert store.path.read_bytes() == before
     store.path.write_text(json.dumps({**data, "names": ["not", "a", "dict"]}))
     assert store.titled_snapshot()[2]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,62 +11,39 @@ from booley.core.boundary import BoundaryError
 from booley.flows.sim import config
 
 
-def test_build_timeout_defaults_to_one_hour(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
-
-    assert config.resolve_sim_build_timeout_ms() == 3_600_000
-
-
-def test_build_timeout_accepts_positive_integer(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        config,
-        "_sim_config",
-        lambda _work_dir: {"build_timeout_ms": 1_234_567},
-    )
-
-    assert config.resolve_sim_build_timeout_ms() == 1_234_567
+def _project(tmp_path: Path, toml: str) -> Path:
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(f"[flows.sim]\n{toml}", encoding="utf-8")
+    return tmp_path
 
 
-@pytest.mark.parametrize("value", [True, 1.5, "1000", 0, -1])
-def test_build_timeout_rejects_non_positive_integer(
-    monkeypatch: pytest.MonkeyPatch,
-    value: object,
+@pytest.mark.parametrize(
+    ("resolver", "key", "default"),
+    [
+        (config.resolve_sim_build_timeout_ms, "build_timeout_ms", 3_600_000),
+        (config.resolve_sim_trace_convert_timeout_ms, "trace_convert_timeout_ms", 1_800_000),
+    ],
+)
+def test_timeouts_default_accept_positive_integers_and_reject_the_rest(
+    tmp_path: Path, resolver: Callable[[Path], int], key: str, default: int
 ) -> None:
-    monkeypatch.setattr(
-        config,
-        "_sim_config",
-        lambda _work_dir: {"build_timeout_ms": value},
-    )
+    assert resolver(tmp_path) == default
+    project = _project(tmp_path, f"{key} = 1234567\n")
+    assert resolver(project) == 1_234_567
 
-    with pytest.raises(BoundaryError, match=r"\[flows\.sim\]\.build_timeout_ms"):
-        config.resolve_sim_build_timeout_ms()
-
-
-def test_trace_convert_timeout_defaults_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
-    assert config.resolve_sim_trace_convert_timeout_ms() == 1_800_000
-
-    monkeypatch.setattr(config, "_sim_config", lambda _w: {"trace_convert_timeout_ms": 5000})
-    assert config.resolve_sim_trace_convert_timeout_ms() == 5000
-
-    for bad in ("1000", 0):  # wrong type, non-positive
-        monkeypatch.setattr(
-            config, "_sim_config", lambda _w, bad=bad: {"trace_convert_timeout_ms": bad}
+    for bad in ("true", "1.5", '"1000"', "0", "-1"):
+        (project / ".booley" / "booley.toml").write_text(
+            f"[flows.sim]\n{key} = {bad}\n", encoding="utf-8"
         )
-        with pytest.raises(BoundaryError, match=r"\[flows\.sim\]\.trace_convert_timeout_ms"):
-            config.resolve_sim_trace_convert_timeout_ms()
+        with pytest.raises(BoundaryError, match=rf"\[flows\.sim\]\.{key}"):
+            resolver(project)
 
 
-def test_sim_sentinels_come_from_project_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        config,
-        "_sim_config",
-        lambda _work_dir: {"pass_sentinels": ["PASS", 7], "fail_sentinels": ["FAIL"]},
-    )
-    assert config.resolve_sim_sentinels() == (["PASS", "7"], ["FAIL"])
+def test_sim_sentinels_come_from_project_config(tmp_path: Path) -> None:
+    project = _project(tmp_path, 'pass_sentinels = ["PASS", 7]\nfail_sentinels = ["FAIL"]\n')
+    assert config.resolve_sim_sentinels(project) == (["PASS", "7"], ["FAIL"])
 
-    monkeypatch.setattr(config, "_sim_config", lambda _work_dir: {})
-    assert config.resolve_sim_sentinels() == ([], [])
+    assert config.resolve_sim_sentinels(tmp_path / "empty") == ([], [])
 
 
 def test_resolvers_accept_a_string_project_root(tmp_path: Path) -> None:

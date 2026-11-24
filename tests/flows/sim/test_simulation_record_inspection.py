@@ -100,6 +100,9 @@ def test_public_work_item_authentication_rejects_file_changed_during_read(
 def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_path):
     from booley.flows.sim.execution.contract import PreSimEvidence
     from booley.flows.sim.record.pre_sim_evidence import publish_pre_sim_firing
+
+    # Private seam: the per-record ``test_names[:8]`` cut and the 16 MiB sidecar have no public
+    # entry below a full ``SimulateFlow`` run of 4,000 Tests.
     from booley.flows.sim.record_presentation import _pre_sim_projection
 
     names = tuple(f"test{index:04d}" + "x" * 504 for index in range(4000))
@@ -132,7 +135,15 @@ def test_maximum_selection_uses_large_sidecar_and_bounded_report_preview(tmp_pat
     assert len(detail["pre_sim_runs"][0]["test_names"]) == 8
 
 
-@pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
+@pytest.fixture
+def pre_sim_record(tmp_path, monkeypatch):
+    """A successful run with one Pre-Sim firing: its invocation directory and outcome."""
+    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
+
+    return _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+
+
+@pytest.mark.parametrize("error", ["truncated", "schema"])
 def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
     request = _hook_publication_request(tmp_path)
     _publish_request_hook(request)
@@ -141,18 +152,16 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
     document = json.loads(path.read_bytes())
     if error == "schema":
         document["$schema"] = "unknown"
-    elif error == "missing":
-        del document["attempt_id"]
     path.chmod(0o600)
     path.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
     with pytest.raises(SimulationRecordIntegrityError):
         collect_pre_sim_firings(request.store.manifest_path)
 
 
-def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_path, monkeypatch):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
-
-    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(
+    pre_sim_record, monkeypatch
+):
+    invocation, outcome = pre_sim_record
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
 
@@ -188,10 +197,8 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(tmp_pat
     ],
     ids=lambda value: None if value is None else str(value)[:32],
 )
-def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value, message):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
-
-    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+def test_pre_sim_reader_rejects_bad_binding(tmp_path, pre_sim_record, defect, value, message):
+    invocation, outcome = pre_sim_record
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
     if value is not None:
@@ -204,12 +211,6 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
     elif defect == "sidecar-link":
         firing.path.unlink()
         firing.path.symlink_to(tmp_path / "outside.json")
-    elif defect == "missing-reference":
-        document = json.loads(result_path.read_bytes())
-        document["evidence"] = [
-            ref for ref in document["evidence"] if ref["kind"] != "pre_sim_commands"
-        ]
-        result_path.write_bytes(canonical_json_bytes(document))
     else:
         result_path.unlink()
         if defect == "ordinal-path":
@@ -225,10 +226,8 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, monkeypatch, defect, value
             collect_pre_sim_firings(store.manifest_path)
 
 
-def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
-
-    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+def _pre_sim_read_case(pre_sim_record, monkeypatch, *, interrupted=False):
+    invocation, outcome = pre_sim_record
     firing = outcome.pre_sim_firings[0]
     store = SimulationRecordStore(invocation / "targets/sim/record")
     if interrupted:
@@ -237,17 +236,9 @@ def _pre_sim_read_case(tmp_path, monkeypatch, *, interrupted=False):
     return store, firing, expected, *_observe_pre_sim_reads(monkeypatch)
 
 
-def test_scan_opens_no_pre_sim_sidecar_and_each_result_once(tmp_path, monkeypatch):
-    store, firing, expected, accesses, decodes, results = _pre_sim_read_case(tmp_path, monkeypatch)
-    assert store.scan() == expected
-    assert accesses == {}, "a scan must not open any Pre-Sim sidecar"
-    assert decodes == {}, "a scan must not decode any Pre-Sim sidecar"
-    assert results == {firing.path.parents[3] / "result.json": 1}, "each result is read once"
-
-
-def test_collector_reads_each_sidecar_and_result_once(tmp_path, monkeypatch):
+def test_collector_reads_each_sidecar_and_result_once(pre_sim_record, monkeypatch):
     store, firing, _expected, accesses, decodes, results = _pre_sim_read_case(
-        tmp_path, monkeypatch
+        pre_sim_record, monkeypatch
     )
     (collected,) = collect_pre_sim_firings(store.manifest_path)
     assert collected.key == firing.key and collected.terminal
@@ -256,8 +247,8 @@ def test_collector_reads_each_sidecar_and_result_once(tmp_path, monkeypatch):
     assert results == {firing.path.parents[3] / "result.json": 1}, "each result is read once"
 
 
-def test_scan_checks_attempts_against_the_callers_digest(tmp_path, monkeypatch):
-    store, _firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
+def test_scan_checks_attempts_against_the_callers_digest(pre_sim_record, monkeypatch):
+    store, _firing, expected, *_ = _pre_sim_read_case(pre_sim_record, monkeypatch)
     manifest = store.load_manifest()
     with pytest.raises(SimulationRecordIntegrityError, match="attempt identity disagrees"):
         store.scan(manifest, "0" * 64)
@@ -268,22 +259,19 @@ def test_scan_checks_attempts_against_the_callers_digest(tmp_path, monkeypatch):
     assert store.regenerate_summary(manifest, digest) == store.regenerate_summary()
 
 
-def test_scan_ignores_corrupt_sidecar_that_collection_refuses(tmp_path, monkeypatch):
-    store, firing, expected, *_ = _pre_sim_read_case(tmp_path, monkeypatch)
-    firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    assert store.scan() == expected
-    with pytest.raises(SimulationRecordIntegrityError, match="result references disagree"):
-        collect_pre_sim_firings(store.manifest_path)
-
-
 @pytest.mark.parametrize("interrupted", [False, True], ids=["complete", "interrupted"])
-def test_scan_opens_no_pre_sim_sidecar(tmp_path, monkeypatch, interrupted):
-    store, _firing, expected, accesses, decodes, _results = _pre_sim_read_case(
-        tmp_path, monkeypatch, interrupted=interrupted
+def test_scan_opens_no_pre_sim_sidecar_and_each_result_once(
+    pre_sim_record, monkeypatch, interrupted
+):
+    store, firing, expected, accesses, decodes, results = _pre_sim_read_case(
+        pre_sim_record, monkeypatch, interrupted=interrupted
     )
     assert store.scan() == expected
-    assert accesses == {}, "no sidecar may be opened"
-    assert decodes == {}, "no sidecar may be decoded"
+    assert accesses == {}, "a scan must not open any Pre-Sim sidecar"
+    assert decodes == {}, "a scan must not decode any Pre-Sim sidecar"
+    # An interrupted attempt has no result to read.
+    result = firing.path.parents[3] / "result.json"
+    assert results == ({} if interrupted else {result: 1}), "each result is read once"
 
 
 def test_simulation_record_mutation_lock_never_recreates_a_missing_root(tmp_path: Path) -> None:

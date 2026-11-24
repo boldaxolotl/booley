@@ -16,6 +16,7 @@ from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import ProcessState
 from tests.harness.test_dashboard import STAMP, snapshot
+from tests.time_budget import hang_guard_s
 
 HEADERS = ["Job", "Target", "Session", "State", "Result", "Elapsed"]
 LONG_TARGET = "asic_synthesize_" + "x" * 64
@@ -27,7 +28,7 @@ LINT_WARNINGS = {"flow": "lint", "detail": {"total_warnings": 3}}
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """Let a slow CI worker finish the first read before any key press (#2023)."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def make_job(

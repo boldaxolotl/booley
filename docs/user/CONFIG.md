@@ -30,6 +30,7 @@ here to look up what a setting means and what its default is.
 | Cocotb Targets | [Cocotb Targets](FLOW-SIM.md#cocotb-targets-python-testbenches) |
 | `tests.toml` | [TESTS.md](TESTS.md) |
 | `metrics.toml` | [Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml) |
+| `reviews.toml` | [Reviewer](REVIEWER.md#declare-reviews-in-reviewstoml) |
 | `.booley/doctor-waivers.toml` | [Doctor waivers](DOCTOR.md#doctor-waivers-doctor-waiverstoml) |
 
 ## booley.toml
@@ -104,7 +105,7 @@ Every Flow or Specialist run is a **Job**. Every Job is admitted against a
 budget has left, and otherwise waits in a queue instead of failing. The queue
 has no limit: a Job waits until it runs or you cancel it. Specialists and mutation
 campaigns are admitted by memory too, and a Specialist waits when the budget is
-full. Running Jobs are never interrupted. The defaults:
+full. Running Jobs are never interrupted. For example:
 
 ```toml
 [sandbox]
@@ -114,21 +115,40 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 # vivado = 1             # licensed seats Booley may use at once; required for Vivado
 ```
 
-The Memory Budget is the Sandbox's memory limit, `[sandbox].memory`, minus a
-reserve: the memory the running agents, the MCP server, and the Dashboard use,
-plus 2 GB. Without `[sandbox].memory` the Sandbox has no limit, so Booley starts
-from the machine's installed memory, which the Sandbox shares with everything
-else; `booley doctor` warns while it is unset.
+The Memory Budget comes from the Sandbox's memory limit, `[sandbox].memory`,
+less what the running agents, the MCP server, and the Dashboard use. Without
+swap the budget is smaller, so fewer Jobs run at once: give the Sandbox
+[swap](SANDBOX.md#project-settings-sandbox). Without `[sandbox].memory` the
+Sandbox has no limit, so Booley starts from the machine's installed memory;
+`booley doctor` warns while it is unset.
 
-Booley reserves the largest peak memory it recorded for a Job
-([resource history](#job-resource-history)), plus 25%. With no record of its
-own, the Job borrows the largest peak recorded for the same Target and step,
-then for that step anywhere in the Project. Only a step Booley has never
-measured makes the Job run alone. A Simulation Record runs independent tests
-in parallel while their reservations fit.
+Booley reserves what the Job used on earlier runs
+([resource history](#job-resource-history)), memory and swap together, plus a
+margin. With no record of its own, the Job borrows from the same step on the
+same Target, then anywhere in the Project. ASIC synthesis and FPGA
+implementation borrow only from the same Target, because their memory grows
+with the design: the first run of such a Target runs alone, and Booley says
+it has no measurement yet. A step with no record at all also runs alone. A
+Simulation Record runs independent tests in parallel while their reservations
+fit. A physical-mode ASIC synthesis Job lowers its reservation to what OpenROAD
+needs once Yosys finishes. A Target's
+[Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
+reserve as much as that Target's build until Booley has measured them.
 
-If the kernel kills a Job for running out of memory, Booley runs it again once,
-alone. A second kill fails the Job.
+If the kernel kills a Job for running out of memory because the Sandbox has
+used `[sandbox].memory` plus its
+[swap](SANDBOX.md#project-settings-sandbox), Booley runs it again once,
+alone. A second kill fails the Job. When one test of a Simulation (with its
+Pre-Sim Commands) is killed after the shared build, or one build or simulation
+of a Mutation run is killed, only that part runs again.
+
+If the host itself runs out of memory while the Sandbox stays below that
+limit, running alone does not help, so Booley does not retry the Job. The
+result says the host ran out of memory: free memory on the host, or lower
+`[sandbox].memory` and recreate the Sandbox, then run the Job again. A Mutant
+whose build or simulation is killed on the host, or killed again when run
+alone, counts as inconclusive. A kill Booley cannot see (inside a FuseSoC
+generator, for example) is a plain failure.
 
 Limits apply to one Project.
 
@@ -146,20 +166,25 @@ Seat Caps don't share commercial license seats between Projects. See
 
 ### Job resource history
 
-Booley measures every Job's peak memory, CPU time, and wall-clock time, and
-keeps the newest 20 runs per Target and Job phase, with no overall cap. Each
-Specialist run that calls its Agent CLI is measured too (the Agent CLI's
-processes, not Booley's own, and not their temporary files) and kept 20 per
-Specialist; Specialist runs do not change the figures of any Target. An entry
-with no run in the last 90 days is deleted the next time any Job records. Peak
-memory counts the Job's temporary files only when `TMPDIR` is on tmpfs; runs
-recorded before that rule keep their earlier peak. `booley resources` prints the
-run count and the minimum, median, and maximum peak memory and wall-clock time
-for each, with one line per Specialist after the Targets (`--json` for
-scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation has its own entry
-(`tests=first+slow`; the default Variant keeps the bare Test name), and the
-seeds of one Variant share it. Flow runs that `booley doctor` starts are not
-recorded.
+Booley measures every Job's peak memory, peak swap, CPU time, and wall-clock
+time, and keeps the newest 20 runs per Target and Job phase, with no overall
+cap. Each Specialist run that calls its Agent CLI is measured too (the Agent
+CLI's processes, not Booley's own, and not their temporary files) and kept 20
+per Specialist; Specialist runs do not change the figures of any Target. An
+entry with no run in the last 90 days is deleted the next time any Job records.
+Peak memory counts the Job's temporary files only when `TMPDIR` is on tmpfs;
+runs recorded before that rule keep their earlier peak. `booley resources`
+prints the run count, which counts each Job once, and the minimum, median, and
+maximum peak memory and wall-clock time for each, and the peak swap of an entry
+that swapped, with one line per Specialist after the Targets (`--json` for
+scripts). Use it to choose `[sandbox].memory`. Each Test Variant of a simulation
+has its own entry (`tests=first+slow`; the default Variant keeps the bare Test
+name), and the seeds of one Variant share it. A synthesis run also has an
+entry for each tool (`sv2v`, `yosys`, `openroad`). Flow runs that `booley doctor`
+starts are not recorded. If the history is not valid JSON or was written by
+another Booley version, the next Job keeps it as
+`.booley/runtime/resources/history.json.unreadable-<time>` and starts a new
+one.
 
 ## Agent CLIs (`[agent]`)
 
@@ -338,7 +363,8 @@ toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
 `post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
 Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
 and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git.
+outputs ignored by Git. `booley measure` runs the same hook in its checkout of
+the commit; see [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 ### Git submodules (`[submodules]`)
 

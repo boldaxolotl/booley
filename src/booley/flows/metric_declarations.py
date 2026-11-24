@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from typing import Any
 
 from booley.core.boundary import as_dict
 from booley.evidence.timing import ClockTiming
@@ -44,13 +45,29 @@ class CostTier(IntEnum):
 
 @dataclass(frozen=True)
 class MetricDeclaration:
-    """One metric a Flow emits."""
+    """One metric a Flow emits.
+
+    ``minimum`` and ``maximum`` are the inclusive valid range of the metric's value; ``None``
+    leaves that side open. A ``metrics.toml`` bound outside the range is a load error.
+    """
 
     name: str
     unit: str
     better: Better
     cost_tier: CostTier
     kind: MetricKind
+    minimum: MetricValue | None = None
+    maximum: MetricValue | None = None
+
+
+@dataclass(frozen=True)
+class FlowSetting:
+    """An integer a Flow's ``metrics.toml`` table sets, passed to the Flow as ``--<name>``."""
+
+    name: str
+    default: int
+    minimum: int
+    meaning: str
 
 
 @dataclass(frozen=True)
@@ -65,6 +82,19 @@ class FlowMetricValues:
     # Every clock the run reported timing for, valued or not: a clock with no fmax is
     # absent from ``per_clock`` but still named here.
     clocks: tuple[str, ...] = ()
+    # Metric name -> the first items its count counts, one display line each; ordered and
+    # capped by the Flow (see :func:`counted_items`), so the count is the whole and this a part.
+    counted_items: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
+
+
+# Bounds on the lines kept behind a count, so a Measurement Run stays small.
+COUNTED_ITEMS_CAP = 20
+COUNTED_ITEM_CHARS = 200
+
+
+def counted_items(lines: Sequence[str]) -> list[str]:
+    """The first ``COUNTED_ITEMS_CAP`` of *lines*, each cut to ``COUNTED_ITEM_CHARS``."""
+    return [line[:COUNTED_ITEM_CHARS] for line in lines[:COUNTED_ITEMS_CAP]]
 
 
 class UndeclaredMetricError(ValueError):
@@ -143,7 +173,7 @@ class MetricsUnavailable:
 def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, object]:
     """The ``report.json`` form of one Target's values, or of why it has none.
 
-    Returns the four value maps of *measure*'s result, or ``{"unavailable": reason}``
+    Returns the value maps of *measure*'s result, or ``{"unavailable": reason}``
     when *measure* raises :class:`MetricsUnavailableError`.
     """
     try:
@@ -155,6 +185,7 @@ def metrics_document(measure: Callable[[], FlowMetricValues]) -> dict[str, objec
         "per_clock": values.per_clock,
         "per_test": values.per_test,
         "clocks": list(values.clocks),
+        "counted_items": values.counted_items,
     }
 
 
@@ -175,4 +206,19 @@ def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable 
         },
         per_test={name: dict(by_test) for name, by_test in document.get("per_test", {}).items()},
         clocks=tuple(document.get("clocks", ())),
+        counted_items={
+            name: list(lines) for name, lines in document.get("counted_items", {}).items()
+        },
     )
+
+
+def metrics_by_target(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+    """Each Target's values from a report's ``detail.metrics`` map; the inverse of the writer."""
+    values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
+    for target, raw in (as_dict(detail.get("metrics")) or {}).items():
+        entry = metrics_from_document(raw)
+        if entry is not None:
+            values[str(target)] = entry
+    return values

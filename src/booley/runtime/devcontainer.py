@@ -1,6 +1,6 @@
-"""Generate the untracked ``.devcontainer/devcontainer.json`` for Interactive Mode.
+"""Generate the untracked ``.devcontainer/devcontainer.json`` for the Sandbox.
 
-ADR 0018: Interactive Mode is entered by opening the repo folder in VS Code and
+ADR 0018: the Sandbox is entered by opening the repo folder in VS Code and
 accepting "Reopen in Container". The runtime is described by a single,
 Booley-generated ``.devcontainer/devcontainer.json`` that lives in the repo but
 is never tracked by git (hidden via ``.git/info/exclude``, not ``.gitignore``).
@@ -41,6 +41,7 @@ from booley.runtime.incontainer_git_identity import (
     git_identity_environment,
     load_git_identity,
 )
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -113,9 +114,9 @@ _DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
 # and VS Code pins a VSIX install so auto-update leaves it there.
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
-# The extension also claims the ``.sdc``/``.xdc`` suffixes (checked against
-# mshr-h.veriloghdl 1.29.0, 2026-10), so nothing else is required.
-_HDL_VERSION = "1.29.0"
+# The extension's ``package.json`` at ``_HDL_VERSION`` also claims the
+# ``.sdc``/``.xdc`` suffixes (recheck on a bump), so nothing else is required.
+_HDL_VERSION = "1.29.1"
 HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
@@ -727,8 +728,8 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
         else {}
     )
     remote_env |= {
-        # Container-side MCP runs in interactive mode and finds config here.
-        "BOOLEY_MCP_MODE": "interactive",
+        # The in-Sandbox MCP server reads BOOLEY_MCP_DEVELOPER_AGENT and finds config here.
+        DEVELOPER_AGENT_ENV: "1",
         "BOOLEY_DIR": BOOLEY_DIR_TARGET,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
         # The in-container registrar (postStartCommand) configures this app.
@@ -739,7 +740,7 @@ def _build_remote_env(app: str, local_timezone: str, egress: str) -> dict[str, s
     return remote_env
 
 
-def _build_run_args(memory: str, egress: str) -> list[str]:
+def _build_run_args(memory: str, memory_swap: str, egress: str) -> list[str]:
     """Build the ``runArgs`` list for :func:`build_devcontainer_spec`."""
     # --network wires egress; the label lets the reaper own this container.
     # --cap-drop ALL + no-new-privileges + a pids ceiling harden the runtime where
@@ -761,8 +762,10 @@ def _build_run_args(memory: str, egress: str) -> list[str]:
         str(SESSION_PIDS_LIMIT),
     ]
     if memory:
-        # The single Sandbox memory limit (ADR 0028 Decision 12).
+        # The single Sandbox memory limit and its explicit swap limit (ADR 0087).
         run_args += ["--memory", memory]
+        if memory_swap:
+            run_args += ["--memory-swap", memory_swap]
     return run_args
 
 
@@ -893,6 +896,7 @@ def build_devcontainer_spec(
     project_id: str = "${localWorkspaceFolderBasename}",
     mcp_start_command: str | None = None,
     memory: str = "",
+    memory_swap: str = "",
     host_skills: Sequence[tuple[str, str]] = (),
     trusted_eda_mounts: Sequence[tuple[str, str]] = (),
     protected_devcontainer_source: str = "",
@@ -904,7 +908,7 @@ def build_devcontainer_spec(
     egress: str = "proxy",
     legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
-    """Build the ``devcontainer.json`` dict for an Interactive Mode session.
+    """Build the ``devcontainer.json`` dict for a Sandbox.
 
     Args:
         app: one of :data:`SUPPORTED_APPS`: the default Agent CLI, which the in-container
@@ -920,10 +924,8 @@ def build_devcontainer_spec(
             container state. Production callers pass :func:`canonical_project_id`.
         mcp_start_command: the shell command for ``postStartCommand`` that starts
             the in-container MCP server (WS4). ``None`` omits the hook.
-        memory: the ONE container memory limit (ADR 0028 Decision 12), e.g.
-            ``"8g"``, from ``[sandbox] memory`` in booley.toml. Rendered as a
-            ``--memory`` run arg; the empty default sets no limit — matching
-            the pre-ADR-0028 devcontainer, so existing installs are unchanged.
+        memory: the ONE container memory limit (ADR 0087), e.g. ``"8g"``, as ``--memory``; empty: none.
+        memory_swap: ``--memory-swap`` (memory plus swap) from ``memory_swap_limit``; empty: none.
         host_skills: ``(name, host_source)`` pairs for the user's HOST agent
             skills, from ``[sandbox] mount_host_skills`` (init resolves the
             real skill dirs behind ``~/.claude/skills`` / ``~/.agents/skills``,
@@ -987,7 +989,6 @@ def build_devcontainer_spec(
     remote_env = _build_remote_env(app, local_timezone, egress)
     _policy_remote_environment(remote_env, app, seeds)
     remote_env.update(identity_env)
-    run_args = _build_run_args(memory, egress)
 
     spec: dict = {
         "name": spec_name([seed.app for seed in seeds], app),
@@ -995,7 +996,7 @@ def build_devcontainer_spec(
         "workspaceMount": _bind_mount("${localWorkspaceFolder}", WORK_DIR),
         "workspaceFolder": WORK_DIR,
         "remoteUser": "agent",
-        "runArgs": run_args,
+        "runArgs": _build_run_args(memory, memory_swap, egress),
         "mounts": mounts,
         "remoteEnv": remote_env,
         "initializeCommand": [

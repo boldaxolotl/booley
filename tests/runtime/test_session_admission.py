@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.time_budget import scaled
 
 from booley.core import host_shell
 from booley.runtime import devcontainer as dc
@@ -945,9 +946,9 @@ def test_default_runner_timeout_kills_the_tree_and_returns_promptly(tmp_path: Pa
         argv = parent_argv(tmp_path, sys.executable, paths, "live")
         start = time.monotonic()
         with pytest.raises(subprocess.TimeoutExpired):
-            session_admission._run(argv, timeout=2)
+            session_admission._run(argv, timeout=scaled(2))
         elapsed = time.monotonic() - start
-        assert elapsed < 25, f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
+        assert elapsed < scaled(25), f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
         assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             "grandchild still running after the timeout"
@@ -983,7 +984,7 @@ def _hung_docker(timeouts: list[float | None], hung: list[str]):
     def run(argv: list[str], *, timeout: float | None = None, **_kwargs):
         assert argv[:2] == ["docker", "ps"], argv
         timeouts.append(timeout)
-        return session_runtime._run(hung, timeout=1 if timeout else None)
+        return session_runtime._run(hung, timeout=scaled(1) if timeout else None)
 
     return run
 
@@ -1008,6 +1009,6 @@ def test_every_listing_is_bounded_through_the_session_runner(tmp_path: Path) -> 
         with pytest.raises((session_admission.AdmissionError, subprocess.TimeoutExpired)):
             listing(hung_docker)
         elapsed = time.monotonic() - start
-        assert elapsed < 25, f"{name} hung {elapsed:.1f}s"
+        assert elapsed < scaled(25), f"{name} hung {elapsed:.1f}s"
         assert timeouts, name
         assert all(t is not None and t > 0 for t in timeouts), (name, timeouts)

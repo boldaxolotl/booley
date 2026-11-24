@@ -255,7 +255,7 @@ def test_gateway_writers_parse_config_once(tmp_path, gateway_env, monkeypatch, w
         if writer == "add":
             assert reg._apply_codex_gateway(home) == "written"
         else:
-            assert reg._drop_codex_gateway(home) == "removed"
+            assert reg.drop_codex_gateway(home) == "removed"
     assert parses() == 1
 
 
@@ -308,7 +308,7 @@ def test_gateway_removal_drops_only_owned_entries(tmp_path, gateway_env):
     reg.register("codex", home=home)
     assert _parsed(home)["model_provider"] == _PROVIDER
 
-    assert reg._drop_codex_gateway(home) == "removed"
+    assert reg.drop_codex_gateway(home) == "removed"
 
     config = _parsed(home)
     assert set(config["model_providers"]) == {"mine"}
@@ -316,7 +316,7 @@ def test_gateway_removal_drops_only_owned_entries(tmp_path, gateway_env):
     assert config["features"]["fast_mode"] is False
     assert _TOKEN_VARIABLE in config["shell_environment_policy"]["exclude"]
     before = (path.read_bytes(), path.stat().st_mtime_ns)
-    assert reg._drop_codex_gateway(home) == "off"
+    assert reg.drop_codex_gateway(home) == "off"
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
 
 
@@ -325,7 +325,7 @@ def test_gateway_removal_keeps_users_own_selection(tmp_path, gateway_env):
     path = _seed(home, f'model_provider = "mine"\nmodel = "{_MODEL}"\n')
     before = path.read_bytes()
 
-    assert reg._drop_codex_gateway(home) == "off"
+    assert reg.drop_codex_gateway(home) == "off"
 
     assert path.read_bytes() == before
 

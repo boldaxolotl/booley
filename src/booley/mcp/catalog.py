@@ -17,8 +17,8 @@ _REPORT_MCP_TOOL_NAME = "booley_report"
 POLL_MCP_TOOL_NAME = "booley_poll"
 
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Wait for long-running endpoints (sim / fpga / synth / reviewer / mutation / "
-    "coverage_analyst / measure) that were started in the background. When such an endpoint takes "
+    "Wait for long-running endpoints (sim / fpga / synth / lint / reviewer / mutation / "
+    "coverage_analyst / measure / Custom Flows) that were started in the background. When such an endpoint takes "
     "longer than the inline wait, its call returns a 'run_id' instead of the result. With "
     "several Jobs running, call with no run_id: it returns the full result of the first of "
     "your Jobs to finish (or one that finished but whose result you have not read), lists "
@@ -102,15 +102,20 @@ def _find_mcp_tool_class_in_module(
     return None
 
 
-def _mcp_tool_def_from_class(
-    cls: type,
+def _mcp_tool_def_from_endpoint(
+    endpoint: Any,
     schema: dict,
     module_name: str,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an MCP tool definition dict from an endpoint class and extracted schema."""
+    """Build an MCP tool definition dict from an endpoint instance and extracted schema.
+
+    ``memory_admitted`` records whether Job memory admission can queue the
+    endpoint, which decides whether its MCP call runs as a background Job.
+    """
     from booley.flows.base import BuiltinFlow, FlowMechanics
 
+    cls = type(endpoint)
     result = {
         "name": cls.name,
         "module": module_name,
@@ -121,6 +126,7 @@ def _mcp_tool_def_from_class(
         "is_flow": issubclass(cls, FlowMechanics),
         "is_builtin_flow": issubclass(cls, BuiltinFlow),
         "non_persisting_dry_run": bool(getattr(cls, "non_persisting_dry_run", False)),
+        "memory_admitted": endpoint._memory_admitted(),
     }
     result.update(extra)
     return result
@@ -161,11 +167,11 @@ def _import_and_extract(
         logger.warning(msg)
         return None, msg
 
-    cls, instance, schema = found
+    _, instance, schema = found
     is_custom = not import_prefix.startswith("booley.")
     return (
-        _mcp_tool_def_from_class(
-            cls,
+        _mcp_tool_def_from_endpoint(
+            instance,
             schema,
             module_name,
             negative_flags=flow_negative_flags(instance),
@@ -177,10 +183,10 @@ def _import_and_extract(
 
 
 def _status_mcp_tool_def() -> dict[str, Any]:
-    """Return the synthetic Interactive Mode status MCP tool definition."""
+    """Return the synthetic Sandbox status MCP tool definition."""
     return {
         "name": _STATUS_MCP_TOOL_NAME,
-        "description": "Show whether Booley Interactive Mode is ready in this tab.",
+        "description": "Show whether Booley is ready in this tab.",
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }
 
@@ -282,9 +288,10 @@ def _targets_mcp_tool_def() -> dict[str, Any]:
         "name": _TARGETS_MCP_TOOL_NAME,
         "description": (
             "List the project's FuseSoC .core Targets — the values a Booley Flow's 'target' argument"
-            " accepts (ADR 0030). Cheap .core-YAML enumeration, no fusesoc run: per Target it "
+            " accepts. Cheap .core-YAML enumeration, no fusesoc run: per Target it "
             "reports the copy-pasteable selector (vlnv#name when the bare name is ambiguous), flow "
-            "(sim/lint/generic), declared EDA tool, cocotb module, declared toplevel, which Doctor "
+            "(sim/lint/generic), declared EDA tool, the EDA tools it runs in order (eda_tools), for synth "
+            "Targets the effective synth_mode and RTL frontend, cocotb module, declared toplevel, which Doctor "
             "Flows the Target selects via flow_options.booley.doctor, and which Booley Flows could "
             "drive it. Optional filters: 'for_flow' (one of synth, fpga, sim, lint) keeps only "
             "Targets that Flow could drive; 'glob' matches the bare name or "
@@ -370,7 +377,7 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
         "description": (
             "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold this MCP "
             "tool call open for 'seconds' server-side, then return timing details. Exists to measure"
-            " the MCP client's MCP-tool-call kill ceiling (ADR 0027) — it does no RTL work and is "
+            " the MCP client's MCP-tool-call kill ceiling — it does no RTL work and is "
             "intended for timing diagnostics."
         ),
         "schema": {
@@ -389,19 +396,33 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
     }
 
 
+# Canonical tool name -> the Feature Flag that hides it (ADR 0095). Empty in production.
+GATED_MCP_TOOLS: dict[str, str] = {}
+
+
+def gated_off(name: str, features: frozenset[str]) -> bool:
+    """Whether *name* is gated by a Feature Flag that *features* leaves off."""
+    from booley.config.feature_flags import feature_enabled
+
+    flag = GATED_MCP_TOOLS.get(name)
+    return flag is not None and not feature_enabled(flag, features)
+
+
 @dataclass(frozen=True)
 class Exposure:
     """One immutable exposure value; only server wiring reads the environment."""
 
-    interactive: bool = True
+    developer_agent: bool = True
     nested: frozenset[str] | None = None
     explicit: frozenset[str] | None = None
     debug: bool = False
     coverage_record: bool = False
     project: bool = False
+    features: frozenset[str] = frozenset()
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> Exposure:
+        from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
         from booley.targets.flow_names import canonical_set
 
         def names(key: str) -> frozenset[str]:
@@ -410,7 +431,7 @@ class Exposure:
             )
 
         return cls(
-            interactive=values.get("BOOLEY_MCP_MODE", "").strip().lower() == "interactive",
+            developer_agent=values.get(DEVELOPER_AGENT_ENV) == "1",
             nested=names("BOOLEY_NESTED_MCP_TOOLS")
             if values.get("BOOLEY_NESTED_AGENT") == "1"
             else None,
@@ -460,7 +481,9 @@ def report_visible(exposure: Exposure) -> bool:
 def _interactive_utility_visible(name: str, exposure: Exposure) -> bool:
     if exposure.nested is not None:
         return name in exposure.nested
-    return exposure.interactive or (exposure.explicit is not None and name in exposure.explicit)
+    return exposure.developer_agent or (
+        exposure.explicit is not None and name in exposure.explicit
+    )
 
 
 def utilities_visible(exposure: Exposure) -> bool:
@@ -514,4 +537,7 @@ def visible_definitions(
     ):
         if visible:
             definitions.append(builder())
-    return sorted(definitions, key=lambda item: item["name"])
+    return sorted(
+        (item for item in definitions if not gated_off(item["name"], exposure.features)),
+        key=lambda item: item["name"],
+    )

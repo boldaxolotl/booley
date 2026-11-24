@@ -77,7 +77,8 @@ Start with no metrics and add them as the design settles. A Project with no
 4. **Numbers settle: turn tracked metrics into bounds.** Choose each bound
     with slack outside the range you saw: a `_max` bound above the highest
     value, a `_min` bound below the lowest. There is no tolerance setting;
-    the slack is the number you write.
+    the slack is the number you write. The slack stops at the metric's valid
+    range (see [Write `metrics.toml`](#write-metricstoml)).
 
 The `booley-setup` skill asks "Enable metrics now or later?" during
 [Project Setup](SETUP.md). `booley init` itself writes only the two default
@@ -88,23 +89,29 @@ lines (`[defaults.sim]` and `[defaults.coverage]`, each with
 
 `metrics.toml` sits in the Booley Directory, `.booley/` at the top of your
 repository. It holds one table per Target and Flow, `[<target>.<flow>]`, for
-these Flows: `lint`, `sim`, `coverage`, `synth` and `fpga`.
+these Flows: `lint`, `sim`, `coverage`, `synth`, `fpga` and `mutation`.
 
 Inside a table:
 
 - `<metric>_max` is a bound at most that number, and `<metric>_min` a bound at
   least that number. Bounds are absolute; there is no relative bound.
+- A bound lies within its metric's valid range, edges included. The coverage
+  metrics and `mutation_score` are percentages from 0 to 100. Every other
+  metric is at least 0, except `wns_ns` and `whs_ns`: slack can be negative.
 - A metric reported per clock or per Test takes a prefix, `<clock>.<metric>`
   or `<test>.<metric>`. Booley splits a key on its last dot, and the whole key
   must be quoted: `"clk_i.fmax_mhz_min" = 400`. Unquoted, TOML reads the dot
   as a nested table, which `metrics.toml` rejects as a load error.
+- A `mutation` table also sets how many Mutants and which sample; see
+  [Measuring the mutation score](FLOW-MUTATION.md#measuring-the-mutation-score).
 - `track = ["cell_count"]` reports a metric in every measurement without a
   bound, so you see its value over time.
 - `off = ["tests_failed_max"]` removes a bound that `[defaults.<flow>]` would
   add to this table.
 - `notes = { area_kge_max = "after DSP sharing" }` records why a bound is what
-  it is; when a later commit changes that bound, the report shows the note
-  beside the change.
+  it is. A note names a bound in force in this table, its own or one from
+  `[defaults.<flow>]`, spelled as that bound's key; when a later commit
+  changes that bound, the report shows the note beside the change.
 
 `[defaults.<flow>]` adds its bounds to every table of that Flow. It never
 creates a table, so a Target with no table of its own is still not measured.
@@ -156,15 +163,37 @@ See [Stealth Mode](STEALTH.md).
 
 `booley measure --validate` checks the `metrics.toml` of your working tree. It
 needs no commit, measures nothing, takes no other option, and lists every load
-error at once. Run it in a container terminal. Where
-Booley can give a corrected line, it prints it as a `write instead:` line.
-An unquoted prefixed key or a relative bound gets one; an unknown metric lists
-the metrics of its Flow instead.
+error at once. Run it in a container terminal.
+
+Bound values are absolute numbers: `tests_failed_max = 0`, never `"+10%"`. A
+percentage value is an error that says so.
+
+Where Booley can give a corrected line, it prints it as a `write instead:`
+line. Three kinds of entry get one: an unquoted prefixed key, a relative-bound
+key name, `<metric>_increase_at_most`, `<metric>_increase_at_least`,
+`<metric>_reduce_at_most` or `<metric>_reduce_at_least`, and a bound outside
+its metric's valid range, which gets the nearest edge of the range. An unknown
+metric lists the metrics of its Flow instead.
 
 ```text
 [sim_core.sim] smoke: a table holds bounds at its top level, and an unquoted dotted key is a nested table; quote the key
   write instead: "smoke.cycle_count_max" = 1000
 ```
+
+```text
+[sim_core.sim] tests_failed_increase_at_most: only absolute bounds exist (`_max` is at most, `_min` is at least)
+  write instead: tests_failed_max = <absolute number>
+```
+
+```text
+[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], got 100.01
+  write instead: line_coverage_min = 100
+```
+
+
+`--validate` also warns when a per-clock key or a tracked metric names a clock
+that no stored measurement of its table reported, and lists the clocks that
+were reported. The warning does not change the exit status.
 
 `booley cheat --metrics` prints each Target's metrics as `metrics.toml` text,
 with the keys already quoted. Save the blocks you keep in
@@ -193,16 +222,16 @@ Dashboard shows each session's measurement; see
 [The dashboard](USAGE.md#the-dashboard).
 
 A commit that is already Measured is not measured again: the command prints
-its stored run, starts no Flow and exits with status 0. A commit whose latest
-run is unmet, errored, stopped or cancelled is measured again without
-`--again`.
+its stored run, starts no Flow and exits with status 0. `--target` checks and
+measures its Target even then. A commit whose latest run is unmet, errored,
+stopped or cancelled is measured again without `--again`.
 
 | Option | Effect |
 |---|---|
 | `--base <sha>` | Compare with this commit, or with its merge-base with the measured commit when it is not an ancestor. See [Base runs](#base-runs). |
 | `--all` | Evaluate every table. Without it, the first unmet or errored table stops the run and the later tables are "not evaluated". |
 | `--again` | Measure a commit that is already Measured again and store a second run. |
-| `--target <name>` | Measure only this Target's tables. The run is never stored and never makes the commit Measured; its reports stay in the `measure` Job's directory under `.interactive_logs/standalone/<run_id>/`. |
+| `--target <name>` | Measure only this Target's tables. The run is never stored and never makes the commit Measured; its reports stay in the `measure` Job's directory under `job_logs/standalone/<run_id>/`. |
 | `--json` | Print the report as JSON. |
 
 | Exit status | Meaning |
@@ -224,8 +253,10 @@ the base first, then give me a Measured Commit.*
 
 ## Read the Measurement Report
 
-The report starts with a verdict line and a header whose color says whether
-the work is accepted:
+The terminal report starts with a verdict line and a header whose color says
+whether the work is accepted. The Markdown report names the state in words
+above its verdict line, for example "Amber: needs review (tests changed)". The
+states are:
 
 - **Red:** a bound is unmet or a Flow errored.
 - **Green:** the commit is Measured, and nothing is amber.
@@ -233,11 +264,30 @@ the work is accepted:
     shows as "rules loosened" or "tests changed"; a `--target` run shows "not
     stored", and a cancelled run shows its status.
 
-Failing rows come first, and the metric table follows.
+Failing rows come first, and the metric table follows. A simulation or
+coverage table with failing tests lists them, and an unmet lint or mutation
+bound lists the lint findings or survived Mutants behind it, each with the path
+of the Flow's report holding the full results.
+
+Tracked metrics that errored or were not evaluated are counted after the
+enforced total, not in it, as in
+`3 of 3 enforced met; 3 tracked not evaluated`.
 
 The report also compares your rules with the Base's. A loosened bound is
 shown, never refused, with its note or "(no note)" beside it, so a reviewer
-sees it.
+sees it. Only a bound still in force carries a note, so a bound turned `off`,
+moved to `track` or removed, and a removed table, always show "(no note)" and
+still mark the report "rules loosened". Give the reason for such a change in
+the commit message.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+Your rules are compared with the Booley Directory's own repository, including
+rules committed in its local `main` but not yet pushed. `--base` moves only the
+Base of your RTL. See [Stealth Mode](STEALTH.md).
+
+</details>
 
 ## Base runs
 
@@ -250,18 +300,31 @@ Without one, the report prints the command to create it:
 `booley measure --all <base>`. A commit on the default branch's own history
 has no Base; name an earlier commit with `--base`.
 
+<details markdown>
+<summary>In stealth mode</summary>
+
+The base run is the latest run of the Base's tree measured under the same
+rules as your rules comparison. When no run was, the latest run of that tree is
+used and the report says "its rules differ". See [Stealth Mode](STEALTH.md).
+
+</details>
+
 ## Limits
 
 - Git LFS files and files with filter attributes cannot be measured.
-- The measurement checkout has no `.git`, so a generator or Pre-Sim Command
-  that calls `git` fails there.
+- The measurement checkout has no `.git`, so a generator, Pre-Sim Command or
+  post-setup hook that calls `git` fails there.
+- The checkout holds only the commit's tracked files. An input your Project
+  builds and Git ignores reaches it through the post-setup hook (see
+  [Worktree setup hooks](CONFIG.md#worktree-setup-hooks-booleyhooks)), which
+  `booley measure` runs in the checkout. Its output goes to `post-setup.log` in
+  the `measure` Job's directory; if the hook fails, the measurement stops with
+  exit status 2 and names the hook and that log.
 - Local results are advisory. The measurement store is writable from the
   Sandbox, and a deliberate read of the live tree by absolute path is
   possible. A run in CI is the trusted one.
 - Heavy generated artifacts, such as a Linux image or a large firmware build,
   are out of scope.
-- `mutation_score` is not a metric, because the mutation Flow has no
-  `metrics.toml` table.
 
 If Booley itself misbehaves, see
 [When Booley itself misbehaves](USAGE.md#when-booley-itself-misbehaves).

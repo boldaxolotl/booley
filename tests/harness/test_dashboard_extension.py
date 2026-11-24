@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ import pytest
 from booley.runtime import dashboard_extension, devcontainer
 from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 from tests.devcontainer_spec_support import build_spec
+from tests.time_budget import hang_guard_s, scaled
 
 
 def test_vsix_is_deterministic_and_contains_installable_workspace_manifest(tmp_path):
@@ -74,22 +76,25 @@ def test_every_sandbox_app_gets_the_image_local_extension():
 # isolation the timeout also bounds the whole test file (node reports the file,
 # not the stuck subtest; the stuck subtest is the one after the last `ok` line),
 # so it must be generous. Normal Windows runs take 3.4-5.1 s.
-_NODE_TEST_TIMEOUT_MS = 60_000
+_NODE_TEST_TIMEOUT_MS = hang_guard_s() * 1000
 
 # Wall-clock bound for the whole `node` process, above the node timeout so node
 # normally reports a stall first. It still catches stalls node cannot see, such
-# as a hang in node startup before the file's child process runs. About 15x the
-# slowest passing Windows run.
-_NODE_SUITE_BOUND_S = 75
+# as a hang in node startup before the file's child process runs. The hang guard
+# plus a scaled 5 s: 35 s at factor 1, 70 s at factor 2 (the Windows CI factor),
+# several times the slowest passing Windows run.
+_NODE_SUITE_BOUND_S = hang_guard_s() + math.ceil(scaled(5))
 
 # pytest-timeout budget for the node suite tests. Derivation:
 # - Kill: the bound plus up to 27 s of `kill_process_tree` on Windows (graceful
 #   taskkill <= 10 s + 2 s grace + forced taskkill <= 10 s + 5 s final wait)
-#   is 102 s, under 180 s, so a stall fails through the bound with node's
-#   output rather than through a pytest-timeout thread kill of the worker.
+#   is 97 s at factor 2 (the Windows CI factor), under 180 s, so a stall fails
+#   through the bound with node's output rather than through a pytest-timeout
+#   thread kill of the worker.
 # - Headroom: the strictest Windows fail limit is `--timeout-headroom=0.5` in
-#   full-python-matrix.yml, i.e. 90 s. The 75 s bound leaves 15 s for setup
-#   and teardown, so a run that passes is capped near the bound, under that limit.
+#   full-python-matrix.yml, i.e. 90 s. The 70 s bound at factor 2 leaves
+#   20 s for setup and teardown, so a run that passes is capped near the
+#   bound, under that limit.
 #   (Headroom only judges passing tests; a stall fails through the bound.)
 _NODE_SUITE_PYTEST_TIMEOUT_S = 180
 

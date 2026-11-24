@@ -25,6 +25,8 @@ from booley.runtime.session_activity import process_session_key
 from booley.runtime.timefmt import rfc3339_from_epoch
 from tests.booley_checkouts_support import init_repo, isolate_git, main_project
 from tests.project_runtime_git_support import git
+from tests.time_budget import hang_guard_s
+from tests.uvicorn_support import capture_serving
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600.0
@@ -37,7 +39,7 @@ def pruning():
 
 
 def jobs_root(booley_dir: Path) -> Path:
-    return booley_dir / ".interactive_logs/old/.runtime/jobs"
+    return booley_dir / "job_logs/old/.runtime/jobs"
 
 
 def add_job(
@@ -264,11 +266,9 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
         started.append(real())
         return started[-1]
 
-    served = []
-    import uvicorn
-
+    served = capture_serving(monkeypatch)
     monkeypatch.setattr(pruning(), "prune_at_start", capture)
-    monkeypatch.setattr(server, "_maybe_configure_interactive_logs_dir", lambda: None)
+    monkeypatch.setattr(server, "_maybe_configure_job_logs_dir", lambda: None)
     monkeypatch.setattr(server, "_load_agent_settings_from_toml", lambda: None)
     monkeypatch.setattr(
         server._McpLifetime,
@@ -278,12 +278,11 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
     monkeypatch.setattr(server, "_build_server", lambda lifetime, **_: (object(), []))
     monkeypatch.setattr(server, "_streamable_http_app", lambda srv: object())
     monkeypatch.setattr(server, "SessionMaintenanceApp", lambda app, sessions: app)
-    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: served.append(True))
     with caplog.at_level("WARNING"):
-        server._run_http(1)
+        server._run_http(0)
         assert started[0] is not None
-        started[0].join(timeout=10)
-    assert served == [True]
+        started[0].join(timeout=hang_guard_s())
+    assert len(served) == 1
     assert any("Handle pruning skipped" in r.getMessage() for r in caplog.records)
 
 

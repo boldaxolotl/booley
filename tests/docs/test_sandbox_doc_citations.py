@@ -153,10 +153,20 @@ def citation_problems(text: str, label: str, *, skill: bool = False) -> list[str
 
 def _string_literals(module: Path) -> list[str]:
     tree = ast.parse(module.read_text(encoding="utf-8"))
+    path_args = {
+        id(arg)
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "sandbox_doc_path"
+        for arg in call.args
+    }  # checked by test_sandbox_doc_path_calls_name_shipped_docs
     return [
         node.value
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in path_args
     ]
 
 

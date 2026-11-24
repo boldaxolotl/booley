@@ -18,7 +18,7 @@ from textual.widgets import OptionList
 
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard import launch
-from booley.harness.dashboard.jobs import JobSnapshot, JobView
+from booley.harness.dashboard.jobs import JobReader, JobSnapshot, JobView
 from booley.harness.dashboard.specialist_form import ReviewerForm
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
 from booley.runtime import auth_token, job_records
@@ -43,6 +43,7 @@ from tests.harness.test_dashboard_run import (
     write_config,
 )
 from tests.harness.test_dashboard_targets import settle
+from tests.time_budget import hang_guard_s
 
 # Fixtures of the Run tests, shared by assignment so a test finds them by name.
 checkout = run_tests.checkout
@@ -52,7 +53,7 @@ spawned = run_tests.spawned
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -286,7 +287,7 @@ class SpecialistGate(ReviewerLauncher):
         self.release = threading.Event()
 
     def specialists(self, worktree):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().specialists(worktree)
 
 
@@ -338,7 +339,7 @@ class KeyedListing(ReviewerLauncher):
         from booley.harness.dashboard.launch import SpecialistChoice, SpecialistListing
 
         self.reads.append(worktree)
-        assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=60)
+        assert self.gates.setdefault(worktree, threading.Event()).wait(timeout=hang_guard_s())
         if self.broken:
             return SpecialistListing((), "EndpointConfigError: bad toml")
         return SpecialistListing((SpecialistChoice("reviewer", str(worktree)),))
@@ -500,11 +501,16 @@ def sim_job(run_id: str, work_dir: Path, *, endpoint="sim", state="completed", r
 
 @pytest.mark.asyncio
 async def test_sim_runs_are_the_finished_simulation_jobs_of_the_worktree(checkout, tmp_path):
-    from booley.harness.dashboard.specialist_form import SimRun
+    from booley.harness.dashboard.specialist_form import SimRun, finished_coverage_records
 
     other = tmp_path / "other"
+    job_records.write_record(sim_job("4", checkout).record, checkout / ".booley/jobs")
+    reports = checkout / ".booley" / "flow-reports"
+    invocation = write_coverage_record(checkout, 4)
+    for report in (invocation / "report.json", reports / "sim.json"):  # the copy is written last
+        report.write_text('{"run_id": "4"}', encoding="utf-8")
     jobs = (
-        sim_job("4", checkout),
+        *JobReader(checkout).read(interactive_root=checkout / ".booley/jobs").jobs,
         sim_job("5", checkout, state="running"),
         sim_job("6", other),
         sim_job("7", checkout, endpoint="lint"),
@@ -518,9 +524,8 @@ async def test_sim_runs_are_the_finished_simulation_jobs_of_the_worktree(checkou
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         runs = app._finished_sim_runs(checkout)
-    assert runs == (
-        SimRun(checkout / ".booley" / "flow-reports" / "sim" / "4", COVERAGE_RECORD_ENDED),
-    )
+    assert runs == (SimRun(invocation, COVERAGE_RECORD_ENDED),)
+    assert finished_coverage_records(checkout, runs or ())[0].label.endswith("sim #4")
 
 
 async def type_coverage_record(app, pilot, wizard, old: str, new: str) -> None:

@@ -349,6 +349,7 @@ def test_relay_argv_is_hardened_and_has_no_mount_or_published_port() -> None:
         ("--security-opt", "no-new-privileges"),
         ("--pids-limit", "64"),
         ("--memory", "64m"),
+        ("--memory-swap", "64m"),
         ("--ulimit", "nofile=256:256"),
         ("--restart", "no"),
     }

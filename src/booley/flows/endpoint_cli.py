@@ -89,6 +89,7 @@ def add_common_args(
     target_required: bool,
     accepts_target: bool,
     target_help: str,
+    target_metavar: str,
     human: bool = False,
 ) -> None:
     """Add args shared by all endpoints.
@@ -111,7 +112,7 @@ def add_common_args(
             action="append",
             default=None,
             required=target_required,
-            metavar="TARGET[,TARGET...]",
+            metavar=target_metavar,
             help=target_help,
         )
 
@@ -137,6 +138,7 @@ def human_endpoint_parser(endpoint, *, project: Path | None = None) -> argparse.
         target_required=endpoint.target_required,
         accepts_target=endpoint.accepts_target,
         target_help=endpoint.target_help,
+        target_metavar=endpoint.target_metavar,
         human=True,
     )
     endpoint._add_args(parser)
@@ -170,7 +172,10 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
             endpoint._args.steer = ""
         elif len(endpoint._args.steer) == 1:
             endpoint._args.steer = endpoint._args.steer[0]
-    apply_environment(endpoint._args, endpoint.endpoint_kind)
+    try:
+        apply_environment(endpoint._args, endpoint.endpoint_kind)
+    except ReportDirError as exc:
+        parser.error(str(exc))
     return endpoint._args
 
 
@@ -232,15 +237,53 @@ def cli(endpoint) -> None:
     sys.exit(endpoint.main())
 
 
+class ReportDirError(ValueError):
+    """An explicit report directory this process cannot create or write."""
+
+
+def require_usable_report_dir(report_dir: str | os.PathLike[str]) -> None:
+    """Refuse an explicit report directory the run could not create or write.
+
+    Side-effect free: nothing is created, and the path is not normalized. The
+    nearest existing ancestor (at worst ``.`` or the root) must be a writable
+    directory; ``os.access`` can disagree with a real write on ACLs or
+    some network filesystems, which then fail once at completion.
+    """
+    given = os.fspath(report_dir)
+    found = Path(given)  # relative paths resolve against the cwd, as the writer's do
+    while True:
+        try:
+            os.lstat(found)
+        except (FileNotFoundError, NotADirectoryError):
+            found = found.parent  # ends at the root or ``.``
+            continue
+        except OSError as exc:
+            reason = f"'{found}' cannot be inspected: {exc.strerror or exc}"
+        else:
+            if not os.path.isdir(found):  # noqa: PTH112 - a test pins ``Path`` to a pure flavour
+                reason = f"'{found}' is not a directory"
+            elif os.access(found, os.W_OK | os.X_OK):
+                return
+            else:
+                reason = f"'{found}' is not writable"
+        break
+    raise ReportDirError(f"argument --report-dir: cannot write reports to '{given}': {reason}")
+
+
+def runtime_report_root(endpoint_kind: str) -> Path | None:
+    """Report root under ``BOOLEY_RUNTIME_DIR``, or None when the variable is unset."""
+    runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
+    if not runtime_env:
+        return None
+    return Path(runtime_env) / ("flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports")
+
+
 def apply_environment(args, endpoint_kind: str) -> None:
     """Resolve Session/Ticket context equally for typed and CLI requests."""
     # Ticket context from env vars (set by developer or explicit board validate)
     args.slug = os.environ.get("BOOLEY_SLUG", "")
     # report-dir: CLI flag wins, then env var, then None
     if args.report_dir is None:
-        runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-        report_leaf = "flow-reports" if endpoint_kind == "flow" else "mcp-tool-reports"
-        if runtime_env:
-            args.report_dir = Path(runtime_env) / report_leaf
-        else:
-            args.report_dir = None
+        args.report_dir = runtime_report_root(endpoint_kind)
+    else:
+        require_usable_report_dir(args.report_dir)

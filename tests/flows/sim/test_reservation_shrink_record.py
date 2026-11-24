@@ -49,8 +49,23 @@ RUN_PEAK_MIB = 40.0
 
 
 @pytest.fixture
-def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float | None]]:
-    """Run every Flow under a real claim; record the reservation at each build and run start."""
+def planned() -> list[tuple[str, ...]]:
+    """The phases each Job's claim planned, in run order."""
+    return []
+
+
+@pytest.fixture
+def probes(
+    request: pytest.FixtureRequest,
+    planned: list[tuple[str, ...]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, float | None]]:
+    """Run every Flow under a real claim; record the reservation at each build and run start.
+
+    Indirect parameter ``False`` leaves the ``sim_pre_run`` records out of the history.
+    """
+    pre_sim_measured = getattr(request, "param", True)
     world = FakeWorld()
     store = make_store(tmp_path / "slots", world)
     pids = itertools.count(101)
@@ -74,9 +89,11 @@ def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, f
             }
             for request in requests
             for key in job_estimates.phase_occurrences(request)
+            if pre_sim_measured or key.phase != "sim_pre_run"
         ]
         plan = plan_memory_claim(requests, records, BUDGET_MIB, None)
         assert plan.phases
+        planned.append(tuple(key.phase for key, _ in plan.phases))
         pid = next(pids)
         spawn(world, pid)
         token = store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=plan.claim)
@@ -100,31 +117,21 @@ def probes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, f
     return seen
 
 
-def test_simulation_record_drops_to_run_estimate_after_build(
-    flow_project: Path,
-    tmp_path: Path,
-    probes: list[tuple[str, float | None]],
-) -> None:
-    reuse._assert_built(
-        reuse._flow_sim(flow_project, tmp_path / "reports", "first"), "missing provenance"
-    )
-    assert probes == [("building", 8192.0), ("executing", 50.0)]
-
-
 def test_reused_build_drops_reservation_without_building(
     flow_project: Path,
     tmp_path: Path,
     probes: list[tuple[str, float | None]],
 ) -> None:
     reports = tmp_path / "reports"
-    reuse._flow_sim(flow_project, reports, "first")
+    reuse._assert_built(reuse._flow_sim(flow_project, reports, "first"), "missing provenance")
+    assert probes == [("building", 8192.0), ("executing", 50.0)]
     probes.clear()
     reuse._assert_hit(reuse._flow_sim(flow_project, reports, "first"))
     # No build ran, and the build was counted out all the same.
     assert probes == [("executing", 50.0)]
 
 
-def test_baseline_attempt_and_pre_sim_jobs_report_no_build_end(tmp_path: Path) -> None:
+def test_baseline_attempt_reports_no_phase_end(tmp_path: Path) -> None:
     ends: list[tuple[str, str, tuple[str, ...]]] = []
 
     class Recorder:
@@ -141,12 +148,27 @@ def test_baseline_attempt_and_pre_sim_jobs_report_no_build_end(tmp_path: Path) -
     assert ends == [("t", "sim_build", ()), ("t", "sim_run", ("x",))]
 
 
-def test_pre_sim_commands_keep_the_build_estimate(
+@pytest.mark.parametrize(
+    ("probes", "expected"),
+    [
+        pytest.param(True, [("building", 8192.0), ("executing", 50.0)], id="measured"),
+        pytest.param(False, [("building", 8192.0), ("executing", 8192.0)], id="unmeasured"),
+    ],
+    indirect=["probes"],
+)
+def test_pre_sim_commands_reserve_their_own_estimate(
     flow_project: Path,
     tmp_path: Path,
     probes: list[tuple[str, float | None]],
+    planned: list[tuple[str, ...]],
+    expected: list[tuple[str, float]],
 ) -> None:
-    """Pre-Sim Commands run unmeasured after the build, so the Job keeps its build estimate."""
+    """The build ends when it settles; measured Pre-Sim Commands no longer hold its estimate.
+
+    Until the Target's Pre-Sim Commands are measured, they reserve the build's.
+    """
     reuse._configure(flow_project, reuse._RUN_CWD_FIRMWARE)
     reuse._flow_sim(flow_project, tmp_path / "reports", "first")
-    assert probes == [("building", 8192.0), ("executing", 8192.0)]
+    assert probes == expected
+    # The Job planned its Pre-Sim Commands as a phase of their own.
+    assert [phases.count("sim_pre_run") for phases in planned] == [1], planned

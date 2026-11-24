@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from booley.audit.resource_policy import parse_memory_limit
+from booley.config.eda import toml_error_line
 from booley.config.flow_enablement import FlowConfigError, flow_enabled
 from booley.config.gateway import (
     GATEWAY_AUTH,
@@ -37,6 +39,7 @@ from booley.core.boundary import (
     require_opt_str,
     require_str,
 )
+from booley.core.config_paths import BooleyTomlError, resolve_toml
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
 from booley.core.private_store import PrivateStore, ProjectStore
@@ -45,7 +48,7 @@ from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
-from booley.runtime import interactive_docker, mount_history
+from booley.runtime import host_docker, mount_history
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
@@ -66,6 +69,7 @@ from booley.runtime.incontainer_git_identity import (
     git_identity_environment,
     load_git_identity,
 )
+from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
@@ -138,7 +142,7 @@ _PROXY_REMOTE_ENV = {
 }
 _REQUIRED_REMOTE_ENV = frozenset(
     {
-        "BOOLEY_MCP_MODE",
+        DEVELOPER_AGENT_ENV,
         "BOOLEY_DIR",
         COMPILER_CACHE_ROOT_ENV,
         "BOOLEY_AGENT_APP",
@@ -159,7 +163,7 @@ _ALLOWED_REMOTE_ENV = (
     }
 )
 _FIXED_REMOTE_ENV = {
-    "BOOLEY_MCP_MODE": "interactive",
+    DEVELOPER_AGENT_ENV: "1",
     "BOOLEY_DIR": BOOLEY_DIR_TARGET,
     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
 }
@@ -183,6 +187,27 @@ class HostPolicyError(RuntimeSpecError):
     def __init__(self, error: HostConfigError) -> None:
         super().__init__(str(error))
         self.path = error.path
+
+
+class ProjectConfigError(RuntimeSpecError):
+    """The Project's booley.toml cannot be read or fails validation; refreshing cannot cure it."""
+
+    def __init__(self, message: str, path: Path, line: int | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+        self.line = line
+
+    @property
+    def location(self) -> str:
+        """The file, with its line when the parser reported one."""
+        return f"{self.path} (line {self.line})" if self.line else str(self.path)
+
+
+def _project_config_error(exc: Exception) -> ProjectConfigError | None:
+    source = exc if isinstance(exc, BooleyTomlError) else exc.__cause__
+    if isinstance(source, BooleyTomlError) and source.path is not None:
+        return ProjectConfigError(str(exc), source.path, source.line)
+    return None
 
 
 class EgressDriftError(RuntimeSpecError):
@@ -480,7 +505,7 @@ def _issuance_requirements(
         vivado_enabled=flow_enabled("fpga", project_root),
         prior_eda=prior_eda,
     ) as leased:
-        yield eda_requirements.with_relay_identity(leased, runner=interactive_docker.relay_docker)
+        yield eda_requirements.with_relay_identity(leased, runner=host_docker.relay_docker)
 
 
 def _seal_with_requirements(
@@ -707,7 +732,7 @@ def issue_prepared(
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
                 leased,
-                runner=interactive_docker.relay_docker,
+                runner=host_docker.relay_docker,
                 force_relay=force_dependencies,
             )
             return _persist_prepared(
@@ -807,7 +832,7 @@ def _restore_file(path: Path, content: bytes | None, mode: int) -> None:
 
 
 def _current_keeper_id(project: Path) -> str | None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper_image(project))
@@ -818,7 +843,7 @@ def _current_keeper_id(project: Path) -> str | None:
 
 
 def _restore_keeper(project: Path, image_id: str | None) -> None:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     keeper = keeper_image(project)
     try:
@@ -921,7 +946,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
         authority.AuthorityError,
         eda_requirements.SessionRequirementsError,
     ) as exc:
-        raise _runtime_authority_error(spec, exc) from exc
+        raise _project_config_error(exc) or _runtime_authority_error(spec, exc) from exc
 
 
 def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
@@ -1199,13 +1224,7 @@ def _validate_run_args(
                 {"fixed_hardening": tuple(raw[:cursor])},
             )
         )
-    if raw[cursor : cursor + 1] == ["--memory"]:
-        if (
-            cursor + 1 >= len(raw)
-            or re.fullmatch(r"[1-9][0-9]*(?:[kKmMgG])?", raw[cursor + 1]) is None
-        ):
-            raise RuntimeSpecError("devcontainer.json memory limit is invalid")
-        cursor += 2
+    cursor = _validate_memory_args(raw, cursor)
     if private_network is not None:
         if raw[cursor : cursor + 2] != ["--network", private_network]:
             raise RuntimeSpecError("licensed Sandbox private network has drifted")
@@ -1216,6 +1235,25 @@ def _validate_run_args(
             "devcontainer.json issuance labels differ from host authority: "
             + _issuance_label_differences(expected_labels, raw[cursor:])
         )
+
+
+def _validate_memory_args(raw: list[str], cursor: int) -> int:
+    """Check the optional ``--memory <v>`` and ``--memory-swap <v>``; return the next cursor."""
+    if raw[cursor : cursor + 1] != ["--memory"]:
+        return cursor
+    pattern = r"[1-9][0-9]*(?:[kKmMgG])?"
+    if cursor + 1 >= len(raw) or re.fullmatch(pattern, raw[cursor + 1]) is None:
+        raise RuntimeSpecError("devcontainer.json memory limit is invalid")
+    memory_bytes = parse_memory_limit(raw[cursor + 1]) or 0
+    cursor += 2
+    if raw[cursor : cursor + 1] == ["--memory-swap"]:
+        swap_limit = raw[cursor + 1] if cursor + 1 < len(raw) else ""
+        if re.fullmatch(pattern, swap_limit) is None or (
+            (parse_memory_limit(swap_limit) or 0) < memory_bytes
+        ):
+            raise RuntimeSpecError("devcontainer.json swap limit is invalid")
+        cursor += 2
+    return cursor
 
 
 def _issuance_label_differences(expected_labels: tuple[str, ...], tail: list[str]) -> str:
@@ -1232,7 +1270,9 @@ def _project_identity_environment(project_data: Path) -> dict[str, str]:
     try:
         return git_identity_environment(load_git_identity(project_data))
     except GitIdentityError as exc:
-        raise RuntimeSpecError(f"invalid [agent.git] identity: {exc}") from exc
+        raise ProjectConfigError(
+            f"invalid [agent.git] identity: {exc}", project_data / "booley.toml"
+        ) from exc
 
 
 def _pin_git_identity(spec: dict[str, Any], project_data: Path) -> None:
@@ -1348,7 +1388,11 @@ def _validate_credential_policy(
     try:
         found = project_credential_policies(project, booley_dir=project_data, selected=app)
     except BackendConfigError as exc:
-        raise RuntimeSpecError(f"booley.toml [agent] is invalid: {exc}") from exc
+        parsed = exc.__cause__
+        line = toml_error_line(parsed) if isinstance(parsed, tomllib.TOMLDecodeError) else None
+        raise ProjectConfigError(
+            f"booley.toml [agent] is invalid: {exc}", resolve_toml(project_data), line
+        ) from exc
     # The set is recorded in [agent] clis order, which also fixes the name and volume order.
     expected = dict(found.policies) if app in found.clis else {}
     if app in auth_token.CREDENTIALS and app not in found.clis:
@@ -2034,7 +2078,7 @@ def _runtime_authority_error(spec: dict[str, Any], exc: Exception) -> RuntimeSpe
 
 
 def _resolve_image_id(image: str) -> str:
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         value = docker.image_id(image)
@@ -2053,7 +2097,7 @@ def _keeper_image_id(keeper: str) -> str | None:
     naming the keeper, so callers cannot report a missing keeper or retag one
     because Docker was unreachable.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     try:
         return docker.image_id(keeper)
@@ -2070,7 +2114,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
     moves this one private tag to the newly approved immutable ID. Runtime specs
     and stamps continue to use the ID itself as their authority boundary.
     """
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     retained_id = _keeper_image_id(issuance.keeper_image)
     if retained_id == issuance.image_id:
@@ -2085,7 +2129,7 @@ def _retain_issued_image(issuance: Issuance) -> None:
 
 def _validate_image_contract(image_id: str) -> None:
     """Inspect the fixed compatibility contract without executing image code."""
-    from booley.runtime import interactive_docker as docker
+    from booley.runtime import host_docker as docker
 
     created = docker._run_docker(
         [

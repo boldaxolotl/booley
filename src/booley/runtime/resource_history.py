@@ -4,7 +4,7 @@ The history lives at ``<Booley Directory>/runtime/resources/history.json``
 (``runtime/`` is Git-ignored). Writers serialize on a sibling lock file and
 publish the whole document with one atomic replacement, so concurrent Jobs
 never lose or corrupt a record. Each history key keeps its newest
-``MAX_SAMPLES_PER_KEY`` samples, with no overall cap. A key whose newest
+``MAX_JOBS_PER_KEY`` Jobs' records, with no overall cap. A key whose newest
 record is older than ``MAX_KEY_AGE`` is deleted on the next write.
 """
 
@@ -13,20 +13,19 @@ from __future__ import annotations
 import json
 import logging
 import statistics
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.atomic_files import atomic_replace_bytes, keep_unreadable
 from booley.runtime.timefmt import format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = "booley.job-resource-history/v1"
-MAX_SAMPLES_PER_KEY = 20
+MAX_JOBS_PER_KEY = 20
 MAX_KEY_AGE = timedelta(days=90)
 _LOCK_TIMEOUT_S = 10.0
 # Set by Doctor on every Flow run it starts; such runs write no records.
@@ -79,22 +78,40 @@ def load_records(booley_dir: Path) -> list[dict[str, Any]]:
     return list(document["records"])
 
 
+def _job(record: dict[str, Any], position: int) -> object:
+    """The Job a record belongs to; a record without one (older release, Specialist) is its own."""
+    return record.get("job", position)
+
+
+def _age_rank(job: object) -> tuple[int, int, str]:
+    """Order Jobs oldest first: records without a Job id by position, then Job ids by time."""
+    return (0, job, "") if isinstance(job, int) else (1, 0, str(job))
+
+
 def _retained(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep each key's newest samples, minus keys idle for longer than ``MAX_KEY_AGE``."""
-    per_key: Counter[tuple[str | None, HistoryKey]] = Counter()
+    """Keep each key's records of its newest Jobs, minus keys idle for longer than ``MAX_KEY_AGE``.
+
+    Job ids sort by start time, so a Job already ranked out never returns
+    through a later record.
+    """
+    seen: dict[tuple[str | None, HistoryKey], set[object]] = {}
     newest_run: dict[tuple[str | None, HistoryKey], datetime] = {}
-    kept: list[dict[str, Any]] = []
-    for record in reversed(records):
+    for position, record in enumerate(records):
         key = _group(record)
-        if per_key[key] < MAX_SAMPLES_PER_KEY:
-            per_key[key] += 1
-            kept.append(record)
-            # The max, not the position: concurrent appends can land slightly out of order.
-            finished = parse_timestamp(record["finished_at"])
-            newest_run[key] = max(finished, newest_run.get(key, finished))
+        seen.setdefault(key, set()).add(_job(record, position))
+        # The max, not the position: concurrent appends can land slightly out of order.
+        finished = parse_timestamp(record["finished_at"])
+        newest_run[key] = max(finished, newest_run.get(key, finished))
     cutoff = datetime.now(UTC) - MAX_KEY_AGE
-    kept.reverse()
-    return [record for record in kept if newest_run[_group(record)] >= cutoff]
+    newest = {
+        key: set(sorted(jobs, key=_age_rank)[-MAX_JOBS_PER_KEY:]) for key, jobs in seen.items()
+    }
+    return [
+        record
+        for position, record in enumerate(records)
+        if _job(record, position) in newest[_group(record)]
+        and newest_run[_group(record)] >= cutoff
+    ]
 
 
 def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
@@ -107,7 +124,12 @@ def append_records(booley_dir: Path, records: list[dict[str, Any]]) -> None:
             try:
                 existing = load_records(booley_dir)
             except ValueError as exc:
-                logger.warning("Starting a new Job resource history: %s", exc)
+                kept = keep_unreadable(path)
+                logger.warning(
+                    "Kept the unreadable Job resource history as %s and started a new one: %s",
+                    kept,
+                    exc,
+                )
                 existing = []
             document = {"$schema": SCHEMA, "records": _retained([*existing, *records])}
             atomic_replace_bytes(path, json.dumps(document, separators=(",", ":")).encode("utf-8"))
@@ -140,8 +162,10 @@ def _summary_order(
 def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Statistics per history key: Target keys in key order, then Specialists by name."""
     groups: dict[tuple[str | None, HistoryKey], list[dict[str, Any]]] = {}
-    for record in records:
+    jobs: dict[int, object] = {}
+    for position, record in enumerate(records):
         groups.setdefault(_group(record), []).append(record)
+        jobs[id(record)] = _job(record, position)
     summaries = []
     for _, group in sorted(groups.items(), key=_summary_order):
         solo = [
@@ -152,10 +176,12 @@ def summarize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         summaries.append(
             {
                 "key": group[0]["key"],
-                "runs": len(group),
+                "runs": len({jobs[id(r)] for r in group}),
                 "peak_memory_mb": _spread([r["peak_memory_mb"] for r in group]),
+                # Records written before swap was measured lack the field.
+                "peak_swap_mb": _spread([r.get("peak_swap_mb") for r in group]),
                 "wall_s": _spread([r["wall_s"] for r in group]),
-                "solo_runs": len(solo),
+                "solo_runs": len({jobs[id(r)] for r in solo}),
                 # Paired per run: a max of each column could come from different runs.
                 "solo_container_over_rss": _spread(
                     [
@@ -179,9 +205,17 @@ def _line(summary: dict[str, Any]) -> str:
         tests = f" tests={key['test_run']}" if key["test_run"] else ""
         head = f"{key['target'] or '(no Target)'} {key['phase']}{flags}{tests}: {runs}"
     parts = [head]
-    for label, field, unit in (("peak memory", "peak_memory_mb", "MiB"), ("wall", "wall_s", "")):
+    for label, field, unit in (
+        ("peak memory", "peak_memory_mb", "MiB"),
+        ("peak swap", "peak_swap_mb", "MiB"),
+        ("wall", "wall_s", ""),
+    ):
         spread = summary[field]
-        if spread is None:
+        if field == "peak_swap_mb":
+            # Swap is shown only for a key that swapped; a missing figure is not "unmeasured".
+            if spread is None or spread["max"] <= 0:
+                continue
+        elif spread is None:
             parts.append(f"{label} unmeasured")
             continue
         shown = [
@@ -209,6 +243,7 @@ def render_report(summaries: list[dict[str, Any]]) -> str:
         [
             *(_line(summary) for summary in summaries),
             "Peak memory = process-tree RSS, plus the Job's own TMPDIR files when "
-            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted.",
+            "TMPDIR is on tmpfs; files a tool writes outside TMPDIR are not counted. "
+            "Peak swap = the process tree's memory swapped out; estimates count it.",
         ]
     )

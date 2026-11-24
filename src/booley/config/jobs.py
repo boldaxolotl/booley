@@ -167,5 +167,5 @@ def retired_jobs_keys_message(path: Path, found: Iterable[RetiredKey]) -> str:
     )
     return (
         f"booley.toml sets retired [jobs] keys: {named}. "
-        f"Fix: delete these lines from {path} (or run booley-heal to remove them)."
+        f"Fix: delete these lines from {path} (or type /booley-heal in a Developer Agent chat to remove them)."
     )

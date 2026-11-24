@@ -38,7 +38,7 @@ def _git(root: Path, *args: str) -> str:
     """Run Git in *root* and return stdout; fail the test, naming *root*, on any error."""
     try:
         # A hang fails inside run_bounded_child, naming the command and so *root*.
-        result = run_bounded_child(["git", "-C", str(root), *args], timeout=60)
+        result = run_bounded_child(["git", "-C", str(root), *args])
     except OSError as error:  # Git cannot start
         pytest.fail(f"cannot run Git for source root {root}: {error}")
     if result.returncode != 0:

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.flows.synth.backends.openroad import ppa as openroad_ppa
 from booley.flows.synth.backends.yosys import ppa as yosys_ppa
 from booley.flows.synth.recipe import (
@@ -45,43 +46,133 @@ def _resolved(tmp_path, *, mode: str, **flow_options):
     )
 
 
-def _fingerprint(tmp_path, *, mode: str, profile: str | None = None) -> str:
+def _fingerprint(tmp_path, *, mode: str, profile: str | None = None, **flow_options) -> str:
     options = {"ppa_profile": profile} if profile else {}
+    options.update(flow_options)
     snapshot = synthesis_recipe_snapshot(
         _resolved(tmp_path, mode=mode, **options), default_recipe_args(), target="synth"
     )
     return synthesis_recipe_snapshot_fingerprint(snapshot)
 
 
-@pytest.mark.parametrize("mode", ["logical", "physical"])
-def test_yosys_profile_settings_change_fingerprint(tmp_path, monkeypatch, mode):
-    """Editing a profile's Yosys settings must invalidate recipe evidence."""
-    before = _fingerprint(tmp_path, mode=mode, profile="max_frequency")
-    table = yosys_ppa._YOSYS_PROFILES
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], abc_delay_ps=1234)
+# The edited profile table is the input under test, and no public API edits it.
+_YOSYS_TABLE = yosys_ppa._YOSYS_PROFILES
+_OPENROAD_TABLE = openroad_ppa._PROFILES
+
+
+def test_profile_table_edit_invalidates_only_recipes_that_run_it(tmp_path, monkeypatch):
+    rows = [
+        (_YOSYS_TABLE, "abc_delay_ps", 1234, "logical", {}, True),
+        (_YOSYS_TABLE, "abc_delay_ps", 1234, "physical", {}, True),
+        (_OPENROAD_TABLE, "setup_margin_ns", 0.7, "physical", {}, True),
+        # Logical mode never runs OpenROAD, so its repair knobs are not recipe.
+        (_OPENROAD_TABLE, "setup_margin_ns", 0.7, "logical", {}, False),
+        # An override that replaces the edited field hides the edit.
+        (
+            _OPENROAD_TABLE,
+            "setup_margin_ns",
+            0.7,
+            "physical",
+            {"advanced_settings_openroad": {"setup_margin_ns": 0.5}},
+            False,
+        ),
+    ]
+    for table, field, value, mode, options, invalidates in rows:
+        before = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
+        with monkeypatch.context() as edit:
+            edit.setitem(
+                table,
+                "max_frequency",
+                dataclasses.replace(table["max_frequency"], **{field: value}),
+            )
+            after = _fingerprint(tmp_path, mode=mode, profile="max_frequency", **options)
+        assert (after != before) is invalidates, (field, mode, options)
+
+
+@pytest.mark.parametrize(
+    ("mode", "flow_options", "call", "yosys", "openroad"),
+    [
+        pytest.param(
+            "physical",
+            {"ppa_profile": "balanced", "advanced_settings_openroad": {"repair_hold": True}},
+            {},
+            {},
+            {"repair_hold": True},
+            id="balanced-target-repair-hold",
+        ),
+        pytest.param(
+            "logical",
+            {"advanced_settings_yosys": {"abc_recipe": "fast"}},
+            {},
+            {"abc_recipe": "fast"},
+            None,
+            id="target-abc-recipe-logical",
+        ),
+        pytest.param(
+            "physical",
+            {"advanced_settings_yosys": {"abc_recipe": "fast"}},
+            {},
+            {"abc_recipe": "fast"},
+            {},
+            id="target-abc-recipe-physical",
+        ),
+        pytest.param(
+            "physical",
+            {"advanced_settings_openroad": {"repair_hold": True}},
+            {"repair_hold": False},
+            {},
+            {"repair_hold": False},
+            id="call-flag-beats-target",
+        ),
+        pytest.param(
+            "physical",
+            {
+                "ppa_profile": "compact",
+                "advanced_settings_yosys": {"abc_recipe": "fast"},
+                "advanced_settings_openroad": {"repair_hold": True},
+            },
+            {"ppa_profile": "max_frequency"},
+            {"abc_recipe": "balanced"},
+            {"repair_hold": False, "gate_cloning": True, "utilization_pct": 40.0},
+            id="call-profile-skips-target",
+        ),
+    ],
+)
+def test_snapshot_records_the_settings_in_effect(
+    tmp_path, mode, flow_options, call, yosys, openroad
+):
+    args = default_recipe_args()
+    vars(args).update(call)
+
+    snapshot = synthesis_recipe_snapshot(
+        _resolved(tmp_path, mode=mode, **flow_options), args, target="synth"
     )
-    assert _fingerprint(tmp_path, mode=mode, profile="max_frequency") != before
+
+    settings = snapshot["effective_ppa_settings"]
+    assert ("openroad" in settings) is (mode == "physical")
+    assert {k: settings["yosys"][k] for k in yosys} == yosys
+    if openroad is not None:
+        assert {k: settings["openroad"][k] for k in openroad} == openroad
 
 
-def test_openroad_profile_settings_change_fingerprint(tmp_path, monkeypatch):
-    """Editing a profile's OpenROAD settings must invalidate physical recipe evidence."""
-    before = _fingerprint(tmp_path, mode="physical", profile="max_frequency")
-    table = openroad_ppa._PROFILES
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], setup_margin_ns=0.7)
-    )
-    assert _fingerprint(tmp_path, mode="physical", profile="max_frequency") != before
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        pytest.param({"setup_margin_ns": float("-inf")}, "setup-margin-ns", id="argv-parse"),
+        pytest.param({"utilization_pct": float("nan")}, "utilization_pct", id="range-check"),
+        pytest.param({"abc_delay_ps": 0}, "abc_delay_ps", id="abc-delay"),
+        pytest.param({"utilization_pct": 150.0}, "utilization_pct", id="utilization"),
+        pytest.param({"placement_density": 2.0}, "placement_density", id="density"),
+        pytest.param({"setup_margin_ns": -1.0}, "setup_margin_ns", id="margin"),
+        pytest.param({"repair_tns_percent": 150.0}, "repair_tns_percent", id="tns"),
+    ],
+)
+def test_snapshot_rejects_settings_the_backend_rejects(tmp_path, call, message):
+    args = default_recipe_args()
+    vars(args).update(call)
 
-
-def test_openroad_profile_settings_do_not_affect_logical_fingerprint(tmp_path, monkeypatch):
-    """Logical mode never runs OpenROAD, so its repair knobs are not recipe."""
-    before = _fingerprint(tmp_path, mode="logical", profile="max_frequency")
-    table = openroad_ppa._PROFILES
-    monkeypatch.setitem(
-        table, "max_frequency", dataclasses.replace(table["max_frequency"], setup_margin_ns=0.7)
-    )
-    assert _fingerprint(tmp_path, mode="logical", profile="max_frequency") == before
+    with pytest.raises(BoundaryError, match=message):
+        synthesis_recipe_snapshot(_resolved(tmp_path, mode="physical"), args, target="synth")
 
 
 def test_default_profile_is_resolved_when_unset(tmp_path):

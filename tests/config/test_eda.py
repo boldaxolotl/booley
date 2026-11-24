@@ -101,7 +101,7 @@ from booley.config import settings, project_config
 from booley.config import eda
 assert project_config._CONFIG_CACHE is None
 """
-    result = run_bounded_child([sys.executable, "-c", script, str(source)], timeout=20)
+    result = run_bounded_child([sys.executable, "-c", script, str(source)])
     assert result.returncode == 0, result.stderr
 
 
@@ -118,5 +118,37 @@ def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     assert settings._load_booley_toml(document.parent)["eda"]["vivado"]["provisioning"] == "host"
     assert project_config._get("PROJECT_NAME") == "rtl_project"
     for loader in (configuration.load_eda_config, public_eda.load_eda_config):
-        with pytest.raises(eda.EdaConfigError, match="unsupported on Windows"):
+        with pytest.raises(eda.EdaConfigError, match="unsupported on Windows") as raised:
             loader(document.parent)
+        assert raised.value.path == document
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        (b"[a]\n[a]\n", 2),
+        (b"x = [1,\n", 2 if sys.version_info >= (3, 14) else None),
+    ],
+)
+def test_unreadable_document_reports_its_path_and_parser_line(document, text, line):
+    document.write_bytes(text)
+    with pytest.raises(eda.EdaConfigError) as raised:
+        eda.load_eda_config(document.parent)
+    assert raised.value.path == document
+    assert raised.value.line == line
+
+
+def test_toml_error_line_reads_only_the_trailing_location_suffix():
+    class Old(tomllib.TOMLDecodeError):
+        lineno = None  # type: ignore[assignment]
+
+    quoted = Old("Cannot declare ('at line 9, column 9',) twice (at line 4, column 2)")
+    assert eda.toml_error_line(quoted) == 4
+    assert eda.toml_error_line(Old("Unclosed array (at end of document)")) is None
+
+
+def test_retired_key_error_names_the_document(document):
+    document.write_bytes(b'[flows.lint]\nbackend = "x"\n')
+    with pytest.raises(eda.EdaConfigError, match="retired") as raised:
+        eda.load_eda_config(document.parent)
+    assert (raised.value.path, raised.value.line) == (document, None)

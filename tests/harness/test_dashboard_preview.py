@@ -23,12 +23,13 @@ from booley.runtime.job_records import JobRecord
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import WAITING_USER, WORKING, Activity
 from tests.harness.test_dashboard_sessions import NOW, STARTED, stamp, standalone_job, world
+from tests.time_budget import hang_guard_s
 
 
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def detail_text(app) -> str:
@@ -155,6 +156,15 @@ async def test_interactive_session_preview_lists_fields_and_only_unfinished_jobs
         await pilot.pause()
         third = detail_text(app)
         assert third.startswith("S3 · Interactive")
+
+        # The session's detail view lists the same unfinished Jobs, none labelled running.
+        move_to(app, "codex:00")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert [str(row[0]).split(" · ")[0] for row in app._rows] == [
+            "Job: J-SIM1",
+            "Job: J-LINT2",
+        ]
 
 
 @pytest.mark.asyncio

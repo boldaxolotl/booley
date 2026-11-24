@@ -33,7 +33,7 @@ def _slots(directory: Path) -> None:
         holders, waiters = store.observe(name)
         tokens = [*holders, *waiters]
         if {token.path for token in tokens} != set(entries):
-            raise BooleyLayoutError(f"cannot prove Job slot inactivity: {root / name}")
+            raise BooleyLayoutError(f"cannot prove Job admission inactivity: {root / name}")
         for token in tokens:
             _require_dead(token.owner_identity, token.pid, str(token.path))
 

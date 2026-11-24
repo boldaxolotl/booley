@@ -7,29 +7,32 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import time
 import tomllib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
-from booley.criteria.state import DevelopmentState
-from booley.evidence.recipe import implementation_comparison_basis
-from booley.evidence.timing import make_clock_timing
+from booley.evidence.timing import make_clock_timing, worst_clock
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
-from booley.flows.implementation_comparison import TargetExecutionRef
+from booley.flows.progress_lifecycle import abort_open_progress
+from booley.flows.source_paths import ProjectSourcePaths
+from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
@@ -47,32 +50,32 @@ from booley.flows.synth.flow import (
     _parse_synth_output,
     _parse_wire_count,
     _parse_worst_slack,
-    _synth_target_warnings,
-    _vlogdefine_args,
     _worst_critical_path_ps,
     synth_target_report_slug,
 )
 from booley.flows.synth.mode import SynthMode
 from booley.flows.synth.recipe import (
     default_recipe_args,
-    resolve_synth_mode,
     synthesis_recipe_changes,
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
 )
+from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.synth.warnings import WarningSummary, parse_synth_diagnostics
-from booley.flows.target_parameters import ParameterValue, vlogparam_specs
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.presentation.report_results import present_job_report
+from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
+from tests.canned_process_support import canned_command
 from tests.conftest import symlink_or_skip
 from tests.flows.synth.captured_yosys import load_capture
 from tests.fusesoc_test_support import relocated_project
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.target_test_support import install_lenient_target_catalog, make_target_handle
+from tests.time_budget import hang_guard_s, scaled
 
 _REAL_CATALOG_BUILD = TargetCatalog.build
 
@@ -243,7 +246,9 @@ def test_numbered_log_publication_failure_is_best_effort(tmp_path: Path) -> None
         "booley.flows.synth.flow.artifacts.publish_bytes",
         side_effect=OSError("evidence disk full"),
     ):
-        flow._record_boundary_diagnostics("demo", metrics, process, 0.1, "complete output")
+        flow._record_boundary_diagnostics(
+            "demo", metrics, process, 0.1, "complete output", ProjectSourcePaths()
+        )
 
     assert metrics.log_path == ""
     assert work_root_for(tmp_path, "synth", "demo").joinpath("run.log").is_file()
@@ -362,14 +367,9 @@ def test_synth_target_report_slug_is_safe_and_collision_resistant():
 
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Create and return a fresh state file, set env vars."""
-    sf = tmp_path / "state.json"
-    st = DevelopmentState.load(sf)
-    st.slug = "test-ticket"
-    st.save()
+    """Set the slug env var and return the unused state path."""
     monkeypatch.setenv("BOOLEY_SLUG", "test-ticket")
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
-    return sf
+    return tmp_path / "state.json"
 
 
 @pytest.fixture()
@@ -570,13 +570,8 @@ def _write_syn_demo_project(work_dir: Path) -> None:
     (work_dir / "syn_demo.core").write_text(_SYN_CORE_TEXT, encoding="utf-8")
 
 
-# Captured before the autouse fixture below patches the attribute, so the
-# real-fusesoc e2e can reach the genuine resolver.
-_REAL_RESOLVE = fusesoc_registry._resolve_target
-
-
-# The Target-handle entry points the lenient catalog adapter replaces per test
-# (it drops the build's library plan); the AC4 test needs the genuine ones.
+# The Target-handle entry points that fixtures here replace per test; the AC4
+# test needs the genuine ones.
 _REAL_RESOLVE_HANDLE = fusesoc_registry.resolve_target_handle
 _REAL_SETUP_HANDLE = fusesoc_registry.setup_command_for_handle
 
@@ -590,33 +585,38 @@ def _fusesoc_cmd() -> list[str]:
     return [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
 
-def _real_resolve(*args, **kwargs):
-    """Run the genuine legacy FuseSoC resolver."""
-    return _REAL_RESOLVE(*args, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
-
-
 def _real_resolve_handle(handle, **kwargs):
     """Run the genuine Target-handle resolver, honoring the build's library plan."""
     return _REAL_RESOLVE_HANDLE(handle, **{**kwargs, "fusesoc_cmd": _fusesoc_cmd()})
+
+
+@dataclasses.dataclass
+class _Resolution:
+    """The FuseSoC resolver the autouse fake delegates to; a test swaps ``resolve``."""
+
+    resolve: Callable[..., fusesoc_registry.ResolvedTarget]
 
 
 @pytest.fixture(autouse=True)
 def _stub_fusesoc_resolution(tmp_path: Path):
     """Default every test's FuseSoC resolution to a fake synth EDAM.
 
-    The execution-path tests (``TestSingleConfigRun`` etc.) mock only
-    ``_execute``; without this, ``_build_synth_cmd`` would shell out to a real
-    ``fusesoc run --setup`` against a project with no ``.core`` and fail. Tests
-    that exercise resolution itself re-patch ``_resolve_target`` inside a ``with``
-    block — that inner patch takes precedence for its duration; the e2e uses
-    ``_REAL_RESOLVE``.
+    A real ``fusesoc run --setup`` against a project with no ``.core`` fails, so
+    the execution-path tests resolve through this fake. It yields the holder
+    whose ``resolve`` a test replaces to shape the resolved Target; tests that
+    exercise resolution itself re-patch ``resolve_target_handle`` inside a ``with``
+    block, and the real-FuseSoC tests set ``resolve`` to ``_real_resolve_handle``.
     """
-    with patch.object(
-        fusesoc_registry,
-        "_resolve_target",
-        side_effect=lambda target="lite", **k: _fake_synth_resolved(tmp_path, config=target),
-    ):
-        yield
+    resolution = _Resolution(
+        resolve=lambda handle, **_kwargs: _fake_synth_resolved(tmp_path, config=handle.selector)
+    )
+
+    def resolve(*args, **kwargs):
+        return resolution.resolve(*args, **kwargs)  # a test may have replaced it
+
+    # Same seam as `_REAL_RESOLVE_HANDLE`: no FuseSoC run or `.core` exists on a test host.
+    with patch.object(fusesoc_registry, "resolve_target_handle", side_effect=resolve):
+        yield resolution
 
 
 def _stub_plan(
@@ -653,18 +653,1214 @@ def _stub_configure_synth():
 
     The execution-path tests mock the boundary executor and feed it synthetic
     output; real script rendering would fail because the fake resolved sources
-    never exist on disk. The spec argv (``_build_synth_cmd``) still runs for
-    real — only the render step is stubbed. Tests that exercise rendering
-    itself call ``run_yosys_syn.resolve_spec`` / ``syn_make`` directly (see
-    tests/flows/synth/backends/yosys/test_pipeline.py and the golden Makefile snapshots).
+    never exist on disk. The spec argv still runs for real: the fixture records
+    each Target's configure argv in the dict it yields and stubs only the render
+    step. Tests that exercise rendering itself call ``run_yosys_syn.resolve_spec``
+    / ``syn_make`` directly (see tests/flows/synth/backends/yosys/test_pipeline.py
+    and the golden Makefile snapshots).
     """
+    configured: dict[str, list[str]] = {}
 
     def fake_configure(self, target, cmd):
+        configured[target] = list(cmd)
         mode = cmd[cmd.index("--synth-mode") + 1]
         return _stub_plan(Path(self.args.work_dir), target, mode=mode)
 
+    # `_configure_synth` renders the build dir the EDA tools read, and no test
+    # host has them; no public name reaches that step alone.
     with patch.object(AsicSynthesizeFlow, "_configure_synth", fake_configure):
-        yield
+        yield configured
+
+
+# ===========================================================================
+# Commands and invocation (through the Flow's CLI)
+# ===========================================================================
+
+_PASS_OUTPUT = SubprocessResult(
+    returncode=0,
+    stdout="Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+    stderr="",
+    duration_s=1.0,
+)
+_SYNTH_ROOT = ".booley/.runtime/edalize/synth/lite"
+_STAGED_SRC = f"{_SYNTH_ROOT}/syn_demo_0/syn/src/syn_demo_0"
+
+
+@dataclasses.dataclass
+class SynthCli:
+    """Drive the ASIC Synthesis Flow through ``execute_cli`` against a temporary Project.
+
+    The faked tool output carries no OpenROAD result, so a physical Target's run
+    ends in a failed verdict; tests of the configure argv read ``configured``
+    instead of the exit code.
+    """
+
+    project: Path
+    resolution: _Resolution
+    configured: dict[str, list[str]]
+    tool_output: SubprocessResult | Callable[[list[str]], SubprocessResult] = dataclasses.field(
+        default_factory=lambda: _PASS_OUTPUT
+    )
+    commands: list[list[str]] = dataclasses.field(default_factory=list)
+    flow: AsicSynthesizeFlow | None = None
+
+    def config(self, body: str) -> None:
+        """Write ``[flows.synth]`` plus *body* into the Project's ``booley.toml``."""
+        _write_execution_config(self.project, body)
+
+    def run(self, *argv: str, target: str = "lite") -> EndpointOutcome:
+        """Run the Flow on *target* through its CLI."""
+        return self._drive(
+            lambda flow: flow.execute_cli(
+                ["--target", target, "--work-dir", str(self.project), *argv]
+            )
+        )
+
+    def run_request(self, target: str = "lite") -> EndpointOutcome:
+        """Run the Flow on a typed request, which keeps the Project path as spelled.
+
+        The CLI resolves ``--work-dir``; a typed caller may pass a path behind a link.
+        """
+        return self._drive(
+            lambda flow: flow.execute(SynthRequest(target=target, work_dir=self.project))
+        )
+
+    def _drive(self, invoke: Callable[[AsicSynthesizeFlow], ExecutionResult]) -> EndpointOutcome:
+        def execute(_flow: AsicSynthesizeFlow, cmd: list[str], **_kwargs) -> SubprocessResult:
+            self.commands.append(list(cmd))
+            return self.tool_output(cmd) if callable(self.tool_output) else self.tool_output
+
+        self.flow = AsicSynthesizeFlow()
+        # No EDA tool runs on test hosts, so the Sandbox subprocess boundary is
+        # the one faked seam.
+        with patch.object(AsicSynthesizeFlow, "_execute", execute):
+            return invoke(self.flow).outcome
+
+    def plan(self, *argv: str, target: str = "lite") -> dict:
+        """Dry-run *target* and return the published plan."""
+        outcome = self.run("--dry-run", *argv, target=target)
+        assert outcome.exit_code == EXIT_SUCCESS, outcome.report_text
+        return outcome.detail
+
+    @property
+    def run_plan(self):
+        """The plan the last run executed.
+
+        A real run publishes no plan (only ``--dry-run`` does), and the dry/real
+        equality is the behavior under test, so this reads the Flow's own record.
+        """
+        assert self.flow is not None
+        return self.flow._flow_plan  # the public result carries no real-run plan
+
+    def report(self, target: str = "lite") -> dict:
+        """The per-Target JSON report the last run wrote."""
+        path = self.project / ".booley" / "flow-reports" / f"synth_{target}.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def synth_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pin_memory_budget: Callable[[int], None],
+    _stub_fusesoc_resolution: _Resolution,
+    _stub_configure_synth: dict[str, list[str]],
+) -> SynthCli:
+    # The in-process CLI runs only inside the Sandbox.
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    # An inherited runtime dir would send reports and events away from the Project.
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    pin_memory_budget(64 * 1024)
+    return SynthCli(tmp_path, _stub_fusesoc_resolution, _stub_configure_synth)
+
+
+def _operands(argv: list[str], flag: str) -> list[str]:
+    return [argv[index + 1] for index, arg in enumerate(argv) if arg == flag]
+
+
+def _has_tokens(argv: list[str], *tokens: str) -> bool:
+    """Whether *tokens* appear in *argv* as one adjacent run."""
+    return any(argv[i : i + len(tokens)] == list(tokens) for i in range(len(argv)))
+
+
+def _staged(
+    resolved: fusesoc_registry.ResolvedTarget, data: bytes | None = None
+) -> fusesoc_registry.ResolvedTarget:
+    """Write the resolved files under the build root, as a FuseSoC setup does.
+
+    Files that already exist keep their content unless *data* is given.
+    """
+    for item in resolved.files:
+        path = item.absolute(resolved.build_root)
+        if data is not None or not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data or b"x")
+    return resolved
+
+
+def _resolving(make: Callable[[Path], fusesoc_registry.ResolvedTarget]):
+    """A resolver that builds and stages its Target for the checkout it is asked about."""
+
+    def resolve(handle, **_kwargs):
+        return _staged(make(Path(handle.project_root)))
+
+    return resolve
+
+
+def test_dry_run_plans_every_selected_target(synth_cli: SynthCli) -> None:
+    outcome = synth_cli.run("--dry-run", target="lite,full")
+
+    assert outcome.exit_code == EXIT_SUCCESS
+    assert "Dry run" in outcome.report_text
+    assert [unit["selector"] for unit in outcome.detail["work_units"]] == ["lite", "full"]
+    assert list((synth_cli.project / _SYNTH_ROOT).parent.glob(".plan-*")) == []
+
+
+def test_dry_run_setup_writes_only_inside_the_booley_directory(synth_cli: SynthCli) -> None:
+    mine = synth_cli.project / ".booley-synth-plan-mine" / "notes.txt"
+    other = (synth_cli.project / _SYNTH_ROOT).parent / ".plan-other" / "notes.txt"
+    for path in (mine, other):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"mine")
+    before = sorted(synth_cli.project.iterdir())
+    during: list[list[str]] = []
+    resolve = synth_cli.resolution.resolve
+
+    def watch(*args, **kwargs):
+        during.append(sorted(synth_cli.project.iterdir()))
+        return resolve(*args, **kwargs)
+
+    synth_cli.resolution.resolve = watch
+
+    assert synth_cli.run("--dry-run").exit_code == EXIT_SUCCESS
+    assert synth_cli.run().exit_code == EXIT_SUCCESS
+    assert during[0] == before
+    assert [path.read_bytes() for path in (mine, other)] == [b"mine", b"mine"]
+
+
+def test_dry_and_real_runs_plan_the_same_work(synth_cli: SynthCli) -> None:
+    dry = synth_cli.plan()
+    outcome = synth_cli.run()
+
+    assert outcome.exit_code == EXIT_SUCCESS, outcome.report_text
+    assert dry["semantic_plan_fingerprint"] == synth_cli.run_plan.semantic_plan_fingerprint
+
+
+def test_physical_dry_run_discloses_runtime_clock_validation(
+    synth_cli: SynthCli, tmp_path: Path
+) -> None:
+    synth_cli.resolution.resolve = lambda *_a, **_k: _with_synth_mode(
+        _fake_synth_resolved(tmp_path), "physical"
+    )
+
+    recipe = synth_cli.plan()["work_units"][0]["recipe"]
+
+    assert "clock creation is validated by OpenROAD at runtime" in recipe["clock_validation"]
+
+
+def test_dry_run_records_evidence_for_projected_stealth_core(
+    synth_cli: SynthCli, tmp_path: Path
+) -> None:
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    booley_dir = work_dir / ".booley"
+    cores = booley_dir / "cores"
+    cores.mkdir(parents=True)
+    (work_dir / "syn_demo.core").replace(cores / "syn_demo.core")
+    (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+    (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = _real_resolve_handle
+
+    dry = synth_cli.plan(target="syn")
+    synth_cli.run(target="syn")
+
+    assert dry["work_units"][0]["selector"] == "syn"
+    assert dry["semantic_plan_fingerprint"] == synth_cli.run_plan.semantic_plan_fingerprint
+    assert synth_cli.report("syn")["run_evidence"]["source_sha256"]
+
+
+@pytest.mark.skipif(
+    shutil.which("git") is None or os.name == "nt",
+    reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
+)
+@pytest.mark.parametrize("isolation", ["isolated", "projected"])
+def test_synth_plan_identity_matches_in_booley_worktree(
+    isolation: str,
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same Target and inputs plan identically in the main and a worktree checkout.
+
+    Isolated Projects name sources by Project-relative path, hiding the
+    private source mirror; without isolation the FuseSoC export names stay.
+    """
+    import argparse
+
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    from booley.harness import worktree_cmd
+
+    # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    root = tmp_path / "repo"
+    _write_syn_demo_project(root)
+    booley_dir = root / ".booley"
+    (booley_dir / "cores").mkdir(parents=True)
+    (root / "syn_demo.core").replace(booley_dir / "cores" / "syn_demo.core")
+    isolate = "ignore_native_cores = true\n" if isolation == "isolated" else ""
+    (booley_dir / "booley.toml").write_text(
+        f"[stealth]\nenabled = true\n{isolate}", encoding="utf-8"
+    )
+    (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    for args in (
+        ("init",),
+        ("config", "user.name", "Test User"),
+        ("config", "user.email", "test@example.com"),
+        ("add", "rtl", "tb", "constraints"),
+        ("commit", "-m", "init"),
+    ):
+        run_bounded_child(["git", *args], cwd=root, check=True)
+    # Created before any preparation, so the Snapshot holds no generated state.
+    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
+
+    def plans(checkout: Path):
+        synth_cli.project = checkout
+        with (
+            patch.object(
+                fusesoc_registry, "resolve_target_handle", side_effect=_real_resolve_handle
+            ),
+            patch.object(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE),
+        ):
+            dry = synth_cli.plan(target="syn")
+            synth_cli.run(target="syn")
+        return dry, synth_cli.run_plan
+
+    main_dry, main_real = plans(root)
+    wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
+
+    assert main_dry["semantic_plan_fingerprint"] == wt_dry["semantic_plan_fingerprint"]
+    assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
+    unit = main_dry["work_units"][0]
+    configure = unit["commands"][0]["argv"]
+    prefix = "" if isolation == "isolated" else "src/syn_demo_0/"
+    assert unit["sources"] == [
+        prefix + name
+        for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv")
+    ]
+    assert unit["constraints"] == [f"{prefix}constraints/dut.sdc"]
+    assert _operands(configure, "--extra-rtl") == [f"{prefix}rtl/pkg.sv", f"{prefix}rtl/dut.sv"]
+    assert _operands(configure, "--inc-dir") == [f"{prefix}rtl/include"]
+
+
+_ABC_SCRIPT = '[flows.synth.advanced_settings_yosys]\nabc_script = "+strash;map"\n'
+_ABC_RECIPE = '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n'
+
+
+def _recipe_argv_cases() -> list[Any]:
+    return [
+        pytest.param(
+            "",
+            [],
+            [
+                ("--ppa-profile", "balanced"),
+                ("--frontend", "sv2v"),
+                ("--flatten",),
+                ("-w", "lite"),
+            ],
+            ["--no-flatten", "--timing-report-paths"],
+            id="defaults",
+        ),
+        pytest.param(
+            'ppa_profile = "compact"\nsynth_mode = "physical"\n'
+            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
+            "[flows.synth.advanced_settings_openroad]\n"
+            "placement_density = 0.72\nrepair_hold = true\n",
+            [],
+            [
+                ("--synth-mode", "physical"),
+                ("--ppa-profile", "compact"),
+                ("--abc-delay-ps", "3333"),
+                ("--placement-density", "0.72"),
+                ("--repair-hold",),
+            ],
+            [],
+            id="profile-and-backend-settings",
+        ),
+        pytest.param(
+            'ppa_profile = "compact"\n' + _ABC_RECIPE,
+            ["--ppa-profile", "balanced"],
+            [("--ppa-profile", "balanced")],
+            ["--abc-recipe"],
+            id="cli-profile-resets-backend-settings",
+        ),
+        pytest.param(
+            _ABC_SCRIPT,
+            ["--abc-recipe", "fast"],
+            [("--abc-recipe", "fast")],
+            ["--abc-script"],
+            id="cli-abc-recipe-replaces-script",
+        ),
+        pytest.param(
+            _ABC_RECIPE,
+            ["--abc-script", "+strash;map"],
+            [("--abc-script", "+strash;map")],
+            ["--abc-recipe"],
+            id="cli-abc-script-replaces-recipe",
+        ),
+        pytest.param(
+            "flatten = true\nsdc = true\n",
+            [],
+            [("--flatten",)],
+            ["--sdc", "--no-flatten"],
+            id="flatten-true-and-retired-sdc-flag",
+        ),
+        pytest.param(
+            "flatten = true\n",
+            ["--no-flatten"],
+            [("--no-flatten",)],
+            ["--flatten"],
+            id="cli-no-flatten-beats-config",
+        ),
+        pytest.param(
+            "flatten = false\n", [], [("--no-flatten",)], ["--flatten"], id="flatten-false"
+        ),
+        pytest.param(
+            "", ["--frontend", "slang"], [("--frontend", "slang")], [], id="cli-frontend"
+        ),
+        pytest.param(
+            'frontend = "slang"\nslang_options = ["--single-unit", "--allow-use-before-declare"]\n',
+            [],
+            [
+                ("--frontend", "slang"),
+                ("--slang-option=--single-unit",),
+                ("--slang-option=--allow-use-before-declare",),
+            ],
+            [],
+            id="target-frontend-and-slang-options",
+        ),
+    ]
+
+
+def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
+    for case in _recipe_argv_cases():
+        config, args, present, absent = case.values
+        synth_cli.config(config)
+
+        unit = synth_cli.plan(*args)["work_units"][0]
+        argv = unit["commands"][0]["argv"]
+
+        for tokens in present:
+            assert _has_tokens(argv, *tokens), (case.id, tokens, argv)
+        for token in absent:
+            assert token not in argv, (case.id, token, argv)
+        parsed = configure.parse_configure_argv(argv)
+        _profile, yosys, openroad = configure.resolve_ppa_settings(parsed)
+        expected = {"yosys": dataclasses.asdict(yosys)}
+        if SynthMode(parsed.synth_mode).runs_openroad:
+            expected["openroad"] = dataclasses.asdict(openroad)
+        assert unit["recipe"]["effective_ppa_settings"] == expected, case.id
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        pytest.param("synth_mode = true\n", "synth_mode", id="bool-synth-mode"),
+        pytest.param('synth_mode = "placed"\n', "must be one of", id="unknown-synth-mode"),
+        pytest.param(
+            'timing_engine = "opensta"\n', "timing_engine is retired", id="timing-engine"
+        ),
+        pytest.param(
+            "[flows.synth.yosys]\n", r"yosys is retired.*advanced_settings_yosys", id="yosys-table"
+        ),
+        pytest.param(
+            "[flows.synth.openroad]\n",
+            r"openroad is retired.*advanced_settings_openroad",
+            id="openroad-table",
+        ),
+        pytest.param(
+            'synth_mode = "logical"\n'
+            "[flows.synth.advanced_settings_openroad]\nplacement_density = 0.72\n",
+            r"cannot be set.*logical",
+            id="openroad-settings-in-logical-mode",
+        ),
+        pytest.param('flatten = "yes"\n', "flatten", id="non-bool-flatten"),
+        pytest.param('ppa_profile = "speed"\n', "ppa_profile", id="unknown-ppa-profile"),
+        pytest.param(
+            'synth_mode = "physical"\n'
+            '[flows.synth.advanced_settings_openroad]\nrepair_hold = "yes"\n',
+            "repair_hold",
+            id="non-bool-repair-hold",
+        ),
+        pytest.param(
+            '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',
+            "cannot set both",
+            id="both-abc-controls",
+        ),
+        pytest.param(
+            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333.5\n",
+            "positive integer",
+            id="fractional-abc-delay",
+        ),
+        pytest.param(
+            '[flows.synth.advanced_settings_yosys]\nabc_recip = "fast"\n',
+            "unknown setting",
+            id="unknown-yosys-setting",
+        ),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\n'
+            "repair_setp = false\n",
+            "unknown setting",
+            id="unknown-openroad-setting",
+        ),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nmax_fanout = 50\n',
+            "unknown setting",
+            id="retired-openroad-setting",
+        ),
+        pytest.param('frontend = "verilator"\n', r"frontend must be one of", id="frontend"),
+        pytest.param(
+            'slang_options = "--single-unit"\n',
+            r"slang_options must be a non-empty list",
+            id="slang-options",
+        ),
+        pytest.param(
+            "timing_report_paths = 0\n", r"^synth: .*timing_report_paths", id="report-paths"
+        ),
+        pytest.param('[flows.synth.timing]\nengine = "sta"\n', "'engine' is retired", id="key"),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nutilization_pct = 150\n',
+            r"candidate lite: utilization_pct must be between 0 and 100",
+            id="ppa",
+        ),
+    ],
+)
+def test_invalid_recipe_fails_planning(synth_cli: SynthCli, config: str, message: str) -> None:
+    synth_cli.config(config)
+
+    for outcome in (synth_cli.run("--dry-run"), synth_cli.run()):
+        assert outcome.exit_code == EXIT_ERROR
+        assert re.search(message, outcome.report_text), outcome.report_text
+    assert list((synth_cli.project / _SYNTH_ROOT).parent.glob(".plan-*")) == []
+
+
+def test_report_size_reaches_the_backend_but_not_the_recipe(synth_cli: SynthCli) -> None:
+    default_recipe = synth_cli.plan()["work_units"][0]["recipe"]
+    synth_cli.config("timing_report_paths = 3\n")
+    synth_cli.resolution.resolve = _resolving(_fake_synth_resolved)
+
+    assert synth_cli.plan()["work_units"][0]["recipe"] == default_recipe
+    assert synth_cli.run().exit_code == EXIT_SUCCESS
+    argv = synth_cli.configured["lite"]
+    assert _operands(argv, "--timing-report-paths") == ["3"]
+    spec = configure.resolve_spec(
+        configure.parse_configure_argv(argv), project_root=synth_cli.project, require_liberty=False
+    )
+    assert spec.timing.report_paths == 3
+    # The standalone configure CLI resolves timing without a Project root (it
+    # reads the working directory's config); no public name reaches that step
+    # without also discovering the root.
+    args = configure.parse_configure_argv(argv)
+    _profile, _yosys, openroad = configure.resolve_ppa_settings(args)
+    assert configure._resolve_syn_timing(args, openroad).report_paths == 3
+
+
+def _physical_target_without_usable_sdc(case: str, project: Path):
+    """A physical Target whose SDC is unusable in way *case*."""
+    resolved = _with_synth_mode(_fake_synth_resolved(project), "physical")
+    if case == "outside":
+        outside = project.parent / "outside.sdc"
+        outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+        return dataclasses.replace(
+            resolved, files=(fusesoc_registry.ResolvedFile(name=str(outside), file_type="SDC"),)
+        )
+    if case == "missing":
+        resolved.sdc_files[0].absolute(resolved.build_root).unlink()
+    if case == "none":
+        return dataclasses.replace(
+            resolved, files=tuple(f for f in resolved.files if f.file_type != "SDC")
+        )
+    return resolved
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("outside", "escapes the selected checkout"),
+        ("missing", "SDC file not found"),
+        ("unreadable", "SDC file is not readable"),
+        ("none", "no timing constraints"),
+    ],
+)
+def test_unusable_sdc_fails_physical_planning(
+    case: str,
+    message: str,
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    synth_cli.project = project
+    resolved = _physical_target_without_usable_sdc(case, project)
+    synth_cli.resolution.resolve = lambda *_a, **_k: resolved
+    if case == "unreadable":
+        sdc = resolved.sdc_files[0].absolute(resolved.build_root)
+        read_bytes = Path.read_bytes
+
+        def read_bytes_or_deny(path: Path) -> bytes:
+            if path == sdc:
+                raise OSError("permission denied")
+            return read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes_or_deny)
+
+    outcome = synth_cli.run("--dry-run")
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert message in outcome.report_text, outcome.report_text
+
+
+def _linked_booley_project(tmp_path: Path) -> tuple[Path, Callable[[Path], object]]:
+    """A Project whose ``.booley`` is a link, plus a resolver factory for one SDC path."""
+    root = tmp_path / "project"
+    data = tmp_path / "booley-data"
+    elsewhere = tmp_path / "elsewhere"
+    for directory in (root, data / "cores", elsewhere):
+        directory.mkdir(parents=True)
+    symlink_or_skip(root / ".booley", data)
+    symlink_or_skip(data / "linked", elsewhere)
+    for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
+        sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+    def resolver(sdc: Path):
+        resolved = dataclasses.replace(
+            _with_synth_mode(_fake_synth_resolved(root), "physical"),
+            files=(fusesoc_registry.ResolvedFile(name=str(sdc), file_type="SDC"),),
+        )
+        return lambda *_a, **_k: resolved
+
+    return root, resolver
+
+
+def test_sta_sdc_follows_symlinked_booley_dir_entry(synth_cli: SynthCli, tmp_path: Path) -> None:
+    """A stealth core's SDC under a linked entry is named through the entry."""
+    root, resolver = _linked_booley_project(tmp_path)
+    synth_cli.project = root
+
+    synth_cli.resolution.resolve = resolver(root / ".booley" / "cores" / "top.sdc")
+    synth_cli.run()
+    assert _operands(synth_cli.configured["lite"], "--sta-sdc") == [".booley/cores/top.sdc"]
+
+    # A link below the entry still leaves the selected checkout.
+    synth_cli.resolution.resolve = resolver(root / ".booley" / "linked" / "top.sdc")
+    outcome = synth_cli.run("--dry-run")
+    assert outcome.exit_code == EXIT_ERROR
+    assert "escapes the selected checkout" in outcome.report_text
+
+
+def test_paths_resolve_from_a_worktree_behind_a_linked_ancestor(
+    synth_cli: SynthCli, tmp_path: Path
+) -> None:
+    """A Codespace worktree sits under the symlinked ``.booley`` entry.
+
+    ``/workspaces/picorv32/.booley/worktrees/zbb`` is physically
+    ``/workspaces/booley-prj-picorv32/worktrees/zbb``. Resolved source
+    paths are physical, so a relative path taken against the linked
+    spelling climbed out of the checkout (``../../../../booley-prj-...``)
+    and synthesis reported "Extra RTL file not found".
+    """
+    physical = tmp_path / "workspaces" / "booley-prj" / "worktrees" / "zbb"
+    physical.mkdir(parents=True)
+    project = tmp_path / "workspaces" / "picorv32"
+    project.mkdir()
+    symlink_or_skip(project / ".booley", physical.parent.parent)
+    work_dir = project / ".booley" / "worktrees" / "zbb"
+    resolved = _with_synth_mode(_fake_synth_resolved(work_dir), "physical")
+    synth_cli.project = work_dir
+    # The work root is wiped before each resolution, so the files are staged per call.
+    synth_cli.resolution.resolve = lambda *_a, **_k: _staged(resolved)
+
+    synth_cli.run_request()
+
+    # Every path is inside the checkout and names the file the Target means,
+    # as seen from the physical working directory the tools run in.
+    argv = synth_cli.configured["lite"]
+    expected = {item.absolute(resolved.build_root) for item in resolved.files}
+    for flag in ("--extra-rtl", "--inc-dir", "--sta-sdc"):
+        values = _operands(argv, flag)
+        assert values, flag
+        for value in values:
+            assert not value.startswith("../"), (flag, value)
+            target = (work_dir.resolve() / value).resolve()
+            assert target in expected or any(p.parent == target for p in expected), value
+
+
+def test_configure_argv_names_target_files_inside_the_checkout(
+    synth_cli: SynthCli, tmp_path: Path
+) -> None:
+    """Sources, include dirs and SDC files are checkout-relative; headers and tb files are not sources."""
+
+    def make(root: Path) -> fusesoc_registry.ResolvedTarget:
+        base = _fake_synth_resolved(root)
+        return _with_synth_mode(
+            dataclasses.replace(
+                base,
+                files=(
+                    *base.files,
+                    fusesoc_registry.ResolvedFile(
+                        name="src/syn_demo_0/sdc/core.sdc", file_type="SDC"
+                    ),
+                    fusesoc_registry.ResolvedFile(
+                        name="src/syn_demo_0/tb/tb.sdc", file_type="SDC", tags=("tb",)
+                    ),
+                ),
+            ),
+            "physical",
+        )
+
+    synth_cli.resolution.resolve = _resolving(make)
+
+    synth_cli.run()
+
+    argv = synth_cli.configured["lite"]
+    assert "-c" not in argv
+    assert _operands(argv, "-t") == ["dut"]
+    assert _operands(argv, "--extra-rtl") == [
+        f"{_STAGED_SRC}/rtl/pkg.sv",
+        f"{_STAGED_SRC}/rtl/dut.sv",
+    ]
+    assert _operands(argv, "--inc-dir") == [f"{_STAGED_SRC}/rtl/include"]
+    assert _operands(argv, "--sta-sdc") == [
+        f"{_STAGED_SRC}/constraints/dut.sdc",
+        f"{_STAGED_SRC}/sdc/core.sdc",
+    ]
+
+
+def test_typed_parameters_reach_the_configure_argv(synth_cli: SynthCli, tmp_path: Path) -> None:
+    parameters = {
+        "BARE": {"paramtype": "vlogdefine", "default": True},
+        "VALUED": {"paramtype": "vlogdefine", "default": 16},
+        "OFF": {"paramtype": "vlogdefine", "default": False},
+        "UNSET": {"paramtype": "vlogdefine"},
+        "WIDTH": {"paramtype": "vlogparam", "default": 8},
+        "ENABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
+        "DISABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": False},
+        "ARG": {"paramtype": "plusarg", "default": "y"},
+    }
+    resolved = dataclasses.replace(_fake_synth_resolved(tmp_path), parameters=parameters)
+    synth_cli.resolution.resolve = lambda *_a, **_k: resolved
+
+    argv = synth_cli.plan()["work_units"][0]["commands"][0]["argv"]
+
+    assert _operands(argv, "-d") == ["BARE", "VALUED=16"]
+    assert _operands(argv, "-p") == ["WIDTH=8", "ENABLED=1", "DISABLED=0"]
+
+
+@pytest.mark.parametrize(
+    ("top", "defines", "expected"),
+    [
+        ("core_tb", {}, ["testbench"]),
+        ("MY_TB", {}, ["testbench"]),
+        ("u_tb_ctrl", {"SIMULATION_SPEED": 2}, []),
+        ("dut", {"SIMULATION": True}, ["SIMULATION"]),
+        ("dut", {"SIMULATION": 1}, ["SIMULATION"]),
+        ("foo_tb", {"SIMULATION": True}, ["testbench", "SIMULATION"]),
+    ],
+)
+def test_simulation_shaped_target_warns(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    top: str,
+    defines: dict[str, object],
+    expected: list[str],
+) -> None:
+    resolved = dataclasses.replace(
+        _fake_synth_resolved(tmp_path, toplevel=top),
+        parameters={
+            name: {"paramtype": "vlogdefine", "default": value} for name, value in defines.items()
+        },
+    )
+    synth_cli.resolution.resolve = lambda *_a, **_k: resolved
+
+    with caplog.at_level(logging.WARNING):
+        synth_cli.plan()
+
+    warnings = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Synth lite: ")
+    ]
+    assert len(warnings) == len(expected), warnings
+    for warning, fragment in zip(warnings, expected, strict=True):
+        assert fragment in warning
+
+
+@pytest.mark.parametrize(
+    ("config", "args", "timeout_ms"),
+    [
+        ("", [], 1800000),
+        ("timeout_ms = 5400000\n", [], 5400000),
+        ("timeout_ms = 5400000\n", ["--timeout-ms", "900000"], 900000),
+    ],
+    ids=["default", "config", "cli-over-config"],
+)
+def test_timeout_precedence(
+    synth_cli: SynthCli, config: str, args: list[str], timeout_ms: int
+) -> None:
+    synth_cli.config(config)
+
+    assert synth_cli.plan(*args)["work_units"][0]["timeout_ms"] == timeout_ms
+
+
+def test_resolution_gets_a_clean_isolated_build_root(synth_cli: SynthCli, tmp_path: Path) -> None:
+    """The build root is wiped before resolution, so FuseSoC re-stages current RTL."""
+    stale = work_root_for(tmp_path, "synth", "lite") / "core_0" / "lite" / "src" / "old.sv"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("module old; endmodule\n", encoding="utf-8")
+    seen: list[tuple[str, Path, str, str | None, bool]] = []
+
+    def resolve(handle, *, build_root, **_kwargs):
+        seen.append(
+            (
+                handle.selector,
+                Path(handle.project_root).resolve(),
+                Path(build_root).relative_to(handle.project_root).as_posix(),
+                handle.vlnv,
+                stale.exists(),
+            )
+        )
+        return _fake_synth_resolved(tmp_path)
+
+    synth_cli.resolution.resolve = resolve
+
+    assert synth_cli.run().exit_code == EXIT_SUCCESS
+
+    assert seen == [("lite", tmp_path.resolve(), _SYNTH_ROOT, "::test:0", False)]
+
+
+def test_resolution_failure_is_an_infrastructure_error(synth_cli: SynthCli) -> None:
+    def fail(*_args, **_kwargs):
+        raise fusesoc_registry.TargetResolutionError("no such target")
+
+    synth_cli.resolution.resolve = fail
+
+    outcome = synth_cli.run()
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "infrastructure error" in outcome.report_text
+    assert "no such target" in outcome.report_text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the short root is the Linux Sandbox's /tmp")
+@pytest.mark.parametrize(
+    ("result", "physical"),
+    [
+        pytest.param(_PASS_OUTPUT, False, id="success"),
+        pytest.param(SubprocessResult(returncode=2), False, id="failure"),
+        pytest.param(SubprocessResult(returncode=-1, timed_out=True), False, id="timeout"),
+        pytest.param(_PASS_OUTPUT, True, id="physical"),
+    ],
+)
+def test_sandbox_make_gives_yosys_a_short_tmpdir_removed_after_the_run(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: SubprocessResult,
+    physical: bool,
+) -> None:
+    """Yosys's ABC hangs under a TMPDIR over 35 characters (#4730): it gets its own."""
+    long_tmp = tmp_path / ("j" * 80)
+    long_tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_tmp))
+    monkeypatch.setattr("tempfile.tempdir", str(long_tmp))
+    live: list[list[str]] = []
+
+    def record(cmd: list[str]) -> SubprocessResult:
+        live.append(
+            [
+                arg
+                for arg in cmd
+                if arg.startswith("BOOLEY_YOSYS_TMPDIR=") and Path(arg.partition("=")[2]).is_dir()
+            ]
+        )
+        return result
+
+    synth_cli.tool_output = record
+    if physical:
+        synth_cli.resolution.resolve = lambda *_a, **_k: _with_synth_mode(
+            _fake_synth_resolved(synth_cli.project), "physical"
+        )
+    synth_cli.run()
+
+    assert synth_cli.commands[0][:3] == ["make", "-C", f"{_SYNTH_ROOT}/synth"]
+    carried = [args for args in live if args]
+    assert len(carried) == 1, "no make command gave Yosys its own TMPDIR"
+    directory = Path(carried[0][0].partition("=")[2])
+    assert directory.parent == Path("/tmp")
+    assert len(str(directory)) <= 35
+    assert not directory.exists()
+
+
+def test_compatibility_argv_matches_the_planned_configure_argv(synth_cli: SynthCli) -> None:
+    synth_cli.run()
+    assert synth_cli.flow is not None
+
+    # `_build_synth_cmd` is the compatibility argv tests/golden and
+    # tests/flows/test_string_parameter_eda.py still call; no public path reaches it.
+    assert synth_cli.flow._build_synth_cmd("lite") == synth_cli.configured["lite"]
+
+
+def test_synth_label_carries_target_source_bytes(synth_cli: SynthCli) -> None:
+    from booley.flows import job_resources
+
+    labels: list[job_resources.ResourceLabel | None] = []
+
+    def record_label(_cmd: list[str]) -> SubprocessResult:
+        labels.append(job_resources.current_label())
+        return _PASS_OUTPUT
+
+    resolved = _fake_synth_resolved(synth_cli.project)
+    synth_cli.tool_output = record_label
+    synth_cli.resolution.resolve = lambda *_a, **_k: _staged(resolved, b"0123456789")
+
+    assert synth_cli.run().exit_code == EXIT_SUCCESS
+
+    assert labels == [
+        job_resources.ResourceLabel(
+            "lite", "synth", split=job_resources.SYNTH_PHASES, source_bytes=50
+        )
+    ]
+
+
+def test_real_fusesoc_synth_setup(synth_cli: SynthCli, tmp_path: Path) -> None:
+    """End-to-end: a real `fusesoc run --setup` leaves a resolved synth EDAM.
+
+    Proves the RTL sources/top/typed-params resolve, the build dir is
+    relocatable, and asic_synthesize feeds the resolved filelist + include
+    dir + defines to the run_yosys_syn configure surface.
+    """
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = _real_resolve_handle
+
+    synth_cli.run(target="syn")
+
+    cmd = synth_cli.configured["syn"]
+    # Configuration over the resolved sources (no legacy config selector).
+    assert cmd[:4] == ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
+    assert "-c" not in cmd
+    assert _operands(cmd, "-t") == ["dut"]
+    # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.
+    extra = _operands(cmd, "--extra-rtl")
+    assert any(e.endswith("rtl/dut.sv") for e in extra)
+    assert any(e.endswith("rtl/pkg.sv") for e in extra)
+    assert not any("defs.svh" in e for e in extra)
+    assert not any(Path(e).is_absolute() for e in extra)
+    # The include header surfaces as an include dir, not a source.
+    assert any(d.endswith("rtl/include") for d in _operands(cmd, "--inc-dir"))
+    # The file_type:SDC fileset is forwarded as --sta-sdc (ADR 0029), sandbox-
+    # safe relative path (ADR 0031: a no-SDC target would have hard-errored).
+    sta = _operands(cmd, "--sta-sdc")
+    assert any(s.endswith("constraints/dut.sdc") for s in sta)
+    assert not any(Path(s).is_absolute() for s in sta)
+    # Typed params reached the CLI.
+    assert _operands(cmd, "-d") == ["SYNTHESIS"]
+    assert _operands(cmd, "-p") == ["WIDTH=8"]
+    # Resolved build dir lives under the worktree and is relocatable.
+    edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
+    assert str(work_dir) not in edam.read_text(encoding="utf-8")
+
+
+# How sv2v and the slang frontend are handed the staged copy of the syn_demo `rtl/` directory.
+_RTL_COPY = "../syn_demo_0/syn/src/syn_demo_0/rtl"
+
+
+@pytest.mark.parametrize(
+    ("log", "error", "failure", "provenance"),
+    [
+        pytest.param(
+            "sv2v",
+            f"cannot read {_RTL_COPY}/dut.sv: invalid byte\n{_RTL_COPY}/gen.sv:1: note",
+            ("sv2v: cannot read rtl/dut.sv: invalid byte\n", f"{_RTL_COPY}/gen.sv:1: note"),
+            (),
+            id="sv2v",
+        ),
+        pytest.param(
+            "yosys",
+            f"{_RTL_COPY}/dut.sv:2:3: error: expected expression",
+            ("rtl/dut.sv:2:3: error: expected expression",),
+            (),
+            id="slang",
+        ),
+        pytest.param(
+            "yosys",
+            "ERROR: syntax error at sv2v_converted.v:2",
+            ("ERROR: syntax error at sv2v_converted.v:2",),
+            ("  - rtl/pkg.sv", "  - rtl/dut.sv"),
+            id="converted",
+        ),
+    ],
+)
+def test_4996_synthesis_output_names_project_paths(
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    log: str,
+    error: str,
+    failure: tuple[str, ...],
+    provenance: tuple[str, ...],
+) -> None:
+    """Issue #4996: warnings, failure text and the source list name Project paths.
+
+    The tools read FuseSoC's staged copies, so they print paths no checkout has. A
+    path that is no Target source (`gen.sv`, `sv2v_converted.v`) stays as printed,
+    and `run.log` keeps the tools' own text.
+    """
+    pytest.importorskip("fusesoc")
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    (work_dir / ".booley").mkdir()
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = _real_resolve_handle
+    warning = f"WARNING: {_RTL_COPY}/dut.sv:1:1: ignored attribute"
+
+    def configure(flow: AsicSynthesizeFlow, target: str, cmd: list[str]) -> syn_make.SynthPlan:
+        plan = _stub_plan(work_dir, target)
+        sources = tuple((work_dir / name).resolve() for name in _operands(cmd, "--extra-rtl"))
+        return dataclasses.replace(plan, spec=dataclasses.replace(plan.spec, sources=sources))
+
+    def make(_cmd: list[str]) -> SubprocessResult:
+        build_dir = work_dir / ".booley" / ".runtime" / "edalize" / "synth" / "syn" / "synth"
+        (build_dir / "sv2v.log").write_bytes((warning + "\n").encode())
+        with (build_dir / f"{log}.log").open("a", encoding="utf-8", newline="\n") as stage_log:
+            stage_log.write(error + "\n")
+        # Windows file times lag the dispatch clock: date the logs past it so they read as fresh.
+        future = time.time() + 60
+        for name in {"sv2v", log}:
+            os.utime(build_dir / f"{name}.log", (future, future))
+        return SubprocessResult(returncode=2, stdout=f"BOOLEY_STAGE: {log}\n")
+
+    synth_cli.tool_output = make
+    # As the autouse fixture: no test host can render the build dir. This plan also
+    # carries the sources the configure argv names, which the source list prints.
+    with patch.object(AsicSynthesizeFlow, "_configure_synth", configure):
+        outcome = synth_cli.run(target="syn")
+
+    report = synth_cli.report("syn")
+    (group,) = report["warning_summary"]["representatives"]
+    assert group["message"] == "WARNING: rtl/dut.sv:1:1: ignored attribute"
+    failure_text = report["infra_error"] + "\n" + report["failure_output"]
+    for fragment in failure:
+        assert fragment in failure_text
+    assert "syn_demo_0/rtl/dut.sv" not in failure_text + outcome.report_text
+    run_log = (
+        work_dir / ".booley" / ".runtime" / "edalize" / "synth" / "syn" / "run.log"
+    ).read_text(encoding="utf-8")
+    assert warning in run_log
+    for line in provenance:
+        assert line in run_log
+
+
+def test_failed_fusesoc_setup_is_recorded_as_synth_prepare(
+    synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Synthesis Flow's own setup runner measures the setup, whatever its outcome."""
+    from booley.runtime import resource_history
+
+    work_dir = tmp_path / "proj"
+    _write_syn_demo_project(work_dir)
+    monkeypatch.setattr(TargetCatalog, "build", _REAL_CATALOG_BUILD)
+    monkeypatch.setattr(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE)
+    failing_setup = canned_command(SubprocessResult(returncode=1, stderr="setup broke"))
+    synth_cli.project = work_dir
+    synth_cli.resolution.resolve = lambda handle, **kwargs: _REAL_RESOLVE_HANDLE(
+        handle, **{**kwargs, "fusesoc_cmd": failing_setup}
+    )
+
+    outcome = synth_cli.run(target="syn")
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "failed (exit 1)" in outcome.report_text
+    assert "setup broke" in outcome.report_text
+    assert synth_cli.commands == []
+    (record,) = resource_history.load_records(tmp_path)
+    key = record["key"]
+    assert (
+        record["flow"],
+        key["target"],
+        key["phase"],
+        record["outcome"],
+        record["returncode"],
+    ) == ("synth", "syn", "synth_prepare", "exit_nonzero", 1)
+
+
+@pytest.mark.skipif(
+    shutil.which("git") is None or os.name == "nt",
+    reason="the baseline worktree runs only on POSIX with git",
+)
+@pytest.mark.parametrize("recipe_changed", [False, True])
+def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
+    synth_cli: SynthCli, recipe_changed: bool
+) -> None:
+    """An unchanged recipe over identical stealth RTL keeps the no-op self-comparison warning.
+
+    The baseline side's SDC lives under its own checkout; were the constraint's
+    path part of the recipe identity, the two sides would differ and the warning
+    would vanish even though nothing changed.
+    """
+    project = synth_cli.project
+    _author_stealth_core(project, "module dut(input logic clk); endmodule\n")
+    (project / "README.md").write_text("project\n", encoding="utf-8")
+    for args in (
+        ("init",),
+        ("config", "user.name", "Test User"),
+        ("config", "user.email", "test@example.com"),
+        ("add", "README.md"),
+        ("commit", "-m", "init"),
+    ):
+        run_bounded_child(["git", *args], cwd=project, check=True)
+
+    def resolve(handle, **_kwargs):
+        project_root = handle.project_root
+        resolved = _fake_synth_resolved(Path(project_root), config=handle.selector)
+        if recipe_changed and Path(project_root).resolve() != project.resolve():
+            resolved = dataclasses.replace(
+                resolved, flow_options={**resolved.flow_options, "flatten": False}
+            )
+        return resolved
+
+    synth_cli.resolution.resolve = resolve
+
+    outcome = synth_cli.run("--baseline", "HEAD")
+
+    assert outcome.exit_code == EXIT_SUCCESS, outcome.report_text
+    assert ("no-op self-comparison" in outcome.report_text) is not recipe_changed
+
+
+def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
+    left_root = tmp_path / "baseline"
+    right_root = tmp_path / "candidate"
+    constraint = Path("constraints/dut.sdc")
+    for root in (left_root, right_root):
+        path = root / constraint
+        path.parent.mkdir(parents=True)
+        path.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
+
+    left = _fake_synth_resolved(tmp_path / "left-build")
+    right = _fake_synth_resolved(tmp_path / "right-build")
+    left = dataclasses.replace(
+        left,
+        files=(
+            fusesoc_registry.ResolvedFile(
+                name=str(left_root / constraint),
+                file_type="SDC",
+                core="::syn_demo:0",
+            ),
+        ),
+    )
+    right = dataclasses.replace(
+        right,
+        files=(
+            fusesoc_registry.ResolvedFile(
+                name=str(right_root / constraint),
+                file_type="SDC",
+                core="::syn_demo:0",
+            ),
+        ),
+    )
+
+    left_snapshot = synthesis_recipe_snapshot(left, default_recipe_args(), target="lite")
+    right_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+
+    assert left_snapshot == right_snapshot
+    assert synthesis_recipe_snapshot_fingerprint(
+        left_snapshot
+    ) == synthesis_recipe_snapshot_fingerprint(right_snapshot)
+    assert left_snapshot["flow"] == "synth"
+    assert left_snapshot["constraints"] == [
+        {
+            "core": "::syn_demo:0",
+            "sha256": hashlib.sha256((left_root / constraint).read_bytes()).hexdigest(),
+        }
+    ]
+
+    (right_root / constraint).write_text(
+        "create_clock -period 5 [get_ports clk]\n", encoding="utf-8"
+    )
+    changed_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
+    assert synthesis_recipe_snapshot_fingerprint(
+        changed_snapshot
+    ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
+
+
+def test_recipe_schema_bumps_without_default_clock(tmp_path: Path):
+    for mode, schema in [("logical", 4), ("physical", 5)]:
+        snapshot = synthesis_recipe_snapshot(
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
+            default_recipe_args(),
+            target="lite",
+        )
+        assert snapshot["schema"] == schema
+        assert "default_clock_ps" not in snapshot
+        assert "ppa_profile_settings" not in snapshot
+
+        previous = {**snapshot, "schema": 3}
+        assert synthesis_recipe_snapshot_fingerprint(previous) != (
+            synthesis_recipe_snapshot_fingerprint(snapshot)
+        )
+        assert synthesis_recipe_changes(previous, snapshot) == [
+            {"path": "schema", "before": 3, "after": schema}
+        ]
+
+
+def test_physical_fanout_policy_invalidates_old_recipe(tmp_path):
+    snapshot = synthesis_recipe_snapshot(
+        dataclasses.replace(
+            _fake_synth_resolved(tmp_path), flow_options={"synth_mode": "physical"}
+        ),
+        default_recipe_args(),
+        target="lite",
+    )
+    previous = {
+        **snapshot,
+        "technology": {**snapshot["technology"], "physical_fanout_policy": "native-point-v1"},
+    }
+    assert synthesis_recipe_snapshot_fingerprint(previous) != (
+        synthesis_recipe_snapshot_fingerprint(snapshot)
+    )
+
+
+def test_config_error_surfaces_as_infra_error(synth_cli: SynthCli) -> None:
+    """The run path reports a config error like a resolution failure
+    (returncode-2 infra error), not an unhandled crash of the Flow.
+
+    A CLI run rejects a bad recipe while planning, so only a Target resolved at
+    run time without a plan reaches the ``BoundaryError`` branch of
+    ``AsicSynthesizeFlow._synthesize_target``, which only ``_run_single_config``
+    drives without one.
+    """
+    synth_cli.config("synth_mode = true\n")
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(synth_cli.project)])
+
+    metrics, output = flow._run_single_config("lite")
+
+    assert metrics.returncode == 2
+    assert "synth_mode" in (metrics.infra_error or "")
+    assert "synth_mode" in output
+
+
+def test_empty_selection_is_an_error(tmp_path: Path) -> None:
+    """Through the CLI an empty ``--target`` turns into automatic Target selection
+    (and the lenient test catalog has no ``list``), so only ``_run`` reaches the
+    ``no Target selected`` refusal in ``ImplementationFlow._run``."""
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
+
+    assert flow._run().exit_code == EXIT_ERROR
 
 
 # ===========================================================================
@@ -713,7 +1909,7 @@ class TestParseArea:
 # ===========================================================================
 
 
-def _perclock_marker(name: str, period_ns, wns_ns, whs_ns) -> str:
+def _perclock_marker(name: str, period_ns, wns_ns, whs_ns, same_clock: bool = True) -> str:
     """Render one canonical STA_PERCLOCK marker line for tests.
 
     ``None`` is emitted as the ``NA`` sentinel the parser maps back to None.
@@ -724,7 +1920,8 @@ def _perclock_marker(name: str, period_ns, wns_ns, whs_ns) -> str:
 
     return (
         f"STA_PERCLOCK: name={name} period_ns={period_ns:.6f} "
-        f"wns_ns={_tok(wns_ns)} whs_ns={_tok(whs_ns)}\n"
+        f"wns_ns={_tok(wns_ns)} whs_ns={_tok(whs_ns)} "
+        f"setup_same_clock={int(same_clock)}\n"
     )
 
 
@@ -762,32 +1959,25 @@ class TestParsePerClockSta:
         assert per_clock["clk_b"].critical_path_ps == pytest.approx(3000.0)
         assert per_clock["clk_b"].fmax_mhz == pytest.approx(333.333, rel=1e-4)
 
+    def test_cross_clock_worst_path_has_no_fmax(self):
+        output = (
+            "STA_PERCLOCK: name=rx_clk period_ns=6.400000 wns_ns=5.000000 whs_ns=0.1"
+            " setup_same_clock=1\n"
+            "STA_PERCLOCK: name=ptp_sample_clk period_ns=8.000000 wns_ns=1.429488 whs_ns=0.2"
+            " setup_same_clock=0\n"
+        )
+        per_clock = _parse_per_clock_sta(output)
+        crossing = per_clock["ptp_sample_clk"]
+        assert crossing.wns_ns == pytest.approx(1.429488)
+        assert crossing.whs_ns == pytest.approx(0.2)
+        assert crossing.critical_path_ps is None
+        assert crossing.fmax_mhz is None
+        assert per_clock["rx_clk"].critical_path_ps == pytest.approx(1400.0)
+        assert per_clock["rx_clk"].fmax_mhz == pytest.approx(714.286, rel=1e-4)
+        assert worst_clock(per_clock) is per_clock["rx_clk"]
+
     def test_no_marker_yields_empty(self):
         assert _parse_per_clock_sta("no timing info here") == {}
-
-
-class TestParsePerClockRaw:
-    """Raw marker parsing (syn_core.parse_perclock) as consumed by the Flow."""
-
-    def test_na_becomes_none(self):
-        from booley.flows.synth.timing import parse_perclock
-
-        row = parse_perclock(_perclock_marker("clk", 2.0, None, 0.3))["clk"]
-        assert row["period_ns"] == pytest.approx(2.0)
-        assert row["wns_ns"] is None
-        assert row["whs_ns"] == pytest.approx(0.3)
-
-    def test_duplicate_clock_keeps_min_slack(self):
-        from booley.flows.synth.timing import parse_perclock
-
-        # Same clock reported twice (raw + re-emitted): the most pessimistic
-        # (minimum) slack wins for both setup and hold.
-        output = _perclock_marker("clk", 2.0, 0.75, 0.30) + _perclock_marker(
-            "clk", 2.0, 0.20, 0.05
-        )
-        row = parse_perclock(output)["clk"]
-        assert row["wns_ns"] == pytest.approx(0.20)
-        assert row["whs_ns"] == pytest.approx(0.05)
 
 
 # ===========================================================================
@@ -865,16 +2055,35 @@ class TestModeSpecificArea:
             "Chip area for top module '\\top': 500.0\n"
             "STA_CRITICAL_PATH_PS: 1250.0\n"
             "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
         )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
         assert metrics.area_um2 == 640.25
         assert metrics.area_source == "openroad_post_optimization"
+        assert metrics.cells == 112
+        assert metrics.cell_count_source == "openroad_post_optimization"
+        assert metrics.wire_count == 42
 
     def test_logical_uses_yosys_area(self):
-        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        output = (
+            "Number of cells: 100\n"
+            "Chip area for top module '\\top': 500.0\n"
+            "Number of wires: 42\n"
+            "OPENROAD_INSTANCE_COUNT: 112\n"
+        )
         metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
         assert metrics.area_um2 == 500.0
         assert metrics.area_source == "yosys_mapped"
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
+        assert metrics.wire_count == 42
+
+    def test_physical_without_openroad_count_keeps_labelled_yosys_count(self):
+        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.cells == 100
+        assert metrics.cell_count_source == "yosys_mapped"
 
 
 # ===========================================================================
@@ -1321,13 +2530,15 @@ class TestIoBoundCritical:
         assert _is_io_bound_critical(SynthMetrics(wns_ns=-2.0)) is False
         assert _is_io_bound_critical(SynthMetrics(reg2reg_slack_ns=-0.25)) is False
 
-    def test_note_line_names_the_sdc_knob(self):
-        cur = SynthMetrics(wns_ns=-2.0, reg2reg_slack_ns=-0.25)
-        line = AsicSynthesizeFlow._format_io_bound_line("lite", cur)
-        assert "I/O-bound" in line
-        assert "period_ps won't move it" in line
-        assert "sdc" in line
-        assert "-2.000 ns" in line and "-0.250 ns" in line
+    def test_io_bound_note_points_at_target_sdc(self, flow_and_state):
+        flow, _ = flow_and_state
+        cur = SynthMetrics(area_um2=500.0, cells=10, wns_ns=-2.0, reg2reg_slack_ns=-0.25)
+        result = flow._aggregate_results(["lite"], {"lite": cur}, {}, None)
+        note = next(line for line in result.report_text.splitlines() if "I/O-bound" in line)
+        assert "-2.000 ns" in note and "-0.250 ns" in note
+        for text in ("file_type: SDC", "set_input_delay", "set_output_delay", "set_false_path"):
+            assert text in note
+        assert "period_ps" not in note and "[flows.synth.timing]" not in note
 
     def test_report_dict_sets_flag(self):
         cur = SynthMetrics(
@@ -1369,278 +2580,9 @@ class TestIoBoundCritical:
 # ===========================================================================
 
 
-class TestDryRun:
-    def test_dry_run_prints_commands(self, state_file: Path, tmp_path: Path):
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite,full",
-                "--work-dir",
-                str(tmp_path),
-                "--dry-run",
-            ]
-        )
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        assert "Dry run" in result.report_text
-        assert [unit["selector"] for unit in result.detail["work_units"]] == [
-            "lite",
-            "full",
-        ]
-        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
-
-    def test_dry_and_real_preparation_have_same_semantic_fingerprint(
-        self, state_file: Path, tmp_path: Path
-    ) -> None:
-        flow = _dry_run_flow(tmp_path)
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
-        ):
-            dry_plan = flow._plan_synth_implementation(["lite"])
-            flow.args.dry_run = False
-            real_plan = flow._plan_synth_implementation(["lite"])
-
-        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
-
-    def test_physical_dry_run_discloses_runtime_clock_validation(
-        self, state_file: Path, tmp_path: Path
-    ):
-        flow = _dry_run_flow(tmp_path)
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _with_synth_mode(
-                _fake_synth_resolved(tmp_path), "physical"
-            ),
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_SUCCESS
-        recipe = result.detail["work_units"][0]["recipe"]
-        assert "clock creation is validated by OpenROAD at runtime" in recipe["clock_validation"]
-
-    def test_dry_run_with_flags(self, state_file: Path, tmp_path: Path):
-        # Synthesis-recipe knobs live on the Flow config, not the CLI.
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nflatten = true\nsdc = true\nsynth_mode = "logical"\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite",
-                "--work-dir",
-                str(tmp_path),
-                "--dry-run",
-            ]
-        )
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda target, **k: _fake_synth_resolved(tmp_path, config=target),
-        ):
-            result = flow._run()
-        command = result.detail["work_units"][0]["commands"][0]["argv"]
-        assert "--flatten" in command
-        # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
-        assert "--sdc" not in command
-        assert command[command.index("--synth-mode") + 1] == "logical"
-
-    def test_dry_run_records_evidence_for_projected_stealth_core(
-        self, state_file: Path, tmp_path: Path
-    ):
-        work_dir = tmp_path / "proj"
-        _write_syn_demo_project(work_dir)
-        booley_dir = work_dir / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (work_dir / "syn_demo.core").replace(cores / "syn_demo.core")
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "syn",
-                "--work-dir",
-                str(work_dir),
-                "--dry-run",
-            ]
-        )
-        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
-            result = flow._run()
-            dry_plan = flow._flow_plan
-            flow.args.dry_run = False
-            real_plan = flow._plan_synth_implementation(["syn"])
-
-        assert result.exit_code == EXIT_SUCCESS
-        assert result.detail["work_units"][0]["selector"] == "syn"
-        assert dry_plan.semantic_plan_fingerprint == real_plan.semantic_plan_fingerprint
-        run_evidence = flow._recipe_evidence["syn"][2]
-        assert run_evidence["source_sha256"]
-
-    @pytest.mark.skipif(
-        shutil.which("git") is None or os.name == "nt",
-        reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
-    )
-    @pytest.mark.parametrize("isolation", ["isolated", "projected"])
-    def test_synth_plan_identity_matches_in_booley_worktree(
-        self,
-        isolation: str,
-        state_file: Path,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """The same Target and inputs plan identically in the main and a worktree checkout.
-
-        Isolated Projects name sources by Project-relative path, hiding the
-        private source mirror; without isolation the FuseSoC export names stay.
-        """
-        import argparse
-
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        from booley.harness import worktree_cmd
-
-        # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        root = tmp_path / "repo"
-        _write_syn_demo_project(root)
-        booley_dir = root / ".booley"
-        (booley_dir / "cores").mkdir(parents=True)
-        (root / "syn_demo.core").replace(booley_dir / "cores" / "syn_demo.core")
-        isolate = "ignore_native_cores = true\n" if isolation == "isolated" else ""
-        (booley_dir / "booley.toml").write_text(
-            f"[stealth]\nenabled = true\n{isolate}", encoding="utf-8"
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        for args in (
-            ("init",),
-            ("config", "user.name", "Test User"),
-            ("config", "user.email", "test@example.com"),
-            ("add", "rtl", "tb", "constraints"),
-            ("commit", "-m", "init"),
-        ):
-            run_bounded_child(["git", *args], cwd=root, check=True)
-        # Created before any preparation, so the Snapshot holds no generated state.
-        assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
-
-        def plans(checkout: Path):
-            flow = AsicSynthesizeFlow()
-            flow.parse_args(["--target", "syn", "--work-dir", str(checkout), "--dry-run"])
-            with (
-                patch.object(
-                    fusesoc_registry, "resolve_target_handle", side_effect=_real_resolve_handle
-                ),
-                patch.object(fusesoc_registry, "setup_command_for_handle", _REAL_SETUP_HANDLE),
-            ):
-                assert flow._run().exit_code == EXIT_SUCCESS
-                dry_plan = flow._flow_plan
-                flow.args.dry_run = False
-                real_plan = flow._plan_synth_implementation(["syn"])
-            return dry_plan, real_plan
-
-        main_dry, main_real = plans(root)
-        wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
-
-        assert main_dry.semantic_plan_fingerprint == wt_dry.semantic_plan_fingerprint
-        assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
-        unit = main_real.work_units[0]
-        configure = unit.commands[0].argv
-
-        def operands(flag: str) -> list[str]:
-            return [configure[i + 1] for i, arg in enumerate(configure) if arg == flag]
-
-        prefix = "" if isolation == "isolated" else "src/syn_demo_0/"
-        assert unit.sources == tuple(
-            prefix + name
-            for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv")
-        )
-        assert unit.constraints == (f"{prefix}constraints/dut.sdc",)
-        assert operands("--extra-rtl") == [f"{prefix}rtl/pkg.sv", f"{prefix}rtl/dut.sv"]
-        assert operands("--inc-dir") == [f"{prefix}rtl/include"]
-
-
-def test_synth_label_carries_target_source_bytes(flow_and_state, tmp_path: Path) -> None:
-    from booley.flows import job_resources
-    from booley.fusesoc.fusesoc_registry import ResolvedFile
-
-    flow, _ = flow_and_state
-    (tmp_path / "dut.sv").write_bytes(b"module dut; endmodule\n")
-    (tmp_path / "pkg.sv").write_bytes(b"package p; endpackage\n")
-    expected_bytes = sum(len(path.read_bytes()) for path in tmp_path.glob("*.sv"))
-    recipe = SimpleNamespace(
-        command=["synth"],
-        resolved=SimpleNamespace(
-            build_root=tmp_path,
-            files=(
-                ResolvedFile("dut.sv", "systemVerilogSource"),
-                ResolvedFile("pkg.sv", "systemVerilogSource"),
-            ),
-        ),
-    )
-    plan = SimpleNamespace(
-        spec=SimpleNamespace(timing=SimpleNamespace(mode="logical")), build_dir=tmp_path
-    )
-    seen: list[job_resources.ResourceLabel | None] = []
-
-    def execute(*_args, **_kwargs):
-        seen.append(job_resources.current_label())
-        return SubprocessResult(returncode=0)
-
-    with (
-        patch.object(flow, "_resolve_synth_recipe", return_value=recipe),
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_synth_boundary_cmd", return_value=["make"]),
-        patch.object(flow, "_open_run_log"),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
-        patch.object(flow, "_interpret_boundary_run", return_value=(SynthMetrics(), "")),
-        patch.object(
-            flow, "_attach_recipe_evidence", side_effect=lambda _target, metrics: metrics
-        ),
-        patch.object(flow, "_store_openroad_result"),
-    ):
-        flow._run_single_config("lite")
-
-    assert seen == [
-        job_resources.ResourceLabel(
-            "lite", "synth", split=job_resources.SYNTH_PHASES, source_bytes=expected_bytes
-        )
-    ]
-    assert expected_bytes > 0
-
-
 # ===========================================================================
 # No configs
 # ===========================================================================
-
-
-class TestNoConfigs:
-    def test_empty_config_returns_error(self, state_file: Path, tmp_path: Path):
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "",
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        result = flow._run()
-        assert result.exit_code == EXIT_ERROR
 
 
 # ===========================================================================
@@ -1703,7 +2645,7 @@ class TestSingleConfigRun:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("live\n", encoding="utf-8")
             started.set()
-            if not release.wait(5.0):
+            if not release.wait(hang_guard_s()):
                 raise TimeoutError("test did not release held synthesis")
             return SubprocessResult(
                 returncode=0,
@@ -1716,22 +2658,17 @@ class TestSingleConfigRun:
 
         with (
             patch.object(flow, "_execute", side_effect=held_eda_run),
-            patch.object(
-                fusesoc_registry,
-                "_setup_command",
-                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
-            ),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
             running = pool.submit(flow._run)
-            assert started.wait(5.0)
+            assert started.wait(hang_guard_s())
             try:
                 preview = dry_run._run()
                 assert marker.read_text(encoding="utf-8") == "live\n"
                 assert preview.exit_code == EXIT_SUCCESS
             finally:
                 release.set()
-            result = running.result(timeout=10.0)
+            result = running.result(timeout=hang_guard_s())
 
         assert result.exit_code == EXIT_SUCCESS
 
@@ -1755,11 +2692,6 @@ class TestSingleConfigRun:
                 ),
             ),
             patch.object(shutil, "copy2", wraps=shutil.copy2) as copy2,
-            patch.object(
-                fusesoc_registry,
-                "_setup_command",
-                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
-            ),
         ):
             result = flow._run()
 
@@ -1772,10 +2704,10 @@ class TestSingleConfigRun:
         tmp_path: Path,
     ):
         flow, _ = flow_and_state
-        flow.args.timeout_ms = 1
+        flow.args.timeout_ms = math.ceil(scaled(1)) * 1000
         build_root = work_root_for(tmp_path, "synth", "lite")
 
-        with work_root_lease(build_root, timeout_s=1.0):
+        with work_root_lease(build_root, timeout_s=hang_guard_s()):
             result = flow._run()
 
         assert result.exit_code == EXIT_ERROR
@@ -1940,6 +2872,7 @@ class TestSingleConfigRun:
         assert data["area_kge"] == pytest.approx(8.02005)
         assert data["area_um2"] == 6400.0
         assert data["area_source"] == "yosys_mapped"
+        assert data["cell_count_source"] == "yosys_mapped"
         assert "mapped_area_um2" not in data
         assert "post_opt_area_um2" not in data
         assert data["cell_count"] == 100
@@ -2107,10 +3040,7 @@ def test_synthesis_run_records_no_criterion(
     state_path = tmp_path / "state.json"
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
     if named_state:
-        state = DevelopmentState.load(state_path)
-        state.slug = "test-ticket"
-        state.init_criteria({"synthesis_ok_lite": True})
-        state.save()
+        state_path.write_bytes(b'{"opaque": true}\n')
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
         before = state_path.read_bytes()
     flow = AsicSynthesizeFlow()
@@ -2151,24 +3081,48 @@ def test_synthesis_run_records_no_criterion(
     assert measure_exit_code(item.verdict for item in judged) == verdict
 
 
+def test_timed_out_synthesis_returns_no_values_and_names_the_timeout_on_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.measurement.metrics_file import Bound, TableRules
+    from booley.measurement.verdicts import FlowFailed, evaluate_table
+    from tests.harness.test_checkout_flow_metrics import RUN_ID, checkout_result
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
+    outer = tmp_path / "out"
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+    flow.args.report_dir = outer / "flow-reports"
+    timed_out = SubprocessResult(
+        returncode=-9, timed_out=True, stdout="Number of cells: 11954\n", duration_s=1.0
+    )
+    with patch.object(flow, "_execute", return_value=timed_out):
+        outcome = flow._run()
+    report = outer / "flow-reports" / "synth" / "1" / "report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {"run_id": RUN_ID, "detail": outcome.detail, "report_text": outcome.report_text}
+        ),
+        encoding="utf-8",
+    )
+    result = checkout_result(outer, "synth", outcome.exit_code)
+    assert result.metrics == {}
+    assert result.unavailable == {"lite": "synthesis execution timeout"}
+    assert result.excerpt is not None
+    bounds = tuple(
+        Bound(name, metric, "max", 99999, None, None, None)
+        for name, metric in (("cells", "cell_count"), ("area", "area_um2"))
+    )
+    rules = TableRules("t", "vlnv:x#t", "synth", bounds, ())
+    verdicts = evaluate_table(rules, FlowFailed(result.excerpt))
+    assert [v.verdict.value for v in verdicts] == ["error"] * 2
+    assert all(v.detail.startswith("lite: synthesis execution timeout") for v in verdicts)
+
+
 # ===========================================================================
 # Sandbox execution
 # ===========================================================================
-
-
-class TestFlowEnablement:
-    """The built-in Flow is admitted by Memory Reservation."""
-
-    @staticmethod
-    def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        return flow
-
-    def test_job_class_is_memory(self, state_file: Path, tmp_path: Path):
-        from booley.runtime import job_slots
-
-        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_MEMORY
 
 
 # ===========================================================================
@@ -2178,40 +3132,6 @@ class TestFlowEnablement:
 # Boundary Command Contract parameter regex (ADR 0037 §5). Mirrored here so
 # the built-in synth argv is proven safe without coupling this test to the
 # executor implementation.
-_BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
-
-
-class TestBoundaryCommand:
-    """The builtin path's ONE crossing command is a bare ``make -C <rel>``."""
-
-    def test_builtin_dispatches_make_argv(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        seen: dict[str, list[str]] = {}
-
-        def mock_execute(cmd, **_kwargs):
-            seen["cmd"] = cmd
-            return SubprocessResult(
-                returncode=0,
-                stdout="Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                stderr="",
-                duration_s=1.0,
-            )
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        cmd = seen["cmd"]
-        assert cmd[:2] == ["make", "-C"]
-        rel = cmd[2]
-        # Workspace-relative -C path (contract clause b) pointing at the
-        # per-target synth build dir.
-        assert not Path(rel).is_absolute()
-        assert rel.endswith("synth/lite/synth")
-        # No python, no booley module invocation — and the joined command
-        # passes the boundary command contract's regex.
-        assert "python3" not in cmd
-        assert _BOUNDARY_COMMAND_RE.fullmatch(" ".join(cmd))
 
 
 def _write_final_structural_failure(build_dir: Path, returncode: int) -> None:
@@ -2400,7 +3320,7 @@ class TestFileBasedInterpretation:
         for evidence in (
             "$add$rtl.sv:7$1",
             "\\feedback",
-            "completed post-optimisation check reports no combinational loops",
+            "completed structural checks find no combinational loops",
         ):
             assert evidence in result.report_text
         target = result.detail["lite"]
@@ -2503,6 +3423,8 @@ class TestFileBasedInterpretation:
         assert "12,345" not in result.report_text
         assert result.exit_code == EXIT_FAILURE
         assert "no metrics" in result.report_text
+        status = result.detail["implementation"]["results"]["lite"]["status"]
+        assert status["failure_reasons"] == ["no metrics"]
 
     def test_error_in_log_despite_exit_0_fails(self, flow_and_state, tmp_path: Path):
         """False-pass guard parity: yosys/ABC can emit ERROR: lines yet exit 0;
@@ -2532,11 +3454,39 @@ class TestFileBasedInterpretation:
         run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
 
-    def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
+    @staticmethod
+    def _constraint_check_block(scenario: str) -> str:
+        """The block run_openroad.tcl prints: every captured check_setup line
+        carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+        if scenario == "unchecked":
+            return ""
+        check_lines: list[str] = []
+        if scenario == "clock_only":
+            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
+            endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
+            check_lines = [
+                "Warning: There are 12 input ports missing set_input_delay.",
+                *(f"  {name}" for name in inputs),
+                "Warning: There is 1 output port missing set_output_delay.",
+                "  y",
+                "Warning: There are 14 unconstrained endpoints.",
+                *(f"  {name}" for name in endpoints),
+            ]
+        return "".join(
+            f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
+        )
+
+    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
+    def test_timing_markers_rederived_from_openroad_log(
+        self, flow_and_state, tmp_path: Path, scenario: str
+    ):
         """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time."""
+        prints) are reconstructed from the STA log file at interpret time, and
+        the constraint check block becomes a NOTE that never moves the verdict."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
+
+        check_block = self._constraint_check_block(scenario)
 
         def fake_configure(target, cmd):
             return _stub_plan(tmp_path, target, mode="physical")
@@ -2549,8 +3499,9 @@ class TestFileBasedInterpretation:
             )
             (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
-                "Design area 7000 u^2 50% utilization.\n",
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1"
+                " setup_same_clock=1\n"
+                "Design area 7000 u^2 50% utilization.\n" + check_block,
                 encoding="utf-8",
             )
             (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
@@ -2577,6 +3528,48 @@ class TestFileBasedInterpretation:
         assert "2,000 ps" in result.report_text
         assert "500 MHz" in result.report_text
         assert "+2.000 ns" in result.report_text
+        # The check never changes the verdict or exit code (the raw OpenSTA
+        # "Warning:" form would have turned this PASS into WARN).
+        assert "RESULT: PASS" in result.report_text
+        self._assert_constraint_outcome(result, tmp_path, scenario)
+
+    @staticmethod
+    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
+        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
+        if scenario == "unchecked":
+            # No block means no check ran (logical mode, or OpenROAD died first):
+            # no key and no NOTE, not zero counts.
+            assert "unconstrained" not in report
+            assert "unconstrained" not in result.detail["lite"]
+            assert "constrained paths" not in result.report_text
+            return
+        detail = report["unconstrained"]
+        assert result.detail["lite"]["unconstrained"] == detail
+        if scenario == "constrained":
+            assert "timing covers only constrained paths" not in result.report_text
+            assert detail == {
+                key: {"count": 0, "sample": []}
+                for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
+            }
+            return
+        note = next(
+            line for line in result.report_text.splitlines() if "constrained paths" in line
+        )
+        assert "NOTE" in note
+        assert "14 unconstrained endpoints" in note
+        assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
+        assert "1 output without set_output_delay (y)" in note
+        assert detail["inputs_without_delay"] == {
+            "count": 12,
+            "sample": [f"in{i}" for i in range(10)],
+        }
+        assert detail["endpoints"]["count"] == 14
+        assert len(detail["endpoints"]["sample"]) == 10
+        assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
+        # The bounded sample drops names the run log keeps.
+        run_log = (tmp_path / report["artifacts"]["log"]).read_text(encoding="utf-8")
+        assert "data[3]" in run_log
+        assert "r1/D" in run_log
 
     def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
         """A clock label without numeric setup/hold evidence cannot complete PPA."""
@@ -2590,7 +3583,7 @@ class TestFileBasedInterpretation:
                 encoding="utf-8",
             )
             (build_dir / "openroad.log").write_text(
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA\n"
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
                 "Design area 7000 u^2 50% utilization.\n",
                 encoding="utf-8",
             )
@@ -2676,7 +3669,7 @@ def _fake_baseline_worktree(project_root: Path, ref: str, *, paired_project):
 class TestBaselineFlow:
     """Baseline comparison synthesizes the ``--baseline`` ref in a throwaway git
     worktree — never the caller's tree — so it works in both Ticket and
-    Interactive Mode (see also test_interactive_smoke)."""
+    a Developer Agent session (see also test_interactive_smoke)."""
 
     def test_baseline_dual_run(self, state_file: Path, tmp_path: Path):
         flow = AsicSynthesizeFlow()
@@ -2720,7 +3713,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_execute", side_effect=mock_execute),
         ):
             result = flow._run()
@@ -2782,7 +3776,9 @@ class TestBaselineFlow:
         assert [
             (plan.baseline.selector, plan.candidate.selector) for plan in flow._target_pairs
         ] == [("lite", "lite")]
-        assert flow.memory_job_requests((handle,)) == (JobRequest("synth", "lite"),)
+        assert flow.memory_job_requests((handle,)) == (
+            JobRequest("synth", "lite", split_phases=("sv2v", "yosys", "openroad")),
+        )
 
     def test_worktree_setup_failure_rejected(self, state_file: Path, tmp_path: Path):
         """A worktree that cannot be created (bad ref, not a repo) is surfaced
@@ -2809,7 +3805,7 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", boom),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="bogus"),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="bogus"),
         ):
             result = flow._run()
 
@@ -2857,7 +3853,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_run_single_config", side_effect=run_one),
         ):
             result = flow._run()
@@ -2924,7 +3921,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", vanishing_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="abc1234"),
+            patch("booley.flows.implementation_flow.baseline_worktree", vanishing_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
             patch.object(flow, "_run_single_config", side_effect=run_one),
         ):
             return flow._run()
@@ -3067,7 +4065,8 @@ class TestBaselineFlow:
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", tracking_worktree),
-            patch("booley.flows.synth.flow.git_short_sha", return_value="deadbeef"),
+            patch("booley.flows.implementation_flow.baseline_worktree", tracking_worktree),
+            patch("booley.flows.implementation_flow.git_short_sha", return_value="deadbeef"),
             patch.object(flow, "_execute", side_effect=RuntimeError("synthesis exploded")),
             pytest.raises(RuntimeError, match="synthesis exploded"),
         ):
@@ -3085,908 +4084,14 @@ class TestBaselineFlow:
 # ===========================================================================
 
 
-class TestBuildSynthCmd:
-    def test_recipe_identity_ignores_isolated_checkout_path(self, tmp_path: Path) -> None:
-        left_root = tmp_path / "baseline"
-        right_root = tmp_path / "candidate"
-        constraint = Path("constraints/dut.sdc")
-        for root in (left_root, right_root):
-            path = root / constraint
-            path.parent.mkdir(parents=True)
-            path.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
-
-        left = _fake_synth_resolved(tmp_path / "left-build")
-        right = _fake_synth_resolved(tmp_path / "right-build")
-        left = dataclasses.replace(
-            left,
-            files=(
-                fusesoc_registry.ResolvedFile(
-                    name=str(left_root / constraint),
-                    file_type="SDC",
-                    core="::syn_demo:0",
-                ),
-            ),
-        )
-        right = dataclasses.replace(
-            right,
-            files=(
-                fusesoc_registry.ResolvedFile(
-                    name=str(right_root / constraint),
-                    file_type="SDC",
-                    core="::syn_demo:0",
-                ),
-            ),
-        )
-
-        left_snapshot = synthesis_recipe_snapshot(left, default_recipe_args(), target="lite")
-        right_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
-
-        assert left_snapshot == right_snapshot
-        assert synthesis_recipe_snapshot_fingerprint(
-            left_snapshot
-        ) == synthesis_recipe_snapshot_fingerprint(right_snapshot)
-        assert left_snapshot["flow"] == "synth"
-        assert left_snapshot["constraints"] == [
-            {
-                "core": "::syn_demo:0",
-                "sha256": hashlib.sha256((left_root / constraint).read_bytes()).hexdigest(),
-            }
-        ]
-
-        (right_root / constraint).write_text(
-            "create_clock -period 5 [get_ports clk]\n", encoding="utf-8"
-        )
-        changed_snapshot = synthesis_recipe_snapshot(right, default_recipe_args(), target="lite")
-        assert synthesis_recipe_snapshot_fingerprint(
-            changed_snapshot
-        ) != synthesis_recipe_snapshot_fingerprint(left_snapshot)
-        assert implementation_comparison_basis(
-            changed_snapshot
-        ) != implementation_comparison_basis(left_snapshot)
-
-    def test_stable_constraint_identity_preserves_selfcompare_diagnostic(
-        self,
-    ) -> None:
-        flow = AsicSynthesizeFlow()
-        flow._baseline_selfcompare_msg = "baseline and candidate resolve identically"
-        current = {"lite": SynthMetrics(recipe_fingerprint="same")}
-        baseline = {"lite": SynthMetrics(recipe_fingerprint="same")}
-
-        flow._discard_stale_selfcompare(["lite"], current, baseline)
-
-        assert flow._baseline_selfcompare_msg is not None
-        current["lite"].recipe_fingerprint = "changed"
-        flow._discard_stale_selfcompare(["lite"], current, baseline)
-        assert flow._baseline_selfcompare_msg is None
-
-    @staticmethod
-    def _append_sdc_args(
-        flow: AsicSynthesizeFlow,
-        resolved: fusesoc_registry.ResolvedTarget,
-        tmp_path: Path,
-    ) -> None:
-        flow._append_sta_constraint_args([], resolved, "lite", tmp_path, SynthMode.PHYSICAL)
-
-    def test_sdc_must_stay_inside_selected_checkout(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        outside = tmp_path.parent / "outside.sdc"
-        outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
-        resolved = dataclasses.replace(
-            _fake_synth_resolved(tmp_path),
-            files=(fusesoc_registry.ResolvedFile(name=str(outside), file_type="SDC"),),
-        )
-
-        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
-            self._append_sdc_args(flow, resolved, tmp_path)
-
-    def test_sta_sdc_follows_symlinked_booley_dir_entry(self, flow_and_state, tmp_path: Path):
-        """A stealth core's SDC under a linked entry is named through the entry."""
-        flow, _ = flow_and_state
-        root = tmp_path / "project"
-        data = tmp_path / "booley-data"
-        elsewhere = tmp_path / "elsewhere"
-        for directory in (root, data / "cores", elsewhere):
-            directory.mkdir(parents=True)
-        symlink_or_skip(root / ".booley", data)
-        symlink_or_skip(data / "linked", elsewhere)
-        for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
-            sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
-
-        def resolved_with(sdc: Path) -> fusesoc_registry.ResolvedTarget:
-            return dataclasses.replace(
-                _fake_synth_resolved(root),
-                files=(fusesoc_registry.ResolvedFile(name=str(sdc), file_type="SDC"),),
-            )
-
-        cmd: list[str] = []
-        flow._append_sta_constraint_args(
-            cmd,
-            resolved_with(root / ".booley" / "cores" / "top.sdc"),
-            "lite",
-            root,
-            SynthMode.PHYSICAL,
-        )
-        assert cmd == ["--sta-sdc", ".booley/cores/top.sdc"]
-
-        # A link below the entry still leaves the selected checkout.
-        with pytest.raises(BoundaryError, match="escapes the selected checkout"):
-            flow._append_sta_constraint_args(
-                [],
-                resolved_with(root / ".booley" / "linked" / "top.sdc"),
-                "lite",
-                root,
-                SynthMode.PHYSICAL,
-            )
-
-    def test_sdc_must_exist(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        resolved = _fake_synth_resolved(tmp_path)
-        resolved.sdc_files[0].absolute(resolved.build_root).unlink()
-
-        with pytest.raises(BoundaryError, match="SDC file not found"):
-            self._append_sdc_args(flow, resolved, tmp_path)
-
-    def test_sdc_must_be_readable(self, flow_and_state, monkeypatch, tmp_path: Path):
-        flow, _ = flow_and_state
-        resolved = _fake_synth_resolved(tmp_path)
-        sdc_file = resolved.sdc_files[0].absolute(resolved.build_root)
-        original_read_bytes = Path.read_bytes
-
-        def fail_for_sdc(path):
-            if path == sdc_file:
-                raise OSError("permission denied")
-            return original_read_bytes(path)
-
-        monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
-        with pytest.raises(BoundaryError, match="SDC file is not readable"):
-            self._append_sdc_args(flow, resolved, tmp_path)
-
-    @pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
-    def test_recipe_schema_bumps_without_default_clock(self, tmp_path: Path, mode, schema):
-        snapshot = synthesis_recipe_snapshot(
-            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
-            default_recipe_args(),
-            target="lite",
-        )
-        assert snapshot["schema"] == schema
-        assert "default_clock_ps" not in snapshot
-
-        previous = {**snapshot, "schema": 3}
-        assert synthesis_recipe_snapshot_fingerprint(previous) != (
-            synthesis_recipe_snapshot_fingerprint(snapshot)
-        )
-        assert synthesis_recipe_changes(previous, snapshot) == [
-            {"path": "schema", "before": 3, "after": schema}
-        ]
-
-    def test_physical_fanout_policy_invalidates_old_recipe(self, tmp_path):
-        snapshot = synthesis_recipe_snapshot(
-            dataclasses.replace(
-                _fake_synth_resolved(tmp_path), flow_options={"synth_mode": "physical"}
-            ),
-            default_recipe_args(),
-            target="lite",
-        )
-        previous = {
-            **snapshot,
-            "technology": {**snapshot["technology"], "physical_fanout_policy": "native-point-v1"},
-        }
-        assert synthesis_recipe_snapshot_fingerprint(previous) != (
-            synthesis_recipe_snapshot_fingerprint(snapshot)
-        )
-
-    def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--ppa-profile") + 1] == "balanced"
-
-    def test_profile_and_backend_config_forwarded(self, state_file: Path, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nppa_profile = "compact"\nsynth_mode = "physical"\n'
-            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
-            "[flows.synth.advanced_settings_openroad]\n"
-            "placement_density = 0.72\nrepair_hold = true\n",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--ppa-profile") + 1] == "compact"
-        assert cmd[cmd.index("--abc-delay-ps") + 1] == "3333"
-        assert cmd[cmd.index("--placement-density") + 1] == "0.72"
-        assert "--repair-hold" in cmd
-
-    def test_cli_profile_resets_project_backend_overrides(self, state_file: Path, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nppa_profile = "compact"\n'
-            '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            ["--target", "lite", "--work-dir", str(tmp_path), "--ppa-profile", "balanced"]
-        )
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--ppa-profile") + 1] == "balanced"
-        assert "--abc-recipe" not in cmd
-
-    @pytest.mark.parametrize(
-        ("config_line", "cli_args", "present", "absent"),
-        [
-            (
-                'abc_script = "+strash;map"',
-                ["--abc-recipe", "fast"],
-                "--abc-recipe",
-                "--abc-script",
-            ),
-            (
-                'abc_recipe = "fast"',
-                ["--abc-script", "+strash;map"],
-                "--abc-script",
-                "--abc-recipe",
-            ),
-        ],
-    )
-    def test_cli_abc_control_replaces_other_configured_form(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-        config_line: str,
-        cli_args: list[str],
-        present: str,
-        absent: str,
-    ):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            f"[flows.synth.advanced_settings_yosys]\n{config_line}\n",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path), *cli_args])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert present in cmd
-        assert absent not in cmd
-
-    def test_resolves_to_configure_command(self, flow_and_state, tmp_path: Path):
-        """FuseSoC resolution drives the run_yosys_syn configure surface.
-
-        The resolved RTL sources go to ``--extra-rtl`` (relative to the worktree
-        so they cross the sandbox boundary), include headers to ``--inc-dir``,
-        the top to ``-t`` (decision 12), and typed params to ``-d``/``-p``.
-        The configure argv carries no ``-c`` because Target resolution already
-        supplied the complete design specification (decision 4).
-        """
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "configure" in cmd
-        assert "-c" not in cmd
-        assert cmd[cmd.index("-t") + 1] == "dut"  # resolved toplevel
-        extra = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--extra-rtl"]
-        assert any(e.endswith("rtl/dut.sv") for e in extra)
-        assert any(e.endswith("rtl/pkg.sv") for e in extra)
-        assert not any("defs.svh" in e for e in extra)  # include, not a source
-        inc = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--inc-dir"]
-        assert any(d.endswith("rtl/include") for d in inc)
-        # Typed params: vlogdefine -> bare -d NAME, vlogparam -> -p NAME=VALUE.
-        assert cmd[cmd.index("-d") + 1] == "SYNTHESIS"
-        assert "WIDTH=8" in cmd
-        # Relative paths only — absolute worktree paths would not satisfy the
-        # relocatable Sandbox contract.
-        assert not any(Path(e).is_absolute() for e in extra)
-
-    def test_sta_sdc_forwarded_from_fileset(self, flow_and_state, tmp_path: Path):
-        """The Target's file_type:SDC fileset reaches run_yosys_syn as --sta-sdc,
-        one per file, as sandbox-safe relative paths (ADR 0029)."""
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _with_synth_mode(
-                _fake_synth_resolved(tmp_path), "physical"
-            ),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
-        assert any(s.endswith("constraints/dut.sdc") for s in sta)
-        assert not any(Path(s).is_absolute() for s in sta)
-
-    def test_paths_resolve_from_a_worktree_behind_a_linked_ancestor(self, tmp_path: Path):
-        """A Codespace worktree sits under the symlinked ``.booley`` entry.
-
-        ``/workspaces/picorv32/.booley/worktrees/zbb`` is physically
-        ``/workspaces/booley-prj-picorv32/worktrees/zbb``. Resolved source
-        paths are physical, so a relative path taken against the linked
-        spelling climbed out of the checkout (``../../../../booley-prj-...``)
-        and synthesis reported "Extra RTL file not found".
-        """
-        physical = tmp_path / "workspaces" / "booley-prj" / "worktrees" / "zbb"
-        physical.mkdir(parents=True)
-        project = tmp_path / "workspaces" / "picorv32"
-        project.mkdir()
-        symlink_or_skip(project / ".booley", physical.parent.parent)
-        work_dir = project / ".booley" / "worktrees" / "zbb"
-        resolved = _with_synth_mode(_fake_synth_resolved(work_dir), "physical")
-        for item in resolved.files:  # every staged file exists, as after FuseSoC setup
-            path = resolved.build_root / item.name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
-
-        flow = AsicSynthesizeFlow()
-        cmd: list[str] = []
-        flow._append_rtl_source_args(cmd, resolved, work_dir)
-        flow._append_sta_constraint_args(
-            cmd,
-            resolved,
-            "lite",
-            work_dir,
-            resolve_synth_mode(resolved.flow_options, target="lite"),
-        )
-
-        # Every path is inside the checkout and names the file the Target means,
-        # as seen from the physical working directory the tools run in.
-        expected = {item.absolute(resolved.build_root) for item in resolved.files}
-        for flag in ("--extra-rtl", "--inc-dir", "--sta-sdc"):
-            values = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == flag]
-            assert values, flag
-            for value in values:
-                assert not value.startswith("../"), (flag, value)
-                target = (work_dir.resolve() / value).resolve()
-                assert target in expected or any(p.parent == target for p in expected), value
-
-    def test_physical_target_without_sdc_hard_errors(
-        self,
-        flow_and_state,
-        tmp_path: Path,
-    ):
-        """A physical Target without SDC is a pre-execution configuration error."""
-        flow, _ = flow_and_state
-        no_sdc = _fake_synth_resolved(tmp_path)
-        no_sdc = dataclasses.replace(
-            no_sdc,
-            files=tuple(f for f in no_sdc.files if f.file_type != "SDC"),
-        )
-        no_sdc = _with_synth_mode(no_sdc, "physical")
-        with (
-            patch.object(
-                fusesoc_registry,
-                "_resolve_target",
-                side_effect=lambda *a, **k: no_sdc,
-            ),
-            pytest.raises(BoundaryError, match=r"no timing constraints"),
-        ):
-            flow._build_synth_cmd("lite")
-
-    def test_default_clock_option_is_removed(self, tmp_path: Path):
-        flow = AsicSynthesizeFlow()
-        with pytest.raises(SystemExit):
-            flow.parse_args(
-                ["--target", "lite", "--work-dir", str(tmp_path), "--default-clock", "5000"]
-            )
-
-    def test_with_flags(self, state_file: Path, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            "[flows.synth]\nflatten = true\nsdc = true\n",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "lite",
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "--flatten" in cmd
-        # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
-        assert "--sdc" not in cmd
-
-    def test_stale_stage_cleared_before_resolve(self, flow_and_state, tmp_path: Path):
-        """The synth build_root is wiped before resolution so `fusesoc --setup`
-        re-stages current RTL (guards against synthesizing stale staged sources)."""
-        from booley.core.build_paths import work_root_for
-
-        flow, _ = flow_and_state
-        build_root = work_root_for(tmp_path, "synth", "lite")
-        build_root.mkdir(parents=True, exist_ok=True)
-        stale = build_root / "core_0" / "lite" / "src" / "old.sv"
-        stale.parent.mkdir(parents=True, exist_ok=True)
-        stale.write_text("module old; endmodule\n", encoding="utf-8")
-
-        seen = {}
-
-        def _resolve(*_a, **_k):
-            # Record whether the stale tree still exists at resolve time.
-            seen["stale_present"] = stale.exists()
-            return _fake_synth_resolved(tmp_path)
-
-        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_resolve):
-            flow._build_synth_cmd("lite")
-        assert seen["stale_present"] is False  # cleared before FuseSoC re-stages
-
-    def test_base_defines_absent_ok(self, flow_and_state, tmp_path: Path):
-        """No base_defines config: only the Target's vlogdefine params appear."""
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        defs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-d"]
-        assert defs == ["SYNTHESIS"]
-
-    def test_frontend_default_is_explicit(self, flow_and_state, tmp_path: Path):
-        """The normalized recipe spells out the effective sv2v default."""
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--frontend") + 1] == "sv2v"
-
-    def test_frontend_cli_forwarded(self, state_file: Path, tmp_path: Path):
-        """--frontend slang on the Flow CLI reaches run_yosys_syn."""
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path), "--frontend", "slang"])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--frontend") + 1] == "slang"
-
-    def test_target_frontend_forwarded(self, state_file: Path, tmp_path: Path):
-        """Target flow_options.frontend is forwarded when no CLI override."""
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nfrontend = "slang"\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--frontend") + 1] == "slang"
-
-    def test_frontend_invalid_config_hard_errors(self, state_file: Path, tmp_path: Path):
-        """A bogus Target frontend is a loud BoundaryError."""
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nfrontend = "verilator"\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with (
-            patch.object(
-                fusesoc_registry,
-                "_resolve_target",
-                side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-            ),
-            pytest.raises(BoundaryError, match=r"frontend must be one of"),
-        ):
-            flow._build_synth_cmd("lite")
-
-    def test_target_slang_options_forwarded(self, state_file: Path, tmp_path: Path):
-        """Target flow_options.slang_options become repeated --slang-option= flags.
-
-        The `=`-joined form is load-bearing, not style: the canonical value is
-        itself a flag (--single-unit), which argparse's two-token form rejects
-        ("expected one argument") — the ravenoc halt #2b regression.
-        """
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nfrontend = "slang"\n'
-            'slang_options = ["--single-unit", "--allow-use-before-declare"]\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "--slang-option=--single-unit" in cmd
-        assert "--slang-option=--allow-use-before-declare" in cmd
-
-    def test_slang_options_invalid_config_hard_errors(self, state_file: Path, tmp_path: Path):
-        """A non-list slang_options value is a loud BoundaryError, not a silent no-op."""
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            '[flows.synth]\nslang_options = "--single-unit"\n',
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with (
-            patch.object(
-                fusesoc_registry,
-                "_resolve_target",
-                side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-            ),
-            pytest.raises(BoundaryError, match=r"slang_options must be a non-empty list"),
-        ):
-            flow._build_synth_cmd("lite")
-
-    def test_result_dir_keyed_on_target_not_toplevel(self, flow_and_state, tmp_path: Path):
-        """Even without a suffix, ``-w`` keys the result dir on the target name.
-
-        Regression (data-loss footgun): without ``-w`` configuration uses the
-        default ``syn_result/standalone.<toplevel>/`` directory, so two
-        targets that share a toplevel module (scalar vs parallel configs of one
-        DUT) silently overwrite each other's reports.
-        """
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        # Result dir is the target name, not the resolved toplevel ("dut").
-        assert cmd[cmd.index("-w") + 1] == "lite"
-
-    def test_sta_sdc_forwarded_from_target_fileset(self, flow_and_state, tmp_path: Path):
-        """file_type:SDC files on the Target become --sta-sdc args (ADR 0029),
-        relative to the worktree; a tb-tagged SDC is excluded."""
-        import dataclasses
-
-        flow, _ = flow_and_state
-
-        def resolve_with_extra_sdc(*_args, **_kwargs):
-            base = _fake_synth_resolved(tmp_path)
-            core_sdc = base.build_root / "src" / "syn_demo_0" / "sdc" / "core.sdc"
-            core_sdc.parent.mkdir(parents=True, exist_ok=True)
-            core_sdc.write_text("set_false_path -from [get_ports rst_n]\n", encoding="utf-8")
-            resolved = dataclasses.replace(
-                base,
-                files=(
-                    *base.files,
-                    fusesoc_registry.ResolvedFile(
-                        name="src/syn_demo_0/sdc/core.sdc",
-                        file_type="SDC",
-                    ),
-                    fusesoc_registry.ResolvedFile(
-                        name="src/syn_demo_0/tb/tb.sdc",
-                        file_type="SDC",
-                        tags=("tb",),
-                    ),
-                ),
-            )
-            return _with_synth_mode(resolved, "physical")
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=resolve_with_extra_sdc,
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
-        assert any(s.endswith("sdc/core.sdc") for s in sta)
-        assert not any("tb.sdc" in s for s in sta)  # tb-tagged SDC excluded
-        assert not any(Path(s).is_absolute() for s in sta)  # boundary-safe
-
-    def test_no_flatten_cli_overrides_toml(self, state_file: Path, tmp_path: Path):
-        """--no-flatten wins over Target ``flow_options.flatten = true``."""
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            "[flows.synth]\nflatten = true\n",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            ["--target", "lite", "--work-dir", str(tmp_path), "--no-flatten"],
-        )
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "--no-flatten" in cmd
-        assert "--flatten" not in cmd
-
-    def test_flatten_false_toml_is_honoured(self, state_file: Path, tmp_path: Path):
-        """``flatten = false`` now emits --no-flatten (previously ignored)."""
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            "[flows.synth]\nflatten = false\n",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "--no-flatten" in cmd
-
-    def test_flatten_default_when_unset(self, flow_and_state, tmp_path: Path):
-        """No CLI flag and no TOML knob → flatten on (run_yosys_syn's default)."""
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            cmd = flow._build_synth_cmd("lite")
-        assert "--flatten" in cmd
-        assert "--no-flatten" not in cmd
-
-
 # ===========================================================================
 # Flow-config trust boundary (plan P2 2026-07-05)
 # ===========================================================================
 
 
-class TestFlowConfigBoundary:
-    """Wrong-typed ``[flows.synth]`` knobs fail before EDA execution.
-
-    The ca5adaf class: an untyped config read leaks a stringified Python value
-    into the sandbox argv (``synth_mode = true`` → ``--synth-mode True``)
-    and dies as an opaque argparse crash inside the container. Every knob read
-    in ``_build_synth_cmd`` is now routed through ``core.boundary`` and must
-    reject wrong types with an actionable message instead.
-    """
-
-    @staticmethod
-    def _flow_with_config(tmp_path: Path, toml_body: str) -> AsicSynthesizeFlow:
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(
-            f"[flows.synth]\n{toml_body}",
-            encoding="utf-8",
-        )
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        return flow
-
-    def test_bool_synth_mode_rejected(self, state_file: Path, tmp_path: Path):
-        """`synth_mode = true` must not become ``--synth-mode True``."""
-        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        with pytest.raises(BoundaryError, match="synth_mode"):
-            flow._build_synth_cmd("lite")
-
-    def test_string_synth_mode_forwarded(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(tmp_path, 'synth_mode = "logical"\n')
-        cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--synth-mode") + 1] == "logical"
-
-    def test_unknown_synth_mode_rejected(self, state_file: Path, tmp_path: Path):
-        """Typos are caught host-side with the valid choices in the message."""
-        flow = self._flow_with_config(tmp_path, 'synth_mode = "placed"\n')
-        with pytest.raises(BoundaryError, match="must be one of"):
-            flow._build_synth_cmd("lite")
-
-    def test_retired_timing_engine_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(tmp_path, 'timing_engine = "opensta"\n')
-        with pytest.raises(BoundaryError, match="timing_engine is retired"):
-            flow._build_synth_cmd("lite")
-
-    @pytest.mark.parametrize(
-        ("old", "new"),
-        [
-            ("yosys", "advanced_settings_yosys"),
-            ("openroad", "advanced_settings_openroad"),
-        ],
-    )
-    def test_retired_expert_table_names_are_hard_errors(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-        old: str,
-        new: str,
-    ):
-        flow = self._flow_with_config(tmp_path, f"[flows.synth.{old}]\n")
-        with pytest.raises(BoundaryError, match=rf"{old} is retired.*{new}"):
-            flow._build_synth_cmd("lite")
-
-    def test_logical_mode_rejects_nonempty_openroad_settings(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        flow = self._flow_with_config(
-            tmp_path,
-            'synth_mode = "logical"\n'
-            "[flows.synth.advanced_settings_openroad]\nplacement_density = 0.72\n",
-        )
-        with pytest.raises(BoundaryError, match=r"cannot be set.*logical"):
-            flow._build_synth_cmd("lite")
-
-    def test_non_bool_flatten_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(tmp_path, 'flatten = "yes"\n')
-        with pytest.raises(BoundaryError, match="flatten"):
-            flow._build_synth_cmd("lite")
-
-    def test_unknown_ppa_profile_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(tmp_path, 'ppa_profile = "speed"\n')
-        with pytest.raises(BoundaryError, match="ppa_profile"):
-            flow._build_synth_cmd("lite")
-
-    def test_non_bool_openroad_override_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(
-            tmp_path,
-            'synth_mode = "physical"\n'
-            '[flows.synth.advanced_settings_openroad]\nrepair_hold = "yes"\n',
-        )
-        with pytest.raises(BoundaryError, match="repair_hold"):
-            flow._build_synth_cmd("lite")
-
-    def test_conflicting_yosys_abc_controls_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(
-            tmp_path,
-            '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',
-        )
-        with pytest.raises(BoundaryError, match="cannot set both"):
-            flow._build_synth_cmd("lite")
-
-    def test_fractional_abc_delay_rejected(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(
-            tmp_path,
-            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333.5\n",
-        )
-        with pytest.raises(BoundaryError, match="positive integer"):
-            flow._build_synth_cmd("lite")
-
-    @pytest.mark.parametrize(
-        ("section", "setting"),
-        [
-            ("advanced_settings_yosys", 'abc_recip = "fast"'),
-            ("advanced_settings_openroad", "repair_setp = false"),
-            ("advanced_settings_openroad", "max_fanout = 50"),
-        ],
-    )
-    def test_unknown_backend_setting_rejected(
-        self, state_file: Path, tmp_path: Path, section: str, setting: str
-    ):
-        flow = self._flow_with_config(
-            tmp_path,
-            ('synth_mode = "physical"\n' if section == "advanced_settings_openroad" else "")
-            + f"[flows.synth.{section}]\n{setting}\n",
-        )
-        with pytest.raises(BoundaryError, match="unknown setting"):
-            flow._build_synth_cmd("lite")
-
-    def test_config_error_surfaces_as_infra_error(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        """The run path reports a config error like a resolution failure
-        (returncode-2 infra error), not an unhandled crash of the Flow."""
-        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        metrics, output = flow._run_single_config("lite")
-        assert metrics.returncode == 2
-        assert "synth_mode" in (metrics.infra_error or "")
-        assert "synth_mode" in output
-
-    def test_dry_run_surfaces_config_error(self, state_file: Path, tmp_path: Path):
-        """Dry-run exists to vet the command — a config error must fail it."""
-        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
-        result = flow._dry_run_result(flow._plan_synth_implementation(["lite"]))
-        assert result.exit_code == EXIT_ERROR
-        assert result.detail["work_units"] == []
-        assert "synth_mode" in result.report_text
-        assert list(tmp_path.glob(".booley-synth-plan-*")) == []
-
-
 # ===========================================================================
 # Timing output format
 # ===========================================================================
-
-
-class TestTimingReportPaths:
-    """``[flows.synth].timing_report_paths``: how many paths the STA reports list."""
-
-    @staticmethod
-    def _flow(tmp_path: Path, toml_body: str) -> AsicSynthesizeFlow:
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir(exist_ok=True)
-        (booley_dir / "booley.toml").write_text(f"[flows.synth]\n{toml_body}", encoding="utf-8")
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        return flow
-
-    @staticmethod
-    def _resolve(flow: AsicSynthesizeFlow, tmp_path: Path):
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
-        ):
-            return flow._resolve_synth_recipe("lite")
-
-    def test_knob_reaches_the_configure_argv(self, state_file: Path, tmp_path: Path):
-        from booley.flows.synth.backends import configure
-
-        flow = self._flow(tmp_path, "timing_report_paths = 3\n")
-        assert flow._resolve_run_policy(True) is None
-        cmd = list(self._resolve(flow, tmp_path).command)
-        assert cmd[cmd.index("--timing-report-paths") + 1] == "3"
-        args = configure.parse_configure_argv(cmd)
-        _profile, _yosys, openroad = configure._resolve_ppa_settings(args)
-        assert configure._resolve_syn_timing(args, openroad).report_paths == 3
-
-    def test_unset_knob_leaves_the_argv_alone(self, state_file: Path, tmp_path: Path):
-        flow = self._flow(tmp_path, "")
-        assert flow._resolve_run_policy(True) is None
-        assert "--timing-report-paths" not in self._resolve(flow, tmp_path).command
-
-    @pytest.mark.parametrize("value", ["0", "-2", "true", "1.5"])
-    def test_value_below_one_is_a_configuration_error(
-        self, state_file: Path, tmp_path: Path, value: str
-    ):
-        flow = self._flow(tmp_path, f"timing_report_paths = {value}\n")
-        message = flow._resolve_run_policy(True)
-        assert message is not None
-        assert message.startswith("synth: ")
-        assert "timing_report_paths" in message
-
-    def test_knob_leaves_recipe_fingerprint_unchanged(self, state_file: Path, tmp_path: Path):
-        """Report size is not a recipe input: it leaves the recipe fingerprint unchanged."""
-        default = self._flow(tmp_path, "")
-        self._resolve(default, tmp_path)
-        custom = self._flow(tmp_path, "timing_report_paths = 3\n")
-        assert custom._resolve_run_policy(True) is None
-        self._resolve(custom, tmp_path)
-        assert custom._recipe_evidence["lite"][:2] == default._recipe_evidence["lite"][:2]
 
 
 class TestTimingOutputFormat:
@@ -4127,235 +4232,14 @@ class TestProcessCountCritical:
 # ===========================================================================
 
 
-class TestParamMapping:
-    def test_vlogdefine_bool_true_is_bare_define(self):
-        params = {"SYNTHESIS": {"paramtype": "vlogdefine", "default": True}}
-        assert _vlogdefine_args(params) == ["SYNTHESIS"]
-
-    def test_vlogdefine_value_is_named_define(self):
-        params = {"WIDTH": {"paramtype": "vlogdefine", "default": 16}}
-        assert _vlogdefine_args(params) == ["WIDTH=16"]
-
-    def test_vlogdefine_false_or_absent_is_undefined(self):
-        params = {
-            "OFF": {"paramtype": "vlogdefine", "default": False},
-            "NONE": {"paramtype": "vlogdefine"},
-        }
-        assert _vlogdefine_args(params) == []
-
-    def test_vlogparam_emits_assignment(self):
-        params = {"WIDTH": {"paramtype": "vlogparam", "default": 8}}
-        assert vlogparam_specs(params) == {"WIDTH": ParameterValue("", "8")}
-
-    def test_vlogparam_normalizes_boolean_literals(self):
-        params = {
-            "ENABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
-            "DISABLED": {"datatype": "bool", "paramtype": "vlogparam", "default": False},
-        }
-        assert vlogparam_specs(params) == {
-            "ENABLED": ParameterValue("bool", "1"),
-            "DISABLED": ParameterValue("bool", "0"),
-        }
-
-    def test_paramtype_filtering_is_exclusive(self):
-        params = {
-            "D": {"paramtype": "vlogdefine", "default": True},
-            "P": {"paramtype": "vlogparam", "default": 4},
-            "X": {"paramtype": "plusarg", "default": "y"},
-        }
-        # vlogdefine helper ignores vlogparam/plusarg and vice versa.
-        assert _vlogdefine_args(params) == ["D"]
-        assert vlogparam_specs(params) == {"P": ParameterValue("", "4")}
-
-    def test_empty_or_none_params(self):
-        assert _vlogdefine_args(None) == []
-        assert vlogparam_specs({}) == {}
-
-
 # ===========================================================================
 # Synth-target sanity warnings (testbench top / SIMULATION define)
 # ===========================================================================
 
 
-class TestSynthTargetWarnings:
-    def test_testbench_top_warns(self):
-        [w] = _synth_target_warnings("core_tb", [])
-        assert "testbench" in w and "core_tb" in w
-
-    def test_testbench_top_case_insensitive(self):
-        assert _synth_target_warnings("MY_TB", [])
-
-    def test_dut_top_is_clean(self):
-        assert _synth_target_warnings("core", []) == []
-        # a substring '_tb' that isn't the suffix must not trip the check
-        assert _synth_target_warnings("u_tb_ctrl", []) == []
-
-    def test_simulation_bare_define_warns(self):
-        [w] = _synth_target_warnings("dut", ["SIMULATION"])
-        assert "SIMULATION" in w
-
-    def test_simulation_valued_define_warns(self):
-        assert _synth_target_warnings("dut", ["SIMULATION=1"])
-
-    def test_simulation_substring_is_clean(self):
-        # SIMULATION_SPEED must not be mistaken for the SIMULATION define
-        assert _synth_target_warnings("dut", ["SIMULATION_SPEED=2"]) == []
-
-    def test_both_problems_yield_two_warnings(self):
-        assert len(_synth_target_warnings("foo_tb", ["SIMULATION"])) == 2
-
-
 # ===========================================================================
 # FuseSoC resolution slice (ADR 0022 Phase 2)
 # ===========================================================================
-
-
-class TestSynthResolution:
-    def test_setup_failure_propagates(self, flow_and_state, tmp_path: Path):
-        """A FuseSoC resolution failure surfaces (caller records it as infra error)."""
-        flow, _ = flow_and_state
-        with (
-            patch.object(
-                fusesoc_registry,
-                "_resolve_target",
-                side_effect=fusesoc_registry.TargetResolutionError("boom"),
-            ),
-            pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
-        ):
-            flow._build_synth_cmd("lite")
-
-    def test_setup_failure_recorded_as_infra_error(self, flow_and_state):
-        """Through the full _run, a resolution failure becomes EXIT_ERROR, not a crash."""
-        flow, _ = flow_and_state
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=fusesoc_registry.TargetResolutionError("no such target"),
-        ):
-            result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "infrastructure error" in result.report_text
-
-    def test_resolution_forwards_target_and_isolated_build_root(
-        self,
-        flow_and_state,
-        tmp_path: Path,
-    ):
-        """_resolve_target gets the config name and asic_synthesize's own build root."""
-        flow, _ = flow_and_state
-        handle = _layer_target_handle(tmp_path, "lite")
-        flow._target_handles = {"lite": handle}
-        flow._target_execution_refs = {
-            "lite": TargetExecutionRef(handle.identity, "::test:0#lite", handle.vlnv)
-        }
-        captured = {}
-
-        def fake_resolve(target, *, project_root, build_root, **kw):
-            captured.update(
-                target=target,
-                project_root=project_root,
-                build_root=build_root,
-                vlnv=kw.get("vlnv"),
-            )
-            return _fake_synth_resolved(tmp_path)
-
-        with patch.object(
-            fusesoc_registry,
-            "_resolve_target",
-            side_effect=fake_resolve,
-        ):
-            flow._build_synth_cmd("lite")
-        assert captured["target"] == "lite"
-        assert captured["vlnv"] == "::test:0"
-        assert captured["project_root"] == tmp_path
-        # Compare build_root in POSIX form for Windows portability.
-        assert captured["build_root"].as_posix().endswith(".booley/.runtime/edalize/synth/lite")
-
-    def test_real_fusesoc_synth_setup(self, state_file: Path, tmp_path: Path):
-        """End-to-end: a real `fusesoc run --setup` leaves a resolved synth EDAM.
-
-        Proves the RTL sources/top/typed-params resolve, the build dir is
-        relocatable, and asic_synthesize feeds the resolved filelist + include
-        dir + defines to the run_yosys_syn configure surface.
-        """
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-        work_dir = tmp_path / "proj"
-        _write_syn_demo_project(work_dir)
-
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "syn",
-                "--work-dir",
-                str(work_dir),
-            ]
-        )
-
-        with patch.object(fusesoc_registry, "_resolve_target", side_effect=_real_resolve):
-            cmd = flow._build_synth_cmd("syn")
-
-        joined = " ".join(cmd)
-        # Configuration over the resolved sources (no legacy config selector).
-        assert cmd[:4] == ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
-        assert "-c" not in cmd
-        assert cmd[cmd.index("-t") + 1] == "dut"
-        # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.
-        extra = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--extra-rtl"]
-        assert any(e.endswith("rtl/dut.sv") for e in extra)
-        assert any(e.endswith("rtl/pkg.sv") for e in extra)
-        assert not any("defs.svh" in e for e in extra)
-        assert not any(Path(e).is_absolute() for e in extra)
-        # The include header surfaces as an include dir, not a source.
-        inc = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--inc-dir"]
-        assert any(d.endswith("rtl/include") for d in inc)
-        # The file_type:SDC fileset is forwarded as --sta-sdc (ADR 0029), sandbox-
-        # safe relative path (ADR 0031: a no-SDC target would have hard-errored).
-        sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
-        assert any(s.endswith("constraints/dut.sdc") for s in sta)
-        assert not any(Path(s).is_absolute() for s in sta)
-        # Typed params reached the CLI.
-        assert "SYNTHESIS" in cmd
-        assert "WIDTH=8" in joined
-        # Resolved build dir lives under the worktree and is relocatable.
-        edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
-        assert str(work_dir) not in edam.read_text(encoding="utf-8")
-
-
-class TestTimeoutResolution:
-    """Per-config timeout precedence: CLI > booley.toml timeout_ms > default."""
-
-    def _flow(self, work_dir: Path, extra_args: list[str]) -> AsicSynthesizeFlow:
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(work_dir), *extra_args])
-        return flow
-
-    def test_default_when_unset(self, tmp_path: Path):
-        flow = self._flow(tmp_path, [])
-        assert flow._timeout_ms() == 1800000
-        assert flow._get_timeout() == 1800
-
-    def test_toml_knob_picked_up(self, tmp_path: Path):
-        proj = tmp_path / ".booley"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.synth]\ntimeout_ms = 5400000\n",
-            encoding="utf-8",
-        )
-        flow = self._flow(tmp_path, [])
-        assert flow._timeout_ms() == 5400000
-        assert flow._get_timeout() == 5400
-
-    def test_cli_overrides_toml(self, tmp_path: Path):
-        proj = tmp_path / ".booley"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.synth]\ntimeout_ms = 5400000\n",
-            encoding="utf-8",
-        )
-        flow = self._flow(tmp_path, ["--timeout-ms", "900000"])
-        assert flow._timeout_ms() == 900000
 
 
 # ===========================================================================
@@ -4893,7 +4777,8 @@ class TestIncompleteResourceResults:
 
         assert result is failure
 
-    def test_completed_target_survives_later_matrix_crash(self, tmp_path: Path):
+    @pytest.mark.parametrize("signalled", [False, True])
+    def test_completed_target_survives_later_matrix_crash(self, tmp_path: Path, signalled: bool):
         flow = AsicSynthesizeFlow()
         report_dir = tmp_path / "reports"
         flow.parse_args(
@@ -4908,12 +4793,18 @@ class TestIncompleteResourceResults:
         )
         first = SynthMetrics(area_um2=500.0, area_kge=1.0, cells=100)
         calls = 0
+        published: list[dict[str, object]] = []
 
         def run_one(_target: str):
             nonlocal calls
             calls += 1
             if calls == 1:
                 return first, "ok"
+            if signalled:  # a signal ends the process here, without unwinding
+                abort_open_progress()
+                published.append(
+                    json.loads(next(report_dir.glob("synth/*/progress.json")).read_text())
+                )
             raise RuntimeError("simulated outer interruption")
 
         with (
@@ -4931,6 +4822,9 @@ class TestIncompleteResourceResults:
         assert progress["completed_targets"] == ["asic_a"]
         assert progress["pending_targets"] == ["asic_b"]
         assert (invocation_dirs[-1] / "targets" / "asic_a.json").is_file()
+        if signalled:
+            (snapshot,) = published
+            assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["asic_b"])
 
 
 @pytest.mark.parametrize("executable", ["sv2v", "yosys", "openroad"])
@@ -5269,8 +5163,9 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
             "expected": expected,
             "openroad": (
                 "STA_WORST_SLACK_NS: 0.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1 setup_same_clock=1\n"
                 "Design area 63 u^2 50% utilization.\n"
+                "OPENROAD_INSTANCE_COUNT: 23\n"
             ),
             "artifacts": {
                 "yosys.log": yosys,
@@ -5293,6 +5188,8 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
     if expected:
         assert report["timing_complete"] is True
         assert report["ppa_complete"] is True
+        assert report["cell_count"] == 23
+        assert report["cell_count_source"] == "openroad_post_optimization"
 
 
 @pytest.mark.parametrize("expected", [8, 9])
@@ -5313,6 +5210,14 @@ def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_pat
         "actual=8, expected=7, excess=1"
         in report["implementation"]["status"]["diagnostic_excerpt"]
     )
+    reason = "8 latches (actual=8, expected=7, excess=1; types: $_DLATCH_P_=8)"
+    assert report["implementation"]["status"]["failure_reasons"] == [reason]
+    job = present_job_report(
+        {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
+    )
+    assert ("Failure reason", reason) in [
+        (row.label.strip(), row.value) for row in job.result_rows
+    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
@@ -5346,9 +5251,8 @@ def test_expected_physical_unmapped_latch_is_noncritical_design_failure(flow_and
 
 
 _NO_PATH_OPENROAD_LOG = (
-    "STA_CLOCK_PERIOD_NS: 10.000000\n"
     "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-    "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+    "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
     "Design area 63 u^2 50% utilization.\n"
 )
 
@@ -5415,16 +5319,39 @@ def test_tool_failure_log_keeps_exit_code_and_timeout_state(
     assert not any("design check failed" in m for m in messages)
 
 
-def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_path, caplog):
-    """The exit-0 forced-failure header is not the design-check reason."""
-    diagnostic = "ERROR: syntax error at rtl.sv:3"
+@pytest.mark.parametrize(
+    ("diagnostic", "log", "process"),
+    [
+        ("ERROR: syntax error at rtl.sv:3", "ERROR: syntax error at rtl.sv:3\n", None),
+        (
+            "sv2v_converted.v:3936: ERROR: syntax error, unexpected '['",
+            (Path(__file__).parent / "fixtures/frontend_error_banner_yosys.txt").read_text(),
+            {"returncode": 2, "stdout": "BOOLEY_STAGE: yosys\n"},
+        ),
+        (
+            "Area for cell type $_DFF_P_ is unknown!",
+            "top.sv:8: Warning: unknown character escape sequence '\\q'\n"
+            'ERROR: assert property (a != 4\'hf) else $display("\\q");\n'
+            "                                                ^\n"
+            "Area for cell type $_DFF_P_ is unknown!\n",
+            None,
+        ),
+    ],
+    ids=["exit-zero-header", "banner-before-error", "echoed-error-before-unknown-area"],
+)
+def test_design_failure_reason_is_the_tool_error_line(
+    flow_and_state, tmp_path, caplog, diagnostic, log, process
+):
+    """The reason is the tool error line: not the exit-0 header, nor (issue #4897) Yosys's
+    banner or an echoed source line."""
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
         result, report = _run_latch_case(
             flow_and_state,
             tmp_path,
             {
                 "cell": "$_DFF_P_",
-                "artifacts": {"yosys.log": f"{diagnostic}\n"},
+                "artifacts": {"yosys.log": log},
+                **({"process": process} if process else {}),
             },
         )
     assert report["termination"] == "design_failure"
@@ -5434,6 +5361,7 @@ def test_exit_zero_design_failure_reason_omits_exit_header(flow_and_state, tmp_p
     # The status cell and RESULT line show the same reason, not the header.
     assert f"FAIL ({diagnostic})" in result.report_text
     assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [diagnostic]
 
 
 @pytest.mark.parametrize(
@@ -5482,6 +5410,7 @@ def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
     assert report["implementation"]["conditions"]["has_critical"] is False
     assert "unmapped generic cell" in result.report_text
     assert "latches" not in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert report["implementation"]["status"]["failure_reasons"] == ["unmapped generic cell"]
 
 
 @pytest.mark.parametrize("stale", [False, True])
@@ -5505,11 +5434,15 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
 
 
 @pytest.mark.parametrize(
-    ("case", "termination"),
+    ("case", "termination", "reasons"),
     [
-        ({"process": {"returncode": 2, "timed_out": True}}, "timeout"),
-        ({"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}}, "oom"),
-        ({"process": {"returncode": 137}}, "resource_killed"),
+        ({"process": {"returncode": 2, "timed_out": True}}, "timeout", ["timeout"]),
+        (
+            {"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}},
+            "oom",
+            ["OOM"],
+        ),
+        ({"process": {"returncode": 137}}, "resource_killed", ["resource-killed"]),
         (
             {
                 "process": {
@@ -5518,6 +5451,7 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {
@@ -5527,20 +5461,23 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
                 }
             },
             "infrastructure_error",
+            [],
         ),
         (
             {"mode": "logical", "missing_netlist": True, "process": {"returncode": 0}},
             "infrastructure_error",
+            [],
         ),
     ],
 )
 def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
-    flow_and_state, tmp_path, case, termination
+    flow_and_state, tmp_path, case, termination, reasons
 ):
     result, report = _run_latch_case(
         flow_and_state, tmp_path, {"mode": "physical", "openroad": _LATCH_ORD, **case}
     )
     assert report["termination"] == termination
+    assert report["implementation"]["status"]["failure_reasons"] == reasons
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
     assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
@@ -5766,6 +5703,8 @@ def test_1095_public_frontend_failure(
         assert f"RESULT: ERROR — lite: {report['infra_error']}" in result.report_text
     else:
         assert not report["infra_error"]
+        # No line is a tool error line: the reason stays the first excerpt line.
+        assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
 
 
 def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
@@ -6030,7 +5969,7 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
             "artifacts": artifacts,
             f"missing_{prefix}": final is None,
             f"stale_{prefix}": final == "stale",
-            "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\nDesign area 63 u^2 50% utilization.\n",
+            "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1 setup_same_clock=1\nDesign area 63 u^2 50% utilization.\n",
         },
     )
     clean = final == "Found and reported 0 problems.\n"
@@ -6044,7 +5983,7 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
         EXIT_SUCCESS if clean else EXIT_FAILURE if available else EXIT_ERROR
     )
     assert (
-        "completed post-optimisation check reports no combinational loops" in result.report_text
+        "completed structural checks find no combinational loops" in result.report_text
     ) is clean
     if clean:
         assert report["implementation"]["status"]["grade"] == "warn"
@@ -6083,9 +6022,34 @@ def test_captured_comb_loop_cases_reach_verdict(
     else:
         assert report["passed"] is True
         assert report["implementation"]["status"]["grade"] == "warn"
-        assert "completed post-optimisation check reports no combinational loops" in (
-            result.report_text
-        )
+        assert "completed structural checks find no combinational loops" in (result.report_text)
+
+
+@pytest.mark.parametrize(
+    ("declared", "grade", "label"), [(8, "pass", "NOTE"), (7, "warn", "WARNING")]
+)
+def test_declared_removed_loops_pass_and_one_more_warns(
+    flow_and_state, tmp_path, declared, grade, label
+):
+    # The captured transient loop (#1417) is 8 earlier-pass warnings. Declaring
+    # all 8 with expected_comb_loops ends PASS with notes; 7 still warns (#4866).
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "cell": "NAND2",
+            "extra_toml": f"expected_comb_loops = {declared}\n",
+            "artifacts": load_capture("transient_loop_yosys_0_70.txt"),
+        },
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert report["implementation"]["status"]["grade"] == grade
+    assert f"RESULT: {grade.upper()}" in result.report_text
+    loop_lines = [line for line in result.report_text.splitlines() if "found logic loop" in line]
+    assert loop_lines
+    assert all(f"{label} --" in line for line in loop_lines)
+    assert all(f"(this run 8, declared {declared})" in line for line in loop_lines)
 
 
 @pytest.mark.parametrize("mode", ["logical", "physical"])
@@ -6119,7 +6083,7 @@ def test_earlier_loop_report_survives_representative_saturation(
     assert "RESULT: WARN" in result.report_text
     assert "CRITICAL" not in result.report_text
     assert "$add$rtl.sv:7$1" in result.report_text
-    assert "completed post-optimisation check reports no combinational loops" in result.report_text
+    assert "completed structural checks find no combinational loops" in result.report_text
     assert str(raw) in result.report_text
     groups = result.detail["lite"]["warning_summary"]["representatives"]
     assert len(groups) == 8
@@ -6612,3 +6576,41 @@ def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
     assert conditions["expected_comb_loops"] == 0
     assert conditions["unexpected_comb_loops"] == 1
     assert "actual=1, expected=0, excess=1" in result.report_text
+    assert report["implementation"]["status"]["failure_reasons"] == [
+        "1 comb loops (actual=1, expected=0, excess=1)"
+    ]
+
+
+@pytest.mark.parametrize("case", ["plain", "baseline"])
+def test_synth_output_matches_golden(
+    case: str, state_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One Target's report, progress record, RESULT line and exit code stay as pinned."""
+    from tests.flows.implementation_golden_support import render_implementation_output
+    from tests.golden.conftest import assert_matches_golden
+
+    monkeypatch.setenv("BOOLEY_RUN_ID", "golden-run")
+    flow = AsicSynthesizeFlow()
+    args = ["--target", "lite", "--work-dir", str(tmp_path)]
+    args += ["--report-dir", str(tmp_path / "reports")]
+    if case == "baseline":
+        args += ["--baseline", "v1.0"]
+    flow.parse_args(args)
+    baseline = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.5, elapsed_s=3.0)
+    current = SynthMetrics(area_kge=12.3, cells=110, wns_ns=0.4, elapsed_s=4.0)
+
+    def run_one(_target: str) -> tuple[SynthMetrics, str]:
+        return (baseline if flow._execution_role == "baseline" else current), "done"
+
+    with (
+        patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
+        patch("booley.flows.implementation_flow.baseline_worktree", _fake_baseline_worktree),
+        patch("booley.flows.implementation_flow.git_short_sha", return_value="abc1234"),
+        patch("booley.flows.synth.flow.git_full_sha", return_value="a" * 40),
+        patch("booley.flows.implementation_flow.git_full_sha", return_value="a" * 40),
+        patch.object(flow, "_run_single_config", side_effect=run_one),
+    ):
+        outcome = flow._run()
+
+    text = render_implementation_output(flow, "synth_lite.json", outcome, tmp_path)
+    assert_matches_golden(f"implementation/synth_{case}.txt", text)

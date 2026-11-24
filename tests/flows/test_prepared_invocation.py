@@ -18,42 +18,9 @@ from tests.flows.report_headline import assert_paired_headline
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 
-# The Criterion key each kind records through the acceptance owner.
-PLANNED_KEYS = {
-    "ordinary": "echo_ok",
-    "target_selection": "lint_clean_chosen",
-    "simulation_record": "sim_pass_chosen",
-}
 
-
-@pytest.fixture
-def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A session runtime with no ambient state, identity or log variables."""
-    from booley.runtime import runtime_context
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    for name in (
-        "BOOLEY_STATE_FILE",
-        "BOOLEY_TICKET_FILE",
-        "BOOLEY_LOGS_DIR",
-        "BOOLEY_RUNTIME_DIR",
-        "BOOLEY_DIR",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-    return tmp_path
-
-
-def _bind_strict_state(runtime: Path, monkeypatch: pytest.MonkeyPatch, key: str) -> None:
-    """Write a strict state whose only Criterion is *key* and point the run at it."""
-    from booley.criteria.state import DevelopmentState
-
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({key: True}, strict=True)
-    state.save()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
+def _bind_logs(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the run's log directory under *runtime*."""
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
 
 
@@ -66,13 +33,11 @@ def _ordinary(runtime: Path) -> tuple[Any, Any]:
     class EchoOkFlow(BooleyFlow):
         name = "echo_ok_flow"
         description = "Custom Flow judging echo_ok"
-        satisfies = ["echo_ok"]  # noqa: RUF012 -- mirrors the declared ClassVar shape
 
         def _add_args(self, parser: argparse.ArgumentParser) -> None:
             """This Flow takes no options of its own."""
 
         def _run(self) -> EndpointOutcome:
-            self.set_criterion("echo_ok", True)
             return EndpointOutcome()
 
     return EchoOkFlow(), [
@@ -95,6 +60,9 @@ def _target_selection(runtime: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[A
         self.set_criterion("lint_clean_chosen", True)
         return EndpointOutcome()
 
+    # Private seam: the Target-selection invocation runs `LintFlow._run` itself;
+    # replacing the prepared invocation (`replace_run`) would change the
+    # invocation kind this test asserts.
     monkeypatch.setattr(LintFlow, "_run", run)
     return LintFlow(), LintFlow.request_type(
         target="", work_dir=runtime, report_dir=runtime / "reports"
@@ -156,8 +124,9 @@ def _spy_lifecycle(monkeypatch: pytest.MonkeyPatch) -> tuple[list[object], list[
 
 @pytest.mark.parametrize("kind", ["ordinary", "target_selection", "simulation_record"])
 def test_prepared_invocation_kind_drives_lifecycle(
-    kind: str, runtime: Path, monkeypatch: pytest.MonkeyPatch
+    kind: str, session_runtime: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    runtime = session_runtime
     from booley.flows.prepared_invocation import OrdinaryRunInvocation, TargetSelectionInvocation
     from booley.flows.sim.record_invocation import SimulationRecordInvocation
 
@@ -166,8 +135,7 @@ def test_prepared_invocation_kind_drives_lifecycle(
         "target_selection": TargetSelectionInvocation,
         "simulation_record": SimulationRecordInvocation,
     }[kind]
-    key = PLANNED_KEYS[kind]
-    _bind_strict_state(runtime, monkeypatch, key)
+    _bind_logs(runtime, monkeypatch)
 
     simulation_record_admissions: list[object] = []
     if kind == "ordinary":
@@ -195,7 +163,10 @@ def test_prepared_invocation_kind_drives_lifecycle(
     assert_paired_headline(runtime / "reports", flow.name)
 
 
-def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(runtime: Path) -> None:
+def test_lint_and_custom_flow_hold_a_memory_reservation_through_the_run(
+    session_runtime: Path,
+) -> None:
+    runtime = session_runtime
     for kind in ("ordinary", "target_selection"):
         # Each case gets its own patches, Project and state.
         with pytest.MonkeyPatch.context() as patch:
@@ -220,8 +191,7 @@ def _assert_holds_reservation_through_run(
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
     monkeypatch.setattr(endpoint_admission, "resolve_common_booley_dir", lambda: booley_dir)
-    key = PLANNED_KEYS[kind]
-    _bind_strict_state(runtime, monkeypatch, key)
+    _bind_logs(runtime, monkeypatch)
     if kind == "ordinary":
         flow, request = _ordinary(runtime)
     else:
@@ -230,6 +200,8 @@ def _assert_holds_reservation_through_run(
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     held_during_run: list[int] = []
     flow_type = type(flow)
+    # Private seam: the invocation runs the Flow's own `_run`; wrapping it is
+    # the only way to read the slot store while the run is in flight.
     original_run = flow_type._run
 
     def observing_run(self: Any) -> EndpointOutcome:

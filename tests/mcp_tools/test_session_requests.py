@@ -14,6 +14,7 @@ from booley.mcp.application import McpApplication, McpDispatchResult
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import SessionRegistry
 from tests.mcp_tools.test_session_registry import SCOPE, _fake_process
+from tests.time_budget import hang_guard_s
 
 
 def _proc_peers(tmp_path):
@@ -53,7 +54,7 @@ async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
         canonicalize=lambda n: n,
         on_discovery_error=lambda _: None,
     )
-    observer = SessionObserver(budget=1)
+    observer = SessionObserver(budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     lifetime = SimpleNamespace(
         sessions=observer,
@@ -148,7 +149,7 @@ async def test_reused_sdk_handler_task_reads_message_request_not_inherited_peer(
         session_peer, "peer_identity", lambda *args, **_k: lookup(*args, proc_root=proc)
     )
     monkeypatch.setattr(session_registry, "_worktree_facts", lambda p: (p, "fixture", "main"))
-    observer = SessionObserver(budget=1)
+    observer = SessionObserver(budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     queue = asyncio.Queue()
     session = SimpleNamespace(
@@ -267,7 +268,7 @@ def _observer_without_peer(tmp_path, monkeypatch, clock):
     monkeypatch.setattr(session_peer, "peer_identity", lambda *_a, **_k: None)
     monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
     monkeypatch.setattr(session_registry, "_worktree_facts", lambda p: (p, "fixture", "main"))
-    observer = SessionObserver(now=lambda: clock[0], budget=1)
+    observer = SessionObserver(now=lambda: clock[0], budget=hang_guard_s())
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path))
     return observer
 

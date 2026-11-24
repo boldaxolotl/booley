@@ -28,7 +28,7 @@ from booley.measurement.base import (
     ChangedFiles,
     changed_files,
     protected_edits,
-    resolve_base,
+    resolve_rules_base,
 )
 from booley.measurement.metrics_file import (
     METRICS_FILE,
@@ -59,6 +59,7 @@ class ChangeKind(StrEnum):
 
     BOUND_ADDED = "bound added"
     TABLE_ADDED = "table added"
+    TRACKED_TABLE_ADDED = "table added with tracked metrics only"
     MAX_LOWERED = "maximum lowered"
     MIN_RAISED = "minimum raised"
     MAX_RAISED = "maximum raised"
@@ -74,6 +75,7 @@ class ChangeKind(StrEnum):
 _DIRECTION: dict[ChangeKind, Direction] = {
     ChangeKind.BOUND_ADDED: Direction.TIGHTENED,
     ChangeKind.TABLE_ADDED: Direction.TIGHTENED,
+    ChangeKind.TRACKED_TABLE_ADDED: Direction.NEUTRAL,
     ChangeKind.MAX_LOWERED: Direction.TIGHTENED,
     ChangeKind.MIN_RAISED: Direction.TIGHTENED,
     ChangeKind.MAX_RAISED: Direction.LOOSENED,
@@ -227,7 +229,8 @@ def _classify(before: WrittenRules, after: WrittenRules) -> tuple[RuleChange, ..
         key = (table.target, table.flow)
         previous = old.get(key)
         if previous is None:
-            changes.append(_row(table, ChangeKind.TABLE_ADDED))
+            kind = ChangeKind.TABLE_ADDED if table.bounds else ChangeKind.TRACKED_TABLE_ADDED
+            changes.append(_row(table, kind))
             continue
         off = after.switched_off.get(key, frozenset())
         changes.extend(_bound_changes(previous, table, off))
@@ -254,7 +257,7 @@ class _Side:
     problem: str | None  # why the files could not be located
 
 
-def _blob(repository: Path, commit: str, path: str) -> bytes | None:
+def commit_file(repository: Path, commit: str, path: str) -> bytes | None:
     """The content of *path* at *commit*, or None when the commit has no such file."""
     try:
         kind = raw_git(repository, "cat-file", "-t", f"{commit}:{path}").strip()
@@ -278,8 +281,8 @@ def _read_side(
         return _Side(label, None, None, TESTS_FILE, f"{label} commit: {exc}")
     tests_path = (place / TESTS_FILE).as_posix()
     try:
-        metrics = _blob(repository, commit, (place / METRICS_FILE).as_posix())
-        tests = _blob(repository, commit, tests_path)
+        metrics = commit_file(repository, commit, (place / METRICS_FILE).as_posix())
+        tests = commit_file(repository, commit, tests_path)
     except FileCommitError as exc:  # e.g. a directory named like the file
         return _Side(label, None, None, tests_path, f"{label} commit: {exc}")
     return _Side(label, metrics, tests, tests_path, None)
@@ -359,8 +362,9 @@ def rules_diff(repository: Path, keyed: KeyedCommit, base: str | None) -> RulesD
     *base* is the RTL Base commit (``None``: no base). When ``keyed.booley_commit`` is
     ``None`` the rules are in the measured tree and the two commits of *repository* are
     compared, each at the Booley Directory placement it configures. Otherwise they come
-    from the Versioned Booley Directory: its own Base (merge-base with its default
-    branch, kept on the result) is compared with ``keyed.booley_commit`` and *base* is
+    from the Versioned Booley Directory: its own rules Base (merge-base with local ``main``
+    when that holds commits ``origin/HEAD`` lacks, else as the RTL default Base; kept on
+    the result) is compared with ``keyed.booley_commit`` and *base* is
     not used. A missing file declares nothing; an unreadable one is reported in
     ``unreadable`` and nothing else is compared. No Base means no changes.
 
@@ -373,11 +377,31 @@ def rules_diff(repository: Path, keyed: KeyedCommit, base: str | None) -> RulesD
             return RulesDiff((), None, None, None)
         return _compare(repository, base, keyed.commit, booley_dir_at)
     paired = _paired_repository(repository)
-    paired_base = resolve_base(paired, keyed.booley_commit)
+    paired_base = resolve_rules_base(paired, keyed.booley_commit)
     if paired_base.commit is None:
         return RulesDiff((), None, None, paired_base)
     diff = _compare(paired, paired_base.commit, keyed.booley_commit, _at_root)
     return replace(diff, paired_base=paired_base)
+
+
+def rules_base_tree(repository: Path, keyed: KeyedCommit, diff: RulesDiff) -> str | None:
+    """The Booley Directory tree a base run should have been measured under, if any.
+
+    ``None`` when the rules are in the measured tree (no preference). Otherwise the tree
+    of the rules Base, or of the measured Booley Directory commit when it has no rules
+    Base (it is its own Base, or none exists).
+    """
+    if keyed.booley_commit is None:
+        return None
+    if diff.paired_base is None or diff.paired_base.commit is None:
+        return keyed.key.booley_tree
+    tree = raw_git(
+        _paired_repository(repository),
+        "rev-parse",
+        "--verify",
+        f"{diff.paired_base.commit}^{{tree}}",
+    )
+    return tree.decode("ascii").strip()
 
 
 def _under(place: PurePosixPath, changed: ChangedFiles) -> ChangedFiles:

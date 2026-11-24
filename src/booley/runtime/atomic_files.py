@@ -6,7 +6,8 @@ import os
 import tempfile
 from pathlib import Path
 
-from booley.runtime.filesystem_utils import replace_file, unlink_file
+from booley.runtime import timefmt
+from booley.runtime.filesystem_utils import make_directories, replace_file, unlink_file
 
 STAGED_SUFFIX = ".booley-staged"
 """Suffix of a durable record staged beside its final name, never read as a record."""
@@ -27,11 +28,31 @@ def fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def keep_unreadable(path: Path) -> Path:
+    """Move an unreadable state file aside, beside itself, and return the kept path.
+
+    The copy is named ``<name>.unreadable-<UTC time>``, with ``-2``, ``-3``, ...
+    appended when that name is taken, so an earlier kept copy is never replaced.
+    The caller holds the lock that serializes writers of *path*. ``OSError``
+    propagates; one raised by the rename leaves *path* in place, one raised by
+    the directory sync after it leaves the file at the kept path.
+    """
+    stem = f"{path.name}.unreadable-{timefmt.compact_utc_now()}"
+    kept = path.with_name(stem)
+    number = 1
+    while kept.exists():
+        number += 1
+        kept = path.with_name(f"{stem}-{number}")
+    replace_file(path, kept)
+    fsync_directory(path.parent)
+    return kept
+
+
 def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:
     from booley.core.booley_layout import reject_retired_path
 
     reject_retired_path(path.absolute())
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     descriptor, raw_temporary = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",

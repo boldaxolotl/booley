@@ -150,24 +150,29 @@ def test_other_import_failures_are_not_reported_as_a_missing_package(
 # AC2 and AC7: operator sites in small Verilog and SystemVerilog fixtures.
 
 
-def test_relational_operator_sites(tmp_path: Path) -> None:
-    assert _sites(_generate(tmp_path, "relational.v"), _RELATIONAL) == [
-        (2, "<", "<="),
-        (3, "<=", "<"),
-        (4, ">", ">="),
-        (5, ">=", ">"),
-        (6, "==", "!="),
-        (7, "!=", "=="),
-        (8, "===", "!=="),
-        (9, "!==", "==="),
-    ]
-
-
-def test_wildcard_equality_sites(tmp_path: Path) -> None:
-    assert _sites(_generate(tmp_path, "relational_sv.sv"), _RELATIONAL) == [
-        (2, "==?", "!=?"),
-        (3, "!=?", "==?"),
-    ]
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (
+            "relational.v",
+            [
+                (2, "<", "<="),
+                (3, "<=", "<"),
+                (4, ">", ">="),
+                (5, ">=", ">"),
+                (6, "==", "!="),
+                (7, "!=", "=="),
+                (8, "===", "!=="),
+                (9, "!==", "==="),
+            ],
+        ),
+        ("relational_sv.sv", [(2, "==?", "!=?"), (3, "!=?", "==?")]),  # wildcard equality
+    ],
+)
+def test_relational_operator_sites(
+    tmp_path: Path, name: str, expected: list[tuple[int, str, str]]
+) -> None:
+    assert _sites(_generate(tmp_path, name), _RELATIONAL) == expected
 
 
 def test_arithmetic_logical_operator_sites(tmp_path: Path) -> None:

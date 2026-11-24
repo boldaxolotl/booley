@@ -79,8 +79,7 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
         "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
-        "output summarizes unselected skips; pass `--result-verbosity full` to print "
-        "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
+        "output summarizes unselected skips; the complete XML and JSON results are always retained"
     ),
     "synth": (
         f"{_BASELINE_CONTROL}; physical Targets must own an SDC fileset that creates a clock"
@@ -88,35 +87,34 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
 }
 
 
-# Reviewer focus names and invocations come from the registry. These blurbs are
-# the human explanation that registry metadata intentionally does not carry.
-# A test requires every reviewer criterion to have one, so a new focus cannot
-# silently appear as an unexplained row.
-_REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
-    "review_rtl_bugs": (
+# Reviewer focus rows: the human explanation that registry metadata intentionally
+# does not carry, keyed by (category, focus). A test ties the keys to the Reviewer's
+# focus sets, so a new focus cannot silently appear as an unexplained row.
+_REVIEW_FOCUS_DESCRIPTIONS: dict[tuple[str, str], str] = {
+    ("rtl", "bugs"): (
         "Functional bug patterns, synthesis hazards, reset/overflow/signing mistakes, "
         "and ifdef consistency across built Targets"
     ),
-    "review_rtl_protocol": (
+    ("rtl", "protocol"): (
         "Bus/protocol rule compliance, handshake behavior, ordering, and "
         "clock-domain crossings (CDC)"
     ),
-    "review_rtl_spec": (
+    ("rtl", "spec"): (
         "Spec compliance: the RTL implements what the change request/spec requires, no more and no less"
     ),
-    "review_rtl_code_style": (
+    ("rtl", "code_style"): (
         "Comments, naming, readability, maintainability, magic values, and "
         "assertion/cover-point quality"
     ),
-    "review_rtl_optimization": (
+    ("rtl", "optimization"): (
         "Functionally dead RTL and strict power/performance/area improvements with no "
         "functional or engineering trade-off"
     ),
-    "review_rtl_security": (
+    ("rtl", "security"): (
         "Fault-injection resistance, simple power/timing leakage, secret "
         "exposure, and unsafe failure behavior"
     ),
-    "review_tb_quality": (
+    ("tb", "quality"): (
         "False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, "
         "timing/sampling mistakes, and TB code quality"
     ),
@@ -195,9 +193,24 @@ def render_flow_reference(
     return "\n".join(lines)
 
 
-def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[str]:
+_REVIEWER_RECHECK = (
+    '**Re-check:** after fixing findings, pass `recheck="<evidence file>"` '
+    "(CLI: `--recheck <evidence file>`), the `Reviewer evidence:` path of the "
+    "earlier review or re-check, instead of running a new review. Run one full "
+    "review, then re-check until its findings are fixed; run another full review "
+    "only on purpose. Each open finding becomes `fixed`, `still open`, or `can't "
+    "tell`, and no new finding is reported. `fixed` needs current code that shows "
+    "it. Category, focus, and scope come from the file, so `scope`, `base`, "
+    "`category`, `focus`, `spec`, `spec_text`, and `steer` are refused. With "
+    "`fail_on`, only `still open` and `can't tell` findings count. To leave a "
+    'finding as it is, pass `waive=[["<finding-id>", "<reason>"]]` (CLI: `--waive '
+    '<finding-id> "<reason>"`) with `recheck`; the Reviewer accepts or refuses '
+    "each proposal, and an accepted `waived` finding never counts for `fail_on`."
+)
+
+
+def _render_reviewer_reference() -> list[str]:
     """Render every registry-declared reviewer focus and its human meaning."""
-    commands = satisfies_args or {}
     lines = [
         "#### `reviewer`",
         "",
@@ -222,13 +235,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "| Category | Focus | What it checks |",
         "|----------|-------|----------------|",
     ]
-    for criterion, description in _REVIEW_FOCUS_DESCRIPTIONS.items():
-        invocation = commands.get(criterion)
-        if invocation is None:
-            continue
-        parts = invocation.split()
-        category = parts[parts.index("--category") + 1]
-        focus = parts[parts.index("--focus") + 1]
+    for (category, focus), description in _REVIEW_FOCUS_DESCRIPTIONS.items():
         lines.append(f"| `{category}` | `{focus}` | {description} |")
     lines.extend(
         [
@@ -248,6 +255,8 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "the `scope` to give the Reviewer the files that use the changed ones. Findings "
             "already present before the change are listed separately as pre-existing and are "
             "never open.",
+            "",
+            _REVIEWER_RECHECK,
         ]
     )
     return lines
@@ -294,7 +303,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
         "Model-call minimum budgets apply; seconds-only providers round up. "
         "A CLI run is a Standalone Job: it shows in "
-        "the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` "
+        "the Dashboard and copies its output to `job_logs/standalone/<run_id>/job.log` "
         "in the Project's common Booley Directory (the main checkout's `.booley` from a linked "
         "worktree).",
         "",
@@ -309,7 +318,7 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
     if coverage_analyst is not None:
         lines.extend(["", *_render_coverage_analyst_reference()])
     if reviewer is not None:
-        lines.extend(["", *_render_reviewer_reference(reviewer.satisfies_args)])
+        lines.extend(["", *_render_reviewer_reference()])
     return "\n".join(lines)
 
 

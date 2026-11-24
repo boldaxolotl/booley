@@ -17,10 +17,8 @@ def test_named_tests_reject_invalid_selections(names: tuple[str, ...]) -> None:
         NamedTests(names)
 
 
-def test_options_reject_invalid_timeout_and_verbosity() -> None:
+def test_options_reject_invalid_timeouts() -> None:
     with pytest.raises(InvalidSimulationRequestError, match="timeout"):
         SimulationOptions(timeout_ms=0)
     with pytest.raises(InvalidSimulationRequestError, match="build timeout"):
         SimulationOptions(build_timeout_ms=0)
-    with pytest.raises(InvalidSimulationRequestError, match="verbosity"):
-        SimulationOptions(result_verbosity="verbose")

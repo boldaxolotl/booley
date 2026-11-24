@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.flows.synth.backends.openroad import ppa as openroad_ppa
 from booley.flows.synth.backends.yosys import ppa
+from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.ppa_config import append_ppa_args
 from booley.flows.synth.profiles import validate_ppa_profile
 
 
@@ -30,21 +34,6 @@ def test_invalid_profile_rejected():
         validate_ppa_profile("small")
 
 
-def test_explicit_openroad_density_override_is_preserved():
-    base = openroad_ppa.openroad_profile("balanced")
-    resolved = openroad_ppa.with_openroad_overrides(base, placement_density=0.72)
-    assert resolved.placement_density == 0.72
-
-
-def test_raw_script_and_named_recipe_are_mutually_exclusive():
-    with pytest.raises(BoundaryError, match="mutually exclusive"):
-        ppa.with_yosys_overrides(
-            ppa.yosys_profile("balanced"),
-            abc_recipe="fast",
-            abc_script="+strash;map",
-        )
-
-
 def test_raw_abc_script_must_not_be_empty():
     with pytest.raises(BoundaryError, match="non-empty"):
         ppa.validate_abc_script("+")
@@ -52,11 +41,6 @@ def test_raw_abc_script_must_not_be_empty():
 
 @pytest.mark.parametrize("profile", [None, "balanced"])
 def test_target_fanout_is_unknown_with_or_without_profile_override(profile):
-    import argparse
-
-    from booley.flows.synth.mode import SynthMode
-    from booley.flows.synth.ppa_config import append_ppa_args
-
     with pytest.raises(BoundaryError, match=r"unknown setting.*max_fanout"):
         append_ppa_args(
             [],

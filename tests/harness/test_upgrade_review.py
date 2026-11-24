@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import doctor, upgrade_review
+from tests.time_budget import hang_guard_s
 
 _NOW = "2026-08-31T12:00:00Z"
 
@@ -109,7 +110,7 @@ def test_cross_process_observers_preserve_highest_target(tmp_path: Path) -> None
     ]
 
     # Kept on subprocess.Popen: four children must run concurrently
-    assert [process.wait(timeout=10) for process in processes] == [0, 0, 0, 0]
+    assert [process.wait(timeout=hang_guard_s()) for process in processes] == [0, 0, 0, 0]
     assert _payload(booley_dir)["pending_target"] == "1.5.0"
 
 

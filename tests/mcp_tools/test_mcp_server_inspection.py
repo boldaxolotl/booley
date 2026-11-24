@@ -135,7 +135,11 @@ def test_discovery_errors_fail_with_first_error_as_fix(monkeypatch, tmp_path):
 
 
 def test_log_setup_failure_fails(monkeypatch, tmp_path):
-    for payload in (_payload(logs_dir_ok=False), {"tools": _ALL_TOOLS, "errors": []}):
+    for payload in (
+        _payload(logs_dir_ok=False),
+        _payload(logs_dir_writable=False),
+        {"tools": _ALL_TOOLS, "errors": []},
+    ):
         report = _Probe(monkeypatch, tmp_path, _completed(json.dumps(payload))).inspect()
 
         assert _summary(report) == [(Severity.FAIL, "MCP interactive log setup failed")]
@@ -238,13 +242,13 @@ def test_probe_command_mounts_project_and_relocated_booley_dir(monkeypatch, tmp_
     assert cmd[5].endswith(":/work")
     assert cmd[6:8] == ["-w", "/work"]
     assert "BOOLEY_DIR=/work/tools/booley" in cmd
-    assert "BOOLEY_MCP_MODE=interactive" in cmd
+    assert "BOOLEY_MCP_DEVELOPER_AGENT=1" in cmd
     assert cmd[-4:] == ["booley:test", "python", "-m", "booley.mcp.probe"]
     assert "-c" not in cmd
     assert kwargs["cwd"] == root
     assert kwargs["timeout"] == 60
     assert kwargs["env"]["BOOLEY_DIR"] == str(host_booley_dir)
-    assert kwargs["env"]["BOOLEY_MCP_MODE"] == "interactive"
+    assert kwargs["env"]["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
 
     default = _Probe(monkeypatch, tmp_path / "plain", _completed(json.dumps(_payload())))
     reset_cache()

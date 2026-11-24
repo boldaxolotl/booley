@@ -22,6 +22,7 @@ from typing import Any, Literal
 from booley.core.build_paths import work_root_for
 from booley.flows import job_resources
 from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
@@ -189,6 +190,30 @@ def prepare_simulation_build(
         raise SimulationBuildPreparationError(str(exc)) from exc
 
 
+def _resolve_judged_setup(
+    handle: TargetHandle,
+    *,
+    work_root: Path,
+    resolution_vlnv: str | None,
+    backend_arguments: Sequence[str],
+    core_library: fusesoc_registry.CoreLibraryPlan | None,
+    setup_runner: SetupRunner | None,
+) -> fusesoc_registry.ResolvedTarget:
+    """Resolve the Target; its FuseSoC setup records a failure when the Flow refuses its output."""
+    with job_resources.judged_commands_failing_on_error() as setup:
+        resolved = fusesoc_registry.resolve_target_handle(
+            handle,
+            build_root=work_root,
+            resolution_vlnv=resolution_vlnv,
+            backend_arguments=backend_arguments,
+            library_plan=core_library,
+            # Without a measured runner FuseSoC setup runs unmeasured.
+            runner=setup_runner or subprocess.run,
+        )
+        setup.judge(True)
+    return resolved
+
+
 def _prepare_simulation_build(
     handle: TargetHandle,
     *,
@@ -208,14 +233,13 @@ def _prepare_simulation_build(
         # Isolated Projects resolve through a private mirror so the build reads
         # only fileset-listed headers; ``None`` elsewhere (shared view).
         core_library = fusesoc_registry.build_library_plan(root, work_root)
-    resolved = fusesoc_registry.resolve_target_handle(
+    resolved = _resolve_judged_setup(
         handle,
-        build_root=work_root,
+        work_root=work_root,
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
-        library_plan=core_library,
-        # Without a measured runner FuseSoC setup runs unmeasured, as for a Mutation Flow.
-        runner=setup_runner or subprocess.run,
+        core_library=core_library,
+        setup_runner=setup_runner,
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
@@ -447,9 +471,12 @@ def setup_timeout_s(build_timeout_s: int) -> int:
     return max(build_timeout_s, DEFAULT_SIM_BUILD_TIMEOUT_MS // 1000)
 
 
-def _setup_oom_reason(peak_rss_mb: float | None) -> str:
+def _setup_oom_reason(result: SubprocessResult) -> str:
     """Name the OOM evidence of a FuseSoC setup, as :func:`_build_oom_reason` does for a build."""
+    peak_rss_mb = result.peak_rss_mb
     peak = "peak RSS unknown" if peak_rss_mb is None else f"peak RSS {peak_rss_mb:.0f} MB"
+    if result.host_oom_kill:
+        return f"FuseSoC setup failed: the host ran out of memory and killed it ({peak})"
     return (
         f"FuseSoC setup failed while the Sandbox recorded an OOM kill ({peak}; raise "
         "[sandbox].memory and recreate the Sandbox, or run fewer Jobs at once)"
@@ -488,7 +515,7 @@ def measured_setup_runner(invoke: SetupInvoker, *, target: str, timeout_s: int) 
         if result.timed_out:
             stderr = f"{stderr}\nFuseSoC setup timed out after {timeout_s} s".lstrip("\n")
         elif result.oom_blamed:
-            stderr = f"{stderr}\n{_setup_oom_reason(result.peak_rss_mb)}".lstrip("\n")
+            stderr = f"{stderr}\n{_setup_oom_reason(result)}".lstrip("\n")
         return subprocess.CompletedProcess(list(cmd), result.returncode, result.stdout, stderr)
 
     return run
@@ -508,15 +535,19 @@ _OOM_REMEDY = (
 )
 
 
-def _build_oom_reason(peak_rss_mb: float | None) -> str:
+def _build_oom_reason(result: SubprocessResult) -> str:
     """Name the OOM evidence without claiming the build process itself was killed.
 
     The Sandbox OOM counter is cgroup-wide, so a sibling process may have
-    raised it; the wording states only what was observed.
+    raised it; the wording states only what was observed. A host kill names
+    no Sandbox remedy: the Job's own line carries it.
     """
+    peak_rss_mb = result.peak_rss_mb
     peak = (
         "build peak RSS unknown" if peak_rss_mb is None else f"build peak RSS {peak_rss_mb:.0f} MB"
     )
+    if result.host_oom_kill:
+        return f"build failed: the host ran out of memory and killed it ({peak})"
     return f"build failed while the Sandbox recorded an OOM kill ({peak}; {_OOM_REMEDY})"
 
 
@@ -525,7 +556,7 @@ def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, gene
     if result.timed_out:
         return _build_timeout_reason(timeout_s)
     if result.oom_blamed:
-        return _build_oom_reason(result.peak_rss_mb)
+        return _build_oom_reason(result)
     return generic
 
 
@@ -670,18 +701,9 @@ def build_output_tail(output: str) -> str:
     return "..." + cut
 
 
-def build_failure_report(outcome: BuildOutcome) -> str:
-    """Return the reason first, then a bounded tail of the build output."""
-    tail = build_output_tail(outcome.output)
+def build_failure_report(outcome: BuildOutcome, project_paths: ProjectSourcePaths) -> str:
+    """Return the reason first, then a bounded tail of the build output by Project path."""
+    tail = build_output_tail(project_paths.project_text(outcome.output))
     if not tail:
         return outcome.reason
     return f"{outcome.reason}\n--- output tail ---\n{tail}"
-
-
-class SimulationBuildInfrastructureError(RuntimeError):
-    """An authenticated build attempt ended without a design verdict."""
-
-    def __init__(self, target: str, outcome: BuildOutcome) -> None:
-        super().__init__(build_failure_report(outcome))
-        self.target = target
-        self.outcome = outcome

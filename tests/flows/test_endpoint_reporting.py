@@ -14,6 +14,11 @@ from booley.flows import endpoint_reporting
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.mcp_tools.test_base import ConcreteMcpTool
 
+try:
+    import resource as _real_resource
+except ImportError:  # Windows has no resource module, and no os.wait4 to need it
+    _real_resource = None
+
 
 def fake_accounting(
     monkeypatch: pytest.MonkeyPatch, *, platform: str = "linux", peak: int = 32768
@@ -35,6 +40,8 @@ def fake_accounting(
             RUSAGE_SELF=0,
             RUSAGE_CHILDREN=-1,
             getrusage=getrusage,
+            # os.wait4 builds its usage record from the module's real type.
+            struct_rusage=_real_resource.struct_rusage if _real_resource else None,
         ),
     )
     monkeypatch.setattr(

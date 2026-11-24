@@ -52,6 +52,7 @@ from booley.runtime.file_lock import (
     release_file_lock,
     wait_for_file_lock,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)
@@ -146,10 +147,6 @@ def _validate_flow_options(flow: str, flow_options: dict[str, Any]) -> dict[str,
         raise EdamSecurityError(
             f"flow_options keys {sorted(bad)} not permitted for flow {flow!r}; "
             f"allowed: {sorted(allowed)}"
-        )
-    if "tool" not in flow_options:
-        raise EdamSecurityError(
-            f"flow_options for flow {flow!r} must name the upstream Edalize 'tool' field"
         )
     return dict(flow_options)
 
@@ -402,7 +399,7 @@ def configure(flow: str, edam: dict[str, Any], work_root: Path | str) -> Path:
     """
     cls = _flow_class(flow)
     root = Path(work_root)
-    root.mkdir(parents=True, exist_ok=True)
+    make_directories(root)
     backend = cls(edam=edam, work_root=str(root))
     backend.configure()
     logger.debug("edalize %s flow configured in %s", flow, root)
@@ -423,7 +420,7 @@ def _work_root_lease_context(
     root = Path(work_root).resolve()
     lock_path = _work_root_lock_path(root)
     try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(lock_path.parent)
         handle = lock_path.open("a+", encoding="utf-8")
     except OSError as exc:
         raise WorkRootLeaseError(root, lock_path, exc) from exc
@@ -487,21 +484,11 @@ def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
     return posix_relpath(Path(work_root).resolve(), Path(work_dir).resolve())
 
 
-def make_command(
-    work_root: Path | str,
-    *,
-    target: str | None = None,
-    make_vars: dict[str, str] | None = None,
-) -> list[str]:
+def make_command(work_root: Path | str) -> list[str]:
     """Build the ``make`` command that drives an Edalize work dir.
 
     Edalize's ``configure()`` emits a Makefile whose default target builds and
     whose ``run`` target runs. Booley executes this command locally inside the
     Sandbox.
     """
-    cmd = ["make", "-C", str(work_root)]
-    if target:
-        cmd.append(target)
-    for key, value in (make_vars or {}).items():
-        cmd.append(f"{key}={value}")
-    return cmd
+    return ["make", "-C", str(work_root)]

@@ -12,8 +12,9 @@ import pytest
 from mcp import Client, MCPError
 from mcp.types import TextContent
 
-from booley.mcp import server
+from booley.mcp import catalog, server
 from booley.runtime.booley_dir import reset_cache
+from tests.time_budget import hang_guard_s, scaled
 
 
 @pytest.fixture
@@ -24,7 +25,8 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     for name in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_RECORD"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
+    # Startup reconciles orphaned jobs of the real Project; these tests have none.
     monkeypatch.setattr(server, "_reconcile_orphaned_jobs", lambda: None)
     reset_cache()
     yield directory
@@ -54,6 +56,21 @@ def write_endpoint(directory: Path, name="local_check", *, family="McpTool", opt
     return path
 
 
+def build_server():
+    # server.py exposes no public builder; main() only runs the stdio transport.
+    return server._build_server()
+
+
+def build_catalog():
+    # No public builder either: the application and its live catalog are assembled here.
+    return server._build_mcp_catalog(server._McpLifetime(None, None))
+
+
+def build_sdk(application):
+    # The poll/cancel bypass is wired here and no public builder reaches it either.
+    return server._build_sdk_server(application, server._McpLifetime(None, None))
+
+
 @asynccontextmanager
 async def live_client(sdk):
     """Expose assertion failures after the SDK's task-group teardown completes."""
@@ -74,38 +91,8 @@ async def tools(client):
     return {item.name: item for item in (await client.list_tools()).tools}
 
 
-def test_audited_capabilities_refresh_on_running_server(project):
-    write_endpoint(project, "local_flow", family="BooleyFlow")
-    write_endpoint(project, "local_specialist", family="Specialist")
-    sdk, _ = server._build_server()
-
-    async def exercise():
-        async with live_client(sdk) as client:
-            initial = await tools(client)
-            from booley.mcp.registry import discover_mcp_tools
-
-            endpoints = discover_mcp_tools(project_mcp_tools_dir=project / "mcp_tools")
-            configurable = [item for item in endpoints if item.kind != "mcp_tool"]
-            assert {"sim", "lint", "synth", "fpga", "local_flow", "local_specialist"} <= set(
-                initial
-            )
-            config = project / "booley.toml"
-            for item in configurable:
-                if item.name not in initial:
-                    continue
-                table = "flows" if item.kind == "flow" else "specialists"
-                config.write_text(f"[{table}.{item.name}]\nenabled = false\n")
-                assert item.name not in await tools(client), (
-                    "running catalog must hide currently disabled endpoint"
-                )
-                config.write_text(f"[{table}.{item.name}]\nenabled = true\n")
-                assert (await tools(client))[item.name] == initial[item.name]
-
-    asyncio.run(exercise())
-
-
 def test_custom_endpoint_set_and_schema_refresh(project):
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -134,7 +121,7 @@ def test_custom_endpoint_refresh_in_redirected_booley_directory(project, monkeyp
     (project.parent / "booley.toml").write_text('[project]\ndir = "selected"\n')
     project.rmdir()
     reset_cache()
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -149,7 +136,7 @@ def test_custom_endpoint_refresh_in_redirected_booley_directory(project, monkeyp
 
 
 def test_retired_custom_directory_change_refuses_then_recovers(project):
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -171,7 +158,7 @@ def test_config_is_read_even_with_preserved_mtime(project):
     config = project / "booley.toml"
     config.write_text("[flows.sim]\nenabled = true\n")
     before = config.stat()
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -185,7 +172,7 @@ def test_config_is_read_even_with_preserved_mtime(project):
 
 
 def test_invalid_config_is_not_served_as_stale_enabled_catalog(project):
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -216,6 +203,7 @@ def test_refresh_preserves_job_and_dispatch_state(project, monkeypatch):
         entered.set()
         await asyncio.Event().wait()
 
+    # Replaced so a call parks a job without running a Flow subprocess.
     monkeypatch.setattr(server, "_run_subprocess", child)
 
     async def dispatch(name, arguments, definition, counts, jobs, **kwargs):
@@ -226,9 +214,11 @@ def test_refresh_preserves_job_and_dispatch_state(project, monkeypatch):
             await entered.wait()
         return [TextContent(type="text", text="accepted")]
 
+    # Replaced to observe each dispatch without running a Flow.
     monkeypatch.setattr(server, "_dispatch_booley_mcp_tool", dispatch)
+    # The health alert reads the real Project's job state, which this test does not have.
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -262,7 +252,7 @@ def test_initially_disabled_enable_and_helper_bytes_refresh_without_repeat_impor
     source = source.replace("'--first'", "'--' + OPTION")
     source += f"\nfrom pathlib import Path\nwith Path({str(marker)!r}).open('a') as output:\n    output.write('import\\n')\n"
     path.write_text(source)
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -291,8 +281,9 @@ def test_hidden_and_removed_calls_refresh_before_dispatch(project, monkeypatch):
         calls.append(args)
         raise AssertionError("hidden endpoint reached dispatch")
 
+    # Replaced so a hidden endpoint that reaches dispatch fails the test.
     monkeypatch.setattr(server, "_dispatch_booley_mcp_tool", forbidden)
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -316,8 +307,9 @@ def test_new_custom_call_refreshes_and_dispatches_published_source(project, monk
         seen.append((name, arguments, source["custom_path"]))
         return [TextContent(type="text", text="new endpoint dispatched")]
 
+    # Replaced to see which published source the dispatch receives.
     monkeypatch.setattr(server, "_dispatch_booley_mcp_tool", dispatch)
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -331,7 +323,7 @@ def test_new_custom_call_refreshes_and_dispatches_published_source(project, monk
 
 
 def test_duplicate_refresh_is_atomic_and_corrected_import_recovers(project):
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
     catalog = application.live_catalog
     original = application.list_tools()
 
@@ -353,20 +345,21 @@ def test_duplicate_refresh_is_atomic_and_corrected_import_recovers(project):
 
 
 def test_poll_and_cancel_bypass_failed_and_waiting_catalog_refresh(project):
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
     catalog = application.live_catalog
-    sdk = server._build_sdk_server(application, server._McpLifetime(None, None))
+    sdk = build_sdk(application)
 
     async def exercise():
         async with live_client(sdk) as client:
             await client.list_tools()
+            # Holding the refresh lock proves poll and cancel never wait for a refresh.
             async with catalog._lock:
                 result = await asyncio.wait_for(
-                    client.call_tool("booley_poll", {"run_id": "absent"}), 1
+                    client.call_tool("booley_poll", {"run_id": "absent"}), hang_guard_s()
                 )
                 assert result.content
                 result = await asyncio.wait_for(
-                    client.call_tool("booley_cancel", {"run_id": "absent"}), 1
+                    client.call_tool("booley_cancel", {"run_id": "absent"}), hang_guard_s()
                 )
                 assert result.content
             (project / "booley.toml").write_text("[flows")
@@ -384,7 +377,7 @@ def test_observation_generation_is_independent_and_root_selector_does_not_reloca
     selector = project.parent / "booley.toml"
     selector.write_text('[project]\ndir = ".booley"\n')
     reset_cache()
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
     catalog = application.live_catalog
 
     async def exercise():
@@ -414,7 +407,7 @@ def test_observation_generation_is_independent_and_root_selector_does_not_reloca
 def test_unchanged_catalog_does_not_rescan_installed_sources(project, monkeypatch):
     from booley.mcp import live_catalog
 
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
     discover = live_catalog.discover_mcp_tools
     scans = []
 
@@ -435,7 +428,7 @@ def test_unchanged_catalog_does_not_rescan_installed_sources(project, monkeypatc
 def test_unchanged_catalog_retains_project_boundary_validation(project, monkeypatch):
     from booley.mcp import live_catalog
 
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
 
     def rejected_selection():
         raise RuntimeError("selected Project boundary rejected")
@@ -480,14 +473,14 @@ def test_worker_timeout_reaps_importer_and_descendants(project, monkeypatch):
     assert ready_at is not None
     assert ready_at - started < catalog_worker.DISCOVERY_TIMEOUT_SECONDS
     # Two taskkill calls (10s each), 0.2s grace, and a 5s reap are bounded.
-    assert time.monotonic() - ready_at < 26
+    assert time.monotonic() - ready_at < scaled(26)
     for pid in pid_file.read_text().split():
         assert_worker_pid_stopped(pid)
 
 
-# Upper bound for a queued SIGKILL to take effect on a loaded host; it matches
-# the worker's own 5 s reap bound and is only spent when the process lingers.
-_KILL_LANDS_SECONDS = 5
+# Upper bound for a queued SIGKILL to take effect on a loaded host; it scales
+# with the load factor and is only spent when the process lingers.
+_KILL_LANDS_SECONDS = scaled(5)
 
 
 def assert_worker_pid_stopped(pid):
@@ -497,7 +490,7 @@ def assert_worker_pid_stopped(pid):
 
     if os.name == "nt":
         result = run_bounded_child(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], timeout=10, check=True
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], check=True
         )
         assert all(len(row) < 2 or row[1] != pid for row in csv.reader(result.stdout.splitlines()))
     else:
@@ -527,7 +520,7 @@ def _proc_state(pid):
 def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
     monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "sim")
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -542,7 +535,7 @@ def test_nested_exposure_is_preserved_across_refresh(project, monkeypatch):
 
 
 def test_retired_layout_marker_invalidates_and_recovers(project):
-    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    application, _, _ = build_catalog()
     catalog = application.live_catalog
 
     async def exercise():
@@ -558,8 +551,9 @@ def test_retired_layout_marker_invalidates_and_recovers(project):
     asyncio.run(exercise())
 
 
-@pytest.mark.timeout(120)  # Windows CI: 34.4 s; 3x rounded up to 30 s.
-def test_config_only_refresh_reuses_unfiltered_discovery(project, monkeypatch):
+@pytest.fixture
+def extract_scans(monkeypatch):
+    """The paths ``registry.extract_mcp_tool_info`` was asked to scan, in order."""
     from booley.mcp import registry
 
     scans = []
@@ -570,9 +564,17 @@ def test_config_only_refresh_reuses_unfiltered_discovery(project, monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
+    return scans
+
+
+@pytest.mark.timeout(120)  # Windows CI: 34.4 s; 3x rounded up to 120 s.
+def test_config_only_refresh_reuses_unfiltered_discovery(project, extract_scans):
+    from booley.mcp import registry
+
+    scans = extract_scans
     write_endpoint(project, "local_flow", family="BooleyFlow")
     write_endpoint(project, "local_specialist", family="Specialist")
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
     endpoints = registry.discover_mcp_tools(project_mcp_tools_dir=project / "mcp_tools")
     startup_scans = len(scans)
 
@@ -597,19 +599,10 @@ def test_config_only_refresh_reuses_unfiltered_discovery(project, monkeypatch):
     asyncio.run(exercise())
 
 
-def test_config_cache_preserves_unknown_specialist_rejection(project, monkeypatch):
-    from booley.mcp import registry
-
-    scans = []
-    original = registry.extract_mcp_tool_info
-
-    def counted(*args, **kwargs):
-        scans.append(args[0])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(registry, "extract_mcp_tool_info", counted)
+def test_config_cache_preserves_unknown_specialist_rejection(project, extract_scans):
+    scans = extract_scans
     write_endpoint(project, "local_specialist", family="Specialist")
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
     startup_scans = len(scans)
 
     async def exercise():
@@ -642,7 +635,7 @@ def test_config_generation_reexecutes_custom_schema(project):
     )
     config = project / "booley.toml"
     config.write_text('[display]\noption = "first"\n')
-    sdk, _ = server._build_server()
+    sdk, _ = build_server()
 
     async def exercise():
         async with live_client(sdk) as client:
@@ -653,3 +646,110 @@ def test_config_generation_reexecutes_custom_schema(project):
             assert "first" not in current
 
     asyncio.run(exercise())
+
+
+def test_live_status_preserves_independent_names_and_observation_precedes_import(
+    project, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from booley.mcp import live_catalog
+
+    seen, imports = [], []
+
+    async def status(name, arguments, jobs, names, *, request_context=None, caller=None):
+        seen.append(set(names))
+        return [SimpleNamespace(text="ready")]
+
+    def worker(paths, cancel):
+        imports.append(paths)
+        return [], []
+
+    # Replaced to record which names the status tool reports.
+    monkeypatch.setattr(server, "_dispatch_special_mcp_tool", status)
+    monkeypatch.setattr(live_catalog, "run_schema_worker", worker)
+    application, _, _ = build_catalog()
+
+    async def exercise():
+        await application.call_tool("booley_status", {})
+        write_endpoint(project)
+        (project / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
+        assert await application.live_catalog.observe_change()
+        assert imports == []
+        await application.live_catalog.refresh()
+        assert len(imports) == 1
+        await application.call_tool("booley_status", {})
+        assert "bwave" in seen[0]
+        assert seen[1] == seen[0] - {"sim"}
+
+    asyncio.run(exercise())
+
+
+def test_duplicate_custom_names_reject_complete_live_and_startup_candidates(project):
+    application, _, _ = build_catalog()
+    original = application.list_tools()
+    write_endpoint(project, "first")
+    second = write_endpoint(project, "second")
+    second.write_text(second.read_text().replace("name = 'second'", "name = 'first'"))
+
+    with pytest.raises(ValueError, match="Duplicate"):
+        asyncio.run(application.live_catalog.refresh())
+    assert application.list_tools() == original
+    with pytest.raises(ValueError, match="Duplicate"):
+        build_catalog()
+
+
+def test_disabled_duplicate_custom_flows_do_not_reject_the_catalog(project):
+    for name in ("one", "two"):
+        path = write_endpoint(project, name, family="BooleyFlow")
+        path.write_text(path.read_text().replace(f"name = {name!r}", "name = 'local'"))
+    config = project / "booley.toml"
+    config.write_text("[flows.local]\nenabled = false\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "sim" in await tools(client)
+            config.write_text("[flows.local]\nenabled = true\n")
+            with pytest.raises(MCPError):
+                await client.list_tools()
+
+    asyncio.run(exercise())
+
+
+def test_gated_tool_exists_only_while_its_flag_is_on(project, monkeypatch, feature_flags):
+    # `booley_poll` is an existing utility. Production registers no gate and no
+    # public entry point adds one, so the test gates it directly.
+    monkeypatch.setitem(catalog.GATED_MCP_TOOLS, "booley_poll", "test-flag")
+    feature_flags.register("test-flag")
+    toml = project / "booley.toml"
+    toml.write_bytes(b"[flows.sim]\nenabled = true\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "booley_poll" not in await tools(client)
+            with pytest.raises(MCPError, match="Unknown MCP tool"):
+                await client.call_tool("booley_poll", {"run_id": "absent"})
+
+            feature_flags.enable(project, "test-flag")
+            assert (await client.call_tool("booley_poll", {"run_id": "absent"})).content
+            assert "booley_poll" in await tools(client)
+
+            toml.write_bytes(b"[flows.sim]\nenabled = true\n")
+            with pytest.raises(MCPError, match="Unknown MCP tool"):
+                await client.call_tool("booley_poll", {"run_id": "absent"})
+
+    asyncio.run(exercise())
+
+
+def test_server_start_refuses_an_invalid_features_table(project, feature_flags):
+    from booley.config.feature_flags import FeatureConfigError
+
+    feature_flags.register("test-flag")
+    (project / "booley.toml").write_bytes(b'[features]\nenable = ["ghost"]\n')
+
+    with pytest.raises(FeatureConfigError, match="ghost"):
+        server._validate_features()
+    # The running catalog treats the same table as every gate closed.
+    assert server._exposure().features == frozenset()

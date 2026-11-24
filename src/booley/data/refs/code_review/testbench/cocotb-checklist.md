@@ -66,7 +66,7 @@ higher-confidence findings — never CRITICAL/MAJOR with LOW confidence.
 
 | # | Check | Look for |
 |---|-------|----------|
-| 1 | **Test name mismatch vs `tests.toml`** | A `tests.toml` name with no matching `@cocotb.test()` function (typo, rename, or an undecorated `async def`) — that test reports *inconclusive* forever; a decorated test missing from `tests.toml` silently never gates a criterion. Compare the declared list against the module's decorated functions |
+| 1 | **Test name mismatch vs `tests.toml`** | A `tests.toml` name with no matching cocotb test ID (typo, rename, an undecorated `async def`, or a parametrized/generated test listed by its function name instead of its rendered IDs) — that test reports *inconclusive* forever; a decorated test missing from `tests.toml` silently never gates a criterion. Compare the declared list against the module's decorated functions and, for generated tests, their rendered IDs |
 | 2 | **Missing output comparison** | A test that drives stimulus but asserts nothing (or only asserts reset state); a test whose only assert is unreachable; `assert True`-shaped tautologies |
 | 3 | **Dead comparisons / non-independent expected** | Expected derived from the same DUT signal being checked (`assert dut.x.value == dut.x.value` shapes); expected computed by mirroring the RTL's own logic instead of the spec; comparison loop that iterates zero times |
 | 4 | **Sentinel prints instead of asserts** | Verdicts "reported" via `print`/`dut._log.info` (e.g. `PASSED`) with no raise — sentinels are ignored for Cocotb Targets, so a print-only test can never fail. Every failure path must raise (assert) |

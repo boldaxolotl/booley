@@ -72,6 +72,10 @@ test = [
     "hypothesis>=6.170.14",
     "pytest==9.2.0",
     "pytest-asyncio==1.4.0",
+    # official_build (tests/harness/test_image_build_contracts.py) builds with
+    # --no-isolation, so the test environment carries the build backend; keep
+    # the floor equal to [build-system] requires.
+    "setuptools>=84.0.0",
     # Run independent tests concurrently in CI. Linux keeps module/class
     # affinity; Windows uses work stealing to balance slower real-Git tests.
     # tests/conftest.py gives every worker its own temp root for
@@ -226,7 +230,7 @@ known-first-party = ["booley"]
 #   PLR0915 (sim) — _run is a linear per-target drive loop (resolve,
 #             execute, classify, write report, accumulate display); splitting
 #             would scatter the per-config result/criterion bookkeeping.
-#   PLR0915 (init_cmd) — _step_interactive is a linear Step-12 setup flow
+#   PLR0915 (init_cmd) — _step_sandbox is a linear Step-12 setup flow
 #             (tracked-guard, build spec, check-only branch, write, docker
 #             provisioning); the sequential guards are one cohesive step.
 #   F401 (init_cmd) — after the Single-Responsibility split, init_cmd is a
@@ -243,7 +247,6 @@ known-first-party = ["booley"]
 #             upstream PR ships the file byte-identical (ADR 0033).
 "src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
-"src/booley/criteria/state.py" = ["PLR0912", "N818"]
 "src/booley/mcp/base.py" = ["B027"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
@@ -277,7 +280,7 @@ markers = [
 filterwarnings = [
     "error",
     # CPython 3.14's tomllib raises this from its own parser on malformed input;
-    # our code only *catches* TOMLDecodeError, it never constructs one. Not ours to fix.
+    # our code only *catches* TOMLDecodeError (one test builds a stand-in). Not ours to fix.
     "ignore:Free-form arguments for TOMLDecodeError are deprecated:DeprecationWarning",
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
     # BOOLEY_DIR. The warning is the behavior under test, not test debt.
@@ -335,27 +338,7 @@ include = ["src/booley"]
 # the same change; when renaming an excluded module, rename its entry; never add
 # a new module: new code is checked by default, so fix its errors instead. Keep
 # the list sorted.
-exclude = [
-    "src/booley/criteria/actions.py",
-    "src/booley/criteria/presentation.py",
-    "src/booley/criteria/reference.py",
-    "src/booley/criteria/templates.py",
-    "src/booley/flows/base.py",
-    "src/booley/flows/cli_arguments.py",
-    "src/booley/flows/cli_selection.py",
-    "src/booley/flows/eda_failures.py",
-    "src/booley/flows/endpoint_admission.py",
-    "src/booley/flows/endpoint_events.py",
-    "src/booley/flows/job_resources.py",
-    "src/booley/flows/mutation/flow.py",
-    "src/booley/flows/review_scope.py",
-    "src/booley/mcp/application.py",
-    "src/booley/mcp/flow_adapter.py",
-    "src/booley/mcp/job_lifecycle.py",
-    "src/booley/mcp/schema_extractor.py",
-    "src/booley/mcp/server.py",
-    "src/booley/mcp/session_registry.py",
-]
+exclude = []
 strict = [
     # External-input coercion and the Booley Directory trust boundary.
     "src/booley/core/boundary.py",

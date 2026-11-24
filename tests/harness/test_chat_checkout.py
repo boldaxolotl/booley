@@ -35,6 +35,7 @@ from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 if sys.platform != "linux" or shutil.which("git") is None:
     pytest.skip(
@@ -341,7 +342,7 @@ def test_never_and_here_use_main_without_waiting_for_a_held_lock(project, monkey
         started_at = time.monotonic()
         busy = _start(project, monkeypatch, capsys, flag="never")
     assert busy.cwd == project
-    assert time.monotonic() - started_at < 5
+    assert time.monotonic() - started_at < scaled(5)
     assert "works in worktree" not in busy.stderr
     assert _worktrees(project) == []
 
@@ -378,7 +379,7 @@ def test_a_crashed_lock_holder_does_not_block_the_next_launch(project, monkeypat
         assert not _lock_is_free(project)
         holder.send_signal(signal.SIGKILL)
         # Kept on subprocess.Popen: test drives the process (reads a line, SIGKILLs it)
-        holder.wait(timeout=30)
+        holder.wait(timeout=hang_guard_s())
     finally:
         if holder.poll() is None:
             holder.kill()
@@ -779,40 +780,144 @@ def test_claude_continue_reopens_the_worktree_of_the_most_recent_conversation(
     assert _new_launch_label(project) == label
 
 
+@pytest.mark.parametrize(
+    "form",
+    [["resume", "conv-1"], ["exec", "resume", "conv-1", "pwd"], ["-m", "o3", "resume", "conv-1"]],
+)
 def test_codex_resume_by_id_reopens_the_recorded_worktree_with_its_handle(
-    project, monkeypatch, capsys, codex
+    project, monkeypatch, capsys, codex, form
 ):
     # Bug caught: a Codex resume got a fresh handle, or its ownership marker pointed at the
-    # old key so the new launch no longer owned its tab.
+    # old key so the new launch no longer owned its tab; an `exec` or option-prefixed form
+    # launched in main unrouted.
     worktree, label = _earlier_session(project, client="codex")
     _record(project, "codex", "conv-1", worktree)
 
-    started = _start(project, monkeypatch, capsys, agent_args=["resume", "conv-1"])
+    started = _start(project, monkeypatch, capsys, agent_args=form)
 
     assert started.cwd == worktree.resolve()
-    assert started.exec_argv == [label, "--no-daemon", "resume", "conv-1"]
+    assert started.exec_argv == [label, "--no-daemon", *form]
+    assert (
+        f"Booley session {label} resumes conversation conv-1 in worktree {worktree}.\n"
+    ) in started.stderr
     new_key = process_session_key(ProcessIdentity(6000, "fixture", 7))
     handles = HandleStore(project / ".booley").load()
     assert handles.labels()[new_key] == label
     assert handles.aliases["chat:codex:" + new_key] == new_key
 
 
+@pytest.mark.parametrize("main_newer", [False, True])
+@pytest.mark.parametrize(
+    ("form", "rewritten"),
+    [
+        (["resume", "--last"], ["resume", "conv-1"]),
+        (["exec", "resume", "--last", "p"], ["exec", "resume", "conv-1", "p"]),
+    ],
+)
 def test_codex_resume_last_reopens_the_worktree_of_the_most_recent_conversation(
-    project, monkeypatch, capsys, codex, homes
+    project, monkeypatch, capsys, codex, homes, form, rewritten, main_newer
 ):
     # Bug caught: ordering by creation (the file's name) instead of last update: this
-    # conversation was created long before main's but updated after it.
+    # conversation was created long before main's but updated after it; `exec resume --last`
+    # picked nothing, and a worktree conversation older than main's displaced main's.
     worktree, label = _earlier_session(project, client="codex")
     _record(project, "codex", "conv-1", worktree)
     _codex_rollout(
         homes, "conv-1", worktree, created=_MAIN_MTIME - 86400, updated=_MAIN_MTIME + 60
     )
-    _codex_rollout(homes, "main-conv", project, created=_MAIN_MTIME, updated=_MAIN_MTIME + 30)
+    main_updated = _MAIN_MTIME + (120 if main_newer else 30)
+    _codex_rollout(homes, "main-conv", project, created=_MAIN_MTIME, updated=main_updated)
 
-    started = _start(project, monkeypatch, capsys, agent_args=["resume", "--last"])
+    started = _start(project, monkeypatch, capsys, agent_args=form)
 
-    assert started.cwd == worktree.resolve()
-    assert started.exec_argv == [label, "--no-daemon", "resume", "conv-1"]
+    if main_newer:
+        assert started.cwd == project
+        assert started.exec_argv[-len(form) :] == form
+    else:
+        assert started.cwd == worktree.resolve()
+        assert started.exec_argv == [label, "--no-daemon", *rewritten]
+
+
+_SESSION_ID = "01a1ea08-dbc5-7b71-b6ca-2e75c24bf4bb"
+
+
+def _hook_reports(project: Path, directory: Path, source: str) -> None:
+    """The conversation record the Codex lifecycle hook leaves for a SessionStart."""
+    from tests.harness.test_session_activity_hook import hook
+
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": _SESSION_ID,
+        "cwd": str(directory),
+        "source": source,
+    }
+    empty = project.parent / "empty-proc"
+    empty.mkdir(exist_ok=True)
+    hook.record("codex", payload, project / ".booley", _MAIN_MTIME, proc_root=empty, pid=1)
+
+
+def test_codex_resume_after_an_exec_resume_still_reopens_its_worktree(
+    project, monkeypatch, capsys, codex
+):
+    # Bug caught: `exec resume <id>` ran unrouted in main, so the hook (which forgets a
+    # conversation that starts outside a worktree) deleted its record and every later resume
+    # of the id started in main with no word.
+    first = _start(project, monkeypatch, capsys, flag="always", agent_args=["exec", "task"])
+    worktree = first.cwd
+    assert worktree is not None
+    _hook_reports(project, worktree, "startup")
+    monkeypatch.chdir(project)
+
+    exec_resume = _start(
+        project, monkeypatch, capsys, agent_args=["exec", "resume", _SESSION_ID, "pwd"]
+    )
+
+    assert exec_resume.cwd == worktree, "exec resume ran outside the recorded worktree"
+    assert f"resumes conversation {_SESSION_ID} in worktree {worktree}." in exec_resume.stderr
+    _hook_reports(project, exec_resume.cwd, "resume")
+    monkeypatch.chdir(project)
+
+    again = _start(project, monkeypatch, capsys, agent_args=["resume", _SESSION_ID])
+
+    assert again.cwd == worktree
+    assert f"resumes conversation {_SESSION_ID} in worktree {worktree}." in again.stderr
+
+
+@pytest.mark.parametrize(
+    "form",
+    [["resume", "conv-1"], ["exec", "resume", "conv-1", "p"], ["-m", "o3", "resume", "conv-1"]],
+)
+def test_codex_resume_of_a_removed_worktree_starts_in_main_with_a_notice(
+    project, monkeypatch, capsys, codex, form
+):
+    # Bug caught: only the bare `resume <id>` form said the worktree was gone.
+    worktree, _ = _earlier_session(project, client="codex")
+    _record(project, "codex", "conv-1", worktree)
+    shutil.rmtree(worktree)
+
+    started = _start(project, monkeypatch, capsys, agent_args=form)
+
+    assert started.cwd == project
+    assert started.exec_argv[-len(form) :] == form
+    assert (
+        "NOTE: conversation conv-1 ran in worktree s1, which no longer exists; "
+        "resuming in the main checkout.\n"
+    ) in started.stderr
+
+
+@pytest.mark.parametrize("form", [["resume", "conv-9"], ["exec", "resume", "conv-9", "p"]])
+def test_codex_resume_of_an_unrecorded_id_starts_in_main_with_a_notice(
+    project, monkeypatch, capsys, codex, form
+):
+    # Bug caught: a Codex resume that Booley cannot place fell back to main in silence.
+    started = _start(project, monkeypatch, capsys, agent_args=form)
+
+    assert started.cwd == project
+    assert started.exec_argv[-len(form) :] == form
+    assert (
+        "NOTE: Booley has no record of where conversation conv-9 ran; "
+        "resuming in the main checkout.\n"
+    ) in started.stderr
 
 
 def test_continue_skips_the_conversation_of_a_running_session(project, monkeypatch, capsys, homes):
@@ -909,6 +1014,7 @@ def test_resume_of_a_main_checkout_conversation_starts_in_main(
     assert not started.lock_free, "main is held for the life of the agent"
     assert _worktrees(project) == before
     assert "resumes conversation" not in started.stderr
+    assert "NOTE" not in started.stderr
 
 
 def test_resume_into_a_busy_main_checkout_refuses_with_a_here_hint(project, monkeypatch, capsys):

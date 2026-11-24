@@ -1,2349 +1,64 @@
-"""Tests for ReviewerSpecialist -- issue parsing, gate logic, prompt construction."""
+"""Tests for ReviewerSpecialist -- issue parsing, channel verdicts, prompt construction.
+
+Every review runs through the public run boundary (``run_review``) against the shared
+scripted agent, so prompts are read from the captured call parameters.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import json
+import logging
 import re
-import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import Any, NamedTuple
 
 import pytest
 
 from booley.specialists.reviewer import (
+    REVIEW_GUIDES,
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
     SEVERITY_MAJOR,
     SEVERITY_MINOR,
-    TB_FOCUS_CATEGORIES,
     MirrorFinding,
     ReviewerSpecialist,
     ReviewIssue,
-    _finding_record,
-    _validate_issue_dict,
-    check_gate,
     count_by_severity,
     format_summary_line,
-    parse_issues,
     parse_review_output,
     report_findings_to_mirror,
     validate_scope_category,
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.mcp_tools.reviewer_support import (
+    ScriptedAgent,
+    guide_of,
+    install_agent,
+    issue,
+    run_review,
+)
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures and helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
+    """The scripted model behind the public ``call_agent`` seam (no workspace snapshot)."""
+    return install_agent(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
-def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reviewer unit tests mock the agent; snapshot behavior has focused tests."""
-
-    @contextlib.contextmanager
-    def passthrough(params, _access, _category=None, **_kwargs):
-        yield params, None
-
-    monkeypatch.setattr(
-        "booley.specialists.specialist.isolated_agent_workspace",
-        passthrough,
-    )
-
-
-def test_reviewer_rejects_removed_target_option(state_file: Path) -> None:
-    endpoint = ReviewerSpecialist()
-    with pytest.raises(SystemExit):
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/uart_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-                "--target",
-                "sim_other",
-            ]
-        )
-
-
-@pytest.fixture()
-def state_file(tmp_path: Path) -> Path:
-    """A path where no review state is written: a Reviewer run keeps none."""
-    return tmp_path / "state.json"
-
-
-@pytest.fixture()
-def review_endpoint() -> ReviewerSpecialist:
-    return ReviewerSpecialist()
-
-
-def _make_agent_result(issues: list[dict]) -> MagicMock:
-    """Build a mock agent result with issues JSON."""
-    result = MagicMock()
-    result.output = json.dumps({"issues": issues})
-    result.structured = None
-    return result
-
-
-def _make_issue_dict(
-    severity: str = "MAJOR",
-    category: str = "bugs",
-    file: str = "rtl/mod_a.sv",
-    line: int = 42,
-    summary: str = "Test issue",
-) -> dict:
-    return {
-        "severity": severity,
-        "confidence": "HIGH",
-        "category": category,
-        "kind": "code_defect",
-        "disposition": "current",
-        "ticket_clause": "Reviewed source must satisfy the current Ticket requirements.",
-        "file": file,
-        "line": line,
-        "summary": summary,
-        "fix_suggestion": "Fix it",
-    }
-
-
-def test_dry_run_does_not_invoke_agent_or_update_receipts(
-    state_file: Path,
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "rtl/mod_a.sv"
-    source.parent.mkdir()
-    source.write_text("module mod_a; endmodule\n", encoding="utf-8")
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--scope",
-            "rtl/mod_a.sv",
-            "--category",
-            "rtl",
-            "--focus",
-            "bugs",
-            "--dry-run",
-        ]
-    )
-    with patch.object(endpoint, "_run_single_review") as review:
-        result = endpoint._run()
-
-    assert result.exit_code == 0
-    assert result.detail["mode"] == "dry_run"
-    assert not state_file.exists()
-    review.assert_not_called()
-
-
-def test_review_findings_outside_explicit_source_scope_are_dropped(
-    state_file: Path,
-) -> None:
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--scope",
-            "rtl/mod_a.sv",
-            "--category",
-            "rtl",
-            "--focus",
-            "bugs",
-        ]
-    )
-    assert endpoint._resolve_scope_contract() is None
-    issues = [
-        ReviewIssue(**_make_issue_dict(file="rtl/mod_a.sv")),
-        ReviewIssue(**_make_issue_dict(file="rtl/mod_b.sv")),
-    ]
-    output_lines: list[str] = []
-
-    kept = endpoint._filter_review_issues(issues, output_lines)
-
-    assert [issue.file for issue in kept] == ["rtl/mod_a.sv"]
-    assert output_lines == [
-        "INFO: filtered 1 proposal(s) outside explicit source scope; preserved in audit evidence"
-    ]
-    assert endpoint._audit["filtered"][0]["reason"] == "source_scope"
-
-
-# ---------------------------------------------------------------------------
-# Issue parsing
-# ---------------------------------------------------------------------------
-
-
-class TestIssueParsing:
-    def test_parse_issues_object(self):
-        output = json.dumps(
-            {
-                "issues": [
-                    _make_issue_dict("CRITICAL"),
-                    _make_issue_dict("MINOR"),
-                ]
-            }
-        )
-        issues = parse_issues(output)
-        assert len(issues) == 2
-        assert issues[0].severity == "CRITICAL"
-        assert issues[1].severity == "MINOR"
-
-    def test_parse_issues_bare_array_rejected(self):
-        """Bare arrays are not the spec'd wrapper format and are no longer
-        accepted: the old greedy ``\\[.*\\]`` fallback swallowed prose like
-        ``[MAJOR] ...`` headings, producing parse errors that masked real
-        wrappers. Agents must emit ``{"issues": [...]}``."""
-        output = json.dumps([_make_issue_dict("MAJOR")])
-        issues = parse_issues(output)
-        assert issues == []
-
-    def test_parse_issues_embedded_in_text(self):
-        output = (
-            "Here is my review:\n```json\n"
-            + json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
-            + "\n```\n"
-        )
-        issues = parse_issues(output)
-        assert len(issues) == 1
-
-    def test_parse_issues_empty(self):
-        output = json.dumps({"issues": []})
-        issues = parse_issues(output)
-        assert issues == []
-
-    def test_parse_issues_no_json(self):
-        output = "No issues found, everything looks great!"
-        issues = parse_issues(output)
-        assert issues == []
-
-    def test_parse_issues_invalid_json(self):
-        output = "{issues: [broken json"
-        issues = parse_issues(output)
-        assert issues == []
-
-    def test_issue_from_dict_defaults(self):
-        issue = ReviewIssue.from_dict({})
-        assert issue.severity == "MINOR"
-        assert issue.confidence == "MEDIUM"
-        assert issue.line == 0
-        assert issue.file == ""
-
-    def test_issue_to_dict_round_trip(self):
-        original = ReviewIssue(
-            severity="CRITICAL",
-            confidence="HIGH",
-            category="bugs",
-            file="rtl/mod_a.sv",
-            line=42,
-            summary="Bad logic",
-            fix_suggestion="Fix the mux",
-        )
-        d = original.to_dict()
-        restored = ReviewIssue.from_dict(d)
-        assert restored.severity == original.severity
-        assert restored.file == original.file
-        assert restored.line == original.line
-
-    def test_issue_to_dict_omits_empty_fix(self):
-        issue = ReviewIssue(
-            severity="MINOR",
-            confidence="LOW",
-            category="quality",
-            file="rtl/mod_b.sv",
-            line=10,
-            summary="Style",
-        )
-        d = issue.to_dict()
-        assert "fix_suggestion" not in d
-
-
-# ---------------------------------------------------------------------------
-# Strict-schema validation: issue dicts
-# ---------------------------------------------------------------------------
-
-
-class TestIssueSchema:
-    """Strict per-issue schema rejection — malformed entries dropped upstream."""
-
-    def test_valid_issue_passes(self):
-        assert _validate_issue_dict(_make_issue_dict("CRITICAL")) == []
-
-    def test_unknown_severity_rejected(self):
-        errs = _validate_issue_dict(_make_issue_dict("INFO"))
-        assert any("severity" in e for e in errs)
-
-    def test_lowercase_severity_accepted(self):
-        # Validator is case-insensitive on the enum check — lowercase
-        # normalizes cleanly. Strictness is on the enum *values*, not
-        # the casing of the string.
-        assert _validate_issue_dict(_make_issue_dict("critical")) == []
-
-    def test_missing_confidence_rejected(self):
-        d = _make_issue_dict("MAJOR")
-        del d["confidence"]
-        errs = _validate_issue_dict(d)
-        assert any("confidence" in e for e in errs)
-
-    @pytest.mark.parametrize("field", ["kind", "disposition", "ticket_clause"])
-    def test_ticket_contract_metadata_is_required(self, field: str):
-        issue = _make_issue_dict("MAJOR")
-        del issue[field]
-
-        errors = _validate_issue_dict(issue)
-
-        assert any(field in error for error in errors)
-
-    def test_finding_ids_distinguish_defects_on_the_same_ticket_clause(self) -> None:
-        first = ReviewIssue.from_dict(_make_issue_dict(summary="Reset polarity is inverted"))
-        second = ReviewIssue.from_dict(_make_issue_dict(summary="Enable polarity is inverted"))
-
-        assert _finding_record(first)["finding_id"] != _finding_record(second)["finding_id"]
-
-    def test_empty_file_rejected(self):
-        d = _make_issue_dict("MAJOR", file="")
-        errs = _validate_issue_dict(d)
-        assert any("file" in e for e in errs)
-
-    def test_negative_line_rejected(self):
-        d = _make_issue_dict("MAJOR", line=-5)
-        errs = _validate_issue_dict(d)
-        assert any("line" in e for e in errs)
-
-    def test_non_int_line_rejected(self):
-        d = _make_issue_dict("MAJOR")
-        d["line"] = "42"
-        errs = _validate_issue_dict(d)
-        assert any("line" in e for e in errs)
-
-    def test_empty_summary_rejected(self):
-        d = _make_issue_dict("MAJOR", summary="   ")
-        errs = _validate_issue_dict(d)
-        assert any("summary" in e for e in errs)
-
-    def test_category_required(self):
-        d = _make_issue_dict("MAJOR")
-        del d["category"]
-        errs = _validate_issue_dict(d)
-        assert any("category" in e for e in errs)
-
-    def test_mismatched_category_rejected_for_focus(self):
-        d = _make_issue_dict("MAJOR", category="protocol")
-        errs = _validate_issue_dict(d, allowed_category="bugs")
-        assert any("exactly 'bugs'" in e for e in errs)
-
-    def test_non_dict_rejected(self):
-        assert _validate_issue_dict("not a dict") != []
-        assert _validate_issue_dict([1, 2, 3]) != []
-
-    def test_parse_review_output_drops_malformed_entries(self):
-        output = json.dumps(
-            {
-                "issues": [
-                    _make_issue_dict("CRITICAL"),
-                    {"severity": "MAJOR"},  # missing required fields
-                    _make_issue_dict("MINOR"),
-                    {
-                        "severity": "INFO",
-                        "confidence": "HIGH",
-                        "category": "x",
-                        "file": "a.sv",
-                        "line": 1,
-                        "summary": "s",
-                    },  # bad severity
-                ],
-            }
-        )
-        result = parse_review_output(output)
-        assert result.json_present is True
-        assert len(result.issues) == 2
-        assert {i.severity for i in result.issues} == {"CRITICAL", "MINOR"}
-        # Two rejected (indices 2 and 4 in 1-based ordering).
-        assert {ord_idx for ord_idx, _ in result.rejected} == {2, 4}
-
-    def test_parse_review_output_rejects_wrong_focus_category(self):
-        output = json.dumps(
-            {
-                "issues": [
-                    _make_issue_dict("MAJOR", category="bugs"),
-                    _make_issue_dict("MAJOR", category="protocol"),
-                ],
-            }
-        )
-        result = parse_review_output(output, allowed_category="bugs")
-
-        assert len(result.issues) == 1
-        assert result.issues[0].category == "bugs"
-        assert {ord_idx for ord_idx, _ in result.rejected} == {2}
-
-    def test_parse_review_output_distinguishes_no_json(self):
-        result = parse_review_output("Looks fine to me, no issues!")
-        assert result.json_present is False
-        assert result.issues == []
-
-    def test_parse_review_output_zero_issues_is_json_present(self):
-        result = parse_review_output(json.dumps({"issues": []}))
-        assert result.json_present is True
-        assert result.issues == []
-
-    def test_parse_review_output_with_verilog_bitselect_in_spec_clause(self):
-        """Regression: spec_clause quoting Verilog bit-selects must not
-        confuse JSON wrapper extraction.
-
-        The old regex-based extractor terminated early on the first
-        ``]}`` substring it found, which appears inside spec_clause
-        values like ``{{20{instr[31]}}, instr[31:20]}`` — causing
-        c-static-branch-predict-0001 to block on a "no JSON wrapper"
-        false negative even though the agent emitted a perfectly valid
-        ``{"issues": [...]}``.
-        """
-        agent_output = (
-            "### [MAJOR] JALR target uses uncited ambiguity reading\n"
-            "**File:** `rtl/static_branch_predict.sv:67`\n"
-            '**Spec clause:** "rd <-pc + {{20{instr[31]}}, '
-            'instr[31:20]} + rs1"\n\n'
-            "```json\n"
-            "{\n"
-            '  "issues": [\n'
-            "    {\n"
-            '      "severity": "MAJOR",\n'
-            '      "confidence": "HIGH",\n'
-            '      "category": "spec",\n'
-            '      "kind": "spec_ambiguity",\n'
-            '      "disposition": "current",\n'
-            '      "ticket_clause": "JALR target uses rs1",\n'
-            '      "file": "rtl/static_branch_predict.sv",\n'
-            '      "line": 67,\n'
-            '      "summary": "JALR target omits rs1",\n'
-            '      "fix_suggestion": "Add SPEC-INTERPRETATION cite.",\n'
-            '      "spec_clause": "rd <-pc + '
-            '{{20{instr[31]}}, instr[31:20]} + rs1"\n'
-            "    },\n"
-            "    {\n"
-            '      "severity": "MAJOR",\n'
-            '      "confidence": "HIGH",\n'
-            '      "category": "spec",\n'
-            '      "kind": "spec_ambiguity",\n'
-            '      "disposition": "current",\n'
-            '      "ticket_clause": "predict_branch_pc_o is the target.",\n'
-            '      "file": "rtl/static_branch_predict.sv",\n'
-            '      "line": 58,\n'
-            '      "summary": "Inactive PC forced to zero",\n'
-            '      "fix_suggestion": "Cite the ambiguity.",\n'
-            '      "spec_clause": "predict_branch_pc_o is the target."\n'
-            "    }\n"
-            "  ]\n"
-            "}\n"
-            "```\n\n"
-            "SPEC COMPLIANCE SUMMARY: 0 CRITICAL, 2 MAJOR, 0 MINOR"
-        )
-        result = parse_review_output(agent_output)
-        assert result.json_present is True
-        assert len(result.issues) == 2
-        assert all(i.severity == "MAJOR" for i in result.issues)
-        assert result.issues[0].line == 67
-        assert result.issues[1].line == 58
-
-    def test_parse_review_output_skips_malformed_prose_braces(self):
-        """An earlier malformed ``{...}`` in prose must not mask a real
-        wrapper that appears later in the output."""
-        agent_output = (
-            "Initial thought: something like { a stray { unbalanced ref }\n"
-            "Actually here is the review:\n"
-            '{"issues": [{"severity": "MINOR", "confidence": "LOW", '
-            '"category": "quality", "kind": "code_defect", '
-            '"disposition": "advisory", "ticket_clause": "Keep names clear.", '
-            '"file": "a.sv", "line": 1, '
-            '"summary": "nit"}]}'
-        )
-        result = parse_review_output(agent_output)
-        assert result.json_present is True
-        assert len(result.issues) == 1
-        assert result.issues[0].severity == "MINOR"
-
-    def test_parse_review_output_brackets_in_string_dont_break_scan(self):
-        """``]}`` inside a JSON string value is not a wrapper terminator."""
-        issue = _make_issue_dict("MAJOR")
-        issue["spec_clause"] = "value [a:b]} with embedded brackets"
-        payload = json.dumps({"issues": [issue]})
-        result = parse_review_output(payload)
-        assert result.json_present is True
-        assert len(result.issues) == 1
-
-
-# ---------------------------------------------------------------------------
-# Strict-schema validation: verify finding dicts
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Upstream rejection: _run_single_review fails loud on missing JSON wrapper
-# ---------------------------------------------------------------------------
-
-
-def _make_report_findings_result(findings: list[dict], output: str = "") -> MagicMock:
-    """Mock agent result that reported via the native ReportFindings endpoint.
-
-    Mirrors a Claude-backend review: the findings arrive as a captured
-    ``ReportFindings`` agent capability-call input. ``output`` is the agent's final text,
-    which the prompt requires to carry the ``{"issues": [...]}`` mirror.
-    """
-    return MagicMock(
-        output=output,
-        structured=None,
-        captured_agent_capability_calls={"ReportFindings": [{"findings": findings}]},
-    )
-
-
-class TestReportFindingsMapper:
-    """Unit tests for the ReportFindings -> MirrorFinding mapping."""
-
-    def test_keeps_sent_severity_and_ignores_verdict(self):
-        mirror = report_findings_to_mirror(
-            [
-                {"file": "./rtl/a.sv", "line": 7, "summary": "x", "severity": "critical"},
-                {"file": "rtl/a.sv", "line": 8, "summary": "y", "verdict": "CONFIRMED"},
-            ]
-        )
-        assert mirror == [
-            MirrorFinding(file="rtl/a.sv", line=7, severity=SEVERITY_CRITICAL),
-            MirrorFinding(file="rtl/a.sv", line=8, severity=None),
-        ]
-
-    def test_bad_line_defaults_to_zero(self):
-        mirror = report_findings_to_mirror([{"file": "rtl/a.sv", "line": "nope", "summary": "x"}])
-        assert mirror[0].line == 0
-
-
-class TestReportFindingsCapture:
-    """End-to-end: review agent reports via the native ReportFindings endpoint."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_confirmed_finding_needs_canonical_metadata(self, mock_agent, state_file: Path):
-        mock_agent.return_value = _make_report_findings_result(
-            [
-                {
-                    "file": "rtl/mod_a.sv",
-                    "line": 42,
-                    "summary": "latch inferred",
-                    "verdict": "CONFIRMED",
-                },
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_empty_report_is_clean_pass(self, mock_agent, state_file: Path):
-        """Zero findings in BOTH channels => clean pass, NOT exit 2.
-
-        An empty agent-capability call is a legitimate clean review only when the text
-        channel agrees (``{"issues": []}``) — an empty call on its own is no
-        longer evidence of anything (SETUP-F-33).
-        """
-        mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 0
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_plausible_finding_needs_canonical_metadata(self, mock_agent, state_file: Path):
-        mock_agent.return_value = _make_report_findings_result(
-            [
-                {
-                    "file": "rtl/mod_a.sv",
-                    "line": 3,
-                    "summary": "style nit",
-                    "verdict": "PLAUSIBLE",
-                },
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-
-_CRITICAL_TEXT_ISSUE = {
-    "issues": [
-        {
-            "severity": "CRITICAL",
-            "confidence": "HIGH",
-            "category": "bugs",
-            "kind": "code_defect",
-            "disposition": "current",
-            "ticket_clause": "Reviewed source must satisfy the current Ticket requirements.",
-            "file": "rtl/mod_a.sv",
-            "line": 42,
-            "summary": "FMAX polarity inverted — returns the minimum",
-            "fix_suggestion": "Swap the comparison operands",
-        }
-    ]
-}
-
-
-def _review_args() -> list[str]:
-    return ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
-
-
-class TestChannelDisagreement:
-    """SETUP-F-33: an empty ReportFindings call must never mask a text CRITICAL."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_empty_endpoint_call_does_not_mask_text_critical(self, mock_agent, state_file: Path):
-        """The exact F-33 bait: ReportFindings([]) + a CRITICAL issue JSON in text."""
-        mock_agent.return_value = _make_report_findings_result(
-            [],
-            output=(
-                "The diff introduces a clear correctness bug.\n" + json.dumps(_CRITICAL_TEXT_ISSUE)
-            ),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 1
-        assert result.detail[SEVERITY_CRITICAL] == 1
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_empty_endpoint_call_and_prose_only_is_endpoint_error(
-        self, mock_agent, state_file: Path
-    ):
-        """Neither channel produced a verdict => Specialist error, never a clean pass."""
-        mock_agent.return_value = _make_report_findings_result(
-            [],
-            output="I looked at the files. Nothing jumped out at me.",
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_endpoint_findings_without_metadata_mirror_are_rejected(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """ReportFindings cannot replace the canonical Ticket-bound JSON."""
-        mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
-            output="see the agent-capability call",
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_tied_channels_preserve_canonical_ticket_metadata(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        canonical = _make_issue_dict("MAJOR", summary="latch")
-        mock_agent.return_value = _make_report_findings_result(
-            [
-                {
-                    "file": canonical["file"],
-                    "line": canonical["line"],
-                    "summary": canonical["summary"],
-                    "verdict": "CONFIRMED",
-                }
-            ],
-            output=json.dumps({"issues": [canonical]}),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issue_list"][0]["kind"] == "code_defect"
-        assert result.detail["issue_list"][0]["disposition"] == "current"
-        assert result.detail["issue_list"][0]["ticket_clause"] == canonical["ticket_clause"]
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_more_severe_text_channel_wins_over_advisory_endpoint_channel(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """PLAUSIBLE via endpoint + CRITICAL in text: the blocking channel wins, no merge."""
-        mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 42, "summary": "nit", "verdict": "PLAUSIBLE"}],
-            output=json.dumps(_CRITICAL_TEXT_ISSUE),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        # Text channel taken whole — not merged with the agent-capability channel.
-        assert result.detail["issues"] == 1
-        assert result.detail[SEVERITY_CRITICAL] == 1
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_endpoint_finding_missing_from_text_is_contract_error(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
-            output='{"issues": []}',
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_all_issues_rejected_is_not_a_clean_pass(self, mock_agent, state_file: Path):
-        """Every reported issue failing the schema is a Specialist error, not '0 issues'."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "issues": [
-                        {
-                            "severity": "CRITICAL",
-                            "confidence": "HIGH",
-                            "category": "wrong_focus",  # rejected: not the active focus
-                            "file": "rtl/mod_a.sv",
-                            "line": 42,
-                            "summary": "polarity inverted",
-                        }
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_advisory_endpoint_call_cannot_outvote_a_rejected_text_channel(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """The residual F-33 false PASS: a MINOR nit burying a rejected CRITICAL.
-
-        ReportFindings severities cap at MAJOR/MINOR, so a ``PLAUSIBLE``
-        cosmetic finding maps to MINOR and passes the gate. If the agent's real
-        CRITICAL is in the text JSON but dies on the schema (``"line": "42"``),
-        the text channel's verdict is *unknown* — it must not be outvoted into
-        a clean pass by the nit.
-        """
-        mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 3, "summary": "naming nit", "verdict": "PLAUSIBLE"}],
-            output=json.dumps(
-                {
-                    "issues": [
-                        {
-                            "severity": "CRITICAL",
-                            "confidence": "HIGH",
-                            "category": "bugs",
-                            "file": "rtl/mod_a.sv",
-                            "line": "42",  # string -> schema-rejected
-                            "summary": "FMAX polarity inverted — returns the minimum",
-                        }
-                    ]
-                }
-            ),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2  # Specialist error, NOT gate_passed: true
-        assert result.detail.get("gate_passed") is not True
-        # And the output must not contradict itself.
-        assert "gate_passed: true" not in capsys.readouterr().out.lower()
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_rejected_text_channel_cannot_be_replaced_by_endpoint_findings(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Even blocking capability findings lack the required Ticket contract."""
-        mock_agent.return_value = _make_report_findings_result(
-            [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
-            output=json.dumps(
-                {
-                    "issues": [
-                        {
-                            "severity": "CRITICAL",
-                            "confidence": "HIGH",
-                            "category": "bugs",
-                            "file": "rtl/mod_a.sv",
-                            "line": "42",  # string -> schema-rejected
-                            "summary": "polarity inverted",
-                        }
-                    ]
-                }
-            ),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_rejected_text_channel_with_empty_endpoint_call_is_a_endpoint_error(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        mock_agent.return_value = _make_report_findings_result(
-            [],
-            output=json.dumps(
-                {"issues": [{"severity": "nope", "category": "bugs", "file": "a.sv"}]}
-            ),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 2
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_partial_rejection_still_reviews_normally(self, mock_agent, state_file: Path):
-        """One survivor means the text channel is usable — only a WARN, no error."""
-        mock_agent.return_value = _make_report_findings_result(
-            [],
-            output=json.dumps(
-                {
-                    "issues": [
-                        {"severity": "nope", "category": "bugs", "file": "a.sv"},
-                        {
-                            "severity": "MINOR",
-                            "confidence": "LOW",
-                            "category": "bugs",
-                            "kind": "code_defect",
-                            "disposition": "advisory",
-                            "ticket_clause": "Keep names clear.",
-                            "file": "rtl/mod_a.sv",
-                            "line": 5,
-                            "summary": "cosmetic",
-                        },
-                    ]
-                }
-            ),
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 0
-        assert result.detail["observation_count"] == 1
-        assert result.detail["gate_passed"] is True
-
-    def test_output_instructions_teach_the_endpoint_contract(self):
-        """The prompt must name ReportFindings — the contract mismatch behind F-33."""
-        text = ReviewerSpecialist._output_instructions("bugs")
-        assert "ReportFindings" in text
-        assert "mirror" in text.lower()
-
-
-def _run_mirror_review(calls: list[list[dict]], canonical: list[dict]) -> int:
-    """Run one review whose agent made ``calls`` ReportFindings calls; return its exit code."""
-    with patch("booley.specialists.specialist._call_agent_sync") as mock_agent:
-        mock_agent.return_value = MagicMock(
-            output=json.dumps({"issues": canonical}),
-            structured=None,
-            captured_agent_capability_calls={
-                "ReportFindings": [{"findings": findings} for findings in calls]
-            },
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        return endpoint._run().exit_code
-
-
-class TestMirrorAgreement:
-    """#1963: the mirror must match canonical findings, not out-count them."""
-
-    def test_repeated_report_agrees_with_canonical_listed_once(self, state_file: Path):
-        """Replay of a recorded run: the same 3 findings reported twice, no severity sent.
-
-        The canonical JSON rates the first CONFIRMED finding MINOR and the
-        PLAUSIBLE one MAJOR; neither verdict is a severity.
-        """
-        mirror = [
-            {"file": "rtl/mod_a.sv", "line": 316, "summary": "no timeout", "verdict": "CONFIRMED"},
-            {"file": "rtl/mod_a.sv", "line": 1156, "summary": "no edges", "verdict": "PLAUSIBLE"},
-            {"file": "rtl/mod_a.sv", "line": 384, "summary": "no stalls", "verdict": "CONFIRMED"},
-        ]
-        canonical = [
-            _make_issue_dict("MAJOR", line=316, summary="no timeout"),
-            _make_issue_dict("MAJOR", line=1156, summary="no edge vectors"),
-            _make_issue_dict("MINOR", line=384, summary="no stall injection"),
-        ]
-
-        assert _run_mirror_review([mirror, mirror], canonical) == 0
-
-    def test_confirmed_finding_rated_minor_agrees(self, state_file: Path):
-        mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "verdict": "CONFIRMED"}]
-
-        assert _run_mirror_review([mirror], [_make_issue_dict("MINOR")]) == 0
-
-    def test_split_report_that_resends_a_finding_agrees(self, state_file: Path):
-        first = {"file": "rtl/mod_a.sv", "line": 5, "summary": "a", "severity": "MAJOR"}
-        second = {"file": "./rtl/mod_a.sv", "line": 9, "summary": "b", "severity": "MINOR"}
-        canonical = [
-            _make_issue_dict("MAJOR", line=5, summary="a"),
-            _make_issue_dict("MINOR", line=9, summary="b"),
-        ]
-
-        assert _run_mirror_review([[first], [first, second]], canonical) == 0
-
-    def test_mirror_severity_above_canonical_still_fails(self, state_file: Path):
-        mirror = [{"file": "rtl/mod_a.sv", "line": 42, "summary": "x", "severity": "CRITICAL"}]
-
-        assert _run_mirror_review([mirror], [_make_issue_dict("MAJOR")]) == 2
-
-    def test_mirror_finding_missing_beside_a_more_severe_canonical_issue_fails(
-        self, state_file: Path
-    ):
-        """A severe canonical issue elsewhere in the file must not hide an omitted finding."""
-        mirror = [{"file": "rtl/mod_a.sv", "line": 7, "summary": "x", "verdict": "PLAUSIBLE"}]
-
-        assert _run_mirror_review([mirror], [_make_issue_dict("CRITICAL")]) == 2
-
-
-class TestReadOnlyEnforcement:
-    """SETUP-F-35: allowed_agent_capabilities is advisory under bypassPermissions."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_review_denies_mutating_tools(self, mock_agent, state_file: Path):
-        mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        endpoint._run()
-
-        params = mock_agent.call_args[0][0]
-        assert "Bash" in params.disallowed_agent_capabilities
-        assert "Write" in params.disallowed_agent_capabilities
-        assert "Edit" in params.disallowed_agent_capabilities
-        # The read-only allowlist is unchanged.
-        assert params.allowed_agent_capabilities == ["Read", "Grep", "Glob", "ReportFindings"]
-
-
-class TestNoReportDirNotice:
-    """SETUP-F-39: the "nothing was persisted" notice belongs to every endpoint.
-
-    ``Endpoint._post_run`` emits it on stderr for whichever endpoint ran (covered by
-    ``TestNoReportDirWarning`` in test_base.py). The reviewer used to build its
-    own copy into ``report_text``; keeping both printed the same warning twice
-    per run, which is the noise F-28 was about. These tests pin the removal.
-    """
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_verdict_text_does_not_carry_its_own_notice(self, mock_agent, state_file: Path):
-        mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_review_args())
-        result = endpoint._run()
-
-        assert "no --report-dir" not in result.report_text
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_silent_with_report_dir(self, mock_agent, state_file: Path, tmp_path: Path):
-        mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args([*_review_args(), "--report-dir", str(tmp_path / "rep")])
-        result = endpoint._run()
-
-        assert "no --report-dir" not in result.report_text
-
-
-class TestUpstreamReviewRejection:
-    """Single review must not treat free-form prose as a clean pass."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_no_json_wrapper_returns_endpoint_error(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Agent emits prose with no JSON wrapper => Specialist error, criterion not set."""
-        mock_agent.return_value = MagicMock(
-            output="I reviewed the files and everything looks fine.",
-            structured=None,
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-
-        assert result.exit_code == 2  # EXIT_ERROR
-        # Must NOT have been promoted to a clean review.
-        assert (
-            "no parseable" in result.report_text.lower()
-            or "invocation failed" in result.report_text.lower()
-        )
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_malformed_entries_dropped_but_review_still_completes(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Mix of valid + malformed issues: valid ones counted, bad ones dropped."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "issues": [
-                        _make_issue_dict("CRITICAL"),
-                        {
-                            "severity": "BOGUS",
-                            "confidence": "HIGH",
-                            "category": "x",
-                            "file": "a.sv",
-                            "line": 1,
-                            "summary": "garbage",
-                        },
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-
-        # Only the valid CRITICAL is counted; _done completion is independent
-        # from the quality verdict recorded in detail.
-        assert result.detail["issues"] == 1
-        assert result.detail["CRITICAL"] == 1
-
-
-# ---------------------------------------------------------------------------
-# Severity counting
-# ---------------------------------------------------------------------------
-
-
-class TestSeverityCounting:
-    def test_count_mixed(self):
-        issues = [
-            ReviewIssue.from_dict(_make_issue_dict("CRITICAL")),
-            ReviewIssue.from_dict(_make_issue_dict("CRITICAL")),
-            ReviewIssue.from_dict(_make_issue_dict("MAJOR")),
-            ReviewIssue.from_dict(_make_issue_dict("MINOR")),
-        ]
-        counts = count_by_severity(issues)
-        assert counts[SEVERITY_CRITICAL] == 2
-        assert counts[SEVERITY_MAJOR] == 1
-        assert counts[SEVERITY_MINOR] == 1
-
-    def test_count_empty(self):
-        counts = count_by_severity([])
-        assert counts[SEVERITY_CRITICAL] == 0
-        assert counts[SEVERITY_MAJOR] == 0
-        assert counts[SEVERITY_MINOR] == 0
-
-    def test_unknown_severity_ignored(self):
-        issues = [ReviewIssue.from_dict({"severity": "UNKNOWN", "file": "f.sv"})]
-        counts = count_by_severity(issues)
-        assert sum(counts.values()) == 0
-
-
-# ---------------------------------------------------------------------------
-# Gate logic
-# ---------------------------------------------------------------------------
-
-
-class TestGateLogic:
-    def test_pass_clean(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is True
-
-    def test_pass_minor_only(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 3}
-        assert check_gate(counts) is True
-
-    def test_fail_critical(self):
-        counts = {SEVERITY_CRITICAL: 1, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is False
-
-    def test_fail_major(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 0}
-        assert check_gate(counts) is False
-
-
-# ---------------------------------------------------------------------------
-# Scope validation
-# ---------------------------------------------------------------------------
-
-
-class TestScopeValidation:
-    def test_rtl_scope_valid(self):
-        assert validate_scope_category(["rtl/mod_a.sv"], "rtl") == []
-        # Without a ``.core``, ``fw/`` is no RTL directory (#4052).
-        errors = validate_scope_category(["fw/main.c"], "rtl")
-        assert len(errors) == 1
-        assert "doesn't match RTL" in errors[0]
-
-    def test_rtl_scope_invalid_tb_path(self):
-        errors = validate_scope_category(["tb/mod_a_tb.sv"], "rtl")
-        assert len(errors) == 1
-        assert "doesn't match RTL" in errors[0]
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    def test_tb_scope_valid(self, _mock):
-        errors = validate_scope_category(["tb/mod_a_tb.sv"], "tb")
-        assert errors == []
-
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    def test_tb_scope_invalid_rtl_path(self, _mock):
-        errors = validate_scope_category(["rtl/mod_a.sv"], "tb")
-        assert len(errors) == 1
-        assert "doesn't match TB" in errors[0]
-
-    @patch(
-        "booley.specialists.reviewer._get_rtl_prefixes",
-        return_value=("rtl/", "rtl\\"),
-    )
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    def test_mixed_scope_rtl_partial_invalid(self, _mock_tb, _mock_rtl):
-        errors = validate_scope_category(
-            ["rtl/mod_a.sv", "tb/mod_a_tb.sv"],
-            "rtl",
-        )
-        assert len(errors) == 1
-        assert "tb/mod_a_tb.sv" in errors[0]
-
-    def test_empty_scope(self):
-        errors = validate_scope_category([], "rtl")
-        assert errors == []
-
-    def test_flat_repo_root_file_is_valid_exact_scope(self, tmp_path: Path):
-        (tmp_path / "picorv32.v").write_text("module picorv32; endmodule\n")
-        (tmp_path / "testbench.v").write_text("module testbench; endmodule\n")
-        (tmp_path / "picorv32.core").write_text(
-            "CAPI=2:\n"
-            "name: ::picorv32\n"
-            "filesets:\n"
-            "  rtl: {files: [picorv32.v]}\n"
-            "  tb: {files: [testbench.v], tags: [tb]}\n"
-            "targets:\n"
-            "  sim: {filesets: [rtl, tb], toplevel: testbench}\n"
-        )
-
-        assert validate_scope_category(["picorv32.v"], "rtl", tmp_path) == []
-        assert validate_scope_category(["./picorv32.v"], "rtl", tmp_path) == []
-        errors = validate_scope_category(["picorv32.v.bak"], "rtl", tmp_path)
-        assert errors == []  # explicit unregistered scope retains its narrow grant
-
-
-# ---------------------------------------------------------------------------
-# CLI args
-# ---------------------------------------------------------------------------
-
-
-class TestReviewerToolArgs:
-    def test_focus_contract_surfaces_are_aligned(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--category",
-                "rtl",
-                "--scope",
-                "rtl/a.sv",
-                "--focus",
-                ",".join(sorted(RTL_FOCUS_CATEGORIES)),
-            ]
-        )
-        assert endpoint._validate_args() == []
-        assert "spec" in RTL_FOCUS_CATEGORIES
-        assert {"quality"} == TB_FOCUS_CATEGORIES
-
-        satisfies = set(ReviewerSpecialist.satisfies_args.values())
-        for focus in RTL_FOCUS_CATEGORIES:
-            assert f"--category rtl --focus {focus}" in satisfies
-        for focus in TB_FOCUS_CATEGORIES:
-            assert f"--category tb --focus {focus}" in satisfies
-        assert "--category tb --focus spec" not in satisfies
-
-    def test_focus_required(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl"])
-        result = endpoint._run()
-        assert result.exit_code == 2
-        assert "--focus" in result.report_text
-
-    def test_rtl_valid_focuses(self, state_file: Path):
-        """--focus bugs validates OK for RTL."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        errors = endpoint._validate_args()
-        focus_errors = [e for e in errors if "focus" in e.lower()]
-        assert focus_errors == []
-
-    def test_rtl_spec_focus_accepted(self, state_file: Path):
-        """--focus spec validates OK for RTL (reinstated — ADR 0038)."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "spec",
-            ]
-        )
-        errors = endpoint._validate_args()
-        focus_errors = [e for e in errors if "focus" in e.lower()]
-        assert focus_errors == []
-
-    def test_tb_valid_focuses(self, state_file: Path):
-        """--focus quality validates OK for TB."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        errors = endpoint._validate_args()
-        focus_errors = [e for e in errors if "focus" in e.lower()]
-        assert focus_errors == []
-
-    def test_invalid_rtl_focus_rejected(self, state_file: Path):
-        """--focus bogus errors for RTL."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bogus",
-            ]
-        )
-        errors = endpoint._validate_args()
-        assert any("Invalid RTL focus" in e for e in errors)
-
-    def test_scope_mismatch_rtl(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        errors = endpoint._validate_args()
-        assert any("doesn't match RTL" in e for e in errors)
-
-    def test_scope_mismatch_tb(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        errors = endpoint._validate_args()
-        assert any("doesn't match TB" in e for e in errors)
-
-
-# ---------------------------------------------------------------------------
-# Prompt construction
-# ---------------------------------------------------------------------------
-
-
-class TestPromptConstruction:
-    def test_rtl_system_prompt_includes_focus_guide(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        system = endpoint._build_system_prompt("bugs")
-        assert "bugs" in system
-        assert "Review methodology" in system
-
-    def test_each_focus_loads_its_declared_guides(self, tmp_path: Path):
-        cases = [
-            ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
-            ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
-            ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
-            (
-                "rtl",
-                "optimization",
-                "rtl/a.sv",
-                ["optimization-checklist", "optimization-hunt"],
-            ),
-            ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
-            ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
-            ("tb", "quality", "tb/t.sv", ["hdl-checklist", "tb-hunt"]),
-            ("tb", "quality", "tb/test.py", ["cocotb-checklist", "tb-hunt"]),
-            (
-                "tb",
-                "quality",
-                "tb/main.cpp,tb/test.py,tb/tb.sv",
-                ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt"],
-            ),
-        ]
-        for index, (category, focus, scope, expected) in enumerate(cases):
-            work_dir = tmp_path / f"case{index}"
-            work_dir.mkdir()
-            endpoint = ReviewerSpecialist()
-            endpoint.parse_args(
-                [
-                    "--work-dir",
-                    str(work_dir),
-                    "--scope",
-                    scope,
-                    "--category",
-                    category,
-                    "--focus",
-                    focus,
-                ]
-            )
-            system = endpoint._build_system_prompt(focus)
-            headings = re.findall(r"^## Review guide — .*$", system, flags=re.MULTILINE)
-            assert headings == [f"## Review guide — {focus} ({name})" for name in expected]
-            if focus == "spec":
-                assert "## Trace targets" in system
-                assert "## Checklist" not in system
-
-    def test_security_hunt_prompt_names_scenario_categories_and_scope_boundaries(
-        self, tmp_path: Path
-    ):
-        """A guide edit or packaging change must not drop what the hunt call receives."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "rtl/a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "security",
-            ]
-        )
-        hunt = tuple(g for g in endpoint._review_guides("security", "rtl") if g.kind == "hunt")
-        system = endpoint._build_system_prompt("security", hunt)
-        assert "(security-hunt)" in system
-        assert "(security-checklist)" not in system
-        boundaries = system.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
-        assert "`bugs`" in boundaries
-        assert "`protocol`" in boundaries
-        assert '{"issues": []}' in boundaries
-        for category in (
-            "Attacker-controlled inputs",
-            "Debug, test, and scan access",
-            "Reset and power",
-            "Error, alert, and escalation paths",
-            "Fault injection",
-            "Secret flow",
-        ):
-            assert f"**{category}**" in system, category
-
-    def test_optimization_hunt_guide_names_scenario_categories_and_scope_boundaries(
-        self, tmp_path: Path
-    ):
-        from booley.specialists.reviewer import REVIEW_GUIDES
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "rtl/a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "optimization",
-            ]
-        )
-        hunt = tuple(g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "hunt")
-        system = endpoint._build_system_prompt("optimization", hunt)
-
-        assert "## Review guide \u2014 optimization (optimization-hunt)" in system
-        assert "## Scope Boundaries" in system
-        for category in (
-            "Redundant storage",
-            "Redundant terms",
-            "Register reuse",
-            "Equivalent structure",
-            "Oversized",
-            "Critical-path placement",
-            "Behavior-neutral dead logic",
-        ):
-            assert f"**{category}**" in system
-        assert "MAJOR** -- A likely critical-path or Fmax improvement" in system
-        assert "MINOR** -- A small saving" in system
-        assert "must not add material delay to a critical path" in system
-        assert "reserved, debug, formal, and coverage hooks" in system
-        assert "Track each wide register's lifetime" in system
-        assert "## Patterns" not in system
-        checklist = tuple(
-            g for g in REVIEW_GUIDES[("rtl", "optimization")] if g.kind == "checklist"
-        )
-        assert "share the same storage" not in endpoint._build_system_prompt(
-            "optimization", checklist
-        )
-
-    def test_rtl_optimization_prompt_checks_for_runtime_constant_work(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "optimization",
-            ]
-        )
-
-        system = endpoint._build_system_prompt("optimization")
-
-        assert "Runtime hardware driven only by elaboration constants" in system
-        assert "registers always driven by constants or a MUX with constant select" in system
-        assert "constant function evaluated into a `localparam`" in system
-        assert "Specialize supported configurations at elaboration" in system
-        assert "reject unsupported geometries at elaboration" in system
-
-    def test_rtl_optimization_prompt_prefers_static_hardware_topology(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "optimization",
-            ]
-        )
-
-        system = endpoint._build_system_prompt("optimization")
-
-        assert "Prefer static wiring over runtime steering" in system
-        assert "variable part-selects, wide dynamic shifts" in system
-        assert "Priority encoders" in system
-        assert "is it REALLY necessary" in system
-        assert "Size operands and intermediate expressions deliberately" in system
-
-    def test_rtl_bugs_prompt_omits_checks_lint_reports(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-
-        system = " ".join(endpoint._build_system_prompt("bugs").split())
-
-        for removed in (
-            "**Width mismatches**",
-            "**Undriven / partially driven signals**",
-            "Undriven or partially driven signals",
-            "an output is wrong or undriven",
-            "**Inferred latches**",
-            "**Multi-driven nets**",
-            "multiple procedural drivers",
-            "Missing labels on generate blocks",
-            "casex",
-            "Unbalanced `ifdef`",
-            "include guard",
-            "**Long combinational chains**",
-        ):
-            assert removed not in system, removed
-
-    def test_rtl_bugs_prompt_keeps_checks_lint_cannot_make(self, state_file: Path):
-        from booley.specialists.reviewer import REVIEW_GUIDES
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-        prompts = {
-            guide.kind: " ".join(endpoint._build_system_prompt("bugs", (guide,)).split())
-            for guide in REVIEW_GUIDES[("rtl", "bugs")]
-        }
-
-        checklist = prompts["checklist"]
-        assert "**Combinational loops**" in checklist
-        assert "zero-width signals or empty loop ranges at legal parameter values" in checklist
-        assert "reason across every built configuration" in checklist
-        assert "Do not review an `ifdef` configuration that no Target builds" in checklist
-        assert "Do not trace an `ifdef` configuration that no Target builds" in prompts["hunt"]
-
-    def test_rtl_optimization_prompt_checks_functionally_dead_rtl(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "optimization",
-            ]
-        )
-
-        system = " ".join(endpoint._build_system_prompt("optimization").split())
-
-        for present in (
-            "Functionally dead logic that lint cannot see",
-            "FSM states no legal input sequence reaches",
-            "constant in practice",
-            "Require proof across all legal configurations",
-            "do not claim silicon savings",
-            "interface items without complete context",
-            "Long combinational chains",
-            "limits Fmax",
-        ):
-            assert present in system, present
-        for removed in (
-            "Unused and dead RTL",
-            "written but never read",
-            "unused declarations",
-            "lint cleanliness",
-        ):
-            assert removed not in system, removed
-
-    def test_rtl_style_guide_has_no_bit_range_order_rule(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "code_style"]
-        )
-
-        system = endpoint._build_system_prompt("code_style")
-
-        assert "ascending bit ranges" not in system.lower()
-
-    def test_rtl_user_prompt_includes_scope(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        prompt = endpoint._build_prompt(focus_override="bugs")
-        assert "mod_a.sv" in prompt
-
-    def test_rtl_security_system_prompt(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "security",
-            ]
-        )
-        system = endpoint._build_system_prompt("security")
-        assert "security" in system
-        prompt = endpoint._build_prompt()
-        assert "mod_a.sv" in prompt
-
-    def test_rtl_protocol_system_prompt_uses_protocol_cdc_guide(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "protocol",
-            ]
-        )
-        system = endpoint._build_system_prompt("protocol")
-        assert "Protocol & Clock Domain Crossings" in system
-        assert '"category": "protocol"' in system
-
-    def test_reviewer_prompts_do_not_request_info_severity(self, state_file: Path):
-        for category, focus in [
-            ("rtl", "bugs"),
-            ("rtl", "protocol"),
-            ("rtl", "ifdef"),
-            ("rtl", "security"),
-            ("rtl", "optimization"),
-            ("rtl", "quality"),
-            ("tb", "quality"),
-        ]:
-            endpoint = ReviewerSpecialist()
-            scope = "tb/mod_a_tb.sv" if category == "tb" else "rtl/mod_a.sv"
-            endpoint.parse_args(
-                [
-                    "--scope",
-                    scope,
-                    "--category",
-                    category,
-                    "--focus",
-                    focus,
-                ]
-            )
-            system = endpoint._build_system_prompt(focus)
-            assert "INFO" not in system
-
-    def test_tb_system_prompt_includes_tb_guides(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        system = endpoint._build_system_prompt("quality")
-        assert "Review methodology" in system
-        assert "Testbench style guide" in system
-        assert "unit_tb_style_guide.md" not in system
-        assert "read its RTL source" not in system
-        assert "FSM structure" not in system
-        assert "datapath" not in system.lower()
-        prompt = endpoint._build_prompt()
-        assert "mod_a_tb.sv" in prompt
-        assert "code_review/rtl/" not in prompt
-
-    @pytest.mark.parametrize(
-        ("category", "scope", "label", "focus"),
-        [
-            ("rtl", "rtl/mod_a.sv", "RTL", "code_style"),
-            ("tb", "tb/mod_a_tb.sv", "Testbench", "quality"),
-        ],
-    )
-    def test_project_style_overlay_is_inlined(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-        category: str,
-        scope: str,
-        label: str,
-        focus: str,
-    ):
-        """A project-authored overlay is appended after the packaged guide."""
-        overlay = tmp_path / ".booley" / f"{category}_style_guide.md"
-        overlay.parent.mkdir(parents=True, exist_ok=True)
-        overlay.write_text("Signal names MUST carry a `u_` prefix.\n")
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                scope,
-                "--category",
-                category,
-                "--focus",
-                focus,
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        system = endpoint._build_system_prompt(focus)
-
-        assert f"## {label} style guide\n" in system
-        assert f"## {label} style guide — project overlay" in system
-        assert "Signal names MUST carry a `u_` prefix." in system
-        # The overlay text is passed through byte-for-byte.
-        assert overlay.read_text() in system
-        # Overlay must follow the packaged guide so precedence reads correctly.
-        assert system.index(f"## {label} style guide\n") < system.index(
-            f"## {label} style guide — project overlay"
-        )
-
-    def test_style_overlay_reads_relocated_booley_dir(self, state_file: Path, tmp_path: Path):
-        """A relative ``[project].dir`` moves the overlay with the Booley Directory."""
-        (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n')
-        overlay = tmp_path / "state" / "rtl_style_guide.md"
-        overlay.parent.mkdir()
-        overlay.write_text("Relocated overlay rule.\n")
-        stale = tmp_path / ".booley" / "rtl_style_guide.md"
-        stale.parent.mkdir()
-        stale.write_text("Default-location rule.\n")
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--work-dir", str(tmp_path)]
-        )
-
-        assert endpoint._read_style_overlay("rtl") == "Relocated overlay rule.\n"
-
-    @pytest.mark.parametrize(
-        ("category", "scope", "focus"),
-        [
-            ("rtl", "rtl/mod_a.sv", "code_style"),
-            ("tb", "tb/mod_a_tb.sv", "quality"),
-        ],
-    )
-    def test_missing_project_style_overlay_is_omitted(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-        category: str,
-        scope: str,
-        focus: str,
-    ):
-        """No overlay authored is the normal case — review still runs."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                scope,
-                "--category",
-                category,
-                "--focus",
-                focus,
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        system = endpoint._build_system_prompt(focus)
-
-        assert "style guide — project overlay" not in system
-        assert "style guide" in system.lower()
-
-    def test_project_style_overlay_skipped_for_non_quality_focus(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        """Overlays ride along with style guides — quality focus only."""
-        overlay = tmp_path / ".booley" / "rtl_style_guide.md"
-        overlay.parent.mkdir(parents=True, exist_ok=True)
-        overlay.write_text("Signal names MUST carry a `u_` prefix.\n")
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-        system = endpoint._build_system_prompt("bugs")
-
-        assert "style guide — project overlay" not in system
-        assert "u_` prefix" not in system
-
-    def test_diff_ref_is_rejected(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        with pytest.raises(SystemExit):
-            endpoint.parse_args(
-                [
-                    "--scope",
-                    "rtl/mod_a.sv",
-                    "--category",
-                    "rtl",
-                    "--focus",
-                    "bugs",
-                    "--diff-ref",
-                    "abc1234",
-                ]
-            )
-
-    def test_steer_injection(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--steer",
-                "Pay attention to clock domain crossings",
-            ]
-        )
-        prompt = endpoint._build_prompt(focus_override="bugs")
-        assert "Pay attention to clock domain crossings" in prompt
-
-    def test_steer_injection_tb(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-                "--steer",
-                "Check for false-pass risks",
-            ]
-        )
-        prompt = endpoint._build_prompt()
-        assert "Check for false-pass risks" in prompt
-
-    def test_output_format_in_system_prompt(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        system = endpoint._build_system_prompt("bugs")
-        assert "CRITICAL" in system
-        assert "MAJOR" in system
-        assert "MINOR" in system
-        assert "STRICT SCHEMA" in system
-        assert "``issues`` array" in system
-        # Low-confidence gate must survive prompt trims (wording may vary).
-        assert "LOW confidence" in system
-        assert '"issues": []' in system
-
-    # ----- Unattended-mode spec reviewer override (REMOVED in ADR-0014) -----
-    # The unattended spec-focus preamble used to demote MAJOR -> MINOR for
-    # spec-silence findings under `// SPEC-INTERPRETATION:` comments.  With
-    # spec compliance centralized in spec_arbiter, the reviewer no longer has
-    # a spec focus and the preamble is dead code.  Its tests were deleted.
-
-
-# ---------------------------------------------------------------------------
-# Summary line formatting
-# ---------------------------------------------------------------------------
-
-
-class TestSummaryFormatting:
-    def test_format_with_issues(self):
-        counts = {SEVERITY_CRITICAL: 1, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 1}
-        line = format_summary_line("rtl", "bugs", 2, counts, 45.3)
-        assert "[review]" in line
-        assert "rtl / bugs" in line
-        assert "2 issues" in line
-        assert "1 CRITICAL" in line
-        assert "1 MINOR" in line
-        assert "45s" in line
-
-    def test_format_no_issues(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
-        line = format_summary_line("tb", "", 0, counts, 10.0)
-        assert "[review]" in line
-        assert "0 issues" in line
-
-    def test_format_single_issue(self):
-        counts = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 0}
-        line = format_summary_line("rtl", "ifdef", 1, counts, 28.0)
-        assert "1 issue" in line
-        assert "1 MAJOR" in line
-        # Should not say "issues" (plural) for count=1
-        assert "1 issues" not in line
-
-
-# ---------------------------------------------------------------------------
-# Full RTL review run (mocked agent)
-# ---------------------------------------------------------------------------
-
-
-class TestFullRtlReview:
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_review(self, mock_agent, state_file: Path, capsys):
-        """No issues => PASS, exit 0, _done met."""
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 0
-        captured = capsys.readouterr()
-        assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_interactive_review_tracks_explicit_spec(
-        self,
-        mock_agent,
-        state_file: Path,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys,
-    ) -> None:
-        logs = tmp_path / "interactive-logs"
-        logs.mkdir()
-        spec = tmp_path / "interactive-spec.md"
-        spec.write_text("Review this change.\n", encoding="utf-8")
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--work-dir",
-                str(tmp_path),
-                "--spec",
-                str(spec),
-            ]
-        )
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["contract"]["spec_source"] == str(spec.resolve())
-        assert "RESULT: REVIEWED — NO FINDINGS" in capsys.readouterr().out
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_clean_interactive_review_needs_no_ticket_snapshot(
-        self,
-        mock_agent,
-        state_file: Path,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        logs = tmp_path / "interactive-logs"
-        logs.mkdir()
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--work-dir",
-                str(tmp_path),
-            ]
-        )
-
-        system = endpoint._build_system_prompt("bugs")
-        assert "Anchor each finding in a Goal, supplied specification, accepted decision" in system
-        assert "steering, or concrete code behavior" in system
-        assert "Cite a relevant Ticket or accepted-decision clause" not in system
-
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert result.detail["contract"]["ticket_source"] == ""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_corrective_issues_complete_done(self, mock_agent, state_file: Path, capsys):
-        mock_agent.return_value = _make_agent_result(
-            [
-                _make_issue_dict("CRITICAL"),
-                {**_make_issue_dict("MINOR"), "summary": "A separate minor finding"},
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 0
-        captured = capsys.readouterr()
-        assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
-        assert "critical" in captured.out
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_corrective_done_findings_remain_visible_and_replay(
-        self, mock_agent, state_file: Path
-    ):
-        common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
-
-        mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-        t1 = ReviewerSpecialist()
-        t1.parse_args(common)
-        first = t1._run()
-        assert first.exit_code == 0
-
-        t2 = ReviewerSpecialist()
-        t2.parse_args(common)
-        rerun = t2._run()
-        assert rerun.exit_code == 0
-        assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
-        # Each bugs review makes two calls (checklist and hunt guides).
-        assert mock_agent.call_count == 4
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_steering_does_not_hide_open_done_correction(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Steering cannot turn terminal _done into a cleanliness workflow."""
-        common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
-        mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-
-        t1 = ReviewerSpecialist()
-        t1.parse_args(common)
-        t1._run()
-
-        mock_agent.return_value = _make_agent_result([])
-        t2 = ReviewerSpecialist()
-        t2.parse_args([*common, "--steer", "attempt 1"])
-        rerun = t2._run()
-        assert rerun.exit_code == 0
-        assert rerun.detail["issues"] == 0
-        assert rerun.detail["issue_list"] == []
-        assert "NO FINDINGS" in rerun.report_text
-        # Each bugs review makes two calls (checklist and hunt guides).
-        assert mock_agent.call_count == 4
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_current_minor_findings_remain_corrective(self, mock_agent, state_file: Path, capsys):
-        mock_agent.return_value = _make_agent_result(
-            [
-                _make_issue_dict("MINOR"),
-                _make_issue_dict("MINOR"),
-            ]
-        )
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 0
-        assert result.detail["gate_passed"] is True
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
-        """Single focus runs one agent call per guide kind, one run per focus."""
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "security",
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 0
-        assert mock_agent.call_count == 2  # security declares a checklist and a hunt guide
-
-
-# ---------------------------------------------------------------------------
-# Full TB review run (mocked agent)
-# ---------------------------------------------------------------------------
-
-
-class TestFullTbReview:
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_tb_clean_review(self, mock_agent, _mock_tb, state_file: Path, capsys):
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 0
-        captured = capsys.readouterr()
-        assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
-
-
-# ---------------------------------------------------------------------------
-# Agent invocation failure
-# ---------------------------------------------------------------------------
-
-
-class TestAgentFailure:
-    @patch("booley.specialists.specialist._call_agent_sync", side_effect=RuntimeError("boom"))
-    def test_agent_error_returns_exit_2(
-        self, mock_agent, state_file: Path, tmp_path: Path, caplog
-    ):
-        endpoint = ReviewerSpecialist()
-        transcript_dir = tmp_path / "transcripts"
-        caplog.set_level("DEBUG")
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--transcript-dir",
-                str(transcript_dir),
-            ]
-        )
-        result = endpoint._run()
-        assert result.exit_code == 2
-
-
-def test_provider_failure_keeps_reviewer_outcome_and_persists_traceback(
-    tmp_path: Path, state_file: Path, capsys, caplog
-) -> None:
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        [
-            "--scope",
-            "rtl/mod_a.sv",
-            "--category",
-            "rtl",
-            "--focus",
-            "code_style",
-            "--work-dir",
-            str(tmp_path),
-            "--report-dir",
-            str(tmp_path / "reports"),
-            "--transcript-dir",
-            str(tmp_path / "transcripts"),
-        ]
-    )
-    caplog.set_level("DEBUG")
-
-    with patch.object(endpoint, "_invoke_agent", side_effect=RuntimeError("boom")):
-        issues, output_lines = endpoint._run_single_review()
-
-    assert issues is None
-    assert output_lines[0].startswith("[review")
-    report_text = endpoint._provider_failure_report(output_lines, "fallback")
-    assert report_text.startswith("reviewer failed: RuntimeError: boom")
-    assert "Diagnostic:" in report_text
-    assert "Traceback" not in capsys.readouterr().err
-    diagnostics = list((tmp_path / "transcripts").glob("reviewer.*.error.log"))
-    assert len(diagnostics) == 1
-    diagnostic = diagnostics[0]
-    assert "RuntimeError: boom" in diagnostic.read_text(encoding="utf-8")
-    assert str(diagnostic) in report_text
-    assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
-    assert not any(record.exc_info for record in caplog.records if record.levelno >= 20)
-
-
-# ---------------------------------------------------------------------------
-# _interpret_output (fallback path)
-# ---------------------------------------------------------------------------
-
-
-class TestInterpretOutput:
-    def test_interpret_clean(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        output = json.dumps({"issues": []})
-        result = endpoint._interpret_output(output, None)
-        assert result.exit_code == 0
-
-    def test_interpret_with_critical(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "security",
-            ]
-        )
-        output = json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
-        result = endpoint._interpret_output(output, None)
-        assert result.exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# TB focus validation
-# ---------------------------------------------------------------------------
-
-
-class TestTbFocusValidation:
-    def test_tb_focus_quality_allowed(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        errors = endpoint._validate_args()
-        focus_errors = [e for e in errors if "focus" in e.lower()]
-        assert focus_errors == []
-
-    def test_tb_focus_spec_rejected(self, state_file: Path):
-        """--focus spec stays rejected on TB — the spec focus is RTL-only (ADR 0038)."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "spec",
-            ]
-        )
-        errors = endpoint._validate_args()
-        focus_errors = [e for e in errors if "focus" in e.lower()]
-        assert focus_errors  # must reject
-
-    def test_tb_focus_invalid_category(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "bugs",
-            ]
-        )
-        errors = endpoint._validate_args()
-        assert any("Invalid TB focus" in e for e in errors)
-
-
-# ---------------------------------------------------------------------------
-# RTL spec focus (reinstated — ADR 0038)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
+def _run_in_tmp_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reviews without ``--work-dir`` resolve against the cwd: keep it hermetic."""
+    monkeypatch.chdir(tmp_path)
+    scope = "rtl/mod_a.sv rtl/a.sv tb/mod_a_tb.sv tb/t.sv tb/test.py tb/main.cpp tb/tb.sv"
+    for name in scope.split():  # reviews refuse a missing scope file
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_text("//\n", encoding="utf-8")
+
+
+@pytest.fixture
 def ticket_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A standalone specification document."""
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -2360,160 +75,1124 @@ def ticket_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return ticket
 
 
-class TestRtlSpecFocus:
-    def _spec_endpoint(self, ticket: Path | None) -> ReviewerSpecialist:
-        endpoint = ReviewerSpecialist()
-        argv = [
-            "--scope",
-            "rtl/mod_a.sv",
-            "--category",
-            "rtl",
-            "--focus",
-            "spec",
+@pytest.fixture
+def review_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    logs = tmp_path / "review-logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    return logs
+
+
+def _argv(category: str, focus: str, scope: str | None = None, *extra: str) -> list[str]:
+    """Reviewer arguments; the scope defaults to a file of the category."""
+    scope = scope or ("tb/mod_a_tb.sv" if category == "tb" else "rtl/mod_a.sv")
+    return ["--scope", scope, "--category", category, "--focus", focus, *extra]
+
+
+BUGS = _argv("rtl", "bugs")
+CLEAN = {"issues": []}
+
+
+def finding(**overrides: Any) -> dict[str, Any]:
+    """A schema-valid finding inside the default ``rtl/mod_a.sv`` scope."""
+    return issue(**{"file": "rtl/mod_a.sv", "line": 42, **overrides})
+
+
+def prompts(agent: ScriptedAgent, argv: list[str]) -> tuple[str, str]:
+    """Run a clean review; return the joined system prompts and the shared user prompt."""
+    outcome, _ = run_review(argv)
+    assert outcome.exit_code == 0, outcome.report_text
+    assert agent.calls
+    system = "\n".join(call.system_prompt or "" for call in agent.calls)
+    return system, agent.calls[0].prompt
+
+
+def system_of(agent: ScriptedAgent, guide: str) -> str:
+    """The system prompt of the call that carries one guide."""
+    (params,) = [call for call in agent.calls if guide_of(call) == guide]
+    return params.system_prompt or ""
+
+
+def squash(text: str) -> str:
+    """Collapse whitespace so wrapped guide text compares as one line."""
+    return " ".join(text.split())
+
+
+# ---------------------------------------------------------------------------
+# Argument surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("option", "value"), [("--target", "sim_other"), ("--diff-ref", "abc1234")], ids=str
+)
+def test_removed_options_exit_2(option: str, value: str) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        run_review([*_argv("rtl", "bugs"), option, value])
+    assert excinfo.value.code == 2
+
+
+def test_dry_run_does_not_invoke_agent(agent: ScriptedAgent, tmp_path: Path) -> None:
+    outcome, _ = run_review(["--work-dir", str(tmp_path), *BUGS, "--dry-run"])
+
+    assert outcome.exit_code == 0
+    assert outcome.detail["mode"] == "dry_run"
+    assert agent.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Issue parsing
+# ---------------------------------------------------------------------------
+
+
+def _without(entry: dict[str, Any], key: str) -> dict[str, Any]:
+    return {k: v for k, v in entry.items() if k != key}
+
+
+_PROSE_BRACES = (
+    "Initial thought: something like { a stray { unbalanced ref }\n"
+    "Actually here is the review:\n"
+    '{"issues": [{"severity": "MINOR", "confidence": "LOW", '
+    '"category": "quality", "kind": "code_defect", '
+    '"disposition": "advisory", "ticket_clause": "Keep names clear.", '
+    '"file": "a.sv", "line": 1, '
+    '"summary": "nit"}]}'
+)
+
+
+class _Wrapper(NamedTuple):
+    output: str
+    issue_count: int
+    json_present: bool | None  # None: the case does not pin it
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        _Wrapper(
+            json.dumps({"issues": [issue(severity="CRITICAL"), issue(severity="MINOR")]}),
+            2,
+            True,
+        ),
+        _Wrapper(
+            "Here is my review:\n```json\n"
+            + json.dumps({"issues": [issue(severity="CRITICAL")]})
+            + "\n```\n",
+            1,
+            True,
+        ),
+        # Bare arrays are not the spec'd wrapper: the old greedy ``\[.*\]`` fallback
+        # swallowed prose like ``[MAJOR] ...`` headings and masked real wrappers.
+        _Wrapper(json.dumps([issue()]), 0, None),
+        _Wrapper(json.dumps(CLEAN), 0, True),
+        _Wrapper("Looks fine to me, no issues!", 0, False),
+        _Wrapper("{issues: [broken json", 0, None),
+        _Wrapper(_PROSE_BRACES, 1, True),
+    ],
+    ids=[
+        "object",
+        "embedded_in_text",
+        "bare_array_rejected",
+        "empty_list_is_json_present",
+        "no_json",
+        "broken_json",
+        "prose_braces_do_not_mask_wrapper",
+    ],
+)
+def test_wrapper_extraction(case: _Wrapper) -> None:
+    result = parse_review_output(case.output)
+
+    assert len(result.issues) == case.issue_count
+    if case.json_present is not None:
+        assert result.json_present is case.json_present
+
+
+def test_brackets_in_string_dont_break_scan() -> None:
+    """``]}`` inside a JSON string value is not a wrapper terminator."""
+    entry = issue(spec_clause="value [a:b]} with embedded brackets")
+
+    result = parse_review_output(json.dumps({"issues": [entry]}))
+
+    assert result.json_present is True
+    assert len(result.issues) == 1
+
+
+class _Malformed(NamedTuple):
+    entry: Any
+    field: str
+    allowed_category: str | None = None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        _Malformed(issue(severity="INFO"), "severity"),
+        _Malformed(_without(issue(), "confidence"), "confidence"),
+        _Malformed(_without(issue(), "kind"), "kind"),
+        _Malformed(_without(issue(), "disposition"), "disposition"),
+        _Malformed(_without(issue(), "ticket_clause"), "ticket_clause"),
+        _Malformed(issue(file=""), "file"),
+        _Malformed(issue(line=-5), "line"),
+        _Malformed(issue(line="42"), "line"),
+        _Malformed(issue(summary="   "), "summary"),
+        _Malformed(_without(issue(), "category"), "category"),
+        _Malformed(issue(category="protocol"), "exactly 'bugs'", "bugs"),
+        _Malformed("not a dict", "JSON object"),
+        _Malformed([1, 2, 3], "JSON object"),
+    ],
+    ids=lambda case: f"{case.field}-{str(case.entry)[:12]}",
+)
+def test_malformed_issue_is_rejected(case: _Malformed) -> None:
+    output = json.dumps({"issues": [case.entry]})
+
+    result = parse_review_output(output, allowed_category=case.allowed_category)
+
+    assert result.issues == []
+    assert [index for index, _ in result.rejected] == [1]
+    assert case.field in str(result.rejected[0][1])
+
+
+def test_lowercase_severity_accepted() -> None:
+    """The enum check is case-insensitive: strictness is on the values, not the casing."""
+    result = parse_review_output(json.dumps({"issues": [issue(severity="critical")]}))
+
+    assert len(result.issues) == 1
+    assert result.rejected == []
+
+
+def test_parse_review_output_drops_malformed_entries() -> None:
+    bad_severity = {
+        "severity": "INFO",
+        "confidence": "HIGH",
+        "category": "x",
+        "file": "a.sv",
+        "line": 1,
+        "summary": "s",
+    }
+    output = json.dumps(
+        {
+            "issues": [
+                issue(severity="CRITICAL"),
+                {"severity": "MAJOR"},  # missing required fields
+                issue(severity="MINOR"),
+                bad_severity,
+            ],
+        }
+    )
+
+    result = parse_review_output(output)
+
+    assert result.json_present is True
+    assert {i.severity for i in result.issues} == {"CRITICAL", "MINOR"}
+    # Two rejected (indices 2 and 4 in 1-based ordering).
+    assert {index for index, _ in result.rejected} == {2, 4}
+
+
+def test_parse_review_output_rejects_wrong_focus_category() -> None:
+    output = json.dumps({"issues": [issue(category="bugs"), issue(category="protocol")]})
+
+    result = parse_review_output(output, allowed_category="bugs")
+
+    assert [i.category for i in result.issues] == ["bugs"]
+    assert {index for index, _ in result.rejected} == {2}
+
+
+def test_parse_review_output_with_verilog_bitselect_in_spec_clause() -> None:
+    """Regression: spec_clause quoting Verilog bit-selects must not confuse wrapper extraction.
+
+    The old regex-based extractor terminated early on the first ``]}`` substring it
+    found, which appears inside spec_clause values like ``{{20{instr[31]}}, instr[31:20]}``
+    -- causing c-static-branch-predict-0001 to block on a "no JSON wrapper" false
+    negative even though the agent emitted a perfectly valid ``{"issues": [...]}``.
+    """
+    agent_output = (
+        "### [MAJOR] JALR target uses uncited ambiguity reading\n"
+        "**File:** `rtl/static_branch_predict.sv:67`\n"
+        '**Spec clause:** "rd <-pc + {{20{instr[31]}}, '
+        'instr[31:20]} + rs1"\n\n'
+        "```json\n"
+        "{\n"
+        '  "issues": [\n'
+        "    {\n"
+        '      "severity": "MAJOR",\n'
+        '      "confidence": "HIGH",\n'
+        '      "category": "spec",\n'
+        '      "kind": "spec_ambiguity",\n'
+        '      "disposition": "current",\n'
+        '      "ticket_clause": "JALR target uses rs1",\n'
+        '      "file": "rtl/static_branch_predict.sv",\n'
+        '      "line": 67,\n'
+        '      "summary": "JALR target omits rs1",\n'
+        '      "fix_suggestion": "Add SPEC-INTERPRETATION cite.",\n'
+        '      "spec_clause": "rd <-pc + '
+        '{{20{instr[31]}}, instr[31:20]} + rs1"\n'
+        "    },\n"
+        "    {\n"
+        '      "severity": "MAJOR",\n'
+        '      "confidence": "HIGH",\n'
+        '      "category": "spec",\n'
+        '      "kind": "spec_ambiguity",\n'
+        '      "disposition": "current",\n'
+        '      "ticket_clause": "predict_branch_pc_o is the target.",\n'
+        '      "file": "rtl/static_branch_predict.sv",\n'
+        '      "line": 58,\n'
+        '      "summary": "Inactive PC forced to zero",\n'
+        '      "fix_suggestion": "Cite the ambiguity.",\n'
+        '      "spec_clause": "predict_branch_pc_o is the target."\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n\n"
+        "SPEC COMPLIANCE SUMMARY: 0 CRITICAL, 2 MAJOR, 0 MINOR"
+    )
+
+    result = parse_review_output(agent_output)
+
+    assert result.json_present is True
+    assert [i.line for i in result.issues] == [67, 58]
+    assert all(i.severity == "MAJOR" for i in result.issues)
+
+
+def test_issue_to_dict_omits_empty_fix() -> None:
+    row = ReviewIssue(
+        severity="MINOR",
+        confidence="LOW",
+        category="quality",
+        file="rtl/mod_b.sv",
+        line=10,
+        summary="Style",
+    )
+
+    assert "fix_suggestion" not in row.to_dict()
+
+
+def test_finding_ids_distinguish_defects_on_the_same_ticket_clause(agent: ScriptedAgent) -> None:
+    agent.answer(
+        {
+            "issues": [
+                finding(summary="Reset polarity is inverted"),
+                finding(summary="Enable polarity is inverted"),
+            ]
+        }
+    )
+
+    outcome, _ = run_review(BUGS)
+
+    ids = {row["finding_id"] for row in outcome.detail["issue_list"]}
+    assert len(outcome.detail["issue_list"]) == 2
+    assert len(ids) == 2
+
+
+class TestReportFindingsMapper:
+    """Unit tests for the ReportFindings -> MirrorFinding mapping."""
+
+    def test_keeps_sent_severity_and_ignores_verdict(self) -> None:
+        mirror = report_findings_to_mirror(
+            [
+                {"file": "./rtl/a.sv", "line": 7, "summary": "x", "severity": "critical"},
+                {"file": "rtl/a.sv", "line": 8, "summary": "y", "verdict": "CONFIRMED"},
+            ]
+        )
+        assert mirror == [
+            MirrorFinding(file="rtl/a.sv", line=7, severity=SEVERITY_CRITICAL),
+            MirrorFinding(file="rtl/a.sv", line=8, severity=None),
         ]
-        if ticket is not None:
-            argv += ["--spec", str(ticket)]
-        endpoint.parse_args(argv)
-        return endpoint
 
-    def test_system_prompt_includes_spec_guide(self, state_file: Path, ticket_md: Path):
-        system = self._spec_endpoint(ticket_md)._build_system_prompt("spec")
+    def test_bad_line_defaults_to_zero(self) -> None:
+        mirror = report_findings_to_mirror([{"file": "rtl/a.sv", "line": "nope", "summary": "x"}])
+        assert mirror[0].line == 0
+
+
+# ---------------------------------------------------------------------------
+# Channel verdicts: text JSON versus the native ReportFindings mirror
+# ---------------------------------------------------------------------------
+
+
+def _mirror(line: int, summary: str, **extra: Any) -> dict[str, Any]:
+    """One ReportFindings entry on ``rtl/mod_a.sv``."""
+    return {"file": "rtl/mod_a.sv", "line": line, "summary": summary, **extra}
+
+
+def _canonical(*rows: dict[str, Any]) -> str:
+    return json.dumps({"issues": list(rows)})
+
+
+class Verdict(NamedTuple):
+    """One agent answer and the run outcome it must produce."""
+
+    output: str  # the agent's final text
+    reports: list[list[dict[str, Any]]] | None  # one list per ReportFindings call; None = none
+    exit_code: int
+    detail: dict[str, Any] = {}  # noqa: RUF012 - read-only expectation
+    report_any: tuple[str, ...] = ()  # the report text carries at least one of these
+
+
+_CRITICAL_TEXT = _canonical(
+    finding(severity="CRITICAL", summary="FMAX polarity inverted — returns the minimum")
+)
+_LATCH = [_mirror(3, "latch", verdict="CONFIRMED")]
+_STRING_LINE = {
+    "severity": "CRITICAL",
+    "confidence": "HIGH",
+    "category": "bugs",
+    "file": "rtl/mod_a.sv",
+    "line": "42",  # string -> schema-rejected
+    "summary": "polarity inverted",
+}
+_NOPE = {"severity": "nope", "category": "bugs", "file": "a.sv"}
+_MINOR_ADVISORY = finding(
+    severity="MINOR",
+    confidence="LOW",
+    disposition="advisory",
+    ticket_clause="Keep names clear.",
+    line=5,
+    summary="cosmetic",
+)
+
+_VERDICTS: dict[str, Verdict] = {
+    # --- native ReportFindings capture ---
+    "confirmed_finding_needs_canonical_metadata": Verdict(
+        "", [[_mirror(42, "latch inferred", verdict="CONFIRMED")]], 2
+    ),
+    # SETUP-F-33: zero findings in BOTH channels is a clean pass; an empty
+    # capability call on its own is no evidence of anything.
+    "empty_report_is_clean_pass": Verdict(json.dumps(CLEAN), [[]], 0, {"issues": 0}),
+    "plausible_finding_needs_canonical_metadata": Verdict(
+        "", [[_mirror(3, "style nit", verdict="PLAUSIBLE")]], 2
+    ),
+    # --- SETUP-F-33: an empty ReportFindings call must never mask a text CRITICAL ---
+    "empty_endpoint_call_does_not_mask_text_critical": Verdict(
+        "The diff introduces a clear correctness bug.\n" + _CRITICAL_TEXT,
+        [[]],
+        0,
+        {"issues": 1, "CRITICAL": 1},
+    ),
+    "empty_endpoint_call_and_prose_only_is_endpoint_error": Verdict(
+        "I looked at the files. Nothing jumped out at me.", [[]], 2
+    ),
+    # ReportFindings cannot replace the canonical Ticket-bound JSON.
+    "endpoint_findings_without_metadata_mirror_are_rejected": Verdict(
+        "see the agent-capability call", [_LATCH], 2
+    ),
+    # PLAUSIBLE via endpoint + CRITICAL in text: the blocking channel wins whole, no merge.
+    "more_severe_text_channel_wins_over_advisory_endpoint_channel": Verdict(
+        _CRITICAL_TEXT,
+        [[_mirror(42, "nit", verdict="PLAUSIBLE")]],
+        0,
+        {"issues": 1, "CRITICAL": 1},
+    ),
+    "endpoint_finding_missing_from_text_is_contract_error": Verdict(
+        json.dumps(CLEAN), [_LATCH], 2
+    ),
+    # Every reported issue failing the schema is a Specialist error, not "0 issues".
+    "all_issues_rejected_is_not_a_clean_pass": Verdict(
+        _canonical({**_STRING_LINE, "category": "wrong_focus"}), None, 2
+    ),
+    # The residual F-33 false PASS: a MINOR nit burying a rejected CRITICAL. The text
+    # channel's verdict is unknown, so the nit must not outvote it into a clean pass.
+    "advisory_endpoint_call_cannot_outvote_a_rejected_text_channel": Verdict(
+        _canonical({**_STRING_LINE, "summary": "FMAX polarity inverted"}),
+        [[_mirror(3, "naming nit", verdict="PLAUSIBLE")]],
+        2,
+    ),
+    "rejected_text_channel_cannot_be_replaced_by_endpoint_findings": Verdict(
+        _canonical(_STRING_LINE), [_LATCH], 2
+    ),
+    "rejected_text_channel_with_empty_endpoint_call_is_a_endpoint_error": Verdict(
+        _canonical(_NOPE), [[]], 2
+    ),
+    # One survivor means the text channel is usable: only a WARN, no error.
+    "partial_rejection_still_reviews_normally": Verdict(
+        _canonical(_NOPE, _MINOR_ADVISORY),
+        [[]],
+        0,
+        {"issues": 0, "observation_count": 1, "gate_passed": True},
+    ),
+    # --- Upstream rejection: prose is never a clean pass ---
+    "no_json_wrapper_returns_endpoint_error": Verdict(
+        "I reviewed the files and everything looks fine.",
+        None,
+        2,
+        report_any=("no parseable", "invocation failed"),
+    ),
+    "malformed_entries_dropped_but_review_still_completes": Verdict(
+        _canonical(
+            finding(severity="CRITICAL"),
+            {**_STRING_LINE, "severity": "BOGUS", "line": 1, "category": "x"},
+        ),
+        None,
+        0,
+        {"issues": 1, "CRITICAL": 1},
+    ),
+    # --- #1963: the mirror must match canonical findings, not out-count them ---
+    # Replay of a recorded run: the same 3 findings reported twice, no severity sent; the
+    # canonical JSON rates the first CONFIRMED finding MINOR and the PLAUSIBLE one MAJOR.
+    "repeated_report_agrees_with_canonical_listed_once": Verdict(
+        _canonical(
+            finding(severity="MAJOR", line=316, summary="no timeout"),
+            finding(severity="MAJOR", line=1156, summary="no edge vectors"),
+            finding(severity="MINOR", line=384, summary="no stall injection"),
+        ),
+        [
+            [
+                _mirror(316, "no timeout", verdict="CONFIRMED"),
+                _mirror(1156, "no edges", verdict="PLAUSIBLE"),
+                _mirror(384, "no stalls", verdict="CONFIRMED"),
+            ]
+        ]
+        * 2,
+        0,
+    ),
+    "confirmed_finding_rated_minor_agrees": Verdict(
+        _canonical(finding(severity="MINOR")),
+        [[_mirror(42, "x", verdict="CONFIRMED")]],
+        0,
+    ),
+    "split_report_that_resends_a_finding_agrees": Verdict(
+        _canonical(
+            finding(severity="MAJOR", line=5, summary="a"),
+            finding(severity="MINOR", line=9, summary="b"),
+        ),
+        [
+            [_mirror(5, "a", severity="MAJOR")],
+            [_mirror(5, "a", severity="MAJOR"), _mirror(9, "b", severity="MINOR")],
+        ],
+        0,
+    ),
+    "mirror_severity_above_canonical_still_fails": Verdict(
+        _canonical(finding(severity="MAJOR")),
+        [[_mirror(42, "x", severity="CRITICAL")]],
+        2,
+    ),
+    # A severe canonical issue elsewhere in the file must not hide an omitted finding.
+    "mirror_finding_missing_beside_a_more_severe_canonical_issue_fails": Verdict(
+        _canonical(finding(severity="CRITICAL")),
+        [[_mirror(7, "x", verdict="PLAUSIBLE")]],
+        2,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", _VERDICTS.values(), ids=list(_VERDICTS))
+def test_channel_verdict(
+    case: Verdict, agent: ScriptedAgent, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if case.reports is None:
+        agent.answer(case.output)
+    else:
+        agent.answer(
+            agent.reported(*({"findings": rows} for rows in case.reports), output=case.output)
+        )
+
+    outcome, _ = run_review(BUGS)
+
+    assert outcome.exit_code == case.exit_code
+    for key, expected in case.detail.items():
+        assert outcome.detail[key] == expected, key
+    if case.report_any:
+        assert any(text in outcome.report_text.lower() for text in case.report_any)
+    if case.exit_code == 2:
+        # A Specialist error is never a gate pass, and the output must not contradict itself.
+        assert outcome.detail.get("gate_passed") is not True
+        shown = (outcome.report_text + capsys.readouterr().out).lower()
+        assert "gate_passed: true" not in shown
+
+
+def test_tied_channels_preserve_canonical_ticket_metadata(agent: ScriptedAgent) -> None:
+    canonical = finding(summary="latch")
+    agent.answer(
+        agent.reported(
+            {"findings": [_mirror(42, "latch", verdict="CONFIRMED")]},
+            output=_canonical(canonical),
+        )
+    )
+
+    outcome, _ = run_review(BUGS)
+
+    assert outcome.exit_code == 0
+    row = outcome.detail["issue_list"][0]
+    assert row["kind"] == "code_defect"
+    assert row["disposition"] == "current"
+    assert row["ticket_clause"] == canonical["ticket_clause"]
+
+
+def test_output_instructions_teach_the_endpoint_contract(agent: ScriptedAgent) -> None:
+    """The prompt must name ReportFindings -- the contract mismatch behind F-33."""
+    system, _ = prompts(agent, BUGS)
+
+    assert "ReportFindings" in system
+    assert "mirror" in system.lower()
+
+
+def test_review_denies_mutating_tools(agent: ScriptedAgent) -> None:
+    """SETUP-F-35: allowed_agent_capabilities is advisory under bypassPermissions."""
+    run_review(BUGS)
+
+    params = agent.calls[0]
+    assert {"Bash", "Write", "Edit"} <= set(params.disallowed_agent_capabilities or [])
+    # The read-only allowlist is unchanged.
+    assert params.allowed_agent_capabilities == ["Read", "Grep", "Glob", "ReportFindings"]
+
+
+@pytest.mark.parametrize("with_report_dir", [False, True], ids=["no_report_dir", "report_dir"])
+def test_verdict_text_does_not_carry_its_own_no_report_dir_notice(
+    agent: ScriptedAgent, tmp_path: Path, with_report_dir: bool
+) -> None:
+    """SETUP-F-39: ``Endpoint._post_run`` owns the "nothing was persisted" notice.
+
+    The reviewer used to build its own copy into ``report_text``; keeping both printed
+    the same warning twice per run, which is the noise F-28 was about.
+    """
+    extra = ["--report-dir", str(tmp_path / "rep")] if with_report_dir else []
+
+    outcome, _ = run_review([*BUGS, *extra])
+
+    assert "no --report-dir" not in outcome.report_text
+
+
+class TestSeverityCounting:
+    def test_unknown_severity_ignored(self) -> None:
+        rows = [ReviewIssue.from_dict({"severity": "UNKNOWN", "file": "f.sv"})]
+
+        assert sum(count_by_severity(rows).values()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Scope and argument validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("files", "category", "fragments"),
+    [
+        (["rtl/mod_a.sv"], "rtl", []),
+        # Without a ``.core``, ``fw/`` is no RTL directory (#4052).
+        (["fw/main.c"], "rtl", ["doesn't match RTL"]),
+        (["tb/mod_a_tb.sv"], "rtl", ["doesn't match RTL"]),
+        (["tb/mod_a_tb.sv"], "tb", []),
+        (["rtl/mod_a.sv"], "tb", ["doesn't match TB"]),
+        (["rtl/mod_a.sv", "tb/mod_a_tb.sv"], "rtl", ["tb/mod_a_tb.sv"]),
+        ([], "rtl", []),
+    ],
+)
+def test_scope_validation(files: list[str], category: str, fragments: list[str]) -> None:
+    errors = validate_scope_category(files, category)
+
+    assert len(errors) == len(fragments)
+    for error, fragment in zip(errors, fragments, strict=True):
+        assert fragment in error
+
+
+def test_flat_repo_root_file_is_valid_exact_scope(tmp_path: Path) -> None:
+    (tmp_path / "picorv32.v").write_text("module picorv32; endmodule\n", encoding="utf-8")
+    (tmp_path / "testbench.v").write_text("module testbench; endmodule\n", encoding="utf-8")
+    (tmp_path / "picorv32.core").write_text(
+        "CAPI=2:\n"
+        "name: ::picorv32\n"
+        "filesets:\n"
+        "  rtl: {files: [picorv32.v]}\n"
+        "  tb: {files: [testbench.v], tags: [tb]}\n"
+        "targets:\n"
+        "  sim: {filesets: [rtl, tb], toplevel: testbench}\n",
+        encoding="utf-8",
+    )
+
+    assert validate_scope_category(["picorv32.v"], "rtl", tmp_path) == []
+    assert validate_scope_category(["./picorv32.v"], "rtl", tmp_path) == []
+    errors = validate_scope_category(["picorv32.v.bak"], "rtl", tmp_path)
+    assert errors == []  # explicit unregistered scope retains its narrow grant
+
+
+class _Arguments(NamedTuple):
+    argv: list[str]
+    refusal: str | None  # None: accepted
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        _Arguments(BUGS, None),
+        _Arguments(_argv("rtl", "spec", None, "--spec-text", "o_valid pulses once."), None),
+        _Arguments(_argv("tb", "quality"), None),
+        # Every RTL focus together (reinstated spec focus, ADR 0038).
+        _Arguments(
+            _argv(
+                "rtl",
+                ",".join(sorted(RTL_FOCUS_CATEGORIES)),
+                None,
+                "--spec-text",
+                "o_valid pulses once.",
+            ),
+            None,
+        ),
+        _Arguments(["--scope", "rtl/mod_a.sv", "--category", "rtl"], "--focus"),
+        _Arguments(_argv("rtl", "bogus"), "Invalid RTL focus"),
+        # The spec focus is RTL-only (ADR 0038).
+        _Arguments(_argv("tb", "spec"), "Invalid TB focus"),
+        _Arguments(_argv("tb", "bugs"), "Invalid TB focus"),
+        _Arguments(_argv("rtl", "bugs", "tb/mod_a_tb.sv"), "doesn't match RTL"),
+        _Arguments(_argv("tb", "quality", "rtl/mod_a.sv"), "doesn't match TB"),
+    ],
+    ids=[
+        "rtl_bugs",
+        "rtl_spec",
+        "tb_quality",
+        "every_rtl_focus",
+        "focus_required",
+        "invalid_rtl_focus",
+        "tb_spec_rejected",
+        "tb_bugs_rejected",
+        "rtl_scope_with_tb_file",
+        "tb_scope_with_rtl_file",
+    ],
+)
+def test_argument_validation(case: _Arguments, agent: ScriptedAgent) -> None:
+    outcome, _ = run_review([*case.argv, "--dry-run"])
+
+    if case.refusal is None:
+        assert outcome.exit_code == 0, outcome.report_text
+    else:
+        assert outcome.exit_code == 2
+        assert case.refusal in outcome.report_text
+    assert agent.calls == []
+
+
+@pytest.mark.parametrize("dry_run", [[], ["--dry-run"]])
+def test_missing_scope_file_is_refused_before_any_search(
+    agent: ScriptedAgent, tmp_path: Path, dry_run: list[str]
+) -> None:
+    (tmp_path / "bare").mkdir()
+    outcome, _ = run_review(["--work-dir", str(tmp_path / "bare"), *BUGS, *dry_run])
+
+    assert outcome.exit_code == 2
+    assert "Scope files not found: rtl/mod_a.sv." in outcome.report_text
+    assert agent.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Prompt construction
+# ---------------------------------------------------------------------------
+
+# (category, focus, scope, guides in declaration order): the guides each focus loads.
+_GUIDE_CASES = [
+    ("rtl", "bugs", "rtl/a.sv", ["bugs-checklist", "bugs-hunt"]),
+    ("rtl", "protocol", "rtl/a.sv", ["protocol-cdc-checklist", "protocol-cdc-hunt"]),
+    ("rtl", "security", "rtl/a.sv", ["security-checklist", "security-hunt"]),
+    ("rtl", "optimization", "rtl/a.sv", ["optimization-checklist", "optimization-hunt"]),
+    ("rtl", "code_style", "rtl/a.sv", ["code_style-checklist"]),
+    ("rtl", "spec", "rtl/a.sv", ["spec-hunt"]),
+    ("tb", "quality", "tb/t.sv", ["hdl-checklist", "tb-hunt"]),
+    ("tb", "quality", "tb/test.py", ["cocotb-checklist", "tb-hunt"]),
+    (
+        "tb",
+        "quality",
+        "tb/main.cpp,tb/test.py,tb/tb.sv",
+        ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist", "tb-hunt"],
+    ),
+]
+
+
+@pytest.mark.parametrize(("category", "focus", "scope", "names"), _GUIDE_CASES)
+def test_each_focus_loads_its_declared_guides(
+    agent: ScriptedAgent,
+    ticket_md: Path,
+    category: str,
+    focus: str,
+    scope: str,
+    names: list[str],
+) -> None:
+    system, _ = prompts(agent, _argv(category, focus, scope, "--spec", str(ticket_md)))
+
+    headings = re.findall(r"^## Review guide — .*$", system, flags=re.MULTILINE)
+    # Guide calls run concurrently, so compare as sets of headings (one call per guide).
+    assert sorted(headings) == sorted(f"## Review guide — {focus} ({name})" for name in names)
+    # A mixed-language TB scope folds its checklists into one call (``a+b``).
+    assert sorted("+".join(guide_of(call) for call in agent.calls).split("+")) == sorted(names)
+    if focus == "spec":
+        assert "## Trace targets" in system
+        assert "## Checklist" not in system
+
+
+@pytest.mark.parametrize(("category", "focus", "scope", "names"), _GUIDE_CASES)
+def test_dry_run_lists_guides_with_kind(
+    ticket_md: Path, category: str, focus: str, scope: str, names: list[str]
+) -> None:
+    expected = [
+        {"kind": "hunt" if name.endswith("-hunt") else "checklist", "name": name} for name in names
+    ]
+
+    argv = _argv(category, focus, scope, "--spec", str(ticket_md), "--dry-run")
+
+    outcome, _ = run_review(argv)
+
+    assert outcome.detail["guides"] == expected
+    assert f"guides={','.join(names)}" in outcome.report_text
+
+
+def test_security_hunt_prompt_names_scenario_categories_and_scope_boundaries(
+    agent: ScriptedAgent,
+) -> None:
+    """A guide edit or packaging change must not drop what the hunt call receives."""
+    run_review(_argv("rtl", "security"))
+
+    system = system_of(agent, "security-hunt")
+    assert "(security-checklist)" not in system
+    boundaries = system.split("## Scope Boundaries", 1)[1].split("\n## ", 1)[0]
+    assert "`bugs`" in boundaries
+    assert "`protocol`" in boundaries
+    assert '{"issues": []}' in boundaries
+    for category in (
+        "Attacker-controlled inputs",
+        "Debug, test, and scan access",
+        "Reset and power",
+        "Error, alert, and escalation paths",
+        "Fault injection",
+        "Secret flow",
+    ):
+        assert f"**{category}**" in system, category
+
+
+def test_optimization_hunt_guide_names_scenario_categories_and_scope_boundaries(
+    agent: ScriptedAgent,
+) -> None:
+    run_review(_argv("rtl", "optimization"))
+
+    system = system_of(agent, "optimization-hunt")
+    assert "## Scope Boundaries" in system
+    for category in (
+        "Redundant storage",
+        "Redundant terms",
+        "Register reuse",
+        "Equivalent structure",
+        "Oversized",
+        "Critical-path placement",
+        "Behavior-neutral dead logic",
+    ):
+        assert f"**{category}**" in system
+    assert "MAJOR** -- A likely critical-path or Fmax improvement" in system
+    assert "MINOR** -- A small saving" in system
+    assert "must not add material delay to a critical path" in system
+    assert "reserved, debug, formal, and coverage hooks" in system
+    assert "Track each wide register's lifetime" in system
+    assert "## Patterns" not in system
+    assert "share the same storage" not in system_of(agent, "optimization-checklist")
+
+
+def test_rtl_optimization_prompt_checks_for_runtime_constant_work(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, _argv("rtl", "optimization"))
+
+    assert "Runtime hardware driven only by elaboration constants" in system
+    assert "registers always driven by constants or a MUX with constant select" in system
+    assert "constant function evaluated into a `localparam`" in system
+    assert "Specialize supported configurations at elaboration" in system
+    assert "reject unsupported geometries at elaboration" in system
+
+
+def test_rtl_optimization_prompt_prefers_static_hardware_topology(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, _argv("rtl", "optimization"))
+
+    assert "Prefer static wiring over runtime steering" in system
+    assert "variable part-selects, wide dynamic shifts" in system
+    assert "Priority encoders" in system
+    assert "is it REALLY necessary" in system
+    assert "Size operands and intermediate expressions deliberately" in system
+
+
+def test_rtl_bugs_prompt_omits_checks_lint_reports(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, BUGS)
+
+    system = squash(system)
+    for removed in (
+        "**Width mismatches**",
+        "**Undriven / partially driven signals**",
+        "Undriven or partially driven signals",
+        "an output is wrong or undriven",
+        "**Inferred latches**",
+        "**Multi-driven nets**",
+        "multiple procedural drivers",
+        "Missing labels on generate blocks",
+        "casex",
+        "Unbalanced `ifdef`",
+        "include guard",
+        "**Long combinational chains**",
+    ):
+        assert removed not in system, removed
+
+
+def test_rtl_bugs_prompt_keeps_checks_lint_cannot_make(agent: ScriptedAgent) -> None:
+    run_review(BUGS)
+
+    checklist = squash(system_of(agent, "bugs-checklist"))
+    assert "**Combinational loops**" in checklist
+    assert "zero-width signals or empty loop ranges at legal parameter values" in checklist
+    assert "reason across every built configuration" in checklist
+    assert "Do not review an `ifdef` configuration that no Target builds" in checklist
+    hunt = squash(system_of(agent, "bugs-hunt"))
+    assert "Do not trace an `ifdef` configuration that no Target builds" in hunt
+
+
+def test_rtl_optimization_prompt_checks_functionally_dead_rtl(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, _argv("rtl", "optimization"))
+
+    system = squash(system)
+    for present in (
+        "Functionally dead logic that lint cannot see",
+        "FSM states no legal input sequence reaches",
+        "constant in practice",
+        "Require proof across all legal configurations",
+        "do not claim silicon savings",
+        "interface items without complete context",
+        "Long combinational chains",
+        "limits Fmax",
+    ):
+        assert present in system, present
+    for removed in (
+        "Unused and dead RTL",
+        "written but never read",
+        "unused declarations",
+        "lint cleanliness",
+    ):
+        assert removed not in system, removed
+
+
+def test_rtl_style_guide_has_no_bit_range_order_rule(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, _argv("rtl", "code_style"))
+
+    assert "ascending bit ranges" not in system.lower()
+
+
+def test_rtl_user_prompt_includes_scope(agent: ScriptedAgent) -> None:
+    system, prompt = prompts(agent, BUGS)
+
+    assert "mod_a.sv" in prompt
+    assert "bugs" in system
+    assert "Review methodology" in system
+
+
+def test_rtl_protocol_system_prompt_uses_protocol_cdc_guide(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, _argv("rtl", "protocol"))
+
+    assert "Protocol & Clock Domain Crossings" in system
+    assert '"category": "protocol"' in system
+    # The output instructions pin the category to the focus.
+    assert '- category:       "protocol"' in system
+    assert "category:       string" not in system
+
+
+@pytest.mark.parametrize(("category", "focus"), sorted(REVIEW_GUIDES))
+def test_reviewer_prompts_do_not_request_info_severity(
+    agent: ScriptedAgent, ticket_md: Path, category: str, focus: str
+) -> None:
+    system, _ = prompts(agent, _argv(category, focus, None, "--spec", str(ticket_md)))
+
+    assert "INFO" not in system
+
+
+def test_tb_system_prompt_includes_tb_guides(agent: ScriptedAgent) -> None:
+    system, prompt = prompts(agent, _argv("tb", "quality"))
+
+    assert "Review methodology" in system
+    assert "Testbench style guide" in system
+    assert "unit_tb_style_guide.md" not in system
+    assert "read its RTL source" not in system
+    assert "FSM structure" not in system
+    assert "datapath" not in system.lower()
+    assert "mod_a_tb.sv" in prompt
+    assert "code_review/rtl/" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("category", "scope", "label", "focus"),
+    [
+        ("rtl", "rtl/mod_a.sv", "RTL", "code_style"),
+        ("tb", "tb/mod_a_tb.sv", "Testbench", "quality"),
+    ],
+)
+def test_project_style_overlay_is_inlined(
+    agent: ScriptedAgent, tmp_path: Path, category: str, scope: str, label: str, focus: str
+) -> None:
+    """A project-authored overlay is appended after the packaged guide."""
+    overlay = tmp_path / ".booley" / f"{category}_style_guide.md"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text("Signal names MUST carry a `u_` prefix.\n", encoding="utf-8")
+
+    system, _ = prompts(agent, _argv(category, focus, scope, "--work-dir", str(tmp_path)))
+
+    assert f"## {label} style guide\n" in system
+    assert f"## {label} style guide — project overlay" in system
+    # The overlay text is passed through byte-for-byte.
+    assert overlay.read_text(encoding="utf-8") in system
+    # Overlay must follow the packaged guide so precedence reads correctly.
+    assert system.index(f"## {label} style guide\n") < system.index(
+        f"## {label} style guide — project overlay"
+    )
+
+
+def test_style_overlay_reads_relocated_booley_dir(agent: ScriptedAgent, tmp_path: Path) -> None:
+    """A relative ``[project].dir`` moves the overlay with the Booley Directory."""
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
+    relocated = tmp_path / "state" / "rtl_style_guide.md"
+    relocated.parent.mkdir()
+    relocated.write_text("Relocated overlay rule.\n", encoding="utf-8")
+    stale = tmp_path / ".booley" / "rtl_style_guide.md"
+    stale.parent.mkdir()
+    stale.write_text("Default-location rule.\n", encoding="utf-8")
+
+    system, _ = prompts(agent, _argv("rtl", "code_style", None, "--work-dir", str(tmp_path)))
+
+    assert "Relocated overlay rule." in system
+    assert "Default-location rule." not in system
+
+
+@pytest.mark.parametrize(
+    ("category", "focus", "overlay_authored"),
+    [("rtl", "code_style", False), ("tb", "quality", False), ("rtl", "bugs", True)],
+    ids=["rtl_absent", "tb_absent", "non_quality_focus_skips_overlay"],
+)
+def test_style_overlay_is_omitted(
+    agent: ScriptedAgent, tmp_path: Path, category: str, focus: str, overlay_authored: bool
+) -> None:
+    """No overlay authored is the normal case; overlays ride along with style guides only."""
+    if overlay_authored:
+        overlay = tmp_path / ".booley" / f"{category}_style_guide.md"
+        overlay.parent.mkdir()
+        overlay.write_text("Signal names MUST carry a `u_` prefix.\n", encoding="utf-8")
+
+    system, _ = prompts(agent, _argv(category, focus, None, "--work-dir", str(tmp_path)))
+
+    assert "style guide — project overlay" not in system
+    assert "u_` prefix" not in system
+    if not overlay_authored:
+        assert "style guide" in system.lower()
+
+
+@pytest.mark.parametrize(
+    ("category", "focus", "steer"),
+    [
+        ("rtl", "bugs", "Pay attention to clock domain crossings"),
+        ("tb", "quality", "Check for false-pass risks"),
+    ],
+)
+def test_steer_injection(agent: ScriptedAgent, category: str, focus: str, steer: str) -> None:
+    _, prompt = prompts(agent, _argv(category, focus, None, "--steer", steer))
+
+    assert steer in prompt
+
+
+def test_output_format_in_system_prompt(agent: ScriptedAgent) -> None:
+    system, _ = prompts(agent, BUGS)
+
+    assert "CRITICAL" in system
+    assert "MAJOR" in system
+    assert "MINOR" in system
+    assert "STRICT SCHEMA" in system
+    assert "``issues`` array" in system
+    # Low-confidence gate must survive prompt trims (wording may vary).
+    assert "LOW confidence" in system
+    assert '"issues": []' in system
+
+
+class TestSchemaExampleMatchesCategory:
+    """A TB reviewer told not to read RTL was shown an rtl/ path to report."""
+
+    def test_tb_example_is_a_tb_path(self, agent: ScriptedAgent) -> None:
+        system, _ = prompts(agent, _argv("tb", "quality"))
+
+        assert "verif/mod_a_tb.sv" in system
+        assert "rtl/mod_a.sv" not in system
+
+    @pytest.mark.parametrize("focus", ["spec", "bugs"])
+    def test_rtl_example_is_an_rtl_path(
+        self, agent: ScriptedAgent, ticket_md: Path, focus: str
+    ) -> None:
+        system, _ = prompts(agent, _argv("rtl", focus, None, "--spec", str(ticket_md)))
+
+        assert "rtl/mod_a.sv" in system
+
+
+# ---------------------------------------------------------------------------
+# RTL spec focus (reinstated -- ADR 0038)
+# ---------------------------------------------------------------------------
+
+
+class TestRtlSpecFocus:
+    def test_prompts_carry_spec_guide_and_inline_the_spec_verbatim(
+        self, agent: ScriptedAgent, ticket_md: Path
+    ) -> None:
+        system, prompt = prompts(agent, _argv("rtl", "spec", None, "--spec", str(ticket_md)))
+
         assert "Spec Compliance" in system
-
-    def test_prompt_inlines_explicit_spec_verbatim(self, state_file: Path, ticket_md: Path):
-        prompt = self._spec_endpoint(ticket_md)._build_prompt(focus_override="spec")
         assert "## Specification" in prompt
         assert "o_valid pulses exactly one cycle" in prompt
 
     def test_standalone_spec_does_not_follow_ticket_frontmatter(
-        self,
-        state_file: Path,
-        ticket_md: Path,
-        tmp_path: Path,
-    ):
+        self, agent: ScriptedAgent, ticket_md: Path, tmp_path: Path
+    ) -> None:
         (tmp_path / "arch_spec.md").write_text("The real spec text.", encoding="utf-8")
         ticket_md.write_text(
             ticket_md.read_text(encoding="utf-8").replace(
-                "type: feature\n",
-                'type: feature\nspec: "arch_spec.md"\n',
+                "type: feature\n", 'type: feature\nspec: "arch_spec.md"\n'
             ),
             encoding="utf-8",
         )
-        endpoint = self._spec_endpoint(ticket_md)
-        endpoint.args.work_dir = str(tmp_path)
-        prompt = endpoint._build_prompt(focus_override="spec")
+
+        _, prompt = prompts(
+            agent,
+            _argv("rtl", "spec", None, "--spec", str(ticket_md), "--work-dir", str(tmp_path)),
+        )
+
         assert "The real spec text." not in prompt
         assert "o_valid pulses exactly one cycle" in prompt
 
-    def test_run_errors_without_spec(self, state_file: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_run_errors_without_spec(
+        self, agent: ScriptedAgent, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        result = self._spec_endpoint(None)._run()
-        assert result.exit_code == 2
-        assert "spec" in result.report_text.lower()
 
+        outcome, _ = run_review(_argv("rtl", "spec"))
 
-class TestTbQualityPrompt:
-    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_tb_quality_system_prompt_has_methodology(
-        self,
-        mock_agent,
-        _mock_tb,
-        state_file: Path,
-    ):
-        """Quality focus system prompt contains review methodology."""
-        mock_agent.return_value = _make_agent_result([])
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        system = endpoint._build_system_prompt("quality")
-        assert "Review methodology" in system
-
-    def test_tb_quality_system_prompt_flags_iverilog_ternary_string_display(
-        self,
-        state_file: Path,
-    ):
-        """TB guide warns about Icarus decimal-printing ternary string sentinels."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        system = endpoint._build_system_prompt("quality")
-        assert "Ternary string expression in display/sentinel calls" in system
-        assert "$display((total_failed == 0) ?" in system
-        assert "print a large decimal" in system
-
-    def test_simulator_specific_rules_are_marked(self, state_file: Path):
-        """Single-simulator rules carry an ``[<Simulator> only]`` mark (#2636)."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            ["--scope", "tb/mod_a_tb.sv", "--category", "tb", "--focus", "quality"]
-        )
-        system = endpoint._build_system_prompt("quality")
-
-        assert "[Icarus only]" in system
-        assert "Icarus exposes" not in system
-        assert 'flow_options.tool = "icarus"' not in system
-        assert "**## Simulation Context**" in system
-
-        # The Vivado xsim bug rule and check 11's clause are marked.
-        urandom = system.index("Never use `$urandom_range()`")
-        assert "[Vivado xsim only]" in system[urandom - 200 : urandom + 200]
-        # The mark covers that clause alone, not the rest of check 11.
-        assert (
-            "`[Vivado xsim only]` for this clause alone: missing rejection sampling for large ranges"
-            in system
-        )
-
-        # `$stop` is wrong on every simulator: its reason names no single one.
-        stop = system.index("End simulation with `$finish`, not `$stop`")
-        assert "Icarus" not in system[stop : stop + 400]
-
-    def test_output_instructions_pin_category_to_focus(self):
-        output = ReviewerSpecialist._output_instructions("protocol")
-
-        assert '- category:       "protocol"' in output
-        assert '"category": "protocol"' in output
-        assert "category:       string" not in output
+        assert outcome.exit_code == 2
+        assert "spec" in outcome.report_text.lower()
+        assert agent.calls == []
 
 
 # ---------------------------------------------------------------------------
-# Verify
+# TB prompts (#2636)
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Finding identity: index-based matching
-# ---------------------------------------------------------------------------
+def test_tb_quality_system_prompt_flags_iverilog_ternary_string_display(
+    agent: ScriptedAgent,
+) -> None:
+    """TB guide warns about Icarus decimal-printing ternary string sentinels."""
+    system, _ = prompts(agent, _argv("tb", "quality"))
+
+    assert "Ternary string expression in display/sentinel calls" in system
+    assert "$display((total_failed == 0) ?" in system
+    assert "print a large decimal" in system
 
 
-# ---------------------------------------------------------------------------
-# Previously-fixed findings: persistence and regression
-# ---------------------------------------------------------------------------
+def test_simulator_specific_rules_are_marked(agent: ScriptedAgent) -> None:
+    """Single-simulator rules carry an ``[<Simulator> only]`` mark (#2636)."""
+    system, _ = prompts(agent, _argv("tb", "quality"))
 
+    assert "[Icarus only]" in system
+    assert "Icarus exposes" not in system
+    assert 'flow_options.tool = "icarus"' not in system
+    assert "**## Simulation Context**" in system
 
-# ---------------------------------------------------------------------------
-# Contradicting-instruction fixes (benchmark batch-01 prompt audit)
-# ---------------------------------------------------------------------------
+    # The Vivado xsim bug rule and check 11's clause are marked.
+    urandom = system.index("Never use `$urandom_range()`")
+    assert "[Vivado xsim only]" in system[urandom - 200 : urandom + 200]
+    # The mark covers that clause alone, not the rest of check 11.
+    assert (
+        "`[Vivado xsim only]` for this clause alone: missing rejection sampling for large ranges"
+        in system
+    )
 
-
-def _tb_args(scope: str = "verif/mod_a_tb.sv") -> list[str]:
-    return ["--scope", scope, "--category", "tb", "--focus", "quality"]
+    # `$stop` is wrong on every simulator: its reason names no single one.
+    stop = system.index("End simulation with `$finish`, not `$stop`")
+    assert "Icarus" not in system[stop : stop + 400]
 
 
 _SIM_CORE_TEMPLATE = """\
@@ -2560,14 +1239,6 @@ def _sim_project(root: Path, sim_selection: str = _VERILATOR_SELECTION) -> Path:
     return root
 
 
-def _tb_endpoint(project: Path, scope: str) -> ReviewerSpecialist:
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--scope", scope, "--category", "tb", "--focus", "quality", "--work-dir", str(project)]
-    )
-    return endpoint
-
-
 def _simulation_context(prompt: str) -> str:
     """Return the ``## Simulation Context`` section of *prompt* (asserted present)."""
     assert "## Simulation Context" in prompt, prompt
@@ -2578,48 +1249,54 @@ def _simulation_context(prompt: str) -> str:
 class TestTbSimulationContext:
     """A TB review tells the reviewer which simulator runs each scoped file (#2636)."""
 
-    def test_verilator_only_project_names_verilator(self, tmp_path: Path, state_file: Path):
+    def test_verilator_only_project_names_verilator(
+        self, agent: ScriptedAgent, tmp_path: Path
+    ) -> None:
         project = _sim_project(tmp_path)
-        prompt = _tb_endpoint(project, "tb/tb_counter.sv")._build_prompt()
+
+        _, prompt = prompts(
+            agent, _argv("tb", "quality", "tb/tb_counter.sv", "--work-dir", str(project))
+        )
 
         section = _simulation_context(prompt)
         file_lines = [line for line in section.splitlines() if line.startswith("- tb/")]
         assert file_lines == ["- tb/tb_counter.sv: Verilator"]
 
-    def test_file_in_no_simulation_target_is_unknown(self, tmp_path: Path, state_file: Path):
+    def test_file_in_no_simulation_target_is_unknown(
+        self, agent: ScriptedAgent, tmp_path: Path
+    ) -> None:
         project = _sim_project(tmp_path)
-        prompt = _tb_endpoint(project, "tb/tb_lint_only.sv")._build_prompt()
+
+        _, prompt = prompts(
+            agent, _argv("tb", "quality", "tb/tb_lint_only.sv", "--work-dir", str(project))
+        )
 
         section = _simulation_context(prompt)
         assert "tb/tb_lint_only.sv: unknown (no simulation Target uses this file)" in section
         assert "advisory" in section
 
-    def test_icarus_project_names_icarus(self, tmp_path: Path, state_file: Path):
+    def test_icarus_project_names_icarus(self, agent: ScriptedAgent, tmp_path: Path) -> None:
         project = _sim_project(tmp_path, _ICARUS_SELECTION)
-        prompt = _tb_endpoint(project, "tb/tb_counter.sv")._build_prompt()
 
-        file_lines = [
-            line for line in _simulation_context(prompt).splitlines() if line.startswith("- tb/")
-        ]
-        assert file_lines == ["- tb/tb_counter.sv: Icarus"]
-
-    def test_rtl_prompt_has_no_simulation_context(self, tmp_path: Path, state_file: Path):
-        project = _sim_project(tmp_path)
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/counter.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-                "--work-dir",
-                str(project),
-            ]
+        _, prompt = prompts(
+            agent, _argv("tb", "quality", "tb/tb_counter.sv", "--work-dir", str(project))
         )
 
-        assert "## Simulation Context" not in endpoint._build_prompt()
+        lines = _simulation_context(prompt).splitlines()
+        assert [line for line in lines if line.startswith("- tb/")] == [
+            "- tb/tb_counter.sv: Icarus"
+        ]
+
+    def test_rtl_prompt_has_no_simulation_context(
+        self, agent: ScriptedAgent, tmp_path: Path
+    ) -> None:
+        project = _sim_project(tmp_path)
+
+        _, prompt = prompts(
+            agent, _argv("rtl", "bugs", "rtl/counter.sv", "--work-dir", str(project))
+        )
+
+        assert "## Simulation Context" not in prompt
 
 
 class TestTbReviewGetsTheSpec:
@@ -2629,317 +1306,393 @@ class TestTbReviewGetsTheSpec:
     unanswerable: the spec was inlined for RTL spec-focus reviews only.
     """
 
-    def test_tb_prompt_inlines_the_specification(self, review_logs: Path, state_file: Path):
+    def test_tb_prompt_inlines_the_specification(
+        self, agent: ScriptedAgent, review_logs: Path
+    ) -> None:
         spec = review_logs / "spec.md"
-        spec.write_text("The output latency is 3 cycles.")
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args([*_tb_args(), "--spec", str(spec)])
+        spec.write_text("The output latency is 3 cycles.", encoding="utf-8")
 
-        prompt = endpoint._build_prompt()
+        _, prompt = prompts(agent, _argv("tb", "quality", None, "--spec", str(spec)))
 
         assert "## Specification" in prompt
         assert "latency is 3 cycles" in prompt
 
-    def test_tb_prompt_survives_a_missing_spec(self, tmp_path: Path, state_file: Path):
-        """Absence is not fatal on the TB side — unlike spec focus, which guards."""
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_tb_args())
-
-        prompt = endpoint._build_prompt()
+    def test_tb_prompt_survives_a_missing_spec(self, agent: ScriptedAgent) -> None:
+        """Absence is not fatal on the TB side -- unlike spec focus, which guards."""
+        _, prompt = prompts(agent, _argv("tb", "quality"))
 
         assert "## Specification" not in prompt
         assert "## Focus: quality" in prompt
 
 
-class TestSchemaExampleMatchesCategory:
-    """A TB reviewer told not to read RTL was shown an rtl/ path to report."""
-
-    def test_tb_example_is_a_tb_path(self):
-        text = ReviewerSpecialist._output_instructions("quality", "tb")
-        assert "verif/mod_a_tb.sv" in text
-        assert "rtl/mod_a.sv" not in text
-
-    def test_rtl_example_is_an_rtl_path(self):
-        assert "rtl/mod_a.sv" in ReviewerSpecialist._output_instructions("spec", "rtl")
-
-    def test_default_stays_rtl(self):
-        assert "rtl/mod_a.sv" in ReviewerSpecialist._output_instructions("bugs")
-
-
-class TestDeadEndMessagesNameARealAction:
-    """Both exhaustion paths used to point the agent at "triage" — an operator
-    workflow the agent cannot invoke, and which does not exist at all in an
-    unattended run."""
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_completed_done_message_names_clean_mode(self, mock_agent, state_file: Path):
-        common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
-        mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(common)
-        endpoint._run()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args([*common, "--steer", "fixed finding"])
-        result = endpoint._run()
-
-        assert result.exit_code == 0
-        assert "triage" not in result.report_text.lower()
-        assert "explicit human approval" not in result.report_text
-        # Each bugs review makes two calls (checklist and hunt guides).
-        assert mock_agent.call_count == 4
-
-    def test_replay_message(self):
-        from booley.specialists import reviewer as reviewer_mod
-
-        source = Path(reviewer_mod.__file__).read_text(encoding="utf-8")
-        assert "raise it in triage instead" not in source
-        assert "resolve this through triage" not in source
-
-
 # ---------------------------------------------------------------------------
-# Diff boundary and project-policy regression (Pico RISC-V32 F-6)
+# Summary line formatting
 # ---------------------------------------------------------------------------
 
 
-def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
+@pytest.mark.parametrize(
+    ("category", "focus", "count", "counts", "seconds", "present", "absent"),
+    [
+        (
+            "rtl",
+            "bugs",
+            2,
+            {SEVERITY_CRITICAL: 1, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 1},
+            45.3,
+            ["[review]", "rtl / bugs", "2 issues", "1 CRITICAL", "1 MINOR", "45s"],
+            [],
+        ),
+        (
+            "tb",
+            "",
+            0,
+            {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0},
+            10.0,
+            ["[review]", "0 issues"],
+            [],
+        ),
+        (
+            "rtl",
+            "ifdef",
+            1,
+            {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 1, SEVERITY_MINOR: 0},
+            28.0,
+            ["1 issue", "1 MAJOR"],
+            ["1 issues"],  # singular for count=1
+        ),
+    ],
+    ids=["with_issues", "no_issues", "single_issue"],
+)
+def test_summary_line(
+    category: str,
+    focus: str,
+    count: int,
+    counts: dict[str, int],
+    seconds: float,
+    present: list[str],
+    absent: list[str],
+) -> None:
+    line = format_summary_line(category, focus, count, counts, seconds)
+
+    for text in present:
+        assert text in line
+    for text in absent:
+        assert text not in line
+
+
+# ---------------------------------------------------------------------------
+# Full reviews (scripted agent)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [BUGS, _argv("tb", "quality")], ids=["rtl", "tb"])
+def test_clean_review(agent: ScriptedAgent, argv: list[str]) -> None:
+    """No issues => PASS, exit 0, _done met."""
+    outcome, _ = run_review(argv)
+
+    assert outcome.exit_code == 0
+    assert "RESULT: REVIEWED — NO FINDINGS" in outcome.report_text
+
+
+def test_clean_interactive_review_tracks_explicit_spec(
+    agent: ScriptedAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs = tmp_path / "interactive-logs"
+    logs.mkdir()
+    spec = tmp_path / "interactive-spec.md"
+    spec.write_text("Review this change.\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    outcome, _ = run_review([*BUGS, "--work-dir", str(tmp_path), "--spec", str(spec)])
+
+    assert outcome.exit_code == 0
+    assert outcome.detail["contract"]["spec_source"] == str(spec.resolve())
+    assert "RESULT: REVIEWED — NO FINDINGS" in outcome.report_text
+
+
+def test_clean_interactive_review_needs_no_ticket_snapshot(
+    agent: ScriptedAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs = tmp_path / "interactive-logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    outcome, _ = run_review([*BUGS, "--work-dir", str(tmp_path)])
+
+    system = agent.calls[0].system_prompt or ""
+    assert "Anchor each finding in a supplied specification, accepted decision" in system
+    assert "Goal" not in system
+    assert "steering, or concrete code behavior" in system
+    assert "Cite a relevant Ticket or accepted-decision clause" not in system
+    assert outcome.exit_code == 0
+    assert outcome.detail["contract"]["ticket_source"] == ""
+
+
+def test_corrective_issues_complete_done(agent: ScriptedAgent) -> None:
+    agent.answer(
+        {"issues": [finding(severity="CRITICAL"), finding(severity="MINOR", summary="Separate")]}
     )
-    return result.stdout.strip()
+
+    outcome, _ = run_review(BUGS)
+
+    assert outcome.exit_code == 0
+    assert "RESULT: REVIEWED WITH FINDINGS" in outcome.report_text
+    assert "critical" in outcome.report_text
 
 
-def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "reviewer-test@example.invalid")
-    _git(repo, "config", "user.name", "Reviewer Test")
-    tb = repo / "verif" / "testbench.v"
-    tb.parent.mkdir()
-    tb.write_text(
-        "module testbench;\n"
-        "  integer feature_mode;\n"
-        "  initial begin\n"
-        '    if ($test$plusargs("vcd")) begin\n'
-        '      $dumpfile("dump.vcd");\n'
-        "      $dumpvars(0, testbench);\n"
-        "    end\n"
-        '    $display("ERROR!");\n'
-        '    $display("TIMEOUT");\n'
-        '    $display("ALL TESTS PASSED.");\n'
-        "    feature_mode = 0;\n"
-        "  end\n"
-        "endmodule\n",
-        encoding="utf-8",
+class _Rerun(NamedTuple):
+    second_issues: list[dict[str, Any]]
+    steer: str | None
+    expected_text: str
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        # Corrective done findings remain visible and replay on a plain rerun.
+        _Rerun([finding(severity="CRITICAL")], None, "RESULT: REVIEWED WITH FINDINGS"),
+        # Steering cannot turn terminal _done into a cleanliness workflow.
+        _Rerun([], "attempt 1", "NO FINDINGS"),
+        # Both exhaustion paths used to point the agent at "triage", an operator
+        # workflow the agent cannot invoke.
+        _Rerun([], "fixed finding", "NO FINDINGS"),
+    ],
+    ids=["replay", "steering_does_not_hide_open_correction", "completed_done_names_clean_mode"],
+)
+def test_second_review_after_a_corrective_done(agent: ScriptedAgent, case: _Rerun) -> None:
+    agent.answer(
+        [{"issues": [finding(severity="CRITICAL")]}] * 2 + [{"issues": case.second_issues}]
     )
-    project = repo / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text(
-        "[flows.sim]\n"
-        'pass_sentinels = ["ALL TESTS PASSED."]\n'
-        'fail_sentinels = ["ERROR!", "TIMEOUT"]\n'
-        'trace_files = ["dump.vcd"]\n',
-        encoding="utf-8",
+    first, _ = run_review(BUGS)
+    assert first.exit_code == 0
+
+    extra = ["--steer", case.steer] if case.steer else []
+    rerun, _ = run_review([*BUGS, *extra])
+
+    assert rerun.exit_code == 0
+    assert case.expected_text in rerun.report_text
+    assert "triage" not in rerun.report_text.lower()
+    assert "explicit human approval" not in rerun.report_text
+    if not case.second_issues:
+        assert rerun.detail["issues"] == 0
+        assert rerun.detail["issue_list"] == []
+    # Each bugs review makes two calls (checklist and hunt guides).
+    assert len(agent.calls) == 4
+
+
+def test_current_minor_findings_remain_corrective(agent: ScriptedAgent) -> None:
+    agent.answer({"issues": [finding(severity="MINOR"), finding(severity="MINOR")]})
+
+    outcome, _ = run_review(BUGS)
+
+    assert outcome.exit_code == 0
+    assert outcome.detail["gate_passed"] is True
+
+
+def test_single_focus_security(agent: ScriptedAgent) -> None:
+    """Single focus runs one agent call per guide kind, one run per focus."""
+    outcome, _ = run_review(_argv("rtl", "security"))
+
+    assert outcome.exit_code == 0
+    assert len(agent.calls) == 2  # security declares a checklist and a hunt guide
+
+
+def test_agent_failure_is_a_reviewer_error_with_persisted_traceback(
+    agent: ScriptedAgent,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    agent.answer(RuntimeError("boom"))
+    caplog.set_level(logging.DEBUG)
+
+    outcome, _ = run_review(
+        [
+            *_argv("rtl", "code_style"),
+            "--work-dir",
+            str(tmp_path),
+            "--report-dir",
+            str(tmp_path / "reports"),
+            "--transcript-dir",
+            str(tmp_path / "transcripts"),
+        ]
     )
-    _git(repo, "add", "verif/testbench.v")
-    _git(repo, "add", "-f", ".booley/booley.toml")
-    _git(repo, "commit", "-qm", "baseline")
-    base = _git(repo, "rev-parse", "HEAD")
-    tb.write_text(tb.read_text(encoding="utf-8").replace("feature_mode = 0", "feature_mode = 1"))
-    return base, tb
+
+    assert outcome.exit_code == 2
+    assert outcome.report_text.startswith("reviewer failed: RuntimeError: boom")
+    assert "Diagnostic:" in outcome.report_text
+    assert "Traceback" not in capsys.readouterr().err
+    diagnostics = list((tmp_path / "transcripts").glob("reviewer.*.error.log"))
+    assert len(diagnostics) == 1
+    assert "RuntimeError: boom" in diagnostics[0].read_text(encoding="utf-8")
+    assert str(diagnostics[0]) in outcome.report_text
+    assert any(record.exc_info for record in caplog.records if record.levelname == "DEBUG")
+    assert not any(record.exc_info for record in caplog.records if record.levelno >= 20)
 
 
-def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
-    from booley.evidence.review_receipt import _ticket_path
+# ---------------------------------------------------------------------------
+# Spec arguments, done reports and category scope
+# ---------------------------------------------------------------------------
+
+
+def test_goal_spec_arg_ignores_ticket_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.specialists.reviewer import resolve_spec_content
 
     spec = tmp_path / "spec.md"
     spec.write_text("Goal specification", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_GOAL_FILE", str(tmp_path / "record.json"))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "absent"))
+
     text, source = resolve_spec_content("spec.md", tmp_path)
+
     assert text == "Goal specification"
     assert source.startswith("spec file:")
     assert resolve_spec_content(None, tmp_path) == (None, "")
-    assert _ticket_path(tmp_path) is None
-
-
-@pytest.fixture
-def review_logs(tmp_path, monkeypatch):
-    logs = tmp_path / "review-logs"
-    logs.mkdir()
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-    return logs
 
 
 @pytest.mark.parametrize("transport", [False, True])
-@patch("booley.specialists.specialist._call_agent_sync")
 def test_unbound_done_findings_do_not_claim_goal_approval(
-    mock_agent, state_file, monkeypatch, transport
-):
-    from booley.core.models import AgentResult
+    agent: ScriptedAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: bool
+) -> None:
     from booley.flows.cli_selection import CliInvocation
     from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
-    root = state_file.parent
-    (root / "rtl").mkdir()
-    (root / "rtl/mod_a.sv").write_text("module mod_a; endmodule\n")
-    directory = root / ".booley"
+    directory = tmp_path / ".booley"
     directory.mkdir()
-    (directory / "booley.toml").write_text("[project]\n")
+    (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    monkeypatch.chdir(root)
     reset_cache()
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    mock_agent.return_value = AgentResult(
-        output=json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
-    )
-    argv = [
-        "--work-dir",
-        str(root),
-        "--scope",
-        "rtl/mod_a.sv",
-        "--category",
-        "rtl",
-        "--focus",
-        "bugs",
-    ]
+    agent.answer({"issues": [finding(severity="CRITICAL")]})
+    argv = ["--work-dir", str(tmp_path), *BUGS]
     for _ in range(2):
         endpoint = ReviewerSpecialist()
+        # Private seam: the transport origin is set only by the MCP server process, and
+        # ``execute_cli`` (the only public entry that honours it) has no parameter for it.
         endpoint._cli_invocation = CliInvocation(transport=transport)
         result = endpoint.execute_cli(argv)
         assert result.exit_code == 0, result.outcome.report_text
         assert "explicit human approval" not in result.outcome.report_text
         assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text
-        report = json.loads((endpoint.args.report_dir / "reviewer.json").read_text())
+        report = json.loads((endpoint.args.report_dir / "reviewer.json").read_text("utf-8"))
         assert "criterion_key" not in report and "criterion_met" not in report
     assert not (directory / "reviewer-state").exists()
 
 
-@patch("booley.specialists.specialist._call_agent_sync")
 def test_standalone_done_findings_print_no_approval_notice(
-    mock_agent, state_file: Path, monkeypatch: pytest.MonkeyPatch
-):
+    agent: ScriptedAgent, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A standalone run gets the same `done` report as an interactive run."""
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"])
-    mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
-    result = endpoint._run()
-    assert "RESULT: REVIEWED WITH FINDINGS" in result.report_text
-    assert "explicit human approval" not in result.report_text
+    agent.answer({"issues": [finding(severity="CRITICAL")]})
+
+    outcome, _ = run_review(BUGS)
+
+    assert "RESULT: REVIEWED WITH FINDINGS" in outcome.report_text
+    assert "explicit human approval" not in outcome.report_text
 
 
 @pytest.mark.parametrize("category,scope", [("rtl", "shared/main.cpp"), ("tb", "shared/dut.sv")])
-def test_registered_opposite_scope_is_refused(tmp_path, category, scope):
+def test_registered_opposite_scope_is_refused(
+    agent: ScriptedAgent, tmp_path: Path, category: str, scope: str
+) -> None:
     from tests.test_target_catalog import _category_sim_core
 
     _category_sim_core(tmp_path)
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tmp_path), "--scope", scope, "--category", category, "--focus", "bugs"]
+
+    outcome, _ = run_review(
+        [
+            "--work-dir",
+            str(tmp_path),
+            *_argv(category, "bugs" if category == "rtl" else "quality", scope),
+        ]
     )
-    assert any("opposite-category" in error for error in endpoint._validate_args())
+
+    assert outcome.exit_code == 2
+    assert "opposite-category" in outcome.report_text
+    assert agent.calls == []
 
 
-def test_same_directory_unregistered_scope_is_own_grant_with_warning(tmp_path, caplog):
-    from booley.specialists.reviewer import _warn_unregistered_sources
+@pytest.mark.parametrize(
+    ("category", "focus", "path"),
+    [
+        ("rtl", "bugs", "shared/new.sv"),
+        *[("tb", "quality", f"shared/helper.{suffix}") for suffix in ("hh", "hxx", "HH", "HXX")],
+    ],
+)
+def test_unregistered_same_directory_scope_is_own_grant_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, category: str, focus: str, path: str
+) -> None:
     from tests.test_target_catalog import _category_sim_core
 
     _category_sim_core(tmp_path)
-    (tmp_path / "shared/new.sv").write_text("module new; endmodule\n")
-    assert validate_scope_category(["shared/new.sv"], "rtl", tmp_path) == []
-    _warn_unregistered_sources(["shared/new.sv"], tmp_path)
-    assert "shared/new.sv" in caplog.text
+    (tmp_path / path).write_text("// source\n", encoding="utf-8")
+
+    outcome, _ = run_review(
+        ["--work-dir", str(tmp_path), *_argv(category, focus, path), "--dry-run"]
+    )
+
+    assert outcome.exit_code == 0, outcome.report_text
+    assert path in caplog.text
 
 
 @pytest.mark.parametrize("name", ["default.h", "rtl.c"])
-def test_cpp_opposite_role_refuses_before_provider(tmp_path, name):
+def test_cpp_opposite_role_refuses_before_provider(
+    agent: ScriptedAgent, tmp_path: Path, name: str
+) -> None:
     (tmp_path / "design.core").write_text(
         "CAPI=2:\nname: ::roles:0\nfilesets:\n  rtl:\n    files: [default.h, rtl.c]\n"
-        "  tb:\n    files: [tagged.hxx]\n    tags: [tb]\n"
+        "  tb:\n    files: [tagged.hxx]\n    tags: [tb]\n",
+        encoding="utf-8",
     )
-    (tmp_path / name).write_text("// source\n")
-    endpoint = ReviewerSpecialist()
-    endpoint.parse_args(
-        ["--work-dir", str(tmp_path), "--scope", name, "--category", "tb", "--focus", "quality"]
-    )
-    with patch("booley.specialists.specialist._call_agent_sync") as provider:
-        result = endpoint._run()
-    assert result.exit_code == 2
-    assert name in result.report_text
-    assert "tags:[tb]" in result.report_text
-    provider.assert_not_called()
+    (tmp_path / name).write_text("// source\n", encoding="utf-8")
+
+    outcome, _ = run_review(["--work-dir", str(tmp_path), *_argv("tb", "quality", name)])
+
+    assert outcome.exit_code == 2
+    assert name in outcome.report_text
+    assert "tags:[tb]" in outcome.report_text
+    assert agent.calls == []
     assert validate_scope_category(["tagged.hxx"], "tb", tmp_path) == []
 
 
-def test_cpp_guidance_preview_and_project_overlay(tmp_path):
-    from booley.specialists.reviewer import _STYLE_OVERLAYS
-
-    cases = [
+@pytest.mark.parametrize(
+    ("scope", "labels"),
+    [
         ("tb/main.cpp", ["c-cpp-checklist"]),
         (
             "tb/main.cpp,tb/test.py,tb/tb.sv",
             ["c-cpp-checklist", "hdl-checklist", "cocotb-checklist"],
         ),
+    ],
+)
+def test_cpp_guidance_preview_and_project_overlay(
+    agent: ScriptedAgent, tmp_path: Path, scope: str, labels: list[str]
+) -> None:
+    overlay = tmp_path / ".booley" / "tb_style_guide.md"
+    overlay.parent.mkdir()
+    overlay.write_text("Project C lifecycle rule", encoding="utf-8")
+    argv = _argv("tb", "quality", scope, "--work-dir", str(tmp_path))
+
+    system, _ = prompts(agent, argv)
+    preview, _ = run_review([*argv, "--dry-run"])
+
+    assert "C/C++ testbench" in system
+    assert "Project C lifecycle rule" in system
+    assert ("Canonical style guide for SystemVerilog" in system) == ("tb/tb.sv" in scope)
+    assert preview.detail["guides"] == [
+        *({"kind": "checklist", "name": name} for name in labels),
+        {"kind": "hunt", "name": "tb-hunt"},
     ]
-    for index, (scope, labels) in enumerate(cases):
-        work_dir = tmp_path / f"case{index}"
-        work_dir.mkdir()
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(work_dir),
-                "--scope",
-                scope,
-                "--category",
-                "tb",
-                "--focus",
-                "quality",
-            ]
-        )
-        assert endpoint._resolve_scope_contract() is None
-        # Use the established project overlay path.
-        overlay = work_dir / ".booley" / _STYLE_OVERLAYS["tb"]
-        overlay.parent.mkdir(parents=True, exist_ok=True)
-        overlay.write_text("Project C lifecycle rule")
-        prompt = endpoint._build_system_prompt("quality")
-        assert "C/C++ testbench" in prompt
-        assert "Project C lifecycle rule" in prompt
-        assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
-        assert endpoint._dry_run_preview().detail["guides"] == [
-            *({"kind": "checklist", "name": name} for name in labels),
-            {"kind": "hunt", "name": "tb-hunt"},
-        ]
 
 
-@pytest.mark.parametrize("suffix", ["hh", "hxx", "HH", "HXX"])
-def test_cpp_unregistered_header_warning(tmp_path, suffix, caplog):
-    from booley.specialists.reviewer import _warn_unregistered_sources
-    from tests.test_target_catalog import _category_sim_core
-
-    _category_sim_core(tmp_path)
-    path = f"shared/helper.{suffix}"
-    (tmp_path / path).write_text("// header")
-    _warn_unregistered_sources([path], tmp_path)
-    assert path in caplog.text
-
-
-def test_declared_review_guides_are_the_packaged_guides():
+def test_declared_review_guides_are_the_packaged_guides() -> None:
     """Every focus declares guides, and the declared files are exactly the packaged ones."""
     from booley.runtime.paths import refs_dir
-    from booley.specialists.reviewer import (
-        REVIEW_GUIDES,
-        RTL_FOCUS_CATEGORIES,
-        TB_FOCUS_CATEGORIES,
-    )
+    from booley.specialists.reviewer import TB_FOCUS_CATEGORIES
 
     focuses = {("rtl", focus) for focus in RTL_FOCUS_CATEGORIES} | {
         ("tb", focus) for focus in TB_FOCUS_CATEGORIES
@@ -2953,73 +1706,15 @@ def test_declared_review_guides_are_the_packaged_guides():
     assert declared == packaged
 
 
-def test_dry_run_lists_guides_with_kind(tmp_path):
-    cases = [
-        (
-            "bugs",
-            [
-                {"kind": "checklist", "name": "bugs-checklist"},
-                {"kind": "hunt", "name": "bugs-hunt"},
-            ],
-        ),
-        (
-            "protocol",
-            [
-                {"kind": "checklist", "name": "protocol-cdc-checklist"},
-                {"kind": "hunt", "name": "protocol-cdc-hunt"},
-            ],
-        ),
-        (
-            "security",
-            [
-                {"kind": "checklist", "name": "security-checklist"},
-                {"kind": "hunt", "name": "security-hunt"},
-            ],
-        ),
-        (
-            "optimization",
-            [
-                {"kind": "checklist", "name": "optimization-checklist"},
-                {"kind": "hunt", "name": "optimization-hunt"},
-            ],
-        ),
-        ("spec", [{"kind": "hunt", "name": "spec-hunt"}]),
-    ]
-    tb_cases = [
-        ("tb/t.sv", "hdl-checklist"),
-        ("tb/test.py", "cocotb-checklist"),
-    ]
-    cases = [("rtl", "rtl/a.sv", focus, expected) for focus, expected in cases] + [
-        (
-            "tb",
-            scope,
-            "quality",
-            [{"kind": "checklist", "name": name}, {"kind": "hunt", "name": "tb-hunt"}],
-        )
-        for scope, name in tb_cases
-    ]
-    for index, (category, scope, focus, expected) in enumerate(cases):
-        work_dir = tmp_path / f"case{index}"
-        work_dir.mkdir()
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--work-dir",
-                str(work_dir),
-                "--scope",
-                scope,
-                "--category",
-                category,
-                "--focus",
-                focus,
-            ]
-        )
-        preview = endpoint._dry_run_preview()
-        assert preview.detail["guides"] == expected
-        assert f"guides={','.join(g['name'] for g in expected)}" in preview.report_text
+def test_replay_message() -> None:
+    from booley.specialists import reviewer as reviewer_mod
+
+    source = Path(reviewer_mod.__file__).read_text(encoding="utf-8")
+    assert "raise it in triage instead" not in source
+    assert "resolve this through triage" not in source
 
 
-def test_protocol_cdc_hunt_guide_names_scenarios_and_scope():
+def test_protocol_cdc_hunt_guide_names_scenarios_and_scope() -> None:
     """The hunt guide keeps the focus's scope boundaries and names every scenario category."""
     from booley.evidence.review_guides import review_guides_root
 
@@ -3038,3 +1733,51 @@ def test_protocol_cdc_hunt_guide_names_scenarios_and_scope():
         "reset domain",
     ):
         assert category in lowered, category
+
+
+# ---------------------------------------------------------------------------
+# Defaults no run reaches: a Reviewer builds its prompts and guides itself
+# ---------------------------------------------------------------------------
+
+
+def _parsed(*argv: str) -> ReviewerSpecialist:
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(list(argv))
+    return endpoint
+
+
+def test_system_prompt_defaults_to_every_guide_of_the_focus() -> None:
+    # Private seam: a run always passes one call's guides, so only a direct call shows the default.
+    endpoint = _parsed(*BUGS)
+
+    system = endpoint._build_system_prompt("bugs")
+
+    for guide in REVIEW_GUIDES[("rtl", "bugs")]:
+        assert f"({guide.name})" in system
+
+
+def test_tb_guides_resolve_the_scope_contract_on_first_use() -> None:
+    # Private seam: a run resolves its scope contract at validation, before guide selection.
+    endpoint = _parsed(*_argv("tb", "quality"))
+
+    guides = endpoint._review_guides("quality", "tb")
+
+    assert guides
+    assert endpoint._scope_contract is not None
+
+
+def test_discovery_prompt_without_override_uses_the_parsed_focus() -> None:
+    # Private seam: a run always names the focus of the call it prompts for.
+    endpoint = _parsed(*_argv("rtl", "bugs,security"))
+
+    assert "bugs, security" in endpoint._build_prompt()
+
+
+def test_tb_prompt_sections_are_resolved_once_per_run(tmp_path: Path) -> None:
+    # Private seam: one run builds its prompt once, so the cached sections are reused
+    # only when a caller builds it again.
+    endpoint = _parsed("--work-dir", str(tmp_path), *_argv("tb", "quality"))
+
+    assert endpoint._build_prompt() == endpoint._build_prompt()
+    assert endpoint._simulation_context is not None
+    assert endpoint._tb_project_policy is not None

@@ -25,7 +25,6 @@ from booley.flows.sim.execution import (
     SimulationOptions,
 )
 from booley.flows.sim.execution.engine import (
-    _preview_work,
     launch_environment,
     target_test_plan,
 )
@@ -89,9 +88,15 @@ def _preview(root: Path, inspection: SimpleNamespace, selection):
 
 
 def _work(root: Path, inspection: SimpleNamespace, names: tuple[str, ...], runs=None):
-    execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
-    cocotb = bool(inspection.flow_options)
-    return _preview_work(execution, _handle(root), inspection, names, cocotb, "build", runs)
+    """The work document of the first previewed command for the selection."""
+    selection = (
+        SelectedTestRuns(runs)
+        if runs is not None
+        else NamedTests(names)
+        if names
+        else DefaultSelection()
+    )
+    return launched_work(_preview(root, inspection, selection).commands[0])
 
 
 def _plusargs(command: tuple[str, ...]) -> list[str]:
@@ -135,14 +140,14 @@ class TestVerilatorNativeSeed:
             "verilator+seed+7",
         ]
 
-    def test_seed_template_is_passed_in_addition_to_the_native_option(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        "parameters", [None, {"seed": {"paramtype": "plusarg", "default": 99}}]
+    )
+    def test_seed_template_is_passed_in_addition_to_the_native_option(
+        self, tmp_path: Path, parameters
+    ):
+        """A target plusarg of the same name is replaced by the template."""
         root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "+seed={seed}"\n')
-        preview = _preview(root, _inspection("verilator"), NamedTests(("reset",)))
-        assert _plusargs(preview.commands[0]) == ["test_id=0", "verilator+seed+1", "seed=1"]
-
-    def test_seed_template_replaces_a_target_plusarg_of_the_same_name(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "+seed={seed}"\n')
-        parameters = {"seed": {"paramtype": "plusarg", "default": 99}}
         preview = _preview(
             root, _inspection("verilator", parameters=parameters), NamedTests(("reset",))
         )
@@ -169,21 +174,27 @@ class TestVerilatorNativeSeed:
 
 
 class TestIcarus:
-    def test_without_a_template_the_run_is_unseeded(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\n')
-        preview = _preview(root, _inspection("icarus"), NamedTests(("reset",)))
-        assert _plusargs(preview.commands[0]) == ["test_id=0"]
-        assert [[run.name for run in group] for group in preview.run_groups] == [["reset"]]
-
-    def test_iverilog_spelling_is_the_same_family(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "+seed={seed}"\n')
-        preview = _preview(root, _inspection("iverilog"), NamedTests(("reset",)))
-        assert _plusargs(preview.commands[0]) == ["test_id=0", "seed=1"]
-
-    def test_getopt_seed_template_is_forwarded_verbatim(self, tmp_path: Path):
-        root = _project(tmp_path, '[sim]\ntests = ["reset"]\nseed = "--seed={seed}"\n')
-        work = _work(root, _inspection("icarus"), ("reset",))
-        assert work.plusargs == ("test_id=0", "--seed=1")
+    @pytest.mark.parametrize(
+        ("adapter", "template", "plusargs"),
+        [
+            pytest.param("icarus", "", ["test_id=0"], id="without-a-template-the-run-is-unseeded"),
+            pytest.param(
+                "iverilog", "+seed={seed}", ["test_id=0", "seed=1"], id="iverilog-spelling"
+            ),
+            pytest.param(
+                "icarus", "--seed={seed}", ["test_id=0", "--seed=1"], id="getopt-template-verbatim"
+            ),
+        ],
+    )
+    def test_seed_template_reaches_the_plusargs_verbatim_or_not_at_all(
+        self, tmp_path: Path, adapter: str, template: str, plusargs: list[str]
+    ):
+        seed = f'seed = "{template}"\n' if template else ""
+        root = _project(tmp_path, f'[sim]\ntests = ["reset"]\n{seed}')
+        preview = _preview(root, _inspection(adapter), NamedTests(("reset",)))
+        assert _plusargs(preview.commands[0]) == plusargs
+        if not template:
+            assert [[run.name for run in group] for group in preview.run_groups] == [["reset"]]
 
 
 class TestVariantEnvironment:
@@ -226,6 +237,7 @@ class TestCocotb:
         )
         assert preview.groups == (("test_a", "test_b", "test_c"),)
         work = launched_work(preview.commands[0])
+        assert work.cocotb_module == "test_demo"
         assert work.cocotb_seed == 1
         assert not any("seed" in plusarg for plusarg in work.plusargs)
 
@@ -269,12 +281,7 @@ class TestDeclarationsTheTargetCannotApply:
         root = _project(tmp_path, _COCOTB_TESTS)
         plan = target_test_plan(_handle(root), "cocotb", {})
         with pytest.raises(ValueError, match="cannot share one simulator process"):
-            _work(
-                root,
-                _inspection("icarus", cocotb=True),
-                ("test_a", "test_b"),
-                (plan.run("test_a"), plan.run("test_b", seed=5)),
-            )
+            plan.launch((plan.run("test_a"), plan.run("test_b", seed=5)))
 
 
 class TestPreviewMatchesLaunch:
@@ -282,8 +289,6 @@ class TestPreviewMatchesLaunch:
         self, tmp_path: Path
     ):
         """Regression: the previewed command ran the Test Variant without its env."""
-        from booley.flows.sim.execution.engine import _launch_environment
-
         root = _project(
             tmp_path,
             '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS,
@@ -301,12 +306,6 @@ class TestPreviewMatchesLaunch:
         build_steps = steps[: steps.index(["export", "FAULT_MODE=1"])]
         assert ["export", "FLAVOR=a"] in build_steps
         assert not any("FAULT_MODE" in word for step in build_steps for word in step)
-        # The launch applies exactly the previewed variables.
-        work = _work(root, inspection, ("stress",), (fault,))
-        assert dict(_launch_environment((("FLAVOR", "a"),), work)) == {
-            "FLAVOR": "a",
-            "FAULT_MODE": "1",
-        }
 
     def test_preview_of_a_run_without_variant_environment_is_unchanged(self, tmp_path: Path):
         root = _project(tmp_path, '[sim]\ntests = ["stress"]\n' + _VARIANTS)

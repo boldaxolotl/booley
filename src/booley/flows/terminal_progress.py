@@ -25,12 +25,16 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, NamedTuple, TextIO
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, TextIO
 
 from booley.presentation.colors import accent, amber, dim
 from booley.presentation.job_log_stream import JobLogStream
 from booley.runtime.booley_dir import runtime_dir
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import format_age, format_duration, utc_now_rfc3339
+
+if TYPE_CHECKING:
+    from booley.flows.source_paths import ProjectSourcePaths
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(
     "flow_terminal_progress", default=None
@@ -301,6 +305,8 @@ class TerminalProgress:
     def _initialize_observation(self) -> None:
         self.paths: dict[Path, _RegisteredLog] = {}
         self._target_stages: dict[str, str] = {}
+        # Build-tree names a relayed line shows as Project paths, merged across Targets.
+        self._source_names: ProjectSourcePaths | None = None
         self.files: list[_FileSource] = []
         self.pipe_lines: dict[str, _Lines] = {}
         # Captures already retain full output in memory. Buffer observations too,
@@ -485,7 +491,7 @@ class TerminalProgress:
             return
         try:
             root = runtime_dir(self.work_dir) / "flow-console"
-            root.mkdir(parents=True, exist_ok=True)
+            make_directories(root)
             self.directory = Path(tempfile.mkdtemp(prefix="invocation-", dir=root))
             (self.directory / "active").touch()
             self.log_path = self.directory / "tool-output.log"
@@ -547,6 +553,18 @@ class TerminalProgress:
             for path in paths:
                 self.log_path_known(path, target=target, temporary=temporary)
 
+    def map_source_names(self, paths: ProjectSourcePaths) -> None:
+        """Show each build-tree name in *paths* as its Project path on relayed lines.
+
+        The mapping is one per invocation: a name is the same Project path for
+        every Target. The transcript keeps the tool's original bytes.
+        """
+        if self.abandoned:
+            return
+        with self.lock:
+            current = self._source_names
+            self._source_names = paths if current is None else current.merged(paths)
+
     def observe(self, source: str, chunk: bytes) -> None:
         """Never block a pipe reader on terminal or disk I/O.
 
@@ -591,7 +609,7 @@ class TerminalProgress:
         lane: _Lane | None = None,
         snapshot: _Snapshot | None = None,
     ) -> None:
-        clean = sanitize(line)
+        clean = self._project_text(sanitize(line))
         marker = _STAGE.fullmatch(clean)
         if marker:
             if lane is None:
@@ -630,6 +648,10 @@ class TerminalProgress:
         self.new_lines.append(clean)
         if self.tool_output:
             self._record(f"{source}: {clean}")
+
+    def _project_text(self, text: str) -> str:
+        names = self._source_names
+        return text if names is None else names.project_text(text)
 
     def _lane_marker(self, lane: _Lane, source: str, name: str) -> None:
         """Apply an in-band stage marker to its lane and the rest of its source."""
@@ -1023,3 +1045,10 @@ def observe_logs(paths: list[Path], *, target: str | None = None, temporary: boo
     observer = current_progress()
     if observer is not None:
         observer.watch(paths, target=target, temporary=temporary)
+
+
+def observe_source_names(paths: ProjectSourcePaths) -> None:
+    """Register a Target's Project paths for the lines the observer relays."""
+    observer = current_progress()
+    if observer is not None:
+        observer.map_source_names(paths)

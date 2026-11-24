@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -28,7 +29,7 @@ from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import agent_config, resource_history
 from booley.specialists.specialist import Specialist
 from tests.mcp_tools.test_specialist import _env_with_state
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
@@ -81,7 +82,7 @@ class MeasuredSpecialist(Specialist):
 class RefusingSpecialist(MeasuredSpecialist):
     """Refuses its arguments before any agent call."""
 
-    def _validate_interactive_args(self) -> McpToolResult | None:
+    def _validate_call_args(self) -> McpToolResult | None:
         return McpToolResult(exit_code=EXIT_FAILURE, report_text="refused")
 
 
@@ -125,6 +126,7 @@ class _Env:
             async def call(self, params, *, on_event=None, on_start=None):
                 return env.respond(params)
 
+        # The one seam that swaps the real Agent CLI backend for the fake.
         monkeypatch.setattr(agent_config, "_make_backend", lambda _cli, _auth: FakeBackend())
         agent_config.set_backend_config(
             agent_config.configure_backend(AgentSettings(default_cli="claude", clis=("claude",)))
@@ -184,6 +186,7 @@ class _HoldsMemory(MeasuredSpecialist):
     def _run(self) -> McpToolResult:
         held = b"x" * (128 * _MIB)
         subprocess.run([sys.executable, "-c", _ALLOCATE_AND_EXIT], check=True)
+        # _run is the hook a Specialist overrides to make its agent calls.
         super()._run()
         result = super()._run()
         assert len(held) == 128 * _MIB
@@ -201,8 +204,12 @@ def test_record_measures_only_the_agent_call_tree(env: _Env) -> None:
 def test_unmeasurable_values_are_recorded_absent(env: _Env, monkeypatch) -> None:
     env.respond = lambda _params: AgentResult(structured={"approved": True})
     monkeypatch.setattr(job_resources, "process_tree", lambda *_a, **_k: None)
-    monkeypatch.setattr(job_resources, "_children_cpu_s", lambda: None)
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: None)
+    # The two probes below are the measurement sources this test makes unavailable.
+    monkeypatch.setattr(job_resources, "_children_rusage", lambda: None)
+    monkeypatch.setattr(
+        job_resources, "cgroup_memory_events", lambda: job_resources.MemoryEvents(None, None)
+    )
+    # Private probes: the only way to make this measurement unavailable.
     monkeypatch.setattr(job_resources, "_container_memory_bytes", lambda: None)
 
     assert env.run(MeasuredSpecialist()).exit_code == EXIT_SUCCESS
@@ -249,7 +256,9 @@ def test_failed_measurement_never_changes_the_specialist_result(
     # The monitor cannot finish: the run is still recorded, with nothing measured.
     with monkeypatch.context() as patched:
         patched.setattr(
-            job_resources.JobResourceMonitor, "_count_descendant_kills", fail(OSError("gone"))
+            job_resources.JobResourceMonitor,
+            "_count_descendant_kills",  # the step that runs when the monitor finishes
+            fail(OSError("gone")),
         )
         outcome = env.run(MeasuredSpecialist())
     assert (outcome.exit_code, outcome.report_text) == (expected.exit_code, expected.report_text)
@@ -271,7 +280,7 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
         pass
 
     class Raises(MeasuredSpecialist):
-        def _run(self) -> McpToolResult:
+        def _run(self) -> McpToolResult:  # the hook a Specialist overrides
             super()._run()
             raise BoomError("boom")
 
@@ -281,9 +290,10 @@ def test_run_that_raises_is_recorded_and_still_raises(env: _Env) -> None:
     outcome = env.run(endpoint)
     assert outcome.exit_code == 2 and "BoomError: boom" in outcome.report_text
     assert [(r["outcome"], r["returncode"]) for r in env.records()] == [("error", None)]
-    # ... because the measured run raises it again, unchanged.
+    # ... because the measured run raises it again, unchanged; the endpoint runner above
+    # catches it, so only the measured run itself shows it.
     with pytest.raises(BoomError, match="boom"):
-        endpoint._measured_run()
+        endpoint._measured_run()  # the run the endpoint runner wraps
 
     assert len(env.records()) == 2
 
@@ -296,19 +306,21 @@ def test_a_failed_monitor_start_does_not_leave_later_windows_counted_as_busy(
     def no_thread() -> None:
         raise RuntimeError("can't start new thread")
 
+    # The sampler thread's start is the call that fails; nothing public starts it alone.
     monkeypatch.setattr(monitor._thread, "start", no_thread)
     with pytest.raises(RuntimeError, match="new thread"):
         monitor.start(os.getpid(), descendants_only=True)
 
+    # The process-wide busy counter has no public reader.
     assert job_resources._IN_PROCESS.enter() is not None  # nothing else is active
-    job_resources._IN_PROCESS.leave(None)
+    job_resources._IN_PROCESS.leave(None)  # the busy counter has no public reader
 
 
 def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> None:
     class Refuses(MeasuredSpecialist):
         refuse = False
 
-        def _validate_interactive_args(self) -> McpToolResult | None:
+        def _validate_call_args(self) -> McpToolResult | None:
             if self.refuse:
                 return McpToolResult(exit_code=EXIT_FAILURE, report_text="refused")
             return None
@@ -319,6 +331,61 @@ def test_a_second_run_of_one_instance_records_only_its_own_calls(env: _Env) -> N
     assert len(env.records()) == 1
 
     endpoint.refuse = True
-    assert endpoint._measured_run().exit_code == EXIT_FAILURE
+    assert env.run(endpoint).exit_code == EXIT_FAILURE
 
     assert len(env.records()) == 1  # no agent call, so no stale record
+
+
+_WINDOWS_SCRIPT = """
+import json, resource, subprocess, sys, threading
+from booley.flows import job_resources
+
+# The sampler must miss the short children, as a 0.25 s sampler does.
+job_resources.process_tree = lambda *_a, **_k: {}
+
+
+# Bigger than this process's own peak: a reaped child's peak counts its parent's.
+BASE = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10) + 64
+
+
+def window(mib, calls):
+    code = f'b = b"x" * ({mib} << 20)'
+    with job_resources.measure_agent_call(calls):
+        subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def peak(calls):
+    return job_resources.specialist_record("w", calls, 0)["peak_rss_mb"]
+
+
+alone_calls = []
+window(BASE, alone_calls)
+
+entered, finished = threading.Event(), threading.Event()
+overlapped_calls = []
+
+
+def overlapped():
+    with job_resources.measure_agent_call(overlapped_calls):
+        entered.set()
+        finished.wait(TIMEOUT)
+
+
+thread = threading.Thread(target=overlapped)
+thread.start()
+entered.wait(TIMEOUT)
+window(BASE + 64, [])
+finished.set()
+thread.join()
+print(json.dumps({"base": BASE, "alone": peak(alone_calls), "overlapped": peak(overlapped_calls)}))
+""".replace("TIMEOUT", str(SUBPROCESS_TIMEOUT_S))
+
+
+def test_agent_call_window_folds_its_reaped_peak_only_alone() -> None:
+    # A fresh interpreter: the window rule reads this process's high-water mark,
+    # which earlier tests in this worker have already raised.
+    done = run_bounded_child([sys.executable, "-c", _WINDOWS_SCRIPT], check=True)
+
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+    assert seen["alone"] is not None and seen["alone"] >= seen["base"]
+    assert seen["overlapped"] is None

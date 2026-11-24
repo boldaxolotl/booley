@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 from tests.conftest import add_git_command_config
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.dev_support import pre_push_hook
 from booley.dev_support.pre_push_hook import main
@@ -384,9 +385,9 @@ def actual_git(request, monkeypatch):
                 "optional minimum Git matrix requires BOOLEY_TEST_MIN_GIT; not local gate evidence"
             )
         assert Path(executable).is_absolute() and Path(executable).is_file()
-        version = run_bounded_child([executable, "--version"], timeout=10, check=True)
+        version = run_bounded_child([executable, "--version"], check=True)
         assert re.fullmatch(r"git version 2\.37\.2(?:\.windows\.\d+)?\n?", version.stdout)
-        probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"], timeout=10)
+        probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"])
         assert probe.returncode == 129 and "unknown option: --no-lazy-fetch" in probe.stderr
         print(f"minimum Git receipt: {Path(executable).resolve()} {version.stdout.strip()}")
     assert executable
@@ -486,7 +487,7 @@ def test_minimum_git_partial_state_preflight(
         }[state]
         _git(repo, "config", key, "false" if state != "partial" else "origin")
     executable = shutil.which("git")
-    probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"], timeout=10)
+    probe = run_bounded_child([executable, "--no-lazy-fetch", "--version"])
     if probe.returncode == 0:
         # The current capability safely inspects local complete objects; file
         # authority preflight remains strict on this path (tested separately).
@@ -975,7 +976,7 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     _enable_stealth(clone / ".booley")
     monkeypatch.chdir(clone)
     absent_before = run_bounded_child(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone, timeout=10
+        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone
     )
     assert absent_before.returncode != 0
     before = {
@@ -993,9 +994,7 @@ def test_real_blobless_clone_missing_committed_symlink_never_fetches(
     }
     assert before == after
     assert '"fetch"' not in trace.read_text()
-    absent = run_bounded_child(
-        ["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone, timeout=10
-    )
+    absent = run_bounded_child(["git", "--no-lazy-fetch", "cat-file", "-e", blob], cwd=clone)
     assert absent.returncode != 0
 
 
@@ -1843,7 +1842,7 @@ def test_minimum_git_upstream_ancestry_has_bounded_output(
         input="".join(records).encode("utf-8"),
         check=True,
         capture_output=True,
-        timeout=30,
+        timeout=hang_guard_s(),
     )
     upstream = _clone_upstream(repo)
     _git(upstream, "update-ref", "-d", "refs/heads/main")

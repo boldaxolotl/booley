@@ -12,9 +12,9 @@ import contextlib
 import functools
 import hashlib
 import json
+import mmap
 import os
 import re
-import shlex
 import shutil
 import socket
 import subprocess
@@ -71,6 +71,7 @@ from booley.config.project_config import (
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
+    as_dict,
     as_int,
     require_dict,
     require_int,
@@ -102,6 +103,7 @@ from booley.fusesoc.core_projection import STATE_CORES_SUBDIR
 from booley.harness import (
     doctor_deep,
     host_diagnostics,
+    image_lifecycle,
     sandbox_git_identity,
     upgrade_cli,
     upgrade_review,
@@ -116,7 +118,7 @@ from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.readiness import ProjectAudit
 from booley.mcp import server_inspection
 from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
-from booley.presentation.terminal_table import render_table
+from booley.presentation.terminal_table import render_table, width_budget
 from booley.runtime import (
     auth_token,
     core_repository_hygiene,
@@ -135,7 +137,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import (
     handles as handle_maps,
 )
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
 from booley.runtime.agent_errors import ModelUnavailableError
 from booley.runtime.booley_dir import (
@@ -149,7 +151,10 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.gateway_token import GatewayTokenCommandError, run_token_command
-from booley.runtime.image_provenance import is_local_image_id
+from booley.runtime.image_lifecycle import ImageLifecycleError, ProjectImageScope
+from booley.runtime.image_lifecycle import Intent as ImageLifecycleIntent
+from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
+from booley.runtime.image_provenance import ImageProvenanceError, is_local_image_id
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
@@ -282,7 +287,7 @@ class _DoctorFlowRuntime:
             raise self.startup_error
         if self.container_name is None:
             try:
-                self.container_name = session_runtime.up(self.project_root)
+                self.container_name = session_runtime.up_without_recovery(self.project_root)
             except session_runtime.SessionError as exc:
                 self.startup_error = exc
                 raise
@@ -627,6 +632,7 @@ class _Reporter:
             DiagnosticReport(tuple(self.findings)).active_findings,
             key=lambda finding: finding.severity is not Severity.FAIL,
         )
+        budget = width_budget()
         if active:
             rows = [
                 [
@@ -636,9 +642,10 @@ class _Reporter:
                 ]
                 for finding in active
             ]
-            print(
-                "\n".join(render_table(("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}))
+            table = render_table(
+                ("Status", "Check", "ID"), rows, max_widths={1: 72, 2: 48}, width=budget
             )
+            print("\n".join(table))
         else:
             print(ts.status_line(ts.LineStatus.PASS, bold_green("no failures or warnings")))
         print()
@@ -646,7 +653,7 @@ class _Reporter:
             [f"{ts.glyph(_LINE_STATUS[kind])} {label}", str(self.counts[kind])]
             for kind, label in _COUNT_LABELS
         ]
-        print("\n".join(render_table(("Status", "Count"), count_rows)))
+        print("\n".join(render_table(("Status", "Count"), count_rows, width=budget)))
 
     def _print_verdict(self) -> None:
         """End the run with one bold line naming the outcome.
@@ -817,15 +824,13 @@ def run_doctor_result(
     args: argparse.Namespace,
     project_root: Path,
     *,
-    read_only: bool = False,
     record_clean: bool = True,
     progress: Check | None = None,
 ) -> DoctorRunResult:
     """Run Doctor and return its structured result.
 
-    ``read_only`` is the automatic-health profile: it reports repairable
-    conditions but never rewrites guidance links or moves orphaned tickets.
-    Manual ``booley doctor`` retains its established self-healing behavior.
+    Doctor repairs nothing: manual and automatic runs report the same findings
+    and leave the Project's files as they are.
     """
     _section("Booley Doctor")
     info(f"version: {booley.__version__}")
@@ -845,8 +850,10 @@ def run_doctor_result(
     )
     report_progress = progress or (lambda _message: None)
     report_progress("host/project checks")
-    docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
+    docker_exe, project = _run_project_phase(project_root, reporter)
     flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
+    if flow_runtime is not None:
+        _check_sandbox_recovery(flow_runtime, reporter)
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
     _run_flow_and_core_phase(project, flow_runtime, reporter, report_progress)
 
@@ -858,6 +865,26 @@ def run_doctor_result(
     if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.common_booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
+
+
+def _check_sandbox_recovery(flow_runtime: _DoctorFlowRuntime, reporter: _Reporter) -> None:
+    """Warn, before any Sandbox entry, when a lifecycle command must complete recovery."""
+    if flow_runtime.inside:
+        return
+    try:
+        pending = session_runtime.recovery_pending()
+    except session_runtime.SessionError as exc:
+        flow_runtime.startup_error = exc
+        return
+    if pending:
+        flow_runtime.startup_error = session_runtime.RecoveryPendingError()
+        reporter.warn_(
+            warning(
+                "host.sandbox-recovery-pending",
+                f"{flow_runtime.startup_error}; Doctor skips the checks that need the Sandbox",
+            ),
+            "run `booley session up`, which completes the recovery, then rerun `booley doctor`",
+        )
 
 
 def _report_deep_currency(
@@ -962,27 +989,25 @@ def _observe_sandbox_identity(
 def _run_project_phase(
     project_root: Path,
     reporter: _Reporter,
-    *,
-    read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
     """Run host, config, Git, and leftover-directory checks."""
     _section("Host checks")
-    host = host_diagnostics.inspect_host()
+    host = host_diagnostics.inspect_host(project_root)
     reporter.diagnostics(host.report)
     docker_exe = host.docker_exe
     loaded = readiness.load_project(project_root)
     reporter.diagnostics(loaded.report)
     booley_dir, project = loaded.booley_dir, loaded.project
-    mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
     # Upgrade-review records are Common Booley State, read from main.
     common_dir = resolve_common_booley_dir(project_root) if booley_dir is not None else None
     _check_upgrade_review(common_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
     _check_goal_leftovers(common_dir, booley_dir, reporter)
+    _check_job_logs_leftover(common_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
-        reporter.diagnostics(readiness.check_guidance(project, mode=mode))
+        reporter.diagnostics(readiness.check_guidance(project))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
@@ -996,7 +1021,7 @@ def _run_project_phase(
         _check_worktree_core_shadow_guard(
             project.booley_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
         )
-        reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
+        reporter.diagnostics(readiness.check_stealth_cores(project))
     return docker_exe, project
 
 
@@ -1194,7 +1219,7 @@ def _warn_missing_project_data_branch(
         f"Booley Directory's repository {project_repo} has no local branch {outer_branch!r}; "
         "implicit Paired Checkout routing will fail"
     )
-    command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
+    command = f"git -C {quote_arg(str(project_repo))} switch -c {quote_arg(outer_branch)}"
     fix = (
         f"commit or otherwise clean changes to the Booley Directory, then run `{command}` and rerun "
         "Doctor; if branch names intentionally differ, set project_destination_ref explicitly"
@@ -1289,6 +1314,32 @@ def _check_goal_leftovers(
             )
 
 
+# The Main Booley Directory child that held session and Standalone Job logs before `job_logs/`.
+_RETIRED_JOB_LOGS_DIR_NAME = ".interactive_logs"
+
+
+def _check_job_logs_leftover(main_booley_dir: Path | None, reporter: _Reporter) -> None:
+    """Warn about the old session-logs directory an earlier version left behind.
+
+    Logs now go to ``job_logs/`` and nothing reads the old directory; Doctor only
+    looks, and nothing deletes or moves it.
+    """
+    if main_booley_dir is None:
+        return
+    leftover = main_booley_dir / _RETIRED_JOB_LOGS_DIR_NAME
+    if not leftover.is_dir():
+        return
+    command = (
+        f"Remove-Item -LiteralPath {quote_arg(str(leftover))} -Recurse -Force"
+        if os.name == "nt"
+        else f"rm -rf {quote_arg(str(leftover))}"
+    )
+    _warning_sink(reporter.warn_, "job-logs.leftover", subject=str(leftover))(
+        f"{leftover} holds session logs from an earlier Booley version; Booley no longer reads it",
+        f"delete it: `{command}`",
+    )
+
+
 def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:
     """Observe the running version and render its durable review status."""
     if booley_dir is None:
@@ -1331,7 +1382,10 @@ def _run_runtime_phase(
         reporter.skip_,
         reporter.fail_,
     )
-    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_sandbox_memory(project, reporter.pass_, reporter.warn_, reporter.skip_, reporter.note_)
+    _check_sandbox_swap(
+        project, docker_exe, sandbox_image, reporter.pass_, reporter.warn_, reporter.skip_
+    )
     _check_seat_caps(project, reporter.pass_, reporter.fail_)
     _run_container_checks(
         project,
@@ -1353,6 +1407,15 @@ def _run_runtime_phase(
     _run_project_checks(project, reporter)
 
 
+def _target_checks_blocker(project: ProjectAudit | None) -> str | None:
+    """Why checks that resolve Targets cannot run; resolving one rewrites stale projections."""
+    if project is None:
+        return "project config invalid"
+    if not readiness.stealth_projections_current(project):
+        return "stealth core projections are not current"
+    return None
+
+
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
     flow_runtime: _DoctorFlowRuntime | None,
@@ -1360,10 +1423,11 @@ def _run_flow_and_core_phase(
     progress: Check,
 ) -> None:
     """Run Flow dry-runs and the authored FuseSoC core audit."""
+    blocker = _target_checks_blocker(project)
     progress("Flow dry-runs")
     _section("Booley Flow setup checks")
-    if project is None:
-        reporter.skip_("Flow dry-runs skipped - project config invalid")
+    if project is None or blocker is not None:
+        reporter.skip_(f"Flow dry-runs skipped - {blocker}")
     else:
         assert flow_runtime is not None
         _run_flow_audit(
@@ -1378,8 +1442,8 @@ def _run_flow_and_core_phase(
         )
     progress("FuseSoC .core audit")
     _section("FuseSoC .core checks")
-    if project is None:
-        reporter.skip_(".core audit skipped - project config invalid")
+    if project is None or blocker is not None:
+        reporter.skip_(f".core audit skipped - {blocker}")
     else:
         _run_core_audit(
             project,
@@ -1401,6 +1465,10 @@ def _run_deep_phase(
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
         return doctor_deep.DeepAttemptSummary(("project-config",))
+    blocker = _target_checks_blocker(project)
+    if blocker is not None:
+        reporter.skip_(f"deep checks skipped - {blocker}")
+        return doctor_deep.DeepAttemptSummary(("stealth-projections",))
     assert flow_runtime is not None
     tracker = doctor_deep.DeepCheckTracker()
     image_id, sandbox_version = _observe_sandbox_identity(
@@ -1591,7 +1659,7 @@ def _check_worktree_prune_guard(
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
         f"legacy or fallback worktree registrations in {repository}",
-        f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
+        f"git -C {quote_arg(str(repository))} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
 
@@ -1658,8 +1726,11 @@ def _check_worktree_core_shadow_guard(
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
 _RUNTIME_MARKER_FIX = (
-    "the image predates the ADR 0028 runtime marker; recreate the Sandbox: "
-    f"{UNKNOWN_SANDBOX_STEPS}"
+    f"the image predates the Sandbox runtime marker; recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
+)
+_HAND_WRITTEN_MARKER_FIX = (
+    "set BOOLEY_CONTAINER=1 in this Sandbox's devcontainer spec (containerEnv), "
+    "then rebuild the Sandbox"
 )
 
 
@@ -1704,33 +1775,179 @@ def _check_sandbox_memory(
     _pass: Check,
     _warn: Warn,
     _skip: Check,
+    _note: Warn,
 ) -> None:
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget Jobs are admitted against.
 
     Unset, the budget falls back to the installed memory, which an agent and the
-    Jobs then share, so Doctor WARNs. Reads configuration only, so it runs
-    inside and outside the Sandbox.
+    Jobs then share, so Doctor WARNs. Outside the Sandbox it reads configuration
+    only; inside, it also compares it with the live limit the Memory Budget reads.
     """
-    _warn = _warning_sink(_warn, "sandbox.memory-unset")
+    unset_warn = _warning_sink(_warn, "sandbox.memory-unset")
     if project is None:
         _skip("sandbox memory skipped - no valid project config")
         return
     mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
     if not mem_str:
-        _warn(
+        unset_warn(
             "[sandbox].memory is unset: the Memory Budget falls back to installed memory",
             'set [sandbox] memory = "<size>" (booley resources shows Job peaks)',
         )
         return
     limit = resource_policy.parse_memory_limit(mem_str)
     if limit is None:
-        _warn(
+        unset_warn(
             f"[sandbox] memory = {mem_str!r} is unparseable: the Memory Budget "
             "falls back to installed memory",
             'set [sandbox] memory to a size such as "16g"',
         )
         return
+    if runtime_context.inside_session_runtime():
+        _check_live_sandbox_memory(
+            mem_str, limit, _pass, _warning_sink(_warn, "sandbox.memory-drift"), _note
+        )
+        return
     _pass(f"[sandbox].memory = {resource_policy.format_memory(limit)}: the Memory Budget limit")
+
+
+_MEMORY_DRIFT_FIX = f"recreate the Sandbox: {UNKNOWN_SANDBOX_STEPS}"
+
+
+def _check_live_sandbox_memory(
+    mem_str: str, configured: int, _pass: Check, _warn: Warn, _note: Warn
+) -> None:
+    """Compare ``[sandbox].memory`` with the limit the running Sandbox has.
+
+    The kernel stores the limit in whole pages, so the comparison is in pages. A
+    Sandbox Booley did not create never gets the setting applied, so there a
+    difference is a NOTE with no recreate advice.
+    """
+    live = resource_policy.cgroup_memory_limit_bytes()
+    if live is not None and live // mmap.PAGESIZE == configured // mmap.PAGESIZE:
+        _pass(
+            f"[sandbox].memory = {resource_policy.format_memory(live)}: "
+            "the Sandbox's memory limit, which sizes the Memory Budget"
+        )
+    elif runtime_context.in_hand_written_sandbox():
+        own = (
+            "uses installed memory"
+            if live is None
+            else f"uses this Sandbox's own memory limit of {resource_policy.format_memory(live)}, set by its devcontainer spec"
+        )
+        _note(
+            f"[sandbox] memory = {mem_str!r} cannot be applied in this Sandbox, which Booley "
+            f"did not create: the Memory Budget {own}"
+        )
+    elif live is None:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox has no readable "
+            "memory limit, so the Memory Budget falls back to installed memory",
+            _MEMORY_DRIFT_FIX,
+        )
+    else:
+        _warn(
+            f"[sandbox] memory = {mem_str!r} is not in effect: the Sandbox's memory limit is "
+            f"still {resource_policy.format_memory(live)}, and the Memory Budget comes from it",
+            _MEMORY_DRIFT_FIX,
+        )
+
+
+_PROC_MEMINFO = Path("/proc/meminfo")
+
+
+def _read_host_memory(
+    docker_exe: str | None, sandbox_image: str
+) -> tuple[resource_policy.HostMemory | None, str]:
+    """The Docker host's memory and swap, or ``None`` and why it cannot be read.
+
+    Inside the Sandbox ``/proc/meminfo`` is the Docker host's already; outside, a
+    short probe container of the Sandbox Image reads it.
+    """
+    if runtime_context.inside_session_runtime():
+        try:
+            text = _PROC_MEMINFO.read_text(encoding="utf-8")
+            return resource_policy.parse_meminfo(text), ""
+        except (OSError, ValueError) as exc:
+            return None, f"cannot read /proc/meminfo: {exc}"
+    if docker_exe is None:
+        return None, "Docker is not available"
+    try:
+        return pi.probe_docker_host_memory(sandbox_image), ""
+    except pi.DockerImageError as exc:
+        return None, str(exc)
+
+
+def _swap_setting_problem(booley_toml: Mapping[str, object]) -> tuple[str, str] | None:
+    """The warning and fix for a ``[sandbox].swap`` that is not a parseable size string."""
+    raw = (as_dict(booley_toml.get("sandbox"), default={}) or {}).get("swap")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return (
+            f"[sandbox] swap = {raw!r} is not a string: the default swap limit applies",
+            'set [sandbox] swap to a quoted size such as "4g", or "0" for no swap',
+        )
+    if raw.strip() and resource_policy.parse_memory_limit(raw.strip()) is None:
+        return (
+            f"[sandbox] swap = {raw.strip()!r} is unparseable: the default swap limit applies",
+            'set [sandbox] swap to a size such as "4g", or "0" for no swap',
+        )
+    return None
+
+
+def _check_sandbox_swap(
+    project: ProjectAudit | None,
+    docker_exe: str | None,
+    sandbox_image: str,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+) -> None:
+    """ADR 0087: warn when ``[sandbox].swap`` asks for swap the Docker host cannot back.
+
+    Checks the allowance issuance writes (``memory_swap_limit``), so a current
+    Sandbox specification and this check agree; a stale one is the drift WARN.
+    """
+    _warn = _warning_sink(_warn, "sandbox.swap-unbacked")
+    if project is None:
+        _skip("sandbox swap skipped - no valid project config")
+        return
+    mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
+    memory = resource_policy.parse_memory_limit(mem_str)
+    if memory is None:
+        _skip("sandbox swap skipped - no swap limit without a parseable [sandbox].memory")
+        return
+    problem = _swap_setting_problem(project.booley_toml)
+    if problem is not None:
+        _warn(*problem)
+        return
+    if runtime_context.in_hand_written_sandbox():
+        _skip(
+            "sandbox swap skipped - Booley did not create this Sandbox, so [sandbox].swap is not applied here"
+        )
+        return
+    swap_str = resource_policy.configured_sandbox_swap(project.booley_toml)
+    host, why = _read_host_memory(docker_exe, sandbox_image)
+    if host is None:
+        _skip(f"sandbox swap skipped - the Docker host's swap is unknown: {why}")
+        return
+    swap = resource_policy.sandbox_swap_bytes(mem_str, swap_str, host.swap_bytes) or 0
+    fmt = resource_policy.format_memory
+    if swap > host.swap_bytes:
+        _warn(
+            f"[sandbox].swap = {fmt(swap)} is more than the {fmt(host.swap_bytes)} of swap "
+            "the Docker host has",
+            'lower [sandbox].swap ("0" disables swap) or add host swap, '
+            "then run `booley session refresh`",
+        )
+    elif memory + swap > host.memory_bytes + host.swap_bytes:
+        _warn(
+            f"[sandbox].memory + swap = {fmt(memory + swap)} is more than the "
+            f"{fmt(host.memory_bytes + host.swap_bytes)} of memory plus swap the Docker host has",
+            "lower [sandbox].memory or [sandbox].swap, then run `booley session refresh`",
+        )
+    else:
+        _pass(f"[sandbox].swap: the Sandbox may swap up to {fmt(swap)} beyond its memory")
 
 
 def _check_runtime_location(
@@ -1770,7 +1987,8 @@ def _check_runtime_location(
     else:
         _warn(
             "container detected only via the /.dockerenv fallback — "
-            f"BOOLEY_CONTAINER=1 is missing; {_RUNTIME_MARKER_FIX}"
+            f"BOOLEY_CONTAINER=1 is missing; "
+            f"{_HAND_WRITTEN_MARKER_FIX if runtime_context.in_hand_written_sandbox() else _RUNTIME_MARKER_FIX}"
         )
     _check_slot_store_writable(_pass, _fail)
 
@@ -1781,7 +1999,7 @@ def _check_host_agent_session(_pass: Check) -> None:
 
     app = runtime_context.agent_session_app()
     if app is None:
-        message = "host shell — Booley Flows live in the Sandbox (ADR 0028)"
+        message = "host shell — Booley Flows live in the Sandbox"
     else:
         message = (
             f"{app} is running on the HOST, as expected for host-side Project Setup. "
@@ -1800,7 +2018,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     root = job_slots.slots_dir()
     if root is None:
         _fail(
-            "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
+            "Memory Reservation store root unresolvable (no Booley Directory) — Job admission cannot arbitrate",
             "run doctor from the project workspace or set BOOLEY_DIR",
         )
         return
@@ -1811,11 +2029,11 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
         probe.unlink()
     except OSError as exc:
         _fail(
-            f"slot store root not writable: {root} ({exc})",
+            f"Memory Reservation store root not writable: {root} ({exc})",
             f"fix ownership/permissions on {root}",
         )
         return
-    _pass(f"slot store root writable: {root}")
+    _pass(f"Memory Reservation store root writable: {root}")
 
 
 def _check_image_bakes_runtime_marker(
@@ -2188,6 +2406,41 @@ def _image_stale_remedy(project: ProjectAudit | None) -> str:
     return session_runtime.sandbox_remedy(project.project_root)
 
 
+def _check_sandbox_image_provenance(
+    project: ProjectAudit | None, image: str, _pass: Check, _warn: Check, _skip: Check
+) -> None:
+    """Judge the Sandbox Image with the lifecycle CHECK that `booley init --check-only` runs."""
+    if project is None:
+        return
+    _warn = _warning_sink(_warn, "sandbox.image-stale", subject=image, dedupe=image)
+    try:
+        result = image_lifecycle.reconcile_planned(
+            ProjectImageScope(project.project_root), ImageLifecycleIntent.CHECK
+        )
+        # CHECK reuses a compatible image under another tag; `booley init` would retag.
+        unadopted = result.status is ImageLifecycleStatus.CURRENT and (
+            idk.image_id(result.selected_reference) != result.selected_id
+        )
+    except (
+        ImageLifecycleError,
+        ImageProvenanceError,
+        idk.ImageInspectError,
+        OSError,
+        ValueError,
+    ) as exc:
+        _skip(f"Sandbox Image provenance check could not run: {exc}")
+        return
+    if result.status is ImageLifecycleStatus.STALE or unadopted:
+        reasons = ", ".join(dict.fromkeys(item.message for item in result.diagnostics))
+        _warn(
+            f"Sandbox Image '{image}' provenance is stale: "
+            f"{reasons or 'the selected image is built but this Project has not adopted it'}. "
+            f"Recreate the Sandbox: {_image_stale_remedy(project)}."
+        )
+    elif result.status is ImageLifecycleStatus.CURRENT:
+        _pass(f"Sandbox Image '{image}' provenance matches the current settings")
+
+
 def _check_image_freshness(
     project: ProjectAudit | None,
     docker_exe: str | None,
@@ -2443,11 +2696,13 @@ def _no_docker_skip_reason() -> str:
     from booley.runtime import runtime_context
 
     if runtime_context.inside_session_runtime():
-        return (
+        inside = (
             "container checks not applicable in here - you are already inside the "
-            "Sandbox, which has no nested Docker. Run `booley doctor` on "
-            "the host to audit the sandbox images"
+            "Sandbox, which has no nested Docker"
         )
+        if runtime_context.in_hand_written_sandbox():
+            return inside
+        return f"{inside}. Run `booley doctor` on the host to audit the sandbox images"
     return "container checks skipped - no Docker/Podman runtime found on this host"
 
 
@@ -2495,13 +2750,15 @@ def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> No
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
-    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it."""
+    """Check Git would commit as ``[agent.git]`` and no gitconfig competes with it
+    or installs a credential helper."""
     if project is None:
         _skip("Sandbox Git identity checks skipped - project config invalid")
         return
     for result in (
         sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
         sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
+        sandbox_git_identity.inspect_credential_helpers(project.project_root),
     ):
         if result.warning is not None:
             _warn(result.warning, result.fix)
@@ -2609,6 +2866,7 @@ def _run_container_checks(
         _fail(f"{image} image missing", "booley init or build the configured sandbox image")
         return
 
+    _check_sandbox_image_provenance(project, image, _pass, _warn, _skip)
     _check_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_derived_image_freshness(project, docker_exe, image, _pass, _warn)
     _check_custom_image_freshness(project, docker_exe, image, _pass, _warn)
@@ -2658,7 +2916,7 @@ def _run_container_tool_checks(
         _container_check(
             "verible-verilog-lint (a .core lint Target selects verible)",
             ["verible-verilog-lint", "--version"],
-            "rebuild the sandbox image — it predates Verible support (ADR 0033)",
+            "rebuild the sandbox image — it predates Verible support",
         )
     _container_check("ripgrep", ["rg", "--version"], "rebuild sandbox image")
     # Two distinct things, and an image can have one without the other:
@@ -2704,7 +2962,7 @@ def _check_riscv_toolchain(
             _fail(finding.message, finding.fix)
 
 
-def _expected_interactive_spec(project_root: Path) -> Callable[[str | None], dict] | None:
+def _expected_sandbox_spec(project_root: Path) -> Callable[[str | None], dict] | None:
     """How inspection rebuilds the spec ``booley init`` would write; ``None`` in the Sandbox.
 
     Inside the Sandbox the host inputs init reads are invisible, so inspection
@@ -2723,13 +2981,13 @@ def _run_mcp_checks(
     image: str,
     reporter: _Reporter,
 ) -> None:
-    """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
+    """Validate the Sandbox: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
-    _section("Interactive Mode checks")
+    _section("Sandbox setup checks")
     if runtime_context.inside_session_runtime():
         _check_sandbox_mcp_server(reporter)
     if project is None:
-        reporter.skip_("Interactive Mode checks skipped - project config invalid")
+        reporter.skip_("Sandbox setup checks skipped - project config invalid")
         return
 
     request = inspection.RuntimeInspectionRequest(
@@ -2741,7 +2999,7 @@ def _run_mcp_checks(
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         booley_dir=project.booley_dir,
-        expected_spec=_expected_interactive_spec(project.project_root),
+        expected_spec=_expected_sandbox_spec(project.project_root),
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     reporter.diagnostics(
@@ -2815,14 +3073,16 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
     _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
-    specialist_clis = _specialist_clis(project)
+    from booley.config.agent import required_agent_clis
+
+    required = required_agent_clis(default_cli, project.booley_toml.get("models"))
     for cli in allowed:
         _check_cli_credentials(
             project,
             cli,
             reporter,
             is_default=cli == default_cli,
-            runs_specialist=cli in specialist_clis,
+            required=cli in required,
             auto_choice=auto_choice,
         )
 
@@ -2849,22 +3109,28 @@ def _recorded_auth_fix(
 def _check_auth_recorded(
     project: ProjectAudit, clis: tuple[str, ...], reporter: _Reporter
 ) -> None:
-    """FAIL each Project CLI whose ``[agent] auth`` is missing or the retired ``auto``.
+    """FAIL each Project CLI whose ``[agent] auth`` is missing, ``auto``, or a stray ``visitor``.
+
+    ``visitor`` is stray outside a Sandbox set up by hand.
 
     A Project records its billing choice. The finding names the value ``booley init``
-    would record.
+    would record. ``visitor`` runs only where ``visitor_mode_honoured`` holds.
     """
-    from booley.config.agent import RETIRED_AUTH
+    from booley.config.agent import RETIRED_AUTH, visitor_mode_honoured
     from booley.harness import init_cmd
 
     declared = _declared_agent(project)
-    auth = declared.auth if declared else None
     for cli in clis:
-        recorded = auth if isinstance(auth, str) else (auth or {}).get(cli)
-        if recorded not in (None, RETIRED_AUTH):
+        recorded = _recorded_auth(declared, cli)
+        if recorded not in (None, RETIRED_AUTH, auth_token.VISITOR_AUTH):
+            continue
+        if recorded == auth_token.VISITOR_AUTH and visitor_mode_honoured():
             continue
         value = init_cmd.detected_auth_policy(cli)
-        state = "is not set" if recorded is None else f"{RETIRED_AUTH!r} is retired"
+        state = {
+            None: "is not set",
+            RETIRED_AUTH: f"{RETIRED_AUTH!r} is retired",
+        }.get(recorded, f"{recorded!r} applies only in a Sandbox set up by hand")
         reporter.fail_(
             f"{cli}: booley.toml [agent] auth {state}; detected: {value}",
             _recorded_auth_fix(declared, clis, cli, value),
@@ -2880,39 +3146,22 @@ def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple
     return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
 
 
-def _specialist_clis(project: ProjectAudit | None) -> frozenset[str]:
-    """The Agent CLIs that the Project's ``[models]`` pins run a Specialist on.
-
-    Fail-soft like :func:`_declared_agent`: a non-table ``[models]``, a non-string
-    pin, or an unknown model prefix contributes nothing (``agent.backend-health``
-    already reports an invalid ``[models]``).
-    """
-    from booley.config.agent import cli_for_model
-
-    models = project.booley_toml.get("models") if project is not None else None
-    if not isinstance(models, dict):
-        return frozenset()
-    pinned = (cli_for_model(pin.strip()) for pin in models.values() if isinstance(pin, str))
-    return frozenset(cli for cli in pinned if cli)
-
-
 def _check_cli_credentials(
     project: ProjectAudit | None,
     cli: str,
     reporter: _Reporter,
     *,
     is_default: bool,
-    runs_specialist: bool,
+    required: bool,
     auto_choice: AgentAppChoice | None,
 ) -> None:
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
     The default CLI keeps its grading (FAIL under a pinned policy, WARN under
-    the visitor mode). Another allowed CLI WARNs for a missing credential, with the CLI's
-    own login fix, unless a ``[models]`` pin runs a Specialist on it: then it
-    FAILs under every policy, because that Specialist's calls would fail.
+    the visitor mode). Another allowed CLI WARNs for a missing credential unless it is
+    *required* (:func:`booley.config.agent.required_agent_clis`): then it FAILs under every policy,
+    because that Specialist's calls would fail. Every CLI's row carries its own login fix.
     """
-    required = is_default or runs_specialist
     auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
         # A Claude session has no gateway values by design; only a shell that kept them can grade it.
@@ -2943,13 +3192,16 @@ def _check_cli_credentials(
             if required
             else None
         ),
-        missing_fix="" if is_default else auth_token.missing_credential_fix(cli, auth_policy),
+        missing_fix=auth_token.missing_credential_fix(cli, auth_policy),
         is_default=is_default,
-        missing_fails=runs_specialist and not is_default,
+        missing_fails=required and not is_default,
     )
     if plan.selected is None and not is_default:
         return  # the missing-credential WARN already names the fix; no login to rotate
-    _check_cli_rotation_risk(cli, reporter, auth_policy, plan, is_default=is_default)
+    recorded = _recorded_auth(_declared_agent(project), cli) == auth_policy
+    _check_cli_rotation_risk(
+        cli, reporter, auth_policy, plan, is_default=is_default, policy_recorded=recorded
+    )
 
 
 def _check_cli_rotation_risk(
@@ -2959,6 +3211,7 @@ def _check_cli_rotation_risk(
     plan: auth_token.CredentialPlan,
     *,
     is_default: bool,
+    policy_recorded: bool = True,
 ) -> None:
     """Check *cli*'s OAuth token and subscription credential health."""
     _check_oauth_token(
@@ -2970,6 +3223,7 @@ def _check_cli_rotation_risk(
         _note=reporter.note_,
         plan=plan,
         is_default=is_default,
+        policy_recorded=policy_recorded,
     )
     _check_subscription_creds_health(
         cli,
@@ -3080,7 +3334,12 @@ def _check_gateway_auth(provider: str, reporter: _Reporter, *, chosen_by_auto: b
                     "Codex and run `python -m booley.harness.incontainer_register`",
                 )
             else:
-                reporter.fail_(str(exc), check_id="agent.credential-missing", subject=provider)
+                reporter.fail_(
+                    str(exc),
+                    "get the gateway token its command reads",
+                    check_id="agent.credential-missing",
+                    subject=provider,
+                )
             return
     reporter.pass_(f"Codex auth: the gateway at {settings.url} ({settings.token_source})")
 
@@ -3108,7 +3367,7 @@ def _declared_provider(project: ProjectAudit | None) -> str | None:
 
     Deliberately NOT env-aware: this exists to drift-check the on-disk devcontainer
     spec, so it must mirror exactly what re-seeding would decide --
-    ``init_cmd._select_interactive_app`` consults booley.toml and nothing else.
+    ``init_cmd._select_agent_app`` consults booley.toml and nothing else.
     An undeclared default means the seeder falls back to host detection, which no
     on-disk value can be compared against, so the caller skips the check.
     """
@@ -3153,6 +3412,12 @@ def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, 
     return (default_cli, *(cli for cli in clis if cli != default_cli))
 
 
+def _recorded_auth(declared: DeclaredAgent | None, cli: str) -> str | None:
+    """The auth policy booley.toml records for *cli*, ``None`` when it records none."""
+    auth = declared.auth if declared else None
+    return auth if isinstance(auth, str) else (auth or {}).get(cli)
+
+
 def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
     """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
@@ -3162,7 +3427,7 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
         _inside_container,
         env_auth_handoff,
         gateway_handoff_active,
-        missing_auth_policy,
+        policy_in_force,
     )
 
     default_cli = _configured_provider(project)
@@ -3176,20 +3441,15 @@ def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None
     env_auth = env_auth_handoff() or ""
     if project is None:
         return (
-            env_auth
-            if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH)
-            else missing_auth_policy()
+            env_auth if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH) else DEFAULT_AUTH
         )
     declared = _declared_agent(project)
     if declared is None:
-        return missing_auth_policy()
-    auth = declared.auth
-    policy = auth if isinstance(auth, str) else (auth or {}).get(cli)
+        return DEFAULT_AUTH
+    policy = _recorded_auth(declared, cli)
     if policy == GATEWAY_AUTH and not _inside_container():
         return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
-    if policy is None or policy == RETIRED_AUTH:
-        return missing_auth_policy()
-    return policy
+    return DEFAULT_AUTH if policy == RETIRED_AUTH else policy_in_force(policy)
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}
@@ -3312,6 +3572,34 @@ def _host_login_can_rotate(provider: str) -> bool:
     return Path(dc._APP_CREDS_SEED_TARGET[provider]).is_file()
 
 
+def _subscription_basis(policy_recorded: bool) -> str:
+    """Why the rotation-risk NOTE accepts the risk: a recorded ``subscription`` or the fallback."""
+    if policy_recorded:
+        return "accepted by explicit auth = 'subscription'"
+    return "the fallback policy auth = 'subscription' applies"
+
+
+def _report_refreshing_login(
+    provider: str, policy: str, policy_recorded: bool, note_sink: Check, warn: Warn
+) -> None:
+    """Report that *provider*'s agents use a refreshing login, with no rotation-free credential."""
+    label = _AGENT_APP_LABELS[provider]
+    if not _host_login_can_rotate(provider):
+        note_sink(
+            f"{label}: no rotation-free credential; agents use a refreshing login made "
+            "inside the Sandbox, which no host-side login can revoke"
+        )
+        return
+    message = (
+        f"{label}: no rotation-free credential; agents use a refreshing one, which a "
+        "host-side login can revoke mid-run"
+    )
+    if policy == "subscription":
+        note_sink(f"{message} ({_subscription_basis(policy_recorded)})")
+    else:
+        warn(message, f"booley auth --cli {provider}")
+
+
 def _check_oauth_token(
     provider: str,
     _pass: Check,
@@ -3322,6 +3610,7 @@ def _check_oauth_token(
     _note: Check | None = None,
     plan: auth_token.CredentialPlan | None = None,
     is_default: bool = True,
+    policy_recorded: bool = True,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -3334,8 +3623,9 @@ def _check_oauth_token(
     are fine on subscription creds, but a multi-hour headless run is not.
 
     Stays a WARN (see :class:`_Reporter`) in the visitor mode and under ``api_key``:
-    it names a real, reachable failure mode with a one-command remedy. An
-    explicit ``auth = "subscription"`` accepts that tradeoff, so it is a NOTE.
+    it names a real, reachable failure mode with a one-command remedy. A
+    ``subscription`` policy accepts that tradeoff, so it is a NOTE: "explicit" when
+    booley.toml records it, the fallback policy otherwise (``policy_recorded``).
     In a Sandbox without the app's seed sidecar the login was made inside it, no
     host-side login shares its refresh token, and the finding is a NOTE too.
     A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
@@ -3353,22 +3643,8 @@ def _check_oauth_token(
     credential = auth_token.CREDENTIALS[provider]
     api_key_var = auth_token.API_KEY_ENV[provider]
     api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
-
     if not api_key and not env_token and not stored:
-        if not _host_login_can_rotate(provider):
-            note_sink(
-                f"{label}: no rotation-free credential; agents use a refreshing login made "
-                "inside the Sandbox, which no host-side login can revoke"
-            )
-            return
-        message = (
-            f"{label}: no rotation-free credential; agents use a refreshing one, which a "
-            "host-side login can revoke mid-run"
-        )
-        if policy == "subscription":
-            note_sink(f"{message} (accepted by explicit auth = 'subscription')")
-        else:
-            _warn(message, f"booley auth --cli {provider}")
+        _report_refreshing_login(provider, policy, policy_recorded, note_sink, _warn)
         return
     # F-18: `stored` is truthy when the token comes from the read-only sidecar
     # seed too (the in-container case), but the privacy check only stats the
@@ -3383,7 +3659,7 @@ def _check_oauth_token(
     ):
         _warn(
             f"{label}: stored credential is readable by others: {auth_token.token_path(provider)}",
-            f"chmod 600 {auth_token.token_path(provider)}",
+            f"chmod 600 {quote_arg(str(auth_token.token_path(provider)))}",
         )
         return
     if api_key:
@@ -3540,9 +3816,7 @@ def _run_project_checks(
     _check_project_trackability(project.project_root, project.booley_dir, reporter.warn_)
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_custom_endpoints_and_criteria(
-        project.project_root, reporter.pass_, reporter.warn_, reporter.fail_
-    )
+    _check_custom_endpoints(project.project_root, reporter.pass_, reporter.warn_, reporter.fail_)
     _check_disabled_endpoints(project, reporter.note_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3650,6 +3924,8 @@ def _handle_map_restart(project_root: Path) -> str:
     if attachment is Attachment.HEADLESS:
         name = quote_arg(session_runtime.session_container_name(project_root))
         return f"run `docker stop {name}`, then `booley session up` on the host"
+    if runtime_context.in_hand_written_sandbox():
+        return "stop this Sandbox, then start it again"
     return (
         f"in VS Code, {_HANDLE_MAP_VSCODE}; headless, stop the Sandbox container "
         "with `docker stop`, then run `booley session up` on the host"
@@ -3845,29 +4121,21 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_custom_endpoints_and_criteria(
-    project_root: Path, _pass: Check, _warn: Warn, _fail: Fail
-) -> None:
+def _check_custom_endpoints(project_root: Path, _pass: Check, _warn: Warn, _fail: Fail) -> None:
     try:
-        from booley.mcp.endpoint_validation import (
-            EndpointValidationError,
-            validate_custom_endpoints_and_criteria,
-        )
+        from booley.mcp.endpoint_validation import validate_custom_endpoints
 
-        skipped = validate_custom_endpoints_and_criteria(project_root)
-    except EndpointValidationError as exc:
-        _fail("custom endpoint/Criteria validation failed", exc.failures[0])
-        return
+        skipped = validate_custom_endpoints(project_root)
     except SourceCheckoutProjectError as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
+            f"custom endpoint validation failed: {exc}",
             "run Doctor from the Project's workspace, not a Booley source checkout",
         )
         return
     except (ImportError, OSError, ValueError) as exc:
         _fail(
-            f"custom endpoint/Criteria validation failed: {exc}",
-            "fix .booley/mcp_tools and Criteria configuration",
+            f"custom endpoint validation failed: {exc}",
+            "fix .booley/mcp_tools and the [flows]/[specialists] tables in booley.toml",
         )
         return
     for item in skipped:
@@ -3875,7 +4143,7 @@ def _check_custom_endpoints_and_criteria(
             f"custom endpoint {item.file} skipped: {item.reason}", item.fix
         )
     if not skipped:
-        _pass("custom endpoints and Criteria validated")
+        _pass("custom endpoints validated")
 
 
 def _check_disabled_endpoints(project: ProjectAudit, _note: Check) -> None:
@@ -3916,9 +4184,15 @@ def _check_agent_backend_health(
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
+        from booley.config.agent import RetiredAuthError
         from booley.runtime.agent_config import get_backend_config, load_backend_config
 
-        load_backend_config(project_root)
+        try:
+            load_backend_config(project_root)
+        except RetiredAuthError:
+            # The agent.credential-policy rows already name the value to set.
+            (_note or _pass)("worker backend health check skipped - set [agent] auth first")
+            return
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()
     except (ImportError, AttributeError, RuntimeError, OSError, ValueError) as exc:
@@ -4011,7 +4285,7 @@ def _run_flow_audit(
                 _note(
                     f"sim pre_run_commands configured ({len(pre_sim_commands)} "
                     f"line(s)); they run in the Sandbox before "
-                    "each sim run (BOOLEY_* env contract, ADR 0039)"
+                    "each sim run (BOOLEY_* env contract)"
                 )
         if flow_name == "sim":
             _check_sim_run_cwd(project, _pass, _warn)
@@ -4196,7 +4470,7 @@ def _enumerate_core_audit_targets(
     if not refs:
         _fail(
             "project has no .core: a resolvable FuseSoC .core Target is a "
-            "precondition for every Booley Flow (ADR 0039)",
+            "precondition for every Booley Flow",
             "author a .core (the booley-setup skill's project-config step walks through it)",
         )
     else:
@@ -4314,10 +4588,10 @@ def _check_target_sources(
         audit.fail,
         _note=audit.note,
         selected_targets=set(_project_target_matrix(audit.project).seed_targets) or None,
-        _inputs=inputs,
+        inputs=inputs,
     )
-    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
-    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
+    _check_sim_dump_declared(audit.root, refs, audit.pass_, audit.warn, inputs=inputs)
     _check_sim_copyto_collisions(audit.root, refs, inputs, audit.warn)
 
 
@@ -4441,15 +4715,14 @@ def _check_sim_target_tb_staging(
     if sources.rtl_source_files and not sources.tb_files:
         _fail(
             f"sim Target '{name}' has files but none tagged tags:[tb]",
-            "tag the testbench fileset tags:[tb] so Source Isolation can "
-            "partition RTL vs TB (ADR 0022 dec 13)",
+            "tag the testbench fileset tags:[tb] so Source Isolation can partition RTL vs TB",
         )
     elif not sources.tb_files:
         _fail(
             f"sim Target '{name}' stages zero files — no testbench "
             "(or design) ever reaches the simulator",
             "list the rtl + tb filesets in the Target's filesets: "
-            "entry (the tb fileset tagged tags:[tb], ADR 0022 dec 13)",
+            "entry (the tb fileset tagged tags:[tb])",
         )
     else:
         _pass(f"sim Target '{name}' TB fileset tagged")
@@ -4488,7 +4761,7 @@ def _warn_missing_sim_sentinel(
         emit(
             f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
             "and its TB fileset is Python — for a cocotb TB declare "
-            "flow_options.cocotb_module on the Target (ADR 0034) so the verdict "
+            "flow_options.cocotb_module on the Target so the verdict "
             "comes from results.xml; $display sentinels only apply to SV TBs"
         )
         return
@@ -4838,7 +5111,7 @@ def _check_icarus_sv_language_mode(
     *,
     _note: Check | None = None,
     selected_targets: set[str] | None = None,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Flag Icarus Targets whose SystemVerilog sources lack an SV flag."""
     icarus_targets = [
@@ -4848,7 +5121,6 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in icarus_targets:
         try:
             sources = inputs.sources_for(name)
@@ -4967,7 +5239,7 @@ def _check_sim_dump_declared(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when an owned C++ main's hardcoded dump is not in ``trace_files``.
 
@@ -4984,7 +5256,6 @@ def _check_sim_dump_declared(
     candidates = _owned_main_verilator_sims(refs)
     if not candidates:
         return
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     patterns = resolve_trace_files(root)
     run_cwd = resolve_run_cwd(root)
     is_template = bool(_safe_run_cwd_fields(run_cwd))
@@ -5132,10 +5403,9 @@ def _check_toplevel_interface_ports(
     _pass: Check,
     _warn: Check,
     *,
-    _inputs: _CoreAuditInputs | None = None,
+    inputs: _CoreAuditInputs,
 ) -> None:
     """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
-    inputs = _inputs or _CoreAuditInputs(TargetCatalog.build(root), refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue
@@ -5503,6 +5773,9 @@ def _prepare_selftest_invocation(
             test_override=case.test,
             doctor_selftest_kind=kind,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        _skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         _fail(
             f"{label} could not enter the Sandbox: {exc}",
@@ -6034,6 +6307,9 @@ def _doctor_flow_command(
             dry_run=dry_run,
             flow_runtime=flow_runtime,
         )
+    except session_runtime.RecoveryPendingError as exc:
+        findings.skip(f"{label} skipped - {exc}")
+        return None
     except session_runtime.SessionError as exc:
         findings.fail(
             f"{label} could not enter the Sandbox: {exc}",

@@ -116,7 +116,6 @@ def test_unknown_tables_have_stable_warning_identity_and_migration_hint() -> Non
         "config.unknown-table",
     ]
     assert [finding.subject for finding in audit.findings] == ["fusesoc", "toolz"]
-    assert "ADR 0030" in audit.findings[0].message
     assert "Target scoping now lives in .core files" in audit.findings[0].message
     assert "default_target" not in audit.findings[0].message
     assert "settings are ignored" in audit.findings[1].message
@@ -271,20 +270,37 @@ def test_agent_audit_uses_authoritative_agent_parser() -> None:
     assert "retired key(s): primary" in retired.findings[0].message
 
 
+_RETIRED_AUTO_AGENTS = [
+    {"clis": ["claude"], "auth": "auto"},
+    {"clis": ["claude"], "auth": {"claude": "auto"}},
+]
+
+
+@pytest.mark.parametrize("agent", _RETIRED_AUTO_AGENTS, ids=["string", "table"])
+def test_doctor_config_audits_read_retired_auto_auth(agent: dict[str, object]) -> None:
+    data = {"agent": agent, "models": {"reviewer": "gpt-6-luna"}}
+
+    agent_audit = agent_schema.audit_agent_table(data)
+    models_audit = agent_schema.audit_models_table(data)
+
+    assert agent_audit.is_valid
+    assert not models_audit.is_valid
+    assert "gpt-6-luna" in models_audit.findings[0].message
+
+
 @pytest.mark.parametrize(
     "agent",
-    [{"auth": "auto"}, {"clis": ["codex"], "default": "codex", "auth": {"codex": "auto"}}],
+    [{"clis": ["codex"], "auth": "bogus"}, {"clis": ["codex"], "auth": {"codex": "bogus"}}],
     ids=["string", "table"],
 )
-def test_retired_auto_auth_fails_the_agent_audit(agent: dict[str, object]) -> None:
+def test_invalid_agent_auth_offers_only_documented_policies(agent: dict[str, object]) -> None:
     audit = agent_schema.audit_agent_table({"agent": agent})
 
     assert not audit.is_valid
     finding = audit.findings[0]
-    assert "is retired" in finding.message
-    assert '"subscription", "api_key"' in finding.fix
-    assert '"auto"' not in finding.fix
-    assert finding.fix.endswith("or re-run booley init")
+    assert finding.message.endswith("is invalid; use one of 'subscription', 'api_key'.")
+    assert "gateway" not in finding.message
+    assert "gateway" not in finding.fix
 
 
 def test_models_audit_reports_pins() -> None:

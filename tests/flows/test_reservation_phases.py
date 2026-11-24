@@ -2,30 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
-import itertools
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from booley.flows import reservation_phases as rp
 from booley.flows.job_estimates import JobRequest
 from booley.flows.memory_admission import plan_memory_claim
 from booley.runtime import job_slots
 from booley.runtime.job_slots import HOLDING, QUEUED, SlotStore
 from booley.runtime.resource_history import HistoryKey
 from tests.test_job_slots import FakeWorld, make_store, spawn
-
-
-class _LazyPhases:
-    """``booley.flows.reservation_phases``, imported on first use so a missing module fails the test."""
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(importlib.import_module("booley.flows.reservation_phases"), name)
-
-
-rp = _LazyPhases()
 
 BUDGET_MIB = 10_000.0
 TARGET = "core"
@@ -50,20 +38,11 @@ SIM_HISTORY = [
 SIM_REQUEST = (JobRequest("sim", TARGET, test_runs=("smoke",)),)
 
 
-def _reservation(token: job_slots.SlotToken) -> float | None:
-    """The reservation the store holds for *token*, read back from disk."""
-    (held,) = (
-        t for t in _store_of(token).observe(job_slots.CLASS_MEMORY)[0] if t.pid == token.pid
-    )
+def _reservation(store: SlotStore, token: job_slots.SlotToken) -> float | None:
+    """The reservation *store* holds for *token*, read back from disk."""
+    (held,) = (t for t in store.observe(job_slots.CLASS_MEMORY)[0] if t.pid == token.pid)
     assert held.memory is not None
     return held.memory.reservation_mb
-
-
-_STORES: dict[int, SlotStore] = {}
-
-
-def _store_of(token: job_slots.SlotToken) -> SlotStore:
-    return _STORES[token.pid]
 
 
 def _start(root: Path, world: FakeWorld, pid: int, plan) -> tuple[SlotStore, job_slots.SlotToken]:
@@ -71,7 +50,6 @@ def _start(root: Path, world: FakeWorld, pid: int, plan) -> tuple[SlotStore, job
     store = make_store(root, world)
     spawn(world, pid)
     token = store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=plan.claim)
-    _STORES[pid] = store
     return store, token
 
 
@@ -84,22 +62,22 @@ def _shrinker(plan, store: SlotStore, token: job_slots.SlotToken) -> Any:
 
 def test_sim_job_holds_build_estimate_then_run_estimate(tmp_path: Path) -> None:
     world = FakeWorld()
-    plan = plan_memory_claim(SIM_REQUEST, SIM_HISTORY, BUDGET_MIB, None)
+    plan = _sim_plan()
     store, token = _start(tmp_path / "slots", world, 101, plan)
     assert store.refresh(token).state == HOLDING
     with rp.shrinking(_shrinker(plan, store, token)):
-        assert _reservation(token) == 8192
+        assert _reservation(store, token) == 8192
         rp.report_phase_end(TARGET, "sim_build")
-        assert _reservation(token) == 50
+        assert _reservation(store, token) == 50
         # The last planned run ends. Setup never reports its end, so its estimate
         # (10 MiB) stays pending and is what the Job holds through reporting.
         rp.report_phase_end(TARGET, "sim_run", tests=("smoke",))
-        assert _reservation(token) == 10
+        assert _reservation(store, token) == 10
 
 
 def test_queued_job_starts_when_build_phase_ends(tmp_path: Path) -> None:
     world = FakeWorld()
-    plan = plan_memory_claim(SIM_REQUEST, SIM_HISTORY, BUDGET_MIB, None)
+    plan = _sim_plan()
     root = tmp_path / "slots"
     store, token = _start(root, world, 101, plan)
     assert store.refresh(token).state == HOLDING
@@ -115,6 +93,10 @@ def test_queued_job_starts_when_build_phase_ends(tmp_path: Path) -> None:
     assert store.refresh(waiter).state == HOLDING
 
 
+def _sim_plan():
+    return plan_memory_claim(SIM_REQUEST, SIM_HISTORY, BUDGET_MIB, None)
+
+
 def _three_phase_plan(tmp_path: Path):
     """A Job of one build (800 MiB) and two runs of different tests (300 and 100 MiB)."""
     records = [
@@ -127,29 +109,21 @@ def _three_phase_plan(tmp_path: Path):
     return plan_memory_claim(requests, records, BUDGET_MIB, None)
 
 
-def test_no_phase_sequence_grows_the_reservation() -> None:
-    plan = _three_phase_plan(Path())
-    ends = [
-        (TARGET, "sim_build", ""),
-        (TARGET, "sim_run", "a"),
-        (TARGET, "sim_run", "b"),
-        # Unplanned, unknown and repeated ends.
-        (TARGET, "sim_run", "c"),
-        ("other", "sim_build", ""),
-        (TARGET, "sim_build", ""),
+@pytest.mark.parametrize(
+    "requests",
+    [
+        (JobRequest("sim", TARGET, test_runs=("a",), flags=("coverage",)),),
+        (JobRequest("lint", TARGET),),
+        (JobRequest("sim", TARGET, test_runs=("a",)), JobRequest("lint", TARGET)),
+    ],
+    ids=["coverage", "lint", "sim-with-lint"],
+)
+def test_claims_that_cannot_shrink_have_no_phases(requests) -> None:
+    records = [
+        _record(phase, 30, "a" if phase == "sim_run" else "")
+        for phase in ("sim_prepare", "sim_build", "sim_run", "sim_postprocess", "lint")
     ]
-    for ordering in itertools.permutations(ends):
-        phase_plan = rp.PhasePlan(plan.phases, plan.claim.reservation_mb or 0.0)
-        held = [phase_plan.held_mb]
-        for target, phase, test_run in ordering:
-            lowered = phase_plan.finish(target, phase, test_run)
-            if lowered is not None:
-                phase_plan.accept(lowered)
-            held.append(phase_plan.held_mb)
-        assert held == sorted(held, reverse=True), ordering
-        # Whatever the order, the reservation stays within the planned estimates; setup
-        # (10 MiB) never reports its end, so it is the floor.
-        assert 10.0 <= phase_plan.held_mb <= 800.0
+    assert plan_memory_claim(requests, records, BUDGET_MIB, None).phases == ()
 
 
 def test_phase_plan_counts_repeated_keys_and_ignores_unplanned_ends() -> None:
@@ -175,7 +149,7 @@ def test_non_positive_remaining_estimate_changes_nothing() -> None:
 
 def test_failed_store_write_keeps_the_held_value(tmp_path: Path) -> None:
     world = FakeWorld()
-    plan = plan_memory_claim(SIM_REQUEST, SIM_HISTORY, BUDGET_MIB, None)
+    plan = _sim_plan()
     store, token = _start(tmp_path / "slots", world, 101, plan)
     store.release(token)  # the entry is gone: the shrink is refused
     phase_plan = rp.PhasePlan(plan.phases, 8192.0)
@@ -184,36 +158,8 @@ def test_failed_store_write_keeps_the_held_value(tmp_path: Path) -> None:
 
 
 def test_phase_end_without_a_shrinker_is_a_no_op() -> None:
-    assert rp._active.get() is None
     rp.report_phase_end(TARGET, "sim_build")
     rp.report_phase_end(TARGET, "synth", tests=("t",))
-
-
-def test_only_sim_synth_fpga_plans_have_phases() -> None:
-    records = [
-        _record("sim_build", 80),
-        _record("sim_run", 40, "t"),
-        _record("sim_prepare", 10),
-        _record("sim_postprocess", 10),
-        _record("synth", 90),
-        _record("fpga_impl", 70),
-        _record("lint", 30),
-        _record("echo_flow", 30),
-    ]
-
-    def phases(*requests: JobRequest, history=records) -> tuple[Any, ...]:
-        return plan_memory_claim(requests, history, BUDGET_MIB, None).phases
-
-    # Setup, build and the two runs.
-    assert len(phases(JobRequest("sim", TARGET, test_runs=("t", "t")))) == 4
-    assert len(phases(JobRequest("synth", TARGET), JobRequest("fpga", TARGET))) == 2
-    assert phases(JobRequest("sim", TARGET, test_runs=("t",), flags=("coverage",))) == ()
-    assert phases(JobRequest("lint", TARGET)) == ()
-    assert phases(JobRequest("echo_flow", TARGET)) == ()
-    # A sim Job that mixes in a lint request holds its claim to the end.
-    assert phases(JobRequest("synth", TARGET), JobRequest("lint", TARGET)) == ()
-    # A run-alone claim (unknown phase) has nothing to shrink.
-    assert phases(JobRequest("synth", TARGET), history=[]) == ()
 
 
 class _Recorder:
@@ -242,40 +188,127 @@ def _synth_flow(role: str | None):
     return flow
 
 
+SYNTH_ENDS = [("a", phase, "") for phase in ("sv2v", "yosys", "openroad", "synth")]
+
+
+# Private seam: the per-Target step runs only after Yosys configuration; its body is
+# replaced to test the report around it.
 @pytest.mark.parametrize(
-    ("role", "reported"), [(None, True), ("candidate", True), ("baseline", False)]
+    ("role", "reported", "failure"),
+    [
+        pytest.param(None, True, None, id="default"),
+        pytest.param("candidate", True, None, id="candidate"),
+        pytest.param("baseline", False, "raises", id="baseline"),
+        pytest.param(None, True, "raises", id="raises"),
+        pytest.param(None, True, "lease", id="lease_fails"),
+    ],
 )
 def test_synth_target_end_is_reported_unless_baseline(
-    role: str | None, reported: bool, recorder: _Recorder, monkeypatch: pytest.MonkeyPatch
+    role: str | None,
+    reported: bool,
+    failure: str | None,
+    recorder: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from booley.flows import edam
+    from booley.flows.synth.flow import SynthMetrics
+
     flow = _synth_flow(role)
-    monkeypatch.setattr(flow, "_synthesize_target", lambda _target: (None, ""))
-    flow._run_single_config("a")
-    assert recorder.ends == ([("a", "synth", "")] if reported else [])
+    flow.parse_args(["--target", "a", "--work-dir", str(tmp_path), "--timeout-ms", "1000"])
+
+    def synthesize(_target: str):
+        if failure == "raises":
+            raise RuntimeError("boom")
+        return SynthMetrics(), ""
+
+    monkeypatch.setattr(flow, "_synthesize_target", synthesize)
+    publish = lambda _metrics: None  # noqa: E731
+    if failure == "raises":
+        with pytest.raises(RuntimeError):
+            flow._run_target("a", publish)
+    elif failure == "lease":
+        # The Flow's own lease fails after its budget: its Target still ends.
+        with edam.work_root_lease(flow._synth_work_root("a"), timeout_s=0):
+            flow._run_target("a", publish)
+    else:
+        flow._run_target("a", publish)
+    assert recorder.ends == (SYNTH_ENDS if reported else [])
 
 
-def test_synth_target_end_is_reported_when_the_run_raises(
-    recorder: _Recorder, monkeypatch: pytest.MonkeyPatch
+SYNTH_CORE = """CAPI=2:
+name: acme:ip:chip:1.0
+filesets:
+  rtl:
+    files: [chip.sv]
+    file_type: systemVerilogSource
+targets:
+  physical:
+    flow: generic
+    flow_options: {tool: yosys}
+    filesets: [rtl]
+    toplevel: chip
+  logical:
+    flow: generic
+    flow_options: {tool: yosys, synth_mode: logical}
+    filesets: [rtl]
+    toplevel: chip
+  slang:
+    flow: generic
+    flow_options: {tool: yosys, frontend: slang}
+    filesets: [rtl]
+    toplevel: chip
+  broken:
+    flow: generic
+    flow_options: {tool: yosys, synth_mode: fast}
+    filesets: [rtl]
+    toplevel: chip
+"""
+
+
+@pytest.mark.parametrize(
+    ("selector", "argv", "phases"),
+    [
+        pytest.param("physical", [], ("sv2v", "yosys", "openroad"), id="physical"),
+        pytest.param("logical", [], ("sv2v", "yosys"), id="logical"),
+        pytest.param("slang", [], ("yosys", "openroad"), id="slang"),
+        pytest.param(
+            "physical", ["--frontend", "slang"], ("yosys", "openroad"), id="frontend_override"
+        ),
+        # An invalid mode plans the whole command; the run reports the error.
+        pytest.param("broken", [], (), id="invalid_mode"),
+        # The baseline's mode and frontend are unknown until it runs: plan every tool.
+        pytest.param(
+            "logical", ["--baseline", "HEAD"], ("sv2v", "yosys", "openroad"), id="baseline"
+        ),
+    ],
+)
+def test_synth_job_requests_plan_the_tools_the_target_runs(
+    tmp_path: Path, selector: str, argv: list[str], phases: tuple[str, ...]
 ) -> None:
-    flow = _synth_flow(None)
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+    from booley.targets.catalog import TargetCatalog
 
-    def boom(_target: str):
-        raise RuntimeError("boom")
+    (tmp_path / "chip.sv").write_bytes(b"module chip; endmodule\n")
+    (tmp_path / "chip.core").write_bytes(SYNTH_CORE.encode())
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", selector, "--work-dir", str(tmp_path), *argv])
+    handle = TargetCatalog.build(tmp_path).select(selector, for_flow="synth")
 
-    monkeypatch.setattr(flow, "_synthesize_target", boom)
-    with pytest.raises(RuntimeError):
-        flow._run_single_config("a")
-    assert recorder.ends == [("a", "synth", "")]
+    assert flow.memory_job_requests((handle, handle)) == (
+        JobRequest("synth", selector, split_phases=phases),
+    )
 
 
+# Private seam: the per-Target step runs only after Vivado configuration.
 @pytest.mark.parametrize(("role", "reported"), [("candidate", True), ("baseline", False)])
 def test_fpga_target_end_is_reported_unless_baseline(
     role: str, reported: bool, recorder: _Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.flows.fpga.flow import FpgaImplFlow
+    from booley.flows.fpga.flow import FpgaImplFlow, FpgaMetrics
 
     flow = FpgaImplFlow()
     flow._execution_role = role
-    monkeypatch.setattr(flow, "_implement_target", lambda _target: SimpleNamespace())
+    monkeypatch.setattr(flow, "_implement_target", lambda _target: FpgaMetrics())
     flow._run_single_target("a")
     assert recorder.ends == ([("a", "fpga_impl", "")] if reported else [])

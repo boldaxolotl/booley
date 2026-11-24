@@ -69,6 +69,7 @@ def test_real_typed_receiver(tmp_path, value, frontend):
         frontend=frontend,
         timing=StaTimingConfig(mode="logical"),
     )
+    # No public entry runs only the frontend script; the test stops before tech mapping.
     pipeline._write_yosys_script(spec, tmp_path)
     script = tmp_path / "synth.ys"
     lines = script.read_text().splitlines()  # run only the frontend, before tech mapping
@@ -129,6 +130,8 @@ targets:
     sim.parse_args(["--project", str(tmp_path), "--target", "sim", "--mode", "elab-only"])
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     build_root = tmp_path / "sim-build"
+    # Each step below drives one Flow stage against the real tool without the rest of the
+    # run (no public entry stops after the build, and the full run needs the seat caps).
     prepared = sim._prepare_elab_only_target(
         "sim", time.monotonic(), handle=handle, build_root=build_root
     )
@@ -141,6 +144,10 @@ targets:
     synth = AsicSynthesizeFlow()
     synth.parse_args(["--project", str(tmp_path), "--target", "synth"])
     plan = synth._configure_synth("synth", synth._build_synth_cmd("synth"))
-    _run(synth._synth_boundary_cmd(plan), tmp_path)
+    with pipeline.yosys_tmpdir() as yosys_tmp:
+        _run(
+            [*synth._synth_boundary_cmd(plan), pipeline.yosys_tmpdir_assignment(yosys_tmp)],
+            tmp_path,
+        )
     _run(["yosys", "-Q", "-p", "read_verilog synth_dut.v; write_json s.json"], plan.build_dir)
     assert _ok_bit(plan.build_dir / "s.json", "dut") == ["1"]

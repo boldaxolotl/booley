@@ -291,6 +291,7 @@ def authenticate_coverage_record_owner(
     """Authenticate the enclosing Simulation manifest, result, and nested evidence."""
     from booley.flows.sim.record import (
         SimulationRecordIntegrityError,
+        SimulationRecordManifestView,
         SimulationRecordWorkItemError,
         authenticate_work_item,
     )
@@ -313,7 +314,7 @@ def authenticate_coverage_record_owner(
             "enclosing Simulation Record cannot be authenticated"
         ) from exc
     manifest = authenticated.manifest
-    target = cast(Mapping[str, str], manifest.document["target"])
+    view = SimulationRecordManifestView(manifest)
     result = authenticated.result
     evidence = cast(tuple[Mapping[str, object], ...], result.document["evidence"])
     try:
@@ -328,11 +329,10 @@ def authenticate_coverage_record_owner(
             "enclosing Simulation result evidence is malformed"
         ) from exc
     if (
-        manifest.document["simulation_record_id"] != document["simulation_record_id"]
+        view.simulation_record_id != document["simulation_record_id"]
         or authenticated.manifest_sha256 != document["simulation_manifest_sha256"]
-        or target["selector"] != cast(Mapping[str, str], document["target"])["selector"]
-        or f"{target['vlnv']}#{target['name']}"
-        != cast(Mapping[str, str], document["target"])["identity"]
+        or view.target.selector != cast(Mapping[str, str], document["target"])["selector"]
+        or view.target.identity != cast(Mapping[str, str], document["target"])["identity"]
         or result.document["attempt_id"] != document["simulation_attempt_id"]
         or result.document["producer_invocation_id"] != document["producer_invocation_id"]
         or nested_evidence

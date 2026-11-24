@@ -1,4 +1,4 @@
-"""Interactive Mode Git identity setup."""
+"""Sandbox Git identity setup."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from booley.runtime.incontainer_git_identity import (
 
 
 def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = run_bounded_child(["git", "-C", str(path), *args], timeout=10, env=env, check=True)
+    result = run_bounded_child(["git", "-C", str(path), *args], env=env, check=True)
     return result.stdout.strip()
 
 
@@ -31,9 +31,7 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
     booley_dir.mkdir()
     global_config = tmp_path / "global.gitconfig"
     for key, value in (("user.name", "Host Alias"), ("user.email", "host-identity.invalid")):
-        configured = run_bounded_child(
-            ["git", "config", "--file", str(global_config), key, value], timeout=10
-        )
+        configured = run_bounded_child(["git", "config", "--file", str(global_config), key, value])
         assert configured.returncode == 0, configured.stderr
     (booley_dir / "booley.toml").write_text(
         '[agent.git]\nname = "Expected Developer"\nemail = "developer-identity.invalid"\n',
@@ -61,7 +59,6 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
         [sys.executable, "-m", "booley.runtime.incontainer_git_identity", "--ticket"],
         cwd=workspace,
         env=env,
-        timeout=10,
     )
     assert applied.returncode == 0, applied.stderr
     (workspace / "change.txt").write_text("change\n", encoding="utf-8")
@@ -204,7 +201,6 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
             "--get",
             "extensions.worktreeConfig",
         ],
-        timeout=10,
     )
     assert result.returncode == 1
 
@@ -371,7 +367,6 @@ def test_stale_image_missing_cleanup_module_cannot_apply_identity(tmp_path):
         [sys.executable, "-m", "booley.runtime.incontainer_git_identity_cleanup"],
         cwd=workspace,
         env=environment,
-        timeout=10,
     )
     assert result.returncode != 0
     assert "No module named" in result.stderr
@@ -454,7 +449,6 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
         [sys.executable, *git_identity_command().split()[1:]],
         cwd=workspace,
         env=sandbox,
-        timeout=10,
     )
     assert applied.returncode == 0, applied.stderr
     assert _git(workspace, "config", "user.name", env=env) == "Human"

@@ -9,11 +9,11 @@ import json
 import logging
 import os
 from collections import deque
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time as wall_clock
-from typing import Any
+from typing import Any, NoReturn
 
 import anyio
 from claude_agent_sdk import (
@@ -32,6 +32,7 @@ from booley.core.models import (
     AgentResult,
     ArtifactPathResolver,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import rfc3339_from_epoch, utc_now_rfc3339
 
 from ._claude_transcript_md import (  # noqa: F401 — re-exported for backward compat
@@ -166,6 +167,8 @@ class ClaudeSDKBackend:
             except TransientAPIError as e:
                 if attempt >= MAX_API_RETRIES:
                     logger.error("All %d retries exhausted: %s", MAX_API_RETRIES, e)
+                    if isinstance(e, _RateLimitRetryError):
+                        raise _still_limited_error(e) from e
                     raise
                 backoff = compute_backoff(attempt, e.retry_after)
                 logger.warning(
@@ -687,7 +690,7 @@ def _open_transcript(
     """Open a transcript file within an ExitStack, or return None."""
     if transcript_path is None:
         return None
-    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(transcript_path.parent)
     return stack.enter_context(transcript_path.open("w", encoding="utf-8"))
 
 
@@ -719,27 +722,33 @@ async def _consume_claude_stream(
     on_message: Callable[[], None] | None = None,
 ) -> None:
     """Consume one Claude query stream and route every message."""
-    async for message in query(prompt=prompt, options=options):
-        if on_message is not None:
-            on_message()
-        if isinstance(message, AssistantMessage):
-            state.turn_count += 1
-            _record_activity(state.last_activity, message)
-            _dispatch_on_event(on_event, message)
-            counters.update_from_assistant(message)
-            counters.capture_mcp_tool_uses(message)
-            _dispatch_usage(on_event, counters, _options_model(options))
-            if transcript_file is not None:
-                _write_transcript_turn(transcript_file, message)
-            _capture_pending_file_edits(message, state)
-        elif isinstance(message, UserMessage):
-            _dispatch_completed_file_edits(on_event, message, state)
-        elif isinstance(message, ResultMessage):
-            counters.apply_result(message)
-            _dispatch_usage(on_event, counters, _options_model(options))
-            state.session_id = getattr(message, "session_id", None)
-        elif isinstance(message, RateLimitEvent):
-            await _handle_rate_limit_event(message)
+    stream = query(prompt=prompt, options=options)
+    assert isinstance(stream, AsyncGenerator)
+    # The loop body raises on a usage limit; close the generator in this task, not in
+    # asyncio's shutdown finalizer where the SDK's close fails.
+    async with contextlib.aclosing(stream):
+        async for message in stream:
+            if on_message is not None:
+                on_message()
+            if isinstance(message, AssistantMessage):
+                state.turn_count += 1
+                _record_activity(state.last_activity, message)
+                _dispatch_on_event(on_event, message)
+                counters.update_from_assistant(message)
+                counters.capture_mcp_tool_uses(message)
+                _dispatch_usage(on_event, counters, _options_model(options))
+                if transcript_file is not None:
+                    _write_transcript_turn(transcript_file, message)
+                _capture_pending_file_edits(message, state)
+            elif isinstance(message, UserMessage):
+                _dispatch_completed_file_edits(on_event, message, state)
+            elif isinstance(message, ResultMessage):
+                counters.apply_result(message)
+                _dispatch_usage(on_event, counters, _options_model(options))
+                state.session_id = getattr(message, "session_id", None)
+            elif isinstance(message, RateLimitEvent) and not counters.got_result:
+                # After a result the answer is complete; a late limit event must not discard it.
+                await _handle_rate_limit_event(message)
 
 
 _EDIT_PATH_FIELDS = {
@@ -818,6 +827,23 @@ def _dispatch_usage(on_event: Any, counters: _UsageCounters, model: str) -> None
         logger.debug("on_event usage error (swallowed)", exc_info=True)
 
 
+def _stop_reason(exc: Exception) -> str:
+    """Crash-context reason for a stream exception."""
+    if isinstance(exc, TransientAPIError):
+        return "transient API error"
+    return f"exception: {type(exc).__name__}"
+
+
+def _raise_expected_stop(exc: Exception, provider_message: str, context: list[str]) -> NoReturn:
+    """Raise a usage limit or rate-limit retry, keeping its crash context off the console."""
+    if isinstance(exc, UsageLimitError | TransientAPIError):
+        _keep_crash_context(exc, context)
+        raise exc
+    stop = UsageLimitError(provider_message, provider="claude")
+    _keep_crash_context(stop, context)
+    raise stop from exc
+
+
 def _handle_stream_exception(
     exc: Exception,
     got_result: bool,
@@ -830,28 +856,26 @@ def _handle_stream_exception(
     model: str,
 ) -> None:
     """Handle exceptions from the SDK stream, re-raising as appropriate."""
-    if isinstance(exc, TransientAPIError):
-        if got_result:
-            logger.debug("Swallowed post-result transient error (SDK teardown artifact)")
-            return
-        _dump_crash_context(
-            stderr_buffer,
-            last_activity,
-            turn_count,
-            reason="transient API error",
-            attempt=attempt,
-            transcript_path=transcript_path,
-        )
-        raise exc
-    # intentionally broad: SDK can raise arbitrary exceptions
-    if got_result and isinstance(exc, _SDK_TEARDOWN_EXCEPTIONS):
-        logger.debug(
-            "Swallowed post-result SDK-teardown exception: %s: %s",
-            type(exc).__name__,
-            exc,
-        )
+    if isinstance(exc, TransientAPIError) and got_result:
+        logger.debug("Swallowed post-result transient error (SDK teardown artifact)")
         return
-
+    if got_result and isinstance(exc, _SDK_TEARDOWN_EXCEPTIONS):
+        logger.debug("Swallowed post-result SDK-teardown: %s: %s", type(exc).__name__, exc)
+        return
+    provider_message = provider_exception_message(exc)
+    if isinstance(exc, UsageLimitError | TransientAPIError) or is_usage_limit(provider_message):
+        _raise_expected_stop(
+            exc,
+            provider_message,
+            _crash_context_lines(
+                stderr_buffer,
+                last_activity,
+                turn_count,
+                reason=_stop_reason(exc),
+                attempt=attempt,
+                transcript_path=transcript_path,
+            ),
+        )
     _dump_crash_context(
         stderr_buffer,
         last_activity,
@@ -860,9 +884,6 @@ def _handle_stream_exception(
         attempt=attempt,
         transcript_path=transcript_path,
     )
-    provider_message = provider_exception_message(exc)
-    if is_usage_limit(provider_message):
-        raise UsageLimitError(provider_message, provider="claude") from exc
     if is_context_exhausted(provider_message):
         raise ContextExhaustedError(provider_message, provider="claude") from exc
     if is_model_refusal(provider_message):
@@ -979,6 +1000,35 @@ def _record_activity(ring: deque[str], msg: AssistantMessage) -> None:
             ring.append(f"Text:{text}")
 
 
+def _crash_context_lines(
+    stderr_buf: deque[str],
+    activity: deque[str],
+    turn_count: int,
+    *,
+    reason: str,
+    attempt: int | None = None,
+    transcript_path: Path | None = None,
+) -> list[str]:
+    """Build crash diagnostics: stderr, last activity, transcript pointer."""
+    attempt_tag = f" (attempt {attempt})" if attempt is not None else ""
+    lines: list[str] = []
+    if stderr_buf:
+        lines.append(f"SDK CLI stderr (last {len(stderr_buf)} lines, on {reason}{attempt_tag}):")
+        lines.extend(f"  [cli-stderr] {line.rstrip()}" for line in stderr_buf)
+    else:
+        lines.append(
+            f"SDK CLI stderr buffer empty on {reason}{attempt_tag} -- child either died "
+            "pre-stderr or SDK did not route it."
+        )
+    lines.append(f"Crash context: {turn_count} turns completed before {reason}{attempt_tag}")
+    if activity:
+        lines.append(f"Last {len(activity)} agent actions:")
+        lines.extend(f"  {entry}" for entry in activity)
+    if transcript_path and transcript_path.exists():
+        lines.append(f"Transcript (may contain final activity): {transcript_path}")
+    return lines
+
+
 def _dump_crash_context(
     stderr_buf: deque[str],
     activity: deque[str],
@@ -988,51 +1038,84 @@ def _dump_crash_context(
     attempt: int | None = None,
     transcript_path: Path | None = None,
 ) -> None:
-    """Emit crash diagnostics: stderr, last activity, transcript pointer."""
-    attempt_tag = f" (attempt {attempt})" if attempt is not None else ""
-
-    if stderr_buf:
-        logger.warning(
-            "SDK CLI stderr (last %d lines, on %s%s):",
-            len(stderr_buf),
-            reason,
-            attempt_tag,
-        )
-        for line in list(stderr_buf):
-            logger.warning("  [cli-stderr] %s", line.rstrip())
-    else:
-        logger.warning(
-            "SDK CLI stderr buffer empty on %s%s -- child either died "
-            "pre-stderr or SDK did not route it.",
-            reason,
-            attempt_tag,
-        )
-
-    logger.warning(
-        "Crash context: %d turns completed before %s%s",
+    """Log crash diagnostics at WARNING."""
+    for line in _crash_context_lines(
+        stderr_buf,
+        activity,
         turn_count,
-        reason,
-        attempt_tag,
+        reason=reason,
+        attempt=attempt,
+        transcript_path=transcript_path,
+    ):
+        logger.warning("%s", line)
+
+
+def _keep_crash_context(error: Exception, lines: list[str]) -> None:
+    """Keep crash diagnostics of an expected stop off the console.
+
+    They go to the DEBUG log and onto the error as a note, so the persisted
+    exception diagnostic holds them.
+    """
+    text = "\n".join(lines)
+    logger.debug("%s", text)
+    error.add_note(text)
+
+
+# A sleep that ends exactly at the call's deadline fires the idle timeout instead of the
+# retry, so a wait stops this long before it.
+_DEADLINE_MARGIN_S = 1.0
+
+
+class _RateLimitRetryError(TransientAPIError):
+    """A rejected limit event whose wait already ran; keeps the limit for the final error."""
+
+    def __init__(self, message: str, *, limit_type: str | None, resets_at: float | None) -> None:
+        super().__init__(message, retry_after=0)
+        self.limit_type = limit_type
+        self.resets_at = resets_at
+
+
+def _still_limited_error(e: _RateLimitRetryError) -> UsageLimitError:
+    """The terminal error when every attempt ended in a rejected limit event."""
+    reset = f"; resets at {rfc3339_from_epoch(e.resets_at)}" if e.resets_at else ""
+    return UsageLimitError(
+        f"Claude usage limit reached ({e.limit_type}){reset};"
+        f" still limited after {MAX_API_RETRIES} attempts",
+        provider="claude",
     )
-    if activity:
-        logger.warning("Last %d agent actions:", len(activity))
-        for entry in activity:
-            logger.warning("  %s", entry)
-    if transcript_path and transcript_path.exists():
-        logger.warning("Transcript (may contain final activity): %s", transcript_path)
+
+
+def _rate_limit_wait_s(info: Any) -> float:
+    """Seconds to wait out a rejected limit, or raise ``UsageLimitError`` if that cannot fit.
+
+    The budget is what remains of the innermost enclosing anyio deadline (the call's idle
+    timeout, or a tighter scope a caller wraps around it); outside any scope it is unbounded.
+    """
+    budget = anyio.current_effective_deadline() - anyio.current_time() - _DEADLINE_MARGIN_S
+    if not info.resets_at:
+        return max(0.0, min(RATE_LIMIT_FALLBACK_BACKOFF_S, budget))
+    wait = max(0, info.resets_at - wall_clock()) + RATE_LIMIT_SLEEP_BUFFER_S
+    if wait > budget:
+        raise UsageLimitError(
+            f"Claude usage limit reached ({info.rate_limit_type});"
+            f" resets at {rfc3339_from_epoch(info.resets_at)},"
+            " too late to wait within this call's timeout",
+            provider="claude",
+        )
+    return wait
 
 
 async def _handle_rate_limit_event(
     event: RateLimitEvent,
 ) -> None:
-    """Handle a rate limit event from the SDK stream."""
+    """Handle a rate limit event from the SDK stream.
+
+    A rejected event waits until its reset and raises a retryable error, unless the reset
+    lies beyond the call's remaining time budget: then it raises ``UsageLimitError`` at once.
+    """
     info = event.rate_limit_info
     if info.status == "rejected":
-        if info.resets_at:
-            now = wall_clock()
-            sleep_s = max(0, info.resets_at - now) + RATE_LIMIT_SLEEP_BUFFER_S
-        else:
-            sleep_s = RATE_LIMIT_FALLBACK_BACKOFF_S
+        sleep_s = _rate_limit_wait_s(info)
 
         logger.warning(
             "Rate limited (%s). Sleeping %.0fs (resets_at=%s, +%ds buffer)",
@@ -1043,9 +1126,10 @@ async def _handle_rate_limit_event(
         )
         await anyio.sleep(sleep_s)
 
-        raise TransientAPIError(
+        raise _RateLimitRetryError(
             f"rate limited ({info.rate_limit_type}), slept {sleep_s:.0f}s",
-            retry_after=0,
+            limit_type=info.rate_limit_type,
+            resets_at=info.resets_at,
         )
     if info.status == "allowed_warning":
         logger.warning(

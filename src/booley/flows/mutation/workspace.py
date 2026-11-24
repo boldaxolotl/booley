@@ -7,6 +7,7 @@ their paths can be shown to the user.
 Layout under ``$BOOLEY_RUNTIME_DIR/mutation/campaign/``::
 
     campaign/
+    ├── baseline-build.log
     ├── baseline.log
     ├── builds/
     │   ├── baseline/
@@ -99,6 +100,11 @@ def mutant_logs_dir(logs_dir: Path | str | None = None) -> Path:
 def baseline_log_path(logs_dir: Path | str | None = None) -> Path:
     """Return the current campaign's pristine-baseline simulator log path."""
     return workspace_dir(logs_dir) / "baseline.log"
+
+
+def baseline_build_log_path(logs_dir: Path | str | None = None) -> Path:
+    """Return the raw output of a pristine-baseline build that failed."""
+    return workspace_dir(logs_dir) / "baseline-build.log"
 
 
 def _hash_file(path: Path) -> str:

@@ -44,6 +44,18 @@ before anything builds. Coverage runs only in the default `--mode simulate`.
 
 Generated or custom C++ mains, HDL testbenches, and cocotb all work.
 
+<details markdown>
+<summary>With a cocotb testbench</summary>
+
+A coverage run gives each Test Run of a
+[Cocotb Target](FLOW-SIM.md#cocotb-targets-python-testbenches) its own
+simulator process, instead of one process per batch of Test Runs that share a
+seed and Test Variant. Its
+[Pre-Sim Commands](FLOW-SIM.md#pre-sim-commands-flowssimpre_run_commands)
+therefore run once per Test Run, each with one Test in `BOOLEY_TEST_NAMES`.
+
+</details>
+
 ## Reading results
 
 Each Target gets its own **Coverage Record**: the coverage evidence of one
@@ -183,17 +195,22 @@ rtl/fifo.sv:57  branch  else  TOP.tb.dut.u_fifo
 The columns are the file and line, the metric, which point, and the instance.
 Bit 2 of `wr_ptr` on line 42 never fell from 1 to 0 in instance `u_fifo`. For a
 `branch` point the third column is the outcome (`if`, `else`, a `case` item);
-for an `expression` point, the term combination; for a `line` point, the block
-number. The third column can contain spaces, so read the columns by eye rather
-than splitting on them.
+for an `expression` point, the term combination; for a `line` point, the kind
+of block Verilator reports, such as `block`, `if`, `else` or `case`. The
+third column can contain spaces, so read the columns by eye rather than
+splitting on them.
 
 - Only points that count toward the percentage are listed. Testbench and
   generated code is skipped, and so are [waived](#coverage-waivers) points, which the
-  last line counts. `--metric` and `--source` match exactly, and a filter that
+  last line counts.
+- `--metric` takes `line`, `branch`, `expression`, `toggle`, or
+  `cover_property`. `--source` matches the path exactly, and a path that
   matches nothing prints `0 uncovered points`.
 - The exit code is `0` whether or not points are uncovered: this is a reader,
   not a gate. It is `2`, with a message naming the file, when the file is
-  missing, is not a coverage record, or its point store is damaged.
+  missing, is not a coverage record, or its point store is damaged. It is also
+  `2`, with a message listing the valid metrics, for any other `--metric`
+  value, such as `Branch` or `fsm`.
 - A run whose coverage collection failed (anything but `COMPLETE` in the
   result) prints a warning first: its list may be incomplete, and is not a
   coverage result.
@@ -254,6 +271,9 @@ To run it yourself inside the Sandbox, pass the Target's
 booley specialist coverage_analyst --record <path to coverage.json>
 ```
 
+It prints its hypotheses, recommendations and limitations, then the path of
+the report it saved.
+
 ## Disk space
 
 Coverage runs are large: each one keeps a raw Verilator database per Test Run
@@ -304,6 +324,12 @@ directory = "coverage-waivers"
 
 `anchor` is `project_data_repository` (the Booley Directory) or
 `rtl_repository` (the RTL repository). `directory` is a relative path below it.
+
+The directory may be absent until you approve the first waiver: coverage then
+runs with no waivers, and its report says that no approvals were found in that
+directory. Git can't commit an empty directory, so commit the directory
+together with your first approval file. Don't add a placeholder such as
+`.gitkeep`; it would block evaluation as an unreferenced file.
 
 Approval files mirror RTL paths: waivers for `rtl/counter.sv` go in
 `coverage-waivers/rtl/counter.sv.toml`. A hand-written file looks like this:

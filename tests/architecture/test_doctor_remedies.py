@@ -19,7 +19,7 @@ lists below stand for what it cannot judge:
 What the scan cannot reach, besides the runtime text above:
 
 * Findings forwarded from owner records the scan does not enumerate (``BootstrapFinding``,
-  the model probe, the upgrade presentation, ``SkippedEndpoint``, ``EndpointValidationError``,
+  the model probe, the upgrade presentation, ``SkippedEndpoint``,
   ``BooleyDirPinError``): the forwarding site is an ``_UNRESOLVED`` entry. Forwards of
   ``EnvironmentFinding``, ``EdaEnvironmentFinding``, ``ConfigFinding`` and ``DiagnosticFinding``
   are checked where their owner builds them.
@@ -84,7 +84,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - harness/doctor.py::_prepare_selftest_invocation "f\'{label} could not enter the Sandbox: {"',
     'warn handles.map-size harness/doctor.py::_check_handle_map_size "job handle map"',
     'fail - audit/agent_schema.py::audit_agent_table "booley.toml [agent] uses retired key(s):"',
-    'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["',
     'fail - audit/host_environment.py::_run_container_probe "container runtime permission denied"',
     'fail - audit/project_schema.py::_feedback_field_findings "booley.toml [feedback].redact_identifier"',
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists."',
@@ -120,7 +119,7 @@ _BASELINE: tuple[str, ...] = (
     'fail - runtime/core_resolution.py::_execute ".core resolvability could not complete i"',
     'fail - runtime/core_resolution.py::_grade ".core Target \'"',
     'fail - runtime/core_resolution.py::_grade ".core resolvability produced incomplete "',
-    'fail - runtime/inspection.py::_check_interactive_logs_tracked ".interactive_logs/ has"',
+    'fail - runtime/inspection.py::_check_job_logs_tracked "job_logs/ has"',
     'fail - runtime/inspection.py::_check_issued_license_relay "License Profile authority is invalid:"',
     'fail - runtime/inspection.py::_credential_policy_inspectable "Sandbox credential mount expectation is "',
     'fail - runtime/inspection.py::_probe_mounted_vivado "Vivado runtime identity probe failed:"',
@@ -134,7 +133,7 @@ _BASELINE: tuple[str, ...] = (
     'warn agent.credential-policy harness/doctor.py::_warn_ignored_gateway_handoff "BOOLEY_PRIMARY_AUTH=gateway is honored o"',
     'warn agent.model-fallback harness/doctor.py::_probe_model_list "Specialist model list for [models]"',
     'warn agent.rotation-risk harness/doctor.py::_check_oauth_token "f\'{label}: stored credential is readable"',
-    'warn agent.rotation-risk harness/doctor.py::_check_oauth_token "message"',
+    'warn agent.rotation-risk harness/doctor.py::_report_refreshing_login "message"',
     'warn agent.subscription-credential-expired harness/doctor.py::_check_subscription_creds_health "subscription login at"',
     'warn cocotb.module-file-missing flows/sim/backends/cocotb_target_checks.py::_inspect_target "cocotb Target \'"',
     'warn cocotb.tb-tag-missing flows/sim/backends/cocotb_target_checks.py::_inspect_target "cocotb Target \'"',
@@ -145,13 +144,11 @@ _BASELINE: tuple[str, ...] = (
     'warn config.project-metadata audit/project_schema.py::audit_project_table "booley.toml missing [project] table"',
     'warn config.unknown-table audit/project_schema.py::audit_known_tables "booley.toml ["',
     "warn core.interface-toplevel harness/doctor.py::_check_toplevel_interface_ports \"f\"{ref.flow} Target '{name}' toplevel '{\"",
-    'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["',
     "warn flow.selftest-evidence-unvalidated harness/doctor.py::_grade_sim_bad_selftest \"f'{label} fail-path unvalidated - {exc}'\"",
     'warn flow.selftest-overlay-build-failed harness/doctor.py::_grade_sim_bad_selftest "f\'{label}: bad overlay no longer builds "',
     "warn git.autocrlf-risk harness/setup/readiness.py::_report_autocrlf_risk \"f'{identity}: {message}'\"",
     'warn git.line-endings-unreadable harness/setup/readiness.py::_report_unreadable_line_endings "line endings:"',
     'warn git.line-endings-unreadable harness/setup/readiness.py::inspect_line_endings "line endings: could not inspect Project "',
-    'warn guidance.links-unhealthy harness/setup/readiness.py::_check_agents_md "could not create root guidance links:"',
     'warn guidance.session-runtime-scope harness/setup/readiness.py::_check_guidance_runtime_note "could not read"',
     'warn host.bootstrap-warning harness/host_diagnostics.py::_add_bootstrap "Host Bootstrap"',
     "warn interactive.devcontainer-drift runtime/inspection.py::_spec_warning \"message + '; ' + request.remedy + ''.joi\"",
@@ -176,7 +173,6 @@ _RUNTIME_TUPLE = "message and fix come from an unpacked runtime tuple"
 _EXCEPTION_TEXT = "message is an exception's text, so a remedy in it is invisible to the scan"
 _RETIRED_HINT = "fix is the retired-table hint from a constant mapping, looked up at runtime"
 _OWNER_RECORD = "forwards an owner record's message and fix, built where the owner constructs it"
-_ENDPOINT_FAILURE = "fix is the first EndpointValidationError failure text, built at runtime"
 _MODEL_PROBE = "forwards a model probe's message and fix, built where the probe runs"
 _BOOTSTRAP_FIX = "fix is BootstrapFinding.doctor_fix, built at runtime by the bootstrap owner"
 _CONFIG_ISSUE = "forwards a config issue's message and fix from its owner"
@@ -187,23 +183,25 @@ _PROBE_WARNING = "forwards a probe result's warning text, built by the probe"
 _UPGRADE_PRESENTATION = (
     "forwards the upgrade presentation's summary and action, built by its owner"
 )
-_PURGE_COMMAND = "fix is a purge command joined at runtime"
 _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint validation"
 
 _UNRESOLVED: dict[str, str] = {
+    'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
+    'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
     'fail - runtime/vaporview.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,
+    'fail - audit/project_schema.py::audit_features_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_interactive_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_known_tables "booley.toml [mcp_tools] is retired"': _RETIRED_HINT,
     'fail - audit/project_schema.py::audit_sandbox_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_specialist_table "message"': _EXCEPTION_TEXT,
     'fail - flows/target_test_plan_inspection.py::_audit_section_keys "str(exc)"': _EXCEPTION_TEXT,
     'fail - harness/doctor.py::_Reporter.diagnostics "finding.message"': _OWNER_RECORD,
-    'fail - harness/doctor.py::_check_custom_endpoints_and_criteria "custom endpoint/Criteria validation fail"': _ENDPOINT_FAILURE,
     'fail - harness/doctor.py::_check_doctor_target_compatibility "*failure"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_doctor_targets "*failure"': _RUNTIME_TUPLE,
+    'warn sandbox.swap-unbacked harness/doctor.py::_check_sandbox_swap "*problem"': _RUNTIME_TUPLE,
     'fail - harness/doctor.py::_check_riscv_toolchain "finding.message"': _OWNER_RECORD,
     'fail - harness/doctor.py::_probe_model_list "probe.message"': _MODEL_PROBE,
     'fail - harness/doctor.py::_probe_one_model "probe.message"': _MODEL_PROBE,
@@ -231,8 +229,7 @@ _UNRESOLVED: dict[str, str] = {
     'warn - harness/doctor.py::_check_upgrade_review "presentation.summary"': _UPGRADE_PRESENTATION,
     'warn - harness/host_diagnostics.py::_add_environment "finding.message"': _OWNER_RECORD,
     'warn - harness/setup/readiness.py::_add_config_audit "finding.message"': _OWNER_RECORD,
-    'warn host.forgotten-project-stamps harness/host_diagnostics.py::_inspect_forgotten_stamps "f\'{len(orphans)} Sandbox issuance stamp("': _PURGE_COMMAND,
-    'warn project.custom-endpoint-skipped harness/doctor.py::_check_custom_endpoints_and_criteria "custom endpoint"': _SKIPPED_ENDPOINT,
+    'warn project.custom-endpoint-skipped harness/doctor.py::_check_custom_endpoints "custom endpoint"': _SKIPPED_ENDPOINT,
 }
 
 

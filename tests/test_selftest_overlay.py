@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import selftest_overlay
+from tests.time_budget import hang_guard_s
 
 
 def test_stage_bad_overlay_replaces_only_mirrored_build_files(tmp_path: Path) -> None:
@@ -52,7 +53,7 @@ def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> No
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=hang_guard_s(),
     )
 
     assert result.returncode != 0

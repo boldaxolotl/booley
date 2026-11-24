@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import reset_git_command_config
 from tests.source_checkout_support import copy_source_checkout
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.runtime import build_stamp
 from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
@@ -44,7 +44,7 @@ def isolated_git(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_TEST_GIT_HOOKS", str(empty))
 
 
-def init_git(root):
+def init_git(root, *, timeout: float = SUBPROCESS_TIMEOUT_S):
     def git(*args):
         run_bounded_child(
             [
@@ -57,7 +57,7 @@ def init_git(root):
             ],
             cwd=root,
             check=True,
-            timeout=10,
+            timeout=timeout,
         )
 
     git("init")
@@ -120,7 +120,6 @@ def untracked_and_modified(root):
         ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=root,
         check=True,
-        timeout=10,
     ).stdout
 
 
@@ -314,7 +313,7 @@ def test_unresolvable_checkout_preserves_dist(
         checkout.rename(relocated)
         checkout = relocated
     elif layout == "no-head":
-        run_bounded_child(["git", "init", str(checkout)], check=True, timeout=10)
+        run_bounded_child(["git", "init", str(checkout)], check=True)
     elif layout in {"redirected", "spoofed-root"}:
         other = tmp_path / "other"
         other.mkdir()
@@ -377,7 +376,6 @@ def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
     run_bounded_child(
         ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
         check=True,
-        timeout=10,
     )
     for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
         (linked / tree).mkdir(parents=True, exist_ok=True)

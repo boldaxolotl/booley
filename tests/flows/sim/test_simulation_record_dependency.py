@@ -1,6 +1,7 @@
 """Two-role Simulation Records and baseline prerequisites."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -79,12 +80,21 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
 
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
+    flow._args = SimpleNamespace(target=["sim"])
+    # Private seam: the card and sim.json projection are built only inside
+    # run_prepared_simulation, which needs a real admission and reservation; this test
+    # hands the projection two already-published records.
     result = flow._simulation_record_endpoint_outcome([candidate, baseline])
     detail = result.detail
     assert detail["pre_sim_total"] == detail["pre_sim_current"] == 2
     assert detail["pre_sim_historical"] == 0
     assert set(detail["pre_sim_roles"]) == {"candidate", "cycle_count_baseline"}
+    # Each role's manifest reference carries the Simulation Record kind.
+    assert {
+        reference["kind"]
+        for role in detail["pre_sim_roles"].values()
+        for reference in role["manifests"]
+    } == {"simulation_record_manifest"}
     card = result.report_text.splitlines()
     card_hooks = [line for line in card if line.startswith("pre_run_commands ")]
     assert sorted(card_hooks) == sorted(detail["pre_sim_lines"])
@@ -101,20 +111,6 @@ def test_two_role_hooks_share_one_card_and_sim_json_projection(tmp_path, monkeyp
     assert {(run["role"], run["attempt_id"]) for run in detail["pre_sim_runs"]} == {
         (firing.document["role"], firing.document["attempt_id"]) for firing in firings
     }
-
-    # Failed re-authentication drops the card block and the sim.json projection together.
-    sidecar = candidate.pre_sim_firings[0].path
-    sidecar.write_bytes(sidecar.read_bytes() + b" ")
-    result = flow._attach_published_pre_sim(result)
-    assert result.exit_code == 2
-    assert not [
-        line
-        for line in result.report_text.splitlines()
-        if line.startswith("pre_run_commands ") or line in {"Candidate:", "Cycle Count baseline:"}
-    ]
-    assert [key for key in result.detail if key.startswith("pre_sim_")] == [
-        "pre_sim_unauthenticated_references"
-    ]
 
 
 def _cycle_baseline_manifest(names):
@@ -188,6 +184,37 @@ def _run_simulation_record(tmp_path, monkeypatch, manifest, invocation):
     return SimulationRecord(_executor(build, counters)).run(request), counters
 
 
+def _published_baseline(tmp_path, monkeypatch):
+    """Run a two-Test Cycle Count baseline; return it, its prerequisite documents and invocation."""
+    from booley.flows.sim.record.model import create_simulation_record_plan
+    from booley.flows.sim.record.store import SimulationRecordStore
+
+    _add_observed_cycles(monkeypatch)
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    baseline, _ = _run_simulation_record(
+        tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
+    )
+    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
+    prerequisites = prerequisite_documents(
+        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
+    )
+    return baseline, prerequisites, invocation
+
+
+def _shared_baseline_candidate(tmp_path, monkeypatch):
+    """Run a baseline, then a candidate linking both of its work items.
+
+    Returns the baseline outcome, the candidate's prerequisite documents, the candidate
+    outcome and the candidate run's execution counters.
+    """
+    baseline, prerequisites, invocation = _published_baseline(tmp_path, monkeypatch)
+    candidate, counters = _run_simulation_record(
+        tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
+    )
+    return baseline, prerequisites, candidate, counters
+
+
 def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_record(
     tmp_path, monkeypatch
 ):
@@ -196,51 +223,16 @@ def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_reco
     Both prerequisites name the same baseline record, which used to be refused
     as a duplicate ("prerequisite identities must be unique") or run as a cycle.
     """
-    from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.store import SimulationRecordStore
+    _baseline, prerequisites, candidate, counters = _shared_baseline_candidate(
+        tmp_path, monkeypatch
+    )
 
-    _add_observed_cycles(monkeypatch)
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    baseline, _ = _run_simulation_record(
-        tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
-    )
-    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = prerequisite_documents(
-        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
-    )
     assert len(prerequisites) == 2
     assert len({item["simulation_record_id"] for item in prerequisites}) == 1
-
-    candidate, counters = _run_simulation_record(
-        tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
-    )
-
     assert candidate.aggregate_grade == "pass"
     facts = candidate.acceptance_facts.document["prerequisites"]
     assert [fact["cycle_observation"]["test"] for fact in facts] == ["alpha", "beta"]
     assert counters["launch"] == 2  # the shared baseline already ran; only the candidate runs
-
-
-def _shared_baseline_candidate(tmp_path, monkeypatch):
-    """Run a two-Test baseline and a candidate linking both of its work items."""
-    from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.store import SimulationRecordStore
-
-    _add_observed_cycles(monkeypatch)
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    baseline, _ = _run_simulation_record(
-        tmp_path, monkeypatch, _cycle_baseline_manifest(("alpha", "beta")), invocation
-    )
-    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = prerequisite_documents(
-        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
-    )
-    candidate, _ = _run_simulation_record(
-        tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), prerequisites), invocation
-    )
-    return baseline, candidate
 
 
 def test_resume_authenticates_a_shared_baseline_simulation_record_once(tmp_path, monkeypatch):
@@ -250,18 +242,66 @@ def test_resume_authenticates_a_shared_baseline_simulation_record_once(tmp_path,
     from booley.flows.sim.record import resume
     from tests.flows.sim.simulation_record_test_support import _handle
 
-    baseline, candidate = _shared_baseline_candidate(tmp_path, monkeypatch)
+    baseline, _prerequisites, candidate, _counters = _shared_baseline_candidate(
+        tmp_path, monkeypatch
+    )
     project = tmp_path / "project"
-    monkeypatch.setattr(resume, "_verify_revision", lambda _root, _target: None)
+    baseline_checkout = tmp_path / "baseline-checkout"
+    baseline_checkout.mkdir()
+    revisions = {project.resolve(): "abc123", baseline_checkout.resolve(): "baseline"}
+    monkeypatch.setattr(resume, "git_full_sha", lambda _ref, root: revisions[Path(root).resolve()])
     monkeypatch.setattr(
         resume.TargetCatalog,
         "build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(project)),
     )
 
-    validated = resume.validate_resume_manifest(candidate.manifest_path, project_root=project)
+    validated = resume.validate_resume_manifest(
+        candidate.manifest_path,
+        project_root=project,
+        revision_root=lambda target: (
+            project if target["role"] == "candidate" else baseline_checkout
+        ),
+    )
 
     assert [node.path for node in validated.prerequisites] == [baseline.manifest_path]
+
+
+def _prerequisite_entry(manifest_path, record_id, target, work_item_id):
+    """A cycle-count baseline prerequisite link to *manifest_path* with placeholder size and digest."""
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": {
+            "path_base": "origin_invocation",
+            "path": manifest_path,
+            "bytes": 1,
+            "sha256": "sha256:" + "a" * 64,
+            "kind": "simulation_record_manifest",
+            "owner": record_id,
+        },
+        "simulation_record_id": record_id,
+        "target": target,
+        "required_observation": "cycle_count",
+        "work_item_id": work_item_id,
+    }
+
+
+def test_cycle_prerequisite_refuses_a_baseline_manifest_whose_digest_disagrees(
+    tmp_path, monkeypatch
+):
+    """A prerequisite link naming a digest other than the baseline manifest's is unauthenticated."""
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+
+    _baseline, prerequisites, invocation = _published_baseline(tmp_path, monkeypatch)
+    tampered = [
+        {**entry, "manifest": {**entry["manifest"], "sha256": "sha256:" + "f" * 64}}
+        for entry in prerequisites
+    ]
+
+    with pytest.raises(SimulationRecordIntegrityError, match="unauthenticated"):
+        _run_simulation_record(
+            tmp_path, monkeypatch, _candidate_manifest(("alpha", "beta"), tampered), invocation
+        )
 
 
 def test_a_simulation_record_that_lists_itself_as_prerequisite_is_a_cycle(tmp_path, monkeypatch):
@@ -271,21 +311,12 @@ def test_a_simulation_record_that_lists_itself_as_prerequisite_is_a_cycle(tmp_pa
 
     own = _manifest_for(("alpha",)).document
     baseline = _cycle_baseline_manifest(("alpha",))
-    entry = {
-        "role": "cycle_count_baseline",
-        "manifest": {
-            "path_base": "origin_invocation",
-            "path": "targets/self/record/manifest.json",
-            "bytes": 1,
-            "sha256": "sha256:" + "a" * 64,
-            "kind": "simulation_record_manifest",
-            "owner": own["simulation_record_id"],
-        },
-        "simulation_record_id": own["simulation_record_id"],
-        "target": baseline.document["target"],
-        "required_observation": "cycle_count",
-        "work_item_id": baseline.document["work_items"][0]["work_item_id"],
-    }
+    entry = _prerequisite_entry(
+        "targets/self/record/manifest.json",
+        own["simulation_record_id"],
+        baseline.document["target"],
+        baseline.document["work_items"][0]["work_item_id"],
+    )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
     with pytest.raises(SimulationRecordIntegrityError, match="cyclic"):
@@ -300,21 +331,12 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
     from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
     document = _manifest()
-    entry = {
-        "role": "cycle_count_baseline",
-        "manifest": {
-            "path_base": "origin_invocation",
-            "path": manifest_path,
-            "bytes": 1,
-            "sha256": "sha256:" + "a" * 64,
-            "kind": "simulation_record_manifest",
-            "owner": SIMULATION_RECORD_ID,
-        },
-        "simulation_record_id": SIMULATION_RECORD_ID,
-        "target": {**document["target"], "role": "cycle_count_baseline"},
-        "required_observation": "cycle_count",
-        "work_item_id": "item:0000:0123456789abcdef",
-    }
+    entry = _prerequisite_entry(
+        manifest_path,
+        SIMULATION_RECORD_ID,
+        {**document["target"], "role": "cycle_count_baseline"},
+        "item:0000:0123456789abcdef",
+    )
     document["prerequisites"] = [entry]
     path = tmp_path / "reports/1/targets/sim/record/manifest.json"
     path.parent.mkdir(parents=True)

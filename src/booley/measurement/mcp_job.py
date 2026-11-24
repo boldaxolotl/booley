@@ -56,9 +56,11 @@ def progress_text(progress: dict[str, Any]) -> str:
 class McpMeasureJob:
     """The ``measure`` Job record an MCP server submitted this process for."""
 
-    def __init__(self, run_id: str, job_dir: Path) -> None:
+    def __init__(self, run_id: str, job_dir: Path, session_key: str | None = None) -> None:
         self.run_id = run_id
         self._dir = job_dir
+        # The session that called ``booley_measure``; the measurement's Flow Jobs are its too.
+        self.session_key = session_key
 
     @classmethod
     def find(cls) -> McpMeasureJob | None:
@@ -70,7 +72,7 @@ class McpMeasureJob:
         with contextlib.suppress(OSError):
             record = job_records.read_record(run_id, root)
             if record is not None and record.endpoint == MEASURE_ENDPOINT:
-                return cls(run_id, root / run_id)
+                return cls(run_id, root / run_id, record.session_key)
         return None
 
     def _write(self, name: str, content: dict[str, Any]) -> None:

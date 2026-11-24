@@ -70,16 +70,18 @@ observable behavior, which is why the default threshold is 80 %, not all.
 ### Equivalent Mutants on Verilator Targets
 
 On a Verilator Target, Booley compares the C++ Verilator generates for each
-Mutant with the baseline's. A Mutant with identical C++ builds the same
-simulator as the original, so no test could detect it: Booley skips it and
-takes the next candidate instead. The run still scores `--count` Mutants
-unless the candidates run out or fail to build; the report then states how many it scored. A
-Mutant that does not build is replaced the same way on every Target, and the
-report states how many candidates did not build. The run stops replacing after
-`--count` candidates failed to build and scores the Mutants it kept; with none
-kept it ends with `ERROR`. The report does not list the skipped Mutants; the
-run's machine-readable result holds their IDs. On other Targets, such as
-Icarus, no Mutant is skipped as equivalent.
+Mutant with the baseline's and with every Mutant it already kept. A Mutant with
+identical C++ to the baseline builds the same simulator as the original, so no
+test could detect it; one with identical C++ to a kept Mutant tests the same
+behavior twice. Booley skips either and takes the next candidate instead. The
+run still scores `--count` Mutants unless the candidates run out or fail to
+build; the report then states how many it scored. A Mutant that does not build
+is replaced the same way on every Target, and the report states how many
+candidates did not build. The run stops replacing after `--count` candidates
+failed to build and scores the Mutants it kept; with none kept it ends with
+`ERROR`. The report does not list the skipped Mutants; the run's
+machine-readable result holds their IDs. On other Targets, such as Icarus, no
+Mutant is skipped as equivalent or duplicate.
 
 ## Which Mutants it plants
 
@@ -114,9 +116,10 @@ directories. The testbench is never mutated, but editing it can change the
 Mutants. When Booley cannot read the whole design (a module that is missing, a
 vendor primitive, a file the parser rejects, any other error in the design, or
 a Target it cannot inspect), it reads each scope file alone with its default
-parameters, and the report says so on a `Target elaboration failed` line. A
-module the Target never instantiates is also read with its default parameters
-when Booley can reach it.
+parameters, and the report says so on a `Target elaboration failed` line,
+followed by a note that Mutants may then duplicate each other. A module the
+Target never instantiates is also read with its default parameters when Booley
+can reach it.
 
 Mutations also reach the arguments of `$signed` and `$unsigned` and the
 expressions in the port connections of module and interface instances.
@@ -211,6 +214,37 @@ the Booley Directory or `--report-dir`
 | `mutation/<N>/campaign/manifest.json` | The run's identity (seed, count, generator and pyslang versions, the Verilator version on a Verilator Target, whether the Target or each file alone was elaborated, scope hashes), each Mutant's status, and each test run's baseline duration and time limit. A `--count auto` run also records how it derived the count. |
 | `mutation/<N>/campaign/variants/` | The mutated source of each Mutant. |
 | `mutation/<N>/campaign/baseline.log`, `mutant-logs/` | The simulator output of the baseline and of each Mutant. |
+
+## Measuring the mutation score
+
+`booley measure` can hold the Mutation Flow to a bound, like any other Flow
+(see
+[Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md#write-metricstoml)).
+A `[<target>.mutation]` table in `metrics.toml` works on every simulation
+Target and measures:
+
+| Metric | Meaning | Better |
+|---|---|---|
+| `mutation_score` | The percentage of valid Mutants (those that build) your tests detected. | higher |
+| `mutants_detected` | How many valid Mutants your tests detected. | higher |
+| `mutants_survived` | How many valid Mutants your tests did not detect. | lower |
+
+The table also takes two settings that choose the Mutants: `count` (how many,
+default `10`, at least `1`; `auto` is refused) and `seed` (which sample,
+default `0`, at least `0`). A table's own setting overrides the one in
+`[defaults.mutation]`.
+
+```toml
+[defaults.mutation]
+count = 20
+
+[sim_core.mutation]
+mutation_score_min = 80
+mutants_survived_max = 4
+seed = 3
+```
+
+`booley cheat --metrics` lists it.
 
 ## Configuration (`[flows.mutation]`)
 

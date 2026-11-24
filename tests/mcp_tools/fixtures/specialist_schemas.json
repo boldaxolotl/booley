@@ -54,8 +54,12 @@
         "description": "Review focus category. RTL: bugs, code_style, optimization, protocol, security, spec. TB: quality.",
         "type": "string"
       },
+      "recheck": {
+        "description": "Re-check the open findings of the Reviewer evidence file at PATH, which an earlier review or re-check wrote, against the current sources: each becomes fixed, still open or can't tell, and no new finding is reported. Category, focus and scope come from the file.",
+        "type": "string"
+      },
       "scope": {
-        "description": "Comma-separated review files",
+        "description": "Comma-separated review files. RTL: .v, .vh, .sv, .svh. TB: .v, .vh, .sv, .svh, .py and C/C++ (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx).",
         "type": "string"
       },
       "spec": {
@@ -70,6 +74,18 @@
         "description": "Developer Agent context and steering instructions. Repeatable; over MCP pass an array of strings, not a bare string.",
         "items": {
           "type": "string"
+        },
+        "type": "array"
+      },
+      "waive": {
+        "description": "Propose waiving the open finding FINDING_ID for REASON, only with --recheck; repeatable. The Reviewer may refuse a waiver. Over MCP, pass [finding ID, reason] pairs.",
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
         },
         "type": "array"
       },

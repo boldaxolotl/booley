@@ -27,10 +27,11 @@ from typing import Any
 import pytest
 
 from booley.core.boundary import require_positive_int, require_str_value
+from tests.time_budget import scaled
 
 # One shared deadline per test. Threads that are not allow-listed finish well
 # inside it on a healthy run; the margin absorbs slow Windows runners.
-GRACE_S = 2.0
+GRACE_S = 2.0  # base seconds; scaled at use, so a bad time scale fails in the session's own check
 _ALLOWLIST_PATH = Path(__file__).with_name("thread_leak_allowlist.toml")
 _BASELINE = pytest.StashKey[frozenset[threading.Thread]]()
 _ALLOWLIST = pytest.StashKey[list["AllowEntry"]]()
@@ -177,7 +178,7 @@ def pytest_runtest_teardown(
         if thread not in baseline and not isinstance(thread, threading._DummyThread)
     ]
     candidates = unexpected_leaks(item.nodeid, new_threads, entries)
-    deadline = time.monotonic() + GRACE_S
+    deadline = time.monotonic() + scaled(GRACE_S)
     for thread in candidates:
         thread.join(max(0.0, deadline - time.monotonic()))
     leaked = [thread for thread in candidates if thread.is_alive()]

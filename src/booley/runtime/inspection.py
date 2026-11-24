@@ -6,7 +6,7 @@ In-runtime validation probes mounted Vivado (90s), without host authority access
 A CLI timeout does not itself prove remote container cleanup. Live execution
 must independently validate authority; a diagnostic report grants no authority.
 It also owns the host-side Interactive Git inspection (`info/exclude` entries and
-tracked `.interactive_logs`) through bounded `git rev-parse` / `git ls-files` probes.
+tracked `job_logs`) through bounded `git rev-parse` / `git ls-files` probes.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
+from booley.config.agent import RetiredAuthError
 from booley.config.eda import EdaConfig
 from booley.core.boundary import require_dict
 from booley.core.host_shell import quote_arg
@@ -48,19 +49,19 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.git import _git_common_dir, stealth_exclude_names
 from booley.runtime.platform_paths import run_captured_bounded, same_host_path
-from booley.runtime.sandbox_apply import Attachment
+from booley.runtime.sandbox_apply import HAND_WRITTEN_SANDBOX_STEPS, Attachment
 
 
 @dataclass(frozen=True, slots=True)
 class InteractiveGitRequest:
-    """Inputs needed to inspect Git state that Interactive Mode depends on."""
+    """Inputs needed to inspect Git state that the Sandbox depends on."""
 
     project_root: Path
     booley_dir: Path
@@ -121,17 +122,17 @@ def inspect_runtime(request: RuntimeInspectionRequest) -> RuntimeInspectionResul
 
 
 def inspect_interactive_git(request: InteractiveGitRequest) -> DiagnosticReport:
-    """Inspect Git excludes and tracked scratch for Interactive Mode; never repairs."""
+    """Inspect Git excludes and tracked scratch for the Sandbox; never repairs."""
     report = Findings()
     _check_devcontainer_excludes(request.project_root, report)
-    _check_interactive_logs_tracked(request.booley_dir, report)
+    _check_job_logs_tracked(request.booley_dir, report)
     return report.report()
 
 
 def inspect_retained_resources(project_root: Path, docker_exe: str | None) -> DiagnosticReport:
     """Observe persistent volumes and image keepers without deleting resources."""
     report = Findings()
-    _check_interactive_state_volumes(project_root, docker_exe, report)
+    _check_sandbox_state_volumes(project_root, docker_exe, report)
     _check_issued_image_keepers(project_root, docker_exe, report)
     return report.report()
 
@@ -149,6 +150,13 @@ def _devcontainer_tracked(project_root: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+_NO_SPEC_BASELINE_NOTES = {
+    True: "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
+    "`booley init` is not checked",
+    False: "this Sandbox is hand-written: drift against `booley init` is not checked",
+}
+
+
 def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings) -> None:  # noqa: PLR0911 — ordered drift preconditions
     """ADR 0018: untracked, valid devcontainer.json that matches what init would write.
 
@@ -161,12 +169,18 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
     """
     if _devcontainer_tracked(request.project_root):
         report.fail(
-            ".devcontainer/ is tracked by git - Interactive Mode unavailable",
+            ".devcontainer/ is tracked by git - Sandbox unavailable",
             "remove it from git history; Booley keeps the spec untracked",
         )
         return
     path = devcontainer_path(request.project_root)
     if not path.is_file():
+        if runtime_context.in_hand_written_sandbox():
+            report.note(
+                "no .devcontainer/devcontainer.json at the Project Root: drift against "
+                "`booley init` is not checked in a Sandbox Booley did not create"
+            )
+            return
         _spec_warning(
             request, report, "no .devcontainer/devcontainer.json - run `booley init` (or `--seed`)"
         )
@@ -176,7 +190,12 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
             json.loads(read_file_bytes(path).decode("utf-8")), field="devcontainer.json"
         )
     except (OSError, ValueError) as exc:
-        report.fail(f"{path} does not parse: {exc}", "re-run booley init")
+        report.fail(
+            f"{path} does not parse: {exc}",
+            "repair this Sandbox's devcontainer.json, then rebuild the Sandbox from it"
+            if runtime_context.in_hand_written_sandbox()
+            else "re-run booley init",
+        )
         return
     spec_app = dc.spec_agent_app(spec)
     if not _provider_current(request, spec, spec_app, report):
@@ -187,14 +206,19 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         request, spec_app, report
     ):
         return
-    if spec_app == agent_app.AUTO_APP:
-        # `booley init` never writes 'auto', so there is no spec to compare against.
-        report.note(
-            "devcontainer.json is hand-written (BOOLEY_AGENT_APP 'auto'): drift against "
-            "`booley init` is not checked"
-        )
+    if spec_app == agent_app.AUTO_APP or runtime_context.in_hand_written_sandbox():
+        # `booley init` never writes 'auto', and a Sandbox it did not create is not rebuilt
+        # from what it writes, so there is no spec to compare against.
+        report.note(_NO_SPEC_BASELINE_NOTES[spec_app == agent_app.AUTO_APP])
         return
     _compare_with_expected_spec(request, spec, report)
+
+
+def _host_authority_remedy() -> str:
+    """Where to repair a Sandbox that holds host authority: a hand-written one is rebuilt from its spec."""
+    if runtime_context.in_hand_written_sandbox():
+        return HAND_WRITTEN_SANDBOX_STEPS
+    return session_runtime.SANDBOX_HOST_INSPECTION_REMEDY
 
 
 def _provider_current(
@@ -255,10 +279,15 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
         executable=request.docker_exe or "docker",
     )
     if comparison.status is image_identity.Status.UNKNOWN:
+        authority = (
+            ""
+            if runtime_context.in_hand_written_sandbox()
+            else " and host `booley doctor` is authoritative"
+        )
         report.note(
             "devcontainer.json has an immutable image pin, but [sandbox].image "
-            f"'{request.image}' cannot be compared conclusively here; image drift is unverified "
-            "and host `booley doctor` is authoritative"
+            f"'{request.image}' cannot be compared conclusively here; image drift is "
+            f"unverified{authority}"
         )
     elif comparison.status is image_identity.Status.MISMATCH:
         _spec_warning(
@@ -289,7 +318,9 @@ def _credential_policy_inspectable(
             request.project_root, booley_dir=request.booley_dir, selected=app
         )
         # Called only for its errors: a policy that cannot be planned cannot be seeded.
-        auth_token.credential_plan(app, found.policies.get(app, found.policies[found.default]))
+        # Every listed CLI is planned, as init plans them.
+        for cli in found.clis if app in found.clis else (app,):
+            auth_token.credential_plan(cli, found.policies.get(cli, found.policies[found.default]))
     except (
         BackendConfigError,
         BooleyLayoutError,
@@ -345,6 +376,10 @@ def _compare_with_expected_spec(
             expected, actual = _comparable(rebuilt), _comparable(spec)
             scope = "matches the spec `booley init` would write"
     except (runtime_spec.RuntimeSpecError, ValueError) as exc:
+        if isinstance(exc.__cause__, RetiredAuthError):
+            # The agent.credential-policy rows already name the value to set.
+            report.note("devcontainer.json drift check skipped - set [agent] auth first")
+            return
         report.warn(
             "devcontainer.json drift cannot be checked: the spec `booley init` would write "
             f"cannot be built: {exc}",
@@ -409,10 +444,12 @@ def _check_issued_session_runtime(request: RuntimeInspectionRequest, report: Fin
         )
         issuance = runtime_spec.validate(request.project_root, spec, path)
     except (OSError, ValueError, runtime_spec.RuntimeSpecError) as exc:
-        report.fail(
-            f"Sandbox host issuance is invalid: {exc}",
-            request.remedy,
+        remedy = (
+            f"fix {exc.location}, then rerun `booley doctor`"
+            if isinstance(exc, runtime_spec.ProjectConfigError)
+            else request.remedy
         )
+        report.fail(f"Sandbox host issuance is invalid: {exc}", remedy)
         return
     report.pass_(f"Sandbox spec has valid host issuance ({issuance.spec_sha256[:12]})")
 
@@ -441,7 +478,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     ):
         report.fail(
             "host-provisioned Vivado is absent from the Sandbox",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return
     if mounted:
@@ -597,7 +634,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
     if any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
@@ -605,7 +642,7 @@ def _check_host_authority_isolation(report: Findings) -> bool:
         if entry is not None:
             report.fail(
                 f"Sandbox exposes a forbidden host-authority surface: {entry}",
-                session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+                _host_authority_remedy(),
             )
             return False
     report.pass_("Sandbox host-authority isolation verified")
@@ -760,13 +797,13 @@ def _mounted_vivado_files(report: Findings) -> bool:
     except OSError as exc:
         report.fail(
             f"mounted Vivado wrapper is unreadable: {exc}",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
             "mounted Vivado wrapper/release layout differs from built-in policy",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     compatibility = (
@@ -777,7 +814,7 @@ def _mounted_vivado_files(report: Findings) -> bool:
     if any(not path.is_file() for path in compatibility):
         report.fail(
             "Sandbox Image lacks the fixed Vivado compatibility libraries or locale",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     return True
@@ -794,7 +831,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     if len(matches) != 1 or "ro" not in matches[0][5].split(","):
         report.fail(
             "Vivado release root is not one exact read-only runtime mount",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
@@ -804,7 +841,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     ):
         report.fail(
             "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
+            _host_authority_remedy(),
         )
         return False
     return True
@@ -837,7 +874,7 @@ def _probe_mounted_vivado(report: Findings) -> None:
     )
 
 
-def _check_interactive_state_volumes(
+def _check_sandbox_state_volumes(
     project_root: Path, docker_exe: str | None, report: Findings
 ) -> None:
     """Surface persistent home-state volumes and flag orphans for pruning.
@@ -931,8 +968,8 @@ def _check_devcontainer_excludes(project_root: Path, report: Findings) -> None:
         )
 
 
-def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
-    """Fail when ephemeral .interactive_logs/ scratch is committed to git.
+def _check_job_logs_tracked(booley_dir: Path, report: Findings) -> None:
+    """Fail when ephemeral job_logs/ scratch is committed to git.
 
     Tracked scratch is laid down read-protected on fresh clones and makes the
     in-container MCP server fail with an opaque PermissionError. The gitignore
@@ -940,7 +977,7 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     """
     try:
         result = platform_paths.run_captured_bounded(
-            ["git", "ls-files", "--", ".interactive_logs"],
+            ["git", "ls-files", "--", "job_logs"],
             timeout=10,
             cwd=booley_dir,
             errors="strict",
@@ -952,9 +989,9 @@ def _check_interactive_logs_tracked(booley_dir: Path, report: Findings) -> None:
     tracked = [line for line in result.stdout.splitlines() if line.strip()]
     if tracked:
         report.fail(
-            f".interactive_logs/ has {len(tracked)} tracked file(s); committed "
+            f"job_logs/ has {len(tracked)} tracked file(s); committed "
             "scratch breaks fresh clones in the sandbox",
-            "git rm -r --cached .interactive_logs && commit the removal",
+            "git rm -r --cached job_logs && commit the removal",
         )
     else:
-        report.pass_(".interactive_logs/ is not tracked in git")
+        report.pass_("job_logs/ is not tracked in git")

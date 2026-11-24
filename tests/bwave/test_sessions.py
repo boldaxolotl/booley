@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.dev_support.test_profiles import native_test_binary
 from tests.bwave.native_binary import require_native_binary as _native_bwave_binary
 from tests.bwave.session_store_support import isolate_temporary_store, use_store
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
@@ -40,7 +42,7 @@ def _ensure_bwave_fixture() -> None:
     if not src.exists():
         pytest.skip("test_distance.vcd fixture missing")
     result = run_bounded_child(
-        [str(native_bwave), "build", str(src), "-o", str(BWAVE)], timeout=60
+        [str(native_bwave), "build", str(src), "-o", str(BWAVE)], timeout=2 * hang_guard_s()
     )
     if result.returncode != 0:
         pytest.fail(f"failed to build {BWAVE}: {result.stderr}")
@@ -175,6 +177,53 @@ def test_load_corrupt_sessions():
     assert _load_sessions() == {}
 
 
+def test_register_keeps_an_unreadable_store_aside(capsys):
+    from booley.bwave import sessions
+    from booley.bwave.cli import _load_sessions, register_trace
+
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("not json {{{")
+
+    register_trace(Path("/tmp/a.fst"), alias="a")
+
+    kept = list(session_file.parent.glob("bwave_sessions.json.unreadable-*"))
+    assert [path.read_text() for path in kept] == ["not json {{{"]
+    assert "a" in _load_sessions()
+    assert str(kept[0]) in capsys.readouterr().err
+
+
+def test_register_leaves_a_store_it_cannot_move_aside(monkeypatch):
+    from booley.bwave import sessions
+    from booley.bwave.cli import register_trace
+
+    session_file = sessions._temporary_store().path
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    session_file.write_text("not json {{{")
+
+    def refuse(path):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(sessions, "keep_unreadable", refuse)
+    with pytest.raises(OSError, match="denied"):
+        register_trace(Path("/tmp/a.fst"), alias="a")
+
+    assert session_file.read_text() == "not json {{{"
+
+
+def test_register_does_not_replace_a_store_it_cannot_read():
+    from booley.bwave import sessions
+    from booley.bwave.cli import register_trace
+
+    session_file = sessions._temporary_store().path
+    session_file.mkdir(parents=True)
+
+    with pytest.raises(OSError):
+        register_trace(Path("/tmp/a.fst"), alias="a")
+
+    assert session_file.is_dir()
+
+
 def test_register_multiple_aliases():
     from booley.bwave.cli import _load_sessions, register_trace
 
@@ -275,6 +324,34 @@ def test_missing_trace_error():
     assert "no longer exists" in r.stderr.lower()
 
 
+def test_register_dir_names_stray_vcd_dump(tmp_path):
+    from booley.bwave import cli as bwave
+
+    dump = tmp_path / "sim.vcd"
+    dump.write_bytes(b"")
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_register(argparse.Namespace(sim_dir=str(tmp_path), alias="dut"))
+    assert str(exc.value) == (
+        f"ERROR: No trace file found in {tmp_path}\n"
+        "VCD dumps here that are not named trace.vcd: sim.vcd\n"
+        "Declare the dump in [flows.sim].trace_files and re-run the sim, "
+        "or pass the file directly (a raw VCD needs --build to register):\n"
+        f"  bwave register {quote_arg(str(dump))} --as ALIAS --build\n"
+        f"  bwave gui {quote_arg(str(dump))}"
+    )
+
+
+def test_register_lists_five_stray_vcds_and_counts_the_rest(tmp_path):
+    from booley.bwave import cli as bwave
+
+    for name in "gfedcba":
+        (tmp_path / f"{name}.vcd").write_bytes(b"")
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_register(argparse.Namespace(sim_dir=str(tmp_path), alias="dut"))
+    assert "a.vcd, b.vcd, c.vcd, d.vcd, e.vcd and 2 more" in str(exc.value)
+    assert "f.vcd" not in str(exc.value)
+
+
 def test_register_missing_trace_includes_incident(tmp_path):
     from booley.bwave import cli as bwave
 
@@ -307,7 +384,7 @@ def test_register_raw_vcd_refuses_and_registers_nothing(tmp_path, monkeypatch, c
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
 
     with pytest.raises(SystemExit) as exc:
@@ -317,7 +394,7 @@ def test_register_raw_vcd_refuses_and_registers_nothing(tmp_path, monkeypatch, c
     assert "raw VCD" in msg
     assert "bwave build" in msg
     assert "waveform.fst" in msg
-    assert "--build" in msg
+    assert f"bwave register {quote_arg(str(vcd))} --as ALIAS --build" in msg
     assert not sessions.exists(), "a refused registration must not write a session"
 
 
@@ -360,7 +437,7 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
     monkeypatch.setattr(
         "booley.bwave.sessions.convert_vcd",
@@ -372,6 +449,10 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         bwave.cmd_register(argparse.Namespace(sim_dir=str(vcd), alias="dut", build=True))
     assert "could not build a queryable store" in str(exc.value)
+    assert (
+        f"`bwave build {quote_arg(str(vcd))} -o {quote_arg(str(vcd.with_suffix('.fst')))}`"
+        in str(exc.value)
+    )
     assert not sessions.exists()
 
 
@@ -389,9 +470,9 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     sessions = tmp_path / "sessions.json"
     use_store(monkeypatch, sessions)
 
-    vcd = tmp_path / "waveform.vcd"
+    vcd = tmp_path / "it's waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
-    existing = tmp_path / "waveform.fst"
+    existing = vcd.with_suffix(".fst")
     existing.write_bytes(b"precious-scoped-store")
 
     called = []
@@ -407,7 +488,8 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     msg = capsys.readouterr().err
     assert "refusing to overwrite" in msg
     assert "--scope" in msg
-    assert f"bwave register {existing}" in msg  # the register-it-as-is way out
+    assert f"bwave register {quote_arg(str(existing))}" in msg  # the register-it-as-is way out
+    assert f"bwave build {quote_arg(str(vcd))} -o {quote_arg(str(existing))}" in msg
     assert not called, "build ran despite the refusal"
     assert existing.read_bytes() == b"precious-scoped-store"
     assert not sessions.exists()
@@ -742,13 +824,57 @@ def test_register_trace_preserves_alias_and_last_markers(tmp_path, monkeypatch):
     assert sessions["_last"]["markers"] == {"last_only": 99}
 
 
-def test_marker_name_validation():
+def _register_dut(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
-    for bad in ["", "123", "-bad", "has space", "wave", "register"]:
-        assert not bwave._validate_marker_name(bad), bad
-    for good in ["error_start", "t123"]:
-        assert bwave._validate_marker_name(good), good
+    use_store(monkeypatch, tmp_path / "sessions.json")
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
+    bwave.register_trace(trace, alias="dut")
+
+
+@pytest.mark.parametrize(
+    ("name", "hint"),
+    [
+        ("123", "t123"),
+        ("5c", "at_5c"),
+        ("10ns", "at_10ns"),
+        ("7t", "at_7t"),
+        ("3us", "at_3us"),
+        ("+5c", "at_+5c"),
+        ("a:b", "a_b"),
+        (":x", "_x"),
+        ("\uff11\uff12\uff13", None),
+        ("", None),
+        ("-bad", None),
+        ("has space", None),
+        ("wave", None),
+    ],
+)
+def test_markers_set_refuses_names_typed_arguments_claim(tmp_path, monkeypatch, name, hint):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", name, "10"]))
+
+    message = str(exc.value)
+    assert "invalid marker name" in message
+    if hint is not None:
+        assert f"'{hint}'" in message
+    assert "markers" not in bwave._load_sessions()["dut"]
+
+
+@pytest.mark.parametrize("name", ["t12", "irq_start", "cyc_5", "5C"])
+def test_markers_set_accepts_names_with_a_label(tmp_path, monkeypatch, name):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "set", name, "10"]))
+
+    assert bwave._load_sessions()["dut"]["markers"] == {name: 10}
 
 
 def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
@@ -771,29 +897,73 @@ def test_markers_set_list_delete(tmp_path, monkeypatch, capsys):
     assert "start" not in bwave._load_sessions()["dut"]["markers"]
 
 
-def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch):
+def test_conflicting_marker_can_be_listed_and_deleted(tmp_path, monkeypatch, capsys):
+    from booley.bwave import cli as bwave
+
+    _register_dut(tmp_path, monkeypatch)
+    # A session written before `set` refused time-token names holds one.
+    sessions = bwave._load_sessions()
+    sessions["dut"]["markers"] = {"5c": 30}
+    bwave._save_sessions(sessions)
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "list"]))
+    assert "5c" in capsys.readouterr().out
+
+    bwave.cmd_markers(argparse.Namespace(extra=["@dut", "delete", "5c"]))
+    assert bwave._load_sessions()["dut"]["markers"] == {}
+
+
+def test_resolve_markers_in_legacy_and_v02_args(tmp_path, monkeypatch, capsys):
     from booley.bwave import cli as bwave
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    markers = {"start": 10, "done": 20, "5c": 30, "10ns": 40, "10c": 50}
+    _write_sessions({"dut": _make_entry("unused.fst", markers=markers)})
 
     cases = [
         (["-t", "start:done"], ["-t", "10c:20c"]),
-        (["--before", "done"], ["-t", ":20c", "--last"]),
-        (["--after", "start"], ["-t", "10c:", "--first"]),
+        (["--before", "done"], ["--before", "20"]),
+        (["--after", "start"], ["--after", "10"]),
         (
-            ["find", "sig", "1", "--before", "done", "--async"],
-            ["find", "sig", "1", "-t", ":20c", "--last", "--async"],
+            ["find", "sig", "1", "--before", "done", "--count"],
+            ["find", "sig", "1", "--before", "20", "--count"],
         ),
+        (["--before=done"], ["--before=20"]),
+        (["--time=start:done"], ["--time=10c:20c"]),
+        (["-tstart:done"], ["-t10c:20c"]),
+        (["-t=start:"], ["-t=10c:"]),
+        (["value", "--at=start"], ["value", "--at=10c"]),
+        (["--before", "start", "--before", "done"], ["--before", "10", "--before", "20"]),
+        (["--before"], ["--before"]),
         (["--diff", "start", "done"], ["--diff", "10c", "20c"]),
         (["diff", "start", "done"], ["diff", "10c", "20c"]),
+        (["diff", "-s", "start", "start", "done"], ["diff", "-s", "start", "10c", "20c"]),
+        (["diff", "--async", "start", "done"], ["diff", "--async", "10c", "20c"]),
         (["value", "--at", "start"], ["value", "--at", "10c"]),
         (["-t", "unknown:done"], ["-t", "unknown:20c"]),
     ]
     for args, expected in cases:
-        bwave._resolve_markers_in_args(args, "dut")
+        bwave._resolve_markers_in_args(args, "dut", "unused.fst")
         assert args == expected
+    assert capsys.readouterr().err == ""
+
+    conflicting = [
+        (["-t", "start:10ns"], ["-t", "10c:10ns"], "10ns"),
+        (["diff", "5c", "done"], ["diff", "5c", "20c"], "5c"),
+        (["--diff", "10ns", "start"], ["--diff", "10ns", "10c"], "10ns"),
+        (["--before", "5c"], ["--before", "5c"], "5c"),
+        (["--after=10ns"], ["--after=10ns"], "10ns"),
+        (["find", "sig", "1", "--before", "5c", "--async"], None, "5c"),
+        (["--at-cycle", "5c"], ["--at-cycle", "5c"], "5c"),
+        (["--at-time", "10ns"], ["--at-time", "10ns"], "10ns"),
+        (["find", "sig", "1", "--at", "5c"], None, "5c"),
+    ]
+    for args, expected, warned in conflicting:
+        original = list(args)
+        bwave._resolve_markers_in_args(args, "dut", "unused.fst")
+        assert args == (expected or original)
+        assert f"marker '{warned}' on @dut does not apply" in capsys.readouterr().err, original
 
 
 def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
@@ -801,7 +971,7 @@ def test_inject_marker_flags_only_for_wave(tmp_path, monkeypatch):
 
     session_file = tmp_path / "sessions.json"
     use_store(monkeypatch, session_file)
-    _write_sessions({"dut": _make_entry("/tmp/t.fst", markers={"start": 10, "done": 20})})
+    _write_sessions({"dut": _make_entry("unused.fst", markers={"start": 10, "done": 20})})
 
     legacy = ["--wave"]
     bwave._inject_marker_flags(legacy, "dut")
@@ -859,6 +1029,53 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
             "2000",
         ]
     ]
+
+
+@pytest.mark.parametrize(
+    ("alias", "argv", "flag", "typed", "name", "target"),
+    [
+        (
+            "dut",
+            ["@dut", "wave", "-s", "top.dut.state", "-t", "5c:12c"],
+            "-t",
+            "5c:12c",
+            "5c",
+            "@dut",
+        ),
+        (
+            "my dut",
+            ["@my dut", "value", "--at", "10ns", "-s", "top.dut.state"],
+            "--at",
+            "10ns",
+            "10ns",
+            "@my dut",
+        ),
+    ],
+    ids=["wave-range", "value-at-spaced-alias"],
+)
+def test_query_keeps_typed_time_over_a_conflicting_marker(
+    tmp_path, monkeypatch, capsys, alias, argv, flag, typed, name, target
+):
+    from booley.bwave import cli as bwave
+
+    use_store(monkeypatch, tmp_path / "sessions.json")
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
+    _write_sessions({alias: _make_entry(str(trace), markers={"5c": 10, "10ns": 3})})
+    calls = []
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(bwave, "_run", lambda cmd: calls.append(cmd) or 0)
+
+    with pytest.raises(SystemExit) as exc:
+        bwave.cmd_query(argparse.Namespace(extra=argv))
+
+    assert exc.value.code == 0
+    (native,) = calls
+    assert native[native.index(flag) + 1] == typed
+    warnings = [x for x in capsys.readouterr().err.splitlines() if x.startswith("WARNING: marker")]
+    assert len(warnings) == 1
+    assert f"marker '{name}' on @{alias} does not apply" in warnings[0]
+    assert f"bwave markers {quote_arg(target)} delete {quote_arg(name)}" in warnings[0]
 
 
 def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
@@ -1140,3 +1357,82 @@ def test_wrapper_help_command_lists_match_accepted_commands():
     # (c) `bwave query --help` text.
     query_help = _help_entry_names(_help_section_lines(bwave._QUERY_HELP_TEXT, ("Subcommands",)))
     assert query_help == bwave._V02_CONSUMER_SUBCOMMANDS | bwave._V02_META_SUBCOMMANDS
+
+
+_MARKER_CYCLE_PAIRS = [
+    ("find *req* 1 --before hs --count", "find *req* 1 --before 25 --count", 0),
+    ("find *req* 1 --after hs --first", "find *req* 1 --after 25 --first", 2),
+    ("find *req* 1 --before hs", "find *req* 1 --before 25", 0),
+    ("find *req* 1 --after hs", "find *req* 1 --after 25", 0),
+    (
+        "sample *req* 1 -s *data* --before hs --count",
+        "sample *req* 1 -s *data* --before 25 --count",
+        0,
+    ),
+    (
+        "sample *req* 1 -s *data* --after hs --first",
+        "sample *req* 1 -s *data* --after 25 --first",
+        2,
+    ),
+    ("sample *req* 1 -s *data* --after hs", "sample *req* 1 -s *data* --after 25", 0),
+    ("find *req* 1 --before=hs --count", "find *req* 1 --before=25 --count", 0),
+    ("find *req* 1 --time=hs:he", "find *req* 1 --time=25:35", 0),
+    ("find *req* 1 -ths:he", "find *req* 1 -t25:35", 0),
+    ("value --at=hs -s *req*", "value --at=25 -s *req*", 0),
+    ("diff -s *data* hs he", "diff -s *data* 25 35", 0),
+    ("find *req* 1 --before hs --async --count", "find *req* 1 --before 265 --async --count", 0),
+]
+
+
+@pytest.mark.native_bwave
+@pytest.mark.parametrize(("marker_form", "cycle_form", "returncode"), _MARKER_CYCLE_PAIRS)
+def test_marker_matches_its_cycle_form(marker_form, cycle_form, returncode):
+    """A Marker behaves like its cycle typed in its place: same output, refusal, exit code."""
+    _ensure_bwave_fixture()
+    _write_sessions({"dut": _make_entry(str(BWAVE.resolve()), markers={"hs": 25, "he": 35})})
+
+    by_marker = _query("@dut", *marker_form.split())
+    by_cycle = _query("@dut", *cycle_form.split())
+
+    assert by_marker.returncode == returncode, by_marker.stderr
+    assert (by_marker.returncode, by_marker.stdout, by_marker.stderr) == (
+        by_cycle.returncode,
+        by_cycle.stdout,
+        by_cycle.stderr,
+    )
+
+
+@pytest.mark.native_bwave
+def test_async_marker_bound_on_a_clockless_trace_is_refused(tmp_path):
+    """The async probe lets the native cycle resolver refuse a trace with no clock."""
+    native = _native_bwave_binary()
+    store = tmp_path / "no_clock.fst"
+    built = run_bounded_child(
+        [str(native), "build", str(FIXTURE_DIR / "test_no_clock.vcd"), "-o", str(store)],
+        timeout=2 * hang_guard_s(),
+    )
+    assert built.returncode == 0, built.stderr
+    _write_sessions({"nc": _make_entry(str(store.resolve()), markers={"m": 2})})
+
+    result = _query("@nc", "find", "*enable*", "1", "--before", "m", "--async")
+
+    assert result.returncode == 2
+    assert "no clock detected" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (["--clock", "clk", "--reset", "rst"], ["--clock", "clk", "--reset", "rst"]),
+        (
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+            ["--clock=--clk", "--reset=--rst", "--with-reset"],
+        ),
+        (["--async", "--before", "m"], []),
+    ],
+)
+def test_cycle_grid_options_keep_attached_values_joined(extra, expected):
+    """The async probe gets the options that map a cycle to a tick, spelled as typed."""
+    from booley.bwave import cli as bwave
+
+    assert bwave._cycle_grid_options(extra) == expected

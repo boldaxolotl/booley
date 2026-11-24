@@ -18,6 +18,7 @@ import pytest
 import booley
 from tests.booley_checkouts_support import RUNTIMES, isolate_git, linked_worktree, main_project
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 _REGISTER = (
     "import sys; from pathlib import Path; from booley.bwave import cli; "
@@ -233,7 +234,7 @@ def test_concurrent_registrations_keep_every_alias(tmp_path: Path) -> None:
     ]
     for child in children:
         # Kept on communicate: both children must run concurrently to race the store.
-        _, stderr = child.communicate(timeout=120)
+        _, stderr = child.communicate(timeout=4 * hang_guard_s())
         assert child.returncode == 0, stderr
 
     aliases = set(json.loads(_store(project).read_text(encoding="utf-8")))

@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
@@ -106,6 +107,7 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_contract.py::test_empty_store_marker_survives_in_binary",
     "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
     "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
+    "tests/bwave/test_contract.py::test_reset_object_validates_against_published_schema",
     "tests/bwave/test_sessions.py::test_query_uses_default_session",
     "tests/bwave/test_sessions.py::test_query_uses_named_alias",
     "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",
@@ -117,7 +119,8 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[find]",
     "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[sample]",
     "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[stats]",
-    "tests/bwave/test_scope_relative_globs.py::test_gui_resolves_relative_glob",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_resolves_relative_glob[all-match]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_resolves_relative_glob[one-missing]",
     "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[u_core.*]",
     "tests/bwave/test_scope_relative_globs.py::test_glob_total_miss_suggests_anchored_form[tb.*]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_total_miss_suggests_anchored_form",
@@ -127,6 +130,22 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[TOP.tb.dut.*-expected0]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[*dut.*-expected1]",
     "tests/bwave/test_scope_relative_globs.py::test_gui_keeps_anchored_and_bare_matching[bus-expected2]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[False]",
+    "tests/bwave/test_scope_relative_globs.py::test_gui_refuses_bit_slice[True]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs --count-find *req* 1 --before 25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --after hs --first-find *req* 1 --after 25 --first-2]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs-find *req* 1 --before 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --after hs-find *req* 1 --after 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --before hs --count-sample *req* 1 -s *data* --before 25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --after hs --first-sample *req* 1 -s *data* --after 25 --first-2]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[sample *req* 1 -s *data* --after hs-sample *req* 1 -s *data* --after 25-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before=hs --count-find *req* 1 --before=25 --count-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --time=hs:he-find *req* 1 --time=25:35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 -ths:he-find *req* 1 -t25:35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[value --at=hs -s *req*-value --at=25 -s *req*-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[diff -s *data* hs he-diff -s *data* 25 35-0]",
+    "tests/bwave/test_sessions.py::test_marker_matches_its_cycle_form[find *req* 1 --before hs --async --count-find *req* 1 --before 265 --async --count-0]",
+    "tests/bwave/test_sessions.py::test_async_marker_bound_on_a_clockless_trace_is_refused",
 }
 
 
@@ -337,7 +356,8 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
 
 def _wait_for_child_pid(path: Path) -> int:
     """Wait for complete readiness, not an empty file created by shell redirection."""
-    for _ in range(200):
+    deadline = time.monotonic() + hang_guard_s()
+    while time.monotonic() < deadline:
         try:
             text = path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
@@ -386,7 +406,7 @@ def test_image_validation_wrapper_cleans_promptly_on_cancellation(
     child_pid = _wait_for_child_pid(child_pid_path)
 
     process.terminate()
-    assert process.wait(timeout=5) == 143
+    assert process.wait(timeout=scaled(5)) == 143
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
     calls = docker_log.read_text(encoding="utf-8").splitlines()

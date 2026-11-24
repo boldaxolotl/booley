@@ -112,6 +112,8 @@ booley flow sim --target sim_soc --test reset
 booley flow sim --help                       # every option of one Flow
 booley specialist                            # list the Specialists
 booley specialist reviewer --help            # a Specialist's arguments
+booley specialist reviewer --recheck <evidence.json>   # re-check an earlier review's findings
+booley specialist reviewer --recheck <evidence.json> --waive <finding-id> "<reason>"   # propose a waiver
 ```
 
 Targets, options, exit codes, and results are in
@@ -153,6 +155,7 @@ booley projects forget <project>         # forget a Project and list what it sti
 booley projects forget --purge <project> # also remove its unused images and state volumes
 booley projects prune-keepers            # preview images left by earlier forgets
 booley projects prune-keepers --confirm <digest>   # remove exactly that preview
+booley projects prune-stamps [<project>...]   # list, or remove, stamps of deleted Projects
 ```
 
 What each command lists, keeps, and removes is in

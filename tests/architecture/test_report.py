@@ -23,7 +23,6 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
 
     result = run_bounded_child(
         [sys.executable, str(_REPORT), "--source-root", str(package), "--top", "1"],
-        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
@@ -55,7 +54,6 @@ def test_report_rejects_non_positive_top_count(tmp_path: Path) -> None:
 
     result = run_bounded_child(
         [sys.executable, str(_REPORT), "--source-root", str(package), "--top", "0"],
-        timeout=10,
     )
 
     assert result.returncode == 2

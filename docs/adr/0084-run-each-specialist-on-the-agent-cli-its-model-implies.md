@@ -31,7 +31,9 @@ of the multi-CLI epic.
   default in one order: `BOOLEY_PRIMARY_PROVIDER`, the toml, `BOOLEY_AGENT_APP`.
 - **Per-CLI auth.** `[agent] auth` is either one policy for every listed CLI
   or an `[agent.auth]` table keyed by CLI; an unlisted table key fails loading
-  and an omitted CLI is `auto`. `gateway` is accepted for Codex only (a string
+  and an omitted CLI bills the subscription
+  ([ADR 0094](0094-record-the-visitor-mode-explicitly.md) has the `visitor`
+  value). `gateway` is accepted for Codex only (a string
   `gateway` fails while `claude` is listed) and, as with the
   `BOOLEY_PRIMARY_AUTH=gateway` hand-off, is honored only inside a Sandbox.
 - **The model implies the CLI.** `[models]` has one key per Specialist
@@ -119,8 +121,7 @@ back.
   with its reason (not logged in, not in `clis`, refused by the provider).
 - **Recording.** Every Specialist result carries the model that ran. A
   fallback adds the first choice and each passed-over entry with its reason to
-  the result detail, a line to the report, and the Criterion evidence, so the
-  Review Package shows it.
+  the result detail, a line to the report, so the Review Package shows it.
 - **Deep Doctor.** It walks each list with the launch rules: PASS when the
   first entry works, WARN naming the skipped or refused entries and the model
   chosen, FAIL when none works.

@@ -84,6 +84,16 @@ ROWS = {
         None,
         None,
     ),
+    "track-only-table-added": (
+        SYNTH + AREA,
+        SYNTH + AREA + '[synth_core.fpga]\ntrack = ["lut_count"]\n',
+        "table added with tracked metrics only",
+        "neutral",
+        None,
+        None,
+        None,
+        None,
+    ),
     "max-lowered": (
         SYNTH + AREA,
         SYNTH + "area_kge_max = 50\n",
@@ -400,7 +410,8 @@ def versioned_case(tmp_path: Path, layout: str) -> tuple[Path, Path]:
     checkout, booley = make_versioned_booley_directory(tmp_path, layout)
     default_branch = booley if layout == "standalone" else tmp_path / "main" / ".booley"
     write(default_branch / "metrics.toml", SYNTH + AREA)
-    git(default_branch, "add", "metrics.toml")
+    write(default_branch / "tests.toml", "[smoke]\n")
+    git(default_branch, "add", "metrics.toml", "tests.toml")
     commit_all(default_branch, "baseline", staged_only=True)
     if layout == "standalone":
         git(booley, "checkout", "-q", "-b", "feature")
@@ -413,6 +424,15 @@ def versioned_case(tmp_path: Path, layout: str) -> tuple[Path, Path]:
     # A live, uncommitted edit must not change what is reported.
     write(booley / "metrics.toml", SYNTH + "area_kge_max = 999\n")
     return checkout, booley
+
+
+def push_origin(booley_repository: Path, commit: str) -> None:
+    """Push *commit* as ``main`` of a bare ``origin`` beside the repository; make it the default."""
+    origin = booley_repository.parent / "origin.git"
+    git(booley_repository.parent, "init", "--bare", "-q", str(origin))
+    git(booley_repository, "remote", "add", "origin", str(origin))
+    git(booley_repository, "push", "-q", "origin", f"{commit}:refs/heads/main")
+    git(booley_repository, "remote", "set-head", "origin", "main")
 
 
 def test_versioned_booley_directory_loosened_rule_and_protected_edit(tmp_path: Path) -> None:
@@ -475,3 +495,68 @@ def test_booley_commit_without_a_versioned_booley_directory_is_refused(tmp_path:
 
     with pytest.raises(ValueError, match="Versioned Booley Directory"):
         rules_diff(repo, replace(keyed, booley_commit=head), base)
+
+
+@pytest.mark.parametrize("layout", ["standalone", "paired-checkout"])
+@pytest.mark.parametrize("origin_at", ["lagging", "in-sync"])
+def test_versioned_booley_directory_ahead_of_its_origin_reports_the_loosened_bound(
+    tmp_path: Path, layout: str, origin_at: str
+) -> None:
+    from booley.measurement.base import BaseChoice
+    from booley.measurement.protected_set import protected_set
+    from booley.measurement.rules_diff import (
+        AmberReason,
+        header_amber,
+        paired_protected_edits,
+        rules_diff,
+    )
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.runtime.commit_export import export_commit
+
+    checkout, booley = versioned_case(tmp_path, layout)
+    main_repository = booley if layout == "standalone" else tmp_path / "main" / ".booley"
+    main = git(booley, "rev-parse", "main")
+    push_origin(main_repository, f"{main}~1" if origin_at == "lagging" else main)
+    head = git(checkout, "rev-parse", "HEAD")
+    keyed = resolve_measurement_key(checkout, head)
+
+    diff = rules_diff(checkout, keyed, None)
+    protected = protected_set(export_commit(checkout, head, tmp_path / "out").root)
+    edits = paired_protected_edits(checkout, keyed, diff, protected)
+
+    (change,) = diff.changes
+    assert (change.kind.value, change.old, change.new) == ("maximum raised", 60, 80)
+    assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
+    assert diff.tests_diff is None
+    assert diff.paired_base is not None and diff.paired_base.commit == main
+    assert diff.paired_base.choice is (
+        BaseChoice.LOCAL_MAIN if origin_at == "lagging" else BaseChoice.REMOTE_DEFAULT
+    )
+    assert edits == (".booley/booley.toml", ".booley/metrics.toml")
+
+
+def test_versioned_booley_directory_ahead_of_its_origin_has_no_change_under_its_default_branch_rules(
+    tmp_path: Path,
+) -> None:
+    from booley.measurement.rules_diff import header_amber, rules_diff
+    from booley.measurement.run_key import resolve_measurement_key
+
+    checkout, booley = versioned_case(tmp_path, "standalone")
+    main = git(booley, "rev-parse", "main")
+    push_origin(booley, f"{main}~1")
+    head = git(checkout, "rev-parse", "HEAD")
+
+    # The measured Booley Directory commit is local main itself: its own rules Base.
+    git(booley, "checkout", "-q", "-f", "main")
+    on_main = rules_diff(checkout, resolve_measurement_key(checkout, head), None)
+    assert (on_main.changes, header_amber(on_main), on_main.tests_diff) == ((), (), None)
+    assert on_main.paired_base is not None and on_main.paired_base.no_base is not None
+    assert on_main.paired_base.no_base.startswith("the measured commit")
+
+    # A branch commit that leaves every rule as local main has them.
+    git(booley, "checkout", "-q", "-b", "other", "main")
+    write(booley / "cores" / "x.core", "other\n")
+    commit_all(booley, "core only")
+    same = rules_diff(checkout, resolve_measurement_key(checkout, head), None)
+    assert (same.changes, header_amber(same), same.tests_diff) == ((), (), None)
+    assert same.paired_base is not None and same.paired_base.commit == main

@@ -27,6 +27,7 @@ from booley.mcp.session_registry import Attribution, SessionRow
 from booley.runtime.job_records import JobRecord
 from booley.runtime.session_activity import UNKNOWN, WAITING_USER, WORKING, Activity
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.time_budget import hang_guard_s
 
 NOW = 1791454200  # 2026-10-08T10:10:00Z
 STARTED = rfc3339_from_epoch(NOW - 300)
@@ -36,7 +37,7 @@ NO_SESSIONS = "No agent sessions connected. Sessions appear when an agent client
 @pytest.fixture(autouse=True)
 def _generous_first_read_budget(monkeypatch):
     """A slow worker must finish the first read before any key press."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 def stamp(seconds_ago: float) -> str:
@@ -80,9 +81,9 @@ def world(activity: dict[str, Activity], count: int = 5, jobs=()):
     )
 
 
-def standalone_job(status: str = "", state: str = "running") -> JobView:
+def standalone_job(status: str = "", state: str = "running", run_id: str = "three") -> JobView:
     """A running (or, by ``status``, finished) Job that belongs to no session."""
-    record = JobRecord("three", "lint", STARTED, 60, argv=["--target", "lint_top"], status=status)
+    record = JobRecord(run_id, "lint", STARTED, 60, argv=["--target", "lint_top"], status=status)
     return JobView(Path("/jobs"), record, state)
 
 
@@ -389,9 +390,21 @@ def test_session_row_keeps_jobs_and_warnings():
         "running",
         handle="J-SIM1",
     )
+    queued = JobView(
+        Path("/jobs"),
+        JobRecord("two", "sim", STARTED, 60, argv=["--target", "fifo"], session_key="codex:00"),
+        "queued",
+        handle="J-SIM2",
+    )
+    orphaned = JobView(
+        Path("/jobs"),
+        JobRecord("five", "sim", STARTED, 60, argv=["--target", "fifo"], session_key="codex:00"),
+        "orphaned",
+        handle="J-SIM5",
+    )
     app = DashboardApp(lambda: None)
     app.snapshot = replace(
-        world({"codex:00": Activity(WAITING_USER, stamp(100))}, jobs=(job,)),
+        world({"codex:00": Activity(WAITING_USER, stamp(100))}, jobs=(job, queued, orphaned)),
         sessions=(row, twin),
         session_handles={"codex:00": "S1", "codex:01": "S2"},
     )
@@ -405,6 +418,9 @@ def test_session_row_keeps_jobs_and_warnings():
         "WARNING shared worktree",
     ):
         assert expected in line, expected
+    assert "J-SIM2 queued sim fifo" in line
+    assert "▶ J-SIM2" not in line
+    assert "J-SIM5" not in line
 
 
 # --- AC8 ---------------------------------------------------------------------
@@ -412,7 +428,9 @@ def test_session_row_keeps_jobs_and_warnings():
 
 @pytest.mark.asyncio
 async def test_standalone_running_jobs_group_and_enter_opens_detail():
-    current = {"snapshot": replace(world({}, count=1), jobs=JobSnapshot((standalone_job(),)))}
+    running = standalone_job()
+    queued = standalone_job(state="queued", run_id="four")
+    current = {"snapshot": replace(world({}, count=1), jobs=JobSnapshot((running, queued)))}
     app = DashboardApp(lambda: current["snapshot"])
     async with app.run_test(size=(120, 30)) as pilot:
         table = app.query_one(DataTable)
@@ -420,8 +438,17 @@ async def test_standalone_running_jobs_group_and_enter_opens_detail():
         assert app.row_keys[:3] == ["group:UNKNOWN", "codex:00", "group:STANDALONE JOBS"]
         job_key = app.row_keys[3]
         cells = dict(zip(app.row_keys, (row[0].plain for row in app._overview()[2]), strict=True))
-        assert cells["group:STANDALONE JOBS"] == "STANDALONE JOBS 1"
+        assert cells["group:STANDALONE JOBS"] == "STANDALONE JOBS 2"
         assert cells[job_key].split() == ["J-LINT?", "standalone", "lint", "lint_top", "5m", "00s"]
+        assert cells[app.row_keys[4]].split() == [
+            "J-LINT?",
+            "standalone",
+            "queued",
+            "lint",
+            "lint_top",
+            "5m",
+            "00s",
+        ]
 
         table.move_cursor(row=3, animate=False)
         await pilot.press("enter")
@@ -431,7 +458,12 @@ async def test_standalone_running_jobs_group_and_enter_opens_detail():
         await pilot.press("escape")
         assert app.navigation.view == "overview"
 
-        # The group exists only while the Job runs.
+        # The group lasts while a Job is unfinished, queued or running.
+        current["snapshot"] = replace(world({}, count=1), jobs=JobSnapshot((queued,)))
+        await app.refresh_snapshot()
+        await pilot.pause()
+        cells = dict(zip(app.row_keys, (row[0].plain for row in app._overview()[2]), strict=True))
+        assert cells["group:STANDALONE JOBS"] == "STANDALONE JOBS 1"
         done = standalone_job(status="done", state="completed")
         current["snapshot"] = replace(world({}, count=1), jobs=JobSnapshot((done,)))
         await app.refresh_snapshot()

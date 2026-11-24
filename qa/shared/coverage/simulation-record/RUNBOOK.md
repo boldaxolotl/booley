@@ -70,12 +70,15 @@ PYTHONPATH=<asset>/simulation-record python3 -c \
 
 ## Corrupt terminal rejection
 
-1. Archive a byte-exact valid `result.json`, then change one byte in its live
-   copy. Save the valid and corrupt digests, all other terminal records, the
-   attempt inventory and a timestamped process sample.
+1. Archive a byte-exact valid `result.json`, then change one byte in a field
+   resume validates in its live copy: the grade (`"pass"` → `"Pass"`),
+   `attempt_id` or `manifest_sha256`. Evidence is trusted on read (ADR 0064),
+   so a well-formed change to an unvalidated field, such as a stored digest, is
+   accepted and proves nothing. Save the valid and corrupt digests, all other
+   terminal records, the attempt inventory and a timestamped process sample.
 2. Resume the exact Manifest with `booley flow sim --resume-from
-   <manifest.json>`. It must exit 2 with a diagnostic naming Simulation Result
-   integrity, an unchanged attempt inventory, and no EDA process launch. Save
+   <manifest.json>`. It must exit 2 with a diagnostic naming the Simulation
+   Result, an unchanged attempt inventory, and no EDA process launch. Save
    the rejected corrupt bytes even when the diagnostic differs.
 3. Restore only the archived Result bytes, check their digest, and resume the
    same Manifest with the same command as the valid control. The completed work

@@ -65,6 +65,60 @@ def test_default_base_falls_back_to_local_main_without_origin_head(tmp_path: Pat
     assert (base.commit, base.choice) == (fork, BaseChoice.LOCAL_MAIN)
 
 
+def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(
+    tmp_path: Path,
+) -> None:
+    from booley.measurement.base import BaseChoice, resolve_base, resolve_rules_base
+
+    def build(name: str, origin: str) -> tuple[Path, dict[str, str]]:
+        """A repository with ``c1 <- c2`` on main and ``origin`` at c1, c2, a later c3, or absent."""
+        repo = new_repository(tmp_path / name / "repo")
+        commits: dict[str, str] = {}
+        for label in ("c1", "c2"):
+            write(repo / f"{label}.v", f"{label}\n")
+            commits[label] = commit_all(repo, label)
+        if origin != "none":
+            if origin == "ahead":
+                write(repo / "c3.v", "c3\n")
+                commits["c3"] = commit_all(repo, "c3")
+                git(repo, "reset", "-q", "--hard", commits["c2"])
+            push = {"behind": "c1", "equal": "c2", "ahead": "c3"}[origin]
+            with_origin(repo)
+            git(repo, "push", "-q", "-f", "origin", f"{commits[push]}:refs/heads/main")
+            git(repo, "fetch", "-q", "origin")
+            git(repo, "remote", "set-head", "origin", "main")
+        return repo, commits
+
+    for origin, choice, expected in (
+        ("behind", BaseChoice.LOCAL_MAIN, "c2"),
+        ("equal", BaseChoice.REMOTE_DEFAULT, "c2"),
+        ("ahead", BaseChoice.REMOTE_DEFAULT, "c2"),
+        ("none", BaseChoice.LOCAL_MAIN, "c2"),
+    ):
+        repo, commits = build(origin, origin)
+        head = branch_commit(repo, "feature", "main", "f.v")
+        base = resolve_rules_base(repo, head)
+        assert (base.commit, base.choice, base.requested, base.no_base) == (
+            commits[expected],
+            choice,
+            None,
+            None,
+        ), origin
+    # The RTL Base keeps ``origin/HEAD`` first even when local main is ahead.
+    repo, commits = build("rtl", "behind")
+    head = branch_commit(repo, "feature", "main", "f.v")
+    assert resolve_base(repo, head).commit == commits["c1"]
+    assert resolve_base(repo, head).choice is BaseChoice.REMOTE_DEFAULT
+
+    # Diverged: both sides hold commits the other lacks; local main's rules count.
+    repo, commits = build("diverged", "ahead")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "local only")
+    local = git(repo, "rev-parse", "HEAD")
+    head = branch_commit(repo, "feature", "main", "f.v")
+    base = resolve_rules_base(repo, head)
+    assert (base.commit, base.choice) == (local, BaseChoice.LOCAL_MAIN)
+
+
 def test_commit_on_the_default_branch_has_no_base(tmp_path: Path) -> None:
     from booley.measurement.base import BaseChoice, resolve_base
 

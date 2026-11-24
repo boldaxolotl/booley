@@ -241,19 +241,14 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
         "minimal_selector",
         "resolve_public_ref",
         "resolve_ref",
-        "resolve_target",
         "resolve_target_selection",
         "selectable_core_closure",
         "selectable_core_closure_for_refs",
         "select_target",
         "select_targets",
-        "setup_command",
         "target_cocotb_modules",
         "target_declarations",
         "target_eda_tools",
-        "try_resolve_target",
-        "missing_target_sources",
-        "preflight_target_sources",
         "sim_target_has_untagged_tb",
         "target_referenced_files",
         "target_source_files",
@@ -467,25 +462,25 @@ def test_eda_separation_rules_catch_all_static_import_locations(tmp_path, statem
 @pytest.mark.parametrize(
     "statement",
     [
-        "import booley.flows.execution\n",
-        "def helper():\n    from booley.flows import execution\n",
+        "import booley.mcp.execution\n",
+        "def helper():\n    from booley.mcp import execution\n",
         "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n    from booley.flows.execution import run\n",
+        "if TYPE_CHECKING:\n    from booley.mcp.execution import run\n",
     ],
 )
-def test_criteria_flow_rule_catches_all_static_import_locations(tmp_path, statement):
+def test_direction_rule_catches_all_static_import_locations(tmp_path, statement):
     root = tmp_path / "booley"
-    for package in (root, root / "criteria", root / "flows"):
+    for package in (root, root / "mcp", root / "flows"):
         package.mkdir(exist_ok=True)
         (package / "__init__.py").touch()
-    (root / "flows" / "execution.py").write_text("def run(): pass\n")
-    (root / "criteria" / "policy.py").write_text(statement)
+    (root / "mcp" / "execution.py").write_text("def run(): pass\n")
+    (root / "flows" / "policy.py").write_text(statement)
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
     report = format_problems(problems)
-    assert "D16" in report
-    assert "booley.criteria.policy" in report
-    assert "booley.flows.execution" in report
+    assert "D15" in report
+    assert "booley.flows.policy" in report
+    assert "booley.mcp.execution" in report
 
 
 @pytest.mark.parametrize(

@@ -22,9 +22,8 @@ from tests.flows.mutation.test_flow import (
     _VERILATED,
     _campaign,
     _detects_every_mutant,
-    _env_with_state,
+    _flow_env,
     _make_endpoint,
-    _make_state,
     _mutant_keys,
     _prepare_scope_files,
     _run_count_preview,
@@ -60,6 +59,7 @@ def _main(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     *args: str,
+    target: str = "sim",
 ) -> tuple[int, str, dict[str, Any]]:
     """Run ``booley flow mutation`` on the project at ``tmp_path/project``.
 
@@ -69,15 +69,16 @@ def _main(
     """
     root = tmp_path / "project"
     reports = tmp_path / "reports"
-    state_file = _make_state(tmp_path)
-    for key, value in _env_with_state(state_file, tmp_path / "logs").items():
+    for key, value in _flow_env(tmp_path / "logs").items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     reached = EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="reached generation")
     (reports / "mutation.json").unlink(missing_ok=True)  # never read a previous run's report
+    # Private seam: the fake build stages only `rtl/*.sv`, so a faked campaign cannot
+    # materialize the vendored and generated scope entries the passing cases name.
     with patch.object(MutationFlow, "_generate", return_value=reached):
         code = MutationFlow().main(
-            ["--work-dir", str(root), "--report-dir", str(reports), "--target", "sim", *args]
+            ["--work-dir", str(root), "--report-dir", str(reports), "--target", target, *args]
         )
     captured = capsys.readouterr()
     report = reports / "mutation.json"
@@ -153,31 +154,70 @@ def test_unusable_scope_entries_end_as_error_in_dry_and_real_runs(
             _assert_real_report(code, report, "deleted Target file")
 
 
-def test_target_without_mutable_rtl_ends_as_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("target", "result"),
+    [
+        pytest.param(
+            "sim",
+            "RESULT: ERROR (scope: Target 'sim' has no mutable RTL "
+            "(only testbench, vendored, generated or non-Verilog inputs); pass --scope.)",
+            id="no-mutable-rtl",
+        ),
+        pytest.param(
+            "nosuch",
+            "RESULT: ERROR (target: Unknown target 'nosuch'; selectable Targets: lint, sim)",
+            id="unknown",
+        ),
+        pytest.param(
+            "sim,lint",
+            "RESULT: ERROR (options: --target must select exactly one Target)",
+            id="list",
+        ),
+        pytest.param(
+            "lint",
+            "RESULT: ERROR (target: Target 'lint' cannot be driven by the 'sim' Flow",
+            id="not-a-sim-target",
+        ),
+    ],
+)
+def test_target_refusals_without_scope_name_their_own_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+    result: str,
 ) -> None:
-    """AC1, AC2: a Target of only testbench, vendored and generated RTL has nothing to mutate."""
+    """AC1-AC3: with no ``--scope``, each Target refusal names its own cause, dry and real."""
     root = tmp_path / "project"
     root.mkdir()
     core = _DEFAULT_SCOPE_CORE.replace(
         "filesets: [rtl, imported, built, tb]", "filesets: [imported, built, tb]"
     )
     assert core != _DEFAULT_SCOPE_CORE
+    core += (
+        "  lint:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: tb_top\n"
+    )
     _author_project(root, core)
 
-    dry_code, dry_out, _ = _main(tmp_path, monkeypatch, capsys, "--count", "3", "--dry-run")
-    code, out, report = _main(tmp_path, monkeypatch, capsys, "--count", "3")
+    dry_code, dry_out, _ = _main(
+        tmp_path, monkeypatch, capsys, "--count", "3", "--dry-run", target=target
+    )
+    code, out, report = _main(tmp_path, monkeypatch, capsys, "--count", "3", target=target)
 
     assert dry_code == EXIT_ERROR
-    assert "has no mutable RTL" in dry_out
-    _assert_real_report(code, report, "no mutable RTL")
-    assert "has no mutable RTL" in out
+    _assert_real_report(code, report, target)
+    for printed in (dry_out, out):
+        assert printed.rstrip().splitlines()[-1].startswith(result), printed
 
 
-def test_repeated_scope_path_is_scoped_once(
+def test_repeated_scope_path_is_scoped_once_and_scope_flags_accumulate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC3: ``--scope a.sv,a.sv`` behaves like ``--scope a.sv``, dry and real."""
+    """AC3, AC5: ``--scope a.sv,a.sv`` is ``--scope a.sv``, dry and real; repeated flags add."""
     outcomes: dict[str, tuple[int, list[tuple[Any, ...]]]] = {}
     for name, scope in (("twice", f"{_SCOPE},{_SCOPE}"), ("once", _SCOPE)):
         _, result, _ = _campaign(
@@ -187,30 +227,19 @@ def test_repeated_scope_path_is_scoped_once(
         outcomes[name] = (result.exit_code, _mutant_keys(result))
     assert outcomes["twice"] == outcomes["once"]
 
-    # The dry run (which fakes the campaign lookup) goes last.
-    _prepare_scope_files(tmp_path, [_SCOPE])
-    for scope in (f"{_SCOPE},{_SCOPE}", _SCOPE):
-        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, extra_args=["--dry-run"])
+    # The dry run goes last; repeated `--scope` flags accumulate like one comma list.
+    _prepare_scope_files(tmp_path, [_SCOPE, "rtl/mod_b.sv"])
+    for scope, extra, expected in (
+        (f"{_SCOPE},{_SCOPE}", [], [_SCOPE]),
+        (_SCOPE, [], [_SCOPE]),
+        (None, ["--scope", _SCOPE, "--scope", "rtl/mod_b.sv"], [_SCOPE, "rtl/mod_b.sv"]),
+    ):
+        endpoint = _make_endpoint(
+            tmp_path, monkeypatch, scope=scope, extra_args=[*extra, "--dry-run"]
+        )
         result, _ = _run_count_preview(endpoint, monkeypatch)
         assert result.exit_code == EXIT_SUCCESS, scope
-        assert result.detail["scope"] == [_SCOPE], scope
-
-
-def test_repeated_scope_flags_accumulate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC5: ``--scope a.sv --scope b.sv`` scopes both files."""
-    scope = ["rtl/mod_a.sv", "rtl/mod_b.sv"]
-    _prepare_scope_files(tmp_path, scope)
-    endpoint = _make_endpoint(
-        tmp_path,
-        monkeypatch,
-        scope=None,
-        extra_args=["--scope", scope[0], "--scope", scope[1], "--dry-run"],
-    )
-
-    result, _ = _run_count_preview(endpoint, monkeypatch)
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert result.detail["scope"] == scope
+        assert result.detail["scope"] == expected, scope
 
 
 def test_mutation_errors_carry_hints_that_fit_their_cause(

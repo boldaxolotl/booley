@@ -24,7 +24,16 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
   `delete:packages`.
 - Agent: the demo's own sign-in (START-HERE step 1); area 3's Zbb request uses
   about half an hour of that allowance and area 4's reviewer run a few
-  minutes. Run at most one such request at a time.
+  minutes. Run at most one such request at a time. Each claim uses one of the
+  GitHub account's 3 active demo tokens, and deleting the Codespace loses it,
+  so repeated runs can hit the limit. When `claim.sh` refuses, don't search for
+  or copy a token: ask the maintainer to sign in with their own account in the
+  Codespace (`codex login --device-auth`), then run
+  `python -m booley.harness.incontainer_register` to switch the agent to that
+  account, and confirm that `booley` starts and answers without
+  `-c model_provider=openai`. Do the same after any re-sign-in. Record in
+  `log.md` that the run did not use the demo token, and go on; it is not a
+  finding.
 - Budget: 4 h 35 min: 265 area minutes plus 10 contingency, one 4-core
   Codespace (about 4.6 h of the Free plan's ~30 h). Areas are in priority
   order. Areas 4 (its warnings item) and 6 need area 3's child or its
@@ -51,7 +60,8 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
 - **Runbook hard rules apply throughout**: no clipboard, no typing into Monaco,
   only your own tab, no changes to the maintainer's VS Code settings, no reload
   unless the area is about reload, and keep the maintainer's identity
-  (`booley doctor -v`, `/etc/gitconfig`) out of evidence.
+  (`/etc/gitconfig`, which plain `booley doctor` also prints on its
+  `sandbox.gitconfig-identity` line) out of evidence.
 - **Default settings first.** Areas 1 and 2 run with the Codespace exactly as
   a new user gets it: runbook step 6 (reading mode) waits until area 2's
   screenshots are taken. Log the switch.
@@ -73,9 +83,7 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
 ### 1. setup — Candidate Codespace and first contact (~30 min)
 Intent: a new user gets from "Open in Codespaces" to a working Booley without help.
 Try:
-- Runbook steps 1-5 with `<sha>` = the candidate. In the first command
-  terminal, run `touch /tmp/qa-start` (area 9 uses it). It lives in the
-  Codespace, not on the host, so the run skill's no-`/tmp` rule doesn't apply. Record in `log.md`: click on
+- Runbook steps 1-5 with `<sha>` = the candidate. Record in `log.md`: click on
   "Create codespace", state `Available`, trust prompt, Dashboard visible,
   `booley --version` correct, first Flow passing.
 - Follow `START-HERE.md` as a new user would: does it open on its own in the
@@ -84,8 +92,10 @@ Try:
   allowance); otherwise stop at its "Type yes" notice with Ctrl+C. Restricted
   Mode and the trust prompt: is it clear why, and what to click?
 - Doctor as the user sees it: the Dashboard `Doctor:` line and the output in
-  the terminal. Run `booley doctor` (never `-v`) and compare; maximize the
-  panel to read all of it (runbook step 7, "Long output"), then restore it.
+  the terminal. Run `booley doctor 2>&1 | grep -v gitconfig-identity` and
+  compare (the filter keeps the maintainer's identity off the screen; runbook
+  Hard rules); maximize the panel to read all of it (runbook step 7, "Long
+  output"), then restore it.
   A layout change is not a setting, so it doesn't break the default-settings
   rule.
 - Time to first sim: run `booley flow sim --target sim_core` in a command
@@ -189,8 +199,9 @@ Try:
   check that text. Run `booley flow sim --coverage --target sim_core`, then
   launch `coverage_analyst` on the new record from the picker. If the demo's
   simulator can't record coverage, log the refusal and skip the launch.
-- Copy command: for one Flow and one Specialist, use Copy command instead of
-  Submit and check that nothing started.
+- Copy command: don't press it (it writes the maintainer's clipboard; runbook
+  Hard rules). Check that the review screen offers it beside Submit and that
+  the shown command matches the form; log the copy itself as a standing gap.
 Look for: a shown command that differs from what ran, a Job that starts with
 different options or a different worktree, a missing or wrong warning, a model
 or `auth` line that disagrees with the settings, a Submit that starts twice, a
@@ -212,9 +223,10 @@ Try:
   trace end, a `--cursor` past the trace end, a missing trace. Each must fail
   with a message; none may silently show the whole trace. A glob that misses
   while others match only warns on stderr.
-- Large trace: the largest trace the demo produces (`sim_dhry`'s
-  `testbench.vcd`; `sim --trace` converts it to FST after the run). Note the
-  open time and whether the UI stays responsive.
+- Large trace: compare the sizes of the waveforms the traced runs print
+  (`ls -la` each `waveform:` path) and open the largest; currently that is
+  `sim_core`'s `axi` Test Run from `booley flow sim --target sim_core --trace`
+  (about 28 MB FST). Note the open time and whether the UI stays responsive.
 - Two traces in two VaporView tabs: a scoped view goes to the right one.
 - Reopen after a reload (Developer: Reload Window), then a scoped view again.
 - The bundled VaporView VSIX is the one installed: compare
@@ -247,14 +259,18 @@ Evidence: `stop-resume-*` before/after pairs with oracle output.
 ### 7. terminal-output — CLI rendering in the browser terminal (~15 min)
 Intent: Booley's CLI output reads as well in the browser as in a desktop terminal.
 Try:
-- Glyphs and colors in `booley doctor`, `booley targets` and `booley help`;
+- Glyphs and colors in `booley doctor` (its Summary only; runbook Hard
+  rules), `booley targets` and `booley help`;
   progress output of a running Flow; wrapping at a narrow panel.
 - `file:line` paths in Flow and lint output: hover shows a link, and opening
   it lands on that line.
-- Device-code sign-in: run `codex login --device-auth` and check that the
-  URL is a link and the code is legible. Stop with Ctrl+C before signing in.
-  Keep the code out of saved evidence. (`booley auth` is host-only, so it
-  can't run in the Codespace.)
+- Device-code sign-in: run
+  `CODEX_HOME=$(mktemp -d) codex login --device-auth` and check that the URL
+  is a link and the code is legible. Stop with Ctrl+C before signing in, then
+  check that `codex login status` still reports the real sign-in: a
+  device-code login in the real `CODEX_HOME` deletes it as it starts. Keep
+  the code out of saved evidence. (`booley auth` is host-only, so it can't
+  run in the Codespace.)
 Look for: mojibake, colors unreadable on the theme, links that open the wrong
 file or line, progress that floods the scrollback.
 Evidence: `terminal-output-*` screenshots.
@@ -273,22 +289,33 @@ Look for: broken links, raw Markdown where a table should be, a report that
 disagrees with the stored run.
 Evidence: `measure-report-*` screenshots and the run document.
 
-### 9. live-preview — HTML reports in Live Preview (~10 min)
-Intent: HTML reports open through the bundled Live Preview extension.
-Try: find the HTML reports this run produced
-(`find /workspaces/picorv32 -name '*.html' -newer /tmp/qa-start`), and open each
-with Live Preview. Check the
-preview loads and its links work.
-Look for: a blank preview (dead port tunnel), missing styles, broken links.
+### 9. live-preview — HTML pages in Live Preview (~10 min)
+Intent: an HTML page in the Codespace opens through the bundled Live Preview
+extension.
+Try:
+- No Booley Flow writes HTML, so write a fixture from a command terminal: a
+  small `index.html` under `/workspaces/picorv32/qa-a9/` with a stylesheet, an
+  image, a relative link to a second page and an anchor link to a heading
+  further down. Delete the directory when the area is done.
+- Open `index.html`, then F1 "Live Preview: Show Preview (Internal Browser)".
+  Check that the styles and the image load, the relative link opens the
+  second page, and the anchor link scrolls.
+- A blank preview: load the same page top-level ("Live Preview: Show Preview
+  (External Browser)", or the forwarded-port URL in a tab of your own; runbook
+  step 7, "Forwarded ports") and record whether it loads. Only a page that
+  stays blank there, with Codespaces port auth ruled out, is a Booley finding.
+Look for: a blank preview that stays blank top-level (dead port tunnel),
+missing styles or image, broken links.
 Evidence: `live-preview-*` screenshots.
 
 ### 10. matrix — Viewport and theme matrix (~15 min)
 Intent: the main views still work at other sizes and themes.
 Try: the main run is 1440×900, dark. Do a short pass over the Dashboard
 Sessions window and one scoped VaporView view at 1024 wide, then `Light 2026`,
-then `Dark High Contrast` and `Light High Contrast`. Change the theme only
-through machine settings (the runbook step 6 one-liner with another
-`workbench.colorTheme` value), never the theme picker.
+then `Default High Contrast` and `Default High Contrast Light`. Change the
+theme only through machine settings (the runbook step 6 one-liner with another
+`workbench.colorTheme` ID), never the theme picker, and check that the
+workbench className changed each time.
 Look for: status shown by color alone (it never may be), text that vanishes
 on a theme, layout that breaks at 1024.
 Evidence: `matrix-*` screenshots named by size and theme.

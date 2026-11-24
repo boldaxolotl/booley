@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, warn
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
     iter_payload_files,
@@ -126,7 +126,7 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
 
 def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
     """Compatibility entry point for the shared, observation-only image probe."""
-    from booley.runtime.interactive_docker import image_exists
+    from booley.runtime.host_docker import image_exists
 
     return image_exists(image)
 

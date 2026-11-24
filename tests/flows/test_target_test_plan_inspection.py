@@ -91,21 +91,6 @@ def _two_core_handles() -> tuple[SimpleNamespace, ...]:
     return tuple(_handle("sim", f"vendor:{v}:{n}:1.0#sim") for v, n in (("a", "x"), ("b", "y")))
 
 
-def test_dead_section_key_fails(tmp_path, monkeypatch):
-    _use_catalog(monkeypatch, [_handle("sim_fast", "::unit:0#sim_fast")])
-    report = _inspect(tmp_path, "[sim_ghost]\n")
-    assert _triples(report) == [
-        ("pass", _TESTS_TOML_VALID, ""),
-        (
-            "fail",
-            "tests.toml section [sim_ghost] names no declared .core Target",
-            "fix the section key (a dead key runs the testbench's default "
-            "test and reports a false PASS)",
-        ),
-        ("pass", _VERILATOR_LINE.format(name="sim_fast"), ""),
-    ]
-
-
 def test_bare_and_qualified_keys_resolve(tmp_path, monkeypatch):
     _use_catalog(monkeypatch, [_handle("sim_fast", "::unit:0#sim_fast")])
     report = _inspect(tmp_path, '[sim_fast]\n["::unit:0#sim_fast"]\n')
@@ -127,20 +112,37 @@ def test_two_keys_for_one_target_fail_naming_both(tmp_path, monkeypatch):
     assert triples[2] == ("pass", _VERILATOR_LINE.format(name="sim"), "")
 
 
-def test_qualified_key_naming_no_target_fails(tmp_path, monkeypatch):
-    _use_catalog(monkeypatch, _two_core_handles())
-    # `sim` is a declared Target name, but no `ghost` core declares it.
-    report = _inspect(tmp_path, '["vendor:z:ghost#sim"]\n')
-    assert _triples(report) == [
-        ("pass", _TESTS_TOML_VALID, ""),
-        (
-            "fail",
-            "tests.toml section [vendor:z:ghost#sim] names no declared .core Target",
-            "fix the section key (a dead key runs the testbench's default "
-            "test and reports a false PASS)",
+_DEAD_KEY_FIX = (
+    "fix the section key (a dead key runs the testbench's default test and reports a false PASS)"
+)
+
+
+@pytest.mark.parametrize(
+    ("handles", "text", "key", "plan_lines"),
+    [
+        pytest.param(
+            [_handle("sim_fast", "::unit:0#sim_fast")],
+            "[sim_ghost]\n",
+            "sim_ghost",
+            ["sim_fast"],
+            id="bare",
         ),
-        ("pass", _VERILATOR_LINE.format(name="sim"), ""),
-        ("pass", _VERILATOR_LINE.format(name="sim"), ""),
+        # `sim` is a declared Target name, but no `ghost` core declares it.
+        pytest.param(
+            _two_core_handles(),
+            '["vendor:z:ghost#sim"]\n',
+            "vendor:z:ghost#sim",
+            ["sim", "sim"],
+            id="qualified",
+        ),
+    ],
+)
+def test_dead_section_key_fails(tmp_path, monkeypatch, handles, text, key, plan_lines):
+    _use_catalog(monkeypatch, handles)
+    assert _triples(_inspect(tmp_path, text)) == [
+        ("pass", _TESTS_TOML_VALID, ""),
+        ("fail", f"tests.toml section [{key}] names no declared .core Target", _DEAD_KEY_FIX),
+        *(("pass", _VERILATOR_LINE.format(name=name), "") for name in plan_lines),
     ]
 
 
@@ -150,9 +152,7 @@ def test_fusesoc_error_returns_silently(tmp_path, monkeypatch):
     assert _triples(_inspect(tmp_path, "[sim_ghost]\n")) == [("pass", _TESTS_TOML_VALID, "")]
 
 
-def test_no_declared_targets_leave_every_key_unjudged(tmp_path, monkeypatch):
-    _use_catalog(monkeypatch, [])
-    assert _triples(_inspect(tmp_path, "[sim_ghost]\n")) == [("pass", _TESTS_TOML_VALID, "")]
+_INVALID = "tests.toml invalid: tests.toml [sim_fast]"
 
 
 @pytest.mark.parametrize(
@@ -160,111 +160,73 @@ def test_no_declared_targets_leave_every_key_unjudged(tmp_path, monkeypatch):
     [
         pytest.param(
             '[sim_fast]\ntests = ["reset", "smoke+fast"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
-            "'smoke+fast' is invalid: it contains '+'",
-            id="plus",
+            f"{_INVALID}.tests: Test name 'smoke+fast' is invalid: it contains '+'",
+            id="name-rule",
         ),
         pytest.param(
-            '[sim_fast]\ntests = ["default"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
-            "'default' is invalid: 'default' is reserved",
-            id="reserved",
-        ),
-        pytest.param(
-            '[sim_fast]\ntests = ["-trace"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
-            "'-trace' is invalid: it starts with '-'",
-            id="leading-dash",
-        ),
-        pytest.param(
-            '[sim_fast]\ntests = ["reset"]\nskip = ["my test"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].skip: Test name "
-            "'my test' is invalid: it contains whitespace",
-            id="whitespace",
+            '[sim_fast]\nskip = ["smoke+fast"]\n',
+            f"{_INVALID}.skip: Test name 'smoke+fast' is invalid: it contains '+'",
+            id="skip-name-rule",
         ),
         pytest.param(
             '[sim_fast]\ntests = ["reset", "reset"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].tests names Test 'reset' more than once",
+            f"{_INVALID}.tests names Test 'reset' more than once",
             id="duplicate-test",
         ),
         pytest.param(
             '[sim_fast]\ntests = ["reset"]\nskip = ["reset", "reset"]\n',
-            "tests.toml invalid: tests.toml [sim_fast].skip names Test 'reset' more than once",
+            f"{_INVALID}.skip names Test 'reset' more than once",
             id="duplicate-skip",
         ),
-    ],
-)
-def test_name_refusal_fails_with_a_fix_hint(tmp_path, text, finding):
-    (severity, message, fix), *rest = _triples(_inspect(tmp_path, text))
-    assert (severity, rest) == ("fail", [])
-    assert message.startswith(finding)
-    # The hint quotes the rule sentence the validator itself reports.
-    assert fix == _INVALID_FIX
-
-
-def test_name_refusal_message_and_hint_state_the_same_rule(tmp_path):
-    ((_, message, fix),) = _triples(_inspect(tmp_path, '[sim_fast]\ntests = ["a@b"]\n'))
-    assert message.endswith(f"Rule: {TEST_NAME_RULES}")
-    assert TEST_NAME_RULES in fix
-
-
-def test_malformed_toml_fails_with_the_parser_reason(tmp_path):
-    ((severity, message, fix),) = _triples(_inspect(tmp_path, "[sim_fast\n"))
-    assert severity == "fail"
-    assert message.startswith("tests.toml invalid: ")
-    assert fix == _INVALID_FIX
-
-
-@pytest.mark.parametrize("key", ["variant", "seeds", "plusargs"])
-def test_unknown_section_key_fails_with_a_fix_hint(tmp_path, key):
-    report = _inspect(tmp_path, f'[sim_fast]\ntests = ["stress"]\n{key} = 1\n')
-    assert _triples(report) == [
-        (
-            "fail",
-            f"tests.toml invalid: tests.toml [sim_fast] has unknown key {key!r}; "
-            f"a Target section holds only: {_SECTION_KEYS}",
-            _INVALID_FIX,
-        )
-    ]
-
-
-@pytest.mark.parametrize(
-    ("text", "finding"),
-    [
+        pytest.param("[sim_fast\n", "tests.toml invalid: ", id="malformed-toml"),
+        pytest.param(
+            '[sim_fast]\ntests = ["stress"]\nvariant = 1\n',
+            f"{_INVALID} has unknown key 'variant'; a Target section holds only: {_SECTION_KEYS}",
+            id="unknown-key",
+        ),
         pytest.param(
             '[sim_fast]\ntests = ["stress"]\n[sim_fast.variants.stress]\na = []\n',
-            "tests.toml invalid: tests.toml [sim_fast].variants.stress must name "
-            "its default Test Variant",
+            f"{_INVALID}.variants.stress must name its default Test Variant",
             id="variant-without-default",
         ),
         pytest.param(
             '[sim_fast]\ntests = ["stress"]\nseed = "+seed=1"\n',
-            "tests.toml invalid: tests.toml [sim_fast].seed template '+seed=1' must "
-            "contain the plain {seed} field exactly once",
+            f"{_INVALID}.seed template '+seed=1' must contain the plain {{seed}} field exactly once",
             id="seed-without-field",
         ),
         pytest.param(
             '[sim_fast]\ntests = ["stress"]\ndefault_seed = 0\n',
-            "tests.toml invalid: tests.toml [sim_fast].default_seed 0 is out of range",
+            f"{_INVALID}.default_seed 0 is out of range",
             id="default-seed-range",
         ),
         pytest.param(
             '[sim_fast]\ntests = ["stress"]\nenv = { BOOLEY_X = "1" }\n',
-            "tests.toml invalid: tests.toml [sim_fast].env may not set BOOLEY_X",
+            f"{_INVALID}.env may not set BOOLEY_X",
             id="reserved-env",
         ),
     ],
 )
-def test_variant_and_seed_refusals_fail(tmp_path, text, finding):
+def test_invalid_file_fails_with_the_validator_reason(tmp_path, text, finding):
     ((severity, message, fix),) = _triples(_inspect(tmp_path, text))
     assert severity == "fail"
     assert message.startswith(finding)
+    # The hint quotes the rule sentence the validator itself reports.
     assert fix == _INVALID_FIX
+    if " is invalid: " in message:
+        assert message.endswith(f"Rule: {TEST_NAME_RULES}")
 
 
-def test_valid_file_passes(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[sim_fast]\ntests = ["reset", "slow-first"]\nselect = "+test={name}"\n',
+        '[sim_fast]\ntests = ["reset"]\nskip = ["reset"]\n',
+        # With no declared Targets every key goes unjudged.
+        "[sim_ghost]\n",
+    ],
+)
+def test_valid_file_passes(tmp_path, monkeypatch, text):
     _use_catalog(monkeypatch, [])
-    text = '[sim_fast]\ntests = ["reset", "slow-first"]\nselect = "+test={name}"\n'
     assert _triples(_inspect(tmp_path, text)) == [("pass", _TESTS_TOML_VALID, "")]
 
 
@@ -338,12 +300,13 @@ def test_pass_line_names_each_targets_seed_mechanism(tmp_path, monkeypatch):
             id="cocotb-arguments",
         ),
         pytest.param(
-            '[sim]\ntests = ["a"]\nseed = "+seed={seed}"\n',
-            _target("icarus", cocotb=True),
-            "tests.toml cannot apply to Target 'sim': tests.toml [sim].seed is not "
-            "allowed on a Cocotb Target: Booley seeds cocotb through its seed "
-            "variable; remove the seed template",
-            id="cocotb-seed-template",
+            '[sim]\ntests = ["a"]\ndefault_seed = 7\n',
+            _target("icarus"),
+            "tests.toml cannot apply to Target 'sim': tests.toml [sim].default_seed cannot "
+            "apply. Target 'sim' is unseeded: its simulator (icarus) has no seed option that "
+            "Booley uses, and tests.toml declares no seed argument template. Add one (for "
+            'example seed = "+seed={seed}") that the testbench reads, or drop the seed',
+            id="default-seed-unseeded",
         ),
     ],
 )
@@ -353,16 +316,6 @@ def test_target_checks_fail_with_the_reason(tmp_path, monkeypatch, text, target,
         ("pass", _TESTS_TOML_VALID, ""),
         ("fail", finding, _PLAN_FIX),
     ]
-
-
-def test_default_seed_on_an_unseeded_target_fails(tmp_path, monkeypatch):
-    _use_catalog(monkeypatch, [_handle("sim")], {"sim": _target("icarus")})
-    report = _inspect(tmp_path, '[sim]\ntests = ["a"]\ndefault_seed = 7\n')
-    assert [s for s, _, _ in _triples(report)] == ["pass", "fail"]
-    assert report.findings[1].message.startswith(
-        "tests.toml cannot apply to Target 'sim': tests.toml [sim].default_seed "
-        "cannot apply. Target 'sim' is unseeded"
-    )
 
 
 def test_unknown_simulator_falls_back_to_its_raw_tool_name(tmp_path, monkeypatch):

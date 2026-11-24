@@ -99,12 +99,96 @@ fn build_default_uses_parallel_engine() {
 
     assert_eq!(default_code, 0, "default build failed: {default_stderr}");
     assert_eq!(parallel_code, 0, "parallel build failed: {parallel_stderr}");
+    for stderr in [&default_stderr, &parallel_stderr] {
+        assert!(!stderr.contains("WARNING:"), "clean trace warned: {stderr}");
+    }
     assert_eq!(
         std::fs::read(&default_store).unwrap(),
         std::fs::read(&parallel_store).unwrap()
     );
     for store in [default_store, parallel_store] {
         let _ = std::fs::remove_file(store);
+    }
+}
+
+const UNUSABLE_HEADER: &str = "$timescale 1ns $end\n$scope module tb $end\n\
+$var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
+$upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
+$enddefinitions $end";
+
+/// Body of the unusable-value-change trace. The header is 207 bytes, so the
+/// body starts at byte 207. The text has no final newline.
+const UNUSABLE_BODY: &str = "#0\n0!\nb00000000 #\n0&\n\
+#10\n1!\n1?\nb0101\n1\nr1.5\n\
+$comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
+#20\n0!\n$dumpoff\n1?\nb1 \nb11   \n$end\n$dumpon\n\
+#30\n1!\nb0010001";
+
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.starts_with("WARNING:"))
+        .collect()
+}
+
+#[test]
+fn build_counts_unusable_value_changes_identically_in_both_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("unusable.vcd");
+    std::fs::write(&vcd, format!("{UNUSABLE_HEADER}\n{UNUSABLE_BODY}")).unwrap();
+    let header_only = dir.path().join("header_only.vcd");
+    std::fs::write(&header_only, UNUSABLE_HEADER).unwrap();
+    let expected = [
+        "WARNING: 6 malformed value-change line(s) skipped (first at byte 238)",
+        "WARNING: 2 value change(s) for an identifier the header does not declare skipped \
+         (first at byte 235)",
+        "WARNING: input does not end with a newline; the final line (byte 351) may be a \
+         truncated record",
+    ];
+    let header_only_expected = [
+        "WARNING: input does not end with a newline; the final line (byte 186) may be a \
+          truncated record",
+    ];
+
+    let configs = [
+        ("serial", None),
+        ("parallel", Some("8")),
+        ("parallel", Some("17")),
+        ("parallel", Some("64")),
+        ("parallel", None),
+    ];
+    for (engine, chunk) in configs {
+        for (input, want) in [
+            (&vcd, &expected[..]),
+            (&header_only, &header_only_expected[..]),
+        ] {
+            let store = dir.path().join("out.fst");
+            let _ = std::fs::remove_file(&store);
+            let mut args = vec!["build", "--engine", engine, "--scope", "tb"];
+            if let Some(chunk) = chunk {
+                args.extend(["--chunk-bytes", chunk]);
+            }
+            args.extend([input.to_str().unwrap(), "-o", store.to_str().unwrap()]);
+            let (_, stderr, code) = run(&args);
+            let label = format!("{engine} chunk {chunk:?} {}", input.display());
+            assert_eq!(code, 0, "{label}: {stderr}");
+            assert_eq!(warning_lines(&stderr), want, "{label}: {stderr}");
+            let wrote = stderr.find("# wrote").expect("wrote line");
+            assert!(stderr.rfind("WARNING:").unwrap() < wrote, "{label}");
+            if input == &vcd {
+                let cache = bwave::cache::ColumnCache::load_from_file(&store).unwrap();
+                let out = cache
+                    .signals
+                    .iter()
+                    .position(|signal| signal.name == "tb.out")
+                    .expect("tb.out is stored");
+                assert_eq!(
+                    cache.read_transitions(out),
+                    vec![(0, "x".to_string()), (10, "1".to_string())],
+                    "{label}: a declared id inside a comment is still stored"
+                );
+            }
+        }
     }
 }
 
@@ -1388,25 +1472,186 @@ fn list_honors_limit() {
 // `-s "dmem_wr[0]"` matched nothing, though the trace declares exactly
 // that name: globset read `[0]` as a character class, so the pattern also
 // skipped the bare-name `*` wrap and could never match a hierarchical
-// name. Array elements looked absent from every trace.
+// name. Array elements looked absent from every trace. The stripped-name
+// fallback then also selected `dmem_wr[1]` for `dmem_wr[0]`.
 #[test]
-fn indexed_element_pattern_matches_its_signal() {
-    let bwave = build_bwave("test_unpacked_array.vcd", "indexed_elem");
-    let bp = bwave.to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["list", &bp, "-s", "dmem_wr[0]"]);
-    let _ = std::fs::remove_file(&bwave);
-    assert_eq!(code, 0, "list failed: {}", stderr);
+fn indexed_element_pattern_selects_only_its_element() {
+    let ua = build_bwave("test_unpacked_array.vcd", "indexed_elem");
+    let ps = build_bwave("test_ps_timescale.vcd", "indexed_elem_ps");
+    let (ua_s, ps_s) = (ua.to_string_lossy(), ps.to_string_lossy());
+    let mut cases: Vec<_> = ["list", "value", "signal", "wave"]
+        .map(|c| issue_4767_query(c, &ua_s, &["dmem_wr[0]"]))
+        .into();
+    cases.push(vec!["find", &ua_s, "dmem_wr[0]", "1", "--async"]);
+    for args in &cases {
+        let (out, err, code) = run(args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        let only = out.contains("dmem_wr[0]") && !out.contains("dmem_wr[1]");
+        assert!(only, "{args:?}: {out}");
+    }
+    let lists: [(&str, &str, &[&str], &[&str]); 5] = [
+        (&ua_s, "tb.dut.dmem_wr[0]", &["dmem_wr[0]"], &["dmem_wr[1]"]),
+        (&ua_s, "*_wr[0]", &["dmem_wr[0]"], &["dmem_wr[1]"]),
+        (&ua_s, "clk[0]", &["clk"], &[]),
+        (&ua_s, "dmem_wr", &["dmem_wr[0]", "dmem_wr[1]"], &[]),
+        (&ps_s, "counter", &["counter[7:0]"], &[]),
+    ];
+    for (store, pattern, present, absent) in lists {
+        let (out, err, code) = run(&["list", store, "-s", pattern]);
+        assert_eq!(code, 0, "{pattern}: {err}");
+        assert!(present.iter().all(|n| out.contains(n)), "{pattern}: {out}");
+        assert!(!absent.iter().any(|n| out.contains(n)), "{pattern}: {out}");
+    }
+    // A nonexistent element is a miss.
+    let (out, err, code) = run(&issue_4767_query("signal", &ua_s, &["imem_wr[1]"]));
+    assert_eq!(code, 2, "{out}");
     assert!(
-        stdout.contains("dmem_wr[0]"),
-        "indexed element must be found, got stdout={} stderr={}",
-        stdout,
-        stderr
+        err.contains("no signals match") && !out.contains("imem_wr"),
+        "{err}"
     );
+    let _ = (std::fs::remove_file(&ua), std::fs::remove_file(&ps));
+}
+
+// #4898: a bit range or index on a vector selects those bits, in every
+// command that takes a signal pattern.
+#[test]
+fn bit_range_pattern_selects_the_slice() {
+    let br = build_bwave("test_bit_range.vcd", "bit_range");
+    let ps = build_bwave("test_ps_timescale.vcd", "bit_range_ps");
+    let (b, p) = (br.to_string_lossy(), ps.to_string_lossy());
+    let sig = |sel: &str| run(&["signal", &b, "-s", sel, "-t", "0:9"]);
+    let (out, err, code) = run(&["find", &b, "qa.data[5:4]", "2'b11"]);
+    assert_eq!(code, 0, "{err}");
+    for c in ["cycle 4 ", "cycle 5 ", "cycle 6 "] {
+        assert!(out.contains(&format!("{c}qa.data[5:4] 3")), "{out}");
+    }
+    let (out, _, _) = run(&["find", &b, "qa.data[3:0]", "8'h33"]);
+    assert!(!out.contains("cycle"), "{out}");
+    let (out, _, _) = sig("qa.data[5:4]");
+    let rows: Vec<_> = out.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(rows, ["1 data[5:4] 0", "4 data[5:4] 3", "7 data[5:4] 0"]);
+    assert!(sig("qa.data[5:4]%b").0.contains("data[5:4] 11"));
+    let rows = sig("qa.data[3]").0;
     assert!(
-        !stderr.contains("no signals match"),
-        "must not report a dropped filter: {}",
-        stderr
+        rows.contains("7 data[3] 1") && rows.contains("8 data[3] 0"),
+        "{rows}"
     );
+    for (whole, value) in [("qa.data[7:0]", "33"), ("qa.addr[15:8]", "A5")] {
+        let (out, _, _) = sig(whole);
+        assert!(out.contains(value), "{whole}: {out}");
+        assert!(
+            !out.contains("[7:0]") && !out.contains("data["),
+            "{whole}: {out}"
+        );
+    }
+    assert!(sig("qa.addr[11:8]").0.contains("addr[11:8] 5"));
+    // Leading zeros name the same slice.
+    assert_eq!(sig("qa.data[05:04]").0, sig("qa.data[5:4]").0);
+    let (out, _, _) = run(&["signal", &b, "-s", "qa.data[5:4]", "--format", "json"]);
+    assert!(out.contains("\"name\": \"data[5:4]\""), "{out}");
+    let (out, _, _) = run(&["wave", &b, "-s", "qa.data[5:4]", "-t", "0:9"]);
+    assert!(out.contains("data[5:4]  0  0  0  3  3  3"), "{out}");
+    let (out, _, _) = run(&[
+        "wave",
+        &b,
+        "-s",
+        "qa.data[5:4]",
+        "-t",
+        "0:9",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        out.contains("\"data[5:4]\"") && !out.contains("\"33\""),
+        "{out}"
+    );
+    let (out, _, _) = run(&["list", &b, "-s", "*data[5:4]", "--format", "json"]);
+    assert!(
+        out.contains("\"name\": \"data[5:4]\"") && out.contains("\"width\": 2"),
+        "{out}"
+    );
+    let (out, _, _) = run(&["list", &p, "-s", "counter[3]"]);
+    assert!(out.contains("counter[3]"), "{out}");
+    let _ = (std::fs::remove_file(&br), std::fs::remove_file(&ps));
+}
+
+// #4898: every pattern-taking option either slices or exits 2.
+#[test]
+fn bit_range_pattern_in_every_option() {
+    let br = build_bwave("test_bit_range.vcd", "bit_range_opts");
+    let b = br.to_string_lossy();
+    let ok: [(&[&str], &str); 7] = [
+        (
+            &["value", "--at", "5", "-s", "qa.data[5:4]"],
+            "data[5:4]                                = 3\n",
+        ),
+        (
+            &["sample", "qa.data[5:4]", "2'b11", "-s", "qa.data[3]"],
+            "data[3] 0",
+        ),
+        (
+            &["diff", "1", "4", "-s", "qa.data[5:4]"],
+            "@1=0            @4=3\n",
+        ),
+        (
+            &[
+                "distance",
+                "qa.data[5:4]",
+                "2'b11",
+                "--to",
+                "qa.data[3]",
+                "1'b1",
+            ],
+            "@ 4 -> @ 7  d=3",
+        ),
+        (
+            &["stats", "-s", "qa.data[5:4]", "--format", "json"],
+            "\"qa.data[5:4]\"",
+        ),
+        (&["stuck", "-s", "qa.data[7:6]"], "data[7:6]"),
+        (&["list", "-s", "qa.data[3]"], "data[3]"),
+    ];
+    for (args, want) in ok {
+        let mut full = vec![args[0], &b];
+        full.extend(&args[1..]);
+        let (out, err, code) = run(&full);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.contains(want), "{args:?}: {out}");
+    }
+    let bad: [(&[&str], &str); 12] = [
+        (
+            &["signal", "-s", "qa.data[4294967296:0]"],
+            "invalid bit select",
+        ),
+        (&["signal", "-s", "qa.data[5::4]"], "invalid bit select"),
+        (&["signal", "-s", "qa.data[9:8]"], "8 bits"),
+        (&["signal", "-s", "qa.data[4:5]"], "8 bits"),
+        (&["signal", "-s", "qa.addr[7:0]"], "[15:8]"),
+        (&["signal", "-s", "qa.v[1:0]"], "ascending"),
+        (&["list", "-s", "*[5:4]"], "wide"),
+        (
+            &["distance", "qa.data[5:4]", "2'b11", "-s", "qa.data[5:4]"],
+            "does not support -s",
+        ),
+        (&["signal", "--clock", "qa.data[0]"], "--clock"),
+        (&["signal", "--reset", "qa.data[1]"], "--reset"),
+        (&["overview", "--clock", "qa.data[0]"], "qa.data"),
+        (&["list", "--reset", "qa.data[1]"], "qa.data"),
+    ];
+    for (args, want) in bad {
+        let mut full = vec![args[0], &b];
+        full.extend(&args[1..]);
+        let (_, err, code) = run(&full);
+        assert_eq!(code, 2, "{args:?}: {err}");
+        assert!(err.contains(want), "{args:?}: {err}");
+    }
+    let _ = std::fs::remove_file(&br);
+    let (dir, fst) = issue_1108_store("slice-alias");
+    let f = fst.to_string_lossy();
+    let count = |p: &str| run(&["find", &f, p, "change", "--async", "--count"]).0;
+    assert!(count("tb.a[0]").contains(char::is_numeric));
+    assert_eq!(count("tb.a*[0]"), count("tb.a[0]"));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 // A real character class keeps class semantics — the index fix must not
@@ -2230,13 +2475,81 @@ fn issue_1100_change_commands_agree_and_preserve_literals() {
             } else {
                 vec!["--async", "--count"]
             };
-            assert_eq!(
-                issue_1100_query(&store, command, "bus", "rising", &extra),
-                "0"
-            );
+            let mut args = vec![command, store.as_str(), "bus", "rising"];
+            args.extend(extra);
+            let (out, error, _) = issue_1100_run(&args);
+            assert_eq!(out.trim(), "0");
+            let note = format!("# {command}: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.");
+            assert!(error.lines().any(|l| l == note), "{command}: {error}");
         }
+        let (out, _, _) = issue_1100_run(&["find", &store, "bus", "rising", "--format", "json"]);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let warnings = json["warnings"].as_array().unwrap();
+        let note = "find: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+        assert!(warnings.iter().any(|w| w == note), "{warnings:?}");
         let (_, error, _) = issue_1100_run(&["distance", &store, "bus", "rising", "--async"]);
         assert!(error.contains("only fires on 1-bit signals"));
+    }
+}
+
+/// `issue_1100_store` signals with `clk` toggling, so sync runs have a grid.
+const ISSUE_4903_CLOCKED: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n1!\nb0001 #\n#15\n1$\n#20\n0$\n0!\nb0011 #\n#25\n1$\n#30\n0$\n1!\n#35\n1$\n#40\n0$\n";
+
+#[test]
+fn issue_4903_distance_multi_bit_edge_note_names_either_operand() {
+    let (_dir, store) = issue_1100_store(ISSUE_4903_CLOCKED, "serial");
+    let note = "distance: signal(s) matched 'bus' but edge keyword 'rising' only fires on 1-bit signals; use a Verilog literal value ('hN / 'dN / 'bN) for multi-bit signals.";
+    let distance = |query: &[&str], mode: &[&str], json: bool| {
+        let mut args = vec!["distance", store.as_str()];
+        args.extend(query);
+        args.extend(mode);
+        if json {
+            args.extend(["--format", "json"]);
+        }
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        (out, err)
+    };
+    let warnings = |out: &str| {
+        let json: serde_json::Value = serde_json::from_str(out).unwrap();
+        assert_eq!(json["data"]["count"], 0, "{json}");
+        assert_eq!(json["data"]["pairs"], serde_json::json!([]), "{json}");
+        json["warnings"].clone()
+    };
+    for mode in [&[][..], &["--async"]] {
+        for query in [
+            &["bus", "rising"][..],
+            &["scalar", "rising", "--to", "bus", "rising"],
+        ] {
+            let (out, err) = distance(query, mode, false);
+            let line = format!("# {note}");
+            assert!(
+                out.is_empty() && err.lines().any(|l| l == line),
+                "{query:?} {mode:?}: {err}"
+            );
+            let (out, _) = distance(query, mode, true);
+            assert_eq!(
+                warnings(&out),
+                serde_json::json!([note]),
+                "{query:?} {mode:?}"
+            );
+        }
+        // A literal that never occurs keeps today's text, and JSON stays silent.
+        let literal = ["scalar", "rising", "--to", "bus", "'hF"];
+        let today = if mode.is_empty() {
+            "# distance: no events found for bus F"
+        } else {
+            "# distance: pattern 'bus' matched but value 'F' never occurred"
+        };
+        let (out, err) = distance(&literal, mode, false);
+        assert!(
+            out.is_empty() && err.lines().any(|l| l == today),
+            "{mode:?}: {err}"
+        );
+        assert_eq!(
+            warnings(&distance(&literal, mode, true).0),
+            serde_json::json!([])
+        );
     }
 }
 
@@ -2358,10 +2671,10 @@ fn issue_1100_raw_pulses_unknowns_virtuals_and_fallback() {
 }
 
 #[test]
-fn issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit() {
+fn issue_1100_reset_cutoff_reassert_and_first_last_limit() {
     // The first post-reset sample is baseline; the next eligible edge
     // observes the fall, and transitions after the final edge are invisible.
-    for reset in ["1%", "x%", "z%"] {
+    for reset in ["1%"] {
         let body = format!("#0\n0!\nb0000 #\n0$\n0%\n#5\n1$\n#7\n1!\nb0001 #\n#10\n0$\n{reset}\n1!\n#15\n1$\n#17\n0!\nb0000 #\n#20\n0$\n0%\n#25\n1$\n#27\n1!\nb0001 #\n");
         let (_dir, store) = issue_1100_store(&body, "parallel");
         for (flag, expected) in [
@@ -3427,6 +3740,42 @@ fn issue_1108_sync_signal_limits_changed_records() {
 }
 
 #[test]
+fn clockless_sync_queries_warn_once_with_next_step() {
+    let store = build_bwave("test_no_clock.vcd", "clockless_warns");
+    let store = store.to_str().unwrap();
+    let text = "no usable clock: fewer than two rising edges; queries fall back to ticks; \
+                select a clock with --clock PATTERN or use --async";
+    for (command, args, has_json) in [
+        ("signal", vec!["-s", "count"], true),
+        ("wave", vec!["-s", "count"], true),
+        ("value", vec!["--at", "10"], true),
+        ("find", vec!["enable", "'h1"], true),
+        ("sample", vec!["enable", "'h1", "--count"], false),
+        ("distance", vec!["enable", "'h1"], true),
+    ] {
+        let mut tokens = vec![command, store];
+        tokens.extend(&args);
+        let (_, err, code) = run(&tokens);
+        assert_eq!(code, 0, "{command}: {err}");
+        assert_eq!(err.matches("# WARNING:").count(), 1, "{command}: {err}");
+        assert!(
+            err.lines().any(|l| l == format!("# WARNING: {text}")),
+            "{command}: {err}"
+        );
+        if has_json {
+            tokens.extend(["--format", "json"]);
+            let (out, err, code) = run(&tokens);
+            assert_eq!(code, 0, "{command}: {err}");
+            let json: serde_json::Value = serde_json::from_str(&out).expect(&out);
+            assert_eq!(json["warnings"], serde_json::json!([text]), "{command}");
+        }
+    }
+    let (out, err, code) = run(&["overview", store]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("# clock: <not detected>\n"), "{out}");
+}
+
+#[test]
 fn issue_1108_point_errors_preserve_buffered_diagnostics() {
     let (dir, fst) = issue_1108_store("point-error-diagnostics");
     let p = fst.to_str().unwrap();
@@ -3435,9 +3784,7 @@ fn issue_1108_point_errors_preserve_buffered_diagnostics() {
         assert_eq!(code, 2, "{err}");
         assert!(out.is_empty(), "{out}");
         assert!(err.contains("# scope: tb"), "{err}");
-        let warning = err
-            .find("no clock signal found, falling back to async mode")
-            .expect(&err);
+        let warning = err.find("no usable clock").expect(&err);
         let error = err.find("ERROR: value time").expect(&err);
         assert!(warning < error, "{err}");
     }
@@ -4039,29 +4386,29 @@ fn issue_1423_text_byte_oracles() {
         (&["list", "-s", "tb.a", "-s", "tb.b"], "a                              wire     1-bit\nb                              wire     1-bit\n", "# scope: tb\n# 2 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "tb.a", "-s", "missing"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "tb.a", "-s", "missing*"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
-        (&["list", "-s", "missing"], "", "# 0 signals — narrow with -s PATTERN or use --tree\n", 0),
+        (&["list", "-s", "missing"], "", "# WARNING: no signals match pattern(s) 'missing'\n", 0),
         (&["list", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["list", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["list", "-s", "tb.a%b", "-s", "tb.a%h"], "a                              wire     1-bit\n", "# scope: tb\n# 1 signals — narrow with -s PATTERN or use --tree\n", 0),
         (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "tb.b"], "# Snapshot at 10\na                                        = 1\nb                                        = 1\n", "# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing*"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "missing*"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["value", "--at", "10t", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["value", "--at", "10t", "--async", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "# Snapshot at 10\na                                        = 1\n", "# WARNING: no signals match 'mem[56]' — filter dropped\n#   (indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*mem*'` for what was dumped)\n# WARNING: no signals match 'mem[57]' — filter dropped\n# 2 of 3 -s patterns matched nothing\n# scope: tb\n", 0),
         (&["value", "--at", "10t", "--async", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["value", "--at", "10t", "--async", "-s", "tb.a%b", "-s", "tb.a%h"], "# Snapshot at 10\na                                        = 1\n", "# scope: tb\n# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n", 0),
         (&["stats", "--async", "-s", "tb.a", "-s", "tb.b"], "# Simulation: 20ns\n# 2 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nb  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "tb.a", "-s", "missing"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "tb.a", "-s", "missing*"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n", 0),
-        (&["stats", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["stats", "--async", "-s", "tb.a", "-s", "missing"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["stats", "--async", "-s", "tb.a", "-s", "missing*"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'missing*' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n", 0),
+        (&["stats", "--async", "-s", "missing"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["stats", "--async", "-s", "tb.a", "-s", "mem[56]", "-s", "mem[57]"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: no signals match 'mem[56]' — filter dropped\n#   (indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*mem*'` for what was dumped)\n# WARNING: no signals match 'mem[57]' — filter dropped\n# 2 of 3 -s patterns matched nothing\n# scope: tb\n", 0),
         (&["stats", "--async", "-s", "[oops"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["stats", "--async", "-s", "tb.a%b", "-s", "tb.a%h"], "# Simulation: 20ns\n# 1 signals analyzed\n\na  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n", "# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n# scope: tb\n", 0),
         (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "tb.a", "-s", "v"], "# Snapshot at 10\na                                        = 1\nv                                        = 1\n", "# scope: tb\n", 0),
-        (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "v", "-s", "missing"], "# Snapshot at 10\nv                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n", 0),
+        (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "v", "-s", "missing"], "# Snapshot at 10\nv                                        = 1\n", "# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n", 0),
         (&["value", "--at", "10t", "--async", "--virtual", "helper = tb.a", "--virtual", "v = helper", "-s", "helper"], "# Snapshot at 10\nhelper                                   = 1\n", "", 0),
         (&["find", "tb.a", "rising", "--async"], "10 a 1\n", "# scope: tb\n# 1 matches found\n", 0),
-        (&["find", "missing", "rising", "--async"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob)\n", 2),
+        (&["find", "missing", "rising", "--async"], "", "ERROR: no signals match pattern(s) 'missing' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n", 2),
         (&["find", "[oops", "rising", "--async"], "", "ERROR: invalid glob pattern '[oops': error parsing glob '[oops': unclosed character class; missing ']'\n", 2),
         (&["find", "*", "rising", "--async"], "10 a 1\n10 b 1\n", "# scope: tb\n# 2 matches found\n", 0),
     ];
@@ -4105,9 +4452,13 @@ fn issue_1423_json_dropped_and_radix_warnings() {
             let (out, err, code) = run(&args);
             assert_eq!(code, 0, "{err}");
             let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+            let mut expected = vec![format!("no signals match '{missing}' — filter dropped")];
+            if command != "list" {
+                expected.push(ISSUE_4767_ROWS_HINT.to_string());
+            }
             assert_eq!(
                 json["warnings"],
-                serde_json::json!([format!("no signals match '{missing}' — filter dropped")]),
+                serde_json::json!(expected),
                 "{command}: {out}"
             );
         }
@@ -4145,6 +4496,161 @@ fn issue_1423_json_dropped_and_radix_warnings() {
                 .any(|w| w.as_str() == Some(expected)),
             "{command}: {out}"
         );
+    }
+}
+
+const ISSUE_4767_BARE_HINT: &str =
+    "bare names match the end of the full path; use `*name*` to match a substring";
+const ISSUE_4767_ROWS_HINT: &str = "rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`";
+
+fn issue_4767_store() -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("input.vcd");
+    let fst = dir.path().join("input.fst");
+    let text = "$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! o_data $end\n$var wire 1 \" r_data $end\n$scope module dut $end\n$var wire 1 # o_data $end\n$upscope $end\n$scope module a $end\n$var wire 1 $ o_data $end\n$upscope $end\n$scope module b $end\n$var wire 1 % o_data $end\n$upscope $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n0\"\n0#\n0$\n0%\n#10\n1!\n1\"\n1#\n1$\n1%\n";
+    std::fs::write(&vcd, text.as_bytes()).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+/// Args for each query command that takes `-s`, with the pattern args given.
+fn issue_4767_query<'a>(command: &'a str, fst: &'a str, selectors: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![command, fst];
+    match command {
+        "value" => args.extend(["--at", "10t"]),
+        "signal" | "wave" => args.extend(["-t", "0t:10t"]),
+        _ => {}
+    }
+    for selector in selectors {
+        args.extend(["-s", selector]);
+    }
+    args.push("--async");
+    args
+}
+
+#[test]
+fn issue_4767_total_miss_bare_name_hint() {
+    let (_dir, fst) = issue_4767_store();
+    for (pattern, hinted) in [("nope", true), ("*nope*", false)] {
+        let mut cases = vec![
+            issue_4767_query("value", &fst, &[pattern]),
+            issue_4767_query("stats", &fst, &[pattern]),
+            vec!["find", &fst, pattern, "rising", "--async"],
+        ];
+        for args in cases.drain(..) {
+            let (_, err, code) = run(&args);
+            assert_eq!(code, 2, "{args:?}: {err}");
+            assert!(
+                err.starts_with(&format!("ERROR: no signals match pattern(s) '{pattern}'")),
+                "{args:?}: {err}"
+            );
+            assert_eq!(
+                err.matches(ISSUE_4767_BARE_HINT).count(),
+                usize::from(hinted),
+                "{args:?}: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn issue_4767_partial_miss_rows_hint() {
+    let (_dir, fst) = issue_4767_store();
+    let dropped = "# WARNING: no signals match 'nope' — filter dropped\n# WARNING: no signals match 'gone' — filter dropped\n# 2 of 3 -s patterns matched nothing\n";
+    for command in ["value", "stats"] {
+        let args = issue_4767_query(command, &fst, &["tb.r_data", "nope", "gone"]);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        assert!(
+            err.starts_with(&format!("{dropped}# {ISSUE_4767_ROWS_HINT}\n")),
+            "{command}: {err}"
+        );
+        assert_eq!(err.matches(ISSUE_4767_ROWS_HINT).count(), 1, "{err}");
+        let args = issue_4767_query(command, &fst, &["tb.r_data", "mem[3]"]);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 0, "{err}");
+        assert!(!err.contains(ISSUE_4767_ROWS_HINT), "{command}: {err}");
+    }
+    for command in ["value", "stats", "signal", "wave"] {
+        let mut args = issue_4767_query(command, &fst, &["tb.r_data", "nope", "gone"]);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            json["warnings"],
+            serde_json::json!([
+                "no signals match 'nope' — filter dropped",
+                "no signals match 'gone' — filter dropped",
+                ISSUE_4767_ROWS_HINT
+            ]),
+            "{command}: {out}"
+        );
+    }
+}
+
+#[test]
+fn issue_4767_scope_depth_note() {
+    let (_dir, fst) = issue_4767_store();
+    let note = |pattern: &str| {
+        format!(
+            "# NOTE: '{pattern}' matches 4 signals in different scopes: tb.o_data, tb.dut.o_data, tb.a.o_data (+1 more); pass the full path to pick one\n"
+        )
+    };
+    let (_, err, code) = run(&issue_4767_query(
+        "value",
+        &fst,
+        &["tb.dut.o_data", "tb.o_data"],
+    ));
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("NOTE"), "{err}");
+    for pattern in ["o_data", "o_data[0]"] {
+        for command in ["value", "stats"] {
+            let (_, err, code) = run(&issue_4767_query(command, &fst, &[pattern]));
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(err.matches(&note(pattern)).count(), 1, "{command}: {err}");
+        }
+    }
+    for pattern in ["data", "*o_data"] {
+        let (_, err, code) = run(&issue_4767_query("value", &fst, &[pattern]));
+        assert_eq!(code, 0, "{err}");
+        assert!(!err.contains("NOTE"), "{pattern}: {err}");
+    }
+    let body = note("o_data");
+    let body = body.strip_prefix("# NOTE: ").unwrap().trim_end();
+    for command in ["value", "signal", "wave"] {
+        let mut args = issue_4767_query(command, &fst, &["o_data"]);
+        args.extend(["--format", "json"]);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command}: {err}");
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            json["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str() == Some(body)),
+            "{command}: {out}"
+        );
+    }
+    let (_, err, code) = run(&["list", &fst, "-s", "o_data"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("NOTE"), "{err}");
+    let (out, _, _) = run(&["list", &fst, "-s", "o_data", "--format", "json"]);
+    assert!(!out.contains("different scopes"), "{out}");
+}
+
+#[test]
+fn issue_4767_skill_drops_pattern_errors() {
+    let (out, err, code) = run(&["skill"]);
+    assert_eq!(code, 0, "{err}");
+    for gone in [
+        "Bare-name patterns use suffix-match",
+        "— filter dropped",
+        "A bare name matches at every scope depth",
+    ] {
+        assert!(!out.contains(gone), "skill still has {gone:?}");
     }
 }
 
@@ -4334,7 +4840,10 @@ fn issue_1423_array_virtual_and_limit_warnings() {
                 assert_eq!(code, 0, "{err}");
                 let json: serde_json::Value = serde_json::from_str(&out).unwrap();
                 let expected = if selectors[1] == "missing" {
-                    serde_json::json!(["no signals match 'missing' — filter dropped"])
+                    serde_json::json!([
+                        "no signals match 'missing' — filter dropped",
+                        ISSUE_4767_ROWS_HINT
+                    ])
                 } else {
                     serde_json::json!([])
                 };
@@ -4348,13 +4857,13 @@ fn issue_1423_array_virtual_and_limit_warnings() {
 fn issue_1423_library_text_byte_oracles() {
     let (_dir, fst) = issue_1423_store();
     let cases: &[(&str, &str, &str, i32)] = &[
-("partial","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n# 1 matches found\n",0),
-("early","\nrunning 1 test\n","ERROR: no signals match pattern(s) 'no_target' (2 signals in store; try `bwave list` or a broader -s glob)\n",2),
+("partial","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'missing' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n# 1 matches found\n",0),
+("early","\nrunning 1 test\n","ERROR: no signals match pattern(s) 'no_target' (2 signals in store; try `bwave list` or a broader -s glob); bare names match the end of the full path; use `*name*` to match a substring\n",2),
 ("radix","\nrunning 1 test\n10 a 1\n","# WARNING: signal 'tb.a' matched by multiple -s patterns with different radixes ([Bin, Hex]); using last: Hex\n# scope: tb\n# 1 matches found\n",0),
 ("empty","\nrunning 1 test\n10 tb.a 1\n","# 1 matches found\n",0),
-("virtual","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# scope: tb\n# 1 matches found\n",0),
+("virtual","\nrunning 1 test\n10 a 1\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n# scope: tb\n# 1 matches found\n",0),
 ("virtual-missing","\nrunning 1 test\n10 tb.a 1\n","# 1 matches found\n",0),
-("stats-virtual","\nrunning 1 test\n# Simulation: 20ns\n# 3 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\ntb.a  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n",0),
+("stats-virtual","\nrunning 1 test\n# Simulation: 20ns\n# 3 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\ntb.a  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","# WARNING: no signals match 'v' — filter dropped\n# 1 of 2 -s patterns matched nothing\n# rows for these patterns are missing from the result; the signal may never have been dumped — check `bwave list`\n",0),
 ("stats-virtual-missing","\nrunning 1 test\n# Simulation: 20ns\n# 2 signals analyzed\n\nhelper  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\nv  1-bit;  2 transitions;  2 unique values;\n\nToggle coverage: 100%\nValue coverage: 100%\n\n0: 50% (10ns)\n1: 50% (10ns)\n\n","",0),
     ];
     for (case, stdout, stderr, code) in cases {
@@ -4402,6 +4911,12 @@ fn issue_1423_data_and_total_miss_policies() {
             .unwrap()
             .iter()
             .any(|w| w.as_str().unwrap().contains("filter dropped")));
+        if command == "list" {
+            assert_eq!(
+                empty["warnings"],
+                serde_json::json!(["no signals match pattern(s) 'missing'"])
+            );
+        }
     }
 }
 
@@ -4580,6 +5095,34 @@ fn issue_1418_signed_bounds() {
     assert!(out.is_empty(), "{out}");
     assert!(err.contains("No data in range"), "{err}");
     issue_1418_wave(p, &["--async", "-t=-1t:0t"], &[0], &["0"]);
+}
+
+#[test]
+fn find_no_match_note_counts_same_tick_writes_and_skips_negative_windows() {
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n";
+    let (_dir, store) = issue_1100_store(body, "serial");
+    let note = |extra: &[&str]| {
+        let mut args = vec!["find", store.as_str(), "scalar", "'h1"];
+        args.extend_from_slice(extra);
+        let (out, err, code) = issue_1100_run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.is_empty(), "{out}");
+        err.lines()
+            .filter(|l| l.starts_with("# NOTE:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // Tick 15 writes 1 then 0: the transient 1 is held inside the window.
+    let held = note(&["--with-reset", "-t", "2:2"]);
+    assert!(held.contains("was held in this window"), "{held}");
+    // A window wholly before tick 0 holds nothing, whatever tick 0 holds.
+    let (_, err, code) =
+        issue_1100_run(&["find", &store, "scalar", "'h0", "--async", "-t=-2t:-1t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("# NOTE: 'h0 was never held in this window"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -4781,4 +5324,676 @@ fn issue_3648_truncated_store_names_cause_and_rebuild_hint() {
     assert!(err.contains("not an FST file"), "{err}");
     assert!(!err.contains("truncated"), "{err}");
     let _ = std::fs::remove_file(store);
+}
+
+// -- Query windows outside the trace ----------------------------------
+
+/// The six windowed commands with selectors that work on every fixture;
+/// `{}` marks where the store path goes.
+const WINDOW_COMMANDS: &[(&str, &[&str])] = &[
+    ("signal", &["signal", "{}", "-s", "*"]),
+    ("find", &["find", "{}", "*", "'h1"]),
+    ("wave", &["wave", "{}", "-s", "*"]),
+    ("sample", &["sample", "{}", "*", "rising", "-s", "*"]),
+    ("stats", &["stats", "{}"]),
+    ("distance", &["distance", "{}", "*", "'h1"]),
+];
+
+const ALL: &[&str] = &["signal", "find", "wave", "sample", "stats", "distance"];
+const BOUND_FLAGS: &[&str] = &["find", "sample"];
+const SYNC_PAST_END: &str = "lies outside the trace: counted cycles are 1..19 \
+     (counted after reset), and the trace ends at 200ns";
+const SYNC_WITH_RESET_PAST_END: &str = "lies outside the trace: counted cycles are 1..20 \
+     (counted from the first clock edge), and the trace ends at 200ns";
+const TICK_PAST_END: &str = "lies outside the trace: the trace ends at tick 200 (200ns)";
+
+/// (fixture, commands, window args, flag as typed when a warning is expected).
+type WindowRow = (
+    usize,
+    &'static [&'static str],
+    &'static [&'static str],
+    Option<&'static str>,
+);
+
+fn window_rows() -> Vec<WindowRow> {
+    vec![
+        (0, ALL, &["-t", "5000:6000"], Some("-t 5000:6000 ")),
+        (
+            0,
+            ALL,
+            &["-t", "5000t:6000t", "--async"],
+            Some("-t 5000t:6000t "),
+        ),
+        (1, ALL, &["-t", "5000:6000"], Some("-t 5000:6000 ")),
+        (0, ALL, &["-t", "0:999999"], None),
+        (0, ALL, &["-t", "0:5"], None),
+        (0, ALL, &["-t", "0t:999999t", "--async"], None),
+        // Cycle 0 exists after a detected reset, so `-t 0:0` is inside the trace.
+        (0, &["signal", "wave"], &["-t", "0:0"], None),
+        (
+            0,
+            &["signal", "wave"],
+            &["-t", "0:0", "--with-reset"],
+            Some("-t 0:0 "),
+        ),
+        // `--before 0` ends at cycle 0, which exists after a detected reset.
+        (0, BOUND_FLAGS, &["--before", "0"], None),
+        (
+            0,
+            BOUND_FLAGS,
+            &["--before", "0", "--with-reset"],
+            Some("--before 0 "),
+        ),
+        (0, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
+        (1, BOUND_FLAGS, &["--after", "1000"], Some("--after 1000 ")),
+        (
+            0,
+            &["signal"],
+            &["--time", "5000:6000"],
+            Some("--time 5000:6000 "),
+        ),
+        (
+            2,
+            &["signal"],
+            &["-t", "60000:70000"],
+            Some("-t 60000:70000 "),
+        ),
+        (2, &["wave"], &["-t", "60000:70000"], None),
+    ]
+}
+
+/// The warning each row expects: the flag as typed plus the trace's extent.
+fn window_expected(fixture: usize, window: &[&str], flag: &str) -> String {
+    let extent = match (fixture, window.contains(&"--async")) {
+        (0, false) if window.contains(&"--with-reset") => SYNC_WITH_RESET_PAST_END,
+        (0, false) => SYNC_PAST_END,
+        (2, _) => "lies outside the trace: the trace ends at tick 52962 (529620ns)",
+        _ => TICK_PAST_END,
+    };
+    format!("{flag}{extent}")
+}
+
+#[test]
+fn window_outside_trace_warning_by_command_and_mode() {
+    let stores = [
+        build_bwave("test_basic.vcd", "window_outside"),
+        build_bwave("test_no_clock.vcd", "window_outside"),
+        build_bwave("medium_async.vcd", "window_outside"),
+    ];
+    for (fixture, commands, window, flag) in window_rows() {
+        let store = stores[fixture].to_str().unwrap();
+        for (name, template) in WINDOW_COMMANDS.iter().filter(|(n, _)| commands.contains(n)) {
+            let mut args: Vec<&str> = template
+                .iter()
+                .map(|a| if *a == "{}" { store } else { *a })
+                .collect();
+            args.extend_from_slice(window);
+            let (_, stderr, code) = run(&args);
+            let context = format!("{name} {window:?} on fixture {fixture}: {stderr}");
+            assert_eq!(code, 0, "{context}");
+            match &flag {
+                Some(flag) => {
+                    let want = format!("# WARNING: {}", window_expected(fixture, window, flag));
+                    assert_eq!(stderr.lines().next(), Some(want.as_str()), "{context}");
+                    assert_eq!(stderr.matches("outside the trace").count(), 1, "{context}");
+                    if *name == "signal" && window.contains(&"--async") {
+                        assert!(
+                            stderr.contains(
+                                "# no transitions in range — showing held values at time 5000"
+                            ),
+                            "{context}"
+                        );
+                    }
+                }
+                None => assert!(!stderr.contains("outside the trace"), "{context}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn window_outside_trace_warning_in_json_envelope() {
+    let store = build_bwave("test_basic.vcd", "window_outside_json");
+    let want = format!("-t 5000:6000 {SYNC_PAST_END}");
+    for (name, template) in WINDOW_COMMANDS.iter().filter(|(n, _)| *n != "sample") {
+        let mut args: Vec<&str> = template
+            .iter()
+            .map(|a| {
+                if *a == "{}" {
+                    store.to_str().unwrap()
+                } else {
+                    *a
+                }
+            })
+            .collect();
+        args.extend_from_slice(&["-t", "5000:6000", "--format", "json"]);
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(code, 0, "{name}: {stderr}");
+        let json: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|error| panic!("{name} stdout is not JSON ({error}): {stdout:?}"));
+        assert_eq!(json["warnings"], serde_json::json!([want]), "{name}");
+        assert!(!stderr.contains("outside the trace"), "{name}: {stderr}");
+    }
+}
+
+#[test]
+fn window_outside_trace_warning_names_typed_flag_beside_option_like_store_name() {
+    let store = build_bwave("test_basic.vcd", "window_outside_name");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(&store, dir.path().join("--time=trace.fst")).unwrap();
+    let out = Command::new(exe_path())
+        .current_dir(dir.path())
+        .args([
+            "signal",
+            "-s",
+            "*",
+            "-t",
+            "5000:6000",
+            "--",
+            "--time=trace.fst",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    let want = format!("# WARNING: -t 5000:6000 {SYNC_PAST_END}");
+    assert_eq!(stderr.lines().next(), Some(want.as_str()), "{stderr}");
+}
+
+// -- Issue 4703: one validating Verilog-literal parser ---------------
+
+fn issue_4703_store(label: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("bwave-4703-{}-{label}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vcd = dir.join("input.vcd");
+    let fst = dir.join("input.fst");
+    std::fs::write(&vcd, "$timescale 1ns $end\n$scope module tb $end\n$var wire 8 ! data $end\n$var wire 8 \" hi $end\n$var wire 8 # lo $end\n$upscope $end\n$enddefinitions $end\n#0\nb00001111 !\nb11111111 \"\nb11110000 #\n#10\nb11111111 !\n#20\nb11110000 !\n#30\nb0000001x !\n#40\nbzzzzzzzz !\n#50\n").unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst)
+}
+
+/// Every command that takes a value literal, with `lit` as that literal.
+fn issue_4703_runs(p: &str, lit: &str) -> Vec<(&'static str, (String, String, i32))> {
+    let def = format!("v = *data == {lit}");
+    vec![
+        ("find", run(&["find", p, "data", lit, "--async", "--first"])),
+        ("sample", run(&["sample", p, "data", lit, "--async"])),
+        (
+            "distance",
+            run(&["distance", p, "data", lit, "--to", "data", "'hF", "--async"]),
+        ),
+        (
+            "distance --to",
+            run(&["distance", p, "data", "'hF", "--to", "data", lit, "--async"]),
+        ),
+        ("stuck", run(&["stuck", p, lit, "--async"])),
+        (
+            "--virtual",
+            run(&[
+                "find",
+                p,
+                "v",
+                "'h1",
+                "--virtual",
+                &def,
+                "--async",
+                "--first",
+            ]),
+        ),
+    ]
+}
+
+#[test]
+fn issue_4703_malformed_literals_exit_2_naming_the_literal() {
+    let (dir, fst) = issue_4703_store("malformed");
+    let p = fst.to_str().unwrap();
+    for lit in ["'h F", "'hF'd15", "'hG", "'d1x"] {
+        for (name, (_, err, code)) in issue_4703_runs(p, lit) {
+            assert_eq!(code, 2, "{name} {lit}: {err}");
+            assert!(
+                err.contains(&format!("invalid Verilog literal '{lit}'")),
+                "{name} {lit}: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_valid_literals_match() {
+    let (dir, fst) = issue_4703_store("valid");
+    let p = fst.to_str().unwrap();
+    for (lit, time) in [
+        ("'hF", "0"),
+        ("'hff", "10"),
+        ("8'd255", "10"),
+        ("255", "10"),
+        ("'hx", "30"),
+        ("'h1x", "30"),
+        ("'bx", "30"),
+        ("'b1x", "30"),
+        ("'dx", "30"),
+        ("8'b0000001x", "30"),
+        ("'dz", "40"),
+    ] {
+        let (out, err, code) = run(&["find", p, "data", lit, "--async", "--first"]);
+        assert_eq!(code, 0, "{lit}: {err}");
+        assert!(
+            out.starts_with(&format!("{time} data ")),
+            "{lit}: expected a first match at {time}, got {out}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4703_underscores_are_ignored_in_every_command() {
+    let (dir, fst) = issue_4703_store("underscores");
+    let p = fst.to_str().unwrap();
+    for (with, without, time, stuck) in [
+        ("'hF_F", "'hFF", "10", "hi  8-bit  stuck at FF"),
+        (
+            "8'b1111_0000",
+            "8'b11110000",
+            "20",
+            "lo  8-bit  stuck at F0",
+        ),
+    ] {
+        let plain = issue_4703_runs(p, without);
+        for ((name, (out, err, code)), (_, (expected, _, _))) in
+            issue_4703_runs(p, with).into_iter().zip(plain)
+        {
+            assert_eq!(code, 0, "{name} {with}: {err}");
+            assert_eq!(out, expected, "{name} {with}");
+            if name == "find" {
+                assert!(out.starts_with(&format!("{time} data ")), "{with}: {out}");
+            }
+            if name == "stuck" {
+                assert!(out.contains(stuck), "{with}: {out}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// -- Issue 4698: warn on value literals that cannot fit ---------------
+
+/// Warnings of a `--format json` run (exit 0), plus its stdout.
+fn issue_4698_json(args: &[&str]) -> (serde_json::Value, Vec<String>) {
+    let mut full = args.to_vec();
+    full.extend(["--format", "json"]);
+    let (out, err, code) = run(&full);
+    assert_eq!(code, 0, "{args:?}: {err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let warnings = json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    (json, warnings)
+}
+
+#[test]
+fn issue_4698_oversized_literals_warn_in_every_command() {
+    let (dir, fst) = issue_4703_store("4698-every");
+    let p = fst.to_str().unwrap();
+    for (lit, both) in [("8'd300", true), ("'h1FF", false)] {
+        let expected = if both {
+            format!(
+                "{lit} needs 9 bits, more than its 8-bit width, and never matches tb.data (8-bit)"
+            )
+        } else {
+            format!("{lit} needs 9 bits and never matches tb.data (8-bit)")
+        };
+        for (name, (_, err, code)) in issue_4703_runs(p, lit) {
+            assert_eq!(code, 0, "{name} {lit}: {err}");
+            let lead = if name == "--virtual" {
+                format!(
+                    "# WARNING: virtual 'v': tb.data == {lit} never matches: {lit} needs 9 bits"
+                )
+            } else {
+                format!("# WARNING: {lit} needs 9 bits")
+            };
+            assert!(err.contains(&lead), "{name} {lit}: {err}");
+            assert!(
+                err.lines()
+                    .filter(|line| line.starts_with("# WARNING"))
+                    .all(|line| !line.contains("12C")),
+                "{name} {lit}: {err}"
+            );
+        }
+        let (_, find) = issue_4698_json(&["find", p, "data", lit, "--async"]);
+        assert_eq!(find, vec![expected.clone()]);
+        let (_, dist) =
+            issue_4698_json(&["distance", p, "data", lit, "--to", "data", "'hF", "--async"]);
+        assert!(dist.contains(&expected), "{dist:?}");
+        let def = format!("v = *data == {lit}");
+        let (_, virt) = issue_4698_json(&["find", p, "v", "'h1", "--virtual", &def, "--async"]);
+        let virt = without_never_held_notes(virt);
+        assert_eq!(virt.len(), 1, "{virt:?}");
+        assert!(
+            virt[0].starts_with(&format!(
+                "virtual 'v': tb.data == {lit} never matches: {lit} needs 9 bits"
+            )),
+            "{virt:?}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_literal_over_its_own_prefix_warns_and_still_matches() {
+    let (dir, fst) = issue_4703_store("4698-prefix");
+    let p = fst.to_str().unwrap();
+    let expected = "1'd255 needs 8 bits, more than its 1-bit width; it is compared untruncated";
+    let (json, warnings) = issue_4698_json(&["find", p, "hi", "1'd255", "--async", "--count"]);
+    assert_eq!(json["data"]["count"], 1, "{json}");
+    assert_eq!(warnings, vec![expected.to_string()]);
+    let (json, warnings) = issue_4698_json(&[
+        "find",
+        p,
+        "v",
+        "'h1",
+        "--virtual",
+        "v = *hi == 1'd255",
+        "--async",
+        "--count",
+    ]);
+    assert_eq!(json["data"]["count"], 1, "{json}");
+    assert_eq!(warnings, vec![format!("virtual 'v': {expected}")]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The literal-width warnings are asserted here, not the #4748 no-match note.
+fn without_never_held_notes(warnings: Vec<String>) -> Vec<String> {
+    let note = |w: &String| w.ends_with(" was never held in this window");
+    warnings.into_iter().filter(|w| !note(w)).collect()
+}
+
+#[test]
+fn issue_4698_one_warning_lists_only_signals_the_literal_cannot_fit() {
+    let fst = build_bwave("small_clocked.vcd", "4698_multi");
+    let p = fst.to_str().unwrap();
+    let (_, warnings) = issue_4698_json(&["find", p, "*a*", "'h1F"]);
+    assert_eq!(
+        without_never_held_notes(warnings),
+        vec!["'h1F needs 5 bits and never matches tb.dut.enable (1-bit), tb.dut.flag (1-bit), tb.dut.state[3:0] (4-bit)".to_string()]
+    );
+    let _ = std::fs::remove_file(fst);
+
+    let (dir, fst) = issue_4703_store("4698-multi");
+    let p = fst.to_str().unwrap();
+    let (_, warnings) =
+        issue_4698_json(&["find", p, "v", "'h1FF", "--virtual", "v = *data", "--async"]);
+    assert_eq!(
+        warnings,
+        vec!["'h1FF needs 9 bits and never matches v (1-bit)".to_string()]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_virtual_comparison_with_oversized_literal_states_its_result() {
+    let (dir, fst) = issue_4703_store("4698-virtual");
+    let p = fst.to_str().unwrap();
+    let base = "needs 9 bits and tb.data is 8-bit";
+    for (op, claim, ones, zeros) in [
+        ("==", "never matches", 0, 1),
+        ("!=", "is always true", 1, 0),
+        (">", "is always false", 0, 1),
+        (">=", "is always false", 0, 1),
+        (
+            "<",
+            "is always true, except while tb.data has X or Z bits",
+            1,
+            1,
+        ),
+        (
+            "<=",
+            "is always true, except while tb.data has X or Z bits",
+            1,
+            1,
+        ),
+    ] {
+        let def = format!("v = *data {op} 'h1FF");
+        let expected = format!("virtual 'v': tb.data {op} 'h1FF {claim}: 'h1FF {base}");
+        for (value, count) in [("'h1", ones), ("'h0", zeros)] {
+            let (json, warnings) = issue_4698_json(&[
+                "find",
+                p,
+                "v",
+                value,
+                "--virtual",
+                &def,
+                "--async",
+                "--count",
+            ]);
+            let warnings = without_never_held_notes(warnings);
+            assert_eq!(warnings, vec![expected.clone()], "{op}");
+            assert_eq!(json["data"]["count"], count, "{op} {value}: {json}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn issue_4698_wide_prefix_literal_that_fits_matches_without_warning() {
+    let fst = build_bwave("small_clocked.vcd", "4698_fits");
+    let p = fst.to_str().unwrap();
+    let (json, warnings) = issue_4698_json(&["find", p, "flag", "8'd1", "--count"]);
+    assert_eq!(json["data"]["count"], 22, "{json}");
+    assert!(warnings.iter().all(|w| !w.contains("8'd1")), "{warnings:?}");
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4698_hex_literal_of_ones_and_zeros_compares_as_hex() {
+    let fst = build_bwave("small_clocked.vcd", "4698_hex");
+    let p = fst.to_str().unwrap();
+    let (json, warnings) = issue_4698_json(&["find", p, "addr", "'h100", "--count"]);
+    assert_eq!(json["data"]["count"], 0, "{json}");
+    assert_eq!(
+        warnings,
+        vec!["'h100 needs 9 bits and never matches tb.dut.addr[7:0] (8-bit)".to_string()]
+    );
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4705_wave_help_time_is_optional() {
+    let (help, _, code) = run(&["wave", "--help"]);
+    assert_eq!(code, 0);
+    let option = help
+        .split("-t, --time <TIME>")
+        .nth(1)
+        .and_then(|rest| rest.lines().nth(1))
+        .expect("wave --help lists -t");
+    assert!(!option.contains("required"), "{option}");
+    assert!(option.contains("Optional"), "{option}");
+}
+
+#[test]
+fn issue_4705_value_past_end_names_at_and_the_typed_time() {
+    let fst = build_bwave("test_basic.vcd", "issue4705");
+    let p = fst.to_str().unwrap();
+    let range = "In sync mode, --at selects a clock cycle (0..19). \
+                 Simulation time range: 15ns..200ns";
+    let rows: [(&[&str], &str, Option<String>); 5] = [
+        (
+            &["--at", "30"],
+            "30",
+            Some(format!("did you mean --at 30t --async? {range}")),
+        ),
+        (&["--at", "500"], "500", Some(range.to_string())),
+        (&["--at", "5000c"], "5000c", Some(range.to_string())),
+        (&["--at", "5000ns"], "5000ns", Some(range.to_string())),
+        (&["--at", "500ns", "--async"], "500ns", None),
+    ];
+    for (extra, typed, hint) in rows {
+        let mut args = vec!["value", p, "-s", "*"];
+        args.extend(extra);
+        let (_, err, code) = run(&args);
+        assert_eq!(code, 2, "{err}");
+        let error = format!("ERROR: value time {typed} is beyond simulation range");
+        assert!(err.lines().any(|line| line == error), "{err}");
+        let hints: Vec<&str> = err.lines().filter(|l| l.starts_with("HINT:")).collect();
+        match hint {
+            Some(text) => assert_eq!(hints, [format!("HINT: {text}")], "{err}"),
+            None => assert!(hints.is_empty(), "{err}"),
+        }
+        assert!(!err.contains("--at-time"), "{err}");
+    }
+    let (out, err, code) = run(&["value", p, "--at", "30t", "--async", "-s", "*"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("# Snapshot at 30"), "{out}");
+    let _ = std::fs::remove_file(fst);
+}
+
+#[test]
+fn issue_4764_stats_cycle_window_matches_wave() {
+    let fst = build_bwave("small_clocked.vcd", "4764-stats-window");
+    let p = fst.to_str().unwrap();
+    let query = |command: &str, window: &[&str], extra: &[&str]| {
+        let mut args = vec![command, p, "-s", "state"];
+        args.extend(window);
+        args.extend(extra);
+        let (out, err, code) = run(&args);
+        assert_eq!(code, 0, "{command} {window:?}: {err}");
+        out
+    };
+    let json = |command: &str, window: &[&str]| -> serde_json::Value {
+        serde_json::from_str(&query(command, window, &["--format", "json"])).unwrap()
+    };
+    for (window, shown) in [
+        (&["-t", "0:10"][..], 11),
+        (&["-t", "3:10"], 8),
+        (&["--with-reset", "-t", "0:10"], 10),
+        (&[], 49),
+    ] {
+        let wave = json("wave", window);
+        assert_eq!(
+            wave["data"]["columns"].as_array().unwrap().len(),
+            shown,
+            "{window:?}"
+        );
+        let stats = json("stats", window);
+        let signal = &stats["data"]["signals"][0];
+        let sampled: u64 = [
+            "time_in_state_clocked_cycles",
+            "time_in_state_stopped_cycles",
+        ]
+        .iter()
+        .flat_map(|key| signal[key].as_object().unwrap().values())
+        .map(|n| n.as_u64().unwrap())
+        .sum();
+        assert_eq!(stats["data"]["total_cycles"], shown, "{window:?}");
+        assert_eq!(sampled, shown as u64, "{window:?}");
+        let text = query("stats", window, &[]);
+        assert!(
+            text.contains(&format!(", {shown} cycles (")),
+            "{window:?}: {text}"
+        );
+        let text_sampled: u64 = text
+            .lines()
+            .filter_map(|line| line.split_once("% (")?.1.strip_suffix(" stopped cycles)"))
+            .flat_map(|counts| counts.split(" clocked, "))
+            .map(|n| n.parse::<u64>().unwrap())
+            .sum();
+        assert_eq!(text_sampled, shown as u64, "{window:?}: {text}");
+    }
+    // value_hist counts held runs: 'h0 holds all four cycles as one run.
+    let stats = json("stats", &["--with-reset", "-t", "0:4"]);
+    let signal = &stats["data"]["signals"][0];
+    assert_eq!(signal["value_hist"], serde_json::json!({"'h0": 1}));
+    assert_eq!(
+        signal["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 4})
+    );
+    // Cycle 0 reads before the reset tick: wave's column 0 for clk is 0, cycle 1 is 1.
+    let args = ["stats", p, "-s", "clk", "-t", "0:4", "--format", "json"];
+    let (out, err, code) = run(&args);
+    assert_eq!(code, 0, "{err}");
+    let stats: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        stats["data"]["signals"][0]["time_in_state_clocked_cycles"],
+        serde_json::json!({"'h0": 1, "'h1": 4})
+    );
+    let _ = std::fs::remove_file(fst);
+}
+
+fn fractional_clock_store(half_period: u64) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("frac.vcd");
+    let fst = dir.path().join("frac.fst");
+    let mut text = String::from("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! clk $end\n$var wire 1 \" d $end\n$var wire 1 # k $end\n$var wire 1 $ rst_n $end\n$upscope $end\n$enddefinitions $end\n");
+    text.push_str("#0\n0!\n0\"\n0#\n0$\n#500\n1$\n");
+    let mut last = 500;
+    for i in 0..40u64 {
+        let t = (i + 1) * half_period;
+        text.push_str(&format!("#{t}\n{}!\n", (i + 1) % 2));
+        if i == 12 {
+            text.push_str("1\"\n");
+        }
+        last = t;
+    }
+    text.push_str(&format!("#{}\n", last + 100));
+    std::fs::write(&vcd, text).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst.to_str().unwrap().to_string())
+}
+
+#[test]
+fn tick_times_keep_fractional_nanoseconds() {
+    let (_dir, fst) = fractional_clock_store(3200);
+    // (args, read stderr, expected substring) on a 1ps store with a 6400-tick clock.
+    let cases: &[(&[&str], bool, &str)] = &[
+        (
+            &["signal", "-s", "tb.d", "--clock", "tb.clk"],
+            true,
+            "# sync: period=6.4ns",
+        ),
+        (
+            &["stats", "-s", "tb.d"],
+            false,
+            "# Simulation: 127.6ns, 21 cycles (6.4ns period)",
+        ),
+        (
+            &["stats", "-s", "tb.d", "--async"],
+            false,
+            "# Simulation: 128.1ns",
+        ),
+        (&["stats", "-s", "tb.d", "--async"], false, "(86.5ns)"),
+        (&["stuck", "--async"], false, "(100%, 128.1ns)"),
+        (
+            &["value", "-s", "tb.d", "--at", "999"],
+            true,
+            "Simulation time range: 0.5ns..128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "-t", "500:600"],
+            true,
+            "the trace ends at 128.1ns",
+        ),
+        (
+            &["signal", "-s", "tb.d", "--async", "-t", "999999t:9999999t"],
+            true,
+            "the trace ends at tick 128100 (128.1ns)",
+        ),
+    ];
+    for (args, use_err, expected) in cases {
+        let mut full: Vec<&str> = vec![args[0], &fst];
+        full.extend_from_slice(&args[1..]);
+        let (out, err, _) = run(&full);
+        let text = if *use_err { &err } else { &out };
+        assert!(
+            text.contains(expected),
+            "{args:?}: want {expected:?}\nstdout: {out}\nstderr: {err}"
+        );
+    }
+    let (_dir, fst) = fractional_clock_store(5000);
+    let (_, err, _) = run(&["signal", &fst, "-s", "tb.d"]);
+    assert!(err.lines().any(|l| l == "# sync: period=10ns"), "{err}");
 }

@@ -13,16 +13,17 @@ down everything that breaks, confuses, or slows it down. The metric is real
 findings per run.
 
 Missions describe where to look, not a checklist to certify. The picorv32
-mission goes furthest: after a short baseline it is a free hunt guided only by
-the user docs, looking for the bugs the planned missions don't look for. When something
-fails, the operator records it, works around it, and keeps going, so one broken
+mission goes furthest: after a short baseline and three release journeys it is
+a free hunt guided only by the user docs, looking for the bugs the planned
+missions don't look for. When something fails, the operator records it, works
+around it, and keeps going, so one broken
 step never hides the bugs behind it.
 
 ## Missions
 
 | Mission | Journey |
 |---|---|
-| [picorv32](missions/picorv32/MISSION.md) | Free hunt on the published demo Project: Quick start, baseline and Stealth guard, then anywhere the user docs lead, with optional seeded faults and a Measured Commit as bait |
+| [picorv32](missions/picorv32/MISSION.md) | Published demo Project: Quick start and baseline, Metric-Driven Development core with a Dhrystone Measured Commit, Claude Code and Codex in one Project, Simulation Records, then a free hunt guided by the user docs |
 | [taxi](missions/taxi/MISSION.md) | Port of the Taxi 10G MAC from a direct clone: setup, baseline, FST and B-Wave, submodule companion Project, mutation testing, Target Metrics, verification and repair work as Measured Commits, Simulation Records, Vivado, cleanup |
 | [uart](missions/uart/MISSION.md) | Clean-room UART from the OpenTitan documentation with an independent evaluator; also crash resume, simulation grading and Project discovery |
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, coverage bounds, waivers, storage, a measured test-gap closure, the Coverage Analyst |

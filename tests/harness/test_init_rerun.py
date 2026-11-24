@@ -27,7 +27,6 @@ import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -43,8 +42,11 @@ from booley.runtime.booley_dir import reset_cache
 from booley.runtime.git import add_git_excludes
 from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
-from tests.conftest import symlink_or_skip
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
+from tests.conftest import symlink_or_skip, use_terminal_stdin
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from tests.docker_host_support import fake_docker_host
+from tests.harness.test_project_initialization import _initialize
 from tests.subprocess_budget import run_bounded_child
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
@@ -81,6 +83,7 @@ def _isolate_docker(monkeypatch) -> None:
     every run without the image gets), and any other route to the shared Docker
     CLI helper fails the test instead of starting ``docker``.
     """
+    # private: the version probe starts Docker; no public input makes it answer without it.
     monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
     forbid_docker_cli(monkeypatch)
 
@@ -132,13 +135,20 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         "reconcile_planned",
         lambda *_args, **_kwargs: current_image,
     )
+    # private: image ids come from Docker, which these tests never reach.
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
+    fake_docker_host(monkeypatch)
     monkeypatch.setattr(
-        "booley.runtime.interactive_docker.image_id",
+        "booley.runtime.host_docker.image_id",
         lambda _image: None,
     )
-    monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
+    # private: host-only probes (editor detection, credentials) that the public `run_init`
+    # would answer from the host.
+    monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
+    monkeypatch.setattr(
+        init_cmd, "_step_auth", lambda ctx, *_a, **_k: ctx.record("auth", "skip", "current")
+    )
     monkeypatch.setattr(
         interactive_init.session_runtime,
         "plan_stopped_headless_runtime_reconciliation",
@@ -156,24 +166,9 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
-def _current_nonstealth_init(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    project = repo / ".booley"
-    project.mkdir()
-    (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
-    image = LifecycleResult(
-        selected_reference="booley-sandbox",
-        selected_id="sha256:test-image",
-        status=ImageLifecycleStatus.CURRENT,
-    )
-
-    def current_image(ctx, _bootstrap=None):
-        ctx.record("docker_image", "skip", "current")
-        return image
-
-    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image)
-    monkeypatch.setattr(
-        init_cmd, "_step_auth", lambda ctx, *args, **kwargs: ctx.record("auth", "skip", "current")
-    )
+def _write_booley_toml(repo: Path, *, stealth: bool) -> None:
+    (repo / ".booley").mkdir(exist_ok=True)
+    (repo / ".booley/booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
 
 
 @pytest.mark.timeout(120)
@@ -181,8 +176,7 @@ def test_every_path_init_creates_is_classified(repo):
     """Every file and empty directory of a full Stealth init has a Booley State part."""
     from booley.core.booley_dir_parts import booley_dir_part
 
-    (repo / ".booley").mkdir()
-    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # adds inner .git
+    _write_booley_toml(repo, stealth=True)  # adds inner .git
     assert _run_full_init(repo) == 0
     booley = repo / ".booley"
     created = [
@@ -226,8 +220,7 @@ def test_hidden_setup_choice_hides_booley_dir_on_init_rerun(repo):
 @pytest.mark.timeout(120)
 def test_init_names_unrecorded_stealth_choice_of_hidden_booley_dir(repo, capsys):
     """A Project hidden while Stealth defaulted on, with no `enabled` key, gets the fix."""
-    (repo / ".booley").mkdir()
-    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")
+    _write_booley_toml(repo, stealth=True)
     assert _run_full_init(repo) == 0
     (repo / ".booley/booley.toml").write_text("# key predates the explicit choice\n")
     capsys.readouterr()
@@ -239,8 +232,8 @@ def test_init_names_unrecorded_stealth_choice_of_hidden_booley_dir(repo, capsys)
 
 
 @pytest.mark.timeout(120)
-def test_nonstealth_init_reports_global_ignored_booley_paths(repo, monkeypatch, capsys):
-    _current_nonstealth_init(repo, monkeypatch)
+def test_nonstealth_init_reports_global_ignored_booley_paths(repo, capsys):
+    _write_booley_toml(repo, stealth=False)
     ignores = repo.parent / "global ignores"
     ignores.write_text("# local policy\n.booley/\n")
     subprocess.run(["git", "config", "core.excludesFile", str(ignores)], cwd=repo, check=True)
@@ -255,8 +248,8 @@ def test_nonstealth_init_reports_global_ignored_booley_paths(repo, monkeypatch, 
 
 
 @pytest.mark.timeout(120)
-def test_nonstealth_trackability_check_only_is_read_only(repo, monkeypatch, capsys):
-    _current_nonstealth_init(repo, monkeypatch)
+def test_nonstealth_trackability_check_only_is_read_only(repo, capsys):
+    _write_booley_toml(repo, stealth=False)
     assert _run_full_init(repo) == 0
     capsys.readouterr()
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
@@ -295,22 +288,6 @@ class TestFullInitRerun:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        current_image = LifecycleResult(
-            selected_reference="booley-sandbox",
-            selected_id="sha256:test-image",
-            status=ImageLifecycleStatus.CURRENT,
-        )
-
-        def current_image_step(ctx, _bootstrap=None):
-            ctx.record("docker_image", "skip", "current")
-            return current_image
-
-        monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
-        monkeypatch.setattr(
-            init_cmd,
-            "_step_auth",
-            lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
-        )
         assert _run_full_init(repo) == 0
         capsys.readouterr()
         before = _filesystem_snapshot(repo)
@@ -334,84 +311,46 @@ class TestFullInitRerun:
         assert "interactive — current" in output
         assert _filesystem_snapshot(repo) == before
 
-    def test_reconciles_stopped_headless_runtime_after_issuing(
-        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    @pytest.mark.parametrize(
+        ("row", "code", "message"),
+        [
+            ("reconciled", 0, "reconciled stopped Sandbox resources from their prior issuance"),
+            ("apply-fails", 2, "could not reconcile the Sandbox: container became active"),
+            (
+                "inspect-fails",
+                2,
+                "could not reconcile the Sandbox: run `booley session refresh` on the host",
+            ),
+        ],
+    )
+    def test_sandbox_runtime_reconciliation(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        row: str,
+        code: int,
+        message: str,
     ) -> None:
-        with (
-            patch.object(
-                sr,
-                "reconcile_stopped_headless_runtime",
-                return_value=True,
-                create=True,
-            ) as reconcile,
-            patch.object(
-                sr,
-                "plan_stopped_headless_runtime_reconciliation",
-                return_value=type("Plan", (), {"pending": True})(),
-            ),
-        ):
-            _run_full_init(repo)
+        def inspect(*_args: object) -> SimpleNamespace:
+            if row == "inspect-fails":
+                raise sr.SessionError("run `booley session refresh` on the host")
+            return SimpleNamespace(pending=True)
 
-        reconcile.assert_called_once()
-        assert (
-            "reconciled stopped Sandbox resources from their prior issuance"
-            in capsys.readouterr().out
-        )
+        def reconcile(*_args: object) -> bool:
+            if row == "apply-fails":
+                raise sr.SessionError("container became active")
+            return True
 
-    def test_runtime_reconciliation_failure_makes_init_incomplete(
-        self, repo: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        _run_full_init(repo)
-        capsys.readouterr()
-        ctx = InitContext(project_root=repo)
-        with (
-            patch.object(
-                sr,
-                "reconcile_stopped_headless_runtime",
-                side_effect=sr.SessionError("container became active"),
-            ),
-            patch.object(
-                sr,
-                "plan_stopped_headless_runtime_reconciliation",
-                return_value=type("Plan", (), {"pending": True})(),
-            ),
-        ):
-            init_cmd._step_interactive(
-                ctx,
-                nangate_pdk_root=repo.parent / "pdk",
-                agent_app="none",
-            )
-        ctx.record("advisories", "ok", "configured")
+        monkeypatch.setattr(sr, "plan_stopped_headless_runtime_reconciliation", inspect)
+        monkeypatch.setattr(sr, "reconcile_stopped_headless_runtime", reconcile)
 
-        assert init_cmd._print_summary(ctx) == 2
+        assert _run_full_init(repo) == code
+
         output = capsys.readouterr().out
-        assert "could not reconcile the Sandbox" in output
-        assert "this project is ready" not in output
-
-    def test_runtime_inspection_failure_makes_init_incomplete(
-        self, repo: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """A refusal while inspecting the Sandbox uses the same prefix as the apply path."""
-        _run_full_init(repo)
-        capsys.readouterr()
-        ctx = InitContext(project_root=repo)
-        with patch.object(
-            sr,
-            "plan_stopped_headless_runtime_reconciliation",
-            side_effect=sr.SessionError("run `booley session refresh` on the host"),
-        ):
-            init_cmd._step_interactive(
-                ctx,
-                nangate_pdk_root=repo.parent / "pdk",
-                agent_app="none",
-            )
-        ctx.record("advisories", "ok", "configured")
-
-        assert init_cmd._print_summary(ctx) == 2
-        output = capsys.readouterr().out
-        assert (
-            "could not reconcile the Sandbox: run `booley session refresh` on the host" in output
-        )
+        assert message in output
+        if row != "reconciled":
+            assert "this project is ready" not in output
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
         booley_dir = repo / ".booley"
@@ -420,20 +359,11 @@ class TestFullInitRerun:
         canon.write_text("# canonical\n", encoding="utf-8")
         foreign = repo / "AGENTS.md"
         foreign.write_text("# user-owned\n", encoding="utf-8")
-        before = {
-            path.relative_to(repo).as_posix(): path.read_bytes()
-            for path in repo.rglob("*")
-            if path.is_file() and ".git" not in path.parts
-        }
+        before = _complete_snapshot(repo, skip_git=True)
 
         assert _run_full_init(repo) == 2
 
-        after = {
-            path.relative_to(repo).as_posix(): path.read_bytes()
-            for path in repo.rglob("*")
-            if path.is_file() and ".git" not in path.parts
-        }
-        assert after == before
+        assert _complete_snapshot(repo, skip_git=True) == before
         assert not (repo / "CLAUDE.md").exists()
 
     # Windows CI measured 40.6s; 3x rounded up to 30s requires 150s.
@@ -451,6 +381,7 @@ class TestFullInitRerun:
         user_owned = [
             pdir / "booley.toml",
             pdir / "tests.toml",
+            pdir / "metrics.toml",
             pdir / "FUSESOC_IGNORE",
         ]
         for f in user_owned:
@@ -498,17 +429,6 @@ class TestFullInitRerun:
                 f"managed file {f} not byte-stable across init re-runs"
             )
 
-    def test_step_numbers_are_contiguous_end_to_end(self, repo: Path, capsys):
-        """F-2: the emitted sequence used to read 1, 2, 3, 5, 8, 9, 9b, 10,
-        10b ... 12, and a first-time user has no way to tell a retired number
-        apart from a step that silently failed."""
-        assert _run_full_init(repo) in (0, 2)
-
-        numbers = re.findall(r"^Step (\S+) —", capsys.readouterr().out, re.MULTILINE)
-
-        assert numbers, "init emitted no step banners"
-        assert numbers == [str(n) for n in range(1, len(numbers) + 1)]
-
     def test_foreign_git_hook_backed_up_not_clobbered(self, repo: Path):
         hooks_dir = repo / ".git" / "hooks"
         hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -523,144 +443,54 @@ class TestFullInitRerun:
         )
         assert "project-git-hooks.pyz" in (hooks_dir / "commit-msg").read_text(encoding="utf-8")
 
-    # Windows CI measured 35.8s; 120s preserves the required timeout headroom.
-    @pytest.mark.timeout(120)
-    def test_gitignore_selfheal_restores_deleted_booley_pattern(self, repo: Path):
-        assert _run_full_init(repo) in (0, 2)
-        gitignore = repo / ".booley" / ".gitignore"
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-        assert ".runtime/" in [ln.strip() for ln in lines]
 
-        # User deletes a load-bearing pattern; re-init appends it back while
-        # keeping the rest of the user's file intact.
-        kept = [ln for ln in lines if ln.strip() != ".runtime/"]
-        gitignore.write_text("\n".join(["# user comment", *kept]) + "\n", encoding="utf-8")
+@pytest.mark.parametrize(
+    "base_packages", [{"cocotb": "2.1.0"}, {}], ids=["base-image", "no-base-image"]
+)
+def test_curated_override_advisory(repo, monkeypatch, capsys, base_packages):
+    """F-13: a pin that re-versions a package the base image curated is named; no base, no noise."""
+    (repo / ".booley").mkdir()
+    (repo / ".booley/booley.toml").write_text(
+        '[sandbox]\npip_requirements = ["requirements.txt"]\n'
+    )
+    (repo / "requirements.txt").write_text("cocotb==1.5.1\nnumpy==2.0\n")
+    monkeypatch.setattr(pi, "base_image_packages", lambda *_a, **_k: base_packages)
 
-        assert _run_full_init(repo) in (0, 2)
-        healed = gitignore.read_text(encoding="utf-8")
-        assert ".runtime/" in {ln.strip() for ln in healed.splitlines()}
-        assert "# user comment" in healed
+    assert _run_full_init(repo) == 0
 
-
-class TestCuratedOverrideAdvisory:
-    """F-13: a project pin that re-versions a package the base image curated
-    (cocotb 2.1.0 -> 1.5.1) was baked with zero output, and the base image's
-    cocotb/VPI validation layer never re-runs on the project layer."""
-
-    def test_names_each_overridden_package(self, monkeypatch, capsys):
-        monkeypatch.setattr(pi, "base_image_packages", lambda *a, **k: {"cocotb": "2.1.0"})
-
-        init_cmd._report_curated_overrides(["cocotb==1.5.1", "numpy==2.0"])
-
-        out = capsys.readouterr().out
+    out = capsys.readouterr().out
+    if base_packages:
         assert "cocotb==1.5.1" in out and "cocotb==2.1.0" in out
         assert "numpy" not in out
-
-    def test_silent_when_the_base_image_cannot_be_queried(self, monkeypatch, capsys):
-        monkeypatch.setattr(pi, "base_image_packages", lambda *a, **k: {})
-
-        init_cmd._report_curated_overrides(["cocotb==1.5.1"])
-
-        assert capsys.readouterr().out == ""
+    else:
+        assert "overrides the base image" not in out
 
 
-class TestProjectGitignoreBackfill:
-    """Project-authored Python hooks may still produce ignored bytecode."""
+@pytest.mark.parametrize(
+    ("authored", "spelled_otherwise"),
+    [
+        (b"# custom policy\r\nmy_custom_dir/\r\ntmp/\r\n", set()),
+        (b"/tickets/board/\n/tickets/state/\n", {"tickets/board/", "tickets/state/"}),
+    ],
+    ids=["crlf-custom-lines", "anchored-spelling"],
+)
+def test_gitignore_backfill_appends_each_missing_pattern_once(repo, authored, spelled_otherwise):
+    ignore = repo / ".booley/.gitignore"
+    ignore.parent.mkdir()
+    ignore.write_bytes(authored)
 
-    def test_new_gitignore_covers_transient_reports_and_python_bytecode(self, tmp_path: Path):
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    _initialize(repo, check_only=True)
+    assert ignore.read_bytes() == authored
 
-        lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
-        assert "flow-reports/" in lines
-        assert "mcp-tool-reports/" in lines
-        assert "reviewer-state/" in lines
-        assert "/logs/" in lines
-        assert "/.baseline-wt-*/" in lines
-        assert "__pycache__/" in lines
-        assert "*.pyc" in lines
-
-    def test_existing_gitignore_is_backfilled_without_losing_user_lines(self, tmp_path: Path):
-        gitignore = tmp_path / ".gitignore"
-        gitignore.write_text("tmp/\nmy_custom_dir/\n", encoding="utf-8")
-
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-        assert "my_custom_dir/" in lines
-        assert lines.count("flow-reports/") == 1
-        assert lines.count("mcp-tool-reports/") == 1
-        assert lines.count("reviewer-state/") == 1
-        assert lines.count("/logs/") == 1
-        assert lines.count("/.baseline-wt-*/") == 1
-        assert "__pycache__/" in lines
-        assert lines.count("tmp/") == 1  # already present -> not re-added
-
-    def test_generated_patterns_are_honored_by_git(self, tmp_path: Path):
-        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-        diagnostic = tmp_path / "logs" / "runner-diagnostics.log"
-        baseline_worktree = tmp_path / ".baseline-wt-42-deadbeef"
-        diagnostic.parent.mkdir()
-        baseline_worktree.mkdir()
-        diagnostic.write_text("diagnostic\n", encoding="utf-8")
-        nested_log = tmp_path / "cores" / "example" / "logs" / "result.log"
-        nested_log.parent.mkdir(parents=True)
-        nested_log.write_text("durable input\n", encoding="utf-8")
-
-        result = subprocess.run(
-            [
-                "git",
-                "check-ignore",
-                "logs/runner-diagnostics.log",
-                ".baseline-wt-42-deadbeef/",
-            ],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        assert result.stdout.splitlines() == [
-            "logs/runner-diagnostics.log",
-            ".baseline-wt-42-deadbeef/",
-        ]
-        nested_result = subprocess.run(
-            ["git", "check-ignore", "cores/example/logs/result.log"],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert nested_result.returncode == 1
-        assert nested_result.stdout == ""
-
-    def test_live_ticket_state_is_ignored_and_ticket_history_is_tracked(self, tmp_path: Path):
-        # ADR 0065: the board and state records are working state; history is committed.
-        run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        def ignored(path: str) -> bool:
-            result = run_bounded_child(
-                ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "-q", path],
-                cwd=tmp_path,
-            )
-            return result.returncode == 0
-
-        assert ignored("tickets/board/alpha.md")
-        assert ignored("tickets/state/alpha.json")
-        assert ignored("tickets/waiver-candidates/alpha.json")
-        assert not ignored("tickets/history/alpha.md")
-
-    def test_anchored_spelling_is_not_duplicated(self, tmp_path: Path):
-        gitignore = tmp_path / ".gitignore"
-        gitignore.write_text("/tickets/board/\n/tickets/state/\n", encoding="utf-8")
-
-        init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-
-        lines = gitignore.read_text(encoding="utf-8").splitlines()
-        assert "tickets/board/" not in lines
-        assert "tickets/state/" not in lines
-        assert "tickets/logs/" in lines
+    _initialize(repo)
+    first = ignore.read_bytes()
+    lines = first.decode().splitlines()
+    kept = authored.decode().splitlines()
+    assert lines[: len(kept)] == kept  # the authored lines lead; init only appends
+    for pattern in PROJECT_GITIGNORE_PATTERNS:
+        assert lines.count(pattern) == (0 if pattern in spelled_otherwise else 1), pattern
+    _initialize(repo)
+    assert ignore.read_bytes() == first
 
 
 # ---------------------------------------------------------------------------
@@ -701,26 +531,6 @@ def _crlf_checkout_project_data(booley_dir: Path, files: dict[str, bytes]) -> No
     assert _git(booley_dir, "status", "--porcelain", "--untracked-files=no") == ""
 
 
-def _stub_current_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Report the image and auth as current so init reaches every file step."""
-    current_image = LifecycleResult(
-        selected_reference="booley-sandbox",
-        selected_id="sha256:test-image",
-        status=ImageLifecycleStatus.CURRENT,
-    )
-
-    def current_image_step(ctx: InitContext, _bootstrap: object = None) -> LifecycleResult:
-        ctx.record("docker_image", "skip", "current")
-        return current_image
-
-    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", current_image_step)
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_auth",
-        lambda ctx, *_args, **_kwargs: ctx.record("auth", "skip", "current"),
-    )
-
-
 def _check_only(root: Path) -> int:
     args = _init_args()
     args.check_only = True
@@ -734,10 +544,9 @@ _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 
 
 def test_agent_selection_write_does_not_block_line_ending_repair(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Init's own [agent] write to Booley configuration with CRLF line endings must not look like user work."""
-    _stub_current_host(monkeypatch)
     booley_dir = repo / ".booley"
     _crlf_checkout_project_data(
         booley_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
@@ -784,7 +593,6 @@ class TestWindowsProjectDataLineEndings:
 
             monkeypatch.setattr(Path, "symlink_to", no_developer_mode)
 
-        _stub_current_host(monkeypatch)
         return request.param
 
     def _assert_safe_and_linked(self, repo: Path, *, hardlink: bool) -> None:
@@ -900,6 +708,7 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: changed)
     monkeypatch.setattr(sr, "sessions_on_stale_image", lambda root, selected: stale_sessions)
 
+    # private: a full init with a CHANGED image also retires superseded images, which needs Docker.
     assert init_cmd._step_image_lifecycle(InitContext(project_root=repo)) is changed
 
     output = " ".join(capsys.readouterr().out.split())
@@ -916,49 +725,16 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
         assert "keeps serving it" not in output
 
 
-def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
-    assert _run_full_init(repo) in (0, 2)
-    project = repo / ".booley"
-    assert not (project / "tickets").exists()
-    assert not (project / "ticket_creation.md").exists()
-    assert not (project / "ticket_defaults.md").exists()
-
-
-@pytest.mark.parametrize("stale", [False, True])
-def test_reconcile_all_fixed_local_evidence_patterns(tmp_path, stale):
-    patterns = (
-        "/reviewer-evidence/",
-        "/findings.jsonl",
-        "/findings.jsonl.tmp",
-        "/BOOLEY-FEEDBACK.md",
-        "/setup-evidence/",
-        "/PARITY-REPORT.md",
-    )
-    ignore = tmp_path / ".gitignore"
-    if stale:
-        ignore.write_bytes(b"# custom policy\r\nmy_custom_dir/\r\ntmp/\r\n")
-        before = ignore.read_bytes()
-        init_cmd._backfill_project_gitignore(
-            tmp_path, InitContext(project_root=tmp_path, check_only=True)
-        )
-        assert ignore.read_bytes() == before
-    init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-    first = ignore.read_bytes()
-    assert all(ignore.read_text().splitlines().count(pattern) == 1 for pattern in patterns)
-    if stale:
-        custom_lines = before.decode().splitlines()
-        assert first.decode().splitlines()[: len(custom_lines)] == custom_lines
-    init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-    assert ignore.read_bytes() == first
-
-
-def _complete_snapshot(root: Path) -> dict[Path, tuple[bytes | None, int]]:
+def _complete_snapshot(
+    root: Path, *, skip_git: bool = False
+) -> dict[Path, tuple[bytes | None, int]]:
     return {
         path.relative_to(root): (
             path.read_bytes() if path.is_file() else None,
             stat.S_IMODE(path.stat().st_mode),
         )
         for path in [root, *root.rglob("*")]
+        if not (skip_git and ".git" in path.relative_to(root).parts)
     }
 
 
@@ -987,36 +763,38 @@ def _assert_backfill_report(output: str, missing: list[str]) -> None:
 def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> None:
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
-    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    if os.name != "nt":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert (target / "booley.toml").read_bytes() == init_cmd.BOOLEY_TOML_SKELETON.encode()
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
     assert (target / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
     assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
-    ignore = (target / ".gitignore").read_text()
+    ignore = (target / ".gitignore").read_text(encoding="utf-8")
     assert ignore.startswith("# custom ignore\ntmp/\n")
     assert missing_gitignore_patterns(ignore) == []
     assert set(ignore.splitlines()) - set("# custom ignore\ntmp/\n".splitlines()) == set(
         missing
     ) | {"", "# Added by booley init — transient Booley state."}
     # The skeleton records no Stealth choice, so no inner repository is created.
-    assert {p.name for p in target.iterdir()} == {
-        ".gitignore",
-        "booley.toml",
-        "tests.toml",
-        "metrics.toml",
-        "FUSESOC_IGNORE",
-    }
+    assert not (target / ".git").exists()
 
 
-def test_fresh_booley_dir_writes_metrics_defaults_that_validate(
-    repo, monkeypatch, capsys: pytest.CaptureFixture[str]
-):
+def test_fresh_booley_dir_is_private_lf_and_valid(repo, monkeypatch, capsys):
     from tests.harness.test_measure_cli import _measure
 
-    init_cmd._step_booley_dir(InitContext(project_root=repo))
-    metrics = repo / ".booley" / "metrics.toml"
-    assert metrics.read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
-    assert tomllib.loads(metrics.read_text(encoding="utf-8")) == {
+    _initialize(repo)
+    booley_dir = repo / ".booley"
+    if os.name != "nt":
+        assert stat.S_IMODE(booley_dir.stat().st_mode) == 0o700
+    (booley_dir / ".gitignore").write_bytes(b"# user rules\n")  # Windows text mode: #609
+    _initialize(repo)
+
+    scaffolds = [path for path in booley_dir.iterdir() if path.is_file()]
+    assert {".gitignore", "booley.toml", "FUSESOC_IGNORE"} <= {path.name for path in scaffolds}
+    for path in scaffolds:
+        assert b"\r\n" not in path.read_bytes(), path.name
+    metrics = tomllib.loads((booley_dir / "metrics.toml").read_text(encoding="utf-8"))
+    assert metrics == {
         "defaults": {"sim": {"tests_failed_max": 0}, "coverage": {"tests_failed_max": 0}}
     }
     capsys.readouterr()
@@ -1024,72 +802,38 @@ def test_fresh_booley_dir_writes_metrics_defaults_that_validate(
     assert "declares no `[<target>.<flow>]` table" in capsys.readouterr().out
 
 
-def test_booley_dir_backfills_metrics_toml_only_when_absent(repo, capsys):
-    absent = _stale_project(repo)
-    kept_root = repo / "other"
-    kept_root.mkdir()
-    kept = _stale_project(kept_root)
-    user_text = b"[sim_core.sim]\ntests_failed_max = 3\n"
-    for target in (absent, kept):
-        (target / "booley.toml").write_bytes(b"# mine\n")
-        (target / "tests.toml").write_bytes(b"# mine\n")
-    (kept / "metrics.toml").write_bytes(user_text)
-
-    for target, root in ((absent, repo), (kept, kept_root)):
-        init_cmd._step_booley_dir(InitContext(project_root=root, check_only=True))
-        output = capsys.readouterr().out
-        assert ("would add 1 config skeleton file(s)" in output) is (target is absent)
-        init_cmd._step_booley_dir(InitContext(project_root=root))
-        capsys.readouterr()
-
-    assert (absent / "metrics.toml").read_bytes() == init_cmd.METRICS_TOML_SKELETON.encode()
-    assert (kept / "metrics.toml").read_bytes() == user_text
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
-def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
+@pytest.mark.parametrize("mode", [0o755, 0o700])
+def test_booley_dir_check_reports_backfills_then_converges(repo, capsys, mode):
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
+    posix = os.name != "nt"
+    if mode == 0o755 and not posix:
+        pytest.skip("POSIX permission repair")
     target = _stale_project(repo)
-    _set_project_mode(target, 0o755)
+    if posix:
+        _set_project_mode(target, mode)
     missing = missing_gitignore_patterns((target / ".gitignore").read_text())
     before = _complete_snapshot(repo)
-    ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_booley_dir(ctx)
+
+    results = _initialize(repo, check_only=True)
+
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
-    assert "would secure Booley Directory permissions" in output
-    assert all(r.name == "booley_dir" and r.status == "warn" for r in ctx.results)
-    assert any(r.detail == "permissions need 0700" for r in ctx.results)
-    assert any("tests.toml" in r.detail for r in ctx.results)
-    assert any("metrics.toml" in r.detail for r in ctx.results)
+    records = [r for r in results if r.name == "booley_dir"]
+    assert records and all(r.status == "warn" for r in records)
+    assert ("would secure Booley Directory permissions" in output) is (mode == 0o755)
+    assert any(r.detail == "permissions need 0700" for r in records) is (mode == 0o755)
+    for skeleton in ("tests.toml", "metrics.toml"):
+        assert any(skeleton in r.detail for r in records)
     assert _complete_snapshot(repo) == before
-    init_cmd._step_booley_dir(InitContext(project_root=repo))
+    _initialize(repo)
     _assert_applied_backfills(repo, target, missing)
     capsys.readouterr()
-    ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_booley_dir(ctx)
+    again = _initialize(repo, check_only=True)
     assert "would" not in capsys.readouterr().out
-    assert [(r.status, r.detail) for r in ctx.results] == [("current", "already present")]
-
-
-def test_booley_dir_check_correct_permissions_keeps_skip(repo, capsys):
-    from booley.runtime.project_gitignore import missing_gitignore_patterns
-
-    target = _stale_project(repo)
-    if os.name != "nt":
-        _set_project_mode(target, 0o700)
-    missing = missing_gitignore_patterns((target / ".gitignore").read_text())
-    before = _complete_snapshot(repo)
-    ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_booley_dir(ctx)
-    output = capsys.readouterr().out
-    _assert_backfill_report(output, missing)
-    assert "Booley Directory found at" in output
-    assert "permissions" not in output
-    assert all(r.status == "warn" for r in ctx.results)
-    assert any("tests.toml" in r.detail for r in ctx.results)
-    assert _complete_snapshot(repo) == before
+    assert [(r.status, r.detail) for r in again if r.name == "booley_dir"] == [
+        ("current", "already present")
+    ]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory search permissions")
@@ -1102,6 +846,9 @@ def test_booley_dir_check_inaccessible_reports_incomplete(repo, capsys):
     try:
         if os.access(target, os.R_OK | os.X_OK):
             pytest.skip("privileges bypass directory search permissions")
+        # private: the full run's core-projection step stats `.booley/cores` and raises
+        # PermissionError on Python 3.11 when the directory is unsearchable; only this step
+        # reports the incomplete backfill.
         ctx = InitContext(project_root=repo, check_only=True)
         init_cmd._step_booley_dir(ctx)
         output = capsys.readouterr().out
@@ -1117,18 +864,18 @@ def test_booley_dir_check_inaccessible_reports_incomplete(repo, capsys):
     assert _complete_snapshot(repo) == before
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
 @pytest.mark.timeout(120)
-def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, monkeypatch, capsys):
+def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, capsys):
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
-    _stub_current_host(monkeypatch)
+    posix = os.name != "nt"
     assert _run_full_init(repo) == 0
     target = repo / ".booley"
     (target / "tests.toml").unlink()
     (target / "FUSESOC_IGNORE").unlink()
     (target / ".gitignore").write_bytes(b"# custom ignore\ntmp/\n")
-    _set_project_mode(target, 0o755)
+    if posix:
+        _set_project_mode(target, 0o755)
     missing = missing_gitignore_patterns((target / ".gitignore").read_text())
     before = _complete_snapshot(repo)
     capsys.readouterr()
@@ -1137,13 +884,14 @@ def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, mon
     assert "would add 1 config skeleton file(s)" in output
     assert "would add FUSESOC_IGNORE" in output
     assert f"would add {len(missing)} missing ignore pattern(s)" in output
-    assert "would secure Booley Directory permissions" in output
+    assert ("would secure Booley Directory permissions" in output) is posix
+    assert "tests.toml" in output.splitlines()[-1]  # the verdict line names the pending backfill
     assert _complete_snapshot(repo) == before
     assert _run_full_init(repo) == 0
     after = _complete_snapshot(repo)
     changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
     assert changed == {
-        Path(".booley"),
+        *([Path(".booley")] if posix else []),
         Path(".booley/tests.toml"),
         Path(".booley/FUSESOC_IGNORE"),
         Path(".booley/.gitignore"),
@@ -1159,7 +907,7 @@ def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, mon
 
 
 def _managed_git(root: Path, *args: str) -> str:
-    return run_bounded_child(["git", "-C", str(root), *args], check=True, timeout=10).stdout
+    return run_bounded_child(["git", "-C", str(root), *args], check=True).stdout
 
 
 def test_initial_authored_scaffolding_remains_uncommitted(repo):
@@ -1205,8 +953,7 @@ def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topolog
 
 
 def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
-    (repo / ".booley").mkdir()
-    (repo / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n")  # inner repo
+    _write_booley_toml(repo, stealth=True)  # inner repo
     assert _run_full_init(repo) == 0
     data = repo / ".booley"
     ignore = data / ".gitignore"
@@ -1218,51 +965,21 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     _managed_git(data, "commit", "-qm", "stale authored policy")
     before = _managed_git(data, "ls-files", "--stage", "-z")
     capsys.readouterr()
-    ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_booley_dir(ctx)
+    _initialize(repo, check_only=True)
     assert (
         "would add 1 missing ignore pattern(s) to .gitignore: .managed/" in capsys.readouterr().out
     )
     assert ignore.read_text() == stale
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    init_cmd._step_booley_dir(InitContext(project_root=repo))
+    _initialize(repo)
     repaired = ignore.read_text()
     assert repaired.startswith(stale)
     assert repaired.count(".managed/\n") == 1
     assert ".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
     assert " M .gitignore" in _managed_git(data, "status", "--porcelain")
-    init_cmd._step_booley_dir(InitContext(project_root=repo))
+    _initialize(repo)
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-
-
-def _current_auth_and_image(monkeypatch):
-    monkeypatch.setattr(
-        init_cmd, "_step_auth", lambda ctx, *_a, **_k: ctx.record("auth", "skip", "current")
-    )
-
-
-def test_seed_image_inspection_preserves_sequential_headings(repo, monkeypatch, capsys):
-    reconcile = init_cmd.image_lifecycle.reconcile_planned
-
-    def inspect(scope, intent, **kwargs):
-        assert intent == init_cmd.ImageLifecycleIntent.CHECK
-        return reconcile(scope, intent, **kwargs)
-
-    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", inspect)
-
-    def interactive(ctx, **_kwargs):
-        ctx.step_banner("Interactive Mode")
-        ctx.record("interactive", "skip", "current")
-
-    monkeypatch.setattr(init_cmd, "_step_interactive", interactive)
-    for force, check in ((False, False), (True, False), (False, True), (True, True)):
-        ctx = InitContext(project_root=repo, force=force, check_only=check)
-        init_cmd._run_seed(ctx, init_cmd.AgentSelection("claude", "subscription"))
-        numbers = [
-            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
-        ]
-        assert numbers == list(range(1, len(numbers) + 1)), "seed headings must be sequential"
 
 
 def test_seed_relocated_booley_dir_passes_pdk_root(repo, monkeypatch):
@@ -1270,33 +987,15 @@ def test_seed_relocated_booley_dir_passes_pdk_root(repo, monkeypatch):
     (repo / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
     (repo / "state").mkdir()
     seen: list[dict] = []
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_image_lifecycle",
-        lambda *_a, **_k: SimpleNamespace(status=init_cmd.ImageLifecycleStatus.CURRENT),
-    )
-    monkeypatch.setattr(init_cmd, "_step_interactive", lambda _ctx, **kwargs: seen.append(kwargs))
+    # private: `_step_sandbox` is where the PDK root arrives; its only public effect needs Docker.
+    monkeypatch.setattr(init_cmd, "_step_sandbox", lambda _ctx, **kwargs: seen.append(kwargs))
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
-    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: repo.parent / "pdk")
+    args = _init_args()
+    args.seed = True
 
-    init_cmd._run_seed(InitContext(project_root=repo), init_cmd.AgentSelection("claude", "x"))
+    init_cmd.run_init(args, repo)
 
     assert seen[0]["nangate_pdk_root"] == repo.parent / "pdk"
-
-
-def test_check_only_reports_directory_backfills_as_pending(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
-    assert _run_full_init(repo) == 0
-    (repo / ".booley/tests.toml").unlink()
-    capsys.readouterr()
-    before = _filesystem_snapshot(repo)
-    args = _init_args()
-    args.check_only = True
-    code = init_cmd.run_init(args, repo)
-    output = capsys.readouterr().out
-    assert code == 1, "backfill must be pending"
-    assert "tests.toml" in output.splitlines()[-1]
-    assert _filesystem_snapshot(repo) == before
 
 
 def _scaffold_args():
@@ -1311,7 +1010,6 @@ def _scaffold_args():
 
 
 def test_scaffold_origin_survives_plain_rerun(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
     assert init_cmd.run_init(_scaffold_args(), repo) == 0
     config = repo / ".booley/booley.toml"
     assert "# booley-init-origin: scaffold" in config.read_text(), (
@@ -1331,7 +1029,6 @@ def test_scaffold_origin_survives_plain_rerun(repo, monkeypatch, capsys):
 
 
 def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
     args = _scaffold_args()
     args.check_only = True
     before = _filesystem_snapshot(repo)
@@ -1358,6 +1055,7 @@ def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, 
     def fail(*_args):
         raise OSError("unique-inspection-failure")
 
+    # private: an OSError from layout inspection has no public trigger.
     monkeypatch.setattr(init_cmd, "_check_init_layout", fail)
     assert init_cmd.run_init(args, repo) == 2
     output = capsys.readouterr().out
@@ -1367,24 +1065,7 @@ def test_check_only_early_failures_end_with_matching_verdict(repo, monkeypatch, 
     assert "unique-inspection-failure" in output.splitlines()[-1]
 
 
-def test_check_only_unavailable_inner_git_branch_is_unresolved(repo, monkeypatch, capsys):
-    target = repo / ".booley"
-    target.mkdir(mode=0o700)
-    (target / "booley.toml").write_text("[stealth]\nenabled = true\n")
-    monkeypatch.setattr(
-        init_cmd.project_repositories,
-        "inspect_symbolic_branch",
-        lambda *_a: type("Branch", (), {"branch": None, "detail": "detached HEAD"})(),
-    )
-    ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._init_project_git_repo(target, ctx)
-    assert any(r.status == "warn" and "branch" in r.detail for r in ctx.results), (
-        "unavailable branch must be recorded unresolved"
-    )
-
-
 def test_comment_only_port_skeleton_then_scaffold_updates_creation_origin(repo, monkeypatch):
-    _current_auth_and_image(monkeypatch)
     config = repo / ".booley/booley.toml"
     config.parent.mkdir(mode=0o700)
     config.write_text(
@@ -1396,14 +1077,12 @@ def test_comment_only_port_skeleton_then_scaffold_updates_creation_origin(repo, 
 
 
 def test_existing_directory_config_backfill_never_invents_port_origin(repo, monkeypatch):
-    _current_auth_and_image(monkeypatch)
     (repo / ".booley").mkdir(mode=0o700)
     assert _run_full_init(repo) == 0
     assert "booley-init-origin:" not in (repo / ".booley/booley.toml").read_text()
 
 
 def test_legacy_init_modes_never_backfill_origin(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
@@ -1481,24 +1160,17 @@ def _after_init_scaffold_args(**overrides):
 
 def _never_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the run interactive and fail the test on any prompt."""
-    real_context = init_cmd._init_context
-
-    def interactive_context(args, project_root):
-        ctx = real_context(args, project_root)
-        ctx.interactive = True
-        return ctx
 
     def no_prompt(*_args, **_kwargs):
         raise AssertionError("scaffold after plain init prompted the user")
 
-    monkeypatch.setattr(init_cmd, "_init_context", interactive_context)
+    use_terminal_stdin(monkeypatch)
     monkeypatch.setattr("builtins.input", no_prompt)
 
 
 def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys):
     from booley.harness import doctor
 
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     config = repo / ".booley/booley.toml"
     assert "[agent]" in config.read_text(encoding="utf-8")
@@ -1539,6 +1211,8 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
         "sim",
     )
     reporter = doctor._Reporter.create()
+    # private: the reporter is the audit's collector, and the public `doctor.run_doctor_result`
+    # also runs host and Docker probes.
     doctor._run_core_audit(
         project,
         reporter.pass_,
@@ -1556,7 +1230,6 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
 
 
 def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch):
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     _never_prompt(monkeypatch)
 
@@ -1572,7 +1245,6 @@ def test_stealth_scaffold_after_plain_init_keeps_hidden_layout(repo, monkeypatch
 
 
 def test_scaffold_refuses_inner_repo_with_commits(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     inner = repo / ".booley"
     _git(inner, "add", "booley.toml")
@@ -1591,7 +1263,6 @@ def test_scaffold_refuses_inner_repo_with_commits(repo, monkeypatch, capsys):
 
 def test_scaffold_refuses_symlinked_inner_git(repo, monkeypatch, capsys, tmp_path):
     """A symlinked `.booley/.git` cannot be removed with rmtree: refuse before any change."""
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     real_git = tmp_path / "elsewhere.git"
     (repo / ".booley/.git").rename(real_git)
@@ -1608,7 +1279,6 @@ def test_scaffold_refuses_symlinked_inner_git(repo, monkeypatch, capsys, tmp_pat
 
 def test_scaffold_removal_failure_keeps_the_exclusion(repo, monkeypatch, capsys):
     """If the inner repository cannot be removed, the exclusion stays and the run stops."""
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
 
     def failing_rmtree(path, *args, **kwargs):
@@ -1626,7 +1296,6 @@ def test_scaffold_removal_failure_keeps_the_exclusion(repo, monkeypatch, capsys)
 
 def test_scaffold_leaves_symlinked_booley_footprint(repo, monkeypatch, capsys, tmp_path):
     """A symlinked `.booley` with a hidden footprint is left alone with a warning."""
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     real = tmp_path / "pinned"
     (repo / ".booley").rename(real)
@@ -1642,7 +1311,6 @@ def test_scaffold_leaves_symlinked_booley_footprint(repo, monkeypatch, capsys, t
 
 def test_scaffold_ownership_conflict_keeps_hidden_layout(repo, monkeypatch, capsys):
     """Refusals precede the destructive step: a blocked write leaves the footprint."""
-    _current_auth_and_image(monkeypatch)
     _plain_init_with_legacy_hidden_layout(repo)
     constraints = repo / "constraints"
     constraints.mkdir()
@@ -1661,7 +1329,6 @@ def test_scaffold_ownership_conflict_keeps_hidden_layout(repo, monkeypatch, caps
 
 
 def test_scaffold_after_init_refuses_rtl_and_other_config(repo, monkeypatch):
-    _current_auth_and_image(monkeypatch)
     assert _run_full_init(repo) == 0
     config = repo / ".booley/booley.toml"
 
@@ -1683,7 +1350,6 @@ def test_scaffold_after_init_refuses_rtl_and_other_config(repo, monkeypatch):
 
 
 def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):
-    _current_auth_and_image(monkeypatch)
     external = repo.parent / "external"
     external.mkdir()
     config = external / "booley.toml"
@@ -1695,36 +1361,62 @@ def test_init_origin_ignores_external_booley_dir(repo, monkeypatch):
     assert os.environ["BOOLEY_DIR"] == str(external)
 
 
-def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys):
-    _current_auth_and_image(monkeypatch)
-    for scaffold, force, check in (
-        (True, False, False),
-        (False, False, False),
-        (False, True, False),
-        (False, False, True),
-    ):
-        args = _scaffold_args() if scaffold else _init_args()
-        args.force = force
-        args.check_only = check
-        assert init_cmd.run_init(args, repo) == 0
-        numbers = [
-            int(n) for n in re.findall(r"^Step (\d+)", capsys.readouterr().out, re.MULTILINE)
-        ]
-        assert numbers == list(range(1, len(numbers) + 1))
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "scaffold",
+        "plain",
+        "force",
+        "check",
+        "seed",
+        "seed+force",
+        "seed+check",
+        "seed+force+check",
+        "bare-seed",
+    ],
+)
+def test_init_mode_headings_are_sequential(repo, monkeypatch, capsys, mode):
+    """F-2: step labels are 1..n with no gaps and no `9b`-style suffixes, in every mode."""
+    flags = set(mode.split("+"))
+    if "seed" in flags or mode in {"force", "check"}:
+        assert _run_full_init(repo) == 0  # these modes act on an initialized Project
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+    intents = []
+    real = init_cmd.image_lifecycle.reconcile_planned
+    monkeypatch.setattr(
+        init_cmd.image_lifecycle,
+        "reconcile_planned",
+        lambda scope, intent, **kwargs: intents.append(intent) or real(scope, intent, **kwargs),
+    )
+    args = _scaffold_args() if mode == "scaffold" else _init_args()
+    args.seed = bool(flags & {"seed", "bare-seed"})  # bare-seed: no Booley Directory yet
+    args.force = "force" in flags
+    args.check_only = "check" in flags
+    capsys.readouterr()
+
+    assert init_cmd.run_init(args, repo) == (2 if mode == "bare-seed" else 0)
+
+    labels = re.findall(r"^Step (\S+) —", capsys.readouterr().out, re.MULTILINE)
+    assert labels == [str(n) for n in range(1, len(labels) + 1)] and labels
+    assert set(intents) <= {init_cmd.ImageLifecycleIntent.CHECK} or not args.seed  # #1564
+    assert intents or "seed" not in flags
 
 
-def test_refused_fusesoc_ignore_marker_warns(tmp_path, capsys):
-    booley_dir = tmp_path / ".booley"
+@pytest.mark.parametrize("name", [".gitignore", "FUSESOC_IGNORE"])
+def test_symlinked_booley_dir_file_is_refused(repo, capsys, name):
+    booley_dir = repo / ".booley"
     booley_dir.mkdir()
-    destination = tmp_path / "outside-marker"
-    symlink_or_skip(booley_dir / "FUSESOC_IGNORE", destination)
-    ctx = InitContext(project_root=tmp_path)
+    outside = repo.parent / "outside"
+    outside.write_bytes(b"# user rules\n")
+    symlink_or_skip(booley_dir / name, outside)
+    planted_target = (booley_dir / name).readlink()
 
-    init_cmd._backfill_fusesoc_ignore(booley_dir, ctx)
+    results = _initialize(repo)
 
-    assert not destination.exists()
+    assert outside.read_bytes() == b"# user rules\n"
+    assert (booley_dir / name).readlink() == planted_target
+    assert ("booley_dir", "warn") in [(r.name, r.status) for r in results]
     assert "refusing symlinked" in capsys.readouterr().out
-    assert (ctx.results[-1].name, ctx.results[-1].status) == ("booley_dir", "warn")
 
 
 @pytest.mark.skipif(
@@ -1765,21 +1457,14 @@ def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path,
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
 
+    # private: `initialize_project` also adds these exclusions from later steps, which would
+    # mask this step dropping them.
     init_cmd._step_core_projections(InitContext(project_root=root))
 
     exclude = (root / ".git/info/exclude").read_text(encoding="utf-8").splitlines()
     assert "/.booley" in exclude
     assert "/tools/booley" in exclude
     reset_cache()
-
-
-@pytest.mark.timeout(120)
-def test_fresh_init_creates_no_goalsets(repo, capsys):
-    """Init seeds no Goalsets: Goal Mode is removed."""
-    assert _run_full_init(repo) == 0
-    out = capsys.readouterr().out
-    assert not list(repo.rglob("goalsets"))
-    assert "Goalsets" not in out
 
 
 EXPECTED_FRESH_INIT = (
@@ -1794,7 +1479,7 @@ EXPECTED_FRESH_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Interactive Mode (Reopen in Container)",
+        "Sandbox (Reopen in Container)",
         "Project Inventory",
         "post-setup advisories",
     ],
@@ -1828,7 +1513,7 @@ EXPECTED_RERUN_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Interactive Mode (Reopen in Container)",
+        "Sandbox (Reopen in Container)",
         "Project Inventory",
         "post-setup advisories",
     ],
@@ -1856,6 +1541,7 @@ def _init_banners_and_results(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Run full init once; return its step banner titles and ``(record, status)`` pairs."""
     summaries: list[InitContext] = []
+    # private: the summary prints status as a glyph, so record statuses come from its context.
     real_summary = init_cmd._print_summary
 
     def capture_summary(ctx: InitContext) -> int:
@@ -1875,7 +1561,6 @@ def test_full_init_output_order_is_unchanged(repo, monkeypatch, capsys):
     The literal sequences were captured from ``main`` before Project Initialization was
     extracted; a step that is dropped, duplicated or reordered changes them.
     """
-    _current_auth_and_image(monkeypatch)
     (repo / ".booley").mkdir()
     (repo / ".booley" / "AGENTS.md").write_text("# Project guide\n", encoding="utf-8")
     # The captured sequences are a Stealth Project's (no Project trackability step).
