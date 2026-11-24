@@ -14,4 +14,4 @@ def test_dollar_in_dump_name_is_single_quoted(tmp_path):
 
     message = str(exc.value)
     assert f"  bwave register '{dump}' --as ALIAS --build" in message
-    assert f"  bwave gui '{dump}'" in message
+    assert "bwave gui" not in message

@@ -16,14 +16,6 @@ RUN T3CODE_VERSION="$(t3code_pin version)" \
         "https://github.com/pingdotgg/t3code/releases/download/v${T3CODE_VERSION}/t3-${T3CODE_VERSION}-linux-x64.tar.gz" \
         -o /tmp/t3code.tar.gz
 
-ARG VAPORVIEW_VERSION=1.6.0
-ARG VAPORVIEW_SHA256=efaea5df08b23ad94efba9f0a686a9863c30d9c9662d06f872f527c22cd4b6a9
-ARG VAPORVIEW_SOURCE_TAG=1.6.0-rel
-ARG VAPORVIEW_SOURCE_COMMIT=d401914c3021596fccf343603aa5a8208c21d28c
-RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
-    -o /tmp/vaporview.vsix
-
 ARG VERILOGHDL_VERSION=1.29.0
 ARG VERILOGHDL_SHA256=f657680f6eaf485923a3c2b07efd8cc3a8231f327762b2c8eb70062b4730709c
 ARG VERILOGHDL_SOURCE_TAG=v1.29.0

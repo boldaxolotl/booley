@@ -4,7 +4,7 @@
 
 Parse a VCD and write a plain FST store (`.fst`): the full transition
 stream, the original timescale, and the scope tree, losslessly. It opens
-directly in GTKWave and VaporView. Every query reads the store instead of
+directly in GTKWave and Surfer. Every query reads the store instead of
 re-parsing the VCD, so `build` is the only expensive step.
 
 Use `--input PATH` rather than the positional path for a named pipe (FIFO):

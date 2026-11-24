@@ -101,7 +101,6 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
         _GITHUB,
         {_WORKFLOW: [r"^ +ACTIONLINT_SHA256: (.*)$"]},
     ),
-    "vaporview": ("lramseyer/vaporview", "1.6.0", _OPEN_VSX, {_BASE: _vsix("VAPORVIEW")}),
     "veriloghdl": ("mshr-h/veriloghdl", "1.29.0", _OPEN_VSX, {_BASE: _vsix("VERILOGHDL")}),
     "live-preview": (
         "ms-vscode/live-server",
@@ -283,20 +282,18 @@ _VERIBLE_URL = (
     "verible-v0.0-4296-g0f262651-linux-static-x86_64.tar.gz"
 )
 _NODE_INDEX_URL = "https://nodejs.org/dist/index.json"
-_VAPORVIEW_META_URL = "https://open-vsx.org/api/lramseyer/vaporview/1.6.0"
+_LIVE_PREVIEW_META_URL = "https://open-vsx.org/api/ms-vscode/live-server/0.4.20"
 _SV2V_RELEASE_URL = "https://api.github.com/repos/zachjs/sv2v/releases/tags/v0.0.13"
 _NODE_SUMS_URL = "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt"
-_VAPORVIEW_SHA_URL = (
-    "https://open-vsx.org/api/lramseyer/vaporview/1.6.0/file/lramseyer.vaporview-1.6.0.sha256"
-)
+_LIVE_PREVIEW_SHA_URL = "https://open-vsx.org/api/ms-vscode/live-server/0.4.20/file/ms-vscode.live-server-0.4.20.sha256"
 
 
-def _vaporview_meta(repository: str | None = None, **files: str) -> dict[str, bytes | None]:
-    """Override the recorded Open VSX metadata of VaporView with different fields."""
-    meta = json.loads(json.dumps(_RECORDED[_VAPORVIEW_META_URL]))
+def _live_preview_meta(repository: str | None = None, **files: str) -> dict[str, bytes | None]:
+    """Override the recorded Open VSX metadata of Live Preview with different fields."""
+    meta = json.loads(json.dumps(_RECORDED[_LIVE_PREVIEW_META_URL]))
     meta["files"].update(files)
     meta["repository"] = repository or meta["repository"]
-    return {_VAPORVIEW_META_URL: json.dumps(meta).encode()}
+    return {_LIVE_PREVIEW_META_URL: json.dumps(meta).encode()}
 
 
 @pytest.mark.parametrize(
@@ -308,9 +305,9 @@ def _vaporview_meta(repository: str | None = None, **files: str) -> dict[str, by
         ),
         pytest.param(
             "sv2v",
-            "vaporview",
+            "live-preview",
             None,
-            {_VAPORVIEW_SHA_URL: b"0" * 64},
+            {_LIVE_PREVIEW_SHA_URL: b"0" * 64},
             None,
             id="openvsx-metadata-mismatch",
         ),
@@ -332,25 +329,25 @@ def _vaporview_meta(repository: str | None = None, **files: str) -> dict[str, by
         ),
         pytest.param(
             "sv2v",
-            "vaporview",
+            "live-preview",
             None,
-            _vaporview_meta(sha256="https://evil.example/x.sha256"),
+            _live_preview_meta(sha256="https://evil.example/x.sha256"),
             None,
             id="foreign-host",
         ),
         pytest.param(
             "sv2v",
-            "vaporview",
+            "live-preview",
             None,
-            _vaporview_meta(repository="https://github.com/evil/vaporview"),
+            _live_preview_meta(repository="https://github.com/evil/vscode-livepreview"),
             None,
             id="openvsx-wrong-repository",
         ),
         pytest.param(
             "sv2v",
-            "vaporview",
+            "live-preview",
             None,
-            _vaporview_meta(download="https://open-vsx.org/api/other.vsix"),
+            _live_preview_meta(download="https://open-vsx.org/api/other.vsix"),
             None,
             id="openvsx-wrong-download",
         ),
@@ -475,8 +472,8 @@ def test_data_file_comes_from_renovate_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Renovate hands the data file over only as an environment variable."""
-    root = _checkout(tmp_path, ["vaporview"])
-    data_file = _data_file(tmp_path, [_CASES["vaporview"][:2]])
+    root = _checkout(tmp_path, ["live-preview"])
+    data_file = _data_file(tmp_path, [_CASES["live-preview"][:2]])
     monkeypatch.setenv(_DATA_FILE_ENV, str(data_file))
 
     assert _script().main(["--root", str(root)], opener=_Upstream()) == 0
@@ -499,18 +496,17 @@ def test_literal_copies_of_a_pin_are_ignored(tmp_path: Path) -> None:
 
     Only the canonical one (the file holding the pin's version) is acted on: the xPack copy
     in the session contract reports ``15.2.0`` where the pin is ``15.2.0-1``, and the
-    VaporView copies must not download the VSIX again.
+    Live Preview copy must not download the VSIX again.
     """
-    root = _checkout(tmp_path, ["xpack-gcc", "vaporview"])
+    root = _checkout(tmp_path, ["xpack-gcc", "live-preview"])
     xpack, xpack_version = _CASES["xpack-gcc"][:2]
-    vaporview, vaporview_version = _CASES["vaporview"][:2]
+    live_preview, live_preview_version = _CASES["live-preview"][:2]
     upgrades = [
         (xpack, xpack_version),
         (xpack, "15.2.0", _SESSION_CONTRACT),
         (xpack, "15.2.0", "docs/user/SUPPORTED-EDA-TOOLS.md"),
-        (vaporview, vaporview_version),
-        (vaporview, vaporview_version, "src/booley/runtime/vaporview.py"),
-        (vaporview, vaporview_version, "docs/user/VAPORVIEW.md"),
+        (live_preview, live_preview_version),
+        (live_preview, live_preview_version, "src/booley/runtime/devcontainer.py"),
     ]
     upstream = _Upstream()
 

@@ -66,7 +66,7 @@ _AUDITED_MODULES = (
     "runtime/core_repository_hygiene.py",
     "runtime/incontainer_setup.py",
     "runtime/project_image.py",
-    "runtime/vaporview.py",
+    "runtime/bundled_extensions.py",
 )
 
 _NON_DOCTOR_PRINTERS = {
@@ -188,7 +188,7 @@ _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint va
 _UNRESOLVED: dict[str, str] = {
     'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
     'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
-    'fail - runtime/vaporview.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
+    'fail - runtime/bundled_extensions.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,

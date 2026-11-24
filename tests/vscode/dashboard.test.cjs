@@ -8,8 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname,
     '../../src/booley/data/vscode/dashboard/extension.js'), 'utf8');
-const LIFECYCLE_NAME = 'Codespaces: python -m booley.runtime.incontainer_live_preview && ' +
-    'python -m booley.runtime.incontainer_vaporview';
+const LIFECYCLE_NAME = 'Codespaces: python -m booley.runtime.incontainer_live_preview';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fakeEditor(options, records, settings) {
@@ -46,7 +45,7 @@ function fakeEditor(options, records, settings) {
             creationOptions: { shellPath: '/usr/local/bin/booley', shellArgs: ['dashboard', '--on-attach'] } });
     }
     if (options.titledLifecycleTerminal) {
-        open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_vaporview',
+        open.push({ name: 'Codespaces: python -m booley.runtime.incontainer_live_preview',
             creationOptions: {}, state: { isInteractedWith: true } });
     }
     if (options.backgroundShell) {
@@ -176,7 +175,6 @@ function fixture(options = {}) {
             if (name === 'vscode') { return vscode; }
             if (name === 'node:child_process') { return {execFile}; }
             if (name === 'node:fs') { return {existsSync: () => options.git !== false}; }
-            if (name === './vaporview_bridge') { return {start: async () => ({})}; }
             return require(name);
         } });
     const state = new Map();

@@ -28,6 +28,7 @@ from booley.runtime.timefmt import utc_now_rfc3339
 
 PROTOCOL_VERSION = 1
 RUNTIME_EXECUTION_ENV = "BOOLEY_RUNTIME_EXECUTION_ID"
+RELEASE_TOKEN_ENV = "BOOLEY_RELEASE_TOKEN"
 EXECUTION_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _EXECUTION_ID_RE = re.compile(r"[0-9a-f]{32}")
 _PROTOCOL_FILENAMES = {
@@ -37,6 +38,7 @@ _PROTOCOL_FILENAMES = {
     "attachment-heartbeat",
     "context.json",
     "record.lock",
+    "release-tokens",
 }
 _RECORD_LOCK_TIMEOUT_SECONDS = 30.0
 _TERMINAL_FIELDS = {
@@ -72,6 +74,7 @@ class ExecutionPaths:
     force: Path
     heartbeat: Path
     context: Path
+    release_tokens: Path
 
 
 def execution_paths(
@@ -89,6 +92,7 @@ def execution_paths(
         force=root / "force-cancel",
         heartbeat=root / "attachment-heartbeat",
         context=root / "context.json",
+        release_tokens=root / "release-tokens",
     )
 
 
@@ -284,6 +288,33 @@ def is_older_child_context(paths: ExecutionPaths, execution_id: ExecutionId) -> 
         and payload.get("$schema") == _OLDER_CONTEXT_SCHEMA
         and payload.get("child_execution_id") == execution_id
     )
+
+
+def record_release_token(paths: ExecutionPaths, token: str) -> None:
+    """Durably append *token*, which releases the processes carrying it from cleanup.
+
+    One ``O_APPEND`` write per token keeps concurrent spawners from interleaving.
+    The leading newline ends any torn line an earlier failed append left. The
+    execution directory is never created; a missing or unwritable one, or a
+    short write, raises ``OSError``.
+    """
+    line = f"\n{token}\n".encode("ascii")
+    descriptor = os.open(paths.release_tokens, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        if os.write(descriptor, line) != len(line):
+            raise OSError(f"short write to {paths.release_tokens.name}")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def read_release_tokens(paths: ExecutionPaths) -> frozenset[str]:
+    """Return the recorded release tokens; blank, torn, and malformed lines release nothing."""
+    raw = _read_protocol_bytes(paths.release_tokens)
+    if raw is None:
+        return frozenset()
+    lines = raw.decode("ascii", errors="replace").splitlines()
+    return frozenset(line for line in lines if _EXECUTION_ID_RE.fullmatch(line))
 
 
 def write_attachment_heartbeat(paths: ExecutionPaths, *, generation: int) -> None:
