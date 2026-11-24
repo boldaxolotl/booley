@@ -24,12 +24,6 @@ def handle_lock_is_held(handle: BinaryIO) -> bool:
     return False
 
 
-def lock_is_held(path: Path) -> bool:
-    """Report whether another open file description currently holds *path*'s lock."""
-    with path.open("a+b") as probe:
-        return handle_lock_is_held(probe)
-
-
 def invocation_lock_paths(root: Path) -> Iterator[Path]:
     """Yield Simulation invocation locks without traversing Git internals.
 
