@@ -110,9 +110,13 @@ class _Checker:
         if spec is None or (header, spec) in self._specs:
             return
         self._specs.add((header, spec))
-        path = (self.checkout / spec).resolve()
-        if not (path.is_file() and path.is_relative_to(self.checkout)):
-            self.error(header, "spec", f"{spec!r} is not a file of the project")
+        try:
+            path = (self.checkout / spec).resolve()
+            found = path.is_file() and path.is_relative_to(self.checkout)
+        except ValueError:  # an embedded NUL
+            found = False
+        if not found:
+            self.error(header, "spec", f"{spec!r} is not a file of the Project")
 
     def table(self, table: TargetReviews) -> tuple[TargetInspection, frozenset[str]] | None:
         """Check *table*; return the Target's inspection and the inputs it excludes."""
@@ -146,13 +150,27 @@ class _Checker:
         wanted: dict[Role, frozenset[str]] = {
             role: files[role] for role in _ROLES if _focuses(entry, role)
         }
+        before = len(self.errors)
         for glob in entry.paths:
             if problem := self.glob_problem(glob, inputs, wanted):
                 self.error(header, "paths", problem)
+        if len(self.errors) != before:
+            return
+        reached = _matches(entry.paths, inputs)
+        for role, role_files in wanted.items():
+            if not reached & role_files:
+                self.error(
+                    header,
+                    "paths",
+                    f"no glob matches a {_ROLE_NAME[role]} file of the Target, "
+                    f"but the entry carries {role} focuses",
+                )
 
 
 def _role_files(inspection: TargetInspection) -> dict[Role, frozenset[str]]:
-    return {"rtl": frozenset(inspection.rtl_files), "tb": frozenset(inspection.tb_files)}
+    """The inputs of each role; include headers are RTL, as in the Reviewer's file classes."""
+    tb = frozenset(item.path for item in inspection.inputs if "tb" in item.tags)
+    return {"rtl": _inputs(inspection) - tb, "tb": tb}
 
 
 def _focuses(declared: TargetReviews | PathReviews, role: Role) -> tuple[str, ...]:

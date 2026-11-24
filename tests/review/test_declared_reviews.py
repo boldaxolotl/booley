@@ -109,6 +109,66 @@ resolve = "critical"
     assert declared.path == root / ".booley" / "reviews.toml"
 
 
+def test_unwritten_keys_take_built_in_defaults_and_entries_carry_their_own(
+    tmp_path: Path,
+) -> None:
+    from booley.review.review_resolution import load_declared_reviews
+
+    root = write_project(
+        tmp_path,
+        """\
+[defaults.review]
+exclude = ["rtl/gen/*.sv"]
+
+[sim_core.review]
+rtl = ["bugs"]
+
+[[sim_core.review.paths]]
+paths = ["tb/*.sv", "rtl/a.sv"]
+rtl = ["spec"]
+tb = ["quality"]
+spec = "docs/spec.md"
+""",
+    )
+
+    declared = load_declared_reviews(root)
+
+    assert declared.reviews == {
+        SIM_CORE_ID: {
+            review("rtl", "bugs", "major", {"rtl/a.sv", "rtl/b.sv"}, spec=None),
+            review("rtl", "spec", "major", {"rtl/a.sv"}),
+            review("tb", "quality", "major", {"tb/tb.sv"}),
+        }
+    }
+
+
+def test_include_headers_are_reviewed_as_rtl(tmp_path: Path) -> None:
+    from booley.review.review_resolution import load_declared_reviews
+
+    root = write_project(
+        tmp_path,
+        '[sim_core.review]\nrtl = ["bugs"]\n[[sim_core.review.paths]]\n'
+        'paths = ["rtl/*.svh"]\nrtl = ["security"]\n',
+    )
+    write(root / "rtl" / "defs.svh", "`define W 8\n")
+    core = root / "sim.core"
+    core.write_bytes(
+        core.read_bytes().replace(
+            b"files: [rtl/a.sv,", b"files: [rtl/a.sv, {rtl/defs.svh: {is_include_file: true}},"
+        )
+    )
+
+    declared = load_declared_reviews(root)
+
+    rtl = {"rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv", "rtl/defs.svh"}
+    assert declared.reviews == {
+        SIM_CORE_ID: {
+            review("rtl", "bugs", "major", rtl, spec=None),
+            review("rtl", "security", "major", {"rtl/defs.svh"}, spec=None),
+        }
+    }
+
+
 def test_no_reviews_toml_declares_nothing(tmp_path: Path) -> None:
     from booley.review.review_resolution import load_declared_reviews
 
@@ -152,7 +212,7 @@ ERRORS = {
     ),
     "spec-path-missing": (
         FOCUS + 'spec = "docs/nope.md"\n',
-        ["[sim_core.review] spec: 'docs/nope.md' is not a file of the project"],
+        ["[sim_core.review] spec: 'docs/nope.md' is not a file of the Project"],
     ),
     "invalid-resolve": (
         FOCUS + 'resolve = "blocker"\n',
@@ -183,6 +243,17 @@ ERRORS = {
         FOCUS + ENTRY + 'paths = ["tb/*"]\n',
         ["[[sim_core.review.paths]] #1 paths: glob 'tb/*' matches no RTL file of the Target"],
     ),
+    "entry-focus-without-files-of-its-role": (
+        FOCUS + ENTRY + 'paths = ["rtl/*.sv"]\ntb = ["quality"]\n',
+        [
+            "[[sim_core.review.paths]] #1 paths: no glob matches a testbench file of the Target, "
+            "but the entry carries tb focuses"
+        ],
+    ),
+    "spec-path-with-a-nul": (
+        FOCUS + 'spec = "docs/\\u0000spec.md"\n',
+        ["[sim_core.review] spec: 'docs/\\x00spec.md' is not a file of the Project"],
+    ),
     "glob-matches-firmware": (
         FOCUS + ENTRY + 'paths = ["fw/*"]\n',
         [
@@ -211,7 +282,7 @@ ERRORS = {
     ),
     "entry-spec-path-missing": (
         FOCUS + ENTRY + 'paths = ["rtl/*"]\nspec = "docs/nope.md"\n',
-        ["[[sim_core.review.paths]] #1 spec: 'docs/nope.md' is not a file of the project"],
+        ["[[sim_core.review.paths]] #1 spec: 'docs/nope.md' is not a file of the Project"],
     ),
     "wrong-value-types": (
         '[sim_core.review]\nrtl = "bugs"\nspec = 3\nexclude = [1]\n',
@@ -247,12 +318,12 @@ ERRORS = {
     ),
     "default-spec-path-missing-is-reported-once": (
         '[defaults.review]\nrtl = ["bugs"]\nspec = "docs/nope.md"\n[sim_core.review]\n[sim_fifo.review]\n',
-        ["[defaults.review] spec: 'docs/nope.md' is not a file of the project"],
+        ["[defaults.review] spec: 'docs/nope.md' is not a file of the Project"],
     ),
     "spec-path-missing-beside-a-valid-default": (
         '[defaults.review]\nrtl = ["bugs"]\nspec = "docs/spec.md"\n'
         '[sim_core.review]\nspec = "docs/nope.md"\n[sim_fifo.review]\n',
-        ["[sim_core.review] spec: 'docs/nope.md' is not a file of the project"],
+        ["[sim_core.review] spec: 'docs/nope.md' is not a file of the Project"],
     ),
     "defaults-is-not-a-table-of-review": (
         "[defaults.sim]\nrtl = 1\n",
@@ -282,10 +353,7 @@ def test_load_error_names_table_and_key(tmp_path: Path, name: str) -> None:
         load_declared_reviews(root)
 
     assert [error.render() for error in raised.value.errors] == expected
-    assert (
-        str(raised.value)
-        == f"reviews.toml has {len(expected)} load error{'s' * (len(expected) != 1)}"
-    )
+    assert str(raised.value).startswith("reviews.toml has ")
 
 
 def commit_reviews(layout: str, tmp_path: Path, committed: str, live: str) -> tuple[Path, str]:

@@ -113,17 +113,15 @@ and Booley's conflict, yours win.
 ## Declare reviews in `reviews.toml`
 
 `reviews.toml` sits in the Booley Directory, `.booley/` at the top of your
-repository. It lists, for each Target, the reviews Booley runs on it, so you
-write them once instead of in each request. Booley checks the file when it runs
-the declared reviews, which no released version does yet (see the
-[roadmap](../internals/ROADMAP.md)). Without the file, a Project declares no
-reviews.
+Project. It lists, for each Target, the reviews Booley runs on it, so you
+write them once instead of in each request. No released version runs them yet.
+Without the file, a Project declares no reviews.
 
 A Target's reviews are a `[<target>.review]` table. Its keys:
 
 - `rtl` and `tb`: the [focuses](#choosing-a-focus) to run on the Target's RTL
   files and testbench files. Use `rtl` for the RTL focuses and `tb` for
-  `quality`; a focus under the other key is a load error.
+  `quality`.
 - `spec`: the path of the spec the review checks against. The `spec` focus
   needs one.
 - `resolve`: the lowest severity that has to be resolved, `critical`, `major`
@@ -152,28 +150,21 @@ spec = "docs/spec.md"
 exclude = ["rtl/gen/*.sv"]
 
 [[sim_core.review.paths]]
-paths = ["rtl/**"]
+paths = ["rtl/*.sv"]
 rtl = ["security"]
 resolve = "critical"
 ```
 
-Here `sim_core` gets a `spec` and a `bugs` review of its RTL files and a
+Here `sim_core` gets `spec` and `bugs` reviews of its RTL files and a
 `quality` review of its testbench files, all resolved at `minor`, plus a
-`security` review of the files under `rtl/` resolved at `critical`. The
-generated files `rtl/gen/*.sv` are in none of them. `sim_fifo` has no table, so
-the defaults do not apply to it.
+`security` review of the `.sv` files in `rtl/` resolved at `critical`. The
+generated files `rtl/gen/*.sv` are in none of them.
 
-The file fails to load, naming the table and key, when:
-
-- a key, focus or value is unknown or of the wrong kind;
-- a table or entry names no focus, or `paths` is missing or empty;
-- a Target key matches no Target;
-- `spec` is not a file of the project;
-- a glob in `exclude` or `paths` matches no file of the Target, or matches a
-  file outside the Target's filesets, or, in an entry, matches no file of the
-  role the entry reviews. `rtl/**` therefore fails when `rtl/` also holds a
-  file such as a README that no fileset lists; write the file type, `rtl/*.sv`.
-  A default `exclude` glob is checked against each Target it fills.
+The file fails to load, naming the table and key, when a key, focus or value
+is unknown or of the wrong kind, a table or entry names no focus, `spec` is
+not a file of the Project, or a glob in `exclude` or `paths` matches no file
+of the Target or reaches a file outside it. Write the file type
+(`rtl/*.sv`, not `rtl/**`) so a README in `rtl/` is not matched.
 
 ## Running it yourself
 

@@ -11,7 +11,7 @@ The reviews a Target declares live in ``<Booley Directory>/reviews.toml``::
     exclude = ["rtl/gen/*.sv"]
 
     [[sim_core.review.paths]]  # adds reviews over the files its globs match
-    paths = ["rtl/**"]
+    paths = ["rtl/*.sv"]
     rtl = ["security"]
 
 This module checks everything that needs no checkout; the checks against the
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, Literal, cast, get_args
 
+from booley.core.boundary import is_str_list
 from booley.measurement.metrics_file import table_header
 from booley.measurement.rules_diff import commit_file
 from booley.measurement.run_key import KeyedCommit, booley_dir_at
@@ -114,14 +115,11 @@ class _Reader:
     def error(self, table: str, key: str | None, message: str) -> None:
         self.errors.append(ReviewsLoadError(table, key, message))
 
-    # --- one key's value --------------------------------------------------------------
-
     def _strings(self, header: str, key: str, value: object) -> tuple[str, ...] | None:
-        items = value if isinstance(value, list) else None
-        if items is None or not all(isinstance(item, str) for item in cast(list[object], items)):
+        if not is_str_list(value):
             self.error(header, key, "must be a list of strings")
             return None
-        return tuple(dict.fromkeys(cast(list[str], items)))
+        return tuple(dict.fromkeys(value))
 
     def _focuses(self, header: str, role: str, value: object) -> tuple[str, ...] | None:
         items = self._strings(header, role, value)
@@ -184,8 +182,6 @@ class _Reader:
             if key not in allowed:
                 self.error(header, key, f"unknown key; use one of: {', '.join(allowed)}")
         return table
-
-    # --- the file ---------------------------------------------------------------------
 
     def read(self, data: Mapping[str, Any]) -> tuple[TargetReviews, ...]:
         defaults = self._defaults(data.get("defaults"))
