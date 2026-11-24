@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import io
+import itertools
 import json
 import logging
 import math
@@ -35,7 +36,7 @@ from booley.flows.synth.backends.yosys.parsing import parse_stat
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
     SynthMetrics,
-    _baseline_self_compare_warning,
+    _baseline_self_compare_warning,  # private: see test_baseline_self_compare_warning
     synth_target_report_slug,
 )
 from booley.flows.synth.mode import SynthMode
@@ -2540,6 +2541,8 @@ def test_run_result_reaches_the_summary(synth_cli: SynthCli, name: str) -> None:
         assert text not in outcome.report_text
     fields = case.get("fields", {})
     assert {key: view.get(key) for key in fields} == fields
+    # The report's own top-level export, which the view's condition would otherwise mask.
+    assert report.get("io_bound_critical", False) is fields.get("io_bound_critical", False)
     assert case.get("failure_output", "") in view.get("failure_output", "")
 
 
@@ -2575,6 +2578,8 @@ def test_run_publishes_report_log_and_build_dir(synth_cli: SynthCli, case: str) 
         assert set(files) <= {path.name for path in live.iterdir()}
     log_text = published_log.read_text(encoding="utf-8")
     assert (_CORRUPT_RC in log_text) is failed
+    assert ("Yosys died before stat output" in log_text) is failed
+    assert (_YOSYS_AREA in log_text) is (case == "pass")
     assert f"lite: log: {published['log']}" in outcome.report_text
     if case == "pass":
         assert (report["cell_count"], report["area_kge"]) == (100, pytest.approx(8.02005))
@@ -3101,16 +3106,29 @@ class TestBaselineFlow:
 
     def test_baseline_dual_run(self, synth_cli: SynthCli, capsys: pytest.CaptureFixture[str]):
         sha = _git_project(synth_cli.project)
+        synth_cli.config('synth_mode = "physical"\n')
+        synth_cli.resolution.resolve = _resolving(
+            lambda root: _with_synth_mode(_fake_synth_resolved(root), "physical")
+        )
         advisory = "ABC: Warning: The network has multiple outputs.\n"
+
+        def sta(wns: float, area: float) -> dict[str, str]:
+            # period 4 ns: wns 2.0 -> 2,000 ps critical path, wns 1.5 -> 2,500 ps.
+            return {
+                "openroad.log": f"STA_WORST_SLACK_NS: {wns:.6f}\n"
+                + _STA_CLOCK.format(wns=f"{wns:.6f}", whs="0.1")
+                + f"Design area {area} u^2 50% utilization.\n"
+            }
+
         roles = _baseline_then_candidate(
             synth_cli,
             baseline={
-                "lite": (_ok(""), _stat_files(51200.0, 100, advisory)),
-                "full": (_ok(""), _stat_files(6400.0, 100)),
+                "lite": (_ok(""), {**_stat_files(51200.0, 100, advisory), **sta(2.0, 7000.0)}),
+                "full": (_ok(""), {**_stat_files(6400.0, 100), **sta(2.0, 7000.0)}),
             },
             candidate={
-                "lite": (_ok(""), _stat_files(52480.0, 110)),
-                "full": (_ok(""), _stat_files(6300.0, 100)),
+                "lite": (_ok(""), {**_stat_files(52480.0, 110), **sta(1.5, 7175.0)}),
+                "full": (_ok(""), {**_stat_files(6300.0, 100), **sta(2.0, 6890.0)}),
             },
         )
 
@@ -3123,7 +3141,11 @@ class TestBaselineFlow:
         assert f"baseline: {sha}" in text
         assert "RESULT: PASS" in text
         _, rows = TestSummaryTable._table(text)
-        assert [("+2.5%" in rows[0]), ("-1.6%" in rows[1])] == [True, True]
+        # Area delta, then critical-path delta, per row.
+        assert [re.findall(r"[+-]\d+\.\d%", row) for row in rows] == [
+            ["+2.5%", "+25.0%"],
+            ["-1.6%", "+0.0%"],
+        ]
         assert "(delta +2.5%)" in capsys.readouterr().err
         assert [(unit.role, unit.selector) for unit in synth_cli.run_plan.work_units] == [
             ("baseline", "lite"),
@@ -3132,13 +3154,16 @@ class TestBaselineFlow:
             ("candidate", "full"),
         ]
         # The baseline ran in the throwaway worktree first and the worktree is gone.
-        assert roles == ["baseline", "baseline", "candidate", "candidate"]
+        assert [role for role, _ in itertools.groupby(roles)] == ["baseline", "candidate"]
         assert not baseline_worktree_path(synth_cli.project, "HEAD").exists()
         assert synth_cli.flow is not None
         assert Path(synth_cli.flow.args.work_dir) == synth_cli.project
 
         report = json.loads((synth_cli.project / "reports/synth_lite.json").read_text("utf-8"))
         assert report["baseline"]["ref"] == sha
+        assert outcome.detail["baseline_ref"] == sha
+        # Each Target's own metrics, not the first Target's, ride in the run detail.
+        assert [outcome.detail[name]["cell_count"] for name in ("lite", "full")] == [110, 100]
         assert report["delta_pct"] == pytest.approx(2.5, rel=0.1)
         assert report["cell_count"] == 110
         assert report["baseline"]["cell_count"] == 100
@@ -3412,9 +3437,15 @@ def test_baseline_self_compare_warning(synth_cli: SynthCli, tmp_path: Path, case
         _author_stealth_core(
             baseline, body if case == "relocated" else body.replace("clk", "clk, rst"), directory
         )
+        # Private: a real run mirrors the Booley Directory into its baseline checkout, so
+        # only the guard itself can see two trees that differ or sit in a relocated one.
         warning = _baseline_self_compare_warning(current, baseline)
-        assert (warning is not None) is (case == "relocated")
-        assert "self-comparison" in (warning or "self-comparison")
+        if case == "relocated":
+            assert not (current / ".booley").exists()
+            assert warning is not None
+            assert "self-comparison" in warning
+        else:
+            assert warning is None
         return
     _git_project(synth_cli.project)
     if case == "identical":
@@ -3650,6 +3681,13 @@ _OOM_KILL = SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True)
             id="ambiguous-137",
         ),
         pytest.param("logical", [_OOM_KILL], "oom", id="own-oom"),
+        # Confirmed OOM outranks the ambiguous kill text the same run printed.
+        pytest.param(
+            "logical",
+            [dataclasses.replace(_OOM_KILL, stderr="make: Error 137")],
+            "oom",
+            id="oom-with-kill-text",
+        ),
         # The container's OOM counter moved, but this command's own process was not killed.
         pytest.param(
             "logical",
