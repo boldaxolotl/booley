@@ -11,12 +11,13 @@ import json
 import ntpath
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -58,12 +59,13 @@ from tests.harness.session_docker_fake import (
     isolate_session_cli,
     run_cli,
     run_registrar_on_post_start,
+    sandbox_exec_on_path,
     serve_sandbox_docker,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
-from tests.t3code_fake import TOKEN, serve_t3_code
+from tests.t3code_fake import TOKEN, echo_listener, serve_t3_code
 from tests.time_budget import hang_guard_s, scaled
 
 
@@ -1084,21 +1086,28 @@ def _sandbox_state(
     return state
 
 
+def _issue_project(docker: SandboxDocker, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give *root* a spec on disk, and its image and the egress network on the Docker fake."""
+    (root / ".booley").mkdir()
+    image = sr.project_image.project_image_name(root)
+    _write_spec(root, _spec(image=image))
+    docker.networks.add(dc.EGRESS_NETWORK)
+    docker.images[image] = {"Id": _test_issuance(root).image_id}
+    # The host-issued authority store and its licence record lie outside these entry points.
+    monkeypatch.setattr(
+        runtime_spec, "validate", lambda project, *_a, **_k: _test_issuance(project)
+    )
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", lambda path: path / ".booley"
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+
+
 @pytest.fixture
 def up_docker(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     """A Project with a spec on disk, and the egress network and spec image on a Docker fake."""
     docker = serve_sandbox_docker(monkeypatch)
-    (workspace / ".booley").mkdir()
-    image = sr.project_image.project_image_name(workspace)
-    _write_spec(workspace, _spec(image=image))
-    docker.networks.add(dc.EGRESS_NETWORK)
-    docker.images[image] = {"Id": _test_issuance(workspace).image_id}
-    # The host-issued authority store and its licence record lie outside these entry points.
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_a, **_k: _test_issuance(workspace))
-    monkeypatch.setattr(
-        runtime_spec, "authorized_project_data_source", lambda _path: workspace / ".booley"
-    )
-    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+    _issue_project(docker, workspace, monkeypatch)
     return docker
 
 
@@ -1937,6 +1946,106 @@ class TestStaleBooleyBakeWarning:
             assert "revision abc123 -> def456" in caplog.text
             assert "wheel_source_fingerprint current -> stale" in caplog.text
             assert sr.sandbox_remedy(workspace) in caplog.text
+
+
+class TestT3CodeRelay:
+    @pytest.fixture
+    def relay_cli(
+        self,
+        up_docker: SandboxDocker,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        """Run `booley session up` and `down` on the Docker fake; stop every relay at teardown."""
+        from booley.harness import booley as cli
+        from booley.harness import doctor
+
+        isolate_session_cli(monkeypatch, tmp_path)
+        monkeypatch.setattr(health, "due_reason", lambda _root: None)
+        monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _root: None)
+        monkeypatch.setattr(
+            doctor, "observe_deep_status", lambda *_a, **_k: SimpleNamespace(render=lambda: "")
+        )
+        roots: dict[Path, None] = {}
+
+        def run(command: str, root: Path) -> tuple[str, str]:
+            roots[root] = None
+            assert run_cli(monkeypatch, ["-C", str(root), "session", command]) == 0
+            captured = capsys.readouterr()
+            return captured.out, captured.err
+
+        def up(root: Path) -> tuple[int, str]:
+            out, err = run("up", root)
+            match = re.search(r"T3 Code relay: 127\.0\.0\.1:(\d+)", out)
+            assert match, f"no T3 Code relay address in: {out}"
+            return int(match[1]), err
+
+        yield SimpleNamespace(up=up, down=lambda root: run("down", root)[0])
+        for root in roots:
+            run("down", root)
+
+    @pytest.mark.skipif(
+        sys.platform != "linux", reason="a script runs as docker; 127.0.0.2 is Linux loopback"
+    )
+    def test_session_up_relays_host_loopback_into_the_sandbox_until_down(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def connect(host: str, port: int) -> socket.socket:
+            return socket.create_connection((host, port), timeout=hang_guard_s())
+
+        with echo_listener() as echo:
+            sandbox_exec_on_path(
+                monkeypatch, tmp_path / "bin", echo, sr.session_container_name(workspace)
+            )
+            port, _ = relay_cli.up(workspace)
+            with connect("127.0.0.1", port) as client:
+                client.sendall(b"ping")
+                client.shutdown(socket.SHUT_WR)
+                assert b"".join(iter(lambda: client.recv(64), b"")) == b"ping"
+            with pytest.raises(
+                OSError
+            ):  # a wildcard bind would accept this other loopback address
+                connect("127.0.0.2", port)
+            down = relay_cli.down(workspace)
+
+        assert "stopped the T3 Code relay" in down
+        with pytest.raises(OSError):
+            connect("127.0.0.1", port)
+
+    def test_relay_port_is_per_project_stable_and_moves_off_a_held_port(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        _issue_project(up_docker, other, monkeypatch)
+
+        first, _ = relay_cli.up(workspace)
+        second, _ = relay_cli.up(other)
+        relay_cli.down(workspace)
+        again, notice = relay_cli.up(workspace)
+        relay_cli.down(workspace)
+        with socket.socket() as holder:
+            with suppress(OSError):  # already held by another process is as good
+                holder.bind(("127.0.0.1", first))
+                holder.listen()
+            moved, warning = relay_cli.up(workspace)
+
+        assert {first, second, moved} <= set(range(3780, 3880))
+        assert first != second
+        assert (again, notice) == (first, "")
+        assert moved not in {first, second}
+        assert f"127.0.0.1:{first} is held" in warning
+        assert "must pair again" in warning
 
 
 class TestDownAndStatus:
@@ -3155,6 +3264,7 @@ def test_project_sandbox_resolution_cli_editor_reuse_reports_due(
     assert cli._session_up(argparse.Namespace(rebuild=False), workspace) == 0
     captured = capsys.readouterr()
     assert "Reusing Sandbox owned by VS Code: editor" in captured.out
+    assert "T3 Code relay" not in captured.out
     assert "Automatic Doctor is due" in captured.err
     assert "Automatic Doctor is running" not in captured.err
 

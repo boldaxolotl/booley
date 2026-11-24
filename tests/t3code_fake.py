@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import socket
 import subprocess
+import threading
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -74,3 +78,24 @@ def serve_t3_code(
     )
     monkeypatch.setattr(incontainer_setup, "subprocess", process)
     return fake
+
+
+@contextlib.contextmanager
+def echo_listener() -> Iterator[int]:
+    """Serve one echo connection on a free loopback port, standing in for `t3 serve`."""
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        server.settimeout(30)
+
+        def echo() -> None:
+            with contextlib.suppress(OSError):
+                connection, _ = server.accept()
+                with connection:
+                    while data := connection.recv(1024):
+                        connection.sendall(data)
+
+        thread = threading.Thread(target=echo, daemon=True)
+        thread.start()
+        try:
+            yield server.getsockname()[1]
+        finally:
+            thread.join(30)

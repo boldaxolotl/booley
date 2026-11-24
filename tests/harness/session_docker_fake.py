@@ -6,6 +6,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Container
@@ -323,6 +324,29 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
         host_docker, "_run_docker", lambda args, **_kw: docker.run(["docker", *args])
     )
     return docker
+
+
+def sandbox_exec_on_path(
+    monkeypatch: pytest.MonkeyPatch, bin_dir: Path, target_port: int, container: str
+) -> None:
+    """Put a `docker` script first on PATH whose `exec -i <container> python3 ...` is a local run.
+
+    The in-Sandbox command runs on this host with its last argument, the T3 Code port,
+    replaced by *target_port*: a Sandbox whose loopback is the host's. Other calls fail.
+    """
+    bin_dir.mkdir()
+    script = bin_dir / "docker"
+    script.write_bytes(
+        f"""#!{sys.executable}
+import os, sys
+args = sys.argv[1:]
+if args[:3] != ["exec", "-i", {container!r}] or args[3] != "python3":
+    sys.exit(1)
+os.execv({sys.executable!r}, [{sys.executable!r}, *args[4:-1], "{target_port}"])
+""".encode()
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 def run_registrar_on_post_start(
