@@ -30,6 +30,7 @@ import shlex
 import socket
 import sys
 import time
+import tomllib
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.config.feature_flags import FeatureConfigError, enabled_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
@@ -193,7 +195,19 @@ _HTTP_HOST = "127.0.0.1"
 
 
 def _exposure() -> catalog.Exposure:
-    return catalog.Exposure.from_mapping(os.environ)
+    try:
+        features = enabled_features()
+    except (BooleyLayoutError, OSError, ValueError):
+        # Unreadable configuration keeps every gate closed; the catalog refresh and
+        # startup report the problem, and poll and cancel stay usable meanwhile.
+        features = frozenset()
+    return replace(catalog.Exposure.from_mapping(os.environ), features=features)
+
+
+def _validate_features() -> None:
+    """Refuse to start on an invalid ``[features]`` table, like an invalid ``[specialists]``."""
+    with contextlib.suppress(BooleyLayoutError, OSError, tomllib.TOMLDecodeError):
+        enabled_features()
 
 
 def _env_timeout_seconds(name: str, default: float | None) -> float | None:
@@ -2582,11 +2596,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
+        _validate_features()
         if args.transport == "http":
             _run_http(args.port if args.port is not None else http_port())
         else:
             asyncio.run(_main())
-    except EndpointConfigError as exc:
+    except (EndpointConfigError, FeatureConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 

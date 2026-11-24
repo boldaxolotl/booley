@@ -19,6 +19,7 @@ from typing import Any
 import anyio
 
 from booley.mcp.application import McpApplication
+from booley.mcp.catalog import GATED_MCP_TOOLS
 from booley.mcp.catalog_worker import run_schema_worker
 from booley.mcp.endpoint_config import read_endpoint_config
 from booley.mcp.registry import McpToolInfo, discover_mcp_inventory, discover_mcp_tools
@@ -132,7 +133,8 @@ class LiveCatalog:
         self._stable = {
             item.name
             for item in application.list_tools()
-            if item.name
+            if item.name not in GATED_MCP_TOOLS
+            and item.name
             not in {
                 endpoint["name"]
                 for endpoint in endpoints

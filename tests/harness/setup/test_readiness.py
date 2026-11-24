@@ -46,6 +46,26 @@ def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
     assert audit.booley_toml["project"]["name"] == "ticket"
 
 
+def test_doctor_names_enabled_flags_without_changing_its_verdict(
+    tmp_path, monkeypatch, feature_flags
+):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    plain_root = tmp_path / "plain"
+    flagged_root = tmp_path / "flagged"
+    plain_root.mkdir()
+    flagged_root.mkdir()
+    _write_project(plain_root)
+    feature_flags.enable(_write_project(flagged_root), "test-flag")
+
+    plain = readiness.load_project(plain_root).report
+    flagged = readiness.load_project(flagged_root).report
+
+    assert flagged.health == plain.health
+    assert not any("test-flag" in f.message for f in plain.findings)
+    named = [f for f in flagged.findings if "test-flag" in f.message]
+    assert [f.severity for f in named] == ["pass"]
+
+
 class TestStealthCoresCheck:
     """ADR 0036 contract: authored cores live in .booley/cores/ (and
     nowhere else in the Booley Directory), and never share a VLNV with a repo core."""

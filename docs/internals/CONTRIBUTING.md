@@ -267,6 +267,35 @@ made-up output is provisional at best.
   `.github/scripts/check_suppressed_assertions.py`; its docstring and messages
   explain each rule.
 
+## Feature Flags and releases
+
+[ADR 0095](../adr/0095-gate-major-features-behind-feature-flags.md) sets the
+policy:
+
+- Automated weekly releases are patch releases; a minor release is the
+  maintainer's decision.
+- A patch needs no manual upgrade action, removes or renames no user-facing
+  surface, and changes no default.
+- A major feature merges behind a Feature Flag. A breaking change is gated with
+  the old behavior as the default, or merges only while a minor release is
+  prepared.
+- A flag is enabled by deleting it, only in a minor release.
+- Flags are maintainer-only: no environment variable and no user opt-in.
+
+To gate a feature:
+
+1. Register it in `FEATURE_FLAGS` in `src/booley/config/feature_flags.py` with
+   a name, a one-line summary, and the tracking issue.
+2. Gate a CLI command in `GATED_COMMANDS` and an MCP tool in `GATED_MCP_TOOLS`.
+   For any other surface (a CLI option or a configuration key), call
+   `feature_enabled(name)` where the surface is built, in the change that first
+   gates it.
+3. Keep the generated references flag-off. Write no user doc for the feature
+   until the PR that deletes the flag.
+4. In tests, use the `feature_flags` fixture. To try the feature, add
+   `[features]` with `enable = ["<name>"]` to a Project's `booley.toml`, and
+   run the command from inside that Project.
+
 ## Writing docs
 
 Follow [DOCS_PRINCIPLES.md](DOCS_PRINCIPLES.md) when you write, edit, or
