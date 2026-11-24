@@ -481,8 +481,8 @@ def test_ci_expands_an_abbreviated_expected_head() -> None:
 @pytest.mark.parametrize(
     ("state", "expected"),
     [
-        (snapshot(head=NEXT_HEAD, required_check_names={"ci-required"}), "head_changed"),
-        (snapshot(state="closed", required_check_names={"ci-required"}), "closed"),
+        (snapshot(head=NEXT_HEAD), "head_changed"),
+        (snapshot(state="closed"), "closed"),
     ],
 )
 def test_ci_returns_head_change_and_closure(state: watch_pr.Snapshot, expected: str) -> None:
@@ -855,6 +855,9 @@ def test_cli_scenarios(
         call.args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "list"])
         or (call.args[0] == "api" and "--method" not in call.args)
         for call in gh.calls()
+    )
+    assert all(
+        "--required" in call.args for call in gh.calls() if call.args[:2] == ["pr", "checks"]
     )
 
 

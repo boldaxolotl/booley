@@ -304,9 +304,9 @@ def test_shard_benchmark_selects_the_ordinary_python_job_set(
 def test_classifier_rejects_invalid_options(
     tmp_path: Path, options: dict[str, object], fragment: str
 ) -> None:
-    repo, base = _repository(tmp_path)
+    repo, base, head = _change(tmp_path, "src/booley/example.py")
 
-    result, _output = _run_classifier(repo, base, base, **options)  # type: ignore[arg-type]
+    result, _output = _run_classifier(repo, base, head, **options)  # type: ignore[arg-type]
 
     assert result.returncode == 2
     assert fragment in result.stderr
@@ -1015,7 +1015,10 @@ def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
         assert " ".join(rendered.split()) == _TODAYS_LINUX_FULL_COMMAND
 
 
-def test_linux_shard_dispatch_emits_matrix_for_a_count_and_scheduler(tmp_path: Path) -> None:
+@pytest.mark.parametrize("count", [1, 3])
+def test_linux_shard_dispatch_emits_matrix_for_a_count_and_scheduler(
+    tmp_path: Path, count: int
+) -> None:
     repo, base, head = _change(tmp_path, "src/booley/example.py")
     non_linux = build_test_matrix(4, linux_shard_count=1)["include"][1:]
 
@@ -1024,22 +1027,25 @@ def test_linux_shard_dispatch_emits_matrix_for_a_count_and_scheduler(tmp_path: P
         base,
         head,
         event_name="workflow_dispatch",
-        linux_options={"shard-count": "3", "scheduler": "worksteal"},
+        linux_options={"shard-count": str(count), "scheduler": "worksteal"},
     )
     entries = json.loads(outputs["test_matrix"])["include"]
     linux = [entry for entry in entries if entry["os"] == "ubuntu-latest"]
 
-    assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == ("3", "worksteal")
+    assert (outputs["linux_shard_count"], outputs["linux_scheduler"]) == (str(count), "worksteal")
     assert entries[len(linux) :] == non_linux
+    if count == 1:
+        assert linux == build_test_matrix(4, linux_shard_count=1)["include"][:1]
+        return
     assert [entry["name"] for entry in linux] == [
-        f"ubuntu-3.11-shard-{index + 1}-of-3" for index in range(3)
+        f"ubuntu-3.11-shard-{index + 1}-of-{count}" for index in range(count)
     ]
     assert all(
         (entry["mode"], entry["group"], entry["shard_count"])
-        == ("shard", f"linux-{entry['python']}", 3)
+        == ("shard", f"linux-{entry['python']}", count)
         for entry in linux
     )
-    assert [entry["shard_index"] for entry in linux] == [0, 1, 2]
+    assert [entry["shard_index"] for entry in linux] == list(range(count))
 
 
 # The jobs that download the `pr-dist` artifact in test.yml.
