@@ -10,25 +10,15 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.path_tool_fake import PathToolFake
 from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from doc_change_class import ClassifierError, classify, load_rules
+import docs_postreview_digest as digest
+from doc_change_class import ClassifierError
 
-
-class _Digest:
-    """Imports the script on first use, so a missing script fails the test, not collection."""
-
-    def __getattr__(self, name: str) -> Any:
-        import docs_postreview_digest
-
-        return getattr(docs_postreview_digest, name)
-
-
-digest = _Digest()
-_RULES = _ROOT / ".github/scripts/doc_change_rules.toml"
 _WORKFLOW = _ROOT / ".github/workflows/docs-postreview-digest.yml"
 _CUTOFF = "2026-11-16T06:00:00Z"
 _PREVIOUS = "2026-11-09T06:00:00Z"
@@ -193,29 +183,28 @@ def test_first_run_lists_every_labeled_merge(monkeypatch: pytest.MonkeyPatch) ->
     assert gh.pr_cursors == [None, "c1"]
 
 
+@pytest.mark.parametrize(
+    ("issues", "message"),
+    [
+        (
+            [_issue(7, "CLOSED", _body(_PREVIOUS, []))],
+            f"No docs-postreview pull request merged after {_PREVIOUS} up to {_CUTOFF}; "
+            "no digest opened.",
+        ),
+        ([], f"No docs-postreview pull request merged up to {_CUTOFF}; no digest opened."),
+    ],
+    ids=["after-a-digest", "first-run"],
+)
 def test_empty_window_opens_no_issue(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    issues: list[dict[str, Any]],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    gh = FakeGh(
-        prs=[[_pr(1, "2026-11-01T00:00:00Z")]], issues=[_issue(7, "CLOSED", _body(_PREVIOUS, []))]
-    )
+    gh = FakeGh(prs=[[_pr(1, "2026-11-01T00:00:00Z")] if issues else []], issues=issues)
     assert _main(gh, monkeypatch) == 0
     assert gh.writes == []
-    assert capsys.readouterr().out.strip() == (
-        f"No docs-postreview pull request merged after {_PREVIOUS} up to {_CUTOFF}; "
-        "no digest opened."
-    )
-
-
-def test_empty_first_run_says_so(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    gh = FakeGh()
-    assert _main(gh, monkeypatch) == 0
-    assert gh.writes == []
-    assert capsys.readouterr().out.strip() == (
-        f"No docs-postreview pull request merged up to {_CUTOFF}; no digest opened."
-    )
+    assert capsys.readouterr().out.strip() == message
 
 
 def test_workflow_runs_weekly_and_by_hand_with_dry_run() -> None:
@@ -278,20 +267,29 @@ def _merge_repo(tmp_path: Path) -> tuple[Path, str]:
     return repo, git("rev-parse", "HEAD")
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="a .cmd launcher cannot pass the GraphQL query's quotes and newlines"
+)
 def test_entry_lists_files_rules_and_checkboxes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, merge = _merge_repo(tmp_path)
     monkeypatch.chdir(repo)
+    monkeypatch.setenv("GH_REPO", "o/r")
     pr = _pr(9, "2026-11-12T08:00:00Z", "Explain <!-- the --> thing")
     pr["mergeCommit"] = {"oid": merge}
-    gh = FakeGh(prs=[[pr]])
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    nodes = {"pageInfo": {"hasNextPage": False}}
+    repository = {"issues": {"nodes": [], **nodes}, "pullRequests": {"nodes": [pr], **nodes}}
+    gh.answer("api", "graphql", stdout=json.dumps({"data": {"repository": repository}}))
+    gh.answer("label", "create")
+    gh.answer("api", "--method", reads_input=True)
 
-    def classifier(sha: str) -> dict[str, object]:
-        return classify(load_rules(_RULES), f"{sha}^1", sha)
+    assert digest.main(["--cutoff", _CUTOFF]) == 0
 
-    assert _main(gh, monkeypatch, classifier=classifier) == 0
-    body = gh.created_issue()["body"]
+    posts = [call for call in gh.calls() if "--method" in call.args]
+    assert len(posts) == 1 and posts[0].input is not None
+    body = json.loads(posts[0].input)["body"]
     assert "## Maintainer steps" in body
     assert "Never delete or unlabel a digest" in body
     entry = body[body.index("### #9") :]
@@ -308,45 +306,57 @@ def test_entry_lists_files_rules_and_checkboxes(
     )
 
 
-def test_edit_rate_counts_closed_digests_only(
+_CLOSED_RATES = _body(
+    "2026-11-02T06:00:00Z",
+    [
+        (1, "default", "x", "x"),
+        (2, "default", "X", " "),
+        (3, "default", "x", " "),
+        (4, "default,glossary", "x", "x"),
+        (5, "glossary", " ", "x"),
+        (6, "", "x", "x"),
+    ],
+)
+_OPEN_RATES = _body(_PREVIOUS, [(7, "default", "x", "x"), (8, "adr", "x", "x")])
+
+
+@pytest.mark.parametrize(
+    ("issues", "present", "absent"),
+    [
+        (
+            [_issue(5, "CLOSED", _CLOSED_RATES), _issue(6, "OPEN", _OPEN_RATES)],
+            ["| `default` | 4 | 2 | 50% |", "| `glossary` | 1 | 1 | 100% |"],
+            ["`adr`"],
+        ),
+        (
+            [
+                _issue(
+                    5,
+                    "CLOSED",
+                    _body(
+                        "2026-11-02T06:00:00Z",
+                        [(1, "a", "x", "x"), (2, "a", "x", " "), (3, "a", "x", " ")],
+                    ),
+                )
+            ],
+            ["| `a` | 3 | 1 | 33% |"],
+            [],
+        ),
+        ([], ["No closed digest has a reviewed pull request yet."], []),
+    ],
+    ids=["closed-digests-only", "rounds-to-whole-percent", "no-data"],
+)
+def test_edit_rate_table(
+    issues: list[dict[str, Any]],
+    present: list[str],
+    absent: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    closed = _body(
-        "2026-11-02T06:00:00Z",
-        [
-            (1, "default", "x", "x"),
-            (2, "default", "X", " "),
-            (3, "default", "x", " "),
-            (4, "default,glossary", "x", "x"),
-            (5, "glossary", " ", "x"),
-            (6, "", "x", "x"),
-        ],
-    )
-    open_digest = _body(_PREVIOUS, [(7, "default", "x", "x"), (8, "adr", "x", "x")])
-    gh = FakeGh(
-        prs=[[_pr(10, "2026-11-12T08:00:00Z")]],
-        issues=[_issue(5, "CLOSED", closed), _issue(6, "OPEN", open_digest)],
-    )
+    gh = FakeGh(prs=[[_pr(10, "2026-11-12T08:00:00Z")]], issues=issues)
     assert _main(gh, monkeypatch) == 0
     body = gh.created_issue()["body"]
-    assert "| `default` | 4 | 2 | 50% |" in body
-    assert "| `glossary` | 1 | 1 | 100% |" in body
-    assert "`adr`" not in body
-
-
-def test_edit_rate_rounds_to_whole_percent_and_handles_no_data(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    entries = [(1, "a", "x", "x"), (2, "a", "x", " "), (3, "a", "x", " ")]
-    gh = FakeGh(
-        prs=[[_pr(10, "2026-11-12T08:00:00Z")]],
-        issues=[_issue(5, "CLOSED", _body("2026-11-02T06:00:00Z", entries))],
-    )
-    assert _main(gh, monkeypatch) == 0
-    assert "| `a` | 3 | 1 | 33% |" in gh.created_issue()["body"]
-    none = FakeGh(prs=[[_pr(10, "2026-11-12T08:00:00Z")]])
-    assert _main(none, monkeypatch) == 0
-    assert "No closed digest has a reviewed pull request yet." in none.created_issue()["body"]
+    assert all(line in body for line in present)
+    assert not any(line in body for line in absent)
 
 
 def test_dry_run_prints_digest_and_writes_nothing(
@@ -360,35 +370,37 @@ def test_dry_run_prints_digest_and_writes_nothing(
     assert "### #3 Change 3" in out
 
 
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("listing", "gh api failed: boom"),
+        ("digest", "issue #7"),
+        ("classifier", "pull request #3: git diff failed"),
+        ("label", "gh label failed: boom"),
+        ("post", "gh api failed: boom"),
+    ],
+)
 def test_failure_opens_no_issue_and_exits_1(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    failure: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def broken(sha: str) -> dict[str, object]:
         raise ClassifierError("git diff failed")
 
-    for failure in ("listing", "digest", "classifier", "label", "post"):
-        issues = [_issue(7, "CLOSED", "no marker here")] if failure == "digest" else []
-        fail_on = {"listing": "pullRequests", "label": "label create", "post": "--method"}
-        gh = FakeGh(
-            prs=[[_pr(3, "2026-11-12T08:00:00Z")]], issues=issues, fail_on=fail_on.get(failure)
-        )
-        classifier = broken if failure == "classifier" else _DEFAULT
-        assert _main(gh, monkeypatch, classifier=classifier) == 1, failure
-        assert capsys.readouterr().err.startswith("docs_postreview_digest: "), failure
-        posts = [args for args, _ in gh.writes if args[0] == "api"]
-        assert len(posts) == (1 if failure == "post" else 0), failure
-
-
-def test_classifier_failure_names_the_pull_request(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def broken(sha: str) -> dict[str, object]:
-        raise ClassifierError("git diff failed")
-
-    assert (
-        _main(FakeGh(prs=[[_pr(3, "2026-11-12T08:00:00Z")]]), monkeypatch, classifier=broken) == 1
+    issues = [_issue(7, "CLOSED", "no marker here")] if failure == "digest" else []
+    fail_on = {"listing": "pullRequests", "label": "label create", "post": "--method"}
+    gh = FakeGh(
+        prs=[[_pr(3, "2026-11-12T08:00:00Z")]], issues=issues, fail_on=fail_on.get(failure)
     )
-    assert "pull request #3: git diff failed" in capsys.readouterr().err
+    classifier = broken if failure == "classifier" else _DEFAULT
+    assert _main(gh, monkeypatch, classifier=classifier) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("docs_postreview_digest: ")
+    assert message in err
+    posts = [args for args, _ in gh.writes if args[0] == "api"]
+    assert len(posts) == (1 if failure == "post" else 0)
 
 
 @pytest.mark.parametrize(
@@ -440,7 +452,6 @@ def test_pull_request_without_merge_commit_fails(
 def test_runaway_paging_stops_at_the_page_bound(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("docs_postreview_digest.MAX_PAGES", 2)
-    gh = FakeGh(prs=[[], [], []])
+    gh = FakeGh(prs=[[]] * (digest.MAX_PAGES + 1))
     assert _main(gh, monkeypatch) == 1
-    assert "more than 2 pages" in capsys.readouterr().err
+    assert f"more than {digest.MAX_PAGES} pages" in capsys.readouterr().err

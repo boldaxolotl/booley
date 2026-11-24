@@ -8,11 +8,13 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.path_tool_fake import PathToolFake
+from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/watch_pr.py"
@@ -42,85 +44,90 @@ def watcher_imports_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
 HEAD = "a" * 40
 NEXT_HEAD = "b" * 40
 URL = "https://github.com/example/repo/pull/7"
+RULES_PATH = "repos/example/repo/rules/branches/main"
+COMMENTS_PATH = "repos/example/repo/issues/7/comments?per_page=100"
+EVENTS_PATH = "repos/example/repo/issues/7/events?per_page=100"
+LONG_URL = "https://github.com/example/repo/pull/" + "x" * 10_000
 
 
-def write_fake_gh(tmp_path: Path, source: str) -> Path:
-    script = tmp_path / "fake_gh.py"
-    script.write_text(source, encoding="utf-8")
-    if os.name == "nt":
-        launcher = tmp_path / "gh.cmd"
-        launcher.write_text(
-            f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n',
-            encoding="utf-8",
-        )
-    else:
-        launcher = tmp_path / "gh"
-        launcher.write_text(f"#!/usr/bin/env python3\n{source}", encoding="utf-8")
-        launcher.chmod(launcher.stat().st_mode | 0o111)
-    return launcher
-
-
-def run_script(
-    *args: str, env: dict[str, str] | None = None, timeout: float = SUBPROCESS_TIMEOUT_S
-) -> subprocess.CompletedProcess[str]:
-    return run_bounded_child(
-        ["python3", str(SCRIPT), *args],
-        timeout=timeout,
-        env=env,
-        check=False,
+def open_pull(**fields: object) -> str:
+    return json.dumps(
+        {
+            "url": URL,
+            "state": "OPEN",
+            "mergedAt": None,
+            "headRefOid": HEAD,
+            "baseRefName": "main",
+            "labels": [],
+            "statusCheckRollup": [],
+            **fields,
+        }
     )
 
 
-def write_passing_ci_gh(tmp_path: Path, log: Path, long_url: str) -> None:
-    write_fake_gh(
-        tmp_path,
-        "import json, os, sys\n"
-        f"open({str(log)!r}, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n"
-        "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({{'url': {long_url!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
-        "elif sys.argv[1:3] == ['pr', 'checks']:\n"
-        "    print(json.dumps([{'name': 'ci-required', 'state': 'SUCCESS', 'bucket': 'pass', 'link': 'https://ci.example/run/1', 'startedAt': None, 'completedAt': None, 'workflow': 'CI'}]))\n"
-        "elif sys.argv[1:3] == ['run', 'list']:\n"
-        "    print('[]')\n"
-        "elif sys.argv[1] == 'api':\n"
-        "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n"
-        "else:\n"
-        "    raise SystemExit('unexpected command')\n",
-    )
-
-
-def _missing_checks_fake_gh_source(run: dict[str, object], confidential: dict[str, object]) -> str:
-    pull = {
-        "url": URL,
-        "state": "OPEN",
-        "mergedAt": None,
-        "headRefOid": HEAD,
-        "baseRefName": "main",
-        "labels": [],
-        "statusCheckRollup": [],
+def passing_check() -> dict[str, object]:
+    return {
+        "name": "ci-required",
+        "state": "SUCCESS",
+        "bucket": "pass",
+        "link": "https://ci.example/run/1",
+        "startedAt": None,
+        "completedAt": None,
+        "workflow": "CI",
     }
+
+
+def run_json(**fields: object) -> dict[str, object]:
+    return {
+        "workflowName": "Tests",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        "headSha": HEAD,
+        "attempt": 2,
+        "createdAt": "2026-09-28T10:00:00Z",
+        "databaseId": 123,
+        "url": "https://ci.example/run/123",
+        **fields,
+    }
+
+
+@pytest.fixture
+def gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PathToolFake:
+    return PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+
+
+def answer_reads(
+    gh: PathToolFake,
+    *,
+    pull: str | list[str] | None = None,
+    checks: str | list[str] | None = "[]",
+    runs: str | list[str] = "[]",
+    comments: str | list[str] = "[]",
+    required: tuple[str, ...] = ("ci-required",),
+) -> None:
+    """Answer each read the watcher makes; a list answers that read once per call, in order."""
     rules = [
         {
             "type": "required_status_checks",
-            "parameters": {
-                "required_status_checks": [
-                    {"context": "ci-required"},
-                    {"context": "confidential-content"},
-                ]
-            },
+            "parameters": {"required_status_checks": [{"context": name} for name in required]},
         }
     ]
-    return (
-        "import json, sys\n"
-        "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({pull!r}))\n"
-        "elif sys.argv[1:3] == ['pr', 'checks']:\n"
-        "    print('[]')\n"
-        "elif sys.argv[1:3] == ['run', 'list']:\n"
-        f"    print(json.dumps({[run, confidential]!r}))\n"
-        "elif sys.argv[1] == 'api':\n"
-        f"    print(json.dumps({rules!r}))\n"
-    )
+    reads = [
+        (("pr", "view"), open_pull() if pull is None else pull),
+        (("api", RULES_PATH), json.dumps(rules)),
+        (("run", "list"), runs),
+        (("api", COMMENTS_PATH), comments),
+    ]
+    if checks is not None:
+        reads.append((("pr", "checks"), checks))
+    for words, value in reads:
+        for stdout in [value] if isinstance(value, str) else value:
+            gh.answer(*words, stdout=stdout)
+
+
+def gh_transport(gh: PathToolFake, clock: FakeClock | None = None) -> watch_pr.GhTransport:
+    return watch_pr.GhTransport(clock=clock or FakeClock(), executable=str(gh.executable))
 
 
 class FakeClock:
@@ -222,7 +229,7 @@ def snapshot(
         mergify_state,
         comments,
         producer_runs,
-        watch_pr._instant(dequeued_at, "dequeued_at") if dequeued_at else None,
+        datetime.fromisoformat(dequeued_at) if dequeued_at else None,
     )
 
 
@@ -269,18 +276,17 @@ def test_ci_waits_for_required_checks_and_uses_sixty_second_cadence() -> None:
     assert transport.query_count == 2
 
 
-def test_ci_empty_required_rules_fail_closed() -> None:
-    transport = FakeTransport(ci=[snapshot()])
-
+@pytest.mark.parametrize(
+    "state",
+    [
+        snapshot(),
+        snapshot(checks=(check(bucket="pass"),), required_check_names=set()),
+    ],
+    ids=["no-checks", "visible-checks"],
+)
+def test_ci_empty_required_rules_fail_closed(state: watch_pr.Snapshot) -> None:
     with pytest.raises(watch_pr.WatchError, match="no required checks"):
-        run_watch(transport, FakeClock(), mode="ci", timeout=100)
-
-
-def test_ci_empty_required_rules_fail_closed_even_with_visible_checks() -> None:
-    state = snapshot(checks=(check(bucket="pass"),), required_check_names=set())
-
-    with pytest.raises(watch_pr.WatchError, match="no required checks"):
-        run_watch(FakeTransport(ci=[state]), FakeClock(), mode="ci")
+        run_watch(FakeTransport(ci=[state]), FakeClock(), mode="ci", timeout=100)
 
 
 def test_ci_reports_required_checks_missing_when_producer_never_registers() -> None:
@@ -293,27 +299,9 @@ def test_ci_reports_required_checks_missing_when_producer_never_registers() -> N
     assert result.missing_checks == ("ci-required", "confidential-content")
 
 
-def test_ci_waits_beyond_registration_grace_while_producer_is_running() -> None:
-    pending = snapshot(
-        required_check_names={"ci-required"},
-        producer_runs=(producer_run(),),
-    )
-    passed = snapshot(
-        checks=(check(bucket="pass"),),
-        required_check_names={"ci-required"},
-    )
-    transport = FakeTransport(ci=[pending, pending, pending, passed])
-    clock = FakeClock()
-
-    result = run_watch(transport, clock, mode="ci", timeout=240)
-
-    assert result.outcome == "ci_passed"
-    assert clock.sleeps == [60, 60, 60]
-
-
 @pytest.mark.parametrize(
     ("status", "conclusion"),
-    [("action_required", None), ("completed", "action_required")],
+    [("action_required", None), ("completed", "action_required"), ("in_progress", None)],
 )
 def test_ci_waits_while_producer_requires_approval(status: str, conclusion: str | None) -> None:
     pending = snapshot(
@@ -351,27 +339,18 @@ def test_ci_reports_completed_producer_that_did_not_publish_context() -> None:
     assert result.links == ("https://ci.example/run/100",)
 
 
-def test_ci_does_not_accept_producer_from_another_head_or_event() -> None:
-    state = snapshot(
-        required_check_names={"ci-required"},
-        producer_runs=(
-            producer_run(head_sha=NEXT_HEAD),
-            producer_run(event="push", database_id=101),
-        ),
-    )
-
-    result = run_watch(
-        FakeTransport(ci=[state, state, state]), FakeClock(), mode="ci", timeout=180
-    )
-
-    assert result.outcome == "required_checks_missing"
-
-
-def test_ci_does_not_accept_producer_from_another_workflow() -> None:
-    state = snapshot(
-        required_check_names={"ci-required"},
-        producer_runs=(producer_run(workflow="Another workflow"),),
-    )
+@pytest.mark.parametrize(
+    "runs",
+    [
+        (producer_run(head_sha=NEXT_HEAD), producer_run(event="push", database_id=101)),
+        (producer_run(workflow="Another workflow"),),
+    ],
+    ids=["another-head-or-event", "another-workflow"],
+)
+def test_ci_does_not_accept_producer_from_another_head_event_or_workflow(
+    runs: tuple[watch_pr.ProducerRun, ...],
+) -> None:
+    state = snapshot(required_check_names={"ci-required"}, producer_runs=runs)
 
     result = run_watch(
         FakeTransport(ci=[state, state, state]), FakeClock(), mode="ci", timeout=180
@@ -426,21 +405,40 @@ def test_ci_rejects_required_context_without_a_producer_mapping() -> None:
         run_watch(FakeTransport(ci=[state]), FakeClock(), mode="ci")
 
 
-def test_ci_waits_for_required_check_that_has_not_appeared() -> None:
-    state = snapshot(
-        checks=(check(name="confidential-content", bucket="pass"),),
-        required_check_names={"confidential-content", "ci-required"},
-    )
-
-    decision = watch_pr.classify_ci(state, HEAD)
+@pytest.mark.parametrize(
+    ("checks", "required"),
+    [
+        (
+            (check(name="confidential-content", bucket="pass"),),
+            {"confidential-content", "ci-required"},
+        ),
+        ((check(bucket="skipping"),), None),
+        ((check(bucket="pending"),), None),
+        (
+            (
+                check(bucket="fail", head_sha=HEAD, attempt=1),
+                check(bucket="pending", head_sha=HEAD, attempt=2),
+            ),
+            None,
+        ),
+        ((check(bucket="fail", head_sha=NEXT_HEAD),), None),
+        ((), {"ci-required"}),
+    ],
+    ids=["absent-sibling", "skipping", "pending", "old-attempt", "old-head", "none-yet"],
+)
+def test_ci_unresolved_checks_stay_pending(
+    checks: tuple[watch_pr.Check, ...], required: set[str] | None
+) -> None:
+    decision = watch_pr.classify_ci(snapshot(checks=checks, required_check_names=required), HEAD)
 
     assert decision.outcome == "pending"
     assert decision.terminal is False
 
 
-def test_ci_visible_failure_wins_over_absent_sibling() -> None:
+@pytest.mark.parametrize("bucket", ["fail", "cancel"])
+def test_ci_failed_check_is_actionable_beside_an_absent_sibling(bucket: str) -> None:
     state = snapshot(
-        checks=(check(bucket="fail", link="https://ci.example/run/failed"),),
+        checks=(check(bucket=bucket, link="https://ci.example/run/failed"),),
         required_check_names={"ci-required", "confidential-content"},
     )
 
@@ -448,32 +446,6 @@ def test_ci_visible_failure_wins_over_absent_sibling() -> None:
 
     assert decision.outcome == "check_failed"
     assert decision.links == ("https://ci.example/run/failed",)
-
-
-@pytest.mark.parametrize("bucket", ["skipping", "pending"])
-def test_ci_non_pass_buckets_remain_unresolved(bucket: str) -> None:
-    decision = watch_pr.classify_ci(snapshot(checks=(check(bucket=bucket),)), HEAD)
-
-    assert decision.outcome == "pending"
-    assert decision.terminal is False
-
-
-def test_ci_cancelled_required_check_is_actionable() -> None:
-    decision = watch_pr.classify_ci(
-        snapshot(checks=(check(bucket="cancel", link="https://ci.example/run/1"),)), HEAD
-    )
-
-    assert decision.outcome == "check_failed"
-    assert decision.links == ("https://ci.example/run/1",)
-
-
-def test_ci_ignores_old_failure_when_newer_same_head_attempt_is_pending() -> None:
-    checks = (
-        check(bucket="fail", head_sha=HEAD, attempt=1),
-        check(bucket="pending", head_sha=HEAD, attempt=2),
-    )
-
-    assert watch_pr.classify_ci(snapshot(checks=checks), HEAD).outcome == "pending"
 
 
 def test_ci_keeps_same_named_checks_from_distinct_workflows() -> None:
@@ -498,14 +470,6 @@ def test_ci_rejects_duplicate_checks_without_a_workflow_identity() -> None:
         watch_pr.classify_ci(snapshot(checks=checks), HEAD)
 
 
-def test_ci_ignores_failure_from_an_old_head() -> None:
-    decision = watch_pr.classify_ci(
-        snapshot(checks=(check(bucket="fail", head_sha=NEXT_HEAD),)), HEAD
-    )
-
-    assert decision.outcome == "pending"
-
-
 def test_ci_expands_an_abbreviated_expected_head() -> None:
     transport = FakeTransport(ci=[snapshot(checks=(check(bucket="pass", head_sha=HEAD),))])
 
@@ -514,27 +478,15 @@ def test_ci_expands_an_abbreviated_expected_head() -> None:
     assert result.outcome == "ci_passed"
 
 
-def test_ci_returns_head_change_and_closure() -> None:
-    assert watch_pr.classify_ci(snapshot(head=NEXT_HEAD), HEAD).outcome == "head_changed"
-    assert watch_pr.classify_ci(snapshot(state="closed"), HEAD).outcome == "closed"
-
-
-def test_ci_head_change_and_closure_win_with_missing_producers() -> None:
-    missing = snapshot(required_check_names={"ci-required"})
-
-    assert (
-        watch_pr.classify_ci(
-            snapshot(head=NEXT_HEAD, required_check_names={"ci-required"}), HEAD
-        ).outcome
-        == "head_changed"
-    )
-    assert (
-        watch_pr.classify_ci(
-            snapshot(state="closed", required_check_names={"ci-required"}), HEAD
-        ).outcome
-        == "closed"
-    )
-    assert watch_pr.classify_ci(missing, HEAD).outcome == "pending"
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (snapshot(head=NEXT_HEAD), "head_changed"),
+        (snapshot(state="closed"), "closed"),
+    ],
+)
+def test_ci_returns_head_change_and_closure(state: watch_pr.Snapshot, expected: str) -> None:
+    assert watch_pr.classify_ci(state, HEAD).outcome == expected
 
 
 def test_queue_baselines_existing_control_comment_and_waits_ten_minutes() -> None:
@@ -580,22 +532,48 @@ def test_queue_does_not_treat_old_failure_as_current_attempt() -> None:
     assert result.outcome == "timeout"
 
 
+def queue_command(created_at: str, body: str = "@mergifyio queue default") -> watch_pr.Comment:
+    return watch_pr.Comment("9", body, "owner", datetime.fromisoformat(created_at))
+
+
+def newer_control(command: str) -> watch_pr.Snapshot:
+    return snapshot(
+        labels={"dequeued"},
+        comments=(queue_command("2026-11-03T10:00:05Z", command),),
+        dequeued_at="2026-11-03T10:20:00Z",
+    )
+
+
 @pytest.mark.parametrize(
     ("state", "expected"),
     [
         (snapshot(labels={"dequeued"}), "dequeued"),
         (
-            snapshot(
-                comments=(watch_pr.Comment("2", "@mergifyio dequeue", "other-owner"),),
-            ),
+            snapshot(comments=(watch_pr.Comment("2", "@mergifyio dequeue", "other-owner"),)),
             "competing_control",
         ),
         (snapshot(mergify_state="failure"), "queue_failed"),
         (snapshot(state="closed"), "closed"),
+        (snapshot(labels={"queued", "dequeued"}), "pending"),
+        (snapshot(labels={"merge-queue-checking", "dequeued"}), "pending"),
+        (newer_control("@mergifyio queue"), "dequeued"),
+        (newer_control("@mergifyio queue default"), "dequeued"),
+        (newer_control("@mergifyio dequeue"), "dequeued"),
+    ],
+    ids=[
+        "dequeued",
+        "competing-control",
+        "queue-failed",
+        "closed",
+        "dequeued-beside-queued",
+        "dequeued-beside-checking",
+        "requeued",
+        "requeued-named-queue",
+        "dequeue",
     ],
 )
-def test_queue_terminal_states(state: watch_pr.Snapshot, expected: str) -> None:
-    memory = watch_pr.QueueMemory(initialized=True)
+def test_queue_states(state: watch_pr.Snapshot, expected: str) -> None:
+    memory = watch_pr.QueueMemory(baseline_comment_ids={"9"}, initialized=True)
 
     assert watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == expected
 
@@ -613,20 +591,6 @@ def test_requeue_ignores_stale_dequeued_label_and_waits_for_merge() -> None:
     result = run_watch(transport, FakeClock(), mode="queue", timeout=2000)
 
     assert result.outcome == "merged"
-
-
-@pytest.mark.parametrize("active", ["queued", "merge-queue-checking"])
-def test_dequeued_label_beside_active_queue_label_stays_pending(active: str) -> None:
-    memory = watch_pr.QueueMemory(initialized=True)
-    state = snapshot(labels={active, "dequeued"})
-
-    assert (
-        watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == "pending"
-    )
-
-
-def queue_command(created_at: str, body: str = "@mergifyio queue default") -> watch_pr.Comment:
-    return watch_pr.Comment("9", body, "owner", watch_pr._instant(created_at, "created_at"))
 
 
 def test_requeue_ignores_dequeued_label_that_predates_the_queue_command() -> None:
@@ -660,83 +624,47 @@ def test_stale_dequeued_label_is_reported_once_the_grace_expires() -> None:
     assert clock.sleeps == [600]
 
 
-@pytest.mark.parametrize(
-    "command",
-    ["@mergifyio queue", "@mergifyio queue default", "@mergifyio dequeue"],
-    ids=["requeued", "requeued-named-queue", "dequeue"],
-)
-def test_dequeued_label_newer_than_last_control_ends_watch(command: str) -> None:
-    state = snapshot(
-        labels={"dequeued"},
-        comments=(queue_command("2026-11-03T10:00:05Z", command),),
-        dequeued_at="2026-11-03T10:20:00Z",
-    )
-    memory = watch_pr.QueueMemory(baseline_comment_ids={"9"}, initialized=True)
+def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label(
+    gh: PathToolFake,
+) -> None:
+    def event(kind: str, label: str, created_at: str) -> dict[str, object]:
+        return {"event": kind, "label": {"name": label}, "created_at": created_at}
 
-    assert (
-        watch_pr.classify_queue(state, memory, remaining_seconds=600, now=0).outcome == "dequeued"
-    )
-
-
-def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label() -> None:
-    transport = watch_pr.GhTransport(clock=FakeClock())
-    labels = iter([[{"name": "queued"}], [{"name": "dequeued"}]])
-    event_reads: list[str] = []
-    events = [
-        [
-            {
-                "event": "labeled",
-                "label": {"name": "dequeued"},
-                "created_at": "2026-11-03T09:00:00Z",
-            },
-            {
-                "event": "unlabeled",
-                "label": {"name": "dequeued"},
-                "created_at": "2026-11-03T09:30:00Z",
-            },
-            {
-                "event": "labeled",
-                "label": {"name": "dequeued"},
-                "created_at": "2026-11-03T09:40:00Z",
-            },
-            {
-                "event": "labeled",
-                "label": {"name": "queued"},
-                "created_at": "2026-11-03T09:50:00Z",
-            },
-            {"event": "closed", "created_at": "2026-11-03T09:55:00Z"},
-        ]
-    ]
     comment = {
         "id": 9,
         "body": "@mergifyio queue default",
         "user": {"login": "owner"},
         "created_at": "2026-11-03T10:00:05Z",
     }
-    transport._pull = lambda *_args: {  # type: ignore[method-assign]
-        "url": URL,
-        "state": "OPEN",
-        "mergedAt": None,
-        "headRefOid": HEAD,
-        "labels": next(labels),
-        "statusCheckRollup": [],
-    }
-    transport._checks = lambda *_args: []  # type: ignore[method-assign]
-    transport._comments = lambda *_args: [[comment]]  # type: ignore[method-assign]
+    undated = {"id": 1, "body": "@mergifyio queue", "user": {"login": "owner"}}
+    answer_reads(
+        gh,
+        pull=[
+            open_pull(labels=[{"name": "queued"}]),
+            open_pull(labels=[{"name": "dequeued"}]),
+        ],
+        comments=json.dumps([[undated, comment], []]),
+    )
+    events = [
+        event("labeled", "dequeued", "2026-11-03T09:00:00Z"),
+        event("unlabeled", "dequeued", "2026-11-03T09:30:00Z"),
+        event("labeled", "dequeued", "2026-11-03T09:40:00Z"),
+        event("labeled", "queued", "2026-11-03T09:50:00Z"),
+        {"event": "closed", "created_at": "2026-11-03T09:55:00Z"},
+    ]
+    gh.answer("api", EVENTS_PATH, stdout=json.dumps([events]))
+    transport = gh_transport(gh)
 
-    def label_events(*_args: object) -> list[list[dict[str, object]]]:
-        event_reads.append("read")
-        return events
-
-    transport._label_events = label_events  # type: ignore[method-assign]
-
-    queued = transport.queue_snapshot("example/repo", 7, 100)
-    dequeued = transport.queue_snapshot("example/repo", 7, 100)
+    queued = transport.queue_snapshot("example/repo", 7, hang_guard_s())
+    dequeued = transport.queue_snapshot("example/repo", 7, hang_guard_s())
 
     assert queued.dequeued_at is None
-    assert dequeued.dequeued_at == watch_pr._instant("2026-11-03T09:40:00Z", "t")
-    assert dequeued.comments[0].created_at == watch_pr._instant("2026-11-03T10:00:05Z", "t")
-    assert event_reads == ["read"]
+    assert dequeued.dequeued_at == datetime.fromisoformat("2026-11-03T09:40:00Z")
+    assert dequeued.comments == (
+        watch_pr.Comment("1", "@mergifyio queue", "owner"),
+        queue_command("2026-11-03T10:00:05Z"),
+    )
+    assert sum(EVENTS_PATH in call.args for call in gh.calls()) == 1
 
 
 def test_queue_transient_label_inconsistency_stays_pending() -> None:
@@ -749,179 +677,99 @@ def test_queue_transient_label_inconsistency_stays_pending() -> None:
     assert result.outcome == "timeout"
 
 
-def test_malformed_external_response_is_rejected() -> None:
-    with pytest.raises(watch_pr.WatchError, match="statusCheckRollup"):
-        watch_pr._snapshot_from_json(
-            {
-                "url": URL,
-                "state": "OPEN",
-                "mergedAt": None,
-                "headRefOid": HEAD,
-                "labels": [],
-                "statusCheckRollup": {"bad": True},
-            },
-            [],
-            [],
-            require_comments=False,
-        )
-
-
-def test_producer_runs_are_parsed_from_structured_fields() -> None:
-    parsed = watch_pr._parse_producer_runs(
-        [
-            {
-                "workflowName": "Tests",
-                "event": "pull_request",
-                "status": "in_progress",
-                "conclusion": "",
-                "headSha": HEAD,
-                "attempt": 2,
-                "createdAt": "2026-09-28T10:00:00Z",
-                "databaseId": 123,
-                "url": "https://ci.example/run/123",
-            }
-        ]
-    )
-
-    assert parsed == (producer_run(attempt=2, database_id=123, url="https://ci.example/run/123"),)
-
-
-def test_producer_runs_reject_unknown_status() -> None:
-    value = {
-        "workflowName": "Tests",
-        "event": "pull_request",
-        "status": "unknown",
-        "conclusion": "",
-        "headSha": HEAD,
-        "attempt": 1,
-        "createdAt": "2026-09-28T10:00:00Z",
-        "databaseId": 123,
-        "url": "https://ci.example/run/123",
-    }
-
-    with pytest.raises(watch_pr.WatchError, match="status value"):
-        watch_pr._parse_producer_runs([value])
-
-
-def test_ci_snapshot_rereads_checks_after_observing_completed_producer() -> None:
-    pull = {
-        "url": URL,
-        "state": "OPEN",
-        "mergedAt": None,
-        "headRefOid": HEAD,
-        "baseRefName": "main",
-        "labels": [],
-        "statusCheckRollup": [],
-    }
-    transport = watch_pr.GhTransport(clock=FakeClock())
-    checks = iter([[], [{"name": "ci-required", "bucket": "pass", "state": "SUCCESS"}]])
-    transport._pull = lambda *_args: pull  # type: ignore[method-assign]
-    transport._required_checks = lambda *_args: frozenset({"ci-required"})  # type: ignore[method-assign]
-    transport._checks = lambda *_args: next(checks)  # type: ignore[method-assign]
-    transport._producer_runs = lambda *_args: (  # type: ignore[method-assign]
-        producer_run(status="completed", conclusion="success"),
-    )
-
-    result = transport.ci_snapshot("example/repo", 7, 100)
-
-    assert tuple(item.name for item in result.checks) == ("ci-required",)
-
-
-def test_paginated_comments_are_flattened_for_control_baselining() -> None:
-    parsed = watch_pr._snapshot_from_json(
-        {
-            "url": URL,
-            "state": "OPEN",
-            "mergedAt": None,
-            "headRefOid": HEAD,
-            "labels": [],
-            "statusCheckRollup": [],
-        },
-        [],
-        [[{"id": 1, "body": "@mergifyio queue default", "user": {"login": "owner"}}], []],
-        require_comments=True,
-    )
-
-    assert parsed.comments == (watch_pr.Comment("1", "@mergifyio queue default", "owner"),)
-
-
-def test_transient_reads_are_retried_at_most_three_times() -> None:
-    transport = watch_pr.GhTransport(clock=FakeClock())
-    clock = transport._clock
-    calls = 0
-
-    def fake_run(*_args: Any, **_kwargs: Any) -> dict[str, bool]:
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            raise ConnectionError("network unavailable")
-        return {"ok": True}
-
-    transport._run = fake_run  # type: ignore[method-assign]
-
-    assert transport._read(["pr", "view"], 100) == {"ok": True}
-    assert calls == 3
-    assert clock.sleeps == [1, 2]
-
-
-@pytest.mark.parametrize("exit_code", [1, 8])
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_accept_empty_stdout_for_no_check_exits(tmp_path: Path, exit_code: int) -> None:
-    executable = write_fake_gh(tmp_path, f"raise SystemExit({exit_code})\n")
-    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
-
-    assert transport._checks("example/repo", 7, hang_guard_s()) == []
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_reject_empty_stdout_for_success(tmp_path: Path) -> None:
-    executable = write_fake_gh(tmp_path, "raise SystemExit(0)\n")
-    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
-
-    with pytest.raises(watch_pr.WatchError, match="empty JSON"):
-        transport._checks("example/repo", 7, hang_guard_s())
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_reject_generic_exit_one_error(tmp_path: Path) -> None:
-    executable = write_fake_gh(
-        tmp_path,
-        "import sys\nprint('GraphQL: missing pull request', file=sys.stderr)\nraise SystemExit(1)\n",
-    )
-    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
-
-    with pytest.raises(watch_pr.WatchError, match="gh read failed"):
-        transport._checks("example/repo", 7, hang_guard_s())
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-@pytest.mark.parametrize("exit_code", [1, 8])
 @pytest.mark.parametrize(
-    "message",
+    ("read", "reads", "match"),
     [
-        pytest.param("no checks reported on the 'feature' branch", id="plain"),
-        pytest.param("no required checks reported on the 'feature' branch", id="required"),
+        (
+            "queue_snapshot",
+            {"pull": open_pull(statusCheckRollup={"bad": True})},
+            "statusCheckRollup",
+        ),
+        ("ci_snapshot", {"runs": json.dumps([run_json(status="unknown")])}, "status value"),
     ],
 )
-def test_checks_accept_documented_no_checks_message(
-    tmp_path: Path, message: str, exit_code: int
+def test_malformed_external_response_is_rejected(
+    gh: PathToolFake, read: str, reads: dict[str, Any], match: str
 ) -> None:
-    executable = write_fake_gh(
-        tmp_path,
-        f"import sys\nprint({message!r}, file=sys.stderr)\nraise SystemExit({exit_code})\n",
+    answer_reads(gh, **reads)
+
+    with pytest.raises(watch_pr.WatchError, match=match):
+        getattr(gh_transport(gh), read)("example/repo", 7, hang_guard_s())
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "parsed"),
+    [("completed", "success", "success"), ("in_progress", "", None)],
+)
+def test_ci_snapshot_rereads_checks_after_observing_completed_producer(
+    gh: PathToolFake, status: str, conclusion: str, parsed: str | None
+) -> None:
+    answer_reads(
+        gh,
+        checks=["[]", json.dumps([passing_check()])],
+        runs=json.dumps([run_json(status=status, conclusion=conclusion)]),
     )
-    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
 
-    assert transport._checks("example/repo", 7, hang_guard_s()) == []
+    result = gh_transport(gh).ci_snapshot("example/repo", 7, hang_guard_s())
+
+    assert tuple(item.name for item in result.checks) == ("ci-required",)
+    assert result.producer_runs == (
+        producer_run(
+            status=status,
+            conclusion=parsed,
+            attempt=2,
+            database_id=123,
+            url="https://ci.example/run/123",
+        ),
+    )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_checks_reject_malformed_nonempty_stdout(tmp_path: Path) -> None:
-    executable = write_fake_gh(tmp_path, "print('{')\nraise SystemExit(1)\n")
-    transport = watch_pr.GhTransport(clock=FakeClock(), executable=str(executable))
+def test_transient_reads_are_retried_at_most_three_times(gh: PathToolFake) -> None:
+    clock = FakeClock()
+    for _ in range(2):
+        gh.answer("pr", "view", stderr="connection reset", returncode=1)
+    answer_reads(gh)
 
-    with pytest.raises(watch_pr.WatchError, match="invalid JSON"):
-        transport._checks("example/repo", 7, hang_guard_s())
+    snapshot_ = gh_transport(gh, clock).queue_snapshot("example/repo", 7, hang_guard_s())
+
+    assert snapshot_.url == URL
+    assert clock.sleeps == [1, 2]
+    assert sum(call.args[:2] == ["pr", "view"] for call in gh.calls()) == 3
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "error"),
+    [
+        (1, "", "", None),
+        (8, "", "", None),
+        (1, "", "no checks reported on the 'feature' branch", None),
+        (8, "", "no required checks reported on the 'feature' branch", None),
+        (0, "", "", "empty JSON"),
+        (1, "", "GraphQL: missing pull request", "gh read failed"),
+        (1, "{\n", "", "invalid JSON"),
+    ],
+    ids=[
+        "exit-1",
+        "exit-8",
+        "plain-message",
+        "required-message",
+        "success-empty",
+        "graphql",
+        "malformed",
+    ],
+)
+def test_required_checks_read_outcomes(
+    gh: PathToolFake, returncode: int, stdout: str, stderr: str, error: str | None
+) -> None:
+    answer_reads(gh, checks=None)
+    gh.answer("pr", "checks", stdout=stdout, stderr=stderr, returncode=returncode)
+    transport = gh_transport(gh)
+
+    if error is not None:
+        with pytest.raises(watch_pr.WatchError, match=error):
+            transport.ci_snapshot("example/repo", 7, hang_guard_s())
+        return
+    assert transport.ci_snapshot("example/repo", 7, hang_guard_s()).checks == ()
 
 
 def test_every_outcome_has_an_explicit_exit_mapping() -> None:
@@ -930,206 +778,154 @@ def test_every_outcome_has_an_explicit_exit_mapping() -> None:
     assert mapped == set(watch_pr.Outcome)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_cli_smoke_uses_read_only_gh_commands_and_emits_two_lines(tmp_path: Path) -> None:
-    log = tmp_path / "commands.log"
-    long_url = "https://github.com/example/repo/pull/" + "x" * 10_000
-    write_passing_ci_gh(tmp_path, log, long_url)
-    result = run_script(
-        "--repo",
-        "example/repo",
-        "--pr",
-        "7",
-        "--mode",
-        "ci",
-        "--expected-head",
-        HEAD,
-        "--timeout-seconds",
-        str(hang_guard_s()),
-        "--producer-registration-grace-seconds",
-        str(hang_guard_s()),
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
-        timeout=2 * hang_guard_s(),
-    )
-
-    lines = result.stdout.splitlines()
-    assert result.returncode == 0
-    assert len(lines) == 2
-    summary = json.loads(lines[1])
-    assert summary["outcome"] == "ci_passed"
-    assert summary["query_count"] == 4
-    assert len(summary["pr_url"]) == watch_pr.MAX_LINK_LENGTH
-    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in lines)
-    commands = log.read_text(encoding="utf-8").splitlines()
-    assert "--required" in "\n".join(commands)
-    assert all(
-        line.split()[:2] in (["pr", "view"], ["pr", "checks"], ["run", "list"])
-        or line.split()[0] == "api"
-        for line in commands
-    )
+def cli(*extra: str) -> list[str]:
+    return ["python3", str(SCRIPT), "--repo", "example/repo", "--pr", "7", *extra]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fake gh uses POSIX command discovery")
-def test_cli_reports_bounded_missing_check_evidence(tmp_path: Path) -> None:
-    run = {
-        "workflowName": "Tests",
-        "event": "pull_request",
-        "status": "completed",
-        "conclusion": "success",
-        "headSha": HEAD,
-        "attempt": 1,
-        "createdAt": "2026-09-28T10:00:00Z",
-        "databaseId": 1,
-        "url": "https://ci.example/run/1",
-    }
-    confidential = {
-        **run,
-        "workflowName": "Confidential content",
-        "event": "pull_request_target",
-        "databaseId": 2,
-        "url": "https://ci.example/run/2",
-    }
-    write_fake_gh(
-        tmp_path,
-        _missing_checks_fake_gh_source(run, confidential),
-    )
+CI_MODE = ["--mode", "ci", "--expected-head", HEAD, "--producer-registration-grace-seconds"]
+CONFIDENTIAL_RUN = run_json(
+    workflowName="Confidential content",
+    event="pull_request_target",
+    databaseId=2,
+    url="https://ci.example/run/2",
+)
 
-    result = run_script(
-        "--repo",
-        "example/repo",
-        "--pr",
-        "7",
-        "--mode",
-        "ci",
-        "--expected-head",
-        HEAD,
-        "--timeout-seconds",
-        str(hang_guard_s()),
-        "--producer-registration-grace-seconds",
-        str(hang_guard_s()),
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
-        timeout=2 * hang_guard_s(),
+
+@pytest.mark.skipif(os.name == "nt", reason="Popen(['gh', ...]) does not resolve a .cmd launcher")
+@pytest.mark.parametrize(
+    ("mode", "reads", "code", "expected"),
+    [
+        (
+            [*CI_MODE, str(hang_guard_s())],
+            {"pull": open_pull(url=LONG_URL), "checks": json.dumps([passing_check()])},
+            0,
+            {
+                "outcome": "ci_passed",
+                "query_count": 4,
+                "pr_url": LONG_URL[: watch_pr.MAX_LINK_LENGTH],
+            },
+        ),
+        (
+            [*CI_MODE, str(hang_guard_s())],
+            {
+                "runs": json.dumps(
+                    [
+                        run_json(attempt=1, databaseId=1, url="https://ci.example/run/1"),
+                        CONFIDENTIAL_RUN,
+                    ]
+                ),
+                "required": ("ci-required", "confidential-content"),
+            },
+            1,
+            {
+                "outcome": "required_checks_missing",
+                "missing_checks": ["ci-required", "confidential-content"],
+                "links": ["https://ci.example/run/1", "https://ci.example/run/2"],
+            },
+        ),
+        (
+            ["--mode", "queue", "--producer-registration-grace-seconds", "0"],
+            {"pull": open_pull(state="MERGED", mergedAt="2026-09-15T10:00:00Z")},
+            0,
+            {"outcome": "merged"},
+        ),
+    ],
+    ids=["passing-ci", "missing-producers", "queue-ignores-grace"],
+)
+def test_cli_scenarios(
+    gh: PathToolFake,
+    mode: list[str],
+    reads: dict[str, Any],
+    code: int,
+    expected: dict[str, object],
+) -> None:
+    answer_reads(gh, **reads)
+
+    result = run_bounded_child(
+        cli(*mode, "--timeout-seconds", str(hang_guard_s())), timeout=2 * hang_guard_s()
     )
 
     lines = result.stdout.splitlines()
     assert len(lines) == 2, result.stderr
     summary = json.loads(lines[1])
-    assert result.returncode == 1
-    assert summary["outcome"] == "required_checks_missing"
-    assert summary["missing_checks"] == ["ci-required", "confidential-content"]
-    assert summary["links"] == ["https://ci.example/run/1", "https://ci.example/run/2"]
-
-
-def test_cli_rejects_overlong_repo_without_echoing_it() -> None:
-    repo = f"owner/{'x' * watch_pr.MAX_REPO_LENGTH}"
-
-    result = subprocess.run(
-        [
-            "python3",
-            str(SCRIPT),
-            "--repo",
-            repo,
-            "--pr",
-            "7",
-            "--mode",
-            "queue",
-            "--timeout-seconds",
-            "5",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    assert result.returncode == code
+    assert {key: summary[key] for key in expected} == expected
+    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in lines)
+    assert all(
+        call.args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "list"])
+        or (call.args[0] == "api" and "--method" not in call.args)
+        for call in gh.calls()
+    )
+    assert all(
+        "--required" in call.args for call in gh.calls() if call.args[:2] == ["pr", "checks"]
     )
 
-    assert result.returncode == 2
-    assert repo not in result.stderr
-    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in result.stderr.splitlines())
 
-
-def test_cli_rejects_registration_grace_longer_than_ci_timeout() -> None:
-    result = subprocess.run(
-        [
-            "python3",
-            str(SCRIPT),
-            "--repo",
-            "example/repo",
-            "--pr",
-            "7",
-            "--mode",
-            "ci",
-            "--expected-head",
-            HEAD,
-            "--timeout-seconds",
-            "60",
-            "--producer-registration-grace-seconds",
-            "61",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    assert "no greater than the CI timeout" in result.stderr
-
-
-@pytest.mark.parametrize("grace", ["0", str(60 * 60 + 1)])
-def test_cli_rejects_invalid_registration_grace_in_ci_mode(grace: str) -> None:
-    result = run_script(
-        "--repo",
-        "example/repo",
-        "--pr",
-        "7",
-        "--mode",
-        "ci",
-        "--expected-head",
-        HEAD,
+def ci_argv(timeout: int, grace: int) -> list[str]:
+    return [
+        *cli()[2:],
+        *CI_MODE,
+        str(grace),
         "--timeout-seconds",
-        str(2 * 60 * 60),
-        "--producer-registration-grace-seconds",
-        grace,
-    )
-
-    assert result.returncode == 2
+        str(timeout),
+    ]
 
 
-def test_cli_ignores_registration_grace_validation_in_queue_mode() -> None:
-    args = watch_pr._parser().parse_args(
-        [
-            "--repo",
-            "example/repo",
-            "--pr",
-            "7",
-            "--mode",
-            "queue",
-            "--timeout-seconds",
-            "1",
-            "--producer-registration-grace-seconds",
-            "0",
-        ]
-    )
+@pytest.mark.parametrize(
+    ("argv", "fragment"),
+    [
+        (
+            [
+                "--repo",
+                f"owner/{'x' * watch_pr.MAX_REPO_LENGTH}",
+                "--pr",
+                "7",
+                "--mode",
+                "queue",
+                "--timeout-seconds",
+                "5",
+            ],
+            "--repo must be OWNER/REPO",
+        ),
+        (ci_argv(60, 61), "no greater than the CI timeout"),
+        (ci_argv(2 * 60 * 60, 0), "must be positive"),
+        (ci_argv(2 * 60 * 60, 60 * 60 + 1), "at most one hour"),
+    ],
+    ids=["overlong-repo", "grace-over-timeout", "grace-zero", "grace-over-an-hour"],
+)
+def test_cli_rejects_invalid_arguments(
+    argv: list[str], fragment: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        watch_pr.main(argv)
 
-    watch_pr._validate_args(args)
+    stderr = capsys.readouterr().err
+    assert raised.value.code == 2
+    assert fragment in stderr
+    assert "x" * watch_pr.MAX_REPO_LENGTH not in stderr
+    assert all(len(line) <= watch_pr.MAX_OUTPUT_LINE_LENGTH for line in stderr.splitlines())
 
 
-def test_cancel_terminates_active_child_process() -> None:
-    transport = watch_pr.GhTransport(clock=watch_pr.SystemClock(), executable=sys.executable)
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the fake is a .cmd wrapper there: terminate() ends only it and the child keeps the pipes",
+)
+def test_cancel_terminates_active_child_process(gh: PathToolFake) -> None:
+    gh.answer("pr", "view", hang_s=4 * hang_guard_s())
+    clock = watch_pr.SystemClock()
+    transport = gh_transport(gh, clock)
     errors: list[BaseException] = []
 
-    def run_child() -> None:
+    def read() -> None:
         try:
-            transport._run(
-                ["-c", f"import time; time.sleep({4 * hang_guard_s()})"],
-                2 * hang_guard_s(),
-                accepted={0},
-            )
+            transport.ci_snapshot("example/repo", 7, clock.monotonic() + 2 * hang_guard_s())
         except watch_pr.CancelledWatchError as error:
             errors.append(error)
 
-    worker = threading.Thread(target=run_child)
+    worker = threading.Thread(target=read)
     worker.start()
     poll_deadline = time.monotonic() + hang_guard_s()
-    while transport._active is None and time.monotonic() < poll_deadline:
+    while not gh.calls() and time.monotonic() < poll_deadline:
         time.sleep(0.01)
     transport.cancel()
     worker.join(timeout=hang_guard_s())
@@ -1139,45 +935,26 @@ def test_cancel_terminates_active_child_process() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal behavior")
-def test_cancel_interrupts_quiet_polling_sleep(tmp_path: Path) -> None:
-    write_fake_gh(
-        tmp_path,
-        "import json, sys\n"
-        "if sys.argv[1:3] == ['pr', 'view']:\n"
-        f"    print(json.dumps({{'url': {URL!r}, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': {HEAD!r}, 'baseRefName': 'main', 'labels': [], 'statusCheckRollup': []}}))\n"
-        "elif sys.argv[1:3] == ['pr', 'checks']:\n"
-        "    print('[]')\n"
-        "elif sys.argv[1:3] == ['run', 'list']:\n"
-        "    print('[]')\n"
-        "elif sys.argv[1] == 'api':\n"
-        "    print(json.dumps([{'type': 'required_status_checks', 'parameters': {'required_status_checks': [{'context': 'ci-required'}]}}]))\n",
-    )
+def test_cancel_interrupts_quiet_polling_sleep(gh: PathToolFake) -> None:
+    answer_reads(gh)
     # The test drives this Popen itself (SIGTERM, communicate).
     process = subprocess.Popen(
-        [
-            "python3",
-            str(SCRIPT),
-            "--repo",
-            "example/repo",
-            "--pr",
-            "7",
-            "--mode",
-            "ci",
-            "--expected-head",
-            HEAD,
+        cli(
+            *CI_MODE,
+            str(2 * hang_guard_s()),
             "--timeout-seconds",
             str(4 * hang_guard_s()),
-            "--producer-registration-grace-seconds",
-            str(2 * hang_guard_s()),
-        ],
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     assert process.stdout is not None
     assert process.stdout.readline().startswith("watch_pr: started")
-    time.sleep(0.2)
+    # The six reads of the first CI snapshot, each logged after its whole answer.
+    poll_deadline = time.monotonic() + hang_guard_s()
+    while len(gh.calls()) < 6 and time.monotonic() < poll_deadline:
+        time.sleep(0.01)
 
     process.send_signal(signal.SIGTERM)
     stdout, stderr = process.communicate(timeout=hang_guard_s())
