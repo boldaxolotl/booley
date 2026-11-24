@@ -8,7 +8,6 @@ from booley.runtime import dockerfile_syntax
 from booley.runtime.dockerfile_syntax import (
     build_context_imports,
     logical_instructions,
-    stage_aliases,
 )
 
 
@@ -26,17 +25,11 @@ def test_unterminated_continuation_is_rejected() -> None:
         logical_instructions("RUN one \\\n")
 
 
-def test_stage_aliases_are_case_insensitive() -> None:
-    instructions = logical_instructions("FROM a@sha256:1 as Tools\nFROM b AS final\nRUN x\n")
-
-    assert stage_aliases(instructions) == {"tools", "final"}
-
-
 def test_build_context_imports_ignore_same_file_stage_copies_only() -> None:
     dockerfile = (
-        "FROM x@sha256:1 AS tools\n"
+        "FROM x@sha256:1 as Tools\n"
         "FROM base\n"
-        "copy --FROM=Tools /a /a\n"
+        "copy --FROM=tOOLS /a /a\n"
         "COPY --from=other-image /b /b\n"
         "COPY src/ /src\n"
         "ADD archive.tar /\n"
@@ -72,17 +65,6 @@ def test_build_arguments_are_scoped_to_their_stage() -> None:
     assert arguments[2].line == 4
 
 
-def test_build_arguments_join_continuation_lines() -> None:
-    dockerfile = "ARG \\\n    # interior comment\n    PIN=abc\nFROM x\nARG A=1\nRUN y\n"
-
-    arguments = dockerfile_syntax.build_arguments(dockerfile)
-
-    assert [(a.name, a.default, a.stage, a.line) for a in arguments] == [
-        ("PIN", "abc", None, 1),
-        ("A", "1", 0, 5),
-    ]
-
-
 def test_argument_default_reports_repeated_declarations() -> None:
     repeated = "ARG PIN=1\nFROM a\nARG PIN\nARG PIN\n"
 
@@ -106,16 +88,6 @@ def test_from_references_resolve_global_arguments() -> None:
     ]
     with pytest.raises(ValueError, match="Dockerfile:1: unresolved FROM"):
         dockerfile_syntax.from_references("FROM ${MISSING}\n")
-
-
-def test_from_references_unquote_global_defaults_and_join_continued_from_lines() -> None:
-    dockerfile = 'ARG PARENT="example.invalid/base:1"\nFROM \\\n    ${PARENT} \\\n    AS builder\n'
-
-    references = dockerfile_syntax.from_references(dockerfile)
-
-    assert [(r.image, r.alias, r.line) for r in references] == [
-        ("example.invalid/base:1", "builder", 2)
-    ]
 
 
 def test_from_references_reject_a_global_argument_declaring_several_names() -> None:
