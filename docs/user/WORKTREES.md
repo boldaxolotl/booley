@@ -76,25 +76,22 @@ booley worktree prepare [PATH]
 `PATH` is any folder in the worktree (default: the current directory). The
 worktree gets the Booley Directory that `booley worktree new` would give it:
 nothing when Git tracks it, otherwise a **Snapshot**. Git submodules are not
-filled in. The command also removes registrations of the Booley Directory's
-repository whose folders are gone, applies the same Git settings as
-`booley worktree new`, and runs the Project's `post-setup` hook, saving its
-output to `.booley/worktrees/.logs/<folder>.log` in the main Booley Directory.
+filled in. Then the Project's `post-setup` hook runs, as it does for
+`booley worktree new`. If it fails, Booley removes what the run created and
+exits nonzero. Running the command again creates nothing new and runs the hook
+again.
 
 <details markdown>
 <summary>In stealth mode</summary>
 
 The worktree gets a **Paired Checkout** on branch `booley-worktree/<folder>`,
-where `<folder>` is the worktree's folder name, with the same warning for files
-left out.
+where `<folder>` is the worktree's folder name. Uncommitted files are left out,
+with a warning.
 
 </details>
 
 Outside a Booley Project the command does nothing and exits 0. It refuses the
-main checkout, a Booley Directory outside the checkout, and a worktree with
-uncommitted changes whose line endings need converting. If a step fails,
-Booley removes what the run created and exits nonzero. Running it again in a
-prepared worktree changes nothing.
+main checkout and a Booley Directory outside the checkout.
 
 ## Listing worktrees
 

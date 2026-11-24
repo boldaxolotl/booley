@@ -65,10 +65,15 @@ def prepare_target(path: Path) -> PrepareTarget | None:
         return None
     common_dir = directories.common_dir
     if common_dir.name != ".git":
-        return None
+        return _superproject_target(path)
     main = common_dir.parent
     if not ((main / "booley.toml").is_file() or own_booley_dir(main).is_dir()):
         return None
+    if _is_booley_directory(main):
+        raise WorktreePrepareError(
+            f"{main} is a Booley Directory, not a worktree; "
+            "run booley worktree prepare in the worktree that holds it"
+        )
     if directories.git_dir == common_dir:
         raise WorktreePrepareError(
             f"{main} is the main checkout of a Booley Project; "
@@ -82,13 +87,24 @@ def prepare_target(path: Path) -> PrepareTarget | None:
     return PrepareTarget(main, Path(top.stdout.strip()))
 
 
-def give_booley_dir(target: PrepareTarget, source: Path | None) -> WorktreeBooleyDir:
-    """Give *target.worktree* its Booley Directory unless it already has one.
+def _superproject_target(path: Path) -> PrepareTarget | None:
+    """The target of the superproject *path* is a submodule of, or ``None`` outside one."""
+    outer = run_git(path, "rev-parse", "--show-superproject-working-tree")
+    if outer.returncode != 0 or not outer.stdout.strip():
+        return None
+    return prepare_target(Path(outer.stdout.strip()))
 
-    *source* is the main Versioned Booley Directory (``None`` when it is not
-    versioned). Git-tracked contents stay as they are; a Versioned directory
-    becomes a Paired Checkout; any other becomes a Snapshot, published
-    atomically so an existing directory is always complete.
+
+def _is_booley_directory(folder: Path) -> bool:
+    """Whether *folder* is the Booley Directory of the checkout around it."""
+    around = run_git(folder.parent, "rev-parse", "--show-toplevel")
+    return around.returncode == 0 and (
+        own_booley_dir(Path(around.stdout.strip())).resolve() == folder.resolve()
+    )
+
+
+def check_booley_dir(target: PrepareTarget, source: Path | None) -> Path:
+    """Refuse a Booley Directory that prepare must not touch; return where the worktree's own goes.
 
     Raises:
         WorktreePrepareError: the directory links out of the worktree, or an
@@ -100,17 +116,41 @@ def give_booley_dir(target: PrepareTarget, source: Path | None) -> WorktreeBoole
         raise WorktreePrepareError(
             f"{nested} is a link out of the worktree; it would share another checkout's configuration"
         )
-    tracked = run_git(target.worktree, "ls-files", "-z", "--", str(relative))
-    if tracked.stdout:
+    if (
+        source is not None
+        and nested.exists()
+        and not (nested / ".git").is_file()
+        and not _tracked(target, nested)
+    ):
+        raise WorktreePrepareError(
+            f"{nested} exists but is not a Paired Checkout; move it away and run prepare again"
+        )
+    return nested
+
+
+def _tracked(target: PrepareTarget, nested: Path) -> bool:
+    relative = nested.relative_to(target.worktree).as_posix()
+    return bool(run_git(target.worktree, "ls-files", "-z", "--", relative).stdout)
+
+
+def give_booley_dir(target: PrepareTarget, source: Path | None) -> WorktreeBooleyDir:
+    """Give *target.worktree* its Booley Directory unless it already has one.
+
+    *source* is the main Versioned Booley Directory (``None`` when it is not
+    versioned). Git-tracked contents stay as they are; a Versioned directory
+    becomes a Paired Checkout; any other becomes a Snapshot, published
+    atomically so an existing directory is always complete.
+
+    Raises:
+        WorktreePrepareError: :func:`check_booley_dir` refuses the directory.
+    """
+    nested = check_booley_dir(target, source)
+    if _tracked(target, nested):
         return WorktreeBooleyDir("tracked", nested, created=False)
     if source is None:
         return _give_snapshot(target, nested)
     if (nested / ".git").is_file():
         return WorktreeBooleyDir("paired", nested, created=False)
-    if nested.exists():
-        raise WorktreePrepareError(
-            f"{nested} exists but is not a Paired Checkout; move it away and run prepare again"
-        )
     pairing = pair_project_worktree(target.main, target.worktree, target.name, source=source)
     assert pairing is not None, "a Versioned Booley Directory pairs"
     return WorktreeBooleyDir("paired", nested, created=True, left_out=pairing.left_out)
@@ -120,6 +160,7 @@ def _give_snapshot(target: PrepareTarget, nested: Path) -> WorktreeBooleyDir:
     if nested.exists():
         return WorktreeBooleyDir("snapshot", nested, created=False)
     staging = nested.with_name(f"{nested.name}.prepare-{os.getpid()}")
+    safe_rmtree(staging)  # a killed run's leftovers (the process ID may repeat) are never kept
     try:
         skipped = copy_snapshot(own_booley_dir(target.main), staging)
         staging.rename(nested)

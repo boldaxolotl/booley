@@ -271,8 +271,21 @@ def prune_missing_checkouts(source: Path) -> None:
 
     An explicit prune ignores ``gc.worktreePruneExpire=never``, which pairing sets.
     The checkouts' branches stay.
+
+    Raises:
+        ProjectPairingError: a folder still exists but lost its ``.git`` pointer
+            (a cut-short removal), so Git would drop its index with the registration.
     """
     with _project_lock(source):
+        folder = ""
+        for line in _require_git(source, "worktree", "list", "--porcelain").splitlines():
+            if line.startswith("worktree "):
+                folder = line.removeprefix("worktree ")
+            elif line.startswith("prunable") and Path(folder).exists():
+                raise ProjectPairingError(
+                    f"{folder} is registered but lost its .git file; "
+                    "remove that folder or restore the file, then run prepare again"
+                )
         _require_git(source, "worktree", "prune")
 
 

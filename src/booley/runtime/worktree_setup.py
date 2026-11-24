@@ -171,9 +171,12 @@ def configure_worktree_git(project_root: Path, worktree: Path, *, booley_dir: Pa
 
 
 def copy_root_fusesoc_ignore(project_root: Path, worktree: Path) -> None:
-    """Preserve an untracked root FuseSoC quarantine marker in a linked worktree."""
+    """Preserve an untracked root FuseSoC quarantine marker in a linked worktree.
+
+    A marker the worktree already has (checked out, or edited since) is kept.
+    """
     marker = project_root / "FUSESOC_IGNORE"
-    if marker.is_file():
+    if marker.is_file() and not os.path.lexists(worktree / marker.name):
         shutil.copy2(marker, worktree / marker.name)
 
 

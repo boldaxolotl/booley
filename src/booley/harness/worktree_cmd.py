@@ -69,6 +69,7 @@ from booley.runtime.worktree_prepare import (
     PrepareTarget,
     WorktreeBooleyDir,
     WorktreePrepareError,
+    check_booley_dir,
     give_booley_dir,
     prepare_target,
     remove_booley_dir,
@@ -166,7 +167,7 @@ def _add_prepare_parser(commands: argparse._SubParsersAction) -> None:
             "applies the worktree Git settings, and runs the post-setup hook. "
             "It does nothing outside a Booley Project and refuses the main checkout and "
             "a Booley Directory outside the checkout. If a step fails, what the run "
-            "created is removed. A second run changes nothing. Submodules are not filled."
+            "created is removed. A second run creates nothing new. Submodules are not filled."
         ),
     )
     prepare.add_argument(
@@ -577,6 +578,7 @@ def _prepare_locked(target: PrepareTarget) -> tuple[WorktreeBooleyDir, Path | No
     main_dir = own_booley_dir(target.main)
     _repair_mount_registrations(target.main)
     source = project_pairing_source(target.main)
+    check_booley_dir(target, source)  # refuse before anything is written
     if source is not None:
         prune_missing_checkouts(source)
     mark_fusesoc_ignore(main_dir, paired=source is not None)
