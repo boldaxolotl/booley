@@ -19,11 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from booley.evidence.review_vocabulary import (
-    OPEN_STATUSES,
-    STATUS_FIXED,
-    STATUS_WAIVED,
-)
+from booley.evidence.review_vocabulary import OPEN_STATUSES, STATUS_WAIVED
 from booley.harness.review_command import (
     ReviewRefusedError,
     ReviewRequest,
@@ -36,11 +32,14 @@ from booley.harness.review_command import (
     resolve_commit,
     run_reviewer,
 )
+from booley.review.declared_reviews import review_rules_changes
+from booley.review.review_report import markdown_report, terminal_report
 from booley.review.review_run import (
     DISCOVERY_KIND,
     ERROR,
     OPEN,
     PASS,
+    VERIFY_KIND,
     PlannedReview,
     ReviewResult,
     VerifiedReview,
@@ -63,7 +62,6 @@ from booley.specialists.reviewer import ReviewerSpecialist
 
 _SHORT = 12  # hex digits of a commit shown in a message
 _COMMIT_NAME = re.compile(r"[0-9a-f]{40,64}")
-_LABELS = {STATUS_FIXED: "fixed", STATUS_WAIVED: "waived"}  # any other status is "still open"
 
 
 def _is_ancestor(project_root: Path, commit: str, descendant: str) -> bool:
@@ -82,17 +80,23 @@ def _runs_of(main: Path, commit: str) -> list[tuple[Path, dict[str, Any]]]:
         raise ReviewRefusedError(str(exc)) from exc
 
 
-def _latest_discovery(
-    project_root: Path, main: Path, sha: str, base_commit: str
-) -> dict[str, Any]:
-    """The latest discovery run of *sha* or an ancestor against *base_commit*; none is a refusal."""
+def _history(project_root: Path, main: Path, sha: str) -> list[dict[str, Any]]:
+    """Every stored run of *sha* or an ancestor, by commit folder."""
     folder = main / "reviews"
     names = sorted(p.name for p in folder.iterdir()) if folder.is_dir() else []
-    found = [
+    return [
         document
         for name in names
         if _COMMIT_NAME.fullmatch(name) and _is_ancestor(project_root, name, sha)
         for _, document in _runs_of(main, name)
+    ]
+
+
+def _latest_discovery(history: list[dict[str, Any]], sha: str, base_commit: str) -> dict[str, Any]:
+    """The latest discovery run in *history* against *base_commit*; none is a refusal."""
+    found = [
+        document
+        for document in history
         if document["kind"] == DISCOVERY_KIND and document["base"]["commit"] == base_commit
     ]
     if not found:
@@ -107,6 +111,24 @@ def _latest_discovery(
     if not open_finding_ids(latest):
         raise ReviewRefusedError(f"{where} has no open finding to verify")
     return latest
+
+
+def _chain(
+    history: list[dict[str, Any]], discovery: dict[str, Any], document: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The discovery run, its earlier verify runs on this line of history, then *document*.
+
+    A verify run on a sibling branch is not in *history*, so it never enters.
+    """
+    earlier = sorted(
+        (
+            run
+            for run in history
+            if run["kind"] == VERIFY_KIND and run["discovery"]["run_id"] == discovery["run_id"]
+        ),
+        key=lambda run: run["run_id"],
+    )
+    return [discovery, *earlier, document]
 
 
 def _proposals(discovery: dict[str, Any], waive: tuple[tuple[str, str], ...]) -> dict[str, str]:
@@ -222,7 +244,8 @@ def verify_review(project_root: Path, request: ReviewRequest) -> int:
     base, base_commit = resolve_base_of(project_root, sha, request.base)
     key_of(project_root, sha)
     main = main_booley_dir_of(project_root)
-    discovery = _latest_discovery(project_root, main, sha, base_commit)
+    history = _history(project_root, main, sha)
+    discovery = _latest_discovery(history, sha, base_commit)
     proposals = _proposals(discovery, request.waive)
     run_id = new_run_id()
     with exported_commit(project_root, sha, main, run_id) as (checkout, export):
@@ -230,6 +253,7 @@ def verify_review(project_root: Path, request: ReviewRequest) -> int:
         declared = load_reviews(checkout, None)
         planned = plan_reviews(declared, frozenset(), checkout)
         _refuse_changed_declarations(discovery, planned, sha)
+        rules_changed = review_rules_changes(project_root, keyed, base_commit)
         path = str(main / "reviews" / discovery["commit"] / f"{discovery['run_id']}.json")
         reviews = tuple(
             _verify_one(discovery["reviews"][index], path, checkout, proposals)
@@ -246,41 +270,25 @@ def verify_review(project_root: Path, request: ReviewRequest) -> int:
         discovery,
         tuple(between.decode("ascii").split()),
         reviews,
+        keyed.message,
+        rules_changed,
     )
     document = verify_document(facts)
-    stored = store_review_run(main, document)
-    _print_report(document, stored, as_json=request.as_json)
+    chain = _chain(history, discovery, document)
+    stored = store_review_run(main, document, markdown_report(chain))
+    _print_report(chain, stored, as_json=request.as_json)
     return exit_code_of(document["outcome"])
 
 
-def _finding_lines(document: dict[str, Any]) -> list[str]:
-    """One line per re-checked finding, one per refused waiver, then the summary counts."""
-    lines: list[str] = []
-    counts = {"fixed": 0, "waived": 0, "still open": 0}
-    for review in document["reviews"]:
-        if review["outcome"] == ERROR:
-            continue
-        rulings = {w["finding_id"]: w["ruling"] for w in review["waivers"] if not w["accepted"]}
-        for row in review["introduced"]:
-            label = _LABELS.get(row["status"], "still open")
-            counts[label] += 1
-            lines.append(
-                f"{row['finding_id']} {row['file']}:{row['line']} {row['summary']}: {label}"
-            )
-            if row["finding_id"] in rulings:
-                reason = rulings[row["finding_id"]] or "the Reviewer gave no reason"
-                lines.append(f"  waiver refused: {reason}")
-    summary = ", ".join(f"{count} {label}" for label, count in counts.items())
-    return [*lines, f"{document['outcome']}: {summary}"]
-
-
-def _print_report(document: dict[str, Any], stored: Path, *, as_json: bool) -> None:
+def _print_report(chain: list[dict[str, Any]], stored: Path, *, as_json: bool) -> None:
+    document = chain[-1]
     where = f"Review Run {stored.name}"
     if as_json:
         print(json.dumps(document, indent=2))
         print(where, file=sys.stderr)
     else:
-        print("\n".join(_finding_lines(document)) + f"; {where}")
+        print(terminal_report(chain), end="")
+        print(f"\n{where}")
     for review in document["reviews"]:
         if review["error"] is not None:
             print(

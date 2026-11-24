@@ -99,10 +99,8 @@ def _bind_closure(document: dict) -> None:
         "rtl": [{"path": f"rtl/{name}.sv", "sha256": "sha256:" + "6" * 64} for name in "ab"],
         "testbench": [{"path": "tb/tb.sv", "sha256": "sha256:" + "7" * 64}],
     }
-    for category in ("rtl", "testbench"):
-        document["fingerprints"][category + "_sources"] = coverage_digest(
-            document["source_closure"][category]
-        )
+    for category, key in (("rtl", "rtl_sources"), ("testbench", "testbench_sources")):
+        document["fingerprints"][key] = coverage_digest(document["source_closure"][category])
     for metric in ("branch", "toggle", "expression", "cover_property"):
         document["collector"]["capabilities"].append(
             {"record_class": metric, "status": "reported"}
@@ -173,8 +171,12 @@ _ALL_LINES = [
 ]
 
 
-def test_uncovered_prints_one_line_per_point_and_a_summary(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("inside", [False, True], ids=["host", "sandbox"])
+def test_uncovered_prints_one_line_per_point_and_a_summary(
+    tmp_path, monkeypatch, capsys, inside: bool
+) -> None:
     path = persist_record(tmp_path)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
 
     code, out, err = _run(monkeypatch, capsys, str(path))
 
@@ -182,28 +184,38 @@ def test_uncovered_prints_one_line_per_point_and_a_summary(tmp_path, monkeypatch
     assert out.splitlines() == [*_ALL_LINES, "9 uncovered points; 2 waived points not listed"]
 
 
-def test_summary_reports_waived_points_left_out(tmp_path, monkeypatch, capsys) -> None:
-    waived_only = [
-        _point("rtl/a.sv", 1, "line", {"basic_block": 0}),
-        _point("rtl/a.sv", 2, "line", {"basic_block": 1}, disposition=_waiver("waiver:one")),
-    ]
-    path = persist_record(tmp_path, waived_only)
-
-    code, out, _err = _run(monkeypatch, capsys, str(path))
-
-    assert code == 0
-    assert out.splitlines() == [
-        "rtl/a.sv:1  line  0  TOP.counter",
-        "1 uncovered point; 1 waived point not listed",
-    ]
+_UNCOVERED = _point("rtl/a.sv", 1, "line", {"basic_block": 0})
 
 
-def test_summary_has_no_waived_clause_without_waived_points(tmp_path, monkeypatch, capsys) -> None:
-    path = persist_record(tmp_path, [_point("rtl/a.sv", 1, "line", {"basic_block": 0})])
+@pytest.mark.parametrize(
+    ("points", "out"),
+    [
+        pytest.param(
+            [
+                _UNCOVERED,
+                _point(
+                    "rtl/a.sv", 2, "line", {"basic_block": 1}, disposition=_waiver("waiver:one")
+                ),
+            ],
+            "rtl/a.sv:1  line  0  TOP.counter\n1 uncovered point; 1 waived point not listed\n",
+            id="waived",
+        ),
+        pytest.param(
+            [_UNCOVERED], "rtl/a.sv:1  line  0  TOP.counter\n1 uncovered point\n", id="one"
+        ),
+        pytest.param(
+            [_point("rtl/a.sv", 1, "line", {"basic_block": 0}, hits={"run:reset": 1})],
+            "0 uncovered points\n",
+            id="covered",
+        ),
+    ],
+)
+def test_summary_counts_uncovered_and_waived_points(
+    tmp_path, monkeypatch, capsys, points, out
+) -> None:
+    path = persist_record(tmp_path, points)
 
-    _code, out, _err = _run(monkeypatch, capsys, str(path))
-
-    assert out.splitlines()[-1] == "1 uncovered point"
+    assert _run(monkeypatch, capsys, str(path)) == (0, out, "")
 
 
 @pytest.mark.parametrize(
@@ -233,12 +245,11 @@ def test_filters_combine_and_unmatched_filter_prints_zero_count(
     tmp_path, monkeypatch, capsys, filters, lines, summary
 ) -> None:
     path = persist_record(tmp_path)
-    everything = [*_ALL_LINES]
 
     code, out, _err = _run(monkeypatch, capsys, str(path), *filters)
 
     assert code == 0
-    assert out.splitlines() == [everything[index] for index in lines] + [summary]
+    assert out.splitlines() == [_ALL_LINES[index] for index in lines] + [summary]
 
 
 @pytest.mark.parametrize("metric", ["Branch", "fsm", "nonsense"])
@@ -250,36 +261,6 @@ def test_metric_outside_the_scored_set_is_a_usage_error(
     assert (code, out) == (2, "")
     assert _METRIC_CHOICES in err
     assert "{" + ",".join(coverage_record.SCORED_METRICS) + "}" in err
-
-
-def test_fully_covered_record_prints_zero_count_and_exits_0(tmp_path, monkeypatch, capsys) -> None:
-    path = persist_record(
-        tmp_path, [_point("rtl/a.sv", 1, "line", {"basic_block": 0}, hits={"run:reset": 1})]
-    )
-
-    code, out, err = _run(monkeypatch, capsys, str(path))
-
-    assert (code, out, err) == (0, "0 uncovered points\n", "")
-
-
-def _remove_point_store(path: Path) -> None:
-    store = path.parent / json.loads(path.read_text())["point_store"]["path"]
-    store.unlink()
-
-
-def _corrupt_point_store(path: Path) -> None:
-    store = path.parent / json.loads(path.read_text())["point_store"]["path"]
-    raw = bytearray(store.read_bytes())
-    raw[len(raw) // 2] ^= 0xFF
-    store.write_bytes(bytes(raw))
-
-
-def _not_json(path: Path) -> None:
-    path.write_text("not json {", encoding="utf-8")
-
-
-def _not_a_coverage_record(path: Path) -> None:
-    path.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
 
 
 def _nested_attempt_manifest(path: Path) -> Path:
@@ -308,21 +289,24 @@ def test_unreadable_record_exits_2_naming_the_file(tmp_path, monkeypatch, capsys
         root = tmp_path / defect
         root.mkdir()
         path = persist_record(root)
+        store = path.parent / json.loads(path.read_text())["point_store"]["path"]
         argument = path
         if defect == "missing-file":
             argument = path.parent / "absent" / "coverage.json"
         elif defect == "not-json":
-            _not_json(path)
+            path.write_text("not json {", encoding="utf-8")
         elif defect == "not-a-coverage-record":
-            _not_a_coverage_record(path)
+            path.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
         elif defect == "wrong-file-name":
             argument = path.rename(path.with_name("record.json"))
         elif defect == "nested-attempt-manifest":
             argument = _nested_attempt_manifest(path)
         elif defect == "point-store-missing":
-            _remove_point_store(path)
-        else:
-            _corrupt_point_store(path)
+            store.unlink()
+        else:  # one flipped byte in the point store
+            raw = bytearray(store.read_bytes())
+            raw[len(raw) // 2] ^= 0xFF
+            store.write_bytes(bytes(raw))
 
         code, out, err = _run(monkeypatch, capsys, str(argument))
 
@@ -373,27 +357,6 @@ def test_incompatible_native_format_warns_even_when_collection_is_complete(
     assert code == 0
     assert out.splitlines()[:2] == _ALL_LINES[:2]
     assert "WARNING: coverage collection is INCOMPATIBLE" in err
-
-
-def test_complete_record_prints_no_warning(tmp_path, monkeypatch, capsys) -> None:
-    path = persist_record(tmp_path)
-
-    _code, _out, err = _run(monkeypatch, capsys, str(path))
-
-    assert err == ""
-
-
-@pytest.mark.parametrize("inside", [False, True], ids=["host", "sandbox"])
-def test_command_reads_the_record_on_host_and_in_sandbox(
-    tmp_path, monkeypatch, capsys, inside: bool
-) -> None:
-    path = persist_record(tmp_path)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
-
-    code, out, err = _run(monkeypatch, capsys, str(path))
-
-    assert (code, err) == (0, "")
-    assert out.splitlines() == [*_ALL_LINES, "9 uncovered points; 2 waived points not listed"]
 
 
 def test_command_needs_no_project_and_refuses_project_selection(

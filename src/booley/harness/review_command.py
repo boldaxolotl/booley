@@ -33,7 +33,8 @@ from booley.harness.checkout_flow import run_post_setup_hook
 from booley.harness.standalone_job import standalone_log_root
 from booley.measurement.base import Base, BaseError, ChangedFiles, changed_files, resolve_base
 from booley.measurement.run_key import KeyedCommit, RulesNotVersionedError, resolve_measurement_key
-from booley.review.declared_reviews import ReviewsFileError
+from booley.review.declared_reviews import ReviewsFileError, review_rules_changes
+from booley.review.review_report import markdown_report, terminal_report
 from booley.review.review_resolution import DeclaredReview, load_declared_reviews
 from booley.review.review_run import (
     ERROR,
@@ -60,7 +61,6 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 _EXIT_REFUSED = 2
-_SHORT = 12  # hex digits of a commit shown in a message
 _ERROR_LINE = 300  # characters of a Reviewer error kept in the Review Run
 
 
@@ -309,6 +309,7 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
             (planned, _run_reviewer(planned, under))
             for planned in plan_reviews(declared, changed, checkout)
         )
+        rules_changed = review_rules_changes(project_root, keyed, base_commit)
     facts = RunFacts(
         run_id,
         rfc3339_from_datetime(started_at),
@@ -318,6 +319,8 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
         base,
         tuple(sorted(changed)),
         results,
+        keyed.message,
+        rules_changed,
     )
     return _report(main, request, review_document(facts), results)
 
@@ -341,15 +344,16 @@ def _report(
     document: dict[str, Any],
     results: tuple[tuple[PlannedReview, ReviewResult], ...],
 ) -> int:
-    """Store the run (unless ``--target``), print it, and return the exit status."""
+    """Store the run and its report (unless ``--target``), print it, and return the exit status."""
     where = "not stored (--target)"
     if request.target is None:
-        where = f"Review Run {store_review_run(main, document)}"
+        where = f"Review Run {store_review_run(main, document, markdown_report([document]))}"
     if request.as_json:
         print(json.dumps(document, indent=2))
         print(where, file=sys.stderr)
     else:
-        print(_summary(document, results, where))
+        print(terminal_report([document], stored=request.target is None), end="")
+        print(f"\n{where}")
     for planned, result in results:
         if result.error is not None:
             print(
@@ -357,23 +361,3 @@ def _report(
                 file=sys.stderr,
             )
     return exit_code_of(document["outcome"])
-
-
-def _summary(
-    document: dict[str, Any],
-    results: tuple[tuple[PlannedReview, ReviewResult], ...],
-    where: str,
-) -> str:
-    """One line: the outcome, how many reviews ran, and where the run is."""
-    skipped = sum(result.outcome == NOT_NEEDED for _, result in results)
-    ran = len(results) - skipped
-    if ran == 0:
-        base = document["base"]["commit"][:_SHORT]
-        return (
-            f"nothing to review: no Declared Review has a changed file since Base {base}; {where}"
-        )
-    found = sum(len(result.introduced) for _, result in results)
-    return (
-        f"{document['outcome']}: {ran} reviews run, {skipped} not needed; "
-        f"{found} introduced findings; {where}"
-    )

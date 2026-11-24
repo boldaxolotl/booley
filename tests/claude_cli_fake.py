@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
 import textwrap
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -78,34 +81,56 @@ def sdk_message(kind: str, **fields: Any) -> Any:
     return message
 
 
-def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]:
-    """Replace the Claude Agent SDK's ``query`` with a scripted stream; return each call's options.
+@dataclass
+class SdkReplay:
+    """What a replayed ``query`` saw: each call's prompt and options, and the task
+    that opened and closed each stream (the real SDK fails when they differ)."""
 
-    The SDK is where Booley hands off to the Claude CLI. Each step is one of:
-    an SDK message (yielded), a number (seconds to wait), an exception
-    (raised), or a callable (called with the call's options, for example to
-    write CLI stderr through ``options.stderr``).
+    prompts: list[Any] = field(default_factory=list)
+    options: list[Any] = field(default_factory=list)
+    opened: list[Any] = field(default_factory=list)
+    closed: list[Any] = field(default_factory=list)
+
+
+def replay_sdk_attempts(monkeypatch: pytest.MonkeyPatch, *attempts: Sequence[Any]) -> SdkReplay:
+    """Replace the Claude Agent SDK's ``query``: call *n* replays ``attempts[n]``.
+
+    The SDK is where Booley hands off to the Claude CLI; the last attempt
+    repeats. Each step is one of: an SDK message (yielded), a number (seconds to
+    wait), an exception (raised), or a callable (called with the call's
+    options, for example to write CLI stderr through ``options.stderr``).
     """
     import anyio
 
     from booley.runtime import _claude_backend
 
-    seen: list[Any] = []
+    replay = SdkReplay()
 
     async def query(*, prompt: Any, options: Any):
-        seen.append(options)
-        for step in steps:
-            if isinstance(step, BaseException):
-                raise step
-            if isinstance(step, int | float):
-                await anyio.sleep(step)
-            elif callable(step):
-                step(options)
-            else:
-                yield step
+        steps = attempts[min(len(replay.options), len(attempts) - 1)]
+        replay.prompts.append(prompt)
+        replay.options.append(options)
+        replay.opened.append(asyncio.current_task())
+        try:
+            for step in steps:
+                if isinstance(step, BaseException):
+                    raise step
+                if isinstance(step, int | float):
+                    await anyio.sleep(step)
+                elif callable(step):
+                    step(options)
+                else:
+                    yield step
+        finally:
+            replay.closed.append(asyncio.current_task())
 
     monkeypatch.setattr(_claude_backend, "query", query)
-    return seen
+    return replay
+
+
+def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]:
+    """Replay the same *steps* on every call (see :func:`replay_sdk_attempts`); return each call's options."""
+    return replay_sdk_attempts(monkeypatch, steps).options
 
 
 def record_sdk_options(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
