@@ -144,6 +144,7 @@ def test_session_down_names_running_standalone_job_and_completes(
     )
     assert argv[argv.index("python3") :][:2] == ["python3", "-I"]
     assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["timeout"] > 0
 
 
 @linux_only

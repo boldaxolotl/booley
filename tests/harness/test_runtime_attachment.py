@@ -108,7 +108,7 @@ def test_spawn_failure_preserves_command_status(
 def test_explicit_environment_reaches_attached_command(project: Path, tmp_path: Path) -> None:
     observed = tmp_path / "proxy.txt"
     script = (
-        f"import os; open({str(observed)!r}, 'w').write(os.environ['HTTPS_PROXY'])\n"
+        f"import os, pathlib; pathlib.Path({str(observed)!r}).write_text(os.environ['HTTPS_PROXY'])\n"
         "raise SystemExit(7)"
     )
 
