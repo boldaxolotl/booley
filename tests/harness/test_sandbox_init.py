@@ -12,12 +12,11 @@ import pytest
 from booley.config import agent as agent_config
 from booley.harness import booley as cli
 from booley.harness import init_cmd
-from booley.harness.setup import git_hooks
 from booley.harness.setup.common import InitContext
-from booley.runtime import auth_token, checkout_role, dashboard_tasks, runtime_context
+from booley.runtime import auth_token, dashboard_tasks, runtime_context
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
-from booley.runtime.checkout_role import SourceCheckoutProjectError
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from tests.git_command_fake import GitCommandFake
 from tests.harness.test_project_initialization import HOST_PRIVATE_ENVIRONMENT, _repository_state
 from tests.subprocess_budget import run_bounded_child
 
@@ -62,7 +61,7 @@ def _publish(publisher: Path) -> None:
     (publisher / "README.md").write_bytes(b"# Demo\n")
     ctx = InitContext(project_root=publisher, interactive=False, show_step_banners=False)
     config_path = booley_dir / "booley.toml"
-    selection = init_cmd._resolve_agent_selection(ctx, init_cmd.argparse.Namespace(), config_path)
+    selection = init_cmd.AgentSelection("claude", "subscription", auth_record="subscription")
     request = init_cmd.ProjectInitialization(
         selection,
         config_path,
@@ -80,6 +79,7 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     """A container without issued mounts, no Docker and no host-private state."""
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(PLAIN_MOUNTINFO, encoding="utf-8", newline="\n")
+    # Private: the kernel's mountinfo path, which nothing public redirects.
     monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
@@ -175,13 +175,12 @@ def test_issued_sandbox_refuses_init_without_writing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     before = _repository_state(project)
+    mountinfo_file = tmp_path / "mountinfo"  # the path the fixture installed
     # None: an unreadable mountinfo also reads as issued, so the refusal is the safe verdict.
     for mountinfo in (ISSUED_MOUNTINFO, None):
-        issued = tmp_path / "issued-mountinfo"
-        issued.unlink(missing_ok=True)
+        mountinfo_file.unlink(missing_ok=True)
         if mountinfo is not None:
-            issued.write_text(mountinfo, encoding="utf-8", newline="\n")
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", issued, raising=False)
+            mountinfo_file.write_text(mountinfo, encoding="utf-8", newline="\n")
         capsys.readouterr()
 
         assert _booley_init(project, monkeypatch) == 2, mountinfo
@@ -192,34 +191,26 @@ def test_issued_sandbox_refuses_init_without_writing(
         assert not (project / "AGENTS.md").exists()
 
 
-@pytest.mark.parametrize("auth", ["subscription", "visitor"])
-def test_sandbox_init_keeps_existing_agent_settings(
-    project: Path, monkeypatch: pytest.MonkeyPatch, auth: str
-) -> None:
-    original = _set_booley_toml(project, f'[agent]\ndefault = "codex"\nauth = "{auth}"\n')
-    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-
-    assert _booley_init(project, monkeypatch) == 0
-
-    assert (project / ".booley" / "booley.toml").read_bytes() == original
-
-
-def test_sandbox_init_replaces_visitor_where_it_does_not_run(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("auth", "agent_app", "kept"),
+    [("subscription", "claude", True), ("visitor", "claude", True), ("visitor", None, False)],
+)
+def test_sandbox_init_keeps_agent_settings_or_replaces_visitor(
+    project: Path, monkeypatch: pytest.MonkeyPatch, auth: str, agent_app: str | None, kept: bool
 ) -> None:
     # A container with no spec hand-off reads `visitor` as the host does, so init
-    # replaces it with the detected policy, as Doctor expects.
-    _set_booley_toml(project, '[agent]\ndefault = "codex"\nauth = "visitor"\n')
-    monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    # replaces it with the detected policy, as Doctor expects (a846dc6a3).
+    original = _set_booley_toml(project, f'[agent]\ndefault = "codex"\nauth = "{auth}"\n')
+    if agent_app is not None:
+        monkeypatch.setenv("BOOLEY_AGENT_APP", agent_app)
+    # Private: reads `/.dockerenv` at the filesystem root, which no test can create.
     monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
 
     assert _booley_init(project, monkeypatch) == 0
 
-    text = (project / ".booley" / "booley.toml").read_text(encoding="utf-8")
-    assert 'auth = "visitor"' not in text
-    assert 'auth = "subscription"' in text
+    text = (project / ".booley" / "booley.toml").read_bytes()
+    assert (text == original) is kept
+    assert kept or b'auth = "subscription"' in text
 
 
 def test_sandbox_init_fills_missing_default_cli_from_agent_app(
@@ -274,10 +265,10 @@ def test_sandbox_init_leaves_default_cli_unset_without_a_source(
 def test_sandbox_init_worktree_policy_follows_local_git(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for git_version, expected in (((2, 47, 0), "false"), ((2, 50, 0), "true")):
-        # The one patched fact is both the "host" and the "Sandbox" side of the 2.48 rule.
-        monkeypatch.setattr(
-            git_hooks, "_host_git_version", lambda git_version=git_version: git_version
+    for git_version, expected in (("2.47.0", "false"), ("2.50.0", "true")):
+        # The one reported version is both the "host" and the "Sandbox" side of the 2.48 rule.
+        GitCommandFake.install(monkeypatch).answer(
+            "git", "--version", returncode=0, stdout=f"git version {git_version}\n".encode()
         )
 
         assert _booley_init(project, monkeypatch) == 0, git_version
@@ -339,7 +330,7 @@ def test_sandbox_init_check_only_writes_nothing(
 def test_sandbox_init_stops_for_a_pending_directory_migration(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(init_cmd, "_sandbox_needs_host_migration", lambda _root: True)
+    (project / ".booley").rename(project / ".booley_project")  # the retired layout
     before = _repository_state(project)
 
     assert _booley_init(project, monkeypatch) == 2
@@ -377,6 +368,8 @@ def test_sandbox_init_reports_filesystem_errors(
     def broken(_ctx: InitContext) -> None:
         raise OSError("disk on fire")
 
+    # Private: Git failures here read as "unknown", so no repository state makes this
+    # sampling raise; only an injected error reaches the `run_sandbox_init` handler from it.
     monkeypatch.setattr(init_cmd, "_sample_line_ending_baseline", broken)
 
     assert _booley_init(project, monkeypatch) == 2
@@ -387,15 +380,12 @@ def test_sandbox_init_reports_filesystem_errors(
 def test_sandbox_init_refuses_booley_source_checkout(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def source_checkout(_root: Path) -> Path:
-        raise SourceCheckoutProjectError("Booley source is not a Project")
-
-    monkeypatch.setattr(checkout_role, "require_project_checkout", source_checkout)
+    (project / "pyproject.toml").write_bytes(b"[tool.booley]\nsource_checkout = true\n")
 
     # The CLI refuses a source checkout before dispatch; the command guards itself as well.
     assert init_cmd.run_sandbox_init(argparse.Namespace(), project) == 2
 
-    assert "Booley source is not a Project" in capsys.readouterr().out
+    assert "Source Checkout cannot be initialized" in capsys.readouterr().out
     assert not (project / ".vscode").exists()
 
 
