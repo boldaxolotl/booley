@@ -1,7 +1,7 @@
 """Stand-in ``t3`` commands for tests (POSIX only: each is a shebang script).
 
 ``write_t3_cli`` names threads, logs its calls and can be slow. ``write_t3_server_cli``
-prints the text T3 Code 0.1.11 prints for its server commands (#4781). Tests that run
+prints the text the pinned T3 Code prints for its server commands (#4781). Tests that run
 code against the real command's output share these instead of each writing its own.
 """
 
