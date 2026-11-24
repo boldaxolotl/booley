@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from booley.mcp.agent_thread import AgentThread
 from booley.mcp.application import McpRequestContext
 from booley.mcp.session_registry import Attribution
 from booley.measurement.mcp_job import MEASURE_ENDPOINT
@@ -33,6 +34,7 @@ class Caller:
 
     owner: str
     session_key: str | None
+    agent: AgentThread | None = None
 
 
 def server_identity() -> str:
@@ -56,8 +58,12 @@ def http_server_identity(hostname: str, port: int) -> str:
     return f"mcp-http:{DisplayScope.current().value}:{hostname}:{port}"
 
 
-def job_owner(server: str, attribution: Attribution | None) -> str:
-    """Server identity, narrowed to one agent tab when the client names a thread or process."""
+def job_owner(
+    server: str, attribution: Attribution | None, agent: AgentThread | None = None
+) -> str:
+    """Server identity, narrowed to the client's thread, else to its tab or process."""
+    if agent is not None and agent.thread is not None:
+        return f"{server}|{agent.client}:{agent.thread}"
     if attribution is not None and attribution.kind in ("thread", "process"):
         return f"{server}|{attribution.key}"
     return server
@@ -67,7 +73,11 @@ def caller_for(server: str, request_context: McpRequestContext | None) -> Caller
     """The caller of one MCP request."""
     if request_context is None:
         return Caller(server, None)
-    return Caller(job_owner(server, request_context.attribution), request_context.session_key())
+    return Caller(
+        job_owner(server, request_context.attribution, request_context.agent),
+        request_context.session_key(),
+        request_context.agent,
+    )
 
 
 def owns(rec: JobRecord, caller: Caller) -> bool:
