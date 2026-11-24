@@ -132,6 +132,7 @@ def lint_result(
             real_catalog_build=_REAL_CATALOG_BUILD,
             fallback_handle=lambda root, token: _target_handle(token, project_root=root),
         )
+        # private: no Verilator on the host and no shared fake of Flow commands to reach these.
         with (
             patch.object(LintFlow, "_prepare_lint_command", **prepared),
             patch.object(LintFlow, "_execute", return_value=execution),
@@ -332,6 +333,7 @@ def unfinished_simulation_record_result(
     """The runner's view of a ``sim`` run that stopped, reported by the production failure path."""
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
     outcome = _simulation_outcome(tmp_path, observations, complete=complete)
+    # private: no public input makes the engine raise after observing some tests.
     reported = SimulateFlow()._ordinary_simulation_record_failure(
         RuntimeError("stopped"), [outcome]
     )

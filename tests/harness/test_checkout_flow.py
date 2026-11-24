@@ -973,7 +973,7 @@ def test_child_selects_the_checkout_explicitly(
         return 0
 
     monkeypatch.chdir(world.checkout)
-    # The public boundary cannot show the selection: every layout where discovery and
+    # private: the public boundary cannot show the selection: every layout where discovery and
     # ``--project`` disagree is refused by the parent first (dropping ``--project`` left
     # ``child_main`` passing with an ancestor ``[project].dir`` and with RTL_PROJECT_ROOT
     # set), so only the argv handed to the CLI does.
@@ -1139,8 +1139,7 @@ def test_checkout_flow_derives_the_live_tree(
     detached_main.mkdir()
     request = world.request("pass")
     if case == "around-main":
-        # Without a ``/work`` mount the live tree is the Git checkout around Main, whatever
-        # directory the caller stands in.
+        # Without a ``/work`` mount the live tree is the Git checkout around Main.
         monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
         monkeypatch.chdir(world.checkout.parent)
     elif case == "around-cwd":
@@ -1396,8 +1395,7 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
 
     use_fusesoc(monkeypatch)
-    # The request's bound applies; it is generous, FuseSoC starts slowly on a loaded host.
-    # The floor is 60 s of real clock and no request input lowers it.
+    # private: the floor is 60 s of real clock and no request input lowers it.
     monkeypatch.setattr(checkout_flow, "_PREFLIGHT_MIN_S", 0)
     world = make_world(
         files={
