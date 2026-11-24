@@ -2100,7 +2100,7 @@ def test_prepare_outside_a_project_changes_nothing(
     assert _bytes_of(folder) == before
 
 
-@pytest.mark.parametrize("case", ["main", "outside", "linked", "dirty-crlf"])
+@pytest.mark.parametrize("case", ["main", "outside", "linked", "dirty-crlf", "missing"])
 def test_prepare_refuses_the_main_checkout_and_an_outside_booley_dir(
     case: str, request, tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -2112,7 +2112,9 @@ def test_prepare_refuses_the_main_checkout_and_an_outside_booley_dir(
         root = request.getfixturevalue("project")
     if case == "dirty-crlf":
         assert _git(root, "config", "core.autocrlf", "true").returncode == 0
-    target = root if case == "main" else _git_worktree(root, "t3-refused")
+    target = root if case == "main" else tmp_path / "absent"
+    if case not in ("main", "missing"):
+        target = _git_worktree(root, "t3-refused")
     if case == "linked":
         if os.name == "nt":
             pytest.skip("needs symlinks")
@@ -2127,6 +2129,7 @@ def test_prepare_refuses_the_main_checkout_and_an_outside_booley_dir(
         "outside": "relative [project].dir",
         "linked": "link out of the worktree",
         "dirty-crlf": "uncommitted changes",
+        "missing": "not a directory",
     }[case]
     assert message in capsys.readouterr().err
     assert list(external.iterdir()) == []
@@ -2222,3 +2225,11 @@ def test_prepare_help_documents_the_command(capsys) -> None:
     help_text = " ".join(capsys.readouterr().out.split())
     for text in ("PATH", "booley-worktree/<folder>", "post-setup", "Snapshot"):
         assert text in help_text
+
+
+def test_prepare_turns_line_ending_conversion_off_in_a_clean_worktree(project: Path) -> None:
+    assert _git(project, "config", "core.autocrlf", "true").returncode == 0
+    worktree = _git_worktree(project, "t3-crlf")
+
+    assert _prepare(worktree) == 0
+    assert _git(worktree, "config", "--get", "core.autocrlf").stdout.strip() == "false"
