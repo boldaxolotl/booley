@@ -129,17 +129,13 @@ def _gc_keeps_conflict_then_retries(name, token, containers, project, base, tag)
     assert image not in _inventory()[0]
 
 
-def _container_ids() -> set[str]:
-    return _inventory()[2]
-
-
 def _roll_forward_replacement(workspace, token, name, tags, containers, old_image, new_image):
     """Replace an old container on tag A with one on tag B, refusing a foreign owner."""
     foreign = _start(name, tags[0], "foreign-" + token)
     containers.append(foreign)
     with pytest.raises(session_runtime.SessionError, match="not this Project's headless Sandbox"):
         session_runtime.remove_refresh_predecessor(workspace)
-    assert foreign in _container_ids(), "a container with a foreign token must survive"
+    assert foreign in _inventory()[2], "a container with a foreign token must survive"
     _docker("rm", "-f", foreign)
 
     old = _start(name, tags[0], token)
@@ -149,13 +145,13 @@ def _roll_forward_replacement(workspace, token, name, tags, containers, old_imag
     session_runtime.verify_refreshed_session(workspace, old_image)
 
     assert session_runtime.remove_refresh_predecessor(workspace) == old
-    assert old not in _container_ids()
+    assert old not in _inventory()[2]
     assert session_runtime.remove_refresh_predecessor(workspace) is None
 
     new = _start(name, tags[1], token)
     containers.append(new)
     session_runtime.verify_refreshed_session(workspace, new_image)
-    assert old not in _container_ids() and new in _container_ids()
+    assert old not in _inventory()[2] and new in _inventory()[2]
     return new
 
 
@@ -170,7 +166,7 @@ def _failed_start_convergence(workspace, token, name, tags, containers, new_imag
     assert failed.returncode == 7  # the start hook failed; nothing cleaned the candidate up
 
     assert session_runtime.remove_refresh_predecessor(workspace) == candidate
-    assert candidate not in _container_ids()
+    assert candidate not in _inventory()[2]
     fresh = _start(name, tags[1], token)
     containers.append(fresh)
     session_runtime.verify_refreshed_session(workspace, new_image)
@@ -202,7 +198,8 @@ def test_real_roll_forward_replacement_and_failed_start_convergence(tmp_path: Pa
     workspace = tmp_path.resolve()
     monkeypatch.setattr(session_runtime, "session_container_name", lambda _workspace: name)
     monkeypatch.setattr(session_runtime, "project_label_id", lambda _root: token)
-    # Isolate only private authority/provenance. Never relocate the host lock.
+    # Private seam: no setting relocates the owned-image store without the host lock,
+    # which must stay real. Isolate only private authority/provenance.
     anchor = tmp_path / "private"
     store = PrivateStore(
         anchor / "session-refresh-images",

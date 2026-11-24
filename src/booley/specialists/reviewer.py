@@ -991,14 +991,18 @@ class ReviewerSpecialist(Specialist):
         "SlashCommand",
     ]
 
-    def __init__(self, change: ReviewChange | None = None) -> None:
+    def __init__(
+        self, change: ReviewChange | None = None, recheck: RecheckInput | None = None
+    ) -> None:
         """*change* is a change the caller already resolved (``booley review``).
 
         It replaces ``--base``: the Reviewer reviews that change and runs no Git query
-        of its own.
+        of its own. *recheck* is a re-check input the caller already built
+        (``booley review --verify``); it replaces the ``--recheck`` evidence file.
         """
         super().__init__()
         self._given_change = change
+        self._given_recheck = recheck
         self._tb_project_policy: TbProjectPolicy | None = None
         self._scope_contract: ReviewScopeContract | None = None
         self._non_corrective_issues: list[ReviewIssue] = []
@@ -1048,7 +1052,7 @@ class ReviewerSpecialist(Specialist):
     def display_tag(self) -> str | None:
         if not self._args:
             return None
-        if self.args.recheck and not self.args.category:
+        if (self.args.recheck or self._given_recheck) and not self.args.category:
             return "recheck"  # the evidence file has not been read yet
         return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
@@ -1636,7 +1640,8 @@ object, even after calling the capability.
         self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
-        if self.args.waive and not self.args.recheck:
+        rechecking = bool(self.args.recheck) or self._given_recheck is not None
+        if self.args.waive and not rechecking:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=(
@@ -1644,7 +1649,7 @@ object, even after calling the capability.
                     "an earlier Reviewer evidence file"
                 ),
             )
-        if self.args.recheck:
+        if rechecking:
             return self._run_recheck()
         if error := self._prepare_invocation():
             return error
@@ -2539,6 +2544,8 @@ object, even after calling the capability.
                     f"remove {', '.join(conflicts)}"
                 ),
             )
+        if self._given_recheck is not None:
+            return self._given_recheck
         try:
             return load_recheck_input(
                 Path(self.args.work_dir) / self.args.recheck,
