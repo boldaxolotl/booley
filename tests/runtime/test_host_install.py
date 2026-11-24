@@ -1,15 +1,31 @@
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.path_tool_fake import PathToolFake
 from tests.time_budget import scaled
 
+import booley
+from booley.core.user_paths import config_dir
 from booley.runtime import host_install
 from booley.runtime.host_install import HostInstallationError, HostInstallationIdentity
+
+# An installed wheel's resource on every host: a ``site-packages`` path outside the
+# temporary folder and outside the ephemeral folders.
+_SOURCE = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
+_POSIX_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX launcher stand-ins and links for booley"
+)
+_ONE_INSTALL_TEXT = (
+    "this Booley process does not match the canonical host installation "
+    "(revision abc123 -> def456); run the canonical host `booley bootstrap "
+    "--update` if this upgrade is intentional"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +34,25 @@ def _empty_path(tmp_path: Path, monkeypatch) -> None:
     empty = tmp_path / "empty-path"
     empty.mkdir()
     monkeypatch.setenv("PATH", str(empty))
+
+
+@pytest.fixture
+def running(monkeypatch):
+    """Make the running process the given identity, or raise the given exception.
+
+    ``current_host_installation`` describes the imported package, which in a test process
+    is a source checkout: no public entry point can turn it into an installed wheel.
+    """
+
+    def install(outcome: HostInstallationIdentity | Exception) -> None:
+        def current(_source):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(host_install, "current_host_installation", current)
+
+    return install
 
 
 def _identity(root: str = "/opt/python/lib/python3.14/site-packages") -> HostInstallationIdentity:
@@ -33,184 +68,74 @@ def _identity(root: str = "/opt/python/lib/python3.14/site-packages") -> HostIns
 
 
 def _write(path: Path, identity: HostInstallationIdentity) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(identity)), encoding="utf-8")
 
 
-def test_host_installation_path_is_under_config_dir(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(host_install, "config_dir", lambda: tmp_path)
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (json.dumps({"schema_version": 2}), "unsupported host installation schema"),
+        ("{", "cannot read host installation identity"),
+    ],
+    ids=["schema 2", "malformed JSON"],
+)
+def test_load_rejects_unreadable_state(tmp_path: Path, content: str, message: str) -> None:
+    state = tmp_path / "host-installation.json"
+    state.write_text(content, encoding="utf-8")
 
-    assert host_install.host_installation_path() == tmp_path / "host-installation.json"
+    with pytest.raises(HostInstallationError, match=message):
+        host_install.load_host_installation(state)
+    assert message in (host_install.host_install_error(_SOURCE, path=state) or "")
 
 
-def test_resolved_executable_uses_path_lookup(tmp_path: Path, monkeypatch) -> None:
-    executable = tmp_path / "booley"
+@pytest.mark.parametrize("argv", ["on PATH", "absolute"])
+def test_current_installation_describes_running_executable(tmp_path, monkeypatch, argv) -> None:
+    executable = tmp_path / "bin" / ("booley.exe" if os.name == "nt" else "booley")
+    executable.parent.mkdir()
     executable.touch()
-    monkeypatch.setattr(sys, "argv", ["booley"])
-    monkeypatch.setattr(host_install.shutil, "which", lambda _name: str(executable))
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(executable.parent))
+    monkeypatch.setattr(sys, "argv", [str(executable) if argv == "absolute" else "booley"])
+    package_root = Path(booley.__file__).resolve().parent
 
-    assert host_install._resolved_executable() == executable.resolve()
+    identity = host_install.current_host_installation(package_root / "data")
 
-
-def test_tree_fingerprint_ignores_bytecode_and_cache_directories(tmp_path: Path) -> None:
-    (tmp_path / "module.py").write_text("value = 1\n", encoding="utf-8")
-    cache = tmp_path / "__pycache__"
-    cache.mkdir()
-    (cache / "module.pyc").write_bytes(b"ignored")
-
-    first = host_install._tree_fingerprint(tmp_path)
-    (tmp_path / "module.py").write_text("value = 2\n", encoding="utf-8")
-
-    assert first != host_install._tree_fingerprint(tmp_path)
+    assert identity.executable == str(executable.resolve())
+    assert identity.distribution_root == str(package_root.parent)
 
 
-def test_current_installation_falls_back_to_tree_fingerprint(monkeypatch) -> None:
+def test_current_installation_hashes_the_package_without_a_build_fingerprint(monkeypatch) -> None:
+    # The existing public patch: the real build metadata of a source checkout has no digest.
     monkeypatch.setattr(
         host_install,
         "current_build_metadata",
         lambda: SimpleNamespace(version="1.2.3", revision="abc123", payload_fingerprint=""),
     )
-    monkeypatch.setattr(host_install, "_tree_fingerprint", lambda _root: "tree-fingerprint")
-    package_root = Path(host_install.__file__).resolve().parent.parent
+    package_root = Path(booley.__file__).resolve().parent
 
-    identity = host_install.current_host_installation(package_root / "data" / "skills")
+    identity = host_install.current_host_installation(package_root / "data")
 
-    assert identity.payload_fingerprint == "tree-fingerprint"
+    assert re.fullmatch("[0-9a-f]{64}", identity.payload_fingerprint)
     assert identity.revision == "abc123"
 
 
-def test_load_rejects_unsupported_schema(tmp_path: Path) -> None:
-    state = tmp_path / "host-installation.json"
-    state.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+def test_tree_fingerprint_ignores_bytecode_and_cache_directories(tmp_path: Path) -> None:
+    # Private on purpose: the public path hashes the imported package, which a test may not edit.
+    fingerprint = host_install._tree_fingerprint
+    (tmp_path / "module.py").write_text("value = 1\n", encoding="utf-8")
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "data.bin").write_bytes(b"one")
+    (tmp_path / "module.pyc").write_bytes(b"one")
+    first = fingerprint(tmp_path)
 
-    with pytest.raises(HostInstallationError, match="unsupported host installation schema"):
-        host_install.load_host_installation(state)
+    (cache / "data.bin").write_bytes(b"two")
+    (tmp_path / "module.pyc").write_bytes(b"two")
+    assert fingerprint(tmp_path) == first
 
-
-def test_load_reports_malformed_state(tmp_path: Path) -> None:
-    state = tmp_path / "host-installation.json"
-    state.write_text("{", encoding="utf-8")
-
-    with pytest.raises(HostInstallationError, match="cannot read host installation identity"):
-        host_install.load_host_installation(state)
-
-
-def test_registration_rejects_ineligible_resource(monkeypatch) -> None:
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: "not eligible")
-
-    with pytest.raises(HostInstallationError, match="not eligible"):
-        host_install.register_host_installation(Path("/skills"))
-
-
-def test_registration_is_idempotent_for_existing_identity(tmp_path: Path, monkeypatch) -> None:
-    state = tmp_path / "host-installation.json"
-    identity = _identity()
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
-    _write(state, identity)
-
-    assert host_install.register_host_installation(Path("/skills"), path=state) == identity
-
-
-def test_host_install_error_reports_invalid_state(tmp_path: Path) -> None:
-    state = tmp_path / "host-installation.json"
-    state.write_text("{", encoding="utf-8")
-    source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
-
-    error = host_install.host_install_error(source, path=state)
-
-    assert error is not None
-    assert "cannot read host installation identity" in error
-
-
-def test_accepts_recorded_base_interpreter_wheel(tmp_path: Path, monkeypatch) -> None:
-    state = tmp_path / "host-installation.json"
-    identity = _identity()
-    _write(state, identity)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
-    source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
-
-    assert host_install.host_install_error(source, path=state) is None
-
-
-@pytest.mark.parametrize(
-    "root", ["/home/user/.local/share/pipx/venvs/booley-rtl", "/work/Booley/.venv"]
-)
-def test_persistent_wheel_venv_claims_and_retains_authority(tmp_path, monkeypatch, root):
-    monkeypatch.setattr(sys, "prefix", root)
-    monkeypatch.setattr(sys, "base_prefix", "/usr")
-    identity = _identity(root + "/lib/python3.14/site-packages")
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
-    source = Path(identity.distribution_root) / "booley/data/skills"
-    state = tmp_path / "host-installation.json"
-    assert host_install.register_host_installation(source, path=state) == identity
-    original = state.read_bytes()
-    assert host_install.register_host_installation(source, path=state) == identity
-    assert state.read_bytes() == original
-    assert host_install.host_install_error(source, path=state) is None
-
-
-@pytest.mark.parametrize("component", [".worktrees", ".runtime", "qa-runs"])
-def test_isolated_wheel_in_ephemeral_component_is_ineligible(monkeypatch, component):
-    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
-    monkeypatch.setattr(sys, "base_prefix", "/usr")
-    source = Path("/work") / component / "lib/site-packages/booley/data/skills"
-    assert "ephemeral workspace state" in host_install.host_install_error(source)
-    with pytest.raises(HostInstallationError, match="ephemeral workspace state"):
-        host_install.register_host_installation(source)
-
-
-@pytest.mark.parametrize(
-    "target", ["src/booley/data/skills", ".runtime/site-packages/booley/data/skills"]
-)
-def test_symlink_cannot_disguise_ineligible_resource(tmp_path, monkeypatch, target):
-    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
-    monkeypatch.setattr(sys, "base_prefix", "/usr")
-    monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/unrelated-temp")
-    actual = tmp_path / target
-    actual.mkdir(parents=True)
-    link = tmp_path / "site-packages/booley/data/skills"
-    link.parent.mkdir(parents=True)
-    link.symlink_to(actual, target_is_directory=True)
-    error = host_install.host_install_error(link)
-    assert "not from an installed wheel" in error or "ephemeral workspace state" in error
-
-
-def test_rejects_source_checkout(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "prefix", "/work/Booley/.venv")
-    monkeypatch.setattr(sys, "base_prefix", "/usr")
-    source = Path("/work/Booley/src/booley/data/skills")
-    error = host_install.host_install_error(
-        source,
-    )
-    assert error is not None
-    assert "not from an installed wheel" in error
-
-    with pytest.raises(HostInstallationError, match="not from an installed wheel"):
-        host_install.register_host_installation(source)
-
-
-def test_rejects_qa_runtime_even_when_it_contains_site_packages() -> None:
-    source = Path(
-        "/work/Booley/.runtime/qa-runs/run/operator-venv/"
-        "lib/python3.14/site-packages/booley/data/skills"
-    )
-    error = host_install.host_install_error(
-        source,
-    )
-    assert error is not None
-    assert "ephemeral workspace state" in error
-
-
-def test_rejects_arbitrary_temporary_qa_path(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "prefix", "/tmp/booley-qa/venv")
-    monkeypatch.setattr(sys, "base_prefix", "/usr")
-    monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/tmp/booley-qa")
-    source = Path("/tmp/booley-qa/run/lib/python3.14/site-packages/booley/data/skills")
-    error = host_install.host_install_error(
-        source,
-    )
-    assert error is not None
-    assert "temporary filesystem state" in error
+    (tmp_path / "module.py").write_text("value = 2\n", encoding="utf-8")
+    assert fingerprint(tmp_path) != first
 
 
 def test_rejects_resource_outside_imported_distribution() -> None:
@@ -220,96 +145,128 @@ def test_rejects_resource_outside_imported_distribution() -> None:
         )
 
 
-def test_unrecorded_installed_wheel_directs_user_to_bootstrap(tmp_path: Path) -> None:
-    source = Path("/opt/python/lib/python3.14/site-packages/booley/data/skills")
-    error = host_install.host_install_error(
-        source,
-        path=tmp_path / "missing.json",
-    )
-    assert error is not None
-    assert "booley bootstrap" in error
+@pytest.mark.parametrize(
+    ("kind", "resource", "message"),
+    [
+        ("plain", "/work/.worktrees/lib/site-packages/booley/data/skills", "ephemeral workspace"),
+        ("plain", "/work/.runtime/lib/site-packages/booley/data/skills", "ephemeral workspace"),
+        ("plain", "/work/qa-runs/lib/site-packages/booley/data/skills", "ephemeral workspace"),
+        (
+            "plain",
+            "/work/Booley/.runtime/qa-runs/run/operator-venv/lib/python3.14/site-packages"
+            "/booley/data/skills",
+            "ephemeral workspace",
+        ),
+        ("plain", "/work/Booley/src/booley/data/skills", "not from an installed wheel"),
+        (
+            "temporary",
+            "/tmp/booley-qa/run/lib/python3.14/site-packages/booley/data/skills",
+            "temporary filesystem state",
+        ),
+        ("link", "src/booley/data/skills", "not from an installed wheel"),
+        ("link", ".runtime/site-packages/booley/data/skills", "ephemeral workspace"),
+    ],
+    ids=[
+        ".worktrees",
+        ".runtime",
+        "qa-runs",
+        "qa runtime with site-packages",
+        "source checkout",
+        "temporary",
+        "symlink to source",
+        "symlink to ephemeral",
+    ],
+)
+def test_ineligible_resource_is_refused(tmp_path, monkeypatch, kind, resource, message) -> None:
+    source = Path(resource)
+    if kind == "temporary":
+        monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/tmp/booley-qa")
+    elif kind == "link":
+        # tmp_path is inside the real temporary folder, which would refuse it first.
+        monkeypatch.setattr(host_install.tempfile, "gettempdir", lambda: "/unrelated-temp")
+        actual = tmp_path / resource
+        actual.mkdir(parents=True)
+        source = tmp_path / "site-packages/booley/data/skills"
+        source.parent.mkdir(parents=True)
+        try:
+            source.symlink_to(actual, target_is_directory=True)
+        except OSError:
+            pytest.skip("this host cannot create symbolic links")
 
-
-def test_mismatched_recorded_identity_is_rejected(tmp_path: Path, monkeypatch) -> None:
-    state = tmp_path / "host-installation.json"
-    _write(state, _identity())
-    monkeypatch.setattr(
-        host_install,
-        "current_host_installation",
-        lambda _source: replace(_identity(), revision="def456"),
-    )
-    error = host_install.host_install_error(
-        Path("/other/site-packages/booley/data/skills"),
-        path=state,
-    )
-    assert error is not None
-    assert "does not match" in error
-    assert "revision abc123 -> def456" in error
-    assert _identity().distribution_root not in error
-
-
-def test_registration_is_atomic_and_refuses_implicit_update(tmp_path: Path, monkeypatch) -> None:
-    state = tmp_path / "host-installation.json"
-    candidate = _identity()
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
-
-    assert host_install.register_host_installation(Path("/skills"), path=state) == candidate
-    assert host_install.load_host_installation(state) == candidate
-    assert not list(tmp_path.glob("*.tmp"))
-
-    replacement = replace(candidate, revision="def456", payload_fingerprint="e" * 64)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: replacement)
-    with pytest.raises(HostInstallationError, match="different canonical") as caught:
-        host_install.register_host_installation(Path("/skills"), path=state)
-    assert "revision abc123 -> def456" in str(caught.value)
-    assert f"payload_fingerprint {'f' * 64} -> {'e' * 64}" in str(caught.value)
-    assert host_install.load_host_installation(state) == candidate
-
-    assert (
-        host_install.register_host_installation(Path("/skills"), update=True, path=state)
-        == replacement
-    )
-    assert host_install.load_host_installation(state) == replacement
+    assert message in (host_install.host_install_error(source) or "")
+    assert message in (host_install.inspect_host_installation(source).error or "")
+    with pytest.raises(HostInstallationError, match=message):
+        host_install.register_host_installation(source)
 
 
 @pytest.mark.parametrize(
-    "field",
-    [
-        "executable",
-        "interpreter",
-        "distribution_root",
-        "version",
-        "revision",
-        "payload_fingerprint",
-    ],
+    "root", ["/home/user/.local/share/pipx/venvs/booley-rtl", "/work/Booley/.venv"]
 )
-def test_each_identity_difference_requires_explicit_update(tmp_path, monkeypatch, field):
-    source = Path("/home/user/venv/lib/site-packages/booley/data/skills")
-    monkeypatch.setattr(sys, "prefix", "/home/user/venv")
+def test_persistent_wheel_venv_claims_and_retains_authority(
+    tmp_path, monkeypatch, running, root
+) -> None:
+    # The persistent virtual environment of #1237: the venv prefix differs from the base one.
+    monkeypatch.setattr(sys, "prefix", root)
     monkeypatch.setattr(sys, "base_prefix", "/usr")
-    state = tmp_path / "identity.json"
-    original = _identity()
-    candidate = replace(original, **{field: "different"})
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: original)
-    host_install.register_host_installation(source, path=state)
-    recorded = state.read_bytes()
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
-    assert "--update" in host_install.host_install_error(source, path=state)
-    with pytest.raises(HostInstallationError, match="--update"):
-        host_install.register_host_installation(source, path=state)
-    assert state.read_bytes() == recorded
-    assert host_install.register_host_installation(source, path=state, update=True) == candidate
+    identity = _identity(root + "/lib/python3.14/site-packages")
+    running(identity)
+    source = Path(identity.distribution_root) / "booley/data/skills"
+    state = tmp_path / "host-installation.json"
+
+    assert host_install.register_host_installation(source, path=state) == identity
+    original = state.read_bytes()
+    assert host_install.register_host_installation(source, path=state) == identity
+    assert state.read_bytes() == original
     assert host_install.host_install_error(source, path=state) is None
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: original)
-    assert "--update" in host_install.host_install_error(source, path=state)
 
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        ("executable",),
+        ("interpreter",),
+        ("distribution_root",),
+        ("version",),
+        ("revision",),
+        ("payload_fingerprint",),
+        ("revision", "payload_fingerprint"),
+    ],
+    ids="+".join,
+)
+def test_registration_records_once_and_requires_update(running, fields) -> None:
+    original = _identity()
+    candidate = replace(original, **{field: f"changed-{field}" for field in fields})
+    differences = [f"{field} {getattr(original, field)} -> changed-{field}" for field in fields]
+    state = host_install.host_installation_path()
+    running(original)
+    assert "booley bootstrap" in (host_install.host_install_error(_SOURCE) or "")
+
+    assert host_install.register_host_installation(_SOURCE) == original
+    assert state == config_dir() / "host-installation.json"
+    assert not list(state.parent.glob(".*.tmp"))
+    recorded = state.read_bytes()
+    assert host_install.register_host_installation(_SOURCE) == original
+    assert state.read_bytes() == recorded
+    assert host_install.host_install_error(_SOURCE) is None
+
+    running(candidate)
+    error = host_install.host_install_error(_SOURCE) or ""
+    with pytest.raises(HostInstallationError, match="--update") as caught:
+        host_install.register_host_installation(_SOURCE)
+    for message in (error, str(caught.value)):
+        assert "--update" in message
+        assert all(difference in message for difference in differences)
+    assert state.read_bytes() == recorded
+    assert host_install.register_host_installation(_SOURCE, update=True) == candidate
+    assert host_install.host_install_error(_SOURCE) is None
+
+    running(original)
+    assert "--update" in (host_install.host_install_error(_SOURCE) or "")
     with pytest.raises(HostInstallationError, match="--update"):
-        host_install.register_host_installation(source, path=state)
-    assert host_install.load_host_installation(state) == candidate
+        host_install.register_host_installation(_SOURCE)
+    assert host_install.load_host_installation() == candidate
 
 
-@pytest.mark.parametrize("update", [False, True])
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize(
     "field",
@@ -323,57 +280,55 @@ def test_each_identity_difference_requires_explicit_update(tmp_path, monkeypatch
         "payload_fingerprint",
     ],
 )
-def test_invalid_candidate_preserves_state(tmp_path, monkeypatch, update, existing, field):
+def test_invalid_candidate_preserves_state(tmp_path, running, existing, field) -> None:
     state = tmp_path / "config" / "identity.json"
     if existing:
-        state.parent.mkdir()
         _write(state, _identity())
     before = state.read_bytes() if existing else None
-    candidate = replace(_identity(), **{field: 2 if field == "schema_version" else ""})
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
+    running(replace(_identity(), **{field: 2 if field == "schema_version" else ""}))
+
     with pytest.raises(HostInstallationError) as caught:
-        host_install.register_host_installation(Path("/skills"), path=state, update=update)
+        host_install.register_host_installation(_SOURCE, path=state, update=True)
+
     assert ("schema" if field == "schema_version" else field) in str(caught.value)
     assert ("complete source checkout" if field == "revision" else "valid build") in str(
         caught.value
     )
     if existing:
         assert state.read_bytes() == before
-        assert host_install.load_host_installation(state) == _identity()
     else:
         assert not state.parent.exists()
 
 
 @pytest.mark.parametrize("update", [False, True])
-def test_valid_build_can_explicitly_repair_invalid_record(tmp_path, monkeypatch, update):
+def test_valid_build_can_explicitly_repair_invalid_record(tmp_path, running, update) -> None:
     state = tmp_path / "identity.json"
     _write(state, replace(_identity(), revision=""))
     before = state.read_bytes()
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: _identity())
+    running(_identity())
     if update:
         assert (
-            host_install.register_host_installation(Path("/skills"), path=state, update=True)
+            host_install.register_host_installation(_SOURCE, path=state, update=True)
             == _identity()
         )
         assert host_install.load_host_installation(state) == _identity()
     else:
         with pytest.raises(HostInstallationError, match="revision"):
-            host_install.register_host_installation(Path("/skills"), path=state)
+            host_install.register_host_installation(_SOURCE, path=state)
         assert state.read_bytes() == before
 
 
 @pytest.mark.parametrize(
     "failure", ["temporary-validation", "write", "replace", "readback", "mismatch"]
 )
-def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monkeypatch, failure):
+def test_registration_cannot_succeed_without_persisted_validation(
+    tmp_path, monkeypatch, running, failure
+):
     state = tmp_path / "identity.json"
     _write(state, _identity())
     before = state.read_bytes()
     candidate = replace(_identity(), revision="new")
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
+    running(candidate)
     original_load = host_install.load_host_installation
     original_write = Path.write_text
     original_replace = Path.replace
@@ -397,11 +352,13 @@ def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monk
             raise OSError("atomic replacement denied")
         return original_replace(path, *args, **kwargs)
 
+    # The write path has no public parameter that makes the loader, the temporary write
+    # or the final replacement fail at one chosen step.
     monkeypatch.setattr(host_install, "load_host_installation", load)
     monkeypatch.setattr(Path, "write_text", write)
     monkeypatch.setattr(Path, "replace", replace_path)
     with pytest.raises(HostInstallationError):
-        host_install.register_host_installation(Path("/skills"), path=state, update=True)
+        host_install.register_host_installation(_SOURCE, path=state, update=True)
     if failure in {"temporary-validation", "write", "replace"}:
         assert state.read_bytes() == before
     else:
@@ -411,105 +368,85 @@ def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monk
 
 @pytest.mark.parametrize(
     "condition",
-    ["missing", "current", "conflict", "corrupt", "ineligible", "invalid", "unreadable"],
+    [
+        "missing",
+        "current",
+        "conflict",
+        "corrupt",
+        "ineligible",
+        "invalid",
+        "unreadable",
+        "inaccessible",
+    ],
 )
-def test_read_only_installation_distinguishes_registration_work(tmp_path, monkeypatch, condition):
-    path = tmp_path / "identity.json"
+def test_read_only_inspection_distinguishes_registration_work(monkeypatch, running, condition):
+    state = host_install.host_installation_path()
     identity = _identity()
-    monkeypatch.setattr(host_install, "host_installation_path", lambda: path)
-    monkeypatch.setattr(
-        host_install,
-        "_eligibility_error",
-        lambda _source: "not an installed wheel" if condition == "ineligible" else None,
-    )
-    monkeypatch.setattr(
-        host_install,
-        "current_host_installation",
-        lambda _source: replace(identity, revision="") if condition == "invalid" else identity,
-    )
+    source = Path("/work/Booley/src/booley/data/skills") if condition == "ineligible" else _SOURCE
+    if condition == "inaccessible":
+        running(PermissionError("package inaccessible"))
+    else:
+        running(replace(identity, revision="") if condition == "invalid" else identity)
     if condition in {"current", "conflict", "unreadable"}:
-        _write(path, replace(identity, version="other") if condition == "conflict" else identity)
+        _write(state, replace(identity, version="other") if condition == "conflict" else identity)
     elif condition == "corrupt":
-        path.write_text("{invalid", encoding="utf-8")
+        state.parent.mkdir(parents=True)
+        state.write_text("{invalid", encoding="utf-8")
     if condition == "unreadable":
         original = Path.read_text
 
-        def denied(source, *args, **kwargs):
-            if source == path:
+        def denied(path, *args, **kwargs):
+            if path == state:
                 raise PermissionError("denied")
-            return original(source, *args, **kwargs)
+            return original(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", denied)
-    result = host_install.inspect_host_installation(tmp_path)
+
+    result = host_install.inspect_host_installation(source)
+
     assert result.pending is (condition == "missing")
     assert bool(result.error) is (condition not in {"missing", "current"})
     if condition == "missing":
-        assert not path.exists()
-        assert host_install.host_install_error(tmp_path) is not None
+        assert not state.exists()
+        assert host_install.host_install_error(source) is not None
     if condition == "conflict":
         assert "--update" in result.error
+    if condition == "inaccessible":
+        assert str(source) in result.error
+        assert "restore package read access" in result.error
 
 
-def test_read_only_installation_contains_unreadable_candidate(tmp_path, monkeypatch):
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-
-    def denied(_source):
-        raise PermissionError("package inaccessible")
-
-    monkeypatch.setattr(host_install, "current_host_installation", denied)
-    result = host_install.inspect_host_installation(tmp_path)
-    assert not result.pending
-    assert str(tmp_path) in result.error
-    assert "restore package read access" in result.error
-
-
-_POSIX_ONLY = pytest.mark.skipif(
-    os.name == "nt", reason="POSIX shell-script and link stand-ins for booley"
-)
-_ONE_INSTALL_TEXT = (
-    "this Booley process does not match the canonical host installation "
-    "(revision abc123 -> def456); run the canonical host `booley bootstrap "
-    "--update` if this upgrade is intentional"
-)
-
-
-def _fake_booley(directory: Path, body: str) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    script = directory / "booley"
-    script.write_bytes(f"#!/bin/sh\n{body}\n".encode())
-    script.chmod(0o755)
-    return script.resolve()
-
-
-def _two_installs(tmp_path: Path, monkeypatch, old_body: str) -> tuple[Path, Path, Path]:
-    old = _fake_booley(tmp_path / "old", old_body)
-    new = _fake_booley(tmp_path / "new", "echo 'booley 1.2.3 (def456, 2026-02-02)'")
-    monkeypatch.setenv("PATH", os.pathsep.join([str(old.parent), str(new.parent)]))
-    state = tmp_path / "host-installation.json"
-    _write(state, replace(_identity(), executable=str(old), version="0.9.0"))
-    running = replace(_identity(), executable=str(new), revision="def456")
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: running)
-    monkeypatch.setattr(host_install, "host_installation_path", lambda: state)
-    return old, new, state
-
-
-def _refusal(entry: str, source: Path, state: Path) -> str | None:
-    if entry == "refusal":
-        return host_install.host_install_error(source, path=state)
-    if entry == "inspection":
-        return host_install.inspect_host_installation(source).error
-    with pytest.raises(HostInstallationError) as caught:
-        host_install.register_host_installation(source, path=state)
-    return str(caught.value)
+def _two_installs(
+    tmp_path: Path, monkeypatch, running, old_answer: dict
+) -> tuple[PathToolFake, Path, Path]:
+    """Two `booley` launchers on PATH, the recorded older one first, the running one second."""
+    new = PathToolFake.install(tmp_path / "new", "booley", monkeypatch)
+    old = PathToolFake.install(tmp_path / "old", "booley", monkeypatch)
+    old.answer("--version", **old_answer)
+    old_path, new_path = old.executable.resolve(), new.executable.resolve()
+    _write(
+        host_install.host_installation_path(),
+        replace(_identity(), executable=str(old_path), version="0.9.0"),
+    )
+    running(replace(_identity(), executable=str(new_path), revision="def456"))
+    return old, old_path, new_path
 
 
 @_POSIX_ONLY
 @pytest.mark.parametrize("entry", ["refusal", "inspection", "registration"])
-def test_mismatch_lists_shadowing_older_install(tmp_path, monkeypatch, entry):
-    old, new, state = _two_installs(tmp_path, monkeypatch, "echo 'booley 0.9.0 (abc1234, x)'")
+def test_mismatch_lists_shadowing_older_install(tmp_path, monkeypatch, running, entry) -> None:
+    _, old, new = _two_installs(
+        tmp_path, monkeypatch, running, {"stdout": "booley 0.9.0 (abc1234, x)\n"}
+    )
 
-    message = _refusal(entry, tmp_path, state)
+    if entry == "refusal":
+        message = host_install.host_install_error(_SOURCE)
+    elif entry == "inspection":
+        message = host_install.inspect_host_installation(_SOURCE).error
+    else:
+        with pytest.raises(HostInstallationError) as caught:
+            host_install.register_host_installation(_SOURCE)
+        message = str(caught.value)
 
     assert message is not None
     assert message.endswith(
@@ -520,8 +457,10 @@ def test_mismatch_lists_shadowing_older_install(tmp_path, monkeypatch, entry):
 
 
 @_POSIX_ONLY
-def test_mismatch_message_unchanged_with_one_distinct_install(tmp_path, monkeypatch):
-    real = _fake_booley(tmp_path / "dir", "echo 'booley 1.2.3'")
+def test_mismatch_message_unchanged_with_one_distinct_install(
+    tmp_path, monkeypatch, running
+) -> None:
+    real = PathToolFake.install(tmp_path / "dir", "booley", monkeypatch).executable.resolve()
     (tmp_path / "link_dir").mkdir()
     (tmp_path / "link_dir" / "booley").symlink_to(real)
     (tmp_path / "hard_dir").mkdir()
@@ -530,17 +469,11 @@ def test_mismatch_message_unchanged_with_one_distinct_install(tmp_path, monkeypa
     locked.mkdir()
     entries = [locked, real.parent, real.parent, tmp_path / "link_dir", tmp_path / "hard_dir"]
     monkeypatch.setenv("PATH", os.pathsep.join(str(item) for item in entries))
-    state = tmp_path / "host-installation.json"
-    _write(state, _identity())
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(
-        host_install,
-        "current_host_installation",
-        lambda _source: replace(_identity(), revision="def456"),
-    )
+    _write(host_install.host_installation_path(), _identity())
+    running(replace(_identity(), revision="def456"))
     locked.chmod(0)
     try:
-        message = host_install.host_install_error(tmp_path, path=state)
+        message = host_install.host_install_error(_SOURCE)
     finally:
         locked.chmod(0o755)
 
@@ -548,31 +481,31 @@ def test_mismatch_message_unchanged_with_one_distinct_install(tmp_path, monkeypa
 
 
 @_POSIX_ONLY
-@pytest.mark.parametrize("probe", ["failing", "hanging"])
-def test_mismatch_lists_unreadable_version_as_unknown(tmp_path, monkeypatch, probe):
-    started = tmp_path / "probe-started"
-    hang = f": > '{started}'; exec '{sys.executable}' -c 'import time; time.sleep(60)'"
-    body = "exit 3" if probe == "failing" else hang
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"returncode": 3},
+        {"hang_s": 60},
+        {"stdout": "other 1.0\n"},
+        {"stdout": "booley\n"},
+    ],
+    ids=["failing", "hanging", "other tool", "bare name"],
+)
+def test_mismatch_lists_unreadable_version_as_unknown(
+    tmp_path, monkeypatch, running, answer
+) -> None:
+    # No public parameter bounds the probe: only the module's timeout keeps a hang short.
     monkeypatch.setattr(host_install, "_VERSION_TIMEOUT_S", scaled(1.0))
-    old, _new, state = _two_installs(tmp_path, monkeypatch, body)
+    probed, old, _new = _two_installs(tmp_path, monkeypatch, running, answer)
 
-    message = host_install.host_install_error(tmp_path, path=state)
+    message = host_install.host_install_error(_SOURCE)
 
     assert message is not None
-    assert started.exists() == (probe == "hanging")
     assert f"{old} (version unknown, recorded)" in message
+    assert [call.args for call in probed.calls()] == [["--version"]]
 
 
-@pytest.mark.parametrize("output", ["other 1.0\n", "booley\n"])
-def test_executable_version_rejects_unexpected_output(tmp_path, output):
-    script = _fake_booley(tmp_path / "odd", f"printf '{output}'")
-    if os.name == "nt":
-        pytest.skip("POSIX shell-script stand-in for booley")
-
-    assert host_install._executable_version(script) is None
-
-
-def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch):
+def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch, running) -> None:
     name = "booley.exe" if os.name == "nt" else "booley"
     decoy_name = "booley" if os.name == "nt" else "booley.exe"
     paths: dict[str, Path] = {}
@@ -585,13 +518,12 @@ def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "PATH", os.pathsep.join(str(tmp_path / part) for part in ("decoy", "first", "second"))
     )
-    state = tmp_path / "host-installation.json"
-    _write(state, replace(_identity(), executable=str(paths["first"])))
-    running = replace(_identity(), executable=str(paths["second"]), revision="def456")
-    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
-    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: running)
+    _write(
+        host_install.host_installation_path(), replace(_identity(), executable=str(paths["first"]))
+    )
+    running(replace(_identity(), executable=str(paths["second"]), revision="def456"))
 
-    message = host_install.host_install_error(tmp_path, path=state)
+    message = host_install.host_install_error(_SOURCE)
 
     assert message is not None
     assert message.endswith(
@@ -602,19 +534,29 @@ def test_mismatch_lists_platform_executable_name(tmp_path, monkeypatch):
     )
 
 
-def test_mismatch_marks_launcher_whose_identity_lacks_exe(tmp_path, monkeypatch):
-    for directory in ("first", "second"):
-        (tmp_path / directory).mkdir()
-        (tmp_path / directory / "booley.exe").write_bytes(b"")
-        (tmp_path / directory / "booley.exe").chmod(0o755)
-    first, second = ((tmp_path / part / "booley.exe").resolve() for part in ("first", "second"))
-    monkeypatch.setattr(host_install, "_path_executables", lambda: [first, second])
-    monkeypatch.setattr(host_install, "_executable_version", lambda _exe: None)
-    recorded = replace(_identity(), executable=str(first.with_suffix("")))
-    running = replace(_identity(), executable=str(second.with_suffix("")), revision="def456")
+def test_mismatch_marks_launcher_whose_identity_lacks_exe(tmp_path, monkeypatch) -> None:
+    launchers = {}
+    for part in ("first", "second"):
+        launcher = tmp_path / part / "booley.exe"
+        launcher.parent.mkdir()
+        launcher.write_bytes(b"")  # empty: it cannot run, so its version stays unknown
+        launcher.chmod(0o755)
+        launchers[part] = launcher.resolve()
+    if os.name == "nt":
+        folders = [tmp_path / "first", tmp_path / "second"]
+    else:  # `booley` links to the `.exe`: the search resolves them to it
+        folders = [tmp_path / "link-first", tmp_path / "link-second"]
+        for folder, part in zip(folders, launchers, strict=True):
+            folder.mkdir()
+            (folder / "booley").symlink_to(launchers[part])
+    monkeypatch.setenv("PATH", os.pathsep.join(str(folder) for folder in folders))
+    recorded = replace(_identity(), executable=str(tmp_path / "first" / "booley"))
+    running = replace(
+        _identity(), executable=str(tmp_path / "second" / "booley"), revision="def456"
+    )
 
     listing = host_install.shadowing_installs(recorded, running)
 
     assert listing is not None
-    assert f"{first} (version unknown, recorded)" in listing
-    assert f"{second} (v1.2.3, running)" in listing
+    assert f"{launchers['first']} (version unknown, recorded)" in listing
+    assert f"{launchers['second']} (v1.2.3, running)" in listing
