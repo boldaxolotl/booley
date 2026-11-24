@@ -2276,7 +2276,7 @@ async def _resolve_observed_request_context(
         caller=caller,
     )
     facts = await observer.resolved(facts)
-    agent = await asyncio.to_thread(resolve_agent_thread, name, meta, facts)
+    agent = await resolve_agent_thread(name, meta, facts)
     return replace(request, attribution=facts, agent=agent)
 
 

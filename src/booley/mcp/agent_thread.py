@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ class AgentThread:
     thread: str | None
 
 
-def resolve_agent_thread(
+async def resolve_agent_thread(
     client_name: str,
     metadata: Mapping[str, Any],
     attribution: Attribution | None,
@@ -33,7 +34,8 @@ def resolve_agent_thread(
 
     Codex names its thread in ``_meta``, read here rather than from *attribution*
     because a ``booley chat`` tab's attribution carries its launch process instead.
-    A Claude caller's T3 Code thread is in the environment of its own process.
+    A Claude caller's T3 Code thread is in the environment of its own process, read off
+    the event loop.
     """
     if codex_client(client_name, metadata):
         thread = metadata.get("threadId")
@@ -41,7 +43,8 @@ def resolve_agent_thread(
     if "claude" not in client_name.lower():
         return None
     process = attribution.process if attribution and attribution.kind == "process" else None
-    return AgentThread("claude", None if process is None else _t3_thread(process, proc_root))
+    thread = None if process is None else await asyncio.to_thread(_t3_thread, process, proc_root)
+    return AgentThread("claude", thread)
 
 
 def _t3_thread(process: ProcessIdentity, proc_root: Path) -> str | None:
