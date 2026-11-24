@@ -225,7 +225,7 @@ def test_public_codex_call_writes_to_injected_destinations(tmp_path, monkeypatch
         transcript_path=tmp_path / "raw" / "agent.jsonl",
         artifact_paths=resolve,
     )
-    result = asyncio.run(codex.CodexBackend().call(params))
+    result = asyncio.run(codex.CodexBackend(auth_mode="visitor").call(params))
     assert result.output == "done"
     resolve.assert_called_once_with(tmp_path / "raw" / "reviewer.jsonl")
     assert json.loads(paths.prompt_json.read_text())["full_prompt"] == "rules\n\n---\n\nwork"
