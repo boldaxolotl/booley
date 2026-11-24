@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -106,7 +107,7 @@ def _run_classifier(
     for name, value in (defaults | options).items():
         if value is not None:
             text = str(value).lower() if isinstance(value, bool) else str(value)
-            command.extend((f"--{name.replace('_', '-')}", text))
+            command.extend((f"--{re.sub('[^a-z0-9]', '-', name)}", text))
     for option, value in (linux_options or {}).items():
         command.extend((f"--linux-{option}", value))
     return run_bounded_child(command, check=False), output
