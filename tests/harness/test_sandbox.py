@@ -2,7 +2,8 @@
 
 ADR 0028 demolished the per-MCP-tool-call container spawning (DockerRunner.run /
 run_sync, the CLI adapters, DockerSandboxBackend); what survives here is the
-argv builder backing `booley shell`. Every test drives `ephemeral_argv`.
+argv builder backing `booley shell`. Tests drive `ephemeral_argv` and its cleanup, plus
+one `docker_mount_path` case.
 """
 
 from __future__ import annotations
@@ -215,7 +216,7 @@ _CREDENTIAL_CASES = {
         absent=[".credentials.json", ".codex", "--env-file"],
         warns=True,
     ),
-    # An unresolvable BOOLEY_AGENT_APP falls back instead of stopping the shell (19d62a372).
+    # An unresolvable BOOLEY_AGENT_APP falls back instead of stopping the shell (acc1f7bad).
     "ambiguous-agent-app": SimpleNamespace(
         toml='[agent]\nclis = ["claude", "codex"]\n',
         env={"BOOLEY_AGENT_APP": "auto"},
