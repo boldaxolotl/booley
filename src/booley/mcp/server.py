@@ -2209,6 +2209,10 @@ async def _call_application_tool(
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
     caller = await _caller_checkout(context, params)
+    if caller is not None and caller.refusal is not None:
+        return CallToolResult(
+            content=[TextContent(type="text", text=caller.refusal)], is_error=True
+        )
     request = await _observed_request_context(context, params, observer, caller)
     try:
         try:
@@ -2293,7 +2297,8 @@ async def _caller_checkout(
     """Look up the calling agent's checkout for a call that names none.
 
     ``None`` means no lookup was made: no SDK request (stdio, stateless) or an
-    explicit ``work_dir``. Routing never depends on presentation, so this runs
+    explicit ``work_dir``. A Codex call whose metadata names no workspace comes
+    back with ``refusal`` set. Routing never depends on presentation, so this runs
     outside the Session observer and its response budget.
     """
     if context is None or context.request is None or (params.arguments or {}).get("work_dir"):
