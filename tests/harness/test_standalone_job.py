@@ -382,6 +382,7 @@ def test_cleanup_keeps_a_record_that_finished_after_it_was_listed(monkeypatch, p
         job_records.write_record(other, root)
         return ProcessObservation(DEAD)
 
+    # observe_process is the process-observation boundary; it opens the race window after listing.
     monkeypatch.setattr(standalone_job, "observe_process", finish_then_die)
     assert job.run(lambda: 0) == 0
     kept = job_records.read_record("stub-other-1", root)
