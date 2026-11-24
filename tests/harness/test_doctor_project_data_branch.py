@@ -8,171 +8,153 @@ from pathlib import Path
 
 import pytest
 
-from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.core.host_shell import quote_arg
 from booley.harness import doctor
+from booley.runtime import directory_migration_git
 from booley.runtime.worktree_evidence import tracked_booley_paths
+from tests.harness.doctor_host_support import serve_healthy_doctor_host
+from tests.harness.doctor_run_support import findings, run_doctor
 from tests.harness.git_support import git_stdout as _git
+from tests.harness.test_doctor import _write_project
 
 
-def _repositories(tmp_path: Path, outer_branch: str, project_branch: str) -> tuple[Path, Path]:
+def _repositories(
+    tmp_path: Path, outer_branch: str, project_branch: str | None = None
+) -> tuple[Path, Path]:
+    """A Project on *outer_branch* whose Booley Directory is a repository on *project_branch*."""
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", outer_branch)
-    booley_dir = root / ".booley"
-    booley_dir.mkdir()
-    _git(booley_dir, "init", "-b", project_branch)
+    booley_dir = _write_project(root)
+    if project_branch:
+        _git(booley_dir, "init", "-b", project_branch)
     return root, booley_dir
 
 
-def _commit(repository: Path, name: str) -> None:
+def _identify(repository: Path):
     _git(repository, "config", "user.name", "Test")
     _git(repository, "config", "user.email", "test@example.invalid")
+
+
+def _commit(repository: Path, name: str):
+    _identify(repository)
     (repository / name).write_text(f"{name}\n", encoding="utf-8")
-    _git(repository, "add", name)
+    _git(repository, "add", "-A")
     _git(repository, "commit", "-m", f"add {name}")
 
 
-def _run_check(root: Path) -> doctor._Reporter:
-    reporter = doctor._Reporter.create()
-    doctor._check_project_data_destination_branch(root, reporter)
-    return reporter
+def _doctor(monkeypatch, checkout: Path) -> doctor.DoctorRunResult:
+    """Run the whole Doctor on *checkout*, with real Git and a healthy host."""
+    serve_healthy_doctor_host(monkeypatch, checkout)
+    return run_doctor(checkout)
 
 
-def test_missing_project_data_destination_warns_with_migration_choices(tmp_path: Path) -> None:
+def _messages(result: doctor.DoctorRunResult, severity: str, needle: str = "") -> list[str]:
+    return [f.message for f in result.findings if f.severity == severity and needle in f.message]
+
+
+def _warnings(result: doctor.DoctorRunResult, check_id: str) -> list:
+    return [f for f in findings(result, check_id) if f.severity == "warn"]
+
+
+@pytest.mark.parametrize("unreadable", [False, True], ids=["missing", "unreadable"])
+def test_unaligned_project_data_destination_warns_distinctly(tmp_path, monkeypatch, unreadable):
     (tmp_path / "it's").mkdir()
-    root, booley_dir = _repositories(tmp_path / "it's", "main", "master")
+    root, booley_dir = _repositories(tmp_path / "it's", "main", None if unreadable else "master")
+    if unreadable:
+        (booley_dir / ".git").mkdir()
+    kind = "unreadable" if unreadable else "missing"
 
-    reporter = _run_check(root)
+    [finding] = _warnings(_doctor(monkeypatch, root), f"project-data.destination-branch-{kind}")
 
-    warnings = [finding for finding in reporter.findings or () if finding.severity == "warn"]
-    assert len(warnings) == 1
-    finding = warnings[0]
-    assert finding.check_id == "project-data.destination-branch-missing"
     assert finding.subject == "project-data"
-    assert "main" in finding.message
     assert str(booley_dir) in finding.message
+    if unreadable:
+        assert "inspect Git health" in finding.fix
+        return
+    assert "main" in finding.message
     assert f"git -C {quote_arg(str(booley_dir))} switch -c {quote_arg('main')}" in finding.fix
     assert "project_destination_ref" in finding.fix
 
 
-@pytest.mark.parametrize("branch", ["main", "release/next"])
-def test_matching_unborn_project_data_destination_passes(
-    tmp_path: Path,
-    branch: str,
-) -> None:
-    root, _booley_dir = _repositories(tmp_path, branch, branch)
+@pytest.mark.parametrize(
+    ("outer", "inner", "existing"),
+    [("main", "main", False), ("release/next", "release/next", False), ("main", "master", True)],
+    ids=["unborn-main", "unborn-nested-name", "other-branch-checked-out"],
+)
+def test_aligned_project_data_destination_passes(tmp_path, monkeypatch, outer, inner, existing):
+    root, booley_dir = _repositories(tmp_path, outer, inner)
+    if existing:
+        _commit(booley_dir, "baseline.txt")
+        _git(booley_dir, "branch", outer)
 
-    reporter = _run_check(root)
+    result = _doctor(monkeypatch, root)
 
-    assert reporter.counts["pass"] == 1
-    assert reporter.counts["warn"] == 0
-
-
-def test_unreadable_project_data_repository_has_distinct_warning(tmp_path: Path) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    booley_dir = root / ".booley"
-    (booley_dir / ".git").mkdir(parents=True)
-
-    reporter = _run_check(root)
-
-    warnings = [finding for finding in reporter.findings or () if finding.severity == "warn"]
-    assert len(warnings) == 1
-    finding = warnings[0]
-    assert finding.check_id == "project-data.destination-branch-unreadable"
-    assert finding.subject == "project-data"
-    assert str(booley_dir) in finding.message
-    assert "inspect Git health" in finding.fix
+    expected = (
+        f"Booley Directory destination branch {outer!r} exists"
+        if existing
+        else f"Booley Directory destination branch matches outer branch {outer!r}"
+    )
+    assert _messages(result, "pass", "Booley Directory destination branch") == [expected]
+    assert _warnings(result, "project-data.destination-branch-missing") == []
 
 
-def test_existing_destination_passes_when_another_branch_is_checked_out(tmp_path: Path) -> None:
-    root, booley_dir = _repositories(tmp_path, "main", "master")
-    _commit(booley_dir, "baseline.txt")
-    _git(booley_dir, "branch", "main")
-
-    reporter = _run_check(root)
-
-    assert reporter.counts["pass"] == 1
-    assert reporter.counts["warn"] == 0
-
-
-def test_detached_outer_checkout_skips_alignment(tmp_path: Path) -> None:
-    root, _booley_dir = _repositories(tmp_path, "main", "master")
-    _commit(root, "README.md")
-    _git(root, "checkout", "--detach")
-
-    reporter = _run_check(root)
-
-    assert reporter.counts["skip"] == 1
-    assert reporter.counts["warn"] == 0
-    assert "detached HEAD" in (reporter.findings or ())[0].message
-
-
-def test_nonstandalone_project_data_skips_alignment(tmp_path: Path) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    _git(root, "init", "-b", "main")
-    (root / ".booley").mkdir()
-
-    reporter = _run_check(root)
-
-    assert reporter.counts["skip"] == 1
-    assert reporter.counts["warn"] == 0
-
-
-def test_linked_project_data_worktree_skips_standalone_alignment(tmp_path: Path) -> None:
+def _linked_project_data_worktree(tmp_path: Path) -> Path:
     root, booley_dir = _repositories(tmp_path, "main", "main")
     _commit(root, "README.md")
     _commit(booley_dir, "baseline.txt")
     ticket_root = tmp_path / "ticket-worktree"
     _git(root, "worktree", "add", "-b", "ticket", str(ticket_root))
-    _git(
-        booley_dir,
-        "worktree",
-        "add",
-        "-b",
-        "ticket-project",
-        str(ticket_root / ".booley"),
-    )
-
-    reporter = _run_check(ticket_root)
-
-    assert reporter.counts["skip"] == 1
-    assert reporter.counts["warn"] == 0
+    _git(booley_dir, "worktree", "add", "-b", "ticket-project", str(ticket_root / ".booley"))
+    return ticket_root
 
 
-def test_missing_destination_warning_can_be_waived(tmp_path: Path) -> None:
+def _detached_outer_checkout(tmp_path: Path) -> Path:
+    root, _booley_dir = _repositories(tmp_path, "main", "master")
+    _commit(root, "README.md")
+    _git(root, "checkout", "--detach")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("build", "reason"),
+    [
+        (_detached_outer_checkout, "detached HEAD"),
+        (lambda tmp_path: _repositories(tmp_path, "main")[0], "no standalone repository"),
+        (_linked_project_data_worktree, "no standalone repository"),
+    ],
+    ids=["detached-outer", "nonstandalone", "linked-project-data-worktree"],
+)
+def test_project_data_alignment_is_skipped_when_it_does_not_apply(
+    tmp_path, monkeypatch, build, reason: str
+):
+    result = _doctor(monkeypatch, build(tmp_path))
+
+    [skipped] = _messages(result, "skip", "Booley Directory branch alignment")
+    assert reason in skipped
+    assert findings(result, "project-data.destination-branch-missing") == []
+    assert findings(result, "project-data.destination-branch-unreadable") == []
+
+
+def test_missing_destination_warning_can_be_waived(tmp_path, monkeypatch):
     root, booley_dir = _repositories(tmp_path, "main", "master")
-    (booley_dir / "doctor-waivers.toml").write_text(
-        """\
-version = 1
+    waiver = b'version = 1\n[[waiver]]\ncheck = "project-data.destination-branch-missing"\n'
+    waiver += b'subject = "project-data"\nreason = "Branches differ."\npermanent = true\n'
+    (booley_dir / "doctor-waivers.toml").write_bytes(waiver)
 
-[[waiver]]
-check = "project-data.destination-branch-missing"
-subject = "project-data"
-reason = "Branches intentionally differ."
-permanent = true
-""",
-        encoding="utf-8",
-    )
-    reporter = doctor._Reporter.create(load_doctor_waivers(booley_dir))
+    result = _doctor(monkeypatch, root)
 
-    doctor._check_project_data_destination_branch(root, reporter)
-
-    assert reporter.counts["warn"] == 0
-    assert reporter.counts["waived"] == 1
+    [finding] = findings(result, "project-data.destination-branch-missing")
+    assert finding.severity == "waived"
 
 
 def _linked_worktree(tmp_path: Path, *, versioned: bool, paired: bool) -> Path:
     """A primary checkout with a linked worktree whose ``.booley`` is a copy or a pair."""
     root, booley_dir = _repositories(tmp_path, "main", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
+    _identify(root)
     _git(root, "commit", "--allow-empty", "-m", "base")
     if versioned:
-        _commit(booley_dir, "booley.toml")
+        _commit(booley_dir, "baseline.txt")
     else:
         shutil.rmtree(booley_dir / ".git")
     worktree = tmp_path / "linked"
@@ -180,50 +162,36 @@ def _linked_worktree(tmp_path: Path, *, versioned: bool, paired: bool) -> Path:
     if paired:
         _git(booley_dir, "worktree", "add", "--detach", str(worktree / ".booley"), "HEAD")
     else:
-        (worktree / ".booley").mkdir()
-        (worktree / ".booley" / "booley.toml").write_text("copy\n", encoding="utf-8")
+        shutil.copytree(
+            booley_dir, worktree / ".booley", ignore=shutil.ignore_patterns(".git", "tickets")
+        )
     return worktree
 
 
-def _pairing_warnings(worktree: Path) -> list:
-    reporter = doctor._Reporter.create()
-    doctor._check_worktree_booley_pairing(worktree, reporter)
-    return [finding for finding in reporter.findings or () if finding.severity == "warn"]
-
-
-def test_plain_copy_of_versioned_booley_directory_in_linked_worktree_warns(
-    tmp_path: Path,
-) -> None:
-    warnings = _pairing_warnings(_linked_worktree(tmp_path, versioned=True, paired=False))
-
-    assert [finding.check_id for finding in warnings] == ["project-data.worktree-unpaired"]
-    assert "Paired Checkout" in warnings[0].message
-    assert "booley worktree new" in warnings[0].fix
-
-
 @pytest.mark.parametrize(
-    ("versioned", "paired"),
-    [(True, True), (False, False)],
-    ids=["paired-checkout", "snapshot-of-unversioned"],
+    ("versioned", "paired", "warns"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+    ids=["plain-copy-of-versioned", "paired-checkout", "snapshot-of-unversioned"],
 )
-def test_expected_worktree_booley_layouts_do_not_warn(
-    tmp_path: Path, versioned: bool, paired: bool
-) -> None:
-    assert _pairing_warnings(_linked_worktree(tmp_path, versioned=versioned, paired=paired)) == []
+def test_plain_copy_of_versioned_booley_directory_in_linked_worktree_warns(
+    tmp_path, monkeypatch, versioned, paired, warns
+):
+    worktree = _linked_worktree(tmp_path, versioned=versioned, paired=paired)
+
+    found = _warnings(_doctor(monkeypatch, worktree), "project-data.worktree-unpaired")
+
+    assert bool(found) == warns
+    if warns:
+        assert "Paired Checkout" in found[0].message
+        assert "booley worktree new" in found[0].fix
 
 
-def _common_state_findings(root: Path) -> list:
-    reporter = doctor._Reporter.create()
-    doctor._check_common_state_in_worktrees(root, reporter)
-    return list(reporter.findings or ())
-
-
-def _plant(path: Path, text: str = "planted\n") -> None:
+def _plant(path: Path, text: str = "planted\n"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
 
-def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
+def test_common_state_in_worktree_warns_on_planted_path(tmp_path, monkeypatch):
     worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
     root = tmp_path / "project"
     planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
@@ -233,164 +201,143 @@ def test_common_state_in_worktree_warns_on_planted_path(tmp_path: Path) -> None:
     _plant(root / ".booley" / "runtime" / "session_activity" / "main")
     _plant(root / ".booley" / "findings.jsonl")
 
-    findings = _common_state_findings(root)
+    result = _doctor(monkeypatch, root)
 
-    warnings = [finding for finding in findings if finding.severity == "warn"]
-    assert [finding.check_id for finding in warnings] == ["project-data.common-state-in-worktree"]
-    assert warnings[0].subject == str(worktree / ".booley")
-    assert "runtime/session_activity" in warnings[0].message
-    assert "measurements" in warnings[0].message
-    assert "findings.jsonl" not in warnings[0].message
-    assert "git worktree remove" in warnings[0].fix
+    [warning] = _warnings(result, "project-data.common-state-in-worktree")
+    assert warning.subject == str(worktree / ".booley")
+    assert "runtime/session_activity" in warning.message
+    assert "measurements" in warning.message
+    assert "findings.jsonl" not in warning.message
+    assert "git worktree remove" in warning.fix
     assert planted.is_file()  # Doctor reports; it never deletes.
-    assert not any(finding.severity == "pass" for finding in findings)
+    assert _messages(result, "pass", "Common Booley State") == []
 
 
-def test_common_state_in_worktree_passes_on_clean_snapshot(tmp_path: Path) -> None:
+@pytest.mark.parametrize("real_directory", [True, False], ids=["clean-snapshot", "no-directory"])
+def test_common_state_in_worktree_passes_without_stale_copies(
+    tmp_path, monkeypatch, real_directory
+):
     worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
-    _plant(worktree / ".booley" / "cores" / "ip.core")  # Versioned state is fine.
-    _plant(worktree / ".booley" / "flow-reports" / "r.json")  # So is source-tied state.
+    if real_directory:
+        _plant(worktree / ".booley" / "cores" / "ip.core")  # Versioned state is fine.
+        _plant(worktree / ".booley" / "flow-reports" / "r.json")  # So is source-tied state.
+    else:
+        shutil.rmtree(worktree / ".booley")
 
-    findings = _common_state_findings(tmp_path / "project")
+    result = _doctor(monkeypatch, tmp_path / "project")
 
-    assert [finding.severity for finding in findings] == ["pass"]
+    assert _messages(result, "pass", "Common Booley State") == [
+        f"no Common Booley State in {int(real_directory)} worktree Booley Directories"
+    ]
 
 
-def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(
-    tmp_path: Path,
-) -> None:
+def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(tmp_path, monkeypatch):
     worktree = _linked_worktree(tmp_path, versioned=True, paired=True)
     paired = worktree / ".booley"
     # Committed in the Versioned Booley Directory, so present in every Paired Checkout.
     _plant(paired / "goalsets" / "x.md")
     _plant(paired / "docker" / "Dockerfile")
-    _git(paired, "config", "user.name", "Test")
-    _git(paired, "config", "user.email", "test@example.invalid")
+    _identify(paired)
     _git(paired, "add", "-f", "goalsets", "docker")
     _git(paired, "commit", "-m", "common files")
 
-    assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
+    clean = _doctor(monkeypatch, tmp_path / "project")
+    assert _messages(clean, "pass", "Common Booley State")
+    assert _warnings(clean, "project-data.common-state-in-worktree") == []
 
     _plant(paired / "runtime" / "session_activity" / "a")
-    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
-    assert len(warnings) == 1
-    assert "session_activity" in warnings[0].message
-    assert "goalsets" not in warnings[0].message and "docker" not in warnings[0].message
+    [warning] = _warnings(
+        _doctor(monkeypatch, tmp_path / "project"), "project-data.common-state-in-worktree"
+    )
+    assert "session_activity" in warning.message
+    assert "goalsets" not in warning.message and "docker" not in warning.message
 
 
-def test_common_state_check_skips_when_the_project_is_the_booley_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def refuse(_root: Path) -> Path:
-        raise doctor.SourceCheckoutProjectError("Booley's own source")
-
-    monkeypatch.setattr(doctor, "resolve_common_booley_dir", refuse)
-
-    assert [f.severity for f in _common_state_findings(tmp_path)] == ["skip"]
-
-
-def _git_failure(stderr: str) -> doctor.subprocess.CalledProcessError:
-    return doctor.subprocess.CalledProcessError(128, ["git"], stderr=stderr)
-
-
-def test_common_state_check_skips_with_git_stderr_when_listing_worktrees_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fail(_root: Path) -> Path:
-        raise _git_failure("fatal: not a git repository\n")
-
-    monkeypatch.setattr("booley.runtime.directory_migration_git.primary_checkout", fail)
-
-    findings = _common_state_findings(_linked_worktree(tmp_path, versioned=False, paired=False))
-
-    assert [f.severity for f in findings] == ["skip"]
-    assert "not a git repository" in findings[0].message
-
-
-def test_common_state_check_names_exit_code_when_git_prints_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fail(_root: Path) -> Path:
-        raise _git_failure("")
-
-    monkeypatch.setattr("booley.runtime.directory_migration_git.primary_checkout", fail)
-
-    findings = _common_state_findings(_linked_worktree(tmp_path, versioned=False, paired=False))
-
-    assert "git exited 128" in findings[0].message
-
-
-def test_common_state_check_ignores_worktrees_without_a_real_booley_directory(
-    tmp_path: Path,
-) -> None:
-    worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
-    shutil.rmtree(worktree / ".booley")
-
-    findings = _common_state_findings(tmp_path / "project")
-
-    assert [(f.severity, f.message) for f in findings] == [
-        ("pass", "no Common Booley State in 0 worktree Booley Directories")
-    ]
+def _git_failure(stderr):
+    return subprocess.CalledProcessError(128, ["git"], stderr=stderr)
 
 
 @pytest.mark.parametrize(
-    ("error", "expected"),
+    ("outcome", "skip_text"),
     [
         (_git_failure("fatal: bad index\n"), "bad index"),
         (_git_failure(""), "git exited 128"),
         (OSError("permission denied"), "permission denied"),
         (ValueError("bad utf-8"), "bad utf-8"),
+        (FileNotFoundError(), None),  # a baseline worktree removed while scanning
+        ([f"common{index}" for index in range(7)], None),
     ],
+    ids=["git-stderr", "git-exit-code", "os-error", "value-error", "removed", "many-paths"],
 )
-def test_common_state_check_skips_a_worktree_it_cannot_scan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
-) -> None:
+def test_common_state_scan_outcomes(tmp_path, monkeypatch, outcome, skip_text):
     worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
 
-    def fail(_worktree: Path, _booley_dir: Path) -> list[str]:
-        raise error
+    def scan(_worktree, _booley_dir):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
-    monkeypatch.setattr(doctor, "untracked_common_paths", fail)
+    # No real collaborator: Git cannot be made to print non-UTF-8 paths, to fail after listing
+    # a worktree, or to drop a worktree while Doctor scans it.
+    monkeypatch.setattr(doctor, "untracked_common_paths", scan)
 
-    findings = _common_state_findings(tmp_path / "project")
+    result = _doctor(monkeypatch, tmp_path / "project")
 
-    assert [f.severity for f in findings] == ["skip", "pass"]
-    assert str(worktree / ".booley") in findings[0].message
-    assert expected in findings[0].message
+    skipped = _messages(result, "skip", f"Common Booley State in {worktree / '.booley'}")
+    warned = _warnings(result, "project-data.common-state-in-worktree")
+    if skip_text:
+        assert [skip_text in message for message in skipped] == [True]
+    elif isinstance(outcome, list):
+        assert "common4, and 2 more" in warned[0].message
+        assert "common5" not in warned[0].message
+    else:
+        assert not skipped
+    assert bool(_messages(result, "pass", "Common Booley State")) == (not warned)
 
 
-def test_common_state_check_skips_a_worktree_removed_while_scanning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_common_state_check_skips_when_the_project_is_the_booley_source(tmp_path, monkeypatch):
+    def refuse(_root: Path) -> Path:
+        raise doctor.SourceCheckoutProjectError("Booley's own source")
+
+    monkeypatch.setattr(doctor, "resolve_common_booley_dir", refuse)
+    # private: a whole run resolves the main Booley Directory unguarded in
+    # `_run_project_phase` before this check, so this fault never reaches it there.
+    reporter = doctor._Reporter.create()
+
+    doctor._check_common_state_in_worktrees(tmp_path, reporter)
+
+    [skipped] = reporter.findings or ()
+    assert skipped.severity == "skip"
+    assert "Booley's own source" in skipped.message
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [("fatal: not a git repository\n", "not a git repository"), ("", "git exited 128")],
+    ids=["git-stderr", "git-exit-code"],
+)
+def test_common_state_check_skips_when_listing_worktrees_fails(
+    tmp_path, monkeypatch, stderr: str, expected: str
+):
     _linked_worktree(tmp_path, versioned=False, paired=False)
 
-    def vanish(_worktree: Path, _booley_dir: Path) -> list[str]:
-        raise FileNotFoundError
+    def fail(_root: Path) -> Path:
+        raise _git_failure(stderr)
 
-    monkeypatch.setattr(doctor, "untracked_common_paths", vanish)
+    monkeypatch.setattr(directory_migration_git, "primary_checkout", fail)
 
-    assert [f.severity for f in _common_state_findings(tmp_path / "project")] == ["pass"]
+    result = _doctor(monkeypatch, tmp_path / "project")
+
+    [skipped] = _messages(result, "skip", "Common Booley State in worktrees")
+    assert expected in skipped
+    assert _messages(result, "pass", "Common Booley State") == []
 
 
-def test_tracked_paths_lookup_raises_with_git_stderr_on_failure(tmp_path: Path) -> None:
+def test_tracked_paths_lookup_raises_with_git_stderr_on_failure(tmp_path: Path):
     with pytest.raises(subprocess.CalledProcessError) as raised:
         tracked_booley_paths(tmp_path, tmp_path / ".booley")
 
     assert raised.value.stderr
-
-
-def test_common_state_warning_counts_paths_beyond_the_shown_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _linked_worktree(tmp_path, versioned=False, paired=False)
-    paths = [f"common{index}" for index in range(7)]
-    monkeypatch.setattr(doctor, "untracked_common_paths", lambda _worktree, _dir: paths)
-
-    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
-
-    assert len(warnings) == 1
-    assert "common4, and 2 more" in warnings[0].message
-    assert "common5" not in warnings[0].message
 
 
 def _relocated_linked_worktree(tmp_path: Path, *, versioned: bool) -> Path:
@@ -398,50 +345,49 @@ def _relocated_linked_worktree(tmp_path: Path, *, versioned: bool) -> Path:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-q")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
+    _identify(root)
+    booley_dir = _write_project(root)
+    state = booley_dir.rename(root / "state")
     (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
     _git(root, "add", "booley.toml")
     _git(root, "commit", "-qm", "base")
-    state = root / "state"
-    state.mkdir()
-    (state / "booley.toml").write_text("main\n", encoding="utf-8")
     if versioned:
         _git(state, "init", "-q")
-        _git(state, "config", "user.name", "Test")
-        _git(state, "config", "user.email", "test@example.invalid")
+        _identify(state)
         _git(state, "add", ".")
         _git(state, "commit", "-qm", "project")
     worktree = tmp_path / "linked"
     _git(root, "worktree", "add", "--detach", str(worktree), "HEAD")
-    (worktree / "state").mkdir()
-    (worktree / "state" / "booley.toml").write_text("copy\n", encoding="utf-8")
+    shutil.copytree(state, worktree / "state", ignore=shutil.ignore_patterns(".git", "tickets"))
     return worktree
 
 
-def test_plain_copy_at_relocated_directory_warns(tmp_path: Path) -> None:
+def test_plain_copy_at_relocated_directory_warns(tmp_path, monkeypatch):
     worktree = _relocated_linked_worktree(tmp_path, versioned=True)
 
-    warnings = _pairing_warnings(worktree)
+    [warning] = _warnings(_doctor(monkeypatch, worktree), "project-data.worktree-unpaired")
 
-    assert [finding.check_id for finding in warnings] == ["project-data.worktree-unpaired"]
-    assert str(worktree / "state") in warnings[0].message
+    assert str(worktree / "state") in warning.message
 
 
-def test_common_state_scan_reads_the_relocated_directory(tmp_path: Path) -> None:
+def test_common_state_scan_reads_the_relocated_directory(tmp_path, monkeypatch):
     worktree = _relocated_linked_worktree(tmp_path, versioned=False)
     _plant(worktree / "state" / "runtime" / "session_activity" / "a")
     _plant(worktree / ".booley" / "runtime" / "session_activity" / "ignored")
 
-    warnings = [f for f in _common_state_findings(tmp_path / "project") if f.severity == "warn"]
+    result = _doctor(monkeypatch, tmp_path / "project")
 
-    assert [finding.subject for finding in warnings] == [str(worktree / "state")]
+    warnings = _warnings(result, "project-data.common-state-in-worktree")
+    assert [f.subject for f in warnings] == [str(worktree / "state")]
 
 
-def test_common_state_scan_skips_a_worktree_with_a_retired_layout(tmp_path: Path) -> None:
+def test_common_state_scan_skips_a_worktree_with_a_retired_layout(tmp_path, monkeypatch):
     worktree = _relocated_linked_worktree(tmp_path, versioned=False)
     (worktree / "booley.toml").write_text('[project]\ndir = ".booley_project"\n', encoding="utf-8")
 
-    findings = _common_state_findings(tmp_path / "project")
+    result = _doctor(monkeypatch, tmp_path / "project")
 
-    assert [f for f in findings if f.severity == "warn"] == []
+    assert _warnings(result, "project-data.common-state-in-worktree") == []
+    assert _messages(result, "pass", "Common Booley State") == [
+        "no Common Booley State in 0 worktree Booley Directories"
+    ]
