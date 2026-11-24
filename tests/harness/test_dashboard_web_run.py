@@ -530,3 +530,15 @@ def test_a_launch_from_another_origin_or_without_json_starts_nothing(
     assert list(answer.json()) == ["error"]
     assert spawned == []
     assert not list(standalone_jobs_dir(world.booley).glob("*"))
+
+
+def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
+    world, feature_flags, spawned, monkeypatch
+):
+    monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")  # as the form route's test does
+    with _client(world, feature_flags) as client:
+        answers = [_post(client, route, world.wt, _run("lint")) for route in POSTS]
+
+    assert [answer.status_code for answer in answers] == [422] * 3
+    assert all("'Lint options'" in answer.json()["error"] for answer in answers)
+    assert spawned == []
