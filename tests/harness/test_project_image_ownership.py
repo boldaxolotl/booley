@@ -13,7 +13,9 @@ from tests.harness.test_image_lifecycle import (
     FakeDocker,
     TransactionBuilder,
     _install_planned_graph,
+    _pin_inputs,
     _project,
+    _stage_registry_candidate,
     _wire,
 )
 
@@ -25,9 +27,6 @@ def _bootstrap_base(monkeypatch, docker):
     monkeypatch.setattr(
         lifecycle.project_image, "project_data_alias_capable", lambda _image: False
     )
-    contracts = lifecycle._expected_image_build_contracts()
-    base, _ = lifecycle._source_graph_base(contracts, lifecycle.docker_data_dir())
-    _install_planned_graph(docker, (base,))
 
 
 def test_same_slug_projects_have_disjoint_writable_images(tmp_path: Path):
@@ -188,6 +187,8 @@ def test_other_project_compatible_artifact_is_reused_without_shared_retag(tmp_pa
 def test_manual_final_scratch_cannot_claim_parent_with_labels(tmp_path, monkeypatch):
     from booley.harness import image_lifecycle as harness
 
+    # Private seam: the real adapter checks ancestry and build context only inside a
+    # real `docker build`, so the manual-final-scratch check is called directly.
     layers = {"parent": ("base", "wheel"), "child": ()}
     docker = SimpleNamespace(
         inspect=lambda ref: ImageMetadata(ref, f"sha256:{ref}", {}, {}, layers[ref])
@@ -214,18 +215,21 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
 ):
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _id: False)
     docker = FakeDocker({})
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
-    shared = lifecycle._complete_release_node(logical, lifecycle._expected_image_build_contracts())
-    labels = lifecycle._prepared_provenance(shared, None)
-    labels.update(
-        {
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
-            lifecycle.LABEL_PARENT_ARTIFACT: "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:"
-            + "a" * 64,
-            lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
-        }
+    _pin_inputs(monkeypatch)
+    policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
+    shared = lifecycle.plan(
+        lifecycle.ProjectImageScope(_project(tmp_path / "probe", logical)),
+        docker=docker,
+        artifact_policy=policy,
+    ).nodes[0]
+    _stage_registry_candidate(
+        docker,
+        shared,
+        logical,
+        image_id=RELEASE_ID,
+        label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64},
     )
-    docker.images[logical] = (RELEASE_ID, labels)
+    labels = docker.images[logical][1]
     if logical == "booley-sandbox-riscv":
         docker.environments[RELEASE_ID] = RISCV_ENVIRONMENT
     for directory in ["first", "second"]:
@@ -233,7 +237,7 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
         observed = lifecycle.plan(
             lifecycle.ProjectImageScope(project),
             docker=docker,
-            artifact_policy=lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY,
+            artifact_policy=policy,
         )
         prepared = lifecycle.prepare(observed, docker=docker, builder=TransactionBuilder(docker))
         result = lifecycle.commit(prepared, docker=docker)
@@ -243,18 +247,22 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
     assert lifecycle.STABLE_RUNTIME_BASE_IMAGE not in docker.images
 
 
+class FailedTagDocker(FakeDocker):
+    """FakeDocker whose ``tag`` onto ``fail`` raises (once, when ``once`` is set)."""
+
+    fail: str | None = None
+    once = False
+
+    def tag(self, source, target):
+        if target == self.fail:
+            if self.once:
+                self.fail = None
+            raise lifecycle.ImageLifecycleError("adoption failed")
+        super().tag(source, target)
+
+
 def test_failed_private_tag_commit_restores_private_outputs_only(tmp_path, monkeypatch):
     root = _project(tmp_path)
-
-    class FailedTagDocker(FakeDocker):
-        fail = None
-
-        def tag(self, source, target):
-            if target == self.fail:
-                self.fail = None
-                raise lifecycle.ImageLifecycleError("adoption failed")
-            super().tag(source, target)
-
     docker = FailedTagDocker({})
     _bootstrap_base(monkeypatch, docker)
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -267,6 +275,7 @@ def test_failed_private_tag_commit_restores_private_outputs_only(tmp_path, monke
     )
     prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
     docker.fail = planned.selected_reference
+    docker.once = True  # restoring the prior tags must not fail again
     docker.mutations.clear()
     with pytest.raises(lifecycle.ImageLifecycleError, match="adoption failed"):
         lifecycle.commit(prepared, docker=docker)
@@ -279,15 +288,6 @@ def test_failed_private_tag_commit_restores_private_outputs_only(tmp_path, monke
 
 def test_failed_commit_untags_references_without_prior_image(tmp_path, monkeypatch):
     root = _project(tmp_path)
-
-    class FailedTagDocker(FakeDocker):
-        fail = None
-
-        def tag(self, source, target):
-            if target == self.fail:
-                raise lifecycle.ImageLifecycleError("adoption failed")
-            super().tag(source, target)
-
     docker = FailedTagDocker({})
     _bootstrap_base(monkeypatch, docker)
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -319,7 +319,6 @@ def _wire_init_to_image_step(monkeypatch, docker) -> list[lifecycle.Intent]:
     """Route ``run_init`` straight to its image step; return the recorded bootstrap intents."""
     from contextlib import nullcontext
 
-    from booley.harness import image_lifecycle as harness
     from booley.harness import init_cmd
 
     intents: list[lifecycle.Intent] = []
@@ -328,7 +327,8 @@ def _wire_init_to_image_step(monkeypatch, docker) -> list[lifecycle.Intent]:
         "reconcile_bootstrap",
         lambda intent, **_kw: intents.append(intent) or init_cmd.BootstrapResult(intent, ()),
     )
-    monkeypatch.setattr(harness, "_docker_adapter", lambda: docker)
+    # Private seam: init's other steps need a whole Project and host install, so these
+    # stand-ins route `run_init` to its image step.
     monkeypatch.setattr(
         init_cmd, "_resolve_agent_selection", lambda *_args: SimpleNamespace(provider="codex")
     )
@@ -438,6 +438,7 @@ def test_external_node_preserves_layout_parent_provenance(tmp_path):
     assert node.standard_substrate_contract == "substrate-contract"
 
 
+# Private seam: the real adapter's context and ancestry checks run only inside a real `docker build`.
 class _PreservingDependencyBuilder(TransactionBuilder):
     def __init__(self, root, docker):
         super().__init__(docker)
@@ -543,26 +544,23 @@ def test_release_overlay_preserves_lone_user_requirements(tmp_path, monkeypatch)
     monkeypatch.setattr(
         lifecycle.project_image, "project_data_alias_capable", lambda _image: False
     )
-    release = lifecycle._complete_release_node(
-        lifecycle.BASE_IMAGE, lifecycle._expected_image_build_contracts()
-    )
-    labels = lifecycle._prepared_provenance(release, None)
-    labels.update(
-        {
-            lifecycle.LABEL_PARENT_ARTIFACT_KIND: lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST,
-            lifecycle.LABEL_PARENT_ARTIFACT: "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:"
-            + "a" * 64,
-            lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
-        }
-    )
-    docker.images[lifecycle.BASE_IMAGE] = (RELEASE_ID, labels)
     directory = root / ".booley/docker"
     directory.mkdir()
     requirements = directory / "requirements.txt"
     body = b"# booley:keep\r\nrequests==2.32.0\r\n"
     requirements.write_bytes(body)
-    scope = lifecycle.ProjectImageScope(root)
     policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
+    release = lifecycle.plan(
+        lifecycle.ProjectImageScope(root), docker=docker, artifact_policy=policy
+    ).nodes[0]
+    _stage_registry_candidate(
+        docker,
+        release,
+        lifecycle.BASE_IMAGE,
+        image_id=RELEASE_ID,
+        label_overrides={lifecycle.LABEL_WHEEL_SHA256: "f" * 64},
+    )
+    scope = lifecycle.ProjectImageScope(root)
     planned = lifecycle.plan(scope, docker=docker, artifact_policy=policy)
     assert not (directory / "Dockerfile").exists()
     prepared = lifecycle.prepare(
