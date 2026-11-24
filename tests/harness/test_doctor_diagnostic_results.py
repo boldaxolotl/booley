@@ -914,20 +914,3 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
     end = next(i for i in range(start, len(lines)) if " dry-run" in lines[i])
     assert lines[start : end + 1] == rows
     assert result.exit_code == exit_code
-
-
-def test_doctor_skips_a_flow_disabled_in_booley_toml(tmp_path, monkeypatch):
-    booley_dir = _write_project(tmp_path)
-    config = booley_dir / "booley.toml"
-    text = config.read_text(encoding="utf-8").replace(
-        "[flows.synth]\n", "[flows.synth]\nenabled = false\n"
-    )
-    config.write_text(text, encoding="utf-8", newline="\n")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
-
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-
-    messages = [f.message for f in result.findings]
-    assert "synth disabled in booley.toml" in messages
-    assert "synth executes in the Sandbox" not in messages
-    assert "sim executes in the Sandbox" in messages

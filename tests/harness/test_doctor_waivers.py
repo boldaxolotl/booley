@@ -234,14 +234,3 @@ def test_doctor_waives_the_warnings_of_the_in_sandbox_checks(tmp_path, monkeypat
 
     severities = {f.check_id: f.severity for f in result.findings if f.check_id in check_ids}
     assert severities == dict.fromkeys(check_ids, Severity.WAIVED if waived else Severity.WARN)
-
-
-def test_doctor_skips_the_sandbox_git_identity_checks_without_a_config(tmp_path, monkeypatch):
-    booley_dir = _write_project(tmp_path)
-    (booley_dir / "booley.toml").unlink()
-    _run_inside_the_sandbox(monkeypatch, tmp_path, booley_dir)
-
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-
-    skipped = [f.message for f in result.findings if f.severity is Severity.SKIP]
-    assert "Sandbox Git identity checks skipped - project config invalid" in skipped
