@@ -142,7 +142,7 @@ def _remove_copy(worktree: Path) -> Path:
 
 
 def _configure_checkout(source: Path, nested: Path) -> None:
-    # Like the outer script, keep this repository capability enabled across
+    # Like the outer worktree's setup, keep this repository capability enabled across
     # removals/rollback. Enabling it is idempotent; checkout settings and identity
     # remain in config.worktree, and the primary checkout keeps its shared settings.
     _require_git(source, "config", "extensions.worktreeConfig", "true")

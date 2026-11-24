@@ -103,7 +103,7 @@ _FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity_cleanup
 _ACCEPTED_FIXED_START_TAILS = frozenset(
     {_FIXED_GIT_IDENTITY, f"{_FIXED_GIT_IDENTITY} && {_FIXED_REGISTRAR}"}
 )
-_FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
+_FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview"
 _FIXED_SEED_FRAGMENTS = frozenset(
     {
         "cp -n /home/agent/.claude-config-seed.json /home/agent/.claude.json 2>/dev/null || true",

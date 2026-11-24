@@ -5,15 +5,15 @@ The submitter publishes a pid-less ``running`` Job record, then spawns
 session routing stripped. The worker stamps its PID and writes the
 terminal state; this module fails the record if the worker dies first.
 
-Known limit: a new session does not escape a ``booley session`` terminal
-attachment, whose execution supervisor ends every descendant when the
-attachment's command ends. A worker spawned inside one ends with it.
+Inside a ``booley session`` terminal attachment the helper records a release
+token, so the attachment's cleanup leaves the worker running (ADR 0095).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -21,6 +21,15 @@ from pathlib import Path
 from typing import Any
 
 from booley.runtime import job_records
+from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.execution_records import (
+    RELEASE_TOKEN_ENV,
+    RUNTIME_EXECUTION_ENV,
+    ExecutionId,
+    execution_paths,
+    record_release_token,
+    verify_inherited_execution_id,
+)
 from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -61,6 +70,34 @@ def worker_environment() -> dict[str, str]:
     return environment
 
 
+def _release_token() -> str | None:
+    """Record and return a release token when inside a terminal attachment.
+
+    An absent or malformed inherited execution ID is outside an attachment:
+    nothing is recorded. A valid one that does not verify, or whose token
+    cannot be recorded, raises ``OSError`` so no worker starts.
+    """
+    raw = os.environ.get(RUNTIME_EXECUTION_ENV)
+    try:
+        execution_id = ExecutionId(raw)
+    except ValueError:
+        return None
+    try:
+        booley_dir = resolve_booley_dir()
+    except (RuntimeError, ValueError) as exc:
+        raise OSError(f"cannot resolve the Booley directory for execution {execution_id}") from exc
+    owner = verify_inherited_execution_id(
+        execution_id, booley_dir=booley_dir, owner_pid=os.getpid()
+    )
+    if owner is None:
+        raise OSError(
+            f"cannot record a release token with terminal attachment execution {execution_id}"
+        )
+    token = secrets.token_hex(16)
+    record_release_token(execution_paths(execution_id, booley_dir=booley_dir), token)
+    return token
+
+
 def worker_command(*args: str) -> list[str]:
     """The worker argv; recorded in the Job record and used to spawn it."""
     return [sys.executable, "-m", WORKER_MODULE, *args]
@@ -81,6 +118,9 @@ def spawn(
     If this process dies first too, the record stays pid-less.
     """
     environment = worker_environment()
+    token = _release_token()
+    if token is not None:
+        environment[RELEASE_TOKEN_ENV] = token
     with log_path.open("ab") as log:
         process = subprocess.Popen(
             command,

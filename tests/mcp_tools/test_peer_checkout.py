@@ -22,15 +22,13 @@ from booley.mcp import server, session_observer, session_peer, session_registry
 from booley.mcp.application import McpApplication, McpDispatchResult, McpRequestContext
 from booley.mcp.session_observer import SessionObserver
 from booley.mcp.session_registry import SessionRegistry
-from booley.runtime import chat_sessions
+from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.mcp_tools.test_session_registry import SCOPE, _fake_process
-from tests.runtime.test_chat_sessions import process
 from tests.time_budget import hang_guard_s
 
-THREAD_ID = "019a0000-0000-7000-8000-000000000000"
 SERVER_PORT = 4321  # Matches the 10E1 endpoint written by ``fake_proc``.
 
 
@@ -142,11 +140,14 @@ def test_claude_code_process_routes_by_its_own_cwd(tmp_path: Path, repos: Simple
     )
     assert routed.checkout == repos.main_wt
     assert routed.peer is not None and routed.peer.pid == 200
-    peer = routed.peer
-    kwargs = {"metadata": {}, "proc_root": proc}
-    assert peer_checkout.session_process(peer, client_name="claude-code", **kwargs) == peer
     # No printable client name: the peer is not known to be a session process.
-    assert peer_checkout.session_process(peer, client_name="", **kwargs) is None
+    unknown = peer_checkout.caller_checkout(request, client_name="", metadata={}, proc_root=proc)
+    assert unknown.checkout is None
+    # A Codex process cwd names no thread: without workspace metadata the call is refused.
+    codex = peer_checkout.caller_checkout(
+        request, client_name="codex-mcp-client", metadata={}, proc_root=proc
+    )
+    assert codex.checkout is None and codex.refusal == peer_checkout.NO_WORKSPACE_REFUSAL
 
 
 def http_request(port: int) -> Any:
@@ -165,36 +166,8 @@ def http_request(port: int) -> Any:
     )
 
 
-def test_booley_chat_codex_launch_routes_by_owner_cwd_and_unmarked_codex_never_routes(
-    tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.mcp import peer_checkout
-
-    booley = tmp_path / "booley"
-    booley.mkdir()
-    monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: booley)
-    proc = tmp_path / "proc"
-    owner = process(proc, 100, 1, executable="node")
-    peer = process(proc, 101, 100)
-    link_cwd(proc, 100, repos.main_wt)  # The tab's launch directory.
-    link_cwd(proc, 101, repos.elsewhere)  # An app-server helper with its own cwd.
-    codex = {"client_name": "codex-mcp-client", "metadata": {"threadId": THREAD_ID}}
-
-    # Ordinary Codex: no booley chat mark, so neither the helper nor the ancestor routes.
-    assert peer_checkout.session_process(peer, proc_root=proc, **codex) is None
-    chat_sessions.reserve_codex_chat(booley, owner)
-    marked = peer_checkout.session_process(peer, proc_root=proc, **codex)
-    assert marked == owner
-    assert marked is not None
-    routed = peer_checkout.process_checkout(marked, server_cwd=repos.main, proc_root=proc)
-    assert routed == repos.main_wt
-    # A Codex call without a valid thread id has no tab identity either.
-    no_thread = {"client_name": "codex-mcp-client", "metadata": {"threadId": ""}}
-    assert peer_checkout.session_process(peer, proc_root=proc, **no_thread) is None
-
-
 def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
-    tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, repos: SimpleNamespace
 ) -> None:
     from booley.mcp import peer_checkout
 
@@ -210,12 +183,27 @@ def test_caller_checkout_falls_back_to_the_server_cwd_on_unreadable_state(
         request, client_name="claude-code", metadata={}, proc_root=proc
     )
     assert result.checkout is None and result.peer is not None
-    # Codex with no handle map at all keeps the server cwd.
-    monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: tmp_path / "missing")
+    # The same unreadable workspace is not a missing one: Codex keeps the server cwd.
+    workspace = {"x-codex-turn-metadata": {"workspaces": {str(repos.main_wt): {}}}}
     codex = peer_checkout.caller_checkout(
-        request, client_name="codex", metadata={"threadId": THREAD_ID}, proc_root=proc
+        request, client_name="codex", metadata=workspace, proc_root=proc
     )
-    assert codex.checkout is None
+    assert codex.checkout is None and codex.refusal is None
+
+
+def test_codex_workspace_with_an_unreadable_git_marker_does_not_hide_a_later_worktree(
+    tmp_path: Path, repos: SimpleNamespace
+) -> None:
+    from booley.mcp import peer_checkout
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / ".git").write_bytes(b"not a gitdir marker\n")
+    metadata = {"x-codex-turn-metadata": {"workspaces": {str(broken): {}, str(repos.main_wt): {}}}}
+
+    result = peer_checkout.caller_checkout(None, client_name="codex", metadata=metadata)
+
+    assert result.checkout == repos.main_wt and result.refusal is None
 
 
 # --- Routing the call: work_dir injection ---------------------------------------------
@@ -270,22 +258,26 @@ async def test_explicit_work_dir_and_tools_without_work_dir_are_never_rewritten(
     assert refused.is_error and len(seen) == 5
 
 
+CUSTOM_DEFINITION = {
+    "name": "utility_custom",
+    "description": "Project-defined",
+    "schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    "module": "utility_custom",
+    "is_custom": True,
+    "custom_path": "utility_custom.py",
+    "default_timeout": 60,
+}
+
+
 @pytest.mark.asyncio
 async def test_routed_caller_is_refused_by_an_endpoint_without_work_dir(
     repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = AsyncMock(return_value=(0, "done", "", False))
     monkeypatch.setattr(server, "_run_inline_endpoint", runner)
-    custom = {
-        "name": "utility_custom",
-        "description": "Project-defined",
-        "schema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "module": "utility_custom",
-        "is_custom": True,
-        "custom_path": "utility_custom.py",
-        "default_timeout": 60,
-    }
-    application = server._build_mcp_application([custom], [], server._McpLifetime(None, None))
+    application = server._build_mcp_application(
+        [CUSTOM_DEFINITION], [], server._McpLifetime(None, None)
+    )
     routed = McpRequestContext(checkout=repos.main_wt)
     refused = await application.call_tool("utility_custom", {}, request_context=routed)
     assert refused.is_error
@@ -365,9 +357,11 @@ async def sdk_calls(
         await client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
         numbers = iter(range(2, 1000))
 
-        async def call(port: int, tool: str, arguments: dict[str, Any]) -> httpx.Response:
+        async def call(
+            port: int, tool: str, arguments: dict[str, Any], meta: dict[str, Any] | None = None
+        ) -> httpx.Response:
             current["port"] = port
-            body = {"name": tool, "arguments": arguments}
+            body = {"name": tool, "arguments": arguments} | ({"_meta": meta} if meta else {})
             return await client.post(
                 "/mcp",
                 json={
@@ -419,6 +413,42 @@ async def test_flow_call_without_work_dir_runs_on_the_callers_worktree(
     # A main-checkout caller is the server cwd: no checkout is named.
     assert "--work-dir" not in commands[1]
     assert commands[2][-2:] == ["--work-dir", str(repos.other_wt)]
+
+
+@pytest.mark.asyncio
+async def test_codex_call_routes_by_the_workspace_in_its_turn_metadata(
+    tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = AsyncMock(return_value=(0, "done", "", False))
+    monkeypatch.setattr(server, "_run_inline_endpoint", runner)
+    application = server._build_mcp_application(
+        [LINT_DEFINITION, CUSTOM_DEFINITION], [], server._McpLifetime(None, None)
+    )
+    # The shared app-server's own cwd names no thread, so only the metadata can route.
+    proc = fake_proc(tmp_path / "proc", {50001: (200, repos.elsewhere)})
+
+    def turn(*roots: Path) -> dict[str, Any]:
+        return {"x-codex-turn-metadata": {"workspaces": {str(root): {} for root in roots}}}
+
+    async with sdk_calls(application, None, proc, monkeypatch, "codex-mcp-client") as call:
+        results = [
+            (await call(50001, tool, arguments, meta)).json()["result"]
+            for tool, arguments, meta in [
+                ("lint", {}, turn(repos.main_wt)),
+                ("lint", {}, turn(repos.main)),
+                ("lint", {}, turn(repos.elsewhere)),
+                ("lint", {}, turn(repos.main, repos.other_wt, repos.main_wt)),
+                ("lint", {}, {"x-codex-turn-metadata": {}}),
+                ("lint", {"work_dir": str(repos.other_wt)}, {"x-codex-turn-metadata": {}}),
+                ("utility_custom", {}, turn(repos.main_wt)),
+            ]
+        ]
+    commands = [item.args[1] for item in runner.await_args_list]
+    routed = [command[-1] if "--work-dir" in command else None for command in commands]
+    assert routed == [str(repos.main_wt), None, None, str(repos.main_wt), str(repos.other_wt)]
+    assert [result["isError"] for result in results] == [False] * 4 + [True, False, True]
+    assert "Retry the call" in results[4]["content"][0]["text"]
+    assert "must declare `work_dir`" in results[6]["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -491,6 +521,44 @@ async def test_dashboard_lists_the_session_under_its_worktree(
     facts = app._session_facts(row)
     assert facts.work_dir == str(repos.main_wt)
     assert "(default)" not in facts.work_dir
+
+
+@pytest.mark.asyncio
+async def test_status_card_names_the_session_the_dashboard_lists(
+    tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    common = repos.main / ".booley"
+    common.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(common))
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
+    observer = SessionObserver(budget=hang_guard_s())
+    proc = fake_proc(tmp_path / "proc", {50002: (201, repos.main), 50001: (200, repos.main_wt)})
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(common, proc_root=proc))
+    application = server._build_mcp_application(  # pyright: ignore[reportPrivateUsage]
+        [],
+        [],
+        server._McpLifetime(None, None),  # pyright: ignore[reportPrivateUsage]
+    )
+    cards: dict[int, str] = {}
+    async with sdk_calls(application, observer, proc, monkeypatch) as call:
+        for port in (50002, 50001):
+            response = await call(port, "booley_status", {})
+            assert response.status_code == 200, response.text
+            cards[port] = response.json()["result"]["content"][0]["text"]
+    labels, titles, _ = HandleStore(common).titled_snapshot()
+    rows = SessionRegistry(common).snapshot().rows
+    app = DashboardApp(lambda: None)
+    app.snapshot = model.DashboardSnapshot(
+        sessions=rows, session_handles=labels, session_titles=titles, observed_at=1791453900
+    )
+    by_branch = {facts.branch: facts for facts in map(app._session_facts, rows)}
+    main_row, worktree_row = by_branch["main"], by_branch["main-work"]
+    assert (main_row.title, main_row.work_dir) == ("S1", f"{repos.main} (default)")
+    assert (worktree_row.title, worktree_row.work_dir) == ("S2", str(repos.main_wt))
+    assert f"Session: S1\nBranch: main\nCheckout: {repos.main} (main checkout)\n" in cards[50002]
+    assert (
+        f"Session: S2\nBranch: main-work\nCheckout: {repos.main_wt} (worktree)\n" in cards[50001]
+    )
 
 
 @pytest.mark.asyncio
