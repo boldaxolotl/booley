@@ -118,11 +118,3 @@ def extract_json(text: str) -> dict[str, Any] | None:
 
 # Backward-compatible alias
 _extract_json = extract_json
-
-
-# Re-export for backward compatibility
-from .agent_backend import (
-    _is_transient_error,  # noqa: F401 — re-exported for backward compatibility
-    _transcript_path_for_attempt,  # noqa: F401 — re-exported for backward compatibility
-    _write_transcript_turn,  # noqa: F401 — re-exported for backward compatibility
-)

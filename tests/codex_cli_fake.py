@@ -138,3 +138,29 @@ async def codex_report(
     params.setdefault("transcript_path", cwd / "transcript.jsonl")
     result = await cb.CodexBackend(auth_mode=auth_mode).call(AgentCallParams(cwd=cwd, **params))
     return json.loads(result.output)
+
+
+def replay_codex_run(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    events: Any = (),
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> list[dict[str, Any]]:
+    """Make every Codex launch answer with ``events`` (JSONL) after ``stdout``.
+
+    Pins the command lookup to ``codex`` and the host/Sandbox boundary to the
+    host, and replaces the one function that runs the ``codex`` process. Returns
+    one ``{"cmd", "prompt"}`` per launch.
+    """
+    launches: list[dict[str, Any]] = []
+
+    async def run(cmd: list[str], params: AgentCallParams, *, full_prompt: str, **_: Any):
+        launches.append({"cmd": cmd, "prompt": full_prompt})
+        return stdout + "".join(json.dumps(e) + "\n" for e in events), stderr, returncode
+
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(cb, "_inside_container", lambda: False)
+    monkeypatch.setattr(cb, "_codex_run_subprocess", run)
+    return launches
