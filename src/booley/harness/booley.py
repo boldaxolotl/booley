@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.runtime.session_admission import Sandbox
+    from booley.runtime.t3_relay import RelayStart
     from booley.targets.target_surface import TargetDetailPayload
 
 # --- Constants ---
@@ -1480,8 +1481,21 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 
     print(observe_deep_status(project_root, container=name).render())
     print(f"Sandbox ready: {name}")
+    if result.relay is not None:
+        _report_relay(result.relay)
     print("  enter it with: booley session enter")
     return 0
+
+
+def _report_relay(relay: RelayStart) -> None:
+    """Print the host address of the T3 Code relay, warning when its port moved."""
+    if relay.moved_from is not None:
+        print(
+            f"warning: 127.0.0.1:{relay.moved_from} is held by another process; the T3 Code "
+            f"relay moved to 127.0.0.1:{relay.port}, so paired browsers must pair again.",
+            file=sys.stderr,
+        )
+    print(f"  T3 Code relay: 127.0.0.1:{relay.port}")
 
 
 def _report_upgrade_before_session(project_root: Path) -> None:
@@ -1553,6 +1567,8 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
             details.append(f"removed {sr.session_container_name(project_root)}")
         if result.claim_cleared:
             details.append("cleared pending editor start claim")
+        if result.t3_relay:
+            details.append("stopped the T3 Code relay")
         print("; ".join(details) or "removed Sandbox resources")
         if result.claim_cleared:
             print(
