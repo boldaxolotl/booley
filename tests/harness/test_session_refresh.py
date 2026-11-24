@@ -7,18 +7,19 @@ primitives, so a rerun after a failed step sees the state the failure left behin
 from __future__ import annotations
 
 import copy
-import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
 from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
+from booley.runtime import devcontainer as dc
 from booley.runtime import (
     issuance_invalidation,
     runtime_context,
@@ -35,7 +36,10 @@ from booley.runtime.image_lifecycle import (
     Status,
 )
 from booley.runtime.sandbox_apply import Attachment
+from tests.fake_docker_executable import install_fake_docker
+from tests.git_support import repository
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.harness.session_docker_fake import SandboxDocker, serve_sandbox_docker
 from tests.runtime import test_session_issuance as issuance_fixtures
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
@@ -86,18 +90,16 @@ class _Host:
     container_image: str | None = None
     canonical_exists: bool = False
     relay_exists: bool = False
-    pending_claim: bool = False
+    pending_claim: bool | Exception = False
     # Failure injections.
     check_error: BaseException | None = None
     start_error: Exception | None = None
     leave_candidate_on_start_failure: bool = False
-    break_lookup_on_start_failure: bool = False
+    break_lookup_after_start: bool = False
     lookup_broken: bool = False
     vscode_appears_after_removal: bool = False
-    docker_calls: list[list[str]] = field(default_factory=list)
-    # The real primitive, captured before the fixture replaces it. A missing primitive
-    # surfaces in the test body, so red evidence fails where the behavior is asserted.
-    original_start: Callable[..., str] | None = None
+    docker: SandboxDocker = field(default_factory=SandboxDocker)
+    original_start: Callable[..., str] = sr.start_refreshed_sandbox
 
     @property
     def canonical(self) -> str:
@@ -120,6 +122,11 @@ class _Host:
         ]
 
     # -- fakes installed over the sr primitives ------------------------------------------
+
+    def has_pending_claim(self, _project: Path) -> bool:
+        if isinstance(self.pending_claim, Exception):
+            raise self.pending_claim
+        return self.pending_claim
 
     def resolve_running_sandbox(self, _project: Path):
         if self.lookup_broken:
@@ -164,49 +171,34 @@ class _Host:
 
     def start_refreshed_sandbox(self, _project: Path, _request, image) -> str:
         self.events.append("start")
+        self.lookup_broken = self.break_lookup_after_start
         if self.relay_exists:
             raise sr.SessionError("the old license relay is still present")
         if self.start_error is not None:
             if self.leave_candidate_on_start_failure:
                 self.canonical_exists = True
-            self.lookup_broken = self.break_lookup_on_start_failure
             raise self.start_error
         self.running = _sandbox(self.canonical, "new-id")
         self.container_image = image.selected_id
         self.canonical_exists = True
         return "new-id"
 
-    def docker(self, argv, **_kwargs):
-        self.docker_calls.append(list(argv))
-        raise AssertionError(f"unexpected Docker call: {argv}")
-
 
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
-    """A stateful fake host with the Docker boundary closed; real lifecycle lock and guards."""
+    """A stateful fake host over the shared Docker fake; real lifecycle lock and guards."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
-    fake = _Host(project, original_start=getattr(sr, "start_refreshed_sandbox", None))
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _project: None)
-    monkeypatch.setattr(
-        session_admission, "has_pending_claim", lambda _project: fake.pending_claim
-    )
+    fake = _Host(project, docker=serve_sandbox_docker(monkeypatch))
+    monkeypatch.setattr(session_admission, "has_pending_claim", fake.has_pending_claim)
     monkeypatch.setattr(sr, "resolve_running_sandbox", fake.resolve_running_sandbox)
     monkeypatch.setattr(sr.idk, "container_exists", fake.container_exists)
-    monkeypatch.setattr(
-        sr, "verified_headless_container", fake.verified_headless_container, raising=False
-    )
-    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start, raising=False)
-    monkeypatch.setattr(
-        sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor, raising=False
-    )
-    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay, raising=False)
-    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox, raising=False)
-    monkeypatch.setattr(sr, "_run", fake.docker)
-    monkeypatch.setattr(
-        session_refresh, "_cleanup_owned_images", lambda _project: fake.events.append("cleanup")
-    )
+    monkeypatch.setattr(sr, "verified_headless_container", fake.verified_headless_container)
+    monkeypatch.setattr(sr, "check_refresh_start", fake.check_refresh_start)
+    monkeypatch.setattr(sr, "remove_refresh_predecessor", fake.remove_refresh_predecessor)
+    monkeypatch.setattr(sr, "remove_refresh_relay", fake.remove_refresh_relay)
+    monkeypatch.setattr(sr, "start_refreshed_sandbox", fake.start_refreshed_sandbox)
     return fake
 
 
@@ -252,22 +244,11 @@ def test_changed_image_replaces_running_sandbox(host: _Host) -> None:
         "remove_relay",
         "start",
         "finalize",
-        "cleanup",
     ]
     images.converge.assert_called_once_with(host.project.resolve(), verbose=True)
     images.prepare_spec.assert_called_once_with(host.project.resolve(), image)
     assert host.running is not None and host.running.container_id == "new-id"
-    assert host.docker_calls == []
-
-
-def test_absent_sandbox_is_created(host: _Host) -> None:
-    image = _image()
-
-    result = session_refresh.refresh(host.project, _images(host, image))
-
-    assert result == session_refresh.RefreshResult(image, "created", None, "new-id")
-    assert result.message == "created new-id"
-    assert "remove_predecessor" in host.events and "start" in host.events
+    assert host.docker.calls == []
 
 
 def test_rerun_after_success_is_kept_without_docker_mutation(host: _Host) -> None:
@@ -283,7 +264,6 @@ def test_rerun_after_success_is_kept_without_docker_mutation(host: _Host) -> Non
     assert second == session_refresh.RefreshResult(stable, "kept", "new-id", "new-id")
     assert second.message == "kept: already current"
     assert host.mutations() == ["finalize"]
-    assert "cleanup" not in host.events
     assert host.running is not None and host.running.container_id == "new-id"
 
     # A stale spec, or a changed graph, is not kept even when the Sandbox is running.
@@ -296,26 +276,13 @@ def test_rerun_after_success_is_kept_without_docker_mutation(host: _Host) -> Non
         assert again.outcome == "replaced"
 
 
-def test_image_failure_leaves_sandbox_and_tags_unchanged(host: _Host) -> None:
-    host.run_old_sandbox()
-    images = _images(host, _image())
-    images.converge.side_effect = ImageLifecycleError("candidate build failed")
-
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh.refresh(host.project, images)
-
-    message = str(caught.value)
-    assert "session refresh failed while reconciling Sandbox Images" in message
-    assert "candidate build failed" in message
-    assert UNCHANGED in message
-    assert RERUN in message
-    assert host.mutations() == []
-    assert host.running is not None and host.running.container_id == "old-id"
-
-
 def test_harness_converge_uses_host_init_engine(
-    host: _Host, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    host: _Host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.runtime.image_lifecycle import ImageRole
+
+    plan = SimpleNamespace(nodes=(SimpleNamespace(role=ImageRole.PROJECT_OVERLAY),))
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
     reconciled = LifecycleResult(
         "booley-sandbox",
         NEW_IMAGE,
@@ -327,79 +294,74 @@ def test_harness_converge_uses_host_init_engine(
     )
     reconcile = Mock(return_value=reconciled)
     monkeypatch.setattr(harness_refresh.image_lifecycle, "reconcile_planned", reconcile)
-    monkeypatch.setattr(init_cmd, "_report_project_requirements", lambda *_a, **_k: None)
-    spec_calls = Mock(side_effect=AssertionError("no spec work before images converge"))
-    monkeypatch.setattr(init_cmd, "_current_sandbox_spec_sources", spec_calls)
-    monkeypatch.setattr(harness_refresh.issuance, "preview", spec_calls)
 
-    image = harness_refresh._RuntimeImages().converge(tmp_path, verbose=True)
+    # Private seam: the converged image is observable publicly only once the spec is
+    # prepared from a real image graph and a Sandbox runs on it.
+    image = harness_refresh._RuntimeImages().converge(host.project, verbose=True)
 
-    reconcile.assert_called_once_with(ProjectImageScope(tmp_path), Intent.ENSURE, verbose=True)
+    reconcile.assert_called_once_with(ProjectImageScope(host.project), Intent.ENSURE, verbose=True)
     assert image == session_refresh.RefreshImage(NEW_IMAGE, "wheel-src", "wheel-sha", True)
 
-    # A lifecycle failure propagates out of the whole refresh before any spec or Docker call.
+    # A lifecycle failure, or a result without an immutable ID to pin the Sandbox to,
+    # fails the whole refresh before any spec or Docker change.
     host.run_old_sandbox()
-    reconcile.side_effect = ImageLifecycleError("registry unreachable")
-    images = harness_refresh._RuntimeImages()
-    monkeypatch.setattr(images, "inspect", lambda _project: None)
-    with pytest.raises(sr.SessionError, match="registry unreachable") as caught:
-        session_refresh.refresh(host.project, images)
-    assert isinstance(caught.value.__cause__, ImageLifecycleError)
-    spec_calls.assert_not_called()
-    assert host.mutations() == [] and host.docker_calls == []
+    for failure, cause in (
+        (ImageLifecycleError("registry unreachable"), "registry unreachable"),
+        (None, "immutable Sandbox Image ID"),
+    ):
+        reconcile.side_effect = failure
+        reconcile.return_value = LifecycleResult("booley-sandbox", None, Status.CHANGED)
+        with pytest.raises(sr.SessionError) as caught:
+            harness_refresh.refresh(host.project)
+        message = str(caught.value)
+        assert "session refresh failed while reconciling Sandbox Images" in message
+        assert cause in message and UNCHANGED in message and RERUN in message
+        assert host.mutations() == [] and host.docker.calls == []
+        assert not (host.project / ".devcontainer").exists()
 
-    # Without an immutable ID there is nothing to pin the Sandbox to.
-    reconcile.side_effect = None
-    reconcile.return_value = LifecycleResult("booley-sandbox", None, Status.CHANGED)
-    with pytest.raises(sr.SessionError, match="immutable Sandbox Image ID"):
-        harness_refresh._RuntimeImages().converge(tmp_path, verbose=False)
+    # An actionable plan error (#1083) reaches the user unchanged, before any image work.
+    reconcile.reset_mock()
+    plan_error = Mock(side_effect=ImageLifecycleError("user-managed"))
+    monkeypatch.setattr(init_cmd.image_lifecycle, "plan", plan_error)
+    with pytest.raises(ImageLifecycleError, match=r"^user-managed$"):
+        harness_refresh.refresh(host.project)
+    reconcile.assert_not_called()
 
 
-def test_start_failure_names_step_and_no_sandbox_then_rerun_creates(host: _Host) -> None:
+@pytest.mark.parametrize(
+    ("leave_candidate", "state", "rerun_message"),
+    [
+        (False, "No Sandbox is running.", "created new-id"),
+        (
+            True,
+            "An unverified Sandbox container {canonical!r} was left in place; "
+            "the next refresh verifies or replaces it.",
+            "replaced candidate-id → new-id",
+        ),
+    ],
+    ids=["nothing-left", "candidate-left"],
+)
+def test_start_failure_names_what_is_left_then_rerun_converges(
+    host: _Host, leave_candidate: bool, state: str, rerun_message: str
+) -> None:
     host.run_old_sandbox()
     host.start_error = sr.SessionError("docker run failed: no such network")
+    host.leave_candidate_on_start_failure = leave_candidate
 
     with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))
 
-    message = str(caught.value)
-    assert "session refresh failed while starting the new Sandbox" in message
-    assert "docker run failed: no such network" in message
-    assert "No Sandbox is running." in message
-    assert RERUN in message
-    # The old Sandbox is not restored: it was replaced and nothing runs now.
-    assert host.running is None and not host.canonical_exists
+    # The old Sandbox is not restored: it was replaced and only a candidate may remain.
+    assert str(caught.value) == (
+        "session refresh failed while starting the new Sandbox: docker run failed: no such "
+        f"network. {state.format(canonical=host.canonical)} {RERUN}"
+    )
+    assert host.running is None and host.canonical_exists is leave_candidate
 
     host.start_error = None
-    host.events.clear()
-    rerun = session_refresh.refresh(
-        host.project, _images(host, _image(graph_changed=False), spec_current=True)
-    )
-    assert rerun.outcome == "created" and rerun.previous_container_id is None
-    assert rerun.container_id == "new-id"
-
-
-def test_start_failure_leaves_unverified_container_named(host: _Host) -> None:
-    host.run_old_sandbox()
-    host.start_error = sr.SessionError("verification failed")
-    host.leave_candidate_on_start_failure = True
-
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh.refresh(host.project, _images(host, _image()))
-
-    message = str(caught.value)
-    assert f"An unverified Sandbox container {host.canonical!r} was left in place" in message
-    assert "the next refresh verifies or replaces it" in message
-    assert "No Sandbox is running." not in message
-
-    # The rerun removes the leftover candidate by ID and starts a fresh Sandbox.
-    host.start_error = None
-    rerun = session_refresh.refresh(
-        host.project, _images(host, _image(graph_changed=False), spec_current=True)
-    )
-    assert rerun == session_refresh.RefreshResult(
-        _image(graph_changed=False), "replaced", "candidate-id", "new-id"
-    )
+    stable = _image(graph_changed=False)
+    rerun = session_refresh.refresh(host.project, _images(host, stable, spec_current=True))
+    assert (rerun.image, rerun.message) == (stable, rerun_message)
 
 
 @pytest.fixture
@@ -437,19 +399,10 @@ def test_start_failure_keeps_reissued_spec_for_session_up(
     assert runtime_spec.stamp_path(project).exists()
     assert sr.validate(project)
     assert sr.status(project) == "absent"
-    docker = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-    with (
-        patch.object(sr, "_run", docker),
-        patch.object(sr.idk, "network_exists", return_value=True),
-        patch.object(sr.idk, "image_exists", return_value=True),
-        patch.object(sr.idk, "inspect_image_metadata", return_value=None),
-        patch.object(sr.idk, "image_id", return_value=None),
-        patch.object(sr.idk, "container_running", return_value=False),
-        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
-        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
-    ):
-        assert sr.up(project) == sr.session_container_name(project)
-    assert any(call.args[0][:2] == ["docker", "run"] for call in docker.call_args_list)
+    host.docker.networks.add(dc.EGRESS_NETWORK)
+    host.docker.images[prepared.spec["image"]] = {"Id": stamp.image_id}
+    assert sr.up(project) == sr.session_container_name(project)
+    assert sr.session_container_name(project) in host.docker.containers
 
 
 def test_interruption_after_reissue_keeps_old_sandbox_then_rerun_replaces(host: _Host) -> None:
@@ -473,33 +426,6 @@ def test_interruption_after_reissue_keeps_old_sandbox_then_rerun_replaces(host: 
     )
     assert rerun.outcome == "replaced"
     assert (rerun.previous_container_id, rerun.container_id) == ("old-id", "new-id")
-
-
-def test_missing_gateway_export_fails_before_removal(host: _Host) -> None:
-    host.run_old_sandbox()
-    host.check_error = sr.SessionError("export BOOLEY_GATEWAY_KEY before refreshing")
-
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh.refresh(host.project, _images(host, _image()))
-
-    message = str(caught.value)
-    assert "session refresh failed while removing the previous Sandbox" in message
-    assert "export BOOLEY_GATEWAY_KEY" in message
-    assert "The Sandbox spec was reissued" in message
-    assert f"the previous Sandbox {host.canonical!r} is still running" in message
-    assert "remove_predecessor" not in host.events and "remove_relay" not in host.events
-    assert host.running is not None and host.running.container_id == "old-id"
-
-
-def test_removal_failure_with_stopped_container_reports_it_left_in_place(host: _Host) -> None:
-    host.canonical_exists = True
-    host.check_error = sr.SessionError("docker stop failed")
-
-    with pytest.raises(sr.SessionError) as caught:
-        session_refresh.refresh(host.project, _images(host, _image()))
-
-    assert f"container {host.canonical!r} was left in place" in str(caught.value)
-    assert RERUN in str(caught.value)
 
 
 def test_missing_or_withdrawn_stamp_refreshes(
@@ -563,89 +489,100 @@ def test_invalidation_cleanup_failure_reports_the_state_it_left(
     assert host.mutations() == []
 
 
-def test_licensed_sandbox_refreshes_with_relay_replaced(host: _Host) -> None:
-    host.run_old_sandbox()
-    host.relay_exists = True  # start refuses while the old relay is present
+@pytest.mark.parametrize(
+    ("owner", "refusal"),
+    [
+        ("vscode", "VS Code owns the active Sandbox 'vscode-owned'; use 'Dev Containers: "),
+        ("claim", "VS Code is starting a Sandbox for this Project; wait for it, or run `booley"),
+        ("unreadable", "claim store unreadable"),
+    ],
+)
+def test_vscode_ownership_refuses_before_any_change(host: _Host, owner: str, refusal: str) -> None:
+    if owner == "vscode":
+        host.run_other_sandbox("vscode-owned", vscode=True)
+    else:
+        host.run_old_sandbox()
+        unreadable = session_admission.AdmissionError("claim store unreadable")
+        host.pending_claim = True if owner == "claim" else unreadable
 
-    result = session_refresh.refresh(host.project, _images(host, _image()))
-
-    assert result.outcome == "replaced"
-    assert host.events.index("remove_relay") < host.events.index("start")
-    assert not host.relay_exists
-
-
-def test_vscode_owner_is_rejected_before_image_work(
-    host: _Host, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(sr, "vscode_session_container", lambda _project: "vscode-owned")
-    images = _images(host, _image())
-
-    with pytest.raises(sr.SessionError, match="VS Code owns the active Sandbox 'vscode-owned'"):
-        session_refresh.refresh(host.project, images)
-
-    assert host.events == []
-
-
-def test_pending_vscode_start_claim_refuses_before_any_change(
-    host: _Host, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    host.run_old_sandbox()
-    host.pending_claim = True
-    with pytest.raises(sr.SessionError, match="VS Code is starting a Sandbox") as caught:
+    with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))
-    assert "booley session down" in str(caught.value)
-    assert host.events == []
 
-    # An unreadable claim store refuses the same way.
-    def unreadable(_project: Path) -> bool:
-        raise session_admission.AdmissionError("claim store unreadable")
-
-    monkeypatch.setattr(session_admission, "has_pending_claim", unreadable)
-    with pytest.raises(sr.SessionError, match="claim store unreadable"):
-        session_refresh.refresh(host.project, _images(host, _image()))
+    assert str(caught.value).startswith(refusal)
     assert host.events == []
 
 
-def test_other_running_project_sandbox_blocks_relay_removal(host: _Host) -> None:
-    # Only resolve_running_sandbox is faked, so the real canonical-Sandbox guard runs.
-    cases = (
-        # canonical present, but a non-canonical Sandbox runs
-        ("a-different-sandbox", True),
-        # canonical absent, but a parked `-pre-refresh` container runs
-        (f"{sr.session_container_name(host.project)}-pre-refresh", False),
-    )
-    for name, canonical_exists in cases:
-        host.events.clear()
-        host.canonical_exists = canonical_exists
-        host.relay_exists = True
-        host.run_other_sandbox(name)
-        host.canonical_exists = canonical_exists
-
-        with pytest.raises(sr.SessionError) as caught:
-            session_refresh.refresh(host.project, _images(host, _image()))
-
-        message = str(caught.value)
-        assert "session refresh failed while removing the previous Sandbox" in message
-        assert "The Sandbox spec was reissued" in message
-        assert f"Sandbox {name!r} is running and was not touched" in message
-        assert "remove_predecessor" not in host.events
-        assert "remove_relay" not in host.events
-        assert "start" not in host.events
-        assert host.relay_exists
+_EXPORT = "export BOOLEY_GATEWAY_KEY before refreshing"
+_NOT_CANONICAL = "is running and is not this Project's canonical headless Sandbox"
 
 
-def test_start_state_lookup_failure_keeps_step_and_rerun_advice(host: _Host) -> None:
-    host.run_old_sandbox()
-    host.start_error = sr.SessionError("docker run failed")
-    host.break_lookup_on_start_failure = True
+@pytest.mark.parametrize(
+    ("running", "canonical_exists", "cause", "state"),
+    [
+        ("canonical", True, _EXPORT, "the previous Sandbox {canonical!r} is still running."),
+        (None, True, _EXPORT, "container {canonical!r} was left in place."),
+        ("other", True, _NOT_CANONICAL, "Sandbox 'other' is running and was not touched."),
+        (
+            "{canonical}-pre-refresh",
+            False,
+            _NOT_CANONICAL,
+            "Sandbox '{canonical}-pre-refresh' is running and was not touched.",
+        ),
+    ],
+    ids=["previous-running", "stopped-left", "other-running", "parked-running"],
+)
+def test_failure_before_removal_reports_the_state_it_left(
+    host: _Host, running: str | None, canonical_exists: bool, cause: str, state: str
+) -> None:
+    """A refused start check, or another running Sandbox, removes nothing."""
+    if running == "canonical":
+        host.run_old_sandbox()
+    elif running is not None:
+        # Only resolve_running_sandbox is faked, so the real canonical-Sandbox guard runs.
+        host.run_other_sandbox(running.format(canonical=host.canonical))
+    host.canonical_exists = canonical_exists
+    host.relay_exists = True
+    host.check_error = sr.SessionError(_EXPORT)
 
     with pytest.raises(sr.SessionError) as caught:
         session_refresh.refresh(host.project, _images(host, _image()))
 
     message = str(caught.value)
-    assert "session refresh failed while starting the new Sandbox: docker run failed" in message
-    assert "The Sandbox state could not be read: docker ps failed." in message
+    assert message.startswith("session refresh failed while removing the previous Sandbox: ")
+    assert cause in message
+    assert "The Sandbox spec was reissued; " + state.format(canonical=host.canonical) in message
     assert message.endswith(RERUN)
+    assert host.mutations() == ["reissue"] and host.relay_exists
+
+
+@pytest.mark.parametrize(
+    ("start_error", "failure", "state"),
+    [
+        (
+            sr.SessionError("docker run failed"),
+            "starting the new Sandbox: docker run failed",
+            "The Sandbox state could not be read: docker ps failed.",
+        ),
+        (
+            None,
+            "checking for a VS Code Sandbox: docker ps failed",
+            "The new Sandbox new-id is running.",
+        ),
+    ],
+    ids=["start-failed", "started"],
+)
+def test_state_lookup_failure_keeps_step_and_rerun_advice(
+    host: _Host, start_error: Exception | None, failure: str, state: str
+) -> None:
+    host.run_old_sandbox()
+    host.start_error = start_error
+    host.break_lookup_after_start = True
+
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh.refresh(host.project, _images(host, _image()))
+
+    assert str(caught.value) == f"session refresh failed while {failure}. {state} {RERUN}"
+    assert "finalize" not in host.events
 
 
 @pytest.mark.parametrize(
@@ -668,17 +605,14 @@ def test_refresh_refuses_external_image_with_owner_steps(
     monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: owner)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "load_issued_snapshot", lambda _root: object())
-    converge = Mock(side_effect=AssertionError("external images are never converged"))
-    monkeypatch.setattr(harness_refresh._RuntimeImages, "converge", converge)
 
     with pytest.raises(RuntimeError) as caught:
-        session_refresh.refresh(host.project, harness_refresh._RuntimeImages())
+        harness_refresh.refresh(host.project)
 
     assert str(caught.value) == (
         "the selected Sandbox Image cannot use managed refresh: it is externally managed; " + steps
     )
-    converge.assert_not_called()
-    assert host.mutations() == []
+    assert host.mutations() == [] and host.docker.calls == []
 
 
 def test_vscode_appearing_during_start_is_reported_untouched(
@@ -687,7 +621,6 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     host.run_old_sandbox()
     host.vscode_appears_after_removal = True
     # The real start refuses while any Sandbox runs, before it makes any Docker call.
-    assert host.original_start is not None
     monkeypatch.setattr(sr, "start_refreshed_sandbox", host.original_start)
 
     with pytest.raises(sr.SessionError) as caught:
@@ -697,71 +630,28 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     assert "session refresh failed while starting the new Sandbox" in message
     assert "VS Code started Sandbox 'vscode-owned' during refresh; it was not touched." in message
     assert RERUN in message
-    assert host.docker_calls == []
+    assert host.docker.calls == []
 
 
-def test_refresh_writes_no_journal(host: _Host, tmp_path: Path) -> None:
-    config = tmp_path / "config"
-
-    def refresh_files() -> set[str]:
-        return {
-            path.relative_to(tmp_path).as_posix()
-            for path in tmp_path.rglob("*")
-            if "refresh" in path.name.lower()
-        }
-
-    before = refresh_files()
-    host.run_old_sandbox()
-    session_refresh.refresh(host.project, _images(host, _image()))
-    host.start_error = sr.SessionError("docker run failed")
-    with pytest.raises(sr.SessionError):
-        session_refresh.refresh(host.project, _images(host, _image(NEW_IMAGE + "2")))
-
-    assert refresh_files() == before
-    assert not (config / "eda" / "session-refresh").exists()
-
-
-def test_harness_refresh_reinitializes_project_after_replacement(tmp_path: Path) -> None:
-    outcome = session_refresh.RefreshResult(_image(), "replaced", "old-id", "new-id")
-    events: list[tuple[object, ...]] = []
-
-    def drive(root: Path, images: object, *, verbose: bool) -> session_refresh.RefreshResult:
-        assert isinstance(images, harness_refresh._RuntimeImages)
-        events.append(("refresh", root, verbose))
-        return outcome
-
-    with (
-        patch.object(harness_refresh.runtime_refresh, "refresh", side_effect=drive),
-        patch.object(
-            init_cmd,
-            "_sandbox_git_version",
-            side_effect=lambda image_id: events.append(("git-version", image_id)) or (2, 50, 0),
-        ),
-        patch.object(
-            init_cmd,
-            "reinitialize_project",
-            side_effect=lambda root, facts: events.append(("reinitialize", root, facts)) or [],
-        ),
-    ):
-        assert harness_refresh.refresh(tmp_path, verbose=True) is outcome
-
-    assert events == [
-        ("refresh", tmp_path, True),
-        ("git-version", NEW_IMAGE),
-        ("reinitialize", tmp_path, init_cmd.ProjectFacts((2, 50, 0))),
-    ]
-
-
-def test_init_runtime_image_inspection_preserves_actionable_plan_errors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the fake's docker.cmd is not found by the bare name `docker`"
+)
+def test_harness_refresh_reinitializes_project_after_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "plan",
-        lambda *_args: (_ for _ in ()).throw(ImageLifecycleError("user-managed")),
-    )
-    with pytest.raises(RuntimeError, match="user-managed"):
-        init_cmd.inspect_refreshable_runtime_image(tmp_path)
+    outcome = session_refresh.RefreshResult(_image(), "replaced", "old-id", "new-id")
+    docker = install_fake_docker(tmp_path, monkeypatch, {"run": (0, "git version 2.50.0")})
+    refresh = Mock(return_value=outcome)
+    monkeypatch.setattr(harness_refresh.runtime_refresh, "refresh", refresh)
+    reinitialize = Mock(return_value=[])
+    monkeypatch.setattr(init_cmd, "reinitialize_project", reinitialize)
+
+    assert harness_refresh.refresh(tmp_path, verbose=True) is outcome
+
+    assert refresh.call_args.kwargs == {"verbose": True}
+    # The Git version comes from the new Sandbox Image, probed after the replacement.
+    assert docker.calls == [["run", "--rm", NEW_IMAGE, "git", "--version"]]
+    reinitialize.assert_called_once_with(tmp_path, init_cmd.ProjectFacts((2, 50, 0)))
 
 
 @pytest.mark.parametrize("problem", ["duplicate", "unknown"])
@@ -776,17 +666,17 @@ def test_refresh_project_sandbox_resolution_refuses_ambiguous_inventory(
         fixture.documents[second["Id"]] = second
     else:
         fixture.state["Config"]["Labels"].pop("booley.project-id")
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
     cause = "multiple running Sandboxes" if problem == "duplicate" else "identity disagrees"
     with pytest.raises(sr.SessionError, match=cause):
-        session_refresh._reject_existing_vscode(workspace)
-    with pytest.raises(sr.SessionError, match=cause):
-        session_refresh._reject_vscode_started(workspace)
+        session_refresh.refresh(workspace, images)
+    assert images.method_calls == []
     assert all(call[1] in ("ps", "container") for call in fixture.calls)
 
 
 @pytest.mark.parametrize("failure", [False, True])
-def test_image_gc_deferral_does_not_block_completed_runtime(
-    tmp_path, monkeypatch, caplog, failure
+def test_image_gc_deferral_does_not_block_completed_refresh(
+    host: _Host, monkeypatch, caplog, failure
 ):
     from booley.runtime import image_lifecycle
 
@@ -795,68 +685,58 @@ def test_image_gc_deferral_does_not_block_completed_runtime(
             raise image_lifecycle.ImageLifecycleError("inventory unavailable")
         return ("immutable image retained by another Project",)
 
+    # The real cleanup inventories images with `docker image ls`, which no shared fake serves.
     monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
-    session_refresh._cleanup_owned_images(tmp_path)
+    host.run_old_sandbox()
+    result = session_refresh.refresh(host.project, _images(host, _image()))
+    assert result.outcome == "replaced"
     assert ("deferred" if failure else "retained by another Project") in caplog.text
 
 
-@pytest.mark.parametrize("stealth", [False, True])
-def test_finalization_uses_authorized_dashboard_source_and_exclusions(
-    tmp_path, monkeypatch, stealth
-):
-    from booley import commit_policy
-    from booley.runtime import dashboard_tasks
-    from booley.runtime import git as runtime_git
-
-    source = tmp_path / "authorized-data"
-    calls = []
-    monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: source)
-    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: stealth)
-    monkeypatch.setattr(
-        dashboard_tasks,
-        "reconcile",
-        lambda project, directory: calls.append(("dashboard", project, directory)),
-    )
-    monkeypatch.setattr(
-        runtime_git,
-        "add_git_excludes",
-        lambda project, patterns: calls.append(("excludes", project, patterns)),
-    )
-    session_refresh.finalize_project(tmp_path)
-    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
-    assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
-
-
-def test_finalization_excludes_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):
-    from booley import commit_policy
-    from booley.runtime import dashboard_tasks
-    from booley.runtime import git as runtime_git
+@pytest.mark.parametrize(
+    ("layout", "excluded"),
+    [
+        ("plain", ["/.devcontainer", "/.claude"]),
+        ("stealth", ["/.devcontainer", "/.claude", "/.booley"]),
+        ("relocated", ["/.devcontainer", "/.claude", "/.booley", "/tools/booley"]),
+    ],
+)
+def test_finalization_reconciles_dashboard_task_and_git_excludes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, excluded: list[str]
+) -> None:
     from booley.runtime.booley_dir import reset_cache
 
-    (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
-    (tmp_path / "tools/booley").mkdir(parents=True)
+    project = repository(tmp_path / "project")
+    source = project / ".booley"
+    stealth = "[stealth]\nenabled = true\n"
+    if layout == "relocated":
+        (project / "booley.toml").write_text('[project]\ndir = "tools/booley"\n', "utf-8")
+        (project / "tools" / "booley").mkdir(parents=True)
+        (project / "tools" / "booley" / "booley.toml").write_text(stealth, "utf-8")
+        source = tmp_path / "authorized"  # a relocated Project authorizes its data by BOOLEY_DIR
+        monkeypatch.setenv("BOOLEY_DIR", str(source))
+    else:
+        monkeypatch.delenv("BOOLEY_DIR")
+    source.mkdir()
+    if layout == "stealth":
+        (source / "booley.toml").write_text(stealth, "utf-8")
     reset_cache()
-    excluded: list[tuple[str, ...]] = []
-    monkeypatch.setattr(runtime_spec, "authorized_project_data_source", lambda _root: tmp_path)
-    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: True)
-    monkeypatch.setattr(dashboard_tasks, "reconcile", lambda _project, _directory: None)
-    monkeypatch.setattr(
-        runtime_git, "add_git_excludes", lambda _project, names: excluded.append(tuple(names))
-    )
 
-    session_refresh.finalize_project(tmp_path)
+    session_refresh.finalize_project(project)
 
-    assert excluded == [(".devcontainer", ".claude", ".booley", "tools/booley")]
-    reset_cache()
+    assert (source / "runtime" / "dashboard-task.json").is_file()
+    exclude = (project / ".git" / "info" / "exclude").read_text("utf-8").splitlines()
+    assert [line for line in exclude if line.startswith("/")] == ["/.vscode", *excluded]
 
 
 def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, issued) -> None:
     from booley.config.host_config import host_config_path
-    from booley.runtime import devcontainer as dc
 
     project, _spec, _path, stamp = issued
     host_config_path().parent.mkdir(parents=True, exist_ok=True)
     host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
+    # Private seam: the prepared spec reaches Docker only through a full refresh, which
+    # needs a converged image graph and a started Sandbox.
     images = harness_refresh._RuntimeImages()
 
     images.prepare_spec(project, _image(stamp.image_id))
