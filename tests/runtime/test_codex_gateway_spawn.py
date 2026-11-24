@@ -20,6 +20,7 @@ from tests.gateway_command_support import count_runs, write_token_command
 from booley.config import agent as agent_config
 from booley.runtime import _codex_backend as cb
 from booley.runtime import agent_errors, gateway_token
+from booley.specialists.coverage_analysis_schema import coverage_analysis_model_schema
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -142,6 +143,7 @@ async def test_fake_codex_text_only_specialist_reaches_gateway_with_pinned_model
         model=settings.model_for_specialist("coverage_analyst"),
         reasoning_effort=settings.effort_for("codex"),
         text_only=True,
+        output_format=coverage_analysis_model_schema(),
         nested_mcp_tools=["coverage_evidence"],
         allowed_agent_capabilities=[],
         transcript_path=tmp_path / "transcripts" / "run.jsonl",
@@ -155,6 +157,7 @@ async def test_fake_codex_text_only_specialist_reaches_gateway_with_pinned_model
     assert report["shell_exclude"] == ["BOOLEY_GATEWAY_TOKEN"]
     assert report["argv"][report["argv"].index("-m") + 1] == "gw-text-model"
     assert 'model_reasoning_effort="low"' in report["argv"]
+    assert "--output-schema" in report["argv"]
     (entry,) = report["catalog"]["models"]
     assert entry["slug"] == "gw-text-model"
     assert entry["shell_type"] == "disabled"

@@ -109,7 +109,14 @@ def test_completed_runs_leave_no_nested_home(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("existing", ['broken="', 'suppress_unstable_features_warning="bad"'])
+@pytest.mark.parametrize(
+    "existing",
+    [
+        'broken="',
+        'suppress_unstable_features_warning="bad"',
+        "suppress_unstable_features_warning=false\n",
+    ],
+)
 async def test_private_codex_writer_invalid_destination(fake_codex, tmp_path, existing, caplog):
     write_codex_login(tmp_path)
     config = _config(await codex_report(tmp_path, nested_mcp_tools=["lint"]))
@@ -126,6 +133,12 @@ async def test_private_codex_writer_invalid_destination(fake_codex, tmp_path, ex
             is True
         )
         assert "malformed" in caplog.text
+    elif "false" in existing:
+        # The destination's own preference survives regeneration.
+        await codex_report(tmp_path, nested_mcp_tools=["lint"])
+        parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+        assert parsed["suppress_unstable_features_warning"] is False
+        assert parsed["mcp_servers"]["booley"]["env"]["BOOLEY_NESTED_MCP_TOOLS"] == "lint"
     else:
         with pytest.raises(ValueError, match="boolean"):
             await codex_report(tmp_path, nested_mcp_tools=["lint"])
