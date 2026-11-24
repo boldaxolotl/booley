@@ -25,7 +25,7 @@ from tests.time_budget import hang_guard_s, scaled
 
 _SRC_ROOT = Path(__file__).parents[1] / "src"
 _WAIT_SECONDS = hang_guard_s()
-_T = TypeVar("_T")
+ResultT = TypeVar("ResultT")
 
 
 def runtime_env(booley_dir: Path, execution_id: ExecutionId | None = None) -> dict[str, str]:
@@ -45,11 +45,11 @@ def runtime_env(booley_dir: Path, execution_id: ExecutionId | None = None) -> di
 
 
 def wait_for_value(
-    probe: Callable[[], _T | None],
+    probe: Callable[[], ResultT | None],
     *,
     failure: str,
     timeout_s: float = _WAIT_SECONDS,
-) -> _T:
+) -> ResultT:
     """Return the first non-None probe result within a bounded interval."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -139,6 +139,7 @@ class _RecoveryInterleaving:
 
     def _recover(self, execution_id: ExecutionId, booley_dir: Path) -> None:
         try:
+            # private: the race window sits inside this step; public recover_execution cannot hold it open.
             execution_recovery._publish_recovered_terminal(execution_id, booley_dir=booley_dir)
         except Exception as exc:  # noqa: BLE001 - reported to the test thread
             self.failures.append(exc)

@@ -158,6 +158,7 @@ COMMAND_LOCATION_TABLE = [
     ("flow", "Sandbox"),
     ("specialist", "Sandbox"),
     ("measure", "Sandbox"),
+    ("review", "Sandbox"),
     ("worktree", "Sandbox"),
     ("cheat", "either"),
     ("coverage", "either"),

@@ -991,8 +991,14 @@ class ReviewerSpecialist(Specialist):
         "SlashCommand",
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, change: ReviewChange | None = None) -> None:
+        """*change* is a change the caller already resolved (``booley review``).
+
+        It replaces ``--base``: the Reviewer reviews that change and runs no Git query
+        of its own.
+        """
         super().__init__()
+        self._given_change = change
         self._tb_project_policy: TbProjectPolicy | None = None
         self._scope_contract: ReviewScopeContract | None = None
         self._non_corrective_issues: list[ReviewIssue] = []
@@ -1391,8 +1397,13 @@ match the strength of the evidence.
         # the spec's own numbers and whether its expected-value model is
         # independent of the implementation, and neither is answerable without
         # the spec in hand. Absence is not fatal on the TB side — the checks
-        # that need it simply go unreported.
-        if SPEC_FOCUS in focus_header.split(", ") or self.args.category == "tb":
+        # that need it simply go unreported. A change the caller resolved comes
+        # with the spec its review declares, for every focus.
+        if (
+            SPEC_FOCUS in focus_header.split(", ")
+            or self.args.category == "tb"
+            or self._given_change is not None
+        ):
             spec_section = self._build_spec_section()
             if spec_section:
                 sections.append(spec_section)
@@ -1760,18 +1771,18 @@ object, even after calling the capability.
             )
         if spec_error := self._validate_review_spec():
             return spec_error
-        return self._narrow_scope_to_change(self.args.base) if self.args.base else None
+        if self._given_change is not None:
+            return self._narrow_scope_to_change(self._given_change)
+        return self._narrow_scope_to_base(self.args.base) if self.args.base else None
 
-    def _narrow_scope_to_change(self, base: str) -> McpToolResult | None:
+    def _narrow_scope_to_base(self, base: str) -> McpToolResult | None:
         """Restrict the validated scope to the files changed since *base*.
 
         Returns a finished result when the base is unusable or nothing in scope
-        changed (no model call, no state); otherwise narrows the scope, scope
-        contract, source digest and finding filter to the changed files.
+        changed (no model call, no state); otherwise narrows to the changed files.
         """
-        scope = self._parse_scope()
         try:
-            change = resolve_review_change(Path(self.args.work_dir), base, scope)
+            change = resolve_review_change(Path(self.args.work_dir), base, self._parse_scope())
         except ReviewChangeError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         if not change.changed:
@@ -1782,6 +1793,11 @@ object, even after calling the capability.
                     "nothing to review."
                 ),
             )
+        return self._narrow_scope_to_change(change)
+
+    def _narrow_scope_to_change(self, change: ReviewChange) -> McpToolResult | None:
+        """Narrow the scope, scope contract, source digest and finding filter to *change*."""
+        scope = self._parse_scope()
         self._review_change = change
         self._full_scope = tuple(scope)
         self._resolved_scope = list(change.changed)

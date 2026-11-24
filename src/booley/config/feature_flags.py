@@ -32,7 +32,11 @@ class FeatureFlag:
 
 
 #: Every registered flag; deleting an entry enables its feature.
-FEATURE_FLAGS: tuple[FeatureFlag, ...] = ()
+FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
+    FeatureFlag(
+        "reviewed-commits", "booley review: Declared Reviews of a commit and its Review Runs", 3064
+    ),
+)
 
 
 class UnknownFeatureFlagError(LookupError):
