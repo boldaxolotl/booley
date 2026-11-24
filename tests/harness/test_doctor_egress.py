@@ -64,10 +64,10 @@ def test_egress_mode_row(sandbox_doctor, monkeypatch, mode, resolver, needle, se
 def test_unproxied_warning_is_waivable(sandbox_doctor, monkeypatch):
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
-    waiver = b'version = 1\n[[waiver]]\ncheck = "sandbox.unproxied"\nreason = "No proxy."\n'
-    (sandbox_doctor / ".booley" / "doctor-waivers.toml").write_bytes(
-        waiver + b"permanent = true\n"
+    waiver = (
+        b'version=1\n[[waiver]]\ncheck="sandbox.unproxied"\nreason="No proxy."\npermanent=true\n'
     )
+    (sandbox_doctor / ".booley" / "doctor-waivers.toml").write_bytes(waiver)
 
     [row] = _rows(sandbox_doctor, "Unproxied Sandbox")
 

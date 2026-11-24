@@ -169,14 +169,18 @@ def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
     assert max(map(colors.len_visible, tables)) <= columns
 
 
-def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path):
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+@pytest.mark.parametrize("retired", ["env", "directory"])
+def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path, retired):
+    if retired == "env":
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+        message = "BOOLEY_PROJECT_DIR is retired; unset it and use BOOLEY_DIR"
+    else:
+        (tmp_path / ".booley_project").mkdir()
+        message = f"{tmp_path / '.booley_project'} needs migration to {tmp_path / '.booley'}; "
+        message += "run `booley init` from the Project Root"
 
     assert doctor.run_doctor(argparse.Namespace(), tmp_path) == 2
-    assert (
-        capsys.readouterr().out
-        == "  ✗  BOOLEY_PROJECT_DIR is retired; unset it and use BOOLEY_DIR\n"
-    )
+    assert capsys.readouterr().out == f"  ✗  {message}\n"
 
 
 def test_waived_findings_are_counted_but_not_listed_as_problems(capsys):
