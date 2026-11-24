@@ -93,6 +93,8 @@ def _issued_transport_spec(root, image, app, policy, monkeypatch):
     )
     if app == "claude":
         (Path.home() / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
+    # private: `booley init` builds the spec sources only while it also writes the project
+    # and pulls the image; no public seam returns the sources for this fixture's project.
     sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, image
     )
