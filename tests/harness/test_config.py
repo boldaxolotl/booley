@@ -2,64 +2,49 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from booley.config.settings import _parse_sandbox_config
+from booley.config.agent import load_agent_settings, set_agent_settings
 
 
-class TestParseSandboxConfig:
-    def test_empty_data(self):
-        cfg = _parse_sandbox_config({})
-        assert cfg.memory == ""
-        assert cfg.mount_host_skills is False
-
-    def test_mount_host_skills_opt_in(self):
-        cfg = _parse_sandbox_config({"sandbox": {"mount_host_skills": True}})
-        assert cfg.mount_host_skills is True
-
-    def test_retired_mode_is_ignored(self):
-        data = {"sandbox": {"mode": "docker"}}
-        cfg = _parse_sandbox_config(data)
-        assert cfg.image == "booley-sandbox"
-
-    def test_custom_image(self):
-        data = {"sandbox": {"image": "ibex-booley-sandbox:latest"}}
-        cfg = _parse_sandbox_config(data)
-        assert cfg.image == "ibex-booley-sandbox:latest"
-
-    @pytest.mark.parametrize("image", ["", 123])
-    def test_invalid_image_falls_back(self, image):
-        data = {"sandbox": {"image": image}}
-        cfg = _parse_sandbox_config(data)
-        assert cfg.image == "booley-sandbox"
-
-    def test_memory_string(self):
-        data = {"sandbox": {"mode": "docker", "memory": "8g"}}
-        cfg = _parse_sandbox_config(data)
-        assert cfg.memory == "8g"
-
-    def test_memory_legacy_tier_table_warns_and_keeps_default(self, caplog):
-        """Retired tier table: warn, salvage the 'default' entry, drop tiers."""
-        data = {
-            "sandbox": {
-                "mode": "docker",
-                "memory": {"default": "6g", "agent": "8g"},
-            },
-        }
+@pytest.mark.parametrize(
+    ("toml", "memory", "swap", "mount", "warning"),
+    [
+        ("", "", "", False, None),
+        ("mount_host_skills = true", "", "", True, None),
+        ('memory = "8g"\nswap = "2g"', "8g", "2g", False, None),
+        ('memory = {default = "6g", agent = "8g"}', "6g", "", False, "memory tier table"),
+        ('memory_tiers = {sim = "4g"}', "", "", False, "memory_tiers is retired"),
+        ('memory = "8g"\nswap = 0', "8g", "", False, "Invalid [sandbox] swap 0"),
+        ('image = ""', "", "", False, "Invalid sandbox image"),
+        ("image = 123", "", "", False, "Invalid sandbox image"),
+        ('mode = "docker"', "", "", False, "[sandbox].mode is retired"),
+    ],
+    ids=[
+        "defaults",
+        "skills",
+        "memory",
+        "tier-table",
+        "tiers-key",
+        "bad-swap",
+        "empty-image",
+        "numeric-image",
+        "retired-mode",
+    ],
+)
+def test_sandbox_settings_from_booley_toml(
+    tmp_path: Path, caplog, toml: str, memory: str, swap: str, mount: bool, warning: str | None
+) -> None:
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(f"[sandbox]\n{toml}\n", encoding="utf-8")
+    try:
         with caplog.at_level("WARNING"):
-            cfg = _parse_sandbox_config(data)
-        assert cfg.memory == "6g"
-        assert any("retired" in r.message for r in caplog.records)
+            sandbox = load_agent_settings(tmp_path).sandbox
+    finally:
+        set_agent_settings(None)  # load_agent_settings installs process-wide settings
 
-    def test_memory_tiers_key_warns_and_is_ignored(self, caplog):
-        data = {"sandbox": {"memory_tiers": {"sim": "4g"}}}
-        with caplog.at_level("WARNING"):
-            cfg = _parse_sandbox_config(data)
-        assert cfg.memory == ""
-        assert any("memory_tiers is retired" in r.message for r in caplog.records)
-
-    def test_non_string_swap_warns_and_is_ignored(self, caplog):
-        with caplog.at_level("WARNING"):
-            cfg = _parse_sandbox_config({"sandbox": {"memory": "8g", "swap": 0}})
-        assert cfg.swap == ""
-        assert any("Invalid [sandbox] swap 0" in r.message for r in caplog.records)
+    assert (sandbox.memory, sandbox.swap, sandbox.mount_host_skills) == (memory, swap, mount)
+    assert (warning is None) == (not caplog.records)
+    assert warning is None or any(warning in r.getMessage() for r in caplog.records)

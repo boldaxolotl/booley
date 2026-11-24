@@ -9,11 +9,12 @@ import pytest
 from booley.config import agent as agent_config
 from booley.config.agent import load_agent_settings, set_agent_settings
 from booley.config.gateway import GatewayConfigError
-from booley.harness import developer_probe, doctor
+from booley.harness import developer_probe
 from booley.runtime import agent as agent_mod
 from booley.runtime.agent_config import set_backend_config
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.harness.agent_auth_support import credential_findings, install_agent_clis, pin_venue
 
 _PIN = "gw-model"
 # A two-CLI Project: Codex is the default, the reviewer is pinned to a Claude model.
@@ -46,8 +47,8 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
     monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-    monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
+    pin_venue(monkeypatch, inside=True)
+    install_agent_clis(tmp_path / "userhome")
     (tmp_path / ".booley").mkdir()
     (tmp_path / ".booley" / "booley.toml").write_text(_TOML, encoding="utf-8")
     set_agent_settings(None)
@@ -66,44 +67,38 @@ def _lazy():
 
 
 def _doctor_findings(root, auth="subscription", provider="codex"):
-    audit = doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=root / ".booley",
-        booley_toml={"agent": {"provider": provider, "auth": auth}},
-        configs_toml={},
-        first_target="",
-    )
-    reporter = doctor._Reporter.create()
-    doctor._run_agent_credential_checks(audit, reporter)
-    return reporter.findings or []
+    return credential_findings(root, {"agent": {"provider": provider, "auth": auth}})
 
 
 def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
     monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
 
-    settings = _loaded(project)
-
-    assert {name: settings.model_for_specialist(name) for name in agent_config.SPECIALISTS} == {
-        "reviewer": "claude-opus-5-5",
-        "coverage_analyst": _PIN,
-    }
-    assert settings.internal_model() == _PIN
-    assert settings.model_settings() == {
-        "claude-opus-5-5": ("[models] reviewer",),
-        _PIN: ("BOOLEY_GATEWAY_MODEL",),
-    }
-
-
-def test_gateway_model_pin_reaches_codex_specialist(project, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
-    _lazy()
-
-    assert CoverageAnalystSpecialist()._resolve_model() == _PIN
-    assert ReviewerSpecialist()._resolve_model() == "claude-opus-5-5"
+    for settings in (_loaded(project), _lazy()):
+        assert {
+            name: settings.model_for_specialist(name) for name in agent_config.SPECIALISTS
+        } == {
+            "reviewer": "claude-opus-5-5",
+            "coverage_analyst": _PIN,
+        }
+        assert settings.internal_model() == _PIN
+        assert settings.model_settings() == {
+            "claude-opus-5-5": ("[models] reviewer",),
+            _PIN: ("BOOLEY_GATEWAY_MODEL",),
+        }
+        # A model pin without an effort pin keeps the default effort.
+        assert settings.effort_for("codex") == "high"
+        # The pin does not pull other models onto Codex: they keep the CLI their name selects.
+        assert [settings.cli_for_model_id(m) for m in (_PIN, "claude-opus-5-5", "gpt-6-luna")] == [
+            "codex",
+            "claude",
+            "codex",
+        ]
 
 
 def test_developer_probe_uses_gateway_model(project, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
+    """The probe runs the pin and effort on Codex, even when the pin is named like a Claude model."""
+    pin = "claude-served-by-gateway"
+    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", pin)
     monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "low")
     seen = []
 
@@ -119,7 +114,7 @@ def test_developer_probe_uses_gateway_model(project, monkeypatch):
             project, getrusage=lambda _who: SimpleNamespace(ru_maxrss=1)
         )
 
-    assert (seen[0].model, seen[0].reasoning_effort) == (_PIN, "low")
+    assert (seen[0].model, seen[0].reasoning_effort, seen[0].agent_cli) == (pin, "low", "codex")
 
 
 def test_gateway_effort_overrides_codex_effort(project, monkeypatch):
@@ -127,6 +122,8 @@ def test_gateway_effort_overrides_codex_effort(project, monkeypatch):
     settings = _lazy()
 
     assert (settings.effort_for("codex"), settings.effort_for("claude")) == ("low", None)
+    # private: a Specialist reads its effort only inside a full MCP tool call against a real
+    # Agent CLI.
     assert CoverageAnalystSpecialist()._resolve_effort() == "low"
     assert ReviewerSpecialist()._resolve_effort() is None  # runs on Claude
     for level in ("none", "persistent"):  # Codex variants beyond the old tier names
@@ -158,14 +155,6 @@ def test_doctor_fails_invalid_gateway_effort(project, monkeypatch):
     assert [f.check_id for f in failed] == ["agent.credential-policy"]
     assert "BOOLEY_GATEWAY_EFFORT" in failed[0].message
     assert "turbo" not in failed[0].message
-
-
-def test_gateway_model_without_effort_keeps_default_effort(project, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", _PIN)
-    settings = _loaded(project)
-
-    assert settings.model_for_specialist("coverage_analyst") == _PIN
-    assert settings.effort_for("codex") == "high"
 
 
 def test_doctor_notes_gateway_model_vars_ignored_outside_gateway(project, monkeypatch):
@@ -201,7 +190,7 @@ def test_gateway_model_vars_ignored_under_other_policies(project, monkeypatch):
     monkeypatch.delenv("BOOLEY_PRIMARY_AUTH")
     subscription = _loaded(project)
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    pin_venue(monkeypatch, inside=False)
     host = _loaded(project)
     for settings in (subscription, host):
         assert settings.model_for_specialist("coverage_analyst") == "gpt-6-astra"
@@ -209,7 +198,7 @@ def test_gateway_model_vars_ignored_under_other_policies(project, monkeypatch):
         assert settings.effort_for("codex") == "high"
 
     # (c) gateway in a container for a Claude-only Project keeps Claude models and no effort.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    pin_venue(monkeypatch, inside=True)
     toml = project / ".booley" / "booley.toml"
     toml.write_text('[agent]\nprovider = "claude"\n', encoding="utf-8")
     claude = _loaded(project)
@@ -229,16 +218,3 @@ def test_config_audits_report_nothing_for_an_invalid_gateway_variable(project, m
 
     for audit in (audit_agent_table(data), audit_models_table(data)):
         assert [f for f in audit.findings if f.severity.value == "fail"] == []
-
-
-def test_probe_runs_the_gateway_pin_on_codex_whatever_its_name(project, monkeypatch):
-    """A gateway can serve any model ID; its probe never follows the name prefix."""
-    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "claude-served-by-gateway")
-    settings = _loaded(project)
-
-    def cli_of(model):
-        return developer_probe._probe_params(settings, model, project, 5, "probe").agent_cli
-
-    assert cli_of("claude-served-by-gateway") == "codex"
-    assert cli_of("claude-opus-5-5") == "claude"
-    assert cli_of("gpt-6-luna") == "codex"
