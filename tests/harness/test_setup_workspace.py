@@ -339,7 +339,10 @@ class TestWorktreeCreateScript:
         assert _run_worktree_create(project_root, "absolute").returncode == 0
         worktree = project_data / "worktrees" / "absolute"
         git_dir = _git(worktree, "rev-parse", "--absolute-git-dir").stdout.strip()
-        (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8", newline="\n")
+        pointer = worktree / ".git"
+        # Git hides the pointer on Windows, and a hidden file refuses to be reopened for writing.
+        pointer.unlink()
+        pointer.write_text(f"gitdir: {git_dir}\n", encoding="utf-8", newline="\n")
         _git(project_root, "config", "worktree.useRelativePaths", "true")
 
         with pytest.raises(WorktreeSetupError, match="non-portable metadata"):
