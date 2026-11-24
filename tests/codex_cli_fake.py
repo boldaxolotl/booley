@@ -60,6 +60,8 @@ if token_run and token_run["stdout"] == "SYNTHETIC_STALE_TOKEN":
     sys.exit(1)
 # Like a real codex exec, read the whole prompt before doing any work.
 prompt = sys.stdin.buffer.read()
+for event in json.loads(os.environ.get("FAKE_CODEX_EVENTS", "[]")):
+    print(json.dumps(event))
 catalog = None
 for index, argument in enumerate(sys.argv):
     if argument == "-c" and sys.argv[index + 1].startswith("model_catalog_json="):
@@ -130,11 +132,45 @@ def write_codex_login(tmp_path: Path, body: str = LOGIN_BODY) -> Path:
 
 
 async def codex_report(
-    cwd: Path, *, auth_mode: str = "subscription", **params: Any
+    cwd: Path, *, auth_mode: str = "subscription", on_event: Any = None, **params: Any
 ) -> dict[str, Any]:
-    """One ``CodexBackend.call`` against the fake; return the fake's decoded report."""
+    """One ``CodexBackend.call`` against the fake; return the fake's decoded report.
+
+    Set ``FAKE_CODEX_EVENTS`` (a JSON list) to have the fake print those events
+    before its report; ``on_event`` receives what the backend dispatches live.
+    """
     params.setdefault("prompt", "p")
     params.setdefault("model", "gpt-5.5")
     params.setdefault("transcript_path", cwd / "transcript.jsonl")
-    result = await cb.CodexBackend(auth_mode=auth_mode).call(AgentCallParams(cwd=cwd, **params))
+    result = await cb.CodexBackend(auth_mode=auth_mode).call(
+        AgentCallParams(cwd=cwd, **params), on_event=on_event
+    )
     return json.loads(result.output)
+
+
+def replay_codex_run(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    events: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> list[dict[str, Any]]:
+    """Answer every ``codex`` launch with one canned run; return each launch's command and prompt.
+
+    ``_codex_run_subprocess`` is the one function that runs the ``codex``
+    command, so a test that needs only the classification of one run replays
+    it here instead of starting a process per case. The host side is pinned:
+    ``codex`` resolves on ``PATH`` and the process is not in a Sandbox.
+    """
+    raw = "\n".join([*([stdout] if stdout else []), *(json.dumps(event) for event in events)])
+    launches: list[dict[str, Any]] = []
+
+    async def run(cmd: list[str], params: AgentCallParams, *, full_prompt: str, **_kwargs: Any):
+        launches.append({"cmd": cmd, "prompt": full_prompt})
+        return raw, stderr, returncode
+
+    monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(cb, "_inside_container", lambda: False)
+    monkeypatch.setattr(cb, "_codex_run_subprocess", run)
+    return launches

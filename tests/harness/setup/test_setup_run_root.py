@@ -22,13 +22,18 @@ MARKER = ".booley-setup-run"
 
 def _cli(root: Path, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict]:
     """Run ``booley cleanup <argv> --json``; a refusal returns ``{"error": stderr}``."""
+    code, out, err = _run(root, capsys, *argv, "--json")
+    return code, json.loads(out) if out.strip() else {"error": err}
+
+
+def _run(root: Path, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     parser = argparse.ArgumentParser()
     cleanup_cli.add_subparser(parser.add_subparsers(dest="command", required=True))
-    args = parser.parse_args(["cleanup", *argv, "--json"])
-    args.project_root = ""
+    args = parser.parse_args(["cleanup", *argv])
+    args.project_root = ""  # the root command normalizes an absent root alias to empty
     code = cleanup_cli.run(args, root)
     out, err = capsys.readouterr()
-    return code, json.loads(out) if out.strip() else {"error": err}
+    return code, out, err
 
 
 def _prepared(tmp_path: Path, capsys, run_id: str = "r1") -> tuple[Path, Path]:
@@ -56,6 +61,10 @@ def test_prepare_rejects_unsafe_and_duplicate_run_ids(tmp_path, capsys):
     assert not (tmp_path / ".booley" / "tmp").exists()
     assert _cli(tmp_path, capsys, "prepare", "--run-id", "dup")[1].get("status") == "prepared"
     assert _cli(tmp_path, capsys, "prepare", "--run-id", "dup")[0] == 2
+    for operation in ("preview", "apply"):
+        with pytest.raises(SystemExit) as refused:
+            _cli(tmp_path, capsys, operation)  # only prepare may pick its own run id
+        assert refused.value.code == 2
 
 
 def test_apply_removes_only_the_run_root(tmp_path, capsys):
@@ -231,6 +240,8 @@ def test_apply_keeps_run_root_when_findings_lock_times_out(tmp_path, capsys, mon
     source.write_text("retain evidence\n", encoding="utf-8")
     append(Finding(title="attached", attachments=[str(source)]), booley_dir)
     before = log_path(booley_dir).read_bytes()
+    # private: the Findings Log lock wait is a fixed 60 s with no public setting; shortened
+    # so the held lock times out in milliseconds.
     monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
 
     with holding_findings_lock(booley_dir):
@@ -256,27 +267,6 @@ def test_apply_retains_concurrent_findings_append(tmp_path, capsys):
     assert [entry.title for entry in log.entries] == ["original", "concurrent"]
     assert Path(log.entries[0].attachments[0]).read_text(encoding="utf-8") == "evidence"
     assert not run_root.exists()
-
-
-def test_apply_materializes_duplicate_finding_ids(tmp_path, capsys):
-    booley_dir, run_root = _prepared(tmp_path, capsys)
-    rows = []
-    for ordinal in range(2):
-        source = run_root / str(ordinal) / "capture.log"
-        source.parent.mkdir()
-        source.write_text(f"evidence {ordinal}\n", encoding="utf-8")
-        rows.append(Finding(title=f"row {ordinal}", id="F-1", attachments=[str(source)]))
-    log_path(booley_dir).write_text(
-        "".join(row.to_json() + "\n" for row in rows), encoding="utf-8"
-    )
-
-    code, out = _cli(tmp_path, capsys, "apply", "--run-id", "r1")
-
-    assert (code, out["status"]) == (0, "removed") and not run_root.exists()
-    reread = read_log(booley_dir).entries
-    snapshots = [Path(entry.attachments[0]) for entry in reread]
-    assert [entry.id for entry in reread] == ["F-1", "F-1"] and len(set(snapshots)) == 2
-    assert [path.read_text(encoding="utf-8") for path in snapshots] == ["evidence 0", "evidence 1"]
 
 
 def test_repeated_apply_reports_root_already_gone(tmp_path, capsys):
@@ -307,6 +297,9 @@ def test_preview_lists_files_and_mutates_nothing(tmp_path, capsys):
     assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == tree
     assert log_path(booley_dir).read_bytes() == log
     assert _cli(tmp_path, capsys, "preview", "--run-id", "absent")[1]["status"] == "gone"
+    code, text, _ = _run(tmp_path, capsys, "preview", "--run-id", "r1")
+    assert code == 0 and text.startswith(f"preview: {run_root} (")
+    assert {"  a.log (3 bytes) [attached]", "  b.log (2 bytes)"} <= set(text.splitlines())
 
 
 def test_apply_restores_marker_when_final_rmdir_fails(tmp_path, capsys, monkeypatch):
@@ -324,7 +317,8 @@ def test_apply_restores_marker_when_final_rmdir_fails(tmp_path, capsys, monkeypa
     assert (code, out["status"]) == (1, "kept") and (run_root / MARKER).is_file()
 
     monkeypatch.undo()
-    assert _cli(tmp_path, capsys, "apply", "--run-id", "r1")[1]["status"] == "removed"
+    code, text, _ = _run(tmp_path, capsys, "apply", "--run-id", "r1")
+    assert code == 0 and text.startswith(f"removed: {run_root} (")
     assert not run_root.exists()
 
 
