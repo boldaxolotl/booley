@@ -32,6 +32,12 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
     -o /tmp/live-server.vsix
 
+ARG CHROME_HEADLESS_SHELL_VERSION=157.0.8103.78
+ARG CHROME_HEADLESS_SHELL_SHA256=7c08cebbed94d2120b977ddf5a202f960ec710c6fa654008a680eeb1a9ae05ff
+RUN echo ">>> Installing chrome-headless-shell ${CHROME_HEADLESS_SHELL_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip" \
+    -o /tmp/chrome-headless-shell.zip
+
 ARG NODE_VERSION=24.21.0
 ARG NPM_VERSION=11.19.0
 ARG NODE_SHA256=8adedcec015224305033af191648a52f531178e18b254bbdac3778f25f5ad94d

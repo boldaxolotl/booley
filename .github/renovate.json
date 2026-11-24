@@ -86,6 +86,11 @@
       "transformTemplates": [
         "{ \"releases\": extensions.{ \"version\": version, \"releaseTimestamp\": timestamp } }"
       ]
+    },
+    "chrome-for-testing": {
+      "defaultRegistryUrlTemplate": "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions.json",
+      "format": "json",
+      "transformTemplates": ["{ \"releases\": versions.{ \"version\": version } }"]
     }
   },
   "customManagers": [
@@ -221,6 +226,15 @@
       "matchStrings": ["\\| sv2v \\| (?<currentValue>v\\d+\\.\\d+\\.\\d+) \\|"],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "zachjs/sv2v"
+    },
+    {
+      "description": "Copy of the headless Chrome pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Headless Chrome \\| `chrome-headless-shell` (?<currentValue>\\d+\\.\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "custom.chrome-for-testing",
+      "depNameTemplate": "chrome-headless-shell",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)$"
     },
     {
       "description": "Copy of the Verible pin: the supported-tools row.",
@@ -648,6 +662,15 @@
       "dependencyDashboardApproval": true,
       "groupName": "ci-rust-nightly",
       "schedule": ["at any time"]
+    },
+    {
+      "description": "Hold: chrome-headless-shell must equal the version the pinned T3 Code release expects (VERSION in its apps/server/src/preview/PreviewBrowser.ts), or T3 Code tries a download the egress rules block. With each T3 Code bump, set allowedVersions to that release's VERSION (a regex, because regex versioning takes no == range); Renovate then proposes exactly it (a new major version waits for Dependency Dashboard approval) and pin_checksums.py rewrites the sha256. Lift the hold only if T3 Code stops pinning a browser version: delete this rule and the hold comment above the pin in Dockerfile.base together.",
+      "matchPackageNames": ["chrome-headless-shell"],
+      "allowedVersions": "/^157\\.0\\.8103\\.78$/",
+      "groupName": "headless-chrome",
+      "prBodyNotes": [
+        "Check that T3 Code's linux64 sha256 for this version equals the `CHROME_HEADLESS_SHELL_SHA256` this PR writes."
+      ]
     }
   ]
 }

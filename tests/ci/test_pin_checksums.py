@@ -43,8 +43,9 @@ _DEMO = ".github/contracts/picorv32-demo.toml"
 _GITHUB = frozenset({"github.com", "api.github.com"})
 _OPEN_VSX = frozenset({"open-vsx.org", "api.github.com"})
 _NODE = frozenset({"nodejs.org"})
+_CHROME = frozenset({"storage.googleapis.com"})
 _LARGE_STAND_IN = "riscv-none-elf-gcc-xpack"
-_ARTIFACT = re.compile(r"/releases/download/|\.vsix$|\.tar\.xz$")
+_ARTIFACT = re.compile(r"/releases/download/|\.vsix$|\.tar\.xz$|/chrome-for-testing-public/")
 
 
 def _arg(*names: str) -> list[str]:
@@ -108,6 +109,12 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
         {_BASE: _vsix("LIVE_PREVIEW")},
     ),
     "node": ("node", "24.21.0", _NODE, {_BASE: _arg("NODE_SHA256", "NPM_VERSION")}),
+    "chrome-headless-shell": (
+        "chrome-headless-shell",
+        "157.0.8103.78",
+        _CHROME,
+        {_BASE: _arg("CHROME_HEADLESS_SHELL_SHA256")},
+    ),
     "t3code": ("pingdotgg/t3code", "0.1.10", _GITHUB, {_MANIFEST: [r'^    "sha256": "(.*)"$']}),
 }
 

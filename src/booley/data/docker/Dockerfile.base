@@ -318,6 +318,31 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
         /usr/local/share/booley/licenses/live-server/SOURCE.txt \
     && rm -f /tmp/live-server.vsix
 
+# Headless Chrome for T3 Code's preview panel: every Sandbox
+# Image carries it. Chrome for Testing's headless shell at the version T3
+# Code pins (apps/server/src/preview/PreviewBrowser.ts), so T3 Code can use
+# it without a download the egress rules block. --version loads every
+# shared library, so a missing one fails the build.
+# The T3 Code release in agent-clis-package.json pins this version; hold
+# 157.0.8103.78 and move the hold in .github/renovate.json with each bump.
+# renovate: datasource=custom.chrome-for-testing depName=chrome-headless-shell versioning=regex:^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\.(?<build>\d+)$
+ARG CHROME_HEADLESS_SHELL_VERSION=157.0.8103.78
+# pin-companion: CHROME_HEADLESS_SHELL_VERSION
+ARG CHROME_HEADLESS_SHELL_SHA256=f90329720fb61e5a76da9b6b509b6ad12a484c9c5df0359403e935177c6d153a
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+        libnspr4 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    && rm -rf /var/lib/apt/lists/*
+RUN echo ">>> Installing chrome-headless-shell ${CHROME_HEADLESS_SHELL_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip" \
+    -o /tmp/chrome-headless-shell.zip \
+    && echo "${CHROME_HEADLESS_SHELL_SHA256}  /tmp/chrome-headless-shell.zip" | sha256sum -c - \
+    && unzip -q /tmp/chrome-headless-shell.zip -d /tmp/chrome-headless-shell \
+    && mv /tmp/chrome-headless-shell/chrome-headless-shell-linux64 /opt/chrome-headless-shell \
+    && ln -s /opt/chrome-headless-shell/chrome-headless-shell /usr/local/bin/chrome-headless-shell \
+    && rm -rf /tmp/chrome-headless-shell.zip /tmp/chrome-headless-shell \
+    && test "$(chrome-headless-shell --version)" = "Google Chrome for Testing ${CHROME_HEADLESS_SHELL_VERSION}"
+
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
@@ -500,6 +525,13 @@ ENV PYTHONUSERBASE="/home/agent/.local"
 # as running inside the Booley Sandbox. /.dockerenv is the fallback
 # for containers from images built before this was added.
 ENV BOOLEY_CONTAINER=1
+
+# Chrome's own sandbox needs user namespaces, which the Sandbox's
+# hardened flags (--cap-drop ALL, no-new-privileges, Docker's seccomp
+# profile) do not allow: it exits with "No usable sandbox!". T3 Code reads
+# this and runs its headless browser with --no-sandbox; the Sandbox
+# itself is the boundary.
+ENV T3CODE_SERVER_BROWSER_SANDBOX=0
 
 # Claude Code kills an MCP tool call at 60s by default (measured on 2.1.205;
 # ADR 0027 amendment 2026-07-09). 2h matches the Codex tool_timeout_sec the
