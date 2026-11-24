@@ -1955,16 +1955,14 @@ _RELAY_SLOTS = 300
 
 
 class TestT3CodeRelay:
-    @pytest.fixture(autouse=True)
-    def relay_ports(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[range]:
-        """Give this test a port range of its own: concurrent test processes share the host.
+    @pytest.fixture
+    def relay_ports(self) -> Iterator[range]:
+        """Claim a port range of this test's own: concurrent test processes share the host.
 
         The product range is 100 ports from 3780 that every test process would prefer first, so
         one test's relay (or its "nothing listens here" probe) would answer another's. A slot's
         lock port is held for the test, which makes its range exclusive among test processes.
         """
-        from booley.runtime import t3_relay
-
         start = os.getpid() % _RELAY_SLOTS
         for offset in range(_RELAY_SLOTS):
             slot = (start + offset) % _RELAY_SLOTS
@@ -1977,10 +1975,16 @@ class TestT3CodeRelay:
             break
         else:  # pragma: no cover - every slot is held by another test process
             pytest.fail("no free relay port slot")
-        ports = range(20000 + slot * _RELAY_SLOT_WIDTH, 20000 + (slot + 1) * _RELAY_SLOT_WIDTH)
-        monkeypatch.setattr(t3_relay, "PORTS", ports)
         with lock:
-            yield ports
+            yield range(20000 + slot * _RELAY_SLOT_WIDTH, 20000 + (slot + 1) * _RELAY_SLOT_WIDTH)
+
+    @staticmethod
+    def relay_module(monkeypatch: pytest.MonkeyPatch, ports: range):
+        """The relay module, pointed at *ports* instead of the product range."""
+        from booley.runtime import t3_relay
+
+        monkeypatch.setattr(t3_relay, "PORTS", ports)
+        return t3_relay
 
     @pytest.fixture
     def relay_cli(
@@ -1989,6 +1993,7 @@ class TestT3CodeRelay:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
+        relay_ports: range,
     ):
         """Run `booley session up` and `down` on the Docker fake; stop every relay at teardown."""
         from booley.harness import booley as cli
@@ -2005,6 +2010,7 @@ class TestT3CodeRelay:
         roots: dict[Path, None] = {}
 
         def run(command: str, root: Path) -> tuple[str, str]:
+            self.relay_module(monkeypatch, relay_ports)
             roots[root] = None
             assert run_cli(monkeypatch, ["-C", str(root), "session", command]) == 0
             captured = capsys.readouterr()
@@ -2077,10 +2083,13 @@ class TestT3CodeRelay:
             assert echo.closed.wait(hang_guard_s())
 
     def test_the_relay_never_imports_from_its_working_directory(
-        self, workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        relay_ports: range,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley.runtime import t3_relay
-
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
         shadow, marker = tmp_path / "shadow", tmp_path / "ran"
         shadow.mkdir()
         (shadow / "booley.py").write_bytes(f"open({str(marker)!r}, 'w').close()\n".encode())
@@ -2093,9 +2102,9 @@ class TestT3CodeRelay:
         assert not marker.exists()
 
     def test_start_reuses_a_running_relay_and_replaces_one_for_another_container(
-        self, workspace: Path
+        self, workspace: Path, relay_ports: range, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.runtime import t3_relay
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
 
         def record() -> dict[str, object]:
             document = t3_relay.relay_store().read(str(workspace.resolve()))
@@ -2126,13 +2135,13 @@ class TestT3CodeRelay:
         self,
         workspace: Path,
         relay_cli: SimpleNamespace,
+        relay_ports: range,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         changes: dict[str, object],
         problem: str,
     ) -> None:
-        from booley.runtime import t3_relay
-
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
         root = str(workspace.resolve())
         record = {
             "schema_version": 1,
