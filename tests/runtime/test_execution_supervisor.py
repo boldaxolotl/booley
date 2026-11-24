@@ -698,7 +698,10 @@ try:
         run_id="released-1",
     )
 except OSError:
-    (root / "refused").write_text("1", encoding="utf-8")
+    try:
+        os.waitpid(-1, os.WNOHANG)
+    except ChildProcessError:  # the refused spawn left no child behind
+        (root / "refused").write_text("1", encoding="utf-8")
     sys.exit(0)
 subprocess.Popen(
     [sys.executable, sleeper, str(root / "plain.pid"), seconds], start_new_session=True

@@ -76,5 +76,3 @@ Two facts shape the decision:
   `session refresh` and `session up --rebuild` stop it without the warning
   that `session down` gives
   ([#3488](https://github.com/boldaxolotl/booley/issues/3488)).
-- The Goal baseline worker uses the same spawn helper and gets the same
-  behavior until Goal Mode is removed.
