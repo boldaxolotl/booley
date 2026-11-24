@@ -384,6 +384,9 @@ def test_release_install_refreshes_image_to_its_version(
     assert docker.count("pull") == pulls
     if pulls:
         assert ["docker", "pull", RELEASE_TAG] in docker.calls
+    if expected == ("ok", "pulled"):
+        # The pulled image, not the stale one, is what the managed name now resolves to.
+        assert docker.images[SANDBOX]["Id"] == docker.images[RELEASE_TAG]["Id"]
 
 
 @pytest.mark.parametrize(
@@ -466,14 +469,20 @@ def test_staged_pull_leaves_canonical_adoption_to_lifecycle(docker) -> None:
             (),
             id="large",
         ),
-        pytest.param(
-            "Build Cache\t2.0GB\t2.0GB\n", ("docker build cache: 2.0GB",), ("prune",), id="small"
-        ),
         pytest.param("Build Cache\t10GiB\t1GiB\n", ("docker builder prune",), (), id="gibibytes"),
         pytest.param(
             "Build Cache\t512MB\t0B\n", ("docker build cache: 512MB",), ("prune",), id="megabytes"
         ),
         pytest.param("Build Cache\t2TB\t0B\n", ("docker builder prune",), (), id="terabytes"),
+        pytest.param(
+            "Build Cache\t9.9GB\t0B\n", ("docker build cache: 9.9GB",), ("prune",), id="below"
+        ),
+        pytest.param("Build Cache\t10GB\t0B\n", ("docker builder prune",), (), id="threshold"),
+        pytest.param(
+            "Build Cache\t10000000kB\t0B\n", ("docker builder prune",), (), id="kilobytes"
+        ),
+        pytest.param("Build Cache\t9000000kB\t0B\n", (), ("prune",), id="kilobytes-below"),
+        pytest.param("Build Cache\t10000000000B\t0B\n", ("docker builder prune",), (), id="bytes"),
         pytest.param(
             "Build Cache\tN/A\tN/A\n", ("docker build cache: N/A",), ("prune",), id="unparseable"
         ),
@@ -697,6 +706,9 @@ def test_local_build_streams_docker_output_as_utf8(
     assert len(builds) == 2
     # Decoding the pipe with the locale codec (cp1252 on Windows) once killed a long rebuild.
     assert all(sent["encoding"] == "utf-8" and sent["errors"] == "replace" for sent in builds)
+    # An open pipe leaks a handle (a ResourceWarning, an error under CI) after every build.
+    assert len(docker.children) == 2
+    assert all(child.stdout.closed for child in docker.children)
     assert not any(
         "--no-cache" in call for call in docker.calls if call[:2] == ["docker", "build"]
     )
@@ -726,28 +738,6 @@ def test_runtime_base_build_timeout_keeps_docker_image_records(
         "docker build timed out after 2h 00m (override with BOOLEY_IMAGE_BUILD_TIMEOUT)" in output
     )
     assert "slow" in output
-
-
-def test_timeout_records_build_failure(monkeypatch, tmp_path, capsys) -> None:
-    # A real build timeout needs a real wait, so the runner reports it directly. private: the
-    # build step is reached only through a whole local build.
-    monkeypatch.setattr(
-        init_docker_image,
-        "run_docker_build",
-        lambda *_args, **_kwargs: DockerBuildResult(
-            None, timed_out=True, diagnostics=("last build output",)
-        ),
-    )
-    ctx = InitContext(project_root=tmp_path)
-    build = init_docker_image._DockerBuildSpec(
-        dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
-    )
-
-    assert init_docker_image._docker_build_image(ctx, build) is None
-
-    assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == "build timed out"
-    assert "last build output" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +921,7 @@ def test_build_timeout_uses_human_duration_and_preserves_record(
     def build(*_a, **_k):
         if raises:
             raise subprocess.TimeoutExpired("docker build", 3661)
-        return DockerBuildResult(None, timed_out=True)
+        return DockerBuildResult(None, timed_out=True, diagnostics=("last build output",))
 
     monkeypatch.setenv("BOOLEY_IMAGE_BUILD_TIMEOUT", "3661")
     monkeypatch.setattr(init_docker_image, "run_docker_build", build)
@@ -940,5 +930,8 @@ def test_build_timeout_uses_human_duration_and_preserves_record(
         dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
     )
     assert init_docker_image._docker_build_image(ctx, spec) is None
-    assert "timed out after 1h 01m" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "timed out after 1h 01m" in output
+    assert ("last build output" in output) is not raises
+    assert ctx.results[-1].status == "err"
     assert ctx.results[-1].detail == "build timed out"

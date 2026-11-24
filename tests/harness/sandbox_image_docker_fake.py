@@ -65,6 +65,8 @@ class SandboxImageDocker:
         self.after: dict[str, Callable[[], None]] = {}
         self.calls: list[list[str]] = []
         self.kwargs: list[dict[str, Any]] = []
+        #: The real child started for each ``docker build``.
+        self.children: list[Any] = []
         self._ids = 0
 
     def add(self, reference: str, labels: dict[str, str] | None = None) -> str:
@@ -110,6 +112,15 @@ class SandboxImageDocker:
         record = {"Id": image["Id"], "Config": {"Labels": image["Labels"]}}
         return 0, json.dumps([record]), ""
 
+    def _tag(self, source: str, target: str) -> Reply:
+        if self.tag.raises is not None or self.tag.code != 0:
+            return self.tag
+        image = self._image(source)
+        if image is None:
+            return Reply(1, stderr=f"Error: No such image: {source}")
+        self.images[target] = image
+        return self.tag
+
     def _docker(self, argv: list[str]) -> Reply:
         verb = argv[1:3] if argv[1] == "image" else argv[1:2]
         if verb == ["image", "inspect"]:
@@ -119,10 +130,7 @@ class SandboxImageDocker:
                 self.add(argv[2])
             return self.pull
         if verb == ["tag"]:
-            source = self._image(argv[2])
-            if self.tag.raises is None and self.tag.code == 0 and source is not None:
-                self.images[argv[3]] = source
-            return self.tag
+            return self._tag(argv[2], argv[3])
         if verb == ["info"]:
             return Reply(stdout=Path(__file__).resolve().anchor)  # any absolute path
         if verb == ["system"]:
@@ -167,6 +175,7 @@ class SandboxImageDocker:
             f"sys.stdout.buffer.flush(); sys.exit({build.code})"
         )
         child = self._real_popen([sys.executable, "-c", code], **kwargs)
+        self.children.append(child)
         if build.code == 0:
             labels = dict(
                 item.split("=", 1) for flag, item in itertools.pairwise(argv) if flag == "--label"
