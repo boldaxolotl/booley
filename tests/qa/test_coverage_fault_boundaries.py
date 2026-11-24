@@ -171,11 +171,9 @@ def test_should_fail_waits_out_a_source_that_is_still_being_written(tmp_path):
         writer.join()
 
 
-def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_path):
+def test_no_reply_until_the_event_is_published_after_snapshot_creation(tmp_path):
     """Snapshot sidecars and partial records get no reply; a published event is judged on its snapshot."""
-    owned = tmp_path / "owned"
     control = tmp_path / "control"
-    owned.mkdir()
     control.mkdir()
     original = json.dumps({"complete": False})
     event = control / "event-123-0"
@@ -188,7 +186,7 @@ def test_source_mutation_waits_for_published_event_after_snapshot_creation(tmp_p
     event.touch()  # Event publication can itself be observed before the newline.
     controller.service(control, "complete", seen, os.getpid())
     assert not event.with_suffix(".reply").exists()
-    event.write_text(f"rename\t{snapshot}\t{owned / 'progress.json'}\n", encoding="utf-8")
+    event.write_text(f"rename\t{snapshot}\t{tmp_path / 'progress.json'}\n", encoding="utf-8")
     controller.service(control, "complete", seen, os.getpid())
     # The snapshot holds the bytes from event time (not complete), so the write may pass.
     assert snapshot.read_text(encoding="utf-8") == original

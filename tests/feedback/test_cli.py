@@ -264,11 +264,13 @@ class TestReporting:
         assert "may be stale" in capsys.readouterr().out
 
     def test_export_is_the_explicit_redacted_file_path(self, run, project, filable, tmp_path):
-        assert run("export", "--all") == 0
-        assert (project / ".booley" / "BOOLEY-FEEDBACK.md").is_file()
+        default = project / ".booley" / "BOOLEY-FEEDBACK.md"
         target = tmp_path / "sanitized.md"
         assert run("export", "--all", "--output", str(target)) == 0
         assert target.is_file()
+        assert not default.exists()
+        assert run("export", "--all") == 0
+        assert default.is_file()
 
     def test_export_honours_the_selected_finding_ids(self, run, project, filable, tmp_path):
         _log_booley_finding(run, "only this finding", "bug")

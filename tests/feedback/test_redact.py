@@ -96,7 +96,8 @@ class TestScrubbing:
         out, _ = redact(text.format(project=project), project)
         for secret in gone:
             assert secret.format(project=project) not in out
-        assert kept in out
+        if kept:
+            assert kept in out
 
     @pytest.mark.parametrize("spelling", ["entry", "target"])
     def test_symlinked_booley_dir_target_is_project_private(self, project, spelling):

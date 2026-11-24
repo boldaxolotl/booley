@@ -186,7 +186,7 @@ def _cli_arguments(subcommand: str, tmp_path: Path) -> list[str]:
 @pytest.mark.parametrize(
     ("subcommand", "expected_exit", "expected_output"),
     [
-        ("backlinks", 0, '"campaign_id": "campaign-1"'),
+        ("backlinks", 0, ""),
         ("rejection", 2, "rejection created an attempt"),
     ],
 )
@@ -204,7 +204,10 @@ def test_validator_cli_exposes_every_check(
         check=False,
     )
     assert result.returncode == expected_exit, result.stderr
-    assert expected_output in result.stdout + result.stderr
+    if expected_exit == 0:
+        assert json.loads(result.stdout)["campaign_id"] == "campaign-1"
+    else:
+        assert expected_output in result.stderr
 
 
 def test_validator_checks_resume_and_rejection(tmp_path: Path) -> None:

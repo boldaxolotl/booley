@@ -11,7 +11,7 @@ FLOWS = Path(__file__).resolve().parents[2] / "src" / "booley" / "flows"
 # checks below.
 # `_prepared_target_selection` stays a string: the guarded bug is a by-name lookup of this
 # field, and no public boundary exposes the field name.
-PREPARED_TARGET_SELECTION = "_prepared_target_selection"  # no public alias: field read by name
+PREPARED_TARGET_SELECTION = "_prepared_target_selection"
 
 # Hooks and fields the shared lifecycle must call directly: every endpoint
 # declares them (EndpointState supplies the neutral default).
