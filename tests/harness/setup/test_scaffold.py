@@ -229,6 +229,11 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
         "filesets": ["lint_selftest_bad"],
         "toplevel": "my_ip_lint_selftest_bad",
     }
+    # An HDL file type keeps Lint from excluding the bad source it must fail on.
+    assert selftest_core["filesets"]["lint_selftest_bad"]["files"] == [
+        {"booley_doctor_selftest/lint_bad.sv": {"file_type": "systemVerilogSource"}}
+    ]
+    assert "lint_selftest_bad" not in core["filesets"]
     assert core_schema_errors(tmp_path / "verif/booley_doctor_selftest.core") == []
 
     public = {handle.name for handle in TargetCatalog.build(tmp_path).list()}
@@ -370,6 +375,7 @@ def test_cocotb_combo_shapes() -> None:
 def test_fpga_part_adds_xdc_and_enables_the_fpga_flow() -> None:
     files = scaffold_files(_choices(fpga_part="xc7a200tfbg484-1"))
     core = _core(files)
+    assert core["targets"]["fpga_my_ip"]["flow"] == "generic"
     assert "xdc" in core["targets"]["fpga_my_ip"]["filesets"]
     assert core["filesets"]["xdc"]["files"] == [{"constraints/my_ip.xdc": {"file_type": "xdc"}}]
     assert "constraints/my_ip.xdc" in files
@@ -835,6 +841,8 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
     # Private: the Synthesis Flow runs Yosys inside the Sandbox. `_configure_synth`
     # and `_execute_boundary` are its two Sandbox command calls; the real
     # `configure` parser still reads the argv the scaffolded Target produces.
+    # `_synth_build_dir` and `_run` are the Flow's own build directory and run
+    # entry, which the public CLI reaches only through that Sandbox.
     monkeypatch.setattr(AsicSynthesizeFlow, "_configure_synth", configure_actual)
     monkeypatch.setattr(
         AsicSynthesizeFlow,
