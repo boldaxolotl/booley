@@ -671,6 +671,40 @@ def _fresh_booley_dir_selection() -> Iterator[None]:
     reset_cache()
 
 
+class FeatureFlagHelper:
+    """Registers test Feature Flags and enables them in a Project's ``booley.toml``."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def register(self, *names: str) -> None:
+        # Production registers no flag and no public entry point adds one, so a
+        # test replaces the registry for its own duration.
+        from booley.config import feature_flags
+
+        self._monkeypatch.setattr(
+            feature_flags,
+            "FEATURE_FLAGS",
+            (
+                *feature_flags.FEATURE_FLAGS,
+                *(feature_flags.FeatureFlag(n, "Test flag", 1) for n in names),
+            ),
+        )
+
+    def enable(self, booley_dir: Path, *names: str) -> None:
+        self.register(*names)
+        listed = ", ".join(f'"{name}"' for name in names)
+        toml = booley_dir / "booley.toml"
+        existing = toml.read_bytes().decode("utf-8") if toml.exists() else ""
+        toml.write_bytes(f"{existing}\n[features]\nenable = [{listed}]\n".encode())
+
+
+@pytest.fixture
+def feature_flags(monkeypatch: pytest.MonkeyPatch) -> FeatureFlagHelper:
+    """Not autouse: the default suite runs with the empty production registry."""
+    return FeatureFlagHelper(monkeypatch)
+
+
 @pytest.fixture(autouse=True)
 def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every test with an empty process-wide Target catalog cache.

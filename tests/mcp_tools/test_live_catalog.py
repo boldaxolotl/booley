@@ -12,7 +12,7 @@ import pytest
 from mcp import Client, MCPError
 from mcp.types import TextContent
 
-from booley.mcp import server
+from booley.mcp import catalog, server
 from booley.runtime.booley_dir import reset_cache
 from tests.time_budget import hang_guard_s, scaled
 
@@ -715,3 +715,41 @@ def test_disabled_duplicate_custom_flows_do_not_reject_the_catalog(project):
                 await client.list_tools()
 
     asyncio.run(exercise())
+
+
+def test_gated_tool_exists_only_while_its_flag_is_on(project, monkeypatch, feature_flags):
+    # `booley_poll` is an existing utility. Production registers no gate and no
+    # public entry point adds one, so the test gates it directly.
+    monkeypatch.setitem(catalog.GATED_MCP_TOOLS, "booley_poll", "test-flag")
+    feature_flags.register("test-flag")
+    toml = project / "booley.toml"
+    toml.write_bytes(b"[flows.sim]\nenabled = true\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "booley_poll" not in await tools(client)
+            with pytest.raises(MCPError, match="Unknown MCP tool"):
+                await client.call_tool("booley_poll", {"run_id": "absent"})
+
+            feature_flags.enable(project, "test-flag")
+            assert (await client.call_tool("booley_poll", {"run_id": "absent"})).content
+            assert "booley_poll" in await tools(client)
+
+            toml.write_bytes(b"[flows.sim]\nenabled = true\n")
+            with pytest.raises(MCPError, match="Unknown MCP tool"):
+                await client.call_tool("booley_poll", {"run_id": "absent"})
+
+    asyncio.run(exercise())
+
+
+def test_server_start_refuses_an_invalid_features_table(project, feature_flags):
+    from booley.config.feature_flags import FeatureConfigError
+
+    feature_flags.register("test-flag")
+    (project / "booley.toml").write_bytes(b'[features]\nenable = ["ghost"]\n')
+
+    with pytest.raises(FeatureConfigError, match="ghost"):
+        server._validate_features()
+    # The running catalog treats the same table as every gate closed.
+    assert server._exposure().features == frozenset()
