@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -197,6 +200,117 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     finally:
         release.set()
     assert admitted.session_key == "pid:fixture:98765:101"
+
+
+_NEEDS_PROC = pytest.mark.skipif(
+    sys.platform != "linux", reason="reads the caller's environment from /proc"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_name", "thread_meta", "peer", "t3_thread", "expected"),
+    [
+        pytest.param(
+            "claude-code",
+            None,
+            "child",
+            "t3-1",
+            ("claude", "t3-1"),
+            id="claude-t3",
+            marks=_NEEDS_PROC,
+        ),
+        pytest.param(
+            "claude-code", None, "child", None, ("claude", None), id="neither", marks=_NEEDS_PROC
+        ),
+        pytest.param("codex-mcp-client", "cx-1", None, None, ("codex", "cx-1"), id="codex"),
+        pytest.param("codex-mcp-client", "cx-2", "chat", None, ("codex", "cx-2"), id="codex-chat"),
+    ],
+)
+async def test_job_records_the_agent_client_and_thread(
+    tmp_path, monkeypatch, client_name, thread_meta, peer, t3_thread, expected
+):
+    from booley.mcp import session_observer
+    from booley.runtime import chat_sessions
+    from booley.runtime.pid import capture_process_identity
+    from booley.runtime.session_activity import process_session_key
+    from booley.runtime.session_paths import session_jobs_dir
+    from tests.runtime.test_chat_sessions import process
+
+    proc = tmp_path / "proc"
+    # A Claude peer is a real process with, or without, the thread variable of T3 Code in its
+    # environment; a Booley chat tab's peer sits under a marked launch in a fake /proc.
+    environment = {k: v for k, v in os.environ.items() if k != "T3CODE_THREAD_ID"}
+    environment.update({} if t3_thread is None else {"T3CODE_THREAD_ID": t3_thread})
+    child = subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep({hang_guard_s()})"], env=environment
+    )
+    launch = process(proc, 100, 1, executable="node") if peer == "chat" else None
+    if launch is not None:
+        chat_sessions.reserve_codex_chat(tmp_path, launch)
+    identity = {
+        None: None,
+        "child": capture_process_identity(child.pid),
+        "chat": process(proc, 101, 100) if launch is not None else None,
+    }[peer]
+    monkeypatch.setattr(session_observer, "observed_peer", lambda _request: identity)
+    try:
+        await _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta)
+    finally:
+        child.kill()
+        child.wait()
+    (rec,) = job_records.list_records(session_jobs_dir())
+    assert (rec.client, rec.thread) == expected
+    assert rec.owner == "mcp-test|" + (
+        f"{rec.client}:{rec.thread}" if rec.thread else rec.session_key
+    )
+    if launch is not None:
+        assert rec.session_key == process_session_key(launch)
+
+
+async def _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta):
+    """Call a background Flow through the application as *client_name*, on the real observer."""
+    from booley.mcp import job_ownership
+    from booley.mcp.session_observer import SessionObserver
+    from booley.mcp.session_registry import SessionRegistry
+    from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime
+
+    for name in ("BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR", "BOOLEY_SLOTS_DIR"):
+        monkeypatch.setenv(name, str(tmp_path / name))
+    monkeypatch.chdir(tmp_path)
+
+    async def run(*_args, **_kwargs):
+        return 0, "", "", False
+
+    monkeypatch.setattr(server, "_run_subprocess", run)
+    monkeypatch.setattr(server, "_endpoint_command", lambda *_: ["fake"])
+    monkeypatch.setattr(server, "_mcp_tool_timeout_seconds", lambda *_a, **_k: 60)
+    observer = SessionObserver(budget=hang_guard_s())
+    monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path, proc_root=proc))
+    jobs = server._JobManager(_FakeLifetime())
+
+    async def dispatch(name, args, source, request):
+        caller = job_ownership.caller_for("mcp-test", request)
+        return await server._dispatch_booley_mcp_tool(
+            name, args, source, {}, jobs, request, caller
+        )
+
+    app = McpApplication(
+        [{"name": "sim", "schema": {"type": "object"}, "memory_admitted": True}],
+        dispatch=dispatch,
+        request_dispatch=dispatch,
+        canonicalize=lambda n: n,
+        on_discovery_error=lambda _: None,
+    )
+    ctx = context()
+    ctx.session.client_params.client_info.name = client_name
+    meta = None if thread_meta is None else {"threadId": thread_meta}
+    try:
+        await server._call_application_tool(
+            app, CallToolRequestParams(name="sim", arguments={}, _meta=meta), ctx, observer
+        )
+    finally:
+        observer.close()
 
 
 @pytest.mark.asyncio

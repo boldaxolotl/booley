@@ -30,7 +30,8 @@ from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.subprocess_budget import run_bounded_child
-from tests.time_budget import hang_guard_s
+from tests.t3_cli_fake import write_t3_cli
+from tests.time_budget import hang_guard_s, scaled
 from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -138,6 +139,8 @@ def _job(
     *,
     target: str | None = "uart",
     session: str | None = "sess1",
+    client: str | None = None,
+    thread: str | None = None,
     status: str = "done",
     exit_code: int | None = 0,
     started: str = STARTED,
@@ -169,6 +172,8 @@ def _job(
             run_started_at=started if running and pid else None,
             work_dir=None if work_dir is None else str(work_dir),
             session_key=session,
+            client=client,
+            thread=thread,
             process_identity=identity,
             ended_at=None if running else ended,
             report_root=(
@@ -424,9 +429,9 @@ def test_a_sessions_key_without_a_handle_reads_as_its_process():
     from booley.harness.dashboard.web_snapshot import _owner
 
     key = "pid:pid:[4026531836]:42:7"
-    job = SimpleNamespace(record=SimpleNamespace(session_key=key), owner_handle="")
+    record = SimpleNamespace(session_key=key, client=None, thread=None)
 
-    assert _owner(job).startswith("PID 42")
+    assert _owner(SimpleNamespace(record=record, owner_handle=""), {}).startswith("PID 42")
 
 
 def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):
@@ -616,6 +621,50 @@ def test_standalone_job_of_the_worktree_is_owned_by_you(world, monkeypatch):
     assert [(row["target"], row["owner"], row["state"]) for row in body["now"]] == [
         ("t_sa", "you", "running")
     ]
+
+
+@pytest.mark.parametrize("t3", ["available", "stalled", "unavailable"])
+def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch, tmp_path, t3):
+    for run_id, client, thread, session in (
+        ("claude", "claude", "t3-claude-thread-1a2b3c4d", "sess2"),
+        ("gone", "claude", "t3-gone-thread-5e6f7a8b", "sess2"),
+        ("codex", "codex", "codex-thread-9c0d1e2f", "sess3"),
+        ("old", None, None, "sess1"),
+    ):
+        _job(world, run_id, world.wt, target=run_id, session=session, client=client, thread=thread)
+
+    if t3 != "unavailable" and sys.platform == "win32":
+        pytest.skip("the t3 fake is a POSIX script")
+    cli, log = write_t3_cli(
+        tmp_path, {"t3-claude-thread-1a2b3c4d": "Fix the UART"}, stall=t3 == "stalled"
+    )
+    monkeypatch.setenv(
+        "T3CODE_CLI_PATH", str(tmp_path / "missing" if t3 == "unavailable" else cli)
+    )
+    if t3 == "stalled":
+        from booley.harness.dashboard import thread_titles
+
+        monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", scaled(0.5))
+
+    with _client(world, monkeypatch) as client:
+        owners = [
+            {row["target"]: row["owner"] for row in _snapshot(client, world.wt)["results"]["jobs"]}
+            for _ in range(2)
+        ]
+
+    titled = "Fix the UART" if t3 == "available" else "claude · 1a2b3c4d"
+    assert owners == 2 * [
+        {
+            "claude": titled,
+            "gone": "claude · 5e6f7a8b",
+            "codex": "codex · 9c0d1e2f",
+            "old": "sess1",
+        }
+    ]
+    # One call per Claude thread over both snapshots (cached; none for Codex), or a single
+    # call before T3 Code is given up on.
+    calls = len(log.read_text().split()) if log.exists() else 0
+    assert calls == {"available": 2, "stalled": 1, "unavailable": 0}[t3]
 
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
