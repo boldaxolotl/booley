@@ -84,7 +84,8 @@ def test_rows_drop_status_words_and_colors_strip_to_the_plain_layout(capsys, mon
     assert "\033" not in plain
     assert "\033[2msim.trace-unavailable:sim_fast" in colored
     assert colors.strip_ansi(colored) == plain
-    # A clean run, with colors still on, ends in a bold green verdict and Summary line.
+    # A clean run, with colors on, ends in a bold green verdict and Summary line.
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
     reporter = _reporter()
     reporter.pass_("fine")
     capsys.readouterr()

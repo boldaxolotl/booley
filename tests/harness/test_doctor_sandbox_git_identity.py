@@ -113,18 +113,18 @@ _RECREATE = (
 
 
 _NAME_ONLY = ({"system": ("Visitor", "visitor@example.com")}, [("user.name", AGENT_NAME)])
-_OTHER_NAME = ({}, [("user.name", "Someone Else")])
+_OTHER_NAME = ({}, [("user.name", "Someone Else"), ("user.email", AGENT_EMAIL)])
 
 
 @pytest.mark.parametrize(
     ("identities", "pairs", "toml", "has", "lacks"),
     [
-        ({"global": _VISITOR}, [], b"", "Visitor global", ""),
-        ({}, "bogus", b"", "GIT_CONFIG_COUNT", ""),
-        (*_NAME_ONLY, b"", "user.email visitor@example.com", "user.name is not set"),
-        (*_OTHER_NAME, b"", "Someone Else", ""),
+        ({"global": _VISITOR}, [], b"", "git uses 'Visitor' from global config", ""),
+        ({}, "bogus", b"", "bogus count in GIT_CONFIG_COUNT", ""),
+        (*_NAME_ONLY, b"", "git uses 'visitor@example.com' from", "user.name is not set"),
+        (*_OTHER_NAME, b"", f"'Someone Else', [agent.git] expects '{AGENT_NAME}'", ""),
         ({}, [], b"", "git has no value", ""),
-        ({}, [], b"[agent.git]\nname = 3\n", "[agent.git] is invalid", ""),
+        ({}, [], b"[agent.git]\nname = 3\n", "[agent.git] is invalid: ", ""),
     ],
     ids=["missing", "malformed", "name-only", "different", "nothing", "invalid-agent-git"],
 )
@@ -140,7 +140,7 @@ def test_override_warning_names_the_problem(sandbox_git, identities, pairs, toml
 
     check = _warned(_inspect(sandbox_git), OVERRIDE_ID)
 
-    assert all(needle in check.warning for needle in has.split())
+    assert has in check.warning
     assert not lacks or lacks not in check.warning
     if not toml:
         assert _RECREATE in check.fix

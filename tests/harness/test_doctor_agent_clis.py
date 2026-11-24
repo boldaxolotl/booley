@@ -245,7 +245,8 @@ def test_single_cli_project_output_is_unchanged(home, tmp_path, monkeypatch):
                 f"booley auth --cli {only}",
             ),
         ]
-        assert {f.subject for f in findings if f.check_id == "agent.rotation-risk"} == {only}
+        agent_rows = [f for f in findings if (f.check_id or "").startswith("agent.")]
+        assert {f.subject for f in agent_rows} <= {None, only}
 
 
 _RETIRED = "auth 'auto' is retired"

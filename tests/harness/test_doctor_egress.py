@@ -36,30 +36,27 @@ def _rows(root, needle):
 
 
 @pytest.mark.parametrize(
-    ("mode", "resolver", "needle", "severity", "fix"),
+    ("mode", "resolver", "needle", "severity", "check_id", "fix"),
     [
-        ("unproxied", _unresolvable, "Unproxied Sandbox", Severity.WARN, ""),
-        (None, _unresolvable, "booley-proxy", Severity.FAIL, "BOOLEY_EGRESS=unproxied"),
-        (None, _resolves, "booley-proxy", Severity.PASS, ""),
-        ("bogus", _resolves, "BOOLEY_EGRESS", Severity.FAIL, "unproxied"),
+        ("unproxied", _unresolvable, "Unproxied Sandbox", Severity.WARN, "sandbox.unproxied", ""),
+        (None, _unresolvable, "does not resolve", Severity.FAIL, None, "BOOLEY_EGRESS=unproxied"),
+        (None, _resolves, "booley-proxy", Severity.PASS, None, ""),
+        ("bogus", _resolves, "BOOLEY_EGRESS", Severity.FAIL, None, "`proxy` or `unproxied`"),
     ],
     ids=["unproxied", "unresolved-proxy", "resolved-proxy", "invalid-mode"],
 )
-def test_egress_mode_row(sandbox_doctor, monkeypatch, mode, resolver, needle, severity, fix):
+def test_egress_mode_row(
+    sandbox_doctor, monkeypatch, mode, resolver, needle, severity, check_id, fix
+):
     if mode:
         monkeypatch.setenv("BOOLEY_EGRESS", mode)
     monkeypatch.setattr(socket, "getaddrinfo", resolver)
 
-    findings = run_doctor(sandbox_doctor).findings
+    [row] = _rows(sandbox_doctor, needle)
 
-    [row] = [f for f in findings if needle in f.message]
-    assert row.severity is severity
+    assert (row.severity, row.check_id) == (severity, check_id)
+    assert bool(row.fix) == bool(fix)
     assert fix in (row.fix or "")
-    assert (row.check_id == "sandbox.unproxied") == (mode == "unproxied")
-    assert any("does not resolve" in f.message for f in findings) == (
-        row.severity is Severity.FAIL and mode is None
-    )
-    assert ("`proxy`" in row.message and "`unproxied`" in row.message) == (mode == "bogus")
 
 
 def test_unproxied_warning_is_waivable(sandbox_doctor, monkeypatch):
