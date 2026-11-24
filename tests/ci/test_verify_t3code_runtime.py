@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -173,3 +174,31 @@ def test_claude_tool_list_comparison(offered: set[str], problems: list[str]) -> 
     compare = importlib.import_module("verify_t3code_claude_tools").compare_tool_lists
 
     assert compare(offered, denied={"schedule_task"}, kept={"html_render"}) == problems
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the T3 Code harness imports pwd")
+def test_claude_shim_exits_with_claude_while_its_stdin_stays_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_shim = importlib.import_module("verify_t3code_claude_tools")._write_claude_shim
+    real, bin_dir, capture = tmp_path / "real", tmp_path / "bin", tmp_path / "capture.jsonl"
+    real.mkdir()
+    bin_dir.mkdir()
+    (real / "claude").write_bytes(
+        f"#!{sys.executable}\nimport sys\nsys.stdin.readline()\nsys.exit(7)\n".encode()
+    )
+    (real / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", str(real))
+    write_shim(bin_dir, capture)
+
+    with subprocess.Popen([str(bin_dir / "claude")], stdin=subprocess.PIPE) as shim:
+        assert shim.stdin is not None
+        shim.stdin.write(b'{"mcp_set_servers": 1}\nignored\n')
+        shim.stdin.flush()
+        try:
+            status = shim.wait(timeout=scaled(10))
+        finally:
+            shim.kill()
+
+    assert status == 7
+    assert capture.read_bytes() == b'{"mcp_set_servers": 1}\n'

@@ -394,10 +394,7 @@ reports `No such tool available` for one of them, this is why:
 - **Secrets:** `request_secret`. Booley
   [forwards your agent logins](#agent-cli-logins-in-the-sandbox) itself.
 
-The tools not listed stay available.
-
-Codex threads keep every T3 Code tool: Booley has no setting that turns them
-off for Codex.
+Codex threads keep every T3 Code tool.
 
 ## Editor credential forwarding
 

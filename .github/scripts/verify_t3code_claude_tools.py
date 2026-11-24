@@ -72,23 +72,28 @@ unlink_pull_requests unwatch_pull_request watch_pull_request write_pull_request_
 _KEPT = frozenset(_KEPT_NAMES.split())
 
 _SHIM = """#!{python} -I
-import subprocess, sys
+import os, subprocess, sys, threading
 child = subprocess.Popen([{real!r}, *sys.argv[1:]], stdin=subprocess.PIPE)
-with open({capture!r}, "ab") as capture:
-    for line in sys.stdin.buffer:
-        if b"mcp_set_servers" in line:
-            capture.write(line)
-            capture.flush()
-        try:
-            child.stdin.write(line)
-            child.stdin.flush()
-        except BrokenPipeError:
-            break
-try:
-    child.stdin.close()
-except BrokenPipeError:
-    pass
-sys.exit(child.wait())
+
+def forward():
+    with open({capture!r}, "ab") as capture:
+        for line in sys.stdin.buffer:
+            if b"mcp_set_servers" in line:
+                capture.write(line)
+                capture.flush()
+            try:
+                child.stdin.write(line)
+                child.stdin.flush()
+            except BrokenPipeError:
+                break
+    try:
+        child.stdin.close()
+    except BrokenPipeError:
+        pass
+
+# T3 Code keeps our stdin open until it sees us exit, so wait for Claude, not for stdin.
+threading.Thread(target=forward, daemon=True).start()
+os._exit(child.wait())
 """
 
 
