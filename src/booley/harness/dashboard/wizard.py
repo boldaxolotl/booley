@@ -68,13 +68,13 @@ from booley.harness.dashboard.specialist_form import (
     finished_coverage_records,
 )
 from booley.harness.dashboard.targets import (
-    TARGET_KIND_OF_FLOW,
     RunChoices,
     TargetListing,
     TargetsReader,
     WorktreeChoice,
     enabled_flows,
     first_line,
+    targets_for,
 )
 from booley.harness.worktree_list import WorktreeListError
 
@@ -686,8 +686,7 @@ class RunWizard(ModalScreen[str | None]):
             return LOADING_TARGETS, rows
         if listing.problem:
             return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}", rows
-        drives = TARGET_KIND_OF_FLOW.get(self._name, self._name)
-        fitting = [row.selector for row in listing.rows if drives in row.flows]
+        fitting = targets_for(listing, self._name)
         rows += [(selector, selector) for selector in fitting]
         return (field.hint if fitting else NO_FITTING_TARGET), rows
 

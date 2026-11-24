@@ -99,6 +99,12 @@ class TargetListing:
     problem: str = ""
 
 
+def targets_for(listing: TargetListing, flow: str) -> tuple[str, ...]:
+    """The selectors of the Targets *flow* can drive: a Flow that is not Target-aware uses its kind's."""
+    drives = TARGET_KIND_OF_FLOW.get(flow, flow)
+    return tuple(row.selector for row in listing.rows if drives in row.flows)
+
+
 @dataclass(frozen=True)
 class TargetDetail:
     """What one Target declares, before any setup.

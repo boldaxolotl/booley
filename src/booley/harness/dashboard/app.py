@@ -39,7 +39,7 @@ from booley.harness.dashboard.measurement import checkout_of, measuring_text
 from booley.harness.dashboard.model import DashboardSnapshot
 from booley.harness.dashboard.resources import Resources
 from booley.harness.dashboard.review import Occupants
-from booley.harness.dashboard.specialist_form import SimRun
+from booley.harness.dashboard.specialist_form import SimRun, sim_runs
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -2011,14 +2011,9 @@ class DashboardApp(App[None]):
         if self.snapshot.observed_at == 0:
             return None
         here = worktree.resolve()
-        return tuple(
-            SimRun(job.report_path.parent, job.record.ended_at or "")
-            for job in self.snapshot.jobs.jobs
-            if job.record.endpoint == "sim"
-            and _finished(job)
-            and job.report_path is not None
-            and job.record.work_dir
-            and Path(job.record.work_dir).resolve() == here
+        return sim_runs(
+            self.snapshot.jobs.jobs,
+            lambda job: bool(job.record.work_dir and Path(job.record.work_dir).resolve() == here),
         )
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:

@@ -4,14 +4,19 @@
 registered linked worktree; ``GET /api/report?...`` serves a report the snapshot links to.
 Every error is ``{"error": "<sentence>"}`` and carries no Jobs. ``GET /`` serves the page
 that polls the snapshot, and its assets come from ``/assets/``.
+
+While the ``web-run-panel`` Feature Flag is on for the Project, ``GET /api/run/entries``,
+``/api/run/targets``, ``/api/run/tests`` and ``/api/run/form`` answer the Run form's choices
+for the same ``?worktree=``, with the same refusals; with the flag off they are unknown routes.
 """
 
 from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -19,13 +24,18 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from booley.config.feature_flags import enabled_features, feature_enabled
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.core.resources import package_data_dir
+from booley.harness.dashboard import web_run
 from booley.harness.dashboard.jobs import JobReader
+from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.resources import ResourceSampler
+from booley.harness.dashboard.specialist_form import SimRun
+from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.thread_titles import ThreadTitles
-from booley.harness.dashboard.web_snapshot import find_report, read_snapshot
+from booley.harness.dashboard.web_snapshot import find_report, finished_sim_runs, read_snapshot
 from booley.harness.worktree_list import WorktreeListError, worktree_registrations
 from booley.runtime import job_slots, loopback_http
 
@@ -93,12 +103,82 @@ def _page(assets: Path) -> Callable[[Request], Response]:
     return page
 
 
+def _page_routes() -> list[Route | Mount]:
+    """``GET /`` and the page's assets, which ship in the package."""
+    assets = package_data_dir() / "dashboard_web"
+    return [Route("/", _page(assets)), Mount("/assets", StaticFiles(directory=assets))]
+
+
+def _required(query: Mapping[str, str], name: str, meaning: str) -> str:
+    value = query.get(name)
+    if not value:
+        raise _RefusalError(400, f"{name} is required: {meaning}")
+    return value
+
+
+def _run_form(
+    launcher: Launcher,
+    records: Callable[[Path], tuple[SimRun, ...]],
+    worktree: Path,
+    query: Mapping[str, str],
+) -> dict[str, Any]:
+    """The form route's answer: the values given are every parameter that is not the route's own."""
+    kind = _required(query, "kind", "flow or specialist")
+    name = _required(query, "name", "name a built-in Flow or Specialist")
+    given = {key: value for key, value in query.items() if key not in {"worktree", "kind", "name"}}
+    return web_run.form(launcher, worktree, kind, name, given, lambda: records(worktree))
+
+
+def _run_routes(
+    main: Path, booley_dir: Path, reader: JobReader, lock: threading.Lock, features: frozenset[str]
+) -> list[Route]:
+    """The ``/api/run/*`` routes while the Feature Flag is on, else none.
+
+    Each accepts the worktree first, so its refusals are the snapshot's, then reads its own
+    parameters.
+    """
+    if not feature_enabled("web-run-panel", features):
+        return []
+    launcher = Launcher(booley_dir)
+    targets = TargetsReader(main)
+
+    def records(worktree: Path) -> tuple[SimRun, ...]:
+        with lock:  # the Job reader's artifact cache is shared
+            return finished_sim_runs(reader, worktree)
+
+    reads: dict[str, Callable[[Path, Mapping[str, str]], dict[str, Any]]] = {
+        "entries": lambda worktree, _query: web_run.entries(launcher, worktree),
+        "targets": lambda worktree, query: web_run.targets(
+            launcher, targets, worktree, _required(query, "flow", "name a built-in Flow")
+        ),
+        "tests": lambda worktree, query: web_run.tests(
+            targets, worktree, _required(query, "target", "pass a Target selector")
+        ),
+        "form": lambda worktree, query: _run_form(launcher, records, worktree, query),
+    }
+
+    def served(
+        read: Callable[[Path, Mapping[str, str]], dict[str, Any]],
+    ) -> Callable[[Request], Response]:
+        def route(request: Request) -> Response:
+            worktree, _branch = _accepted_worktree(main, request.query_params.get("worktree"))
+            try:
+                return JSONResponse(read(worktree, request.query_params))
+            except web_run.UnknownEntryError as exc:
+                raise _RefusalError(404, str(exc)) from exc
+
+        return route
+
+    return [Route(f"/api/run/{name}", served(read)) for name, read in reads.items()]
+
+
 def create_app(
     main: Path,
     booley_dir: Path,
     *,
     proc_root: Path = Path("/proc"),
     cgroup: Path = Path("/sys/fs/cgroup"),
+    features: frozenset[str] = frozenset(),
 ) -> Starlette:
     """The page and JSON application of the Project whose main checkout is *main*.
 
@@ -140,14 +220,12 @@ def create_app(
             raise _RefusalError(404, "no such report in this worktree")
         return Response(data, media_type="application/json")
 
-    assets = package_data_dir() / "dashboard_web"
-
     return Starlette(
         routes=[
-            Route("/", _page(assets)),
-            Mount("/assets", StaticFiles(directory=assets)),
+            *_page_routes(),
             Route("/api/snapshot", snapshot),
             Route("/api/report", report),
+            *_run_routes(main, booley_dir, reader, lock, features),
         ],
         exception_handlers={_RefusalError: _refuse},
     )
@@ -155,8 +233,14 @@ def create_app(
 
 def serve(project_root: Path, port: int) -> int:
     """Serve the Project's Jobs on ``127.0.0.1:<port>`` until stopped."""
+    try:
+        features = enabled_features(project_root)
+    except ValueError:  # An unparsable booley.toml: the page still serves, without gated routes.
+        features = frozenset()
     app = create_app(
-        resolve_main_checkout_root(project_root), resolve_common_booley_dir(project_root)
+        resolve_main_checkout_root(project_root),
+        resolve_common_booley_dir(project_root),
+        features=features,
     )
     try:
         sock = loopback_http.listen(HOST, port)
