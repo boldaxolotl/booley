@@ -286,9 +286,9 @@ To gate a feature:
 1. Register it in `FEATURE_FLAGS` in `src/booley/config/feature_flags.py` with
    a name, a one-line summary, and the tracking issue.
 2. Gate a CLI command in `GATED_COMMANDS` and an MCP tool in `GATED_MCP_TOOLS`.
-   For any other surface (a CLI option, a configuration key, a Dashboard
-   element), call `feature_enabled` and add the gate in the change that first
-   needs it.
+   For any other surface (a CLI option or a configuration key), call
+   `feature_enabled(name)` where the surface is built, in the change that first
+   gates it.
 3. Keep the generated references flag-off. Write no user doc for the feature
    until the PR that deletes the flag.
 4. In tests, use the `feature_flags` fixture. To try the feature, add

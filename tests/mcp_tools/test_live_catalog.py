@@ -718,8 +718,8 @@ def test_disabled_duplicate_custom_flows_do_not_reject_the_catalog(project):
 
 
 def test_gated_tool_exists_only_while_its_flag_is_on(project, monkeypatch, feature_flags):
-    # `booley_poll` is an existing utility; gating it with a test flag exercises
-    # the gate without a production flag.
+    # `booley_poll` is an existing utility. Production registers no gate and no
+    # public entry point adds one, so the test gates it directly.
     monkeypatch.setitem(catalog.GATED_MCP_TOOLS, "booley_poll", "test-flag")
     feature_flags.register("test-flag")
     toml = project / "booley.toml"

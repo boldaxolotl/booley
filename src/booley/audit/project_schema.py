@@ -114,7 +114,7 @@ def audit_features_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     try:
         enabled = parse_enabled_features(data)
     except FeatureConfigError as exc:
-        return failure(str(exc), "remove it from [features].enable")
+        return failure(str(exc), "correct [features].enable in booley.toml")
     if not enabled:
         return ConfigTableAudit()
     return ConfigTableAudit(

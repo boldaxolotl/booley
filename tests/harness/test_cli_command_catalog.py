@@ -227,8 +227,8 @@ def test_gated_command_exists_only_while_its_flag_is_on(
     capsys: pytest.CaptureFixture[str],
     feature_flags,
 ) -> None:
-    # `cheat` is an existing Project-independent command; gating it with a test
-    # flag exercises the gate without a production flag.
+    # `cheat` is an existing Project-independent command. Production registers no
+    # gate and no public entry point adds one, so the test gates it directly.
     monkeypatch.setitem(cli.GATED_COMMANDS, "cheat", "test-flag")
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     booley_dir = tmp_path / ".booley"
@@ -255,3 +255,28 @@ def test_gated_command_exists_only_while_its_flag_is_on(
     monkeypatch.setattr("sys.argv", ["booley", "cheat", "--list"])
     assert cli.main() == 0
     assert capsys.readouterr().out.strip()
+
+
+def test_dispatch_refuses_a_gated_command_the_selected_project_keeps_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    feature_flags,
+) -> None:
+    # Production registers no gate and no public entry point adds one, so the
+    # test gates the Project-bound `targets` command directly.
+    monkeypatch.setitem(cli.GATED_COMMANDS, "targets", "test-flag")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    on_root, off_root = tmp_path / "on", tmp_path / "off"
+    for root in (on_root, off_root):
+        (root / ".booley").mkdir(parents=True)
+        (root / ".booley" / "booley.toml").write_bytes(b'[project]\nname = "unit"\n')
+    feature_flags.enable(on_root / ".booley", "test-flag")
+    # The ambient Project enables the flag, so parsing accepts `targets`; the
+    # selected Project keeps it off, so dispatch must refuse it.
+    monkeypatch.chdir(on_root)
+    monkeypatch.setattr("sys.argv", ["booley", "-C", str(off_root), "targets"])
+    with pytest.raises(SystemExit) as refused:
+        cli.main()
+    assert refused.value.code == 2
+    assert "invalid choice: 'targets'" in capsys.readouterr().err

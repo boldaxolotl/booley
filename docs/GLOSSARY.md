@@ -190,7 +190,7 @@ that keeps Booley out of the RTL repository and its history. It is off unless
 enabled.
 
 **Feature Flag**:
-A maintainer-only switch, named in Booley's registry and enabled per
+A maintainer-only switch, registered in `FEATURE_FLAGS` and enabled per
 **Project**, that keeps an unfinished major feature or breaking change
 invisible until a minor release deletes it.
 _Avoid_: feature toggle, experiment
