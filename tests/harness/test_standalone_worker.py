@@ -14,18 +14,17 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from booley.harness import standalone_worker as worker
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
     standalone_request_path,
 )
-from booley.runtime import job_records, job_slots
-from booley.runtime.job_records import _proc_cmdline
+from booley.runtime import detached_job, job_records, job_slots
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
@@ -258,9 +257,16 @@ def dashboard_states(project: Path, run_id: str) -> list[str]:
 
 
 @linux_only
-def test_flow_outlives_its_submitter(project: Path, ctl: Path) -> None:
+def test_flow_outlives_its_submitter_without_its_session_identity(
+    project: Path, ctl: Path
+) -> None:
     run_id = submit_and_exit(
-        project, "flow", "stub_flow", ("--ctl", str(ctl)), wait_for=ctl / "started"
+        project,
+        "flow",
+        "stub_flow",
+        ("--ctl", str(ctl)),
+        wait_for=ctl / "started",
+        env=SESSION_ENV,
     )
 
     # The submitter is gone and the Flow is mid-run; its output is already in the live log.
@@ -275,27 +281,13 @@ def test_flow_outlives_its_submitter(project: Path, ctl: Path) -> None:
     assert final.pid == running.pid
     assert final.ended_at
 
-
-@linux_only
-def test_specialist_survives_submitter_exit(project: Path, ctl: Path) -> None:
-    run_id = submit_and_exit(
-        project, "specialist", "stub_specialist", ("--ctl", str(ctl)), wait_for=ctl / "armed"
-    )
-
-    def survived_or_ended() -> bool:
-        record = job_records.read_record(run_id, jobs_root_of(project))
-        return (ctl / "survived").exists() or (
-            record is not None and record.status != job_records.STATUS_RUNNING
-        )
-
-    poll(survived_or_ended, "the Specialist to outlive its submitter")
-    # The watchdog aborts a run whose parent changed; this one is still going.
-    assert (ctl / "survived").exists()
-    # An unclassed Specialist holds no slot; the record alone must show it running.
-    assert dashboard_states(project, run_id) == ["running"]
-    (ctl / "release").write_text("1", encoding="utf-8")
-    final = terminal_record(project, run_id)
-    assert (final.status, final.exit_code) == ("done", 0)
+    worker_env = json.loads((ctl / "env.json").read_text(encoding="utf-8"))
+    for name in SESSION_ENV.keys() - {"BOOLEY_RUN_ID"}:
+        assert name not in worker_env
+    assert worker_env["BOOLEY_RUN_ID"] == run_id  # its own run, not the submitter's
+    assert final.session_key is None
+    assert "BOOLEY_RELEASE_TOKEN" not in worker_env
+    assert not list((booley_dir_of(project) / ".runtime").rglob("release-tokens"))
 
 
 # Sandbox hand-off variables a worker inherits; the tests set only what they assert.
@@ -304,27 +296,10 @@ AGENT_ENV_RESET = dict.fromkeys(
 )
 
 
-def run_stub_specialist(
-    project: Path, ctl: Path, *, worktree: Path | None = None, env: dict[str, str] | None = None
-) -> tuple[str, dict[str, object]]:
-    """Run the stub Specialist to its end; return the run id and what it saw."""
-    (ctl / "release").write_text("1", encoding="utf-8")
-    run_id = submit_and_exit(
-        project,
-        "specialist",
-        "stub_specialist",
-        ("--ctl", str(ctl)),
-        wait_for=ctl / "armed",  # the stub arms its watchdog while the submitter is alive
-        env=AGENT_ENV_RESET | (env or {}),
-        worktree=worktree,
-    )
-    final = terminal_record(project, run_id)
-    assert (final.status, final.exit_code) == ("done", 0), job_log(project, run_id)
-    return run_id, json.loads((ctl / "seen.json").read_text(encoding="utf-8"))
-
-
 @linux_only
-def test_specialist_job_uses_worktree_agent_settings(project: Path, ctl: Path) -> None:
+def test_specialist_job_survives_its_submitter_with_worktree_settings(
+    project: Path, ctl: Path
+) -> None:
     # The Project pins conflicting values: only the worktree's toml may decide.
     (booley_dir_of(project) / "booley.toml").write_text(
         '[agent]\ndefault = "claude"\n[agent.auth]\nclaude = "api_key"\n'
@@ -340,56 +315,37 @@ def test_specialist_job_uses_worktree_agent_settings(project: Path, ctl: Path) -
         '[agent.auth]\nclaude = "subscription"\n[models]\nreviewer = "claude-pinned-test"\n',
         encoding="utf-8",
     )
-
-    _, seen = run_stub_specialist(
-        project, ctl, worktree=worktree, env={"BOOLEY_AGENT_CLIS": "codex=api_key"}
+    run_id = submit_and_exit(
+        project,
+        "specialist",
+        "stub_specialist",
+        ("--ctl", str(ctl)),
+        wait_for=ctl / "armed",  # the stub arms its watchdog while the submitter is alive
+        env=AGENT_ENV_RESET | {"BOOLEY_AGENT_CLIS": "codex=api_key"},
+        worktree=worktree,
     )
 
+    poll((ctl / "survived").exists, "the Specialist to outlive its submitter")
+    # The watchdog aborts a run whose parent changed; this one is still going.
+    assert (ctl / "survived").exists()
+    # An unclassed Specialist holds no slot; the record alone must show it running.
+    assert dashboard_states(project, run_id) == ["running"]
+    (ctl / "release").write_text("1", encoding="utf-8")
+    final = terminal_record(project, run_id)
+    assert (final.status, final.exit_code) == ("done", 0), job_log(project, run_id)
+
+    seen = json.loads((ctl / "seen.json").read_text(encoding="utf-8"))
     assert seen["model"] == "claude-pinned-test"
     assert seen["default_cli"] == "claude"
     assert seen["claude_auth"] == "subscription"
     assert seen["codex_auth"] == "api_key"
-
-
-@linux_only
-def test_specialist_job_gets_a_transcript_dir_and_keeps_its_command(
-    project: Path, ctl: Path
-) -> None:
-    run_id, seen = run_stub_specialist(project, ctl)
-
     transcripts = booley_dir_of(project) / "job_logs" / "standalone" / run_id / "transcripts"
     assert seen["argv"] == ["--ctl", str(ctl), "--transcript-dir", str(transcripts)]
-    record = job_records.read_record(run_id, jobs_root_of(project))
-    assert record is not None
-    assert record.argv == ["booley", "specialist", "stub_specialist", "--ctl", str(ctl)]
+    assert final.argv == ["booley", "specialist", "stub_specialist", "--ctl", str(ctl)]
     request = json.loads(
         standalone_request_path(booley_dir_of(project), run_id).read_text(encoding="utf-8")
     )
     assert request["argv"] == ["--ctl", str(ctl)]
-
-
-@linux_only
-def test_worker_environment_has_no_session_identity(project: Path, ctl: Path) -> None:
-    (ctl / "release").write_text("1", encoding="utf-8")
-    run_id = submit_and_exit(project, "flow", "stub_flow", ("--ctl", str(ctl)), env=SESSION_ENV)
-    final = terminal_record(project, run_id)
-
-    worker_env = json.loads((ctl / "env.json").read_text(encoding="utf-8"))
-    for name in SESSION_ENV.keys() - {"BOOLEY_RUN_ID"}:
-        assert name not in worker_env
-    assert worker_env["BOOLEY_RUN_ID"] == run_id  # its own run, not the submitter's
-    assert final.session_key is None
-    assert "BOOLEY_RELEASE_TOKEN" not in worker_env
-    assert not list((booley_dir_of(project) / ".runtime").rglob("release-tokens"))
-
-
-START_FAILURE_REASONS = {
-    "unknown-flow": "no_such_flow",
-    "missing-worktree": "worktree is not a directory",
-    "bad-kind": "kind must be one of",
-    "bad-name": "bad name",
-    "bad-models": "names no known Agent CLI",
-}
 
 
 def bad_models_worktree(project: Path) -> Path:
@@ -403,48 +359,58 @@ def bad_models_worktree(project: Path) -> Path:
 
 
 @linux_only
-@pytest.mark.parametrize("case", START_FAILURE_REASONS)
-def test_start_failure_leaves_failed_record(project: Path, case: str) -> None:
-    kind, name, worktree = {
-        "unknown-flow": ("flow", "no_such_flow", project),
-        "missing-worktree": ("flow", "stub_flow", project / "gone"),
-        "bad-kind": ("bogus", "stub_flow", project),
-        "bad-name": ("flow", "bad name", project),
-        "bad-models": ("specialist", "stub_specialist", bad_models_worktree(project)),
-    }[case]
-    run_id = submit_and_exit(project, kind, name, worktree=worktree)
+@pytest.mark.parametrize(
+    ("kind", "name", "worktree", "reason"),
+    [
+        ("flow", "no_such_flow", "project", "no_such_flow"),
+        ("flow", "stub_flow", "gone", "worktree is not a directory"),
+        ("bogus", "stub_flow", "project", "kind must be one of"),
+        ("flow", "bad name", "project", "bad name"),
+        ("specialist", "stub_specialist", "bad-models", "names no known Agent CLI"),
+    ],
+    ids=["unknown-flow", "missing-worktree", "bad-kind", "bad-name", "bad-models"],
+)
+def test_start_failure_leaves_failed_record(
+    project: Path, kind: str, name: str, worktree: str, reason: str
+) -> None:
+    where = {
+        "project": project,
+        "gone": project / "gone",
+        "bad-models": bad_models_worktree(project),
+    }[worktree]
+    run_id = submit_and_exit(project, kind, name, worktree=where)
     final = terminal_record(project, run_id)
 
     assert (final.status, final.exit_code) == ("failed", 2)
     assert final.ended_at
-    assert START_FAILURE_REASONS[case] in job_log(project, run_id)
+    assert reason in job_log(project, run_id)
     assert dashboard_states(project, run_id) == ["failed"]
 
 
-def test_worker_exit_before_initialization_is_failed(tmp_path: Path) -> None:
-    from booley.runtime import detached_job
-
-    jobs_root = tmp_path / "jobs"
-    log_path = tmp_path / "job.log"
+def test_worker_exit_before_initialization_is_failed(project: Path) -> None:
+    log_path = standalone_log_path(booley_dir_of(project), "stub-1")
+    log_path.parent.mkdir(parents=True)
     job_records.write_record(
-        job_records.JobRecord("stub-1", "stub", utc_now_rfc3339(), 60), jobs_root
+        job_records.JobRecord("stub-1", "stub", utc_now_rfc3339(), 60), jobs_root_of(project)
     )
 
-    detached_job._reap_unstarted(SimpleNamespace(wait=lambda: 3), log_path, jobs_root, "stub-1")
+    # A worker that exits before it stamps its pid on the record.
+    detached_job.spawn(
+        [sys.executable, "-c", "raise SystemExit(3)"],
+        log_path,
+        jobs_root=jobs_root_of(project),
+        run_id="stub-1",
+    )
 
-    record = job_records.read_record("stub-1", jobs_root)
-    assert record is not None
+    record = terminal_record(project, "stub-1")
     assert (record.status, record.exit_code) == ("failed", 3)
     assert record.ended_at
-    assert "worker exited before initialization (exit 3)" in log_path.read_text(encoding="utf-8")
+    assert "worker exited before initialization (exit 3)" in job_log(project, "stub-1")
 
 
 def test_spawn_failure_leaves_failed_record(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import standalone_worker as worker
-    from booley.runtime import detached_job
-
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError(2, "no interpreter")
 
@@ -463,8 +429,6 @@ def test_spawn_failure_leaves_failed_record(
 def test_unwritable_log_still_leaves_failed_record(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import standalone_worker as worker
-
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise OSError(13, "log not writable")
 
@@ -479,35 +443,34 @@ def test_unwritable_log_still_leaves_failed_record(
     assert (record.status, record.exit_code) == ("failed", 2)
 
 
-def test_worker_rejects_unknown_kinds(capsys: pytest.CaptureFixture[str]) -> None:
-    from booley.harness import standalone_worker as worker
-
-    assert worker.main(["unknown", "x"]) == 2
-    assert worker.main(["goal-baseline", "request.json"]) == 2
-    assert worker.main(["standalone", "x"]) == 2
-    assert "usage:" in capsys.readouterr().err
-
-
-def test_worker_without_a_record_reports_it(
-    project: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("unknown", "{booley_dir}", "missing-1"), "usage:"),
+        (("standalone", "x"), "usage:"),
+        (("standalone", "{booley_dir}", "missing-1"), "record not found: missing-1"),
+    ],
+    ids=["unknown-kind", "argument-count", "missing-record"],
+)
+def test_worker_refuses_a_bad_invocation(
+    project: Path, capsys: pytest.CaptureFixture[str], args: tuple[str, ...], message: str
 ) -> None:
-    from booley.harness import standalone_worker as worker
+    argv = [arg.format(booley_dir=booley_dir_of(project)) for arg in args]
 
-    assert worker.main(["standalone", str(booley_dir_of(project)), "missing-1"]) == 2
-    assert "record not found: missing-1" in capsys.readouterr().err
+    assert worker.main(argv) == 2
+    assert message in capsys.readouterr().err
 
 
 @linux_only
 def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> None:
     slots_root = booley_dir_of(project) / "runtime" / "jobs" / "slots"
     store = job_slots.SlotStore(slots_root)
-    # A Shell run holds the memory class alone.
-    argv = _proc_cmdline(os.getpid()) or []
+    # A Shell run holds the memory class alone; its own command line keeps the holder live.
     holders = [
         store.acquire(
             job_slots.CLASS_MEMORY,
             pid=os.getpid(),
-            argv=argv,
+            argv=list(sys.orig_argv),
             memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
         )
     ]
