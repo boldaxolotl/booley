@@ -360,7 +360,8 @@ How a commit is accepted: [ADR
 against metrics their Targets declare, and [ADR
 0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside
 that measurement. `booley measure` checks `metrics.toml` and measures and stores
-runs; Review Runs are not built yet.
+runs; `booley review` stores Review Runs behind the `reviewed-commits` Feature
+Flag until a minor release deletes the flag.
 
 **Metric-Driven Development**:
 Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.

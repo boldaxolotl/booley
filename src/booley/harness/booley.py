@@ -103,6 +103,7 @@ COMMAND_LOCATIONS = {
     "flow": CommandLocation.SESSION_RUNTIME,
     "specialist": CommandLocation.SESSION_RUNTIME,
     "measure": CommandLocation.SESSION_RUNTIME,
+    "review": CommandLocation.SESSION_RUNTIME,
     "feedback": CommandLocation.EITHER,
     "cleanup": CommandLocation.EITHER,
 }
@@ -144,6 +145,7 @@ COMMAND_PROJECT_BINDINGS = {
     "flow": ProjectBinding.REQUIRED,
     "specialist": ProjectBinding.REQUIRED,
     "measure": ProjectBinding.REQUIRED,
+    "review": ProjectBinding.REQUIRED,
     "feedback": ProjectBinding.FEEDBACK,
     "cleanup": ProjectBinding.REQUIRED,
     "shell": ProjectBinding.REQUIRED,
@@ -156,8 +158,8 @@ RETIRED_COMMAND_POINTERS = {
 }
 
 
-# Command word -> the Feature Flag that hides it (ADR 0095). Empty in production.
-GATED_COMMANDS: dict[str, str] = {}
+# Command word -> the Feature Flag that hides it (ADR 0095).
+GATED_COMMANDS: dict[str, str] = {"review": "reviewed-commits"}
 
 
 def _gated_off(command: str, features: frozenset[str]) -> bool:
@@ -967,6 +969,37 @@ def _add_measure_subparser(sub) -> None:
     )
 
 
+def _add_review_subparser(sub) -> None:
+    """Add `booley review`: discover findings in a commit's changes with its Declared Reviews."""
+    parser = sub.add_parser(
+        "review", help="Review a commit with the Declared Reviews in reviews.toml"
+    )
+    parser.add_argument(
+        "revision",
+        nargs="?",
+        default="HEAD",
+        metavar="<sha>",
+        help="The commit to review (default: HEAD); uncommitted work is never reviewed",
+    )
+    parser.add_argument(
+        "--base",
+        metavar="<sha>",
+        help="Compare with this commit instead of the default Base",
+    )
+    parser.add_argument(
+        "--target",
+        metavar="<name>",
+        help="Run only this Target's reviews; the run is printed, never stored",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the Review Run as JSON")
+
+
+def _add_commit_subparsers(sub) -> None:
+    """Add the commands that measure or review one commit."""
+    _add_measure_subparser(sub)
+    _add_review_subparser(sub)
+
+
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
     from booley.flows.cli_arguments import add_project_root_alias
@@ -1118,7 +1151,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_init_subparser(sub)
     _add_flow_subparser(sub)
     _add_specialist_subparser(sub)
-    _add_measure_subparser(sub)
+    _add_commit_subparsers(sub)
     _add_targets_subparser(sub)
     resources_cli.add_subparser(sub)
     coverage_cli.add_subparser(sub)
@@ -2031,6 +2064,15 @@ def _measure_commit(args: argparse.Namespace, project_root: Path) -> int:
         raise _CancelledRun from None
 
 
+def _cmd_review(args: argparse.Namespace, project_root: Path) -> int:
+    """`booley review`: run the Declared Reviews of a commit and store the Review Run."""
+    from booley.harness.review_command import ReviewRequest, run_review
+
+    return run_review(
+        project_root, ReviewRequest(args.revision, args.base, args.target, args.json)
+    )
+
+
 def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
     """`booley measure`: measure a commit, or with `--validate` read metrics.toml; run no Flow."""
     from booley.measurement.metrics_file import MetricsFileError, load_metrics_rules, table_header
@@ -2140,6 +2182,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "flow": _cmd_flow,
     "specialist": _cmd_specialist,
     "measure": _cmd_measure,
+    "review": _cmd_review,
     "feedback": _cmd_feedback,
     "cleanup": cleanup_cli.run,
     "upgrade": upgrade_cli.run,
