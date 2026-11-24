@@ -79,12 +79,11 @@ def test_test_in_warning_band_passes_and_is_reported(
     assert any(line.startswith(annotation) for line in output.splitlines()) is github
     if github:
         assert "%25; warning above 0.1%25)" in output
-    warnings = [
-        node
-        for node in ET.parse(junit).iter("property")
-        if node.get("name") == "timeout_headroom_warning"
-    ]
-    assert len(warnings) == 1
+    properties = [node.attrib for node in ET.parse(junit).iter("property")]
+    assert [p["name"] for p in properties].count("timeout_headroom_warning") == 1
+    # The 0.2 s sleep uses about 0.0033 of the 60 s budget (rounded to 4 places).
+    ratio = next(p for p in properties if p["name"] == "timeout_headroom_ratio")
+    assert 0.003 <= float(ratio["value"]) < 0.5
 
 
 def test_test_over_failure_limit_is_not_also_a_warning(tmp_path: Path) -> None:
@@ -107,27 +106,28 @@ def test_warning_limit_requires_a_higher_failure_limit(tmp_path: Path, options: 
     assert "--timeout-headroom-warn requires --timeout-headroom at or above it" in result.stderr
 
 
-def test_ratio_is_recorded_in_junit(tmp_path: Path) -> None:
-    junit = tmp_path / "junit.xml"
-    result = _run_case(tmp_path, ["--timeout-headroom=0.5", f"--junitxml={junit}"])
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    properties = {
-        node.get("name"): float(node.get("value", "nan"))
-        for node in ET.parse(junit).iter("property")
-    }
-    # The 0.2 s sleep uses about 0.0033 of the 60 s budget (rounded to 4 places).
-    assert 0.003 <= properties["timeout_headroom_ratio"] < 0.5
-
-
-def test_marker_budget_overrides_cli_budget(tmp_path: Path) -> None:
-    # 0.001 of the 60 s CLI budget would trip; 0.001 of 600 s (0.6 s) does not.
+@pytest.mark.parametrize(
+    ("call_seconds", "returncode"),
+    [
+        # 0.001 of the 60 s CLI budget would trip; 0.001 of 600 s (0.6 s) does not.
+        pytest.param(0.2, 0, id="marker-overrides-cli-budget"),
+        # 0.7 s exceeds 0.001 x 600 s; 3x 0.7 s alone would suggest 30 s.
+        pytest.param(0.7, 1, id="suggestion-never-lowers-budget"),
+    ],
+)
+def test_marker_budget_replaces_cli_budget(
+    tmp_path: Path, call_seconds: float, returncode: int
+) -> None:
     result = _run_case(
-        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", durations={"call": 0.2}
+        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", durations={"call": call_seconds}
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert _counts(result.stdout) == {"passed": 1}
+    output = result.stdout + result.stderr
+    assert result.returncode == returncode, output
+    if returncode:
+        assert "Raise the test's @pytest.mark.timeout to at least 630 s" in output
+    else:
+        assert _counts(result.stdout) == {"passed": 1}
 
 
 def test_disabled_timeout_disables_the_guard(tmp_path: Path) -> None:
@@ -153,65 +153,56 @@ def test_func_only_budget_ignores_fixture_time(tmp_path: Path) -> None:
     assert _counts(result.stdout) == {"passed": 1}
 
 
-def test_suggestion_never_lowers_the_current_budget(tmp_path: Path) -> None:
-    # 0.7 s exceeds 0.001 x 600 s; 3x 0.7 s alone would suggest 30 s.
-    result = _run_case(
-        tmp_path, [_TRIP], marker="@pytest.mark.timeout(600)", durations={"call": 0.7}
-    )
+@pytest.mark.parametrize(
+    ("marker", "body", "arguments", "outcome"),
+    [
+        pytest.param("", _SLOW_BODY + "\n    assert False", "", "failed", id="failed-test"),
+        pytest.param(
+            "@pytest.fixture\ndef broken():\n    time.sleep(0.2)\n    raise RuntimeError\n",
+            "pass",
+            "broken",
+            "error",
+            id="setup-error",
+        ),
+    ],
+)
+def test_failure_is_not_also_reported_as_headroom(
+    tmp_path: Path, marker: str, body: str, arguments: str, outcome: str
+) -> None:
+    result = _run_case(tmp_path, [_TRIP], marker=marker, body=body, arguments=arguments)
 
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
-    assert "Raise the test's @pytest.mark.timeout to at least 630 s" in output
-
-
-def test_failed_test_is_not_reported_twice(tmp_path: Path) -> None:
-    result = _run_case(tmp_path, [_TRIP], body=_SLOW_BODY + "\n    assert False")
-
-    output = result.stdout + result.stderr
-    assert result.returncode == 1, output
-    assert _counts(output) == {"failed": 1}, output
-    assert "headroom limit is" not in output
-
-
-def test_setup_error_is_not_reported_twice(tmp_path: Path) -> None:
-    fixture = "@pytest.fixture\ndef broken():\n    time.sleep(0.2)\n    raise RuntimeError\n"
-    result = _run_case(tmp_path, [_TRIP], marker=fixture, body="pass", arguments="broken")
-
-    output = result.stdout + result.stderr
-    assert result.returncode == 1, output
-    assert _counts(output) == {"error": 1}, output
+    assert _counts(output) == {outcome: 1}, output
     assert "headroom limit is" not in output
 
 
 @pytest.mark.parametrize(
-    ("marker", "body", "outcome"),
+    ("marker", "body", "arguments", "phase", "outcome"),
     [
-        ("", "pytest.skip('missing prerequisite')", "skipped"),
-        ("@pytest.mark.xfail(reason='known failure')", "assert False", "xfailed"),
-        ("", "pytest.xfail('known failure')", "xfailed"),
+        ("", "pytest.skip('missing prerequisite')", "", "call", "skipped"),
+        ("@pytest.mark.xfail(reason='known failure')", "assert False", "", "call", "xfailed"),
+        ("", "pytest.xfail('known failure')", "", "call", "xfailed"),
+        (
+            "@pytest.fixture\ndef missing():\n    pytest.skip('missing prerequisite')\n",
+            _SLOW_BODY,
+            "missing",
+            "setup",
+            "skipped",
+        ),
     ],
+    ids=["skip", "xfail-marker", "xfail-call", "setup-skip"],
 )
 def test_nonpassing_test_is_not_a_headroom_error(
-    tmp_path: Path, marker: str, body: str, outcome: str
+    tmp_path: Path, marker: str, body: str, arguments: str, phase: str, outcome: str
 ) -> None:
-    result = _run_case(tmp_path, [_TRIP], marker=marker, body=body, durations={"call": 0.2})
-
-    output = result.stdout + result.stderr
-    assert result.returncode == 0, output
-    assert f"1 {outcome}" in output
-    assert "headroom limit is" not in output
-    assert "0 tests checked" in output
-
-
-def test_setup_skip_is_not_a_headroom_error(tmp_path: Path) -> None:
-    fixture = "@pytest.fixture\ndef missing():\n    pytest.skip('missing prerequisite')\n"
     result = _run_case(
-        tmp_path, [_TRIP], marker=fixture, arguments="missing", durations={"setup": 0.2}
+        tmp_path, [_TRIP], marker=marker, body=body, arguments=arguments, durations={phase: 0.2}
     )
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
-    assert "1 skipped" in output
+    assert f"1 {outcome}" in output
     assert "headroom limit is" not in output
     assert "0 tests checked" in output
 

@@ -11,67 +11,57 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-class TestSourceDirPrefixes:
-    """ADR 0026: source_dirs entries may be files (exact prefix) or dirs."""
+# ADR 0026: source_dirs entries may be files (exact prefix) or dirs. A root-level file has
+# identical '/' and '\\' forms, so it yields one prefix; base_dir None (legacy CWD path) treats
+# every entry as a directory.
+@pytest.mark.parametrize(
+    ("dirs", "files", "entries", "expected"),
+    [
+        pytest.param(["rtl"], [], ["rtl"], ("rtl/", "rtl\\"), id="directory-entry"),
+        pytest.param([], ["picorv32.v"], ["picorv32.v"], ("picorv32.v",), id="root-file-entry"),
+        pytest.param(
+            ["src"], ["src/top.v"], ["src/top.v"], ("src/top.v", "src\\top.v"), id="nested-file"
+        ),
+        pytest.param(
+            ["rtl"],
+            ["top.v"],
+            ["rtl", "rtl", "top.v"],
+            ("rtl/", "rtl\\", "top.v"),
+            id="mixed-deduped",
+        ),
+    ],
+)
+def test_source_dir_prefixes(tmp_path: Path, dirs, files, entries, expected):
+    from booley.runtime.shared_infra import source_dir_prefixes
 
-    def test_directory_entry_gets_trailing_separators(self, tmp_path: Path):
-        from booley.runtime.shared_infra import source_dir_prefixes
+    for directory in dirs:
+        (tmp_path / directory).mkdir()
+    for file in files:
+        (tmp_path / file).write_text("//\n", encoding="utf-8")
 
-        (tmp_path / "rtl").mkdir()
-        assert source_dir_prefixes(["rtl"], tmp_path) == ("rtl/", "rtl\\")
-
-    def test_file_entry_gets_exact_path_prefix(self, tmp_path: Path):
-        from booley.runtime.shared_infra import source_dir_prefixes
-
-        # A root-level file: '/' and '\\' forms are identical -> one prefix.
-        (tmp_path / "picorv32.v").write_text("//\n", encoding="utf-8")
-        assert source_dir_prefixes(["picorv32.v"], tmp_path) == ("picorv32.v",)
-
-    def test_nested_file_entry_gets_both_separators(self, tmp_path: Path):
-        from booley.runtime.shared_infra import source_dir_prefixes
-
-        (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "top.v").write_text("//\n", encoding="utf-8")
-        assert source_dir_prefixes(["src/top.v"], tmp_path) == (
-            "src/top.v",
-            "src\\top.v",
-        )
-
-    def test_unstatable_base_treats_all_as_dirs(self):
-        from booley.runtime.shared_infra import source_dir_prefixes
-
-        # base_dir None (legacy CWD path) -> every entry is a directory prefix.
-        assert source_dir_prefixes(["picorv32.v"], None) == (
-            "picorv32.v/",
-            "picorv32.v\\",
-        )
-
-    def test_mixed_and_deduped(self, tmp_path: Path):
-        from booley.runtime.shared_infra import source_dir_prefixes
-
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "top.v").write_text("//\n", encoding="utf-8")
-        out = source_dir_prefixes(["rtl", "rtl", "top.v"], tmp_path)
-        assert out == ("rtl/", "rtl\\", "top.v")
+    assert source_dir_prefixes(entries, tmp_path) == expected
 
 
-class TestSourcePathMatches:
-    def test_directory_prefix_matches_descendants(self):
-        from booley.runtime.shared_infra import source_path_matches
+def test_source_dir_prefixes_unstatable_base_treats_all_as_dirs():
+    from booley.runtime.shared_infra import source_dir_prefixes
 
-        assert source_path_matches("./rtl/top.sv", ("rtl/",))
-        assert not source_path_matches("rtl_extra/top.sv", ("rtl/",))
+    assert source_dir_prefixes(["picorv32.v"], None) == ("picorv32.v/", "picorv32.v\\")
 
-    def test_file_prefix_is_exact(self):
-        from booley.runtime.shared_infra import source_path_matches
 
-        assert source_path_matches("./picorv32.v", ("picorv32.v",))
-        assert not source_path_matches("picorv32.v.bak", ("picorv32.v",))
+@pytest.mark.parametrize(
+    ("path", "prefixes", "expected"),
+    [
+        pytest.param("./rtl/top.sv", ("rtl/",), True, id="directory-matches-descendant"),
+        pytest.param("rtl_extra/top.sv", ("rtl/",), False, id="directory-needs-separator"),
+        pytest.param("./picorv32.v", ("picorv32.v",), True, id="file-prefix-exact"),
+        pytest.param("picorv32.v.bak", ("picorv32.v",), False, id="file-prefix-not-a-stem"),
+        pytest.param("rtl/../tb/top.sv", ("rtl/",), False, id="parent-segments-borrow-nothing"),
+    ],
+)
+def test_source_path_matches(path, prefixes, expected):
+    from booley.runtime.shared_infra import source_path_matches
 
-    def test_parent_segments_cannot_borrow_category(self):
-        from booley.runtime.shared_infra import source_path_matches
-
-        assert not source_path_matches("rtl/../tb/top.sv", ("rtl/",))
+    assert source_path_matches(path, prefixes) is expected
 
 
 # ---------------------------------------------------------------------------

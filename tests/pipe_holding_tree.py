@@ -145,6 +145,7 @@ def stall_wait_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from booley.runtime import platform_paths
 
+    # private: the stall is reproduced at the spawn seam, below any public entry.
     real_spawn = platform_paths._spawn
 
     def spawn(*args, **kwargs):

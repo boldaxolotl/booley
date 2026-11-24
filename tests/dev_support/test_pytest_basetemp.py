@@ -90,38 +90,33 @@ def test_own_folder_is_kept_even_if_its_marker_names_a_missing_checkout(
     assert own.is_dir()
 
 
-def test_deletion_errors_do_not_fail_and_keep_the_marker(
-    tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failure", ["delete", "marker-write"])
+def test_io_failures_do_not_fail_the_session(
+    tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    _basetemp(tools_root, "orphan", tmp_path / "gone")
+    orphan = _basetemp(tools_root, "orphan", tmp_path / "gone")
 
     def refuse(path: Path) -> None:
         raise PermissionError(f"denied: {path}")
 
-    monkeypatch.setattr(pytest_basetemp.shutil, "rmtree", refuse)
-    checkout = _checkout(tmp_path, "live")
-    assert _record_and_prune(tools_root / "pytest-basetemp-own", checkout) == ()
-    # The marker survives so a later session retries the deletion.
-    assert (tools_root / "pytest-basetemp-orphan.checkout").is_file()
-
-
-def test_marker_write_failure_does_not_fail_and_still_prunes(
-    tools_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A disk out of inodes must not crash every session: pruning still frees space.
-    orphan = _basetemp(tools_root, "orphan", tmp_path / "gone")
-
     def full_disk(self: Path, target: Path) -> Path:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(Path, "replace", full_disk)
+    if failure == "delete":
+        monkeypatch.setattr(pytest_basetemp.shutil, "rmtree", refuse)
+    else:  # a disk out of inodes must not crash every session: pruning still frees space
+        monkeypatch.setattr(Path, "replace", full_disk)
     checkout = _checkout(tmp_path, "live")
-    assert _record_and_prune(tools_root / "pytest-basetemp-own", checkout) == (orphan,)
-    # Neither the marker nor its staging file is left behind; the session lock stays.
-    assert sorted(path.name for path in tools_root.iterdir()) == [
-        "pytest-basetemp-orphan.lock",
-        "pytest-basetemp-own.lock",
-    ]
+    pruned = _record_and_prune(tools_root / "pytest-basetemp-own", checkout)
+    names = sorted(path.name for path in tools_root.iterdir())
+    if failure == "delete":
+        assert pruned == ()
+        # The marker survives so a later session retries the deletion.
+        assert (tools_root / "pytest-basetemp-orphan.checkout").is_file()
+    else:
+        assert pruned == (orphan,)
+        # Neither the marker nor its staging file is left behind; the session lock stays.
+        assert names == ["pytest-basetemp-orphan.lock", "pytest-basetemp-own.lock"]
 
 
 def test_folder_is_kept_when_its_checkout_cannot_be_checked(

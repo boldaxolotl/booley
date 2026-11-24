@@ -8,17 +8,15 @@ list can only be updated from one place.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from tests.shipped_docs_support import rendered_docs_outside_user_docs
 from tests.source_checkout_support import source_checkout_files
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.flow_specialist_reference import (
-    _FLOW_KEY_CONTROLS,
-    _PURPOSE_SUMMARY_MAX,
-    _REVIEW_FOCUS_DESCRIPTIONS,
     EXCLUDED_MCP_TOOLS,
-    _main,
     extract_generated,
     render_flow_reference,
     render_specialists_reference,
@@ -42,6 +40,7 @@ def test_cheatsheet_blocks_match_registry() -> None:
     `booley cheat` splices them live, but the raw file must be correct too.
     """
     text = cheatsheet_path().read_text(encoding="utf-8")
+    assert "--diagnostic" not in text
     assert extract_generated(text) == render_flow_reference(), REGEN_HINT
     assert extract_generated(text, name="specialists") == render_specialists_reference(), (
         REGEN_HINT
@@ -56,14 +55,12 @@ def test_regenerating_a_stale_cheatsheet_restores_both_blocks(tmp_path: Path) ->
         splice_generated(splice_generated(committed, "stale"), "stale", name="specialists"),
         encoding="utf-8",
     )
-    assert _main([str(stale)]) == 0
+    run_bounded_child(
+        [sys.executable, "-m", "booley.dev_support.flow_specialist_reference", str(stale)],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     assert stale.read_text(encoding="utf-8") == committed
-
-
-def test_specialist_reference_names_only_current_common_options() -> None:
-    committed = cheatsheet_path().read_text(encoding="utf-8")
-    assert "--diagnostic" not in render_specialists_reference()
-    assert "--diagnostic" not in committed
 
 
 def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
@@ -86,30 +83,21 @@ def test_every_endpoint_is_rendered_or_explicitly_excluded() -> None:
             )
 
 
-def test_flow_table_has_two_columns() -> None:
-    """`booley cheat` emits a fixed-width table; a 3rd column overruns it (A3)."""
+def test_flow_table_has_two_columns_in_hardware_flow_order() -> None:
+    """`booley cheat` emits a fixed-width table (a 3rd column overruns it), led by elaboration."""
     rendered = render_flow_reference()
     assert "| Booley Flow | Purpose |" in rendered
     assert "Execution" not in rendered
-
-
-def test_flows_follow_hardware_flow_order() -> None:
-    """The human catalog leads from elaboration through implementation."""
-    rows = [
-        line.split("`")[1]
-        for line in render_flow_reference().splitlines()
-        if line.startswith("| `")
-    ]
+    rows = [line.split("`")[1] for line in rendered.splitlines() if line.startswith("| `")]
     assert rows == ["sim", "lint", "synth", "fpga", "mutation"]
 
 
 def test_every_builtin_flow_has_key_controls() -> None:
-    flows = {endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "flow"}
-    assert flows == set(_FLOW_KEY_CONTROLS)
     rendered = render_flow_reference()
-    for flow_name, controls in _FLOW_KEY_CONTROLS.items():
+    flows = [endpoint.name for endpoint in discover_mcp_tools() if endpoint.kind == "flow"]
+    assert flows
+    for flow_name in flows:
         assert f"- `{flow_name}`:" in rendered
-        assert controls in rendered
 
 
 def test_purpose_cells_are_summarized_not_the_agent_description() -> None:
@@ -123,24 +111,32 @@ def test_purpose_cells_are_summarized_not_the_agent_description() -> None:
     rendered = render_flow_reference()
     assert "A Target with NO SDC is a hard error" not in rendered
     assert "Do NOT use --trace" not in rendered
-    for line in rendered.splitlines():
-        if not line.startswith("| `"):
+    cells = {
+        line.split("`")[1]: line.split("|")[2].strip()
+        for line in rendered.splitlines()
+        if line.startswith("| `")
+    }
+    shortened = kept = 0
+    for endpoint in discover_mcp_tools():
+        if endpoint.kind != "flow":
             continue
-        purpose = line.split("|")[2]
-        assert len(purpose) <= _PURPOSE_SUMMARY_MAX + 2, f"unsummarized Purpose cell: {line}"
+        description = " ".join(endpoint.description.split())
+        cell = cells[endpoint.name]
+        if "." not in description[:-1] and len(description) <= 120:
+            assert cell == description  # an already-short description is kept as is
+            kept += 1
+        else:
+            assert len(cell) < len(description)  # a longer one is shortened
+            shortened += 1
+    assert shortened and kept  # the registry has both kinds, so both rules ran
 
 
 def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> None:
-    endpoints = {endpoint.name: endpoint for endpoint in discover_mcp_tools()}
-    assert "reviewer" in endpoints
-    assert set(_REVIEW_FOCUS_DESCRIPTIONS) == {
-        *(("rtl", focus) for focus in RTL_FOCUSES),
-        *(("tb", focus) for focus in TB_FOCUS_CATEGORIES),
-    }
-
+    assert "reviewer" in {endpoint.name for endpoint in discover_mcp_tools()}
     rendered = render_specialists_reference()
-    for category, focus in _REVIEW_FOCUS_DESCRIPTIONS:
-        assert f"| `{category}` | `{focus}` |" in rendered
+    for category, focuses in (("rtl", RTL_FOCUSES), ("tb", TB_FOCUS_CATEGORIES)):
+        for focus in focuses:
+            assert f"| `{category}` | `{focus}` |" in rendered
     # Mutation testing is a Flow now: no Specialist table, no Specialist section.
     assert "mutation_tester" not in rendered
     assert "Goal arguments" not in rendered
@@ -166,6 +162,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
     rendered = render_specialists_reference()
     assert "booley specialist <name> [args...]" in rendered
     assert "Goal" not in rendered
+    assert "--diagnostic" not in rendered  # only current common options are named
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer"):
         assert f"Ask your Developer Agent to call the `{name}` Specialist" in rendered
@@ -189,16 +186,12 @@ def test_shipped_documentation_never_dispatches_a_specialist_as_a_flow() -> None
             assert f"booley flow {name}" not in text, document
 
 
-def test_reviewer_reference_states_kind_and_opposite_scope_contract():
+def test_reviewer_reference_states_kind_scope_and_header_contract():
     text = render_specialists_reference()
     assert "(.v, .vh, .sv, .svh)" in text
     assert "opposite-category sources are refused" in text
     reviewer = text[text.index("#### `reviewer`") :]
     assert "Goal" not in reviewer
-
-
-def test_reviewer_reference_admits_exact_cpp_headers():
-    text = render_specialists_reference()
     assert "(.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx)" in text
     assert "only an exact per-file category grant" in text
     assert "refuses C/C++ kinds" not in text

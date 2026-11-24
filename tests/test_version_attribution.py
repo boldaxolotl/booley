@@ -44,6 +44,25 @@ def _write_source_tree(root: Path, version: str = "9.9.9\n") -> Path:
     return package_file
 
 
+@pytest.fixture
+def site_packages(tmp_path: Path) -> Path:
+    """An installed-style ``site-packages`` holding an empty ``booley`` package."""
+    root = tmp_path / "site-packages"
+    package_file = root / "booley" / "__init__.py"
+    package_file.parent.mkdir(parents=True)
+    package_file.write_text("", encoding="utf-8")
+    return root
+
+
+def _imported_package(site_packages: Path) -> Path:
+    return site_packages / "booley" / "__init__.py"
+
+
+def _only_for_current_name(*distributions):
+    """A ``distributions`` stand-in that answers only the ``booley-rtl`` lookup."""
+    return lambda **kwargs: list(distributions) if kwargs == {"name": "booley-rtl"} else []
+
+
 def test_source_tree_version_wins_without_distribution_lookup(tmp_path, monkeypatch) -> None:
     package_file = _write_source_tree(tmp_path)
 
@@ -59,20 +78,15 @@ def test_source_tree_version_wins_without_distribution_lookup(tmp_path, monkeypa
     )
 
 
-def test_installed_wheel_uses_owning_current_distribution(tmp_path, monkeypatch) -> None:
-    site_packages = tmp_path / "site-packages"
-    package_file = site_packages / "booley" / "__init__.py"
-    package_file.parent.mkdir(parents=True)
-    package_file.write_text("", encoding="utf-8")
+@pytest.mark.parametrize("stale_siblings", [0, 1], ids=["sole-owner", "skips-stale-same-name"])
+def test_installed_wheel_uses_owning_current_distribution(
+    tmp_path, monkeypatch, site_packages, stale_siblings
+) -> None:
     owner = _FakeDistribution(site_packages, "4.5.6")
+    stale = [_FakeDistribution(tmp_path / "stale" / "site-packages", "1.2.3")] * stale_siblings
+    monkeypatch.setattr(importlib.metadata, "distributions", _only_for_current_name(*stale, owner))
 
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distributions",
-        lambda **kwargs: [owner] if kwargs == {"name": "booley-rtl"} else [],
-    )
-
-    assert resolve_version_attribution(package_file) == VersionAttribution(
+    assert resolve_version_attribution(_imported_package(site_packages)) == VersionAttribution(
         version="4.5.6",
         origin=VersionOrigin.DISTRIBUTION,
         distribution_name="booley-rtl",
@@ -102,34 +116,20 @@ def _write_metadata(
 def test_imported_checkout_ignores_stale_current_and_legacy_metadata(tmp_path) -> None:
     checkout = tmp_path / "checkout"
     package_file = _write_source_tree(checkout, "9.9.9\n")
-    package_file.write_text(
-        (_ROOT / "src" / "booley" / "__init__.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
+    # Copy the real modules the import-time version logic needs; the rest stay empty packages.
+    copied = (
+        "__init__.py",
+        "core/boundary.py",
+        "core/checkout_role.py",
+        "runtime/checkout_role.py",
+        "runtime/version_attribution.py",
     )
-    core_dir = package_file.parent / "core"
-    core_dir.mkdir()
-    (core_dir / "__init__.py").write_text("", encoding="utf-8")
-    (core_dir / "boundary.py").write_text(
-        (_ROOT / "src" / "booley" / "core" / "boundary.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (core_dir / "checkout_role.py").write_text(
-        (_ROOT / "src" / "booley" / "core" / "checkout_role.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    runtime_dir = package_file.parent / "runtime"
-    runtime_dir.mkdir()
-    (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
-    (runtime_dir / "checkout_role.py").write_text(
-        (_ROOT / "src" / "booley" / "runtime" / "checkout_role.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (runtime_dir / "version_attribution.py").write_text(
-        (_ROOT / "src" / "booley" / "runtime" / "version_attribution.py").read_text(
-            encoding="utf-8"
-        ),
-        encoding="utf-8",
-    )
+    for relative in ("core/__init__.py", "runtime/__init__.py"):
+        (package_file.parent / relative).parent.mkdir(exist_ok=True)
+        (package_file.parent / relative).write_text("", encoding="utf-8")
+    for relative in copied:
+        source = (_ROOT / "src" / "booley" / relative).read_text(encoding="utf-8")
+        (package_file.parent / relative).write_text(source, encoding="utf-8")
     metadata_root = tmp_path / "metadata"
     _write_metadata(metadata_root, "booley-rtl", "1.2.3")
     _write_metadata(metadata_root, "booley", "0.9.0")
@@ -209,11 +209,8 @@ def test_source_git_metadata_does_not_search_enclosing_repository(tmp_path, monk
     assert attribution.source_git_metadata() == ("", "")
 
 
-def test_real_wheel_metadata_owns_the_imported_package(tmp_path, monkeypatch) -> None:
-    site_packages = tmp_path / "site-packages"
-    package_file = site_packages / "booley" / "__init__.py"
-    package_file.parent.mkdir(parents=True)
-    package_file.write_text("", encoding="utf-8")
+def test_real_wheel_metadata_owns_the_imported_package(monkeypatch, site_packages) -> None:
+    package_file = _imported_package(site_packages)
     _write_metadata(
         site_packages,
         "booley-rtl",
@@ -228,28 +225,10 @@ def test_real_wheel_metadata_owns_the_imported_package(tmp_path, monkeypatch) ->
     assert attribution.origin is VersionOrigin.DISTRIBUTION
 
 
-def test_distribution_lookup_skips_stale_same_name_metadata(tmp_path, monkeypatch) -> None:
-    site_packages = tmp_path / "active" / "site-packages"
-    package_file = site_packages / "booley" / "__init__.py"
-    package_file.parent.mkdir(parents=True)
-    package_file.write_text("", encoding="utf-8")
-    stale = _FakeDistribution(tmp_path / "stale" / "site-packages", "1.2.3")
-    owner = _FakeDistribution(site_packages, "4.5.6")
-
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distributions",
-        lambda **kwargs: [stale, owner] if kwargs == {"name": "booley-rtl"} else [],
-    )
-
-    assert resolve_version_attribution(package_file).version == "4.5.6"
-
-
-def test_legacy_distribution_is_used_only_when_it_owns_the_import(tmp_path, monkeypatch) -> None:
-    site_packages = tmp_path / "site-packages"
-    package_file = site_packages / "booley" / "__init__.py"
-    package_file.parent.mkdir(parents=True)
-    package_file.write_text("", encoding="utf-8")
+def test_legacy_distribution_is_used_only_when_it_owns_the_import(
+    tmp_path, monkeypatch, site_packages
+) -> None:
+    package_file = _imported_package(site_packages)
     unrelated_current = _FakeDistribution(tmp_path / "unrelated", "4.5.6")
     legacy_owner = _FakeDistribution(site_packages, "0.9.0")
 
@@ -279,7 +258,7 @@ def test_unowned_or_unverifiable_metadata_falls_back_to_dev(tmp_path, monkeypatc
     )
 
 
-@pytest.mark.parametrize("version_contents", [None, "", "  \n"])
+@pytest.mark.parametrize("version_contents", [None, "", "  \n", "directory"])
 def test_recognized_source_requires_readable_nonempty_version(
     tmp_path, monkeypatch, version_contents
 ) -> None:
@@ -287,6 +266,9 @@ def test_recognized_source_requires_readable_nonempty_version(
     version_file = tmp_path / "VERSION"
     if version_contents is None:
         version_file.unlink()
+    elif version_contents == "directory":
+        version_file.unlink()
+        version_file.mkdir()
     else:
         version_file.write_text(version_contents, encoding="utf-8")
     monkeypatch.setattr(
@@ -299,27 +281,9 @@ def test_recognized_source_requires_readable_nonempty_version(
         resolve_version_attribution(package_file)
 
 
-def test_recognized_source_reports_unreadable_version(tmp_path) -> None:
-    package_file = _write_source_tree(tmp_path)
-    version_file = tmp_path / "VERSION"
-    version_file.unlink()
-    version_file.mkdir()
-
-    with pytest.raises(RuntimeError, match=re.escape(str(version_file))):
-        resolve_version_attribution(package_file)
-
-
-def test_owning_distribution_requires_nonempty_version(tmp_path, monkeypatch) -> None:
-    site_packages = tmp_path / "site-packages"
-    package_file = site_packages / "booley" / "__init__.py"
-    package_file.parent.mkdir(parents=True)
-    package_file.write_text("", encoding="utf-8")
+def test_owning_distribution_requires_nonempty_version(monkeypatch, site_packages) -> None:
     owner = _FakeDistribution(site_packages, "")
-    monkeypatch.setattr(
-        importlib.metadata,
-        "distributions",
-        lambda **kwargs: [owner] if kwargs == {"name": "booley-rtl"} else [],
-    )
+    monkeypatch.setattr(importlib.metadata, "distributions", _only_for_current_name(owner))
 
     with pytest.raises(RuntimeError, match="owning booley-rtl distribution"):
-        resolve_version_attribution(package_file)
+        resolve_version_attribution(_imported_package(site_packages))
