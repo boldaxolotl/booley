@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from pathlib import Path
@@ -1949,7 +1950,38 @@ class TestStaleBooleyBakeWarning:
             assert sr.sandbox_remedy(workspace) in caplog.text
 
 
+_RELAY_SLOT_WIDTH = 16
+_RELAY_SLOTS = 300
+
+
 class TestT3CodeRelay:
+    @pytest.fixture(autouse=True)
+    def relay_ports(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[range]:
+        """Give this test a port range of its own: concurrent test processes share the host.
+
+        The product range is 100 ports from 3780 that every test process would prefer first, so
+        one test's relay (or its "nothing listens here" probe) would answer another's. A slot's
+        lock port is held for the test, which makes its range exclusive among test processes.
+        """
+        from booley.runtime import t3_relay
+
+        start = os.getpid() % _RELAY_SLOTS
+        for offset in range(_RELAY_SLOTS):
+            slot = (start + offset) % _RELAY_SLOTS
+            lock = socket.socket()
+            try:
+                lock.bind(("127.0.0.1", 25000 + slot))
+            except OSError:
+                lock.close()
+                continue
+            break
+        else:  # pragma: no cover - every slot is held by another test process
+            pytest.fail("no free relay port slot")
+        ports = range(20000 + slot * _RELAY_SLOT_WIDTH, 20000 + (slot + 1) * _RELAY_SLOT_WIDTH)
+        monkeypatch.setattr(t3_relay, "PORTS", ports)
+        with lock:
+            yield ports
+
     @pytest.fixture
     def relay_cli(
         self,
@@ -2105,7 +2137,7 @@ class TestT3CodeRelay:
         record = {
             "schema_version": 1,
             "project_root": root,
-            "port": 3780,
+            "port": t3_relay.PORTS[0],
             "container": "c",
             "process": None,
         }
@@ -2122,6 +2154,7 @@ class TestT3CodeRelay:
         tmp_path: Path,
         up_docker: SandboxDocker,
         relay_cli: SimpleNamespace,
+        relay_ports: range,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         other = tmp_path / "other"
@@ -2139,7 +2172,7 @@ class TestT3CodeRelay:
                 holder.listen()
             moved, warning = relay_cli.up(workspace)
 
-        assert {first, second, moved} <= set(range(3780, 3880))
+        assert {first, second, moved} <= set(relay_ports)
         assert first != second
         assert (again, notice) == (first, "")
         assert moved not in {first, second}
@@ -2160,20 +2193,21 @@ class TestT3CodeRelay:
         t3_relay.relay_store().write(str(root.resolve()), json.dumps(document))
 
     def test_a_held_recorded_port_moves_to_the_next_port_up_not_the_first_free_one(
-        self, workspace: Path, relay_cli: SimpleNamespace
+        self, workspace: Path, relay_cli: SimpleNamespace, relay_ports: range
     ) -> None:
-        self.record_port(workspace, 3790)
-        assert relay_cli.up(workspace) == (3790, "")
+        recorded = relay_ports[10]
+        self.record_port(workspace, recorded)
+        assert relay_cli.up(workspace) == (recorded, "")
         relay_cli.down(workspace)
 
         with socket.socket() as holder:
             with suppress(OSError):  # already held by another process is as good
-                holder.bind(("127.0.0.1", 3790))
+                holder.bind(("127.0.0.1", recorded))
                 holder.listen()
             moved, warning = relay_cli.up(workspace)
 
-        assert moved > 3790
-        assert "127.0.0.1:3790 is held" in warning
+        assert moved > recorded
+        assert f"127.0.0.1:{recorded} is held" in warning
 
     def test_a_free_recorded_port_stays_when_another_project_recorded_it_too(
         self,
@@ -2181,15 +2215,17 @@ class TestT3CodeRelay:
         tmp_path: Path,
         up_docker: SandboxDocker,
         relay_cli: SimpleNamespace,
+        relay_ports: range,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         other = tmp_path / "other"
         other.mkdir()
         _issue_project(up_docker, other, monkeypatch)
-        self.record_port(other, 3790)
-        self.record_port(workspace, 3790)
+        recorded = relay_ports[10]
+        self.record_port(other, recorded)
+        self.record_port(workspace, recorded)
 
-        assert relay_cli.up(workspace) == (3790, "")
+        assert relay_cli.up(workspace) == (recorded, "")
 
     def test_session_up_fails_when_the_range_has_no_free_port(
         self,
