@@ -396,6 +396,18 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
     }
 
 
+# Canonical tool name -> the Feature Flag that hides it (ADR 0095). Empty in production.
+GATED_MCP_TOOLS: dict[str, str] = {}
+
+
+def gated_off(name: str, features: frozenset[str]) -> bool:
+    """Whether *name* is gated by a Feature Flag that *features* leaves off."""
+    from booley.config.feature_flags import feature_enabled
+
+    flag = GATED_MCP_TOOLS.get(name)
+    return flag is not None and not feature_enabled(flag, features)
+
+
 @dataclass(frozen=True)
 class Exposure:
     """One immutable exposure value; only server wiring reads the environment."""
@@ -406,6 +418,7 @@ class Exposure:
     debug: bool = False
     coverage_record: bool = False
     project: bool = False
+    features: frozenset[str] = frozenset()
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> Exposure:
@@ -524,4 +537,7 @@ def visible_definitions(
     ):
         if visible:
             definitions.append(builder())
-    return sorted(definitions, key=lambda item: item["name"])
+    return sorted(
+        (item for item in definitions if not gated_off(item["name"], exposure.features)),
+        key=lambda item: item["name"],
+    )
