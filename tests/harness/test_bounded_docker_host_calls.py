@@ -540,11 +540,13 @@ def _sites() -> list[_Site]:
 
 
 def _readiness_docker_observation() -> tuple[str, str]:
+    # private: same reason as the drivers above; the public readiness report issues other calls.
     check = agent_readiness._docker_check(True)
     return check.id, check.status.value
 
 
 def _remove_relay_for_site(relay: Any) -> None:
+    # private: same reason as the drivers above; the public Session teardown issues other calls.
     session_runtime._remove_license_relay(relay)
 
 

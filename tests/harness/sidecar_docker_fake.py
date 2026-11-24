@@ -2,8 +2,8 @@
 
 ``EgressDocker`` answers the ``docker`` verbs that ``booley.harness.host_sidecars`` and
 Session admission issue, from memory. Tests of Host Bootstrap, Doctor and init that need a
-sidecar installation to exist, drift or break use ``serve_egress_docker``; later parts of
-the test purge reuse it instead of faking the sidecar adapter again.
+sidecar installation to exist, drift or break use ``serve_egress_docker`` instead of faking
+the sidecar adapter again.
 """
 
 from __future__ import annotations

@@ -805,6 +805,8 @@ def _unproxied_inspection(monkeypatch, tmp_path) -> EgressDocker:
     from tests.harness.test_bootstrap import _inspection_environment
 
     _inspection_environment(monkeypatch, tmp_path)
+    # Patching the host policy loader: it reads the machine's policy file, and no public entry
+    # point pins an unproxied policy without writing that file into the real Booley directory.
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: _UNPROXIED)
     docker = serve_egress_docker(monkeypatch)
     docker.add_sidecar(_REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
