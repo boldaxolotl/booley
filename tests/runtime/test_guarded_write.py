@@ -1,7 +1,6 @@
-"""Tests for the shared clobber-guarded writer at its runtime import path.
+"""Tests for the shared clobber-guarded writer: each ownership outcome and file mode.
 
-The full ownership contract is pinned by ``tests/harness/setup/test_common.py``
-through the init re-export; these tests cover each outcome at the new path.
+``tests/harness/setup/test_common.py`` covers the newline and dry-run knobs init uses.
 """
 
 from __future__ import annotations
