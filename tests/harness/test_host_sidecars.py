@@ -322,6 +322,7 @@ class _Failure:
     state: sidecars.SidecarState = _ERROR
     unlabelled_builds: bool = False
     unowned_session: bool = False
+    stopped_session: bool = False
 
 
 def _answer(*prefix: str, **result: object) -> tuple[tuple[str, ...], dict[str, object]]:
@@ -471,6 +472,13 @@ _FAILURES = {
         damage="stale-reaper",
         answers=(_answer("ps", returncode=0, stdout="ghost-id\tghost\n"),),
     ),
+    "session-stopped": _Failure(
+        "reaper",
+        "cannot prove active Session ownership",
+        damage="stale-reaper",
+        answers=(_answer("ps", returncode=0, stdout="booley-session-x\tbooley-session-x\n"),),
+        stopped_session=True,
+    ),
     "session-without-project": _Failure(
         "reaper",
         "cannot identify owning Project",
@@ -503,12 +511,15 @@ def test_docker_failures_are_reported_on_their_row(
     docker.unlabelled_builds = failure.unlabelled_builds
     if failure.unowned_session:
         docker.add_container("booley-session-x", labels={sidecars.ROLE_LABEL: "interactive"})
+    if failure.stopped_session:
+        docker.add_session("booley-session-x", running=False)
     for prefix, result in failure.answers:
         docker.reply(*prefix, **result)  # type: ignore[arg-type]
 
     result = sidecars.reconcile_sidecars(_POLICY, failure.intent)
 
     row = _row(result, failure.resource)
+    assert result.ready is (failure.state is not _ERROR)
     assert row.state is failure.state
     assert failure.fragment in row.detail
     if failure.state is _ERROR:
