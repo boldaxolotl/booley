@@ -7,12 +7,12 @@ schema = 1
 # Chrome (about 300 MB unpacked and 122 MB compressed in each image). Every
 # ceiling remains below the committed 0.2.10 control, so accidental restoration
 # of the OpenROAD development tree, Rust toolchain, duplicate CLIs, or unstripped
-# artifacts fails before promotion. The RISC-V docker_local_size_bytes stays
-# below that control (a test pins it), so its headroom over T3 Code and Chrome is
+# artifacts fails before promotion. Each docker_local_size_bytes stays below
+# that control (a test pins it), so its headroom over T3 Code and Chrome is
 # under 10%.
 [images.sandbox]
 registry_compressed_layer_bytes = 2_420_000_000
-docker_local_size_bytes = 4_385_000_000
+docker_local_size_bytes = 4_320_000_000
 unpacked_layer_history_bytes = 4_935_000_000
 merged_visible_filesystem_bytes = 4_365_000_000
 

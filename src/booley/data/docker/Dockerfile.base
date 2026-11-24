@@ -361,8 +361,8 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 # Code pins (apps/server/src/preview/PreviewBrowser.ts), so T3 Code can use
 # it without a download the egress rules block. --version loads every
 # shared library, so a missing one fails the build.
-# T3 Code v0.1.11 pins this version; hold 157.0.8103.78 and move the hold in
-# .github/renovate.json with each T3 Code bump.
+# The T3 Code release in agent-clis-package.json pins this version; hold
+# 157.0.8103.78 and move the hold in .github/renovate.json with each bump.
 # renovate: datasource=custom.chrome-for-testing depName=chrome-headless-shell versioning=regex:^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\.(?<build>\d+)$
 ARG CHROME_HEADLESS_SHELL_VERSION=157.0.8103.78
 # pin-companion: CHROME_HEADLESS_SHELL_VERSION
