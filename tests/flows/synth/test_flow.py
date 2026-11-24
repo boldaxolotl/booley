@@ -1759,7 +1759,6 @@ def test_empty_selection_is_an_error(tmp_path: Path) -> None:
     assert flow._run().exit_code == EXIT_ERROR
 
 
-# `_perclock_marker` also renders the STA marker for `TestSingleConfigRun`.
 def _perclock_marker(name: str, period_ns, wns_ns, whs_ns, same_clock: bool = True) -> str:
     """Render one canonical STA_PERCLOCK marker line for tests.
 
@@ -2153,7 +2152,12 @@ _PHYSICAL_TIMING = (
                 "passed": True,
             },
             {
-                "clk": {"wns_ns": 0.75, "whs_ns": 0.1, "critical_path_ps": 1250.0},
+                "clk": {
+                    "wns_ns": 0.75,
+                    "whs_ns": 0.1,
+                    "critical_path_ps": 1250.0,
+                    "fmax_mhz": 800.0,
+                },
                 "x": {"wns_ns": 1.429488, "whs_ns": 0.2, "critical_path_ps": None},
             },
             id="logical",
@@ -2256,6 +2260,11 @@ _INLINE_AREA = "Chip area for module 'dut': 100.0\n"
             "Chip area for top module dut: 100.0\n",
             {"latches": 0, "passed": True},
             id="stat-without-latches",
+        ),
+        pytest.param(
+            _INLINE_AREA + "Warning: found $dlatch in cell A\n13. Printing statistics.\n",
+            {"latches": 1},
+            id="incomplete-stat-marker-keeps-the-mention-count",
         ),
         pytest.param(
             _INLINE_AREA + "synthesis completed OK\n",

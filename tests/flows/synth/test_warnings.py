@@ -262,6 +262,7 @@ def test_earlier_loop_without_both_completed_checks_stays_structural(premap, fin
     diagnostics = parse_synth_diagnostics(sources)
     assert not diagnostics.structural.complete
     assert diagnostics.structural.comb_loops == 0
+    assert diagnostics.structural.multi_driven == 0
     assert diagnostics.warnings.structural_warnings == 1
     assert diagnostics.warnings.representatives[0].rationale is None
 
