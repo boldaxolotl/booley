@@ -222,6 +222,8 @@ def _run_publication_worker(directory, connection, operation):
 
 def _paused_feedback_writer(directory, connection, operation, attempted):
     import argparse
+    import contextlib
+    import io
 
     from booley.feedback import cli, findings, materialize
     from booley.harness import feedback_view
@@ -263,7 +265,9 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         if operation == "triage_attach":
             command += ["--attach", str(directory / "late.log")]
         args = parser.parse_args(command)
-        assert cli.run(args, directory.parent, list_view=feedback_view.render_listing) == 0
+        # The triage summary holds a non-ASCII arrow that a Windows worker's cp1252 stdout rejects.
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cli.run(args, directory.parent, list_view=feedback_view.render_listing) == 0
     else:
         _run_publication_worker(directory, connection, operation)
     connection.send("done")
