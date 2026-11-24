@@ -85,14 +85,12 @@ def _stub_tables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(metrics_file, "TABLE_FLOWS", (*metrics_file.TABLE_FLOWS, FLOW))
 
 
-def measure(
-    monkeypatch: pytest.MonkeyPatch, world: World, *arguments: str, entry: str = "_dispatch_main"
-) -> int:
+def measure(monkeypatch: pytest.MonkeyPatch, world: World, *arguments: str) -> int:
     """Run ``booley -C <live Project> measure <arguments>`` in a Sandbox."""
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(world.live), "measure", *arguments])
-    return getattr(cli, entry)()
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # main() quiets a Ctrl-C's traceback
+    return cli.main()
 
 
 def store_of(world: World) -> MeasurementStore:
@@ -271,14 +269,21 @@ def test_a_crashing_flow_gives_error_verdicts_with_an_excerpt_and_exits_two(
 
 
 @linux_only
-def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("retired", "said"),
+    [("max_heavy = 1\n", "max_heavy"), ("\n[goals]\nquiet_after = 60\n", "[goals] section")],
+    ids=["scheduler-key", "goals"],
+)
+def test_retired_config_in_the_commit_does_not_stop_its_measurement(
+    make_world: WorldBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    retired: str,
+    said: str,
 ) -> None:
-    # The commit's own ``booley.toml`` holds a retired scheduler key; the live one does not.
+    # The commit's own ``booley.toml`` holds *retired*; the live one does not until the end.
     world = metrics_project(
-        make_world,
-        "[metrics_ok.checkout_stub]\nmarker_max = 10\n",
-        config=ONE_AT_A_TIME + "max_heavy = 1\n",
+        make_world, "[metrics_ok.checkout_stub]\nmarker_max = 10\n", config=ONE_AT_A_TIME + retired
     )
     live_settings = world.main / "booley.toml"
     live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n")
@@ -286,33 +291,10 @@ def test_a_retired_key_in_the_commit_does_not_stop_its_measurement(
     assert measure(monkeypatch, world) == 0
     assert len(stored_documents(world)) == 1
 
-    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\nmax_heavy = 1\n")
+    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n" + retired.encode())
     capsys.readouterr()
-    assert measure(monkeypatch, world, entry="main") == 2
-    assert "max_heavy" in capsys.readouterr().err
-    assert len(stored_documents(world)) == 1  # nothing new was stored
-
-
-@linux_only
-def test_a_goals_section_in_the_commit_does_not_stop_its_measurement(
-    make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # The commit's own ``booley.toml`` still has a [goals] section; the live one does not.
-    world = metrics_project(
-        make_world,
-        "[metrics_ok.checkout_stub]\nmarker_max = 10\n",
-        config=ONE_AT_A_TIME + "\n[goals]\nquiet_after = 60\n",
-    )
-    live_settings = world.main / "booley.toml"
-    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n")
-
-    assert measure(monkeypatch, world) == 0
-    assert len(stored_documents(world)) == 1
-
-    live_settings.write_bytes(b"[jobs]\nmax_tickets = 1\n\n[goals]\nquiet_after = 60\n")
-    capsys.readouterr()
-    assert measure(monkeypatch, world, entry="main") == 2
-    assert "[goals] section" in capsys.readouterr().err
+    assert measure(monkeypatch, world) == 2
+    assert said in capsys.readouterr().err
     assert len(stored_documents(world)) == 1  # nothing new was stored
 
 
@@ -370,7 +352,6 @@ use_fusesoc(patches)
 declare_stub_metrics(patches)
 patches.setattr(metrics_file, "TABLE_FLOWS", (*metrics_file.TABLE_FLOWS, FLOW))
 patches.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-patches.setattr(cli, "_host_install_authority_error", lambda *_: None)
 sys.argv = ["booley", *sys.argv[1:]]
 sys.exit(cli.main())
 """
@@ -397,6 +378,10 @@ def test_an_mcp_cancel_stops_the_measurement_and_its_children(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from booley.mcp.call_context import resolve_call_context
+
+    # The MCP server builds its Job manager only inside its own lifetime, and the public
+    # JobLifecycle's default repository finds records differently from the server's; the test
+    # drives the server's real submit and cancel with no server around it.
     from booley.mcp.server import _JobManager
     from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime
 
@@ -416,17 +401,16 @@ def test_an_mcp_cancel_stops_the_measurement_and_its_children(
 
     async def scenario() -> tuple[str | None, float, str]:
         jobs = _JobManager(_FakeLifetime())
-        run_id = jobs.submit(
-            "measure", command, 3 * hang_guard_s(), context=resolve_call_context({})
-        )
+        context = resolve_call_context({})
+        run_id = jobs.submit("measure", command, 3 * hang_guard_s(), context=context)
         deadline = time.monotonic() + hang_guard_s()
         while not (world.ctl / "lingering").exists():
-            assert run_id in jobs._tasks and not jobs._tasks[run_id].done(), "measure ended early"
+            assert await jobs.wait(run_id, 0) is False, "measure ended early"
             assert time.monotonic() < deadline, "the child Flow never started"
             await asyncio.sleep(0.05)
         began = time.monotonic()
         phase = await asyncio.wait_for(jobs.cancel(run_id), timeout=hang_guard_s())
-        record = job_records.read_record(run_id, jobs._job_roots[run_id])
+        record = job_records.read_record(run_id, context.jobs_root)
         assert record is not None
         return phase, time.monotonic() - began, record.status
 

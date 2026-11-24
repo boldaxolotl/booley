@@ -8,12 +8,14 @@ child Flows are in ``test_measure_command_flows.py``.
 
 from __future__ import annotations
 
-import importlib.util
+import contextlib
+import importlib
 import json
 import os
 import signal
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -29,6 +31,7 @@ from booley.harness.standalone_job import (
     standalone_log_path,
     standalone_log_root,
 )
+from booley.measurement.measuring_rules import ERROR_RULE, UNMET_RULE
 from booley.measurement.metrics_file import TableRules
 from booley.measurement.run_document import RunStatus, TableRun
 from booley.measurement.run_key import resolve_measurement_key
@@ -46,9 +49,9 @@ def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) ->
     # Windows has no mountinfo, which reads as an issued Sandbox that mounts no ``/work``.
     hand_written = cli.runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
     monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda: hand_written)
-    monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", *arguments])
-    return cli._dispatch_main()
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # main() quiets a Ctrl-C's traceback
+    return cli.main()
 
 
 def _listing(project: Path) -> list[str]:
@@ -57,86 +60,81 @@ def _listing(project: Path) -> list[str]:
     return sorted(str(path.relative_to(data)) for path in data.rglob("*"))
 
 
-def test_validate_valid_file_exits_zero_and_runs_no_flow(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("metrics", "said"),
+    [
+        pytest.param(
+            EXAMPLE_METRICS, ["metrics.toml is valid: 6 tables", "[sim_fifo.sim]"], id="valid"
+        ),
+        pytest.param(
+            "[defaults.sim]\ntests_failed_max = 0\n",
+            ["declares no `[<target>.<flow>]` table"],
+            id="table-free",
+        ),
+        pytest.param(None, ["no metrics.toml", "declares nothing"], id="no-file"),
+    ],
+)
+def test_validate_a_loadable_file_exits_zero_and_writes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    metrics: str | None,
+    said: list[str],
 ) -> None:
-    write_metrics_project(tmp_path, EXAMPLE_METRICS)  # not a Git repository: no commit exists
+    write_metrics_project(tmp_path, metrics)  # not a Git repository: no commit exists
     before = _listing(tmp_path)
     assert _measure(monkeypatch, tmp_path, "--validate") == 0
     out = capsys.readouterr().out
-    assert "metrics.toml is valid: 6 tables" in out
-    assert "[sim_fifo.sim]" in out
+    assert [text for text in said if text not in out] == []
     assert _listing(tmp_path) == before
 
 
+BOUND_IS_ABSOLUTE = "; a bound is an absolute number, not a percentage"
+
+
+@pytest.mark.parametrize(
+    ("metrics", "said"),
+    [
+        pytest.param(
+            "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n"
+            "[sim_core.coverage]\nline_coverage_min = 100.01\n",
+            [
+                "[nope.sim]",
+                "[sim_core.sim] bogus_max: ",
+                "[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], "
+                "got 100.01\n  write instead: line_coverage_min = 100",
+                "metrics.toml has 3 load errors",
+            ],
+            id="every-error",
+        ),
+        pytest.param(  # AC2 of #4388: an automatic mutation count names its table and key
+            '[sim_core.mutation]\nmutation_score_min = 50\ncount = "auto"\n',
+            ["[sim_core.mutation] count: count must be an integer, got 'auto'"],
+            id="auto-count",
+        ),
+        pytest.param(  # a percentage says bounds are absolute; another string keeps its error
+            '[sim_core.sim]\ntests_total_min = "+10%"\ntests_failed_max = "10%"\n'
+            'tests_total_max = "zero"\n',
+            [
+                "tests_total_min must be a finite number, got '+10%'" + BOUND_IS_ABSOLUTE,
+                "tests_failed_max must be a finite number, got '10%'" + BOUND_IS_ABSOLUTE,
+                "got 'zero'\n",
+            ],
+            id="percentage",
+        ),
+    ],
+)
 def test_validate_lists_every_load_error_and_exits_nonzero(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    metrics: str,
+    said: list[str],
 ) -> None:
-    write_metrics_project(
-        tmp_path,
-        "[nope.sim]\ntests_failed_max = 0\n[sim_core.sim]\nbogus_max = 1\n"
-        "[sim_core.coverage]\nline_coverage_min = 100.01\n",
-    )
+    write_metrics_project(tmp_path, metrics)
     assert _measure(monkeypatch, tmp_path, "--validate") == 2
     err = capsys.readouterr().err
-    assert "[nope.sim]" in err
-    assert "[sim_core.sim] bogus_max: " in err
-    assert (
-        "[sim_core.coverage] line_coverage_min: line_coverage must be within [0, 100], "
-        "got 100.01\n  write instead: line_coverage_min = 100"
-    ) in err
-    assert "metrics.toml has 3 load errors" in err
-
-
-def test_validate_reports_a_table_free_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    write_metrics_project(tmp_path, "[defaults.sim]\ntests_failed_max = 0\n")
-    assert _measure(monkeypatch, tmp_path, "--validate") == 0
-    assert "declares no `[<target>.<flow>]` table" in capsys.readouterr().out
-
-
-def test_validate_without_metrics_file_declares_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    write_metrics_project(tmp_path)
-    assert _measure(monkeypatch, tmp_path, "--validate") == 0
-    out = capsys.readouterr().out
-    assert "no metrics.toml" in out
-    assert "declares nothing" in out
-
-
-def test_validate_refuses_an_automatic_mutation_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """AC2: ``count = "auto"`` is a load error that names its table and key."""
-    write_metrics_project(
-        tmp_path, '[sim_core.mutation]\nmutation_score_min = 50\ncount = "auto"\n'
-    )
-
-    assert _measure(monkeypatch, tmp_path, "--validate") == 2
-
-    err = capsys.readouterr().err
-    assert "[sim_core.mutation] count: count must be an integer, got 'auto'" in err
-
-
-def test_validate_percentage_bound_says_bounds_are_absolute(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A percentage bound value says bounds are absolute; another string keeps its error."""
-    write_metrics_project(
-        tmp_path,
-        '[sim_core.sim]\ntests_total_min = "+10%"\ntests_failed_max = "10%"\n'
-        'tests_total_max = "zero"\n',
-    )
-
-    assert _measure(monkeypatch, tmp_path, "--validate") == 2
-
-    err = capsys.readouterr().err
-    assert err.count("a bound is an absolute number, not a percentage") == 2
-    assert "tests_total_min must be a finite number, got '+10%'; a bound" in err
-    assert "tests_failed_max must be a finite number, got '10%'; a bound" in err
-    assert "got 'zero'\n" in err
+    assert [text for text in said if text not in err] == []
 
 
 @pytest.mark.parametrize(
@@ -255,8 +253,6 @@ def script_children(
 ) -> list[str]:
     """Replace the children; the returned list names each step that ran, in order."""
     steps: list[str] = []
-    if importlib.util.find_spec(COMMAND) is None:
-        return steps  # the command does not exist yet: `booley measure` refuses to run
 
     def prepare_children(tables: Sequence[TableRules], **_options: object) -> list[object]:
         steps.append("prepare")
@@ -294,6 +290,11 @@ def job_log(project: Path) -> str:
     )
 
 
+def job_dir(project: Path) -> Path:
+    """The directory the ``measure`` Job's record names by its run id."""
+    return standalone_log_root(project / ".booley") / job_record(project).run_id
+
+
 def stored_runs(project: Path) -> list[Path]:
     return sorted((project / ".booley" / "measurements").glob("*/*.json"))
 
@@ -319,17 +320,57 @@ def test_unmet_and_error_together_exit_two(
     assert job_record(project).exit_code == 2
 
 
-def test_nothing_in_scope_exits_two_and_stores_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("metrics", "arguments", "said"),
+    [
+        pytest.param(
+            "[defaults.sim]\ntests_failed_max = 0\n", [], NOTHING_IN_SCOPE, id="no-table"
+        ),
+        pytest.param(
+            ONE_LINT_TABLE, ["--target", "sim_fifo"], NOTHING_IN_SCOPE, id="target-no-table"
+        ),
+        pytest.param(ONE_LINT_TABLE, ["--target", "nope"], "Unknown target 'nope'", id="unknown"),
+        pytest.param(
+            ONE_LINT_TABLE, ["--target", "shared"], "'shared' is declared by 2", id="ambiguous"
+        ),
+        pytest.param(
+            ONE_LINT_TABLE,
+            ["--base", "no-such-revision"],
+            "--base 'no-such-revision' cannot be used",
+            id="base",
+        ),
+        pytest.param(
+            ONE_LINT_TABLE,
+            ["--", "no-such-revision"],
+            "is not a commit of this Project",
+            id="revision",
+        ),
+        pytest.param(
+            ONE_LINT_TABLE,
+            ["--", "--exec=x"],
+            "is not a commit of this Project",
+            id="option-revision",
+        ),
+    ],
+)
+def test_a_refused_measurement_exits_two_and_stores_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    metrics: str,
+    arguments: list[str],
+    said: str,
 ) -> None:
-    project = committed_project(tmp_path, "[defaults.sim]\ntests_failed_max = 0\n")
+    project = committed_project(tmp_path, metrics)
     steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
 
-    assert run_command(monkeypatch, project) == 2
+    assert run_command(monkeypatch, project, *arguments) == 2
 
-    assert NOTHING_IN_SCOPE in capsys.readouterr().err
+    *_, refusal, rule = capsys.readouterr().err.rstrip().splitlines()
+    assert said in refusal and rule == ERROR_RULE
     assert steps == []
     assert not (project / ".booley" / "measurements").exists()
+    assert not (job_dir(project) / "measurements").exists()
     assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
 
 
@@ -393,21 +434,33 @@ def test_a_failing_post_setup_hook_refuses_with_its_log(
     assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
 
 
-def test_a_first_child_that_cannot_launch_is_a_refusal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("failure", "said"),
+    [
+        (CheckoutFlowError("Flow 'lint' could not be started: disk full"), "ERROR: Flow 'lint'"),
+        (RuntimeError("boom"), "ERROR: measurement failed: boom"),
+    ],
+    ids=["launch", "crash"],
+)
+def test_children_that_fail_to_run_exit_two_and_store_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _measuring_environment: Path,
+    failure: Exception,
+    said: str,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
 
-    def cannot_launch(
-        _tables: Sequence[TableRules], _cancelled: Callable[[], bool]
-    ) -> ChildrenOutcome:
-        raise CheckoutFlowError("Flow 'lint' could not be started: disk full")
+    def fail(_tables: Sequence[TableRules], _cancelled: Callable[[], bool]) -> ChildrenOutcome:
+        raise failure
 
-    script_children(monkeypatch, cannot_launch)
+    script_children(monkeypatch, fail)
 
     assert run_command(monkeypatch, project) == 2
-    assert "could not be started: disk full" in capsys.readouterr().err
+    assert said in capsys.readouterr().err
     assert not (project / ".booley" / "measurements").exists()
+    assert not list(_measuring_environment.iterdir())  # the scratch checkout is gone
 
 
 def test_measure_job_record_carries_flow_progress(
@@ -448,35 +501,6 @@ def test_json_prints_the_report_view(
     assert "view" in document
     assert document["run_id"] == job_record(project).run_id
     assert job_record(project).argv == ["booley", "measure", "--all", "--json"]
-
-
-def test_an_invalid_base_is_refused_before_the_export(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
-
-    assert run_command(monkeypatch, project, "--base", "no-such-revision") == 2
-
-    assert "--base 'no-such-revision' cannot be used" in capsys.readouterr().err
-    assert steps == []
-    assert not (project / ".booley" / "measurements").exists()
-
-
-@pytest.mark.parametrize("revision", ["no-such-revision", "--exec=x"])
-def test_a_revision_that_is_not_a_commit_is_refused(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    revision: str,
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", "--", revision])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
-
-    assert cli._dispatch_main() == 2
-    assert "is not a commit of this Project" in capsys.readouterr().err
 
 
 def test_rules_that_are_not_versioned_are_refused(
@@ -547,20 +571,6 @@ def test_measure_inside_another_job_gets_its_own_record(
     assert os.environ["BOOLEY_RUN_ID"] == "outer-run"  # the caller's Job id is back
 
 
-def test_a_project_without_a_job_directory_cannot_store_a_measurement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.harness import standalone_job
-
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    monkeypatch.setattr(
-        standalone_job.StandaloneJob, "prepare", classmethod(lambda *_a, **_k: None)
-    )
-
-    assert run_command(monkeypatch, project) == 2
-    assert "no Main Booley Directory" in capsys.readouterr().err
-
-
 def test_an_unwritable_store_exits_two_with_the_error_in_the_job_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -570,59 +580,50 @@ def test_an_unwritable_store_exits_two_with_the_error_in_the_job_log(
 
     assert run_command(monkeypatch, project) == 2
 
-    assert "ERROR: measurement failed:" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "ERROR: measurement failed:" in err
+    assert err.rstrip().splitlines()[-1] == ERROR_RULE
     record = job_record(project)
     assert (record.status, record.exit_code) == ("failed", 2)
     assert "measurement failed" in job_log(project)
 
 
-def test_a_measured_commit_is_shown_without_running_a_flow(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_measured_commit_is_shown_without_a_checkout_or_a_flow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _measuring_environment: Path,
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
     assert run_command(monkeypatch, project) == 0
     (first,) = stored_runs(project)
-    capsys.readouterr()
+    err = capsys.readouterr().err  # a met run prints no rule
+    assert UNMET_RULE not in err and ERROR_RULE not in err
+    exports: list[tuple[object, ...]] = []
+    export = importlib.import_module(COMMAND).export_commit
+
+    def recording_export(*args: object):
+        exports.append(args)
+        return export(*args)  # type: ignore[arg-type]
+
+    # The checkout is observable only through this call: the command exports and discards it.
+    monkeypatch.setattr(f"{COMMAND}.export_commit", recording_export)
 
     assert run_command(monkeypatch, project) == 0
 
     captured = capsys.readouterr()
     assert steps == ["prepare", "run"]  # the second command started no Flow
+    assert (exports, list(_measuring_environment.iterdir())) == ([], [])
     assert stored_runs(project) == [first]
     assert "Targets with no metrics: " in captured.out
     run_id = json.loads(first.read_text())["run_id"]
     assert f"is already Measured by run {run_id}; showing it" in captured.err
     assert "--again" in captured.err
     assert "Measurement Report" not in captured.err
-
-
-def test_the_shown_run_is_the_json_document_on_stdout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
-    assert run_command(monkeypatch, project) == 0
-    capsys.readouterr()
-
     assert run_command(monkeypatch, project, "--json") == 0
-
     document = json.loads(capsys.readouterr().out)
     assert "view" in document and document["status"] == "completed"
-
-
-def test_again_measures_a_measured_commit_and_stores_a_second_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
-    assert run_command(monkeypatch, project) == 0
-
-    assert run_command(monkeypatch, project, "--again") == 0
-
-    assert steps == ["prepare", "run", "prepare", "run"]
-    assert len(stored_runs(project)) == 2
-    assert len(MeasurementStore(project / ".booley").history(key_of(project))) == 2
 
 
 @pytest.mark.parametrize("later", ["unmet", "error", "stopped", "cancelled"])
@@ -672,31 +673,6 @@ def test_an_unreadable_stored_document_is_noted_and_the_commit_is_measured(
 
     assert "measuring again" in capsys.readouterr().err
     assert steps == ["prepare", "run"] * 2
-
-
-def test_a_measured_commit_is_shown_without_creating_a_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _measuring_environment: Path
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
-    assert run_command(monkeypatch, project) == 0
-    exports: list[tuple[object, ...]] = []
-    export = measure_command_module().export_commit
-
-    def recording_export(*args: object):
-        exports.append(args)
-        return export(*args)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(f"{COMMAND}.export_commit", recording_export)
-
-    assert run_command(monkeypatch, project) == 0
-
-    assert exports == []
-    assert not list(_measuring_environment.iterdir())
-
-
-def measure_command_module():
-    return importlib.import_module(COMMAND)
 
 
 def project_with_live_changes(tmp_path: Path) -> Path:
@@ -815,27 +791,17 @@ def test_an_unreadable_status_does_not_hide_the_stored_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = committed_project(tmp_path, ONE_LINT_TABLE)
+    (project / "scratch.txt").write_bytes(b"untracked\n")  # an untracked file is no change
     script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
     assert run_command(monkeypatch, project) == 0
     clean = capsys.readouterr()
+    assert "note:" not in clean.err
     (project / ".git" / "index").write_bytes(b"not an index")
 
     assert run_command(monkeypatch, project) == 0
     captured = capsys.readouterr()
     assert captured.out == clean.out
     assert "note:" not in captured.err
-
-
-def test_a_clean_live_tree_prints_no_notice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    (project / "scratch.txt").write_bytes(b"untracked\n")
-    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
-
-    assert run_command(monkeypatch, project) == 0
-
-    assert "note:" not in capsys.readouterr().err
 
 
 def assert_cancelled_run_stored(project: Path, *, measured: bool = False) -> None:
@@ -891,7 +857,9 @@ def test_cancelled_before_any_child_finished_stores_nothing(
     with pytest.raises(KeyboardInterrupt):
         run_command(monkeypatch, project)
 
-    assert "nothing stored" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "nothing stored" in err  # a cancelled run prints no rule
+    assert UNMET_RULE not in err and ERROR_RULE not in err
     assert not (project / ".booley" / "measurements").exists()
     record = job_record(project)
     assert (record.status, record.exit_code) == ("cancelled", 130)
@@ -916,23 +884,17 @@ def children_cancelled_by(
         run_command(monkeypatch, project)
 
 
+@pytest.mark.parametrize(
+    "numbers",
+    [[signal.SIGINT, signal.SIGINT], [signal.SIGTERM], [HANGUP]],
+    ids=["two-ctrl-c", "term", "hangup"],
+)
 def test_signals_during_the_children_cancel_the_measurement(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, numbers: list[int]
 ) -> None:
     project = committed_project(tmp_path, TWO_LINT_TABLES)
 
-    children_cancelled_by(project, monkeypatch, [signal.SIGINT, signal.SIGINT])
-
-    assert_cancelled_run_stored(project)
-
-
-@pytest.mark.parametrize("number", [signal.SIGTERM, HANGUP])
-def test_a_termination_signal_cancels_the_measurement_like_ctrl_c(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, number: int
-) -> None:
-    project = committed_project(tmp_path, TWO_LINT_TABLES)
-
-    children_cancelled_by(project, monkeypatch, [number])
+    children_cancelled_by(project, monkeypatch, numbers)
 
     assert_cancelled_run_stored(project)
 
@@ -1086,26 +1048,6 @@ def test_a_cancelled_run_with_no_terminal_still_ends_as_a_ctrl_c(
     assert_cancelled_run_stored(project)
 
 
-def test_stored_text_reports_skip_symlinks(tmp_path: Path) -> None:
-    from booley.harness.measure_command import _flow_reports
-
-    reports = tmp_path / "invocation"
-    reports.mkdir()
-    (reports / "report.json").write_bytes(b"{}")
-    secret = tmp_path / "secret.txt"
-    secret.write_bytes(b"outside the report directory")
-    try:
-        (reports / "tool.log").symlink_to(secret)
-    except OSError:  # no symlink privilege on this platform
-        pytest.skip("symlinks are unavailable")
-    run = TableRun("t#lint", "lint", 1.0, None, ())
-    outcome = ChildrenOutcome(
-        RunStatus.COMPLETED, (TableMeasurement(run, (reports / "report.json",), True),)
-    )
-
-    assert [report.path.name for report in _flow_reports(outcome)] == ["report.json"]
-
-
 # kind: its metrics table; every Flow leaves progress and hidden temporaries beside its reports
 TABLE_OF_KIND = {
     "lint": "[sim_core.lint]\nwarnings_max = 0\n",
@@ -1130,6 +1072,8 @@ def test_only_report_artifacts_are_stored_listed_and_counted(
     invocation.mkdir()
     for name in (*reports, *BOOKKEEPING):
         (invocation / name).write_bytes(b"{}")
+    with contextlib.suppress(OSError):  # a symlink is never stored; Windows may not allow one
+        (invocation / "tool.log").symlink_to(invocation / "report.json")
     # A counted bookkeeping file would push a real report out, or itself show as dropped.
     monkeypatch.setattr(run_store, "REPORT_CAP_BYTES", 2 * len(reports))
 
@@ -1158,50 +1102,34 @@ def test_the_signal_handlers_are_restored_after_the_run(
     assert run_command(monkeypatch, project) == 0
 
     assert {n: signal.getsignal(n) for n in before} == before
+    monkeypatch.delattr(signal, "SIGHUP", raising=False)  # as on Windows
+    assert run_command(monkeypatch, project, "--again") == 0
+    assert {n: signal.getsignal(n) for n in before} == before
 
 
-def test_cancel_signals_skip_a_signal_this_platform_lacks(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_measurement_outside_the_main_thread_runs_without_signal_handlers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import measure_command
+    project = committed_project(tmp_path, ONE_LINT_TABLE)
+    script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
+    codes: list[int] = []
 
-    monkeypatch.setattr(measure_command, "_CANCEL_SIGNALS", ("SIGNOSUCH", "SIGINT"))
-    with measure_command._cancel_signals() as signals:
-        assert signal.getsignal(signal.SIGINT) == signals._on_signal
-    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
-
-
-def test_cancel_signals_do_nothing_outside_the_main_thread() -> None:
-    import threading
-
-    from booley.harness import measure_command
-
-    seen: list[bool] = []
-
-    def attempt() -> None:
-        with measure_command._cancel_signals() as signals:
-            seen.append(signals.is_set())
-
-    worker = threading.Thread(target=attempt)
+    worker = threading.Thread(target=lambda: codes.append(run_command(monkeypatch, project)))
     worker.start()
     worker.join(DEADLINE_S)
-    assert seen == [False]
+
+    assert not worker.is_alive()
+    assert codes == [0]
+    assert len(stored_runs(project)) == 1
 
 
 # ---------------------------------------------------------------- measuring one Target (#3955)
-
-TWO_TABLES = "[sim_core.lint]\nwarnings_max = 0\n[sim_two.lint]\nwarnings_max = 0\n"
-
-
-def job_dir(project: Path) -> Path:
-    """The directory the ``measure`` Job's record names by its run id."""
-    return standalone_log_root(project / ".booley") / job_record(project).run_id
 
 
 def test_a_target_run_is_kept_with_its_job_and_stores_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project = committed_project(tmp_path, TWO_TABLES)
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
     report = tmp_path / "children" / "report.json"
     report.parent.mkdir()
     report.write_bytes(b'{"lint": "ok"}')
@@ -1222,6 +1150,8 @@ def test_a_target_run_is_kept_with_its_job_and_stores_nothing(
     run_id = job_record(project).run_id
     (document,) = (job_dir(project) / "measurements").glob(f"*/{run_id}.json")
     assert document.with_suffix(".md").is_file()
+    tables = json.loads(document.read_text())["tables"]
+    assert [table["identity"].split("#")[1] for table in tables] == ["sim_two"]
     kept_report = document.parent / run_id / "0-lint" / "report.json"
     assert kept_report.read_bytes() == report.read_bytes()
     assert str(document.with_suffix(".md")) in job_log(project)
@@ -1233,63 +1163,10 @@ def test_a_target_run_is_kept_with_its_job_and_stores_nothing(
     assert len(stored_runs(project)) == 1
 
 
-def test_a_target_without_a_table_exits_two_and_runs_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
-
-    assert run_command(monkeypatch, project, "--target", "sim_fifo") == 2
-
-    assert NOTHING_IN_SCOPE in capsys.readouterr().err
-    assert steps == []
-    assert not (project / ".booley" / "measurements").exists()
-    assert not (job_dir(project) / "measurements").exists()
-    assert (job_record(project).status, job_record(project).exit_code) == ("failed", 2)
-
-
-def test_an_unknown_or_ambiguous_target_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    project = committed_project(tmp_path, ONE_LINT_TABLE)
-    steps = script_children(monkeypatch, lambda *_: pytest.fail("no child may run"))
-
-    for name in ("nope", "shared"):
-        assert run_command(monkeypatch, project, "--target", name) == 2, name
-        assert name in capsys.readouterr().err
-    assert steps == []
-    assert {
-        r.exit_code
-        for r in job_records.list_records(
-            standalone_jobs_dir(project / ".booley"), skip_malformed=True
-        )
-        if r.endpoint == "measure"
-    } == {2}
-
-
-def test_a_target_run_measures_only_its_tables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = committed_project(tmp_path, TWO_TABLES)
-    seen: list[list[str]] = []
-
-    def run(tables: Sequence[TableRules], _cancelled: Callable[[], bool]) -> ChildrenOutcome:
-        seen.append([rules.identity.split("#")[1] for rules in tables])
-        return outcome_of(tables, [0])
-
-    script_children(monkeypatch, run)
-
-    assert run_command(monkeypatch, project, "--target", "sim_two") == 0
-    assert seen == [["sim_two"]]
-    (document,) = (job_dir(project) / "measurements").glob("*/*.json")
-    tables = json.loads(document.read_text())["tables"]
-    assert [t["identity"].split("#")[1] for t in tables] == ["sim_two"]
-
-
 def test_a_target_run_exits_like_a_full_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = committed_project(tmp_path, TWO_TABLES)
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
     for warnings, code in ((3, 1), (None, 2)):
         script_children(monkeypatch, lambda tables, _c, w=warnings: outcome_of(tables, [w]))
 
