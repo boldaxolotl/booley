@@ -194,6 +194,7 @@ def load_declared_reviews(checkout: Path) -> DeclaredReviews:
         ReviewsFileError: holding every load error, including those that need the
             Target catalog or the checkout's files.
         OSError: the file exists but cannot be read.
+        StaleTargetCatalogError: the Project's Targets changed while the catalog was built.
     """
     path = resolve_checkout_booley_dir(checkout) / REVIEWS_FILE
     try:
@@ -201,11 +202,7 @@ def load_declared_reviews(checkout: Path) -> DeclaredReviews:
     except FileNotFoundError:
         return DeclaredReviews(path, (), {})
     tables = parse_reviews_as_written(raw)
-    try:
-        catalog = TargetCatalog.build(checkout)
-    except FuseSocError as exc:
-        raise ReviewsFileError((ReviewsLoadError("", None, str(exc)),)) from exc
-    checker = _Checker(checkout, catalog)
+    checker = _Checker(checkout, TargetCatalog.build(checkout))
     reviews: dict[str, frozenset[DeclaredReview]] = {}
     for table in tables:
         checked = checker.table(table)

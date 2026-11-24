@@ -115,7 +115,7 @@ and Booley's conflict, yours win.
 `reviews.toml` sits in the Booley Directory, `.booley/` at the top of your
 repository. It lists, for each Target, the reviews Booley runs on it, so you
 write them once instead of in each request. Booley checks the file when it runs
-the declared reviews with `booley review`, which is not released yet (see the
+the declared reviews, which no released version does yet (see the
 [roadmap](../internals/ROADMAP.md)). Without the file, a Project declares no
 reviews.
 
