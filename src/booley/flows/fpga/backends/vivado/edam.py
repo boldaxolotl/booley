@@ -405,7 +405,7 @@ _IMPL_OK_RE = re.compile(
 )
 
 
-def _safe_float(text: str | None) -> float | None:
+def _safe_float(text: str) -> float | None:
     """Coerce a regex-captured numeric string to float; None on format drift.
 
     The timing patterns capture ``-?[\\d.]+``, which can still match malformed
@@ -413,8 +413,6 @@ def _safe_float(text: str | None) -> float | None:
     ``None`` — matching how the integer metrics leave an unparsed field unset —
     rather than raising on EDA tool output.
     """
-    if text is None:
-        return None
     try:
         return float(text)
     except ValueError:
