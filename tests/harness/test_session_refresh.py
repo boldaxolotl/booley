@@ -360,7 +360,6 @@ def test_start_failure_names_what_is_left_then_rerun_converges(
     host.start_error = None
     stable = _image(graph_changed=False)
     rerun = session_refresh.refresh(host.project, _images(host, stable, spec_current=True))
-    # The message names the outcome and both container IDs.
     assert (rerun.image, rerun.message) == (stable, rerun_message)
 
 
