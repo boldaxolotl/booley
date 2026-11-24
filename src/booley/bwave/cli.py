@@ -1227,7 +1227,7 @@ class _TickResolver:
         if end is None or end > last:
             print(
                 f"NOTE: --time end {raw_end} is past the end of the trace; "
-                f"showing up to tick {last}",
+                f"checking up to tick {last}",
                 file=sys.stderr,
             )
             end = last
@@ -1668,7 +1668,7 @@ Quick start:
     p_gui.add_argument(
         "--append",
         action="store_true",
-        help="Treat the selection as an addition to a view (no clock row is added)",
+        help="Treat the selection as an addition to an existing one (no clock row is added)",
     )
     p_gui.add_argument(
         "--no-clock",

@@ -174,7 +174,8 @@ Try:
   try `--version`, `schema`, `docs topics`/`search`/`show`, `skill`, the old v0.1 flag form
   (`--wave`, `--find`), a pattern miss, an ambiguous name, and a `--limit` output cap.
 - `bwave gui` reports a bad selection (unknown trace, no matching signal,
-  a time or cursor past the end), then exits 1 with the no-viewer message.
+  a time or cursor past the end) and exits non-zero without the no-viewer
+  message; a valid or absent selection exits 1 with the no-viewer message.
   From an MCP client call status, targets, a Flow and a Specialist, and
   read the MCP schemas.
 Look for: exit 0 with wrong values, ignored options, off-by-one markers, dropped signals.

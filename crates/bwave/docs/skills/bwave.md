@@ -63,7 +63,6 @@ bwave @dut find hsk 'h1 --virtual "hsk = *valid & *ready" --count
 
 ## Showing the human a waveform
 
-Booley has no waveform viewer for now, and `bwave gui` only checks a selection
-and exits non-zero (`commands/gui`). When the human needs to see something,
+Booley has no waveform viewer for now. When the human needs to see something,
 report what the queries found as text: the signal names, the times and the
 values.

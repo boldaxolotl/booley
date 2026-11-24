@@ -14,7 +14,6 @@ import itertools
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -72,22 +71,6 @@ _NO_VIEWER = (
     "ERROR: Booley has no waveform viewer until the web Dashboard's waveform "
     "view ships. The text queries still work: see `bwave --help`."
 )
-
-
-@pytest.fixture()
-def no_viewer_host(monkeypatch, tmp_path):
-    """A host with no editor CLI and an empty home, so no viewer can answer."""
-    real_which = shutil.which
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        shutil,
-        "which",
-        lambda name, *a, **kw: (
-            None
-            if name in ("code", "code-insiders", "cursor", "codium")
-            else real_which(name, *a, **kw)
-        ),
-    )
 
 
 def _args(target: str | None = None, **kwargs) -> argparse.Namespace:
@@ -402,7 +385,7 @@ def fake_rust(monkeypatch):
 # ── no viewer: the criterion tests ──────────────────────────────────────────
 
 
-def test_valid_selection_reports_no_viewer(tmp_path, fake_rust, no_viewer_host, capsys):
+def test_valid_selection_reports_no_viewer(tmp_path, fake_rust, capsys):
     _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
@@ -430,7 +413,7 @@ def test_valid_selection_reports_no_viewer(tmp_path, fake_rust, no_viewer_host, 
     ],
     ids=["alias", "explicit-path", "sim-dir", "vcd-file"],
 )
-def test_gui_without_selection_reports_no_viewer(tmp_path, no_viewer_host, name, target):
+def test_gui_without_selection_reports_no_viewer(tmp_path, name, target):
     trace = _make_trace(tmp_path, name)
     _write_sessions({"dut": _make_entry(str(trace))})
 
@@ -642,7 +625,7 @@ def test_time_end_past_the_trace_is_clamped(tmp_path, fake_rust, capsys):
     plan = _plan(_seed_default(tmp_path), time="100c:999999c", append=True)
 
     assert plan.viewport == (1000, end)
-    assert f"--time end 999999c is past the end of the trace; showing up to tick {end}" in (
+    assert f"--time end 999999c is past the end of the trace; checking up to tick {end}" in (
         capsys.readouterr().err
     )
 
