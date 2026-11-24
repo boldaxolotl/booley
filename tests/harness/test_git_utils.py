@@ -1,11 +1,4 @@
-"""Tests for git_utils.py — focused on untested functions and real-git integration.
-
-Existing test_utils.py covers the Scope and Git helpers (expand_scope_globs,
-scope_matches_file, is_scope_unknown, commit_scope with mocks).  This file adds:
-  - git_run basics
-  - commit_scope integration with a real tmp git repo (main-worktree guard,
-    nothing-to-commit, git-add failure, auto-fix message body)
-"""
+"""Tests for ``booley.runtime.git`` against real Git repositories and worktrees."""
 
 from __future__ import annotations
 
@@ -15,29 +8,27 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from booley.core.scope_matching import has_glob_chars
 from booley.runtime.agent_errors import BlockingError
 from booley.runtime.git import (
     BOOLEY_EXCLUDE_HEADER,
-    _git_common_dir,
     add_git_excludes,
     commit_scope,
+    git_common_dir,
+    git_exclude_entries,
     git_excludes_pending,
     git_run,
     is_linked_worktree,
+    remove_git_excludes,
 )
 from tests.conftest import symlink_or_skip
+from tests.git_support import hostile
+from tests.harness.git_support import git_stdout
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
-
-# ---------------------------------------------------------------------------
-# Helpers — tiny git repo factory
-# ---------------------------------------------------------------------------
 
 
 def _init_repo(path: Path) -> Path:
@@ -77,269 +68,141 @@ def _make_worktree(repo: Path, wt_path: Path, branch: str = "test-branch") -> Pa
     return wt_path
 
 
-# ===========================================================================
-# has_glob_chars
-# ===========================================================================
+@pytest.fixture
+def wt(tmp_path: Path) -> Path:
+    """A linked worktree, at ``tmp_path / "wt"``, of a one-commit repository at ``tmp_path``."""
+    return _make_worktree(_init_repo(tmp_path), tmp_path / "wt")
 
 
-class TestHasGlobChars:
-    def test_plain_path(self):
-        assert not has_glob_chars("rtl/foo.sv")
-
-    def test_star(self):
-        assert has_glob_chars("rtl/*.sv")
-
-    def test_question_mark(self):
-        assert has_glob_chars("rtl/foo?.sv")
-
-    def test_bracket(self):
-        assert has_glob_chars("rtl/foo[12].sv")
+def _committed(wt: Path) -> list[str]:
+    return git_stdout(wt, "show", "--format=", "--name-only", "HEAD").splitlines()
 
 
-# ===========================================================================
-# git_run
-# ===========================================================================
+def _snapshot(path: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(path)): p.read_bytes() for p in path.rglob("*") if p.is_file()}
 
 
-class TestGitRun:
-    def test_returns_completed_process(self, tmp_path: Path):
-        _init_repo(tmp_path)
-        result = git_run(tmp_path, ["rev-parse", "--is-inside-work-tree"])
-        assert result.returncode == 0
-        assert result.stdout.strip() == "true"
-
-    def test_bad_command_nonzero(self, tmp_path: Path):
-        _init_repo(tmp_path)
-        result = git_run(tmp_path, ["log", "--oneline", "nonexistent-ref-999"])
-        assert result.returncode != 0
+@pytest.mark.parametrize(
+    ("where", "linked"),
+    [("wt", True), (".", False), ("wt/rtl", False), ("plain", False)],
+    ids=["linked-root", "main-checkout", "linked-subdirectory", "plain-directory"],
+)
+def test_is_linked_worktree(wt: Path, where: str, linked: bool) -> None:
+    (wt / "rtl").mkdir()
+    (wt.parent / "plain").mkdir()
+    assert is_linked_worktree(wt.parent / where) is linked
 
 
 # ===========================================================================
-# is_linked_worktree
+# commit_scope
 # ===========================================================================
 
 
-class TestIsLinkedWorktree:
-    def test_linked_worktree_root_is_detected(self, tmp_path: Path):
-        repo = _init_repo(tmp_path / "repo")
-        wt = _make_worktree(repo, tmp_path / "wt")
-        assert is_linked_worktree(wt)
+@pytest.mark.parametrize(
+    ("linked", "scope", "staged"),
+    [(False, ["new.sv"], True), (True, [], True), (True, ["init.txt"], False)],
+    ids=["main-checkout", "empty-scope", "nothing-to-commit"],
+)
+def test_commit_scope_without_work_changes_nothing(
+    tmp_path: Path, linked: bool, scope: list[str], staged: bool
+) -> None:
+    """The main-checkout guard, an empty Scope and a clean tree leave HEAD and index alone."""
+    repo = _init_repo(tmp_path)
+    target = _make_worktree(repo, tmp_path / "wt") if linked else repo
+    if staged:
+        (target / "new.sv").write_text("wire x;\n", encoding="utf-8")
+        git_stdout(target, "add", "new.sv")
+    before = (git_stdout(target, "rev-parse", "HEAD"), git_stdout(target, "status", "--short"))
 
-    def test_main_checkout_is_not_linked(self, tmp_path: Path):
-        # .git is the repository directory, not a pointer file.
-        repo = _init_repo(tmp_path / "repo")
-        assert not is_linked_worktree(repo)
+    commit_scope(target, scope, "feat: nothing to record")
 
-    def test_subdirectory_of_linked_worktree_is_not_a_root(self, tmp_path: Path):
-        repo = _init_repo(tmp_path / "repo")
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "rtl").mkdir()
-        assert not is_linked_worktree(wt / "rtl")
-
-    def test_plain_directory_is_not_linked(self, tmp_path: Path):
-        assert not is_linked_worktree(tmp_path)
-
-
-# ===========================================================================
-# commit_scope — integration with real git repos
-# ===========================================================================
+    assert (
+        git_stdout(target, "rev-parse", "HEAD"),
+        git_stdout(target, "status", "--short"),
+    ) == before
 
 
-class TestCommitScopeIntegration:
-    """Tests that need a real git repo (main worktree guard, nothing-to-commit, etc.)."""
+def test_literal_scope_with_pathspec_metacharacters(wt: Path) -> None:
+    """Literal staging accepts real filenames that contain glob syntax."""
+    literal_path = "rtl/mem[0].sv"
+    (wt / "rtl").mkdir()
+    (wt / literal_path).write_text("wire x;\n", encoding="utf-8")
 
-    def test_main_worktree_guard_blocks(self, tmp_path: Path):
-        """commit_scope refuses when .git is a directory (main repo)."""
-        repo = _init_repo(tmp_path)
-        (repo / "new.sv").write_text("wire x;\n", encoding="utf-8")
-        # .git is a directory → main worktree → should silently refuse
-        commit_scope(repo, ["new.sv"], "should not commit")
-        # File should NOT be committed
-        result = subprocess.run(
-            ["git", "-C", str(repo), "log", "--oneline"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert "should not commit" not in result.stdout
+    commit_scope(wt, [literal_path], "feat: add literal path", literal=True)
 
-    def test_worktree_allows_commit(self, tmp_path: Path):
-        """commit_scope succeeds in a linked worktree (.git is a file)."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
-        commit_scope(wt, ["new.sv"], "feat: add wire")
-        result = subprocess.run(
-            ["git", "-C", str(wt), "log", "--oneline"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert "feat: add wire" in result.stdout
+    assert _committed(wt) == [literal_path]
 
-    def test_literal_scope_with_pathspec_metacharacters(self, tmp_path: Path):
-        """Literal staging accepts real filenames that contain glob syntax."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        literal_path = "rtl/mem[0].sv"
-        (wt / "rtl").mkdir()
-        (wt / literal_path).write_text("wire x;\n", encoding="utf-8")
 
-        commit_scope(wt, [literal_path], "feat: add literal path", literal=True)
+@pytest.mark.parametrize(
+    ("stage", "left"),
+    [
+        (["add", "outside.sv"], "?? outside.sv"),
+        (["rm", "--quiet", "init.txt"], " D init.txt"),
+    ],
+    ids=["added", "deleted"],
+)
+def test_pre_staged_outsider_is_left_uncommitted(wt: Path, stage: list[str], left: str) -> None:
+    """Authorized work commits even when an unrelated addition or deletion was staged."""
+    (wt / "authorized.sv").write_text("wire allowed;\n", encoding="utf-8")
+    (wt / "outside.sv").write_text("wire needs_triage;\n", encoding="utf-8")
+    git_stdout(wt, *stage)
 
-        result = subprocess.run(
-            ["git", "-C", str(wt), "show", "--format=", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert literal_path in result.stdout.splitlines()
+    commit_scope(wt, ["authorized.sv"], "fix: preserve scoped work")
 
-    def test_pre_staged_outsider_is_left_uncommitted(self, tmp_path: Path):
-        """Authorized work commits even when an unrelated path was staged."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "authorized.sv").write_text("wire allowed;\n", encoding="utf-8")
-        (wt / "outside.sv").write_text("wire needs_triage;\n", encoding="utf-8")
-        subprocess.run(
-            ["git", "-C", str(wt), "add", "outside.sv"],
-            capture_output=True,
-            check=True,
-        )
+    assert _committed(wt) == ["authorized.sv"]
+    status = run_bounded_child(["git", "-C", str(wt), "status", "--short"], check=True).stdout
+    assert left in status.splitlines()
 
-        commit_scope(wt, ["authorized.sv"], "fix: preserve scoped work")
 
-        committed = subprocess.run(
-            ["git", "-C", str(wt), "show", "--format=", "--name-only", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
-        status = subprocess.run(
-            ["git", "-C", str(wt), "status", "--short"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
-        assert committed.stdout.splitlines() == ["authorized.sv"]
-        assert status.stdout.splitlines() == ["?? outside.sv"]
+def test_unmatched_glob_scope_is_ignored(wt: Path) -> None:
+    """Missing glob matches do not make git add fail."""
+    (wt / "rtl").mkdir()
+    (wt / "rtl" / "new.sv").write_text("wire x;\n", encoding="utf-8")
 
-    def test_unmatched_glob_scope_is_ignored(self, tmp_path: Path):
-        """Missing glob matches do not make git add fail."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "rtl").mkdir()
-        (wt / "rtl" / "new.sv").write_text("wire x;\n", encoding="utf-8")
+    commit_scope(wt, ["rtl/*.sv", "verif/lane2/*.sv"], "feat: add scoped rtl")
 
-        commit_scope(
-            wt,
-            ["rtl/*.sv", "verif/lane2/*.sv"],
-            "feat: add scoped rtl",
-        )
+    assert _committed(wt) == ["rtl/new.sv"]
 
-        result = subprocess.run(
-            ["git", "-C", str(wt), "log", "--oneline"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert "feat: add scoped rtl" in result.stdout
 
-    def test_nothing_to_commit(self, tmp_path: Path):
-        """No changes → commit_scope returns quietly (no exception)."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        # No file changes — "nothing to commit" path
-        commit_scope(wt, ["init.txt"], "feat: noop")
+def test_git_add_failure_raises_blocking(wt: Path) -> None:
+    with pytest.raises(BlockingError, match="git add failed"):
+        commit_scope(wt, ["this_file_does_not_exist.sv"], "feat: ghost")
 
-    def test_git_add_failure_raises_blocking(self, tmp_path: Path):
-        """git add on nonexistent file → BlockingError."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
+
+def test_unknown_scope_commits_every_change(wt: Path) -> None:
+    """Wildcard scope ['*'] stages tracked edits and untracked files alike."""
+    (wt / "init.txt").write_text("modified content\n", encoding="utf-8")
+    (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
+
+    commit_scope(wt, ["*"], "fix: wildcard commit")
+
+    assert sorted(_committed(wt)) == ["init.txt", "new.sv"]
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="Booley has no Git process probe on macOS")
+def test_active_git_owner_keeps_index_lock(wt: Path) -> None:
+    """A lock with a matching live git process is left alone."""
+    (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
+    lock_path = Path(git_stdout(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
+    lock_path.write_text("", encoding="utf-8")
+    # A live Git process that names the worktree, as an interrupted add would.
+    owner = subprocess.Popen(
+        ["git", "-C", str(wt.resolve()), "hash-object", "--stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+    )
+    try:
         with pytest.raises(BlockingError, match="git add failed"):
-            commit_scope(wt, ["this_file_does_not_exist.sv"], "feat: ghost")
-
-    def test_empty_scope_skips(self, tmp_path: Path):
-        """Empty scope list → no git operations at all."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        # Should return silently
-        commit_scope(wt, [], "wip")
-
-    def test_unknown_scope_uses_add_dot(self, tmp_path: Path):
-        """Wildcard scope ['*'] stages tracked modifications via 'git add -u'."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        # Modify a tracked file (git add -u only stages tracked changes)
-        (wt / "init.txt").write_text("modified content\n", encoding="utf-8")
-        commit_scope(wt, ["*"], "fix: wildcard commit")
-        result = subprocess.run(
-            ["git", "-C", str(wt), "log", "--oneline"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert "fix: wildcard commit" in result.stdout
-
-    def test_stale_index_lock_is_removed_and_retried(self, tmp_path: Path):
-        """A stale linked-worktree index.lock should not block commit_scope."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
-        git_dir = subprocess.check_output(
-            ["git", "-C", str(wt), "rev-parse", "--git-dir"],
-            text=True,
-        ).strip()
-        git_dir_path = Path(git_dir)
-        if not git_dir_path.is_absolute():
-            git_dir_path = wt / git_dir_path
-        lock_path = git_dir_path / "index.lock"
-        lock_path.write_text("", encoding="utf-8")
-
-        commit_scope(wt, ["new.sv"], "feat: recover stale lock")
-
-        assert not lock_path.exists()
-        result = subprocess.run(
-            ["git", "-C", str(wt), "log", "--oneline"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert "feat: recover stale lock" in result.stdout
-
-    def test_active_git_owner_keeps_index_lock(self, tmp_path: Path):
-        """A lock with a matching live git process is left alone."""
-        repo = _init_repo(tmp_path)
-        wt = _make_worktree(repo, tmp_path / "wt")
-        (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
-        git_dir = subprocess.check_output(
-            ["git", "-C", str(wt), "rev-parse", "--git-dir"],
-            text=True,
-        ).strip()
-        git_dir_path = Path(git_dir)
-        if not git_dir_path.is_absolute():
-            git_dir_path = wt / git_dir_path
-        lock_path = git_dir_path / "index.lock"
-        lock_path.write_text("", encoding="utf-8")
-
-        with (
-            patch("booley.runtime.git._git_process_owns_worktree", return_value=True),
-            pytest.raises(BlockingError, match="git add failed"),
-        ):
             commit_scope(wt, ["new.sv"], "feat: keep busy lock")
+    finally:
+        owner.kill()  # never leave the blocked Git process running, whatever the outcome
+        owner.communicate()
 
-        assert lock_path.exists()
+    assert lock_path.exists()
 
 
 # ===========================================================================
-# add_git_excludes — worktree-aware info/exclude (ADR 0018 WS0)
+# Git excludes (ADR 0018 WS0)
 # ===========================================================================
 
 
@@ -378,28 +241,18 @@ class TestAddGitExcludes:
         assert exclude.readlink() == planted_target
         assert git_excludes_pending(repo, [".booley"])
 
-    def test_main_worktree_excludes_and_is_honored(self, tmp_path):
+    def test_main_worktree_excludes_once_and_is_honored(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
 
-        modified = add_git_excludes(repo, [".devcontainer", ".booley"])
+        assert add_git_excludes(repo, [".devcontainer", ".booley"]) is True
+        assert add_git_excludes(repo, [".devcontainer"]) is False
 
-        assert modified is True
-        exclude = repo / ".git" / "info" / "exclude"
-        body = exclude.read_text(encoding="utf-8")
+        body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
         assert BOOLEY_EXCLUDE_HEADER in body
-        assert "/.devcontainer" in body and "/.booley" in body
+        assert body.count("/.devcontainer") == 1 and "/.booley" in body
         # The entries must actually be honored by git.
         assert _is_ignored(repo, ".devcontainer/devcontainer.json")
         assert _is_ignored(repo, ".booley/booley.toml")
-
-    def test_idempotent(self, tmp_path):
-        repo = _init_repo(tmp_path / "repo")
-
-        assert add_git_excludes(repo, [".devcontainer"]) is True
-        # Second call adds nothing new and reports no modification.
-        assert add_git_excludes(repo, [".devcontainer"]) is False
-        body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-        assert body.count("/.devcontainer") == 1
 
     def test_later_entries_reuse_one_generated_block(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -429,84 +282,43 @@ class TestAddGitExcludes:
         assert add_git_excludes(repo, [".devcontainer"]) is True
         assert exclude.read_text(encoding="utf-8").count(BOOLEY_EXCLUDE_HEADER) == 1
 
-    def test_linked_worktree_writes_to_common_dir_and_is_honored(self, tmp_path):
+    def test_linked_worktree_writes_to_common_dir_and_is_honored(self, wt: Path):
         """The crux: a linked worktree honors the COMMON-dir info/exclude only.
 
         Git treats ``info/`` as a shared path, so the per-worktree
         ``.git/worktrees/<id>/info/exclude`` is ignored. add_git_excludes must
         target ``$GIT_COMMON_DIR/info/exclude`` for the exclude to take effect.
         """
-        repo = _init_repo(tmp_path / "repo")
-        wt = _make_worktree(repo, tmp_path / "wt")
+        assert add_git_excludes(wt, [".devcontainer"]) is True
 
-        modified = add_git_excludes(wt, [".devcontainer"])
-
-        assert modified is True
-        # Written to the shared dir, not the per-worktree info dir.
-        common_exclude = repo / ".git" / "info" / "exclude"
+        common_exclude = wt.parent / ".git" / "info" / "exclude"
         assert "/.devcontainer" in common_exclude.read_text(encoding="utf-8")
-        per_wt_exclude = _git_common_dir(wt)  # resolves to repo/.git, not worktrees/<id>
-        assert per_wt_exclude == (repo / ".git").resolve()
-        # And it is actually honored from inside the linked worktree.
         assert _is_ignored(wt, ".devcontainer/devcontainer.json")
 
-    def test_non_git_dir_is_noop(self, tmp_path):
-        # Best-effort: no .git, no crash, reports no modification.
-        assert add_git_excludes(tmp_path, [".devcontainer"]) is False
 
-
-def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
+def test_git_helpers_keep_the_intended_linked_worktree_under_foreign_selectors(
     tmp_path, monkeypatch
 ):
-    from booley.runtime.git import _git_dir_for_worktree
-    from tests.git_support import hostile
-
+    """Inherited GIT_DIR-style variables never redirect a helper to another repository."""
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")
     foreign = _init_repo(tmp_path / "foreign")
-    expected_admin = _git_dir_for_worktree(linked)
-    before = {
-        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
-    }
-    for key, value in hostile(foreign).items():
-        monkeypatch.setenv(key, value)
-    assert _git_dir_for_worktree(linked) == expected_admin
-    assert _git_common_dir(linked) == main / ".git"
-    assert git_run(linked, ["symbolic-ref", "--short", "HEAD"]).stdout.strip() == "test-branch"
-    assert before == {
-        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
-    }
-
-
-def test_git_run_stale_lock_retry_keeps_intended_repository(tmp_path, monkeypatch):
-    from booley.runtime import git as git_module
-    from tests.git_support import hostile
-
-    main = _init_repo(tmp_path / "main")
-    linked = _make_worktree(main, tmp_path / "linked")
-    foreign = _init_repo(tmp_path / "foreign")
-    admin = git_module._git_dir_for_worktree(linked)
-    assert admin is not None
-    lock = admin / "index.lock"
+    lock = Path(git_stdout(linked, "rev-parse", "--absolute-git-dir")) / "index.lock"
     lock.write_bytes(b"stale fixture")
-    before = {
-        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
-    }
-    monkeypatch.setattr(git_module, "_git_process_owns_worktree", lambda *args: False)
+    before = _snapshot(foreign)
     for key, value in hostile(foreign).items():
         monkeypatch.setenv(key, value)
-    result = git_run(linked, ["add", "init.txt"])
+
+    assert git_common_dir(linked) == (main / ".git").resolve()
+    assert git_run(linked, ["symbolic-ref", "--short", "HEAD"]).stdout.strip() == "test-branch"
+    result = git_run(linked, ["add", "init.txt"])  # retried after removing the stale lock
     assert result.returncode == 0, result.stderr
     assert not lock.exists()
-    assert before == {
-        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
-    }
+    assert _snapshot(foreign) == before
 
 
 def test_remove_git_excludes_keeps_other_entries(tmp_path):
     """Only the named lines go; the header and sibling entries stay."""
-    from booley.runtime.git import git_exclude_entries, remove_git_excludes
-
     repo = _init_repo(tmp_path / "repo")
     add_git_excludes(repo, [".devcontainer", ".booley", ".claude"])
     exclude = repo / ".git" / "info" / "exclude"
@@ -525,11 +337,10 @@ def test_remove_git_excludes_keeps_other_entries(tmp_path):
 
 
 def test_git_exclude_helpers_without_git_or_exclude_file(tmp_path):
-    """Outside a repository, or with no exclude file, both helpers are no-ops."""
-    from booley.runtime.git import git_exclude_entries, remove_git_excludes
-
+    """Outside a repository, or with no exclude file, every helper is a no-op."""
     plain = tmp_path / "plain"
     plain.mkdir()
+    assert add_git_excludes(plain, [".booley"]) is False
     assert git_exclude_entries(plain, [".booley"]) == ()
     remove_git_excludes(plain, ["/.booley"])
 
@@ -542,8 +353,6 @@ def test_git_exclude_helpers_without_git_or_exclude_file(tmp_path):
 
 
 def test_remove_git_excludes_refuses_symlinked_exclude(tmp_path):
-    from booley.runtime.git import remove_git_excludes
-
     repo = _init_repo(tmp_path / "repo")
     add_git_excludes(repo, [".booley"])
     exclude = repo / ".git" / "info" / "exclude"
@@ -561,8 +370,6 @@ def test_remove_git_excludes_refuses_symlinked_exclude(tmp_path):
 
 def test_git_exclude_entries_ignores_an_undecodable_exclude_file(tmp_path):
     """A non-UTF-8 info/exclude holds no removable footprint: no crash, no entries."""
-    from booley.runtime.git import git_exclude_entries
-
     repo = _init_repo(tmp_path / "repo")
     (repo / ".git" / "info" / "exclude").write_bytes(b"/.booley\n\xff\xfe\n")
     assert git_exclude_entries(repo, [".booley"]) == ()
@@ -616,6 +423,8 @@ def test_git_run_keeps_its_result_contract(
     sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
 )
 def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch) -> None:
+    # private: the public path (git_run's stale-lock check) reaches this probe only on
+    # Windows, where a fake `powershell` cannot shadow powershell.exe.
     from booley.runtime.git import _iter_git_process_cmdlines_windows
 
     with heartbeat_tree(tmp_path) as paths:
