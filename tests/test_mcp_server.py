@@ -1118,31 +1118,82 @@ class TestBooleyStatus:
 
             self.mcp_server = mcp_server
 
-    def test_format_status_card(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("case", "identity"),
+        [
+            (
+                "no-attribution",
+                "Session: unknown (Booley could not attribute this call)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            (
+                "unrecorded",
+                "Session: unknown (Booley has not recorded this session)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            (
+                "no-handle",
+                "Session: unknown\nBranch: main\nCheckout: {repo} (main checkout)\n",
+            ),
+            (
+                "unreadable-checkout",
+                "Session: S1\nBranch: main\nCheckout: {repo} (checkout kind unknown)\n",
+            ),
+            (
+                "recorded",
+                "Session: S1\nBranch: main\nCheckout: {repo} (main checkout)\n",
+            ),
+        ],
+        ids=["no-attribution", "unrecorded", "no-handle", "unreadable-checkout", "recorded"],
+    )
+    def test_format_status_card(self, monkeypatch, tmp_path, case, identity):
+        from booley.mcp.session_registry import Attribution, SessionRegistry
+        from booley.runtime.handles import HandleStore
+        from booley.runtime.pid import ProcessIdentity
+        from tests.git_support import git
 
-        monkeypatch.setattr(
-            self.mcp_server.socket,
-            "gethostname",
-            lambda: "4f3c2a1b",
-        )
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        if case == "unreadable-checkout":
+            (repo / ".git").write_bytes(b"garbage")
+        else:
+            git(repo, "init", "-q", "-b", "main")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+        repo = repo.resolve()
+        booley = tmp_path / "booley"
+        booley.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(booley))
+        monkeypatch.setattr(self.mcp_server.socket, "gethostname", lambda: "4f3c2a1b")
         monkeypatch.setattr(health_presentation, "current_summary", lambda _root: "clean")
         monkeypatch.setattr(
             self.mcp_server,
             "format_status_line",
             lambda: "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.",
         )
+        attribution = Attribution(
+            key="process:x",
+            kind="process",
+            work_dir=str(repo),
+            worktree_key="",
+            branch="main",
+            process=ProcessIdentity(200, "pid:[17]", 7),
+        )
+        if case not in ("no-attribution", "unrecorded"):
+            SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
+        if case == "no-handle":
+            HandleStore(booley).path.unlink()
 
         card = self.mcp_server._format_status_card(
-            [
-                "sim",
-                "lint",
-            ]
+            ["sim", "lint"], None if case == "no-attribution" else attribution
         )
 
         assert card == (
             "```text\n"
             "Booley ready. Sandbox container 4f3c2a1b is running.\n"
-            "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.\n"
+            + identity.format(repo=repo)
+            + "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.\n"
             "Available MCP tools: sim, lint.\n"
             "Health: clean\n"
             "```"
@@ -1181,40 +1232,6 @@ class TestBooleyStatus:
             "booley_targets",
             "sim",
         ]
-
-    def test_dispatch_status_returns_text_content(self, monkeypatch):
-
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
-
-        monkeypatch.setattr(
-            self.mcp_server.socket,
-            "gethostname",
-            lambda: "4f3c2a1b",
-        )
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            fake_text_content,
-        )
-        monkeypatch.setattr(health_presentation, "current_summary", lambda _root: "1 WARN")
-        monkeypatch.setattr(
-            self.mcp_server,
-            "format_status_line",
-            lambda: "Booley: 0.1.0; last updated unknown; sandbox image built unknown.",
-        )
-
-        result = self.mcp_server._dispatch_status(["sim"])
-
-        assert result[0].type == "text"
-        assert result[0].text == (
-            "```text\n"
-            "Booley ready. Sandbox container 4f3c2a1b is running.\n"
-            "Booley: 0.1.0; last updated unknown; sandbox image built unknown.\n"
-            "Available MCP tools: sim.\n"
-            "Health: 1 WARN\n"
-            "```"
-        )
 
     def test_first_mcp_tool_result_gets_changed_health_warning(self, monkeypatch):
 

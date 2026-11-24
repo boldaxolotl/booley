@@ -186,7 +186,10 @@ def _status_mcp_tool_def() -> dict[str, Any]:
     """Return the synthetic Sandbox status MCP tool definition."""
     return {
         "name": _STATUS_MCP_TOOL_NAME,
-        "description": "Show whether Booley is ready in this tab.",
+        "description": (
+            "Show whether Booley is ready, and the Session handle, branch and checkout "
+            "(main checkout or worktree) Booley attributes to this caller."
+        ),
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }
 

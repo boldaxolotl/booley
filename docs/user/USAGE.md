@@ -344,6 +344,11 @@ The reason is `the main checkout is in use by another booley chat`,
 `[worktree] chat = "always"`. A lone session runs in the main checkout and
 prints no such line.
 
+To check where a session works, ask its agent for Booley's status. The
+`booley_status` card shows the session's handle, branch and checkout as the
+Dashboard lists them, and whether that checkout is the main checkout or a
+worktree. A fact Booley cannot attribute to the session reads `unknown`.
+
 The worktree starts at the main checkout's last commit, so commit first what
 the new session needs: uncommitted changes to the Project's files are not
 copied. Booley also fills the Git submodules and runs the Project's post-setup
