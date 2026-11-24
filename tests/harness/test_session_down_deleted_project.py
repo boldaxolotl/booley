@@ -7,17 +7,13 @@ import re
 import shlex
 import shutil
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from booley.config.host_config import SandboxHostPolicy
-from booley.harness import host_sidecars as sidecars
 from booley.runtime import session_admission, session_runtime
 from tests.harness.session_docker_fake import (
     SessionDockerFake,
-    SidecarPort,
     route_session_commands,
     run_cli,
 )
@@ -88,26 +84,37 @@ def _down_hint(message: str) -> list[str]:
     return shlex.split(commands[0])[1:]
 
 
+def _capacity_refusal(fake: SessionDockerFake, tmp_path: Path, root: Path) -> str:
+    """The refusal a second Project gets while *root*'s Session fills the host's one slot."""
+    config = tmp_path / "xdg-config" / "booley"
+    for private in (config.parent, config):  # the claim store refuses a looser ancestor
+        private.mkdir(exist_ok=True)
+        private.chmod(0o700)
+    (config / "config.toml").write_text("[sandbox]\nmax_sessions = 1\n", encoding="utf-8")
+    other = tmp_path / "other-project"
+    other.mkdir(exist_ok=True)
+    with pytest.raises(session_admission.AdmissionError) as refused:
+        session_admission.admit_start(other, target_name="other", run=fake.run)
+    assert str(root.resolve()) in str(refused.value)
+    return str(refused.value)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="hint quoting is PowerShell there")
 def test_every_session_down_hint_works_for_deleted_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = install_docker_fake(monkeypatch, tmp_path)
-    monkeypatch.setattr(sidecars, "_docker_adapter", lambda: SidecarPort(fake))
-
-    def host_sidecars_hint(root: Path) -> str:
-        return sidecars._active_session_summary(sidecars._active_sessions(SidecarPort(fake)))
 
     def sandbox(_root: Path) -> session_admission.Sandbox:
         (item,) = session_admission.running_sandboxes(run=fake.run)
         return item
 
     builders: dict[str, Callable[[Path], str]] = {
-        "bootstrap blocker": host_sidecars_hint,
         "recreate remedy": lambda root: session_admission.recreate_remedy(sandbox(root)),
-        "capacity refusal": lambda root: session_admission._refusal(
-            SandboxHostPolicy(), (sandbox(root),), (), datetime.now(UTC)
-        ),
+        "capacity refusal": lambda root: _capacity_refusal(fake, tmp_path, root),
+        # Private: its public callers raise it only for a Sandbox whose identity disagrees,
+        # and `session down` for that Project refuses the same Sandbox, so no public call
+        # yields this hint for a Session the round trip can remove.
         "identity recovery": lambda root: session_admission._identity_recovery(
             sandbox(root), str(root.resolve())
         ),

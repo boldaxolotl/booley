@@ -6,8 +6,6 @@ import random
 import re
 from pathlib import Path
 
-from claude_agent_sdk import ProcessError
-
 # --- API resilience constants (owned here, re-exported by config.py) ---
 # Exponential backoff with jitter: base 30s → 60s → 120s → 240s → 300s,
 # each randomized by ±JITTER_FRACTION to avoid lockstep retries.
@@ -40,11 +38,7 @@ _TRANSIENT_PATTERNS = [
 
 def _is_transient_error(exc: Exception) -> bool:
     """Check if an exception represents a transient API/network error."""
-    if isinstance(exc, (ConnectionError, OSError)):
-        return True
     text = str(exc).lower()
-    if isinstance(exc, ProcessError) and exc.stderr:
-        text += " " + exc.stderr.lower()
     return any(p in text for p in _TRANSIENT_PATTERNS)
 
 

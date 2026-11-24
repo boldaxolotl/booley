@@ -53,23 +53,11 @@ class AgentBackend(Protocol):
 
 from ._claude_backend import (  # noqa: F401 — re-exported as public API of harness.agent_backend
     ClaudeSDKBackend,
-    _handle_rate_limit_event,
-    _write_transcript_turn,
 )
 from ._codex_backend import (  # noqa: F401 — re-exported as public API of harness.agent_backend
     CodexBackend,
     _codex_build_prompt,
-    _codex_ensure_additional_properties,
-    _codex_extract_structured,
     _codex_parse_events,
     _codex_sandbox_mode,
     _codex_write_transcript,
-)
-from ._cost import estimate_cost as _estimate_cost  # noqa: F401 — re-exported for callers
-from ._cost import format_usage_log as _format_usage_log  # noqa: F401 — re-exported for callers
-
-# Helpers that other modules import by name
-from ._retry import _is_transient_error  # noqa: F401 — re-exported for callers
-from ._retry import (
-    transcript_path_for_attempt as _transcript_path_for_attempt,  # noqa: F401 — re-exported for callers
 )
