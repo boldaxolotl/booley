@@ -65,6 +65,14 @@ def normalize_scope_path(path: str) -> str:
     return str(PurePosixPath(value))
 
 
+def reviewable(path: str, category: str) -> bool:
+    """Whether a ``--scope`` of *category* accepts the file kind of *path*."""
+    suffix = PurePosixPath(normalize_scope_path(path)).suffix.lower()
+    if suffix in _HDL_SUFFIXES:
+        return True
+    return category == "tb" and (suffix == ".py" or suffix in _CPP_SUFFIXES)
+
+
 def accepted_scope_kinds(category: str) -> str:
     """Return the file kinds ``--scope`` accepts for *category*, for messages and help."""
     hdl = ", ".join(_HDL_SUFFIXES)
@@ -86,14 +94,14 @@ def resolve_review_scope(
     for raw_path in scope:
         path = normalize_scope_path(raw_path)
         suffix = PurePosixPath(path).suffix.lower()
-        if suffix == ".py" and category == "tb":
+        if not reviewable(path, category):
+            unsupported.append(path)
+        elif suffix == ".py":
             cocotb.add(path)
         elif suffix in _HDL_SUFFIXES:
             hdl.add(path)
-        elif category == "tb" and suffix in _CPP_SUFFIXES:
-            support.add(path)
         else:
-            unsupported.append(path)
+            support.add(path)
     if unsupported and not allow_support:
         raise ReviewContractError(
             f"Unsupported {category.upper()} source kind in --scope: "
