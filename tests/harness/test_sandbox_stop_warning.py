@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from booley.harness import booley
+from booley.harness import sandbox_stop_warning
 from booley.harness.standalone_job import standalone_jobs_dir
-from booley.runtime import job_records
-from booley.runtime import session_runtime as sr
+from booley.runtime import booley_dir as booley_dir_module
+from booley.runtime import job_records, session_runtime
 from booley.runtime.pid import capture_process_identity
-from booley.runtime.session_admission import Sandbox
+from booley.runtime.platform_paths import run_captured_bounded
+from tests.harness.session_docker_fake import (
+    SessionDockerFake,
+    install_sandbox_exec,
+    route_session_commands,
+    run_cli,
+)
+from tests.time_budget import hang_guard_s
 
 linux_only = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
@@ -29,23 +35,6 @@ linux_only = pytest.mark.skipif(
 NOW = 1_800_000_000.0  # 2027-01-15T08:00:00Z
 STARTED_AT = "2027-01-15T06:58:00Z"  # 1h 02m before NOW
 DEAD_PID = 4_194_305  # above the Linux pid_max ceiling: never a live process
-SANDBOX = Sandbox(
-    container_id="abc123",
-    name="booley-sandbox",
-    project_root="/project",
-    project_id=None,
-    created_at=datetime(2027, 1, 15, tzinfo=UTC),
-    started_at=None,
-    running=True,
-    vscode=False,
-)
-
-
-def _load(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Import the module under test inside the test body and freeze its clock."""
-    warning = importlib.import_module("booley.harness.sandbox_stop_warning")
-    monkeypatch.setattr(warning, "wall_clock", lambda: NOW)
-    return warning
 
 
 def _write(
@@ -75,57 +64,64 @@ def _own_identity() -> dict[str, Any]:
     return identity.to_payload()
 
 
-def _real_probe(
-    warning: Any, booley_dir: Path
-) -> Callable[[Sandbox], subprocess.CompletedProcess[str]]:
-    """Stand-in for ``docker exec``: run the shipped probe locally against ``booley_dir``."""
+Probe = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
-    def run(_sandbox: Sandbox) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, "-I", "-c", warning._PROBE, warning._RECORDS_RELPATH],
-            env={**os.environ, "BOOLEY_DIR": str(booley_dir)},
-            capture_output=True,
-            text=True,
-            check=False,
+
+class _SessionDown:
+    """Run `booley session down` for one Session of a Project whose Booley Directory is here."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+        self._capsys = capsys
+        self.root = tmp_path / "project"
+        self.booley_dir = self.root / ".booley"
+        self.booley_dir.mkdir(parents=True)
+        monkeypatch.setattr(sandbox_stop_warning, "wall_clock", lambda: NOW)
+        monkeypatch.chdir(self.root)
+        monkeypatch.setenv("BOOLEY_DIR", str(self.booley_dir))
+        booley_dir_module.reset_cache()
+
+    def __call__(
+        self, probe: Probe | None = None, *, running: bool = True
+    ) -> tuple[str, list[tuple[list[str], dict[str, Any]]]]:
+        """Return stderr and the probe calls; the command exits 0 and removes the Session."""
+        fake = SessionDockerFake()
+        name = session_runtime.session_container_name(self.root)
+        fake.add_session(name, self.root)
+        fake.containers[name]["State"]["Running"] = running
+        probed = route_session_commands(
+            self._monkeypatch, self._tmp_path, fake.run, fake.containers, probe=probe
         )
+        code = run_cli(self._monkeypatch, ["-C", str(self.root), "session", "down"])
+        out = self._capsys.readouterr()
+        assert code == 0, out.err
+        assert out.out == f"removed {name}\n"
+        return out.err, probed
 
-    return run
+    def real_probe(self) -> Probe:
+        """Run the shipped probe in a `docker exec` that executes on this host."""
+        install_sandbox_exec(self._tmp_path, self._monkeypatch, self.booley_dir)
+        return lambda argv: run_captured_bounded(argv, timeout=hang_guard_s())
 
 
-def _probe_output(warning: Any, booley_dir: Path) -> dict[str, Any]:
-    result = _real_probe(warning, booley_dir)(SANDBOX)
-    assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+@pytest.fixture
+def session_down(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> _SessionDown:
+    return _SessionDown(monkeypatch, tmp_path, capsys)
 
 
-def _session_down(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    *,
-    sandbox: Sandbox | None = SANDBOX,
-) -> tuple[int, str, str]:
-    """Run ``booley session down`` with only the Docker-facing ``down`` replaced."""
-
-    def fake_down(
-        _root: Path, *, before_stop: Callable[[Sandbox | None], None] | None = None
-    ) -> sr.DownResult:
-        assert before_stop is not None
-        before_stop(sandbox)
-        return sr.DownResult(headless=True)
-
-    monkeypatch.setattr(sr, "down", fake_down)
-    monkeypatch.setattr(sr, "session_container_name", lambda _root: "booley-sandbox")
-    args = booley._build_parser().parse_args(["session", "down"])
-    code = booley._cmd_session(args, tmp_path)
-    out = capsys.readouterr()
-    return code, out.out, out.err
+def _answer(running: list[Any], unreadable: list[str] | None = None) -> Probe:
+    stdout = json.dumps({"running": running, "unreadable": unreadable or []})
+    return lambda argv: subprocess.CompletedProcess(argv, 0, stdout, "")
 
 
 def test_session_down_names_running_standalone_job_and_completes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    session_down: _SessionDown,
 ) -> None:
-    warning = _load(monkeypatch)
     record = job_records.JobRecord(
         run_id="r1",
         endpoint="sim",
@@ -134,64 +130,50 @@ def test_session_down_names_running_standalone_job_and_completes(
         argv=["booley", "flow", "sim", "--target", "sim_fifo"],
         work_dir="/workspace/wt",
     )
-    stdout = json.dumps({"running": [record.to_dict()], "unreadable": []})
-    monkeypatch.setattr(
-        warning, "_run_probe", lambda _s: subprocess.CompletedProcess([], 0, stdout, "")
-    )
 
-    code, out, err = _session_down(monkeypatch, tmp_path, capsys)
+    err, probed = session_down(_answer([record.to_dict()]))
 
-    assert code == 0
-    assert out == "removed booley-sandbox\n"
     assert err == (
         "warning: Standalone Job flow sim (Target sim_fifo, worktree /workspace/wt) "
         "has run for 1h 02m and stops with the Sandbox\n"
     )
-
-
-@linux_only
-def test_probe_keeps_only_live_running_records(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    own = _own_identity()
-    _write(tmp_path, "live", identity=own)
-    _write(tmp_path, "no-identity", identity=None)
-    _write(tmp_path, "dead", identity={**own, "pid": DEAD_PID})
-    _write(tmp_path, "reused", identity={**own, "start_token": own["start_token"] + 1})
-    _write(tmp_path, "earlier-sandbox", identity={**own, "identity_scope": "pid:[1]"})
-    _write(tmp_path, "finished", status="done", identity=own)
-    # An identity the probe cannot judge counts as live: warn rather than hide the Job.
-    _write(tmp_path, "scopeless", identity={"pid": own["pid"], "start_token": own["start_token"]})
-
-    output = _probe_output(_load(monkeypatch), tmp_path)
-
-    assert sorted(item["run_id"] for item in output["running"]) == [
-        "live",
-        "no-identity",
-        "scopeless",
-    ]
-    assert output["unreadable"] == []
-
-
-@linux_only
-def test_probe_reports_nothing_without_records_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    assert _probe_output(_load(monkeypatch), tmp_path) == {"running": [], "unreadable": []}
-
-
-def test_session_down_output_unchanged_without_running_jobs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    warning = _load(monkeypatch)
-    stdout = json.dumps({"running": [], "unreadable": []})
-    monkeypatch.setattr(
-        warning, "_run_probe", lambda _s: subprocess.CompletedProcess([], 0, stdout, "")
+    ((argv, kwargs),) = probed
+    assert (
+        argv[argv.index("-i") + 1]
+        == f"id-{session_runtime.session_container_name(session_down.root)}"
     )
+    assert argv[argv.index("python3") :][:2] == ["python3", "-I"]
+    assert kwargs["stdin"] == subprocess.DEVNULL
 
-    code, out, err = _session_down(monkeypatch, tmp_path, capsys)
 
-    assert (code, out, err) == (0, "removed booley-sandbox\n", "")
+@linux_only
+def test_probe_keeps_only_live_running_records(session_down: _SessionDown) -> None:
+    own = _own_identity()
+    booley = session_down.booley_dir
+
+    def write(run_id: str, **kwargs: Any) -> None:
+        _write(booley, run_id, argv=["booley", "flow", "sim", "--target", run_id], **kwargs)
+
+    write("live", identity=own)
+    write("no-identity", identity=None)
+    write("dead", identity={**own, "pid": DEAD_PID})
+    write("reused", identity={**own, "start_token": own["start_token"] + 1})
+    write("earlier-sandbox", identity={**own, "identity_scope": "pid:[1]"})
+    write("finished", status="done", identity=own)
+    # An identity the probe cannot judge counts as live: warn rather than hide the Job.
+    write("scopeless", identity={"pid": own["pid"], "start_token": own["start_token"]})
+
+    err, _probed = session_down(session_down.real_probe())
+
+    assert sorted(re.findall(r"\(Target (\S+),", err)) == ["live", "no-identity", "scopeless"]
+    assert err.count("\n") == 3
+
+
+@linux_only
+def test_probe_reports_nothing_without_records_dir(session_down: _SessionDown) -> None:
+    err, _probed = session_down(session_down.real_probe())
+
+    assert err == ""
 
 
 @pytest.mark.parametrize(
@@ -210,46 +192,30 @@ def test_session_down_output_unchanged_without_running_jobs(
     ids=["exit-code", "not-json", "bad-shape", "no-docker", "timeout", "sandbox-stopped"],
 )
 def test_session_down_skips_check_and_completes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    probe: Any,
-    reason: str,
+    session_down: _SessionDown, probe: Any, reason: str
 ) -> None:
-    warning = _load(monkeypatch)
-
-    def run_probe(_sandbox: Sandbox) -> subprocess.CompletedProcess[str]:
+    def run_probe(_argv: list[str]) -> subprocess.CompletedProcess[str]:
         if isinstance(probe, BaseException):
             raise probe
         return probe
 
-    monkeypatch.setattr(warning, "_run_probe", run_probe)
-    sandbox = SANDBOX if probe is not None else None
+    err, _probed = session_down(run_probe, running=probe is not None)
 
-    code, out, err = _session_down(monkeypatch, tmp_path, capsys, sandbox=sandbox)
-
-    assert code == 0
-    assert out == "removed booley-sandbox\n"
     assert err.startswith("warning: skipped the running Standalone Job check: ")
     assert reason in err
     assert err.count("\n") == 1
 
 
 @linux_only
-def test_unreadable_record_is_named_and_live_jobs_still_warned(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    warning = _load(monkeypatch)
-    _write(tmp_path, "live", identity=_own_identity(), argv=["booley", "specialist", "rtl"])
-    records_dir = tmp_path / standalone_jobs_dir(Path())
+def test_unreadable_record_is_named_and_live_jobs_still_warned(session_down: _SessionDown) -> None:
+    booley = session_down.booley_dir
+    _write(booley, "live", identity=_own_identity(), argv=["booley", "specialist", "rtl"])
+    records_dir = booley / standalone_jobs_dir(Path())
     (records_dir / "broken.json").write_bytes(b"{not json")
     (records_dir / "bad-schema.json").write_bytes(b'{"status": "running", "run_id": "bad-schema"}')
-    monkeypatch.setattr(warning, "_run_probe", _real_probe(warning, tmp_path))
 
-    code, out, err = _session_down(monkeypatch, tmp_path, capsys)
+    err, _probed = session_down(session_down.real_probe())
 
-    assert code == 0
-    assert out == "removed booley-sandbox\n"
     assert err.splitlines() == [
         "warning: Standalone Job specialist sim (worktree /workspace/wt) "
         "has run for 1h 02m and stops with the Sandbox",
@@ -264,49 +230,17 @@ def test_unreadable_record_is_named_and_live_jobs_still_warned(
     ids=["argv-not-a-list", "started-at-not-a-string"],
 )
 def test_wrong_typed_running_record_is_unreadable_not_a_crash(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    bad_fields: dict[str, Any],
+    session_down: _SessionDown, bad_fields: dict[str, Any]
 ) -> None:
-    warning = _load(monkeypatch)
     good = job_records.JobRecord(
         run_id="good", endpoint="sim", started_at=STARTED_AT, timeout_s=60, argv=["booley", "flow"]
     )
     bad = {**good.to_dict(), "run_id": "bad", **bad_fields}
-    stdout = json.dumps({"running": [good.to_dict(), bad], "unreadable": []})
-    monkeypatch.setattr(
-        warning, "_run_probe", lambda _s: subprocess.CompletedProcess([], 0, stdout, "")
-    )
 
-    code, _out, err = _session_down(monkeypatch, tmp_path, capsys)
+    err, _probed = session_down(_answer([good.to_dict(), bad]))
 
-    assert code == 0
     assert err.splitlines() == [
         "warning: Standalone Job flow sim (worktree unknown) has run for 1h 02m "
         "and stops with the Sandbox",
         "warning: skipped the running Standalone Job check: unreadable Job records: bad.json",
     ]
-
-
-def test_run_probe_execs_the_probe_in_the_sandbox_without_caller_stdin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    warning = _load(monkeypatch)
-    seen: dict[str, Any] = {}
-
-    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        seen["argv"], seen["kwargs"] = argv, kwargs
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(warning, "run_captured_bounded", fake_run)
-
-    warning._run_probe(SANDBOX)
-
-    assert seen["argv"] == sr.exec_argv(
-        SANDBOX.container_id,
-        ["python3", "-I", "-c", warning._PROBE, warning._RECORDS_RELPATH],
-        tty=False,
-    )
-    assert seen["kwargs"]["stdin"] == subprocess.DEVNULL
-    assert seen["kwargs"]["timeout"] == 15

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Container
@@ -15,7 +17,13 @@ import pytest
 
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
+from booley.harness import sandbox_stop_warning
+from booley.runtime import (
+    booley_dir as booley_dir_module,
+)
 from booley.runtime import host_docker, runtime_attachment, session_admission, session_runtime
+
+_SRC_ROOT = Path(__file__).parents[2] / "src"
 
 
 def completed(
@@ -49,17 +57,6 @@ def headless_session_entry(name: str, root: Path, *, running: bool = True) -> di
     }
 
 
-class SidecarPort:
-    """Adapt a docker fake to the `args`-without-`docker` port host_sidecars uses."""
-
-    def __init__(self, fake: SessionDockerFake) -> None:
-        self._fake = fake
-
-    def run(self, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-        del timeout
-        return self._fake.run(["docker", *args])
-
-
 class SessionDockerFake:
     """Serve the `docker` argv `session down` and the hint builders issue."""
 
@@ -68,7 +65,7 @@ class SessionDockerFake:
         self.calls: list[list[str]] = []
         self.removed: list[str] = []
         self.stopped: list[str] = []
-        self.probed: list[object] = []
+        self.probed: list[tuple[list[str], dict[str, Any]]] = []
 
     def add_session(self, name: str, root: Path) -> None:
         self.containers[name] = headless_session_entry(name, root)
@@ -159,6 +156,7 @@ class SandboxDocker:
             args and (args[0] in self.failing or args[-1] in self.failing)
         ):
             return subprocess.CompletedProcess(argv, 1, "", f"{verb} failed: container is running")
+        # `_<verb>` names this fake's own handler methods, not a production name.
         handler = getattr(self, f"_{verb}", None)
         if handler is None:
             raise AssertionError(f"unexpected docker call: {argv}")
@@ -355,25 +353,64 @@ def route_session_commands(
     tmp_path: Path,
     run: Callable[..., subprocess.CompletedProcess[str]],
     existing: Container[str],
-) -> list[object]:
+    *,
+    probe: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> list[tuple[list[str], dict[str, Any]]]:
     """Send every Docker call `booley session down` makes to *run*.
 
-    Also isolates host state under *tmp_path*, skips the host-only and host-install
-    gates, and stubs the in-Sandbox Standalone Job probe; returns the Sandboxes it saw.
+    Also isolates host state under *tmp_path* and skips the host-only and host-install
+    gates. *probe* answers the argv of the Standalone Job probe's `docker exec` (default:
+    no running Job); returns the `(argv, kwargs)` of each probe call.
     """
     isolate_session_cli(monkeypatch, tmp_path)
+    # `_run` is each module's one Docker CLI runner and no public entry takes a runner.
     monkeypatch.setattr(session_runtime, "_run", run)
     monkeypatch.setattr(session_admission, "_run", run)
     monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
     monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
-    probed: list[object] = []
-    monkeypatch.setattr(
-        "booley.harness.sandbox_stop_warning._run_probe",
-        lambda sandbox: (
-            probed.append(sandbox) or completed(stdout='{"running": [], "unreadable": []}')
-        ),
-    )
+    probed: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run_probe(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        probed.append((list(argv), kwargs))
+        if probe is None:
+            return completed(stdout='{"running": [], "unreadable": []}')
+        return probe(argv)
+
+    # The probe's `docker exec` is the one `session down` call that bypasses `_run`.
+    monkeypatch.setattr(sandbox_stop_warning, "run_captured_bounded", run_probe)
     return probed
+
+
+def install_sandbox_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, booley_dir: Path, *, protocol: bool = True
+) -> None:
+    """Put a `docker` on PATH whose `exec` runs the in-Sandbox `python3` command here.
+
+    It applies the `-e` pairs, points `PYTHONPATH` at `src/` and sets `BOOLEY_DIR`. With
+    *protocol* false it runs only `python3 -I` commands (the cwd and Standalone Job
+    probes) and exits 127 for the execution supervisor, a Sandbox without an execution
+    protocol. Linux only: the shim has a shebang and the Sandbox processes read `/proc`.
+    """
+    guard = "" if protocol else "if args[start+1]!='-I':sys.exit(127)\n"
+    binary = tmp_path / "docker"
+    binary.write_text(
+        "#!/usr/bin/python3\n"
+        "import os,sys\n"
+        "args=sys.argv[1:]\n"
+        "for index,arg in enumerate(args):\n"
+        " if arg=='-e':\n"
+        "  key,value=args[index+1].split('=',1)\n"
+        "  os.environ[key]=value\n"
+        "start=args.index('python3')\n"
+        f"{guard}"
+        "os.execvp(args[start],args[start:])\n",
+        encoding="utf-8",
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PYTHONPATH", f"{_SRC_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}")
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    booley_dir_module.reset_cache()
 
 
 def run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
