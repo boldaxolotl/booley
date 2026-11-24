@@ -10,16 +10,19 @@ import json
 import tomllib
 from pathlib import Path
 
+import anyio
 import pytest
+from tests.claude_cli_fake import record_sdk_options
 
 from booley.config import agent as agent_config
+from booley.core.models import AgentCallParams
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import _claude_backend, auth_token, session_issuance
+from booley.runtime import auth_token, session_issuance
 from booley.runtime import devcontainer as dc
+from booley.runtime._claude_backend import ClaudeSDKBackend
 
 _CLAUDE_CREDS_SEED = f"{dc.AGENT_HOME}/.claude-creds-seed.json"
-_CODEX_CREDS_SEED = f"{dc.AGENT_HOME}/.codex-auth-seed.json"
 _GATEWAY_URL = "https://gw.example/v1"
 _GATEWAY_KEYS = (
     "BOOLEY_GATEWAY_URL",
@@ -66,7 +69,12 @@ def _host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, codex: str = "gateway
 
 
 def _issue(project: Path) -> dict:
-    """The spec ``booley init`` would write for Claude (built, not sealed)."""
+    """The spec ``booley init`` would write for Claude (built, not sealed).
+
+    ``init_cmd._sandbox_spec_sources`` and ``_NANGATE_PDK_NOT_REQUESTED`` stay: the public
+    ``current_interactive_spec`` seals the spec and probes the image through Docker, while
+    these tests read the unsealed build.
+    """
     sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
     )
@@ -75,7 +83,13 @@ def _issue(project: Path) -> dict:
 
 
 def _targets(spec: dict) -> list[str]:
-    return [dc._parse_mount(mount).get("target", "") for mount in spec["mounts"]]
+    """The ``target=`` of each mount string."""
+    return [
+        part.removeprefix("target=")
+        for mount in spec["mounts"]
+        for part in mount.split(",")
+        if part.startswith("target=")
+    ]
 
 
 def _hooks(spec: dict) -> str:
@@ -101,15 +115,17 @@ def test_issuance_forwards_gateway_refs_and_seeds_no_codex_login(tmp_path, monke
     assert "OPENAI_API_KEY" not in remote
     targets = _targets(spec)
     assert _CLAUDE_CREDS_SEED in targets
-    assert _CODEX_CREDS_SEED not in targets
-    assert dc._APP_TOKEN_SEED_TARGET["codex"] not in targets
+    assert not [mount for mount in spec["mounts"] if "codex" in mount and "seed" in mount]
     assert ".codex/auth.json" not in _hooks(spec)
     project_id = dc.canonical_project_id(project)
-    volumes = [m for m in spec["mounts"] if dc._parse_mount(m).get("type") == "volume"]
+    volumes = [m for m in spec["mounts"] if "type=volume" in m.split(",")]
     assert volumes == [
         dc.state_volume_mount("claude", project_id, "subscription"),
         dc.state_volume_mount("codex", project_id, "gateway"),
     ]
+    assert dc.state_volume_name("codex", project_id, "gateway") in dc.state_volume_names(
+        project_id
+    )
     assert "SYNTHETIC" not in json.dumps(spec)  # references only, never a value
 
 
@@ -138,14 +154,8 @@ def test_issuance_without_host_gateway_settings_fails_naming_the_variable(tmp_pa
         _issue(project)
 
 
-def test_gateway_state_volume_belongs_to_the_project():
-    project_id = "abc123"
-    gateway_volume = dc.state_volume_name("codex", project_id, "gateway")
-    assert gateway_volume == f"booley-codex-state-{project_id}-gateway"
-    assert gateway_volume in dc.state_volume_names(project_id)
-
-
 def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, monkeypatch):
+    sdk_options = record_sdk_options(monkeypatch)
     project = _host(tmp_path, monkeypatch)
     monkeypatch.setenv("BOOLEY_GATEWAY_URL", _GATEWAY_URL)
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_TOKEN")
@@ -157,6 +167,7 @@ def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, 
     host_env = {"BOOLEY_GATEWAY_URL": _GATEWAY_URL, "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_TOKEN"}
     for key, value in spec["remoteEnv"].items():
         monkeypatch.setenv(key, host_env.get(key, value) if "localEnv" in value else value)
+    # The container marker is the host/Sandbox boundary: only a Sandbox hides the gateway.
     monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
 
@@ -164,7 +175,11 @@ def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, 
     assert settings.auth_for("codex") == "gateway"
     assert settings.auth_for("claude") == "subscription"
     assert agent_config.gateway_handoff_active()  # Codex's own policy, not the default CLI's
-    overrides = _claude_backend._claude_env_overrides("subscription")
-    assert overrides["BOOLEY_GATEWAY_URL"] == ""
-    assert overrides["BOOLEY_GATEWAY_TOKEN"] == ""
-    assert overrides["BOOLEY_HIDDEN_GATEWAY"] == "1"
+    anyio.run(
+        ClaudeSDKBackend(auth_mode="subscription").call,
+        AgentCallParams(prompt="p", model="claude-test", cwd=tmp_path),
+    )
+    env = sdk_options[0].env
+    assert env["BOOLEY_GATEWAY_URL"] == ""
+    assert env["BOOLEY_GATEWAY_TOKEN"] == ""
+    assert env["BOOLEY_HIDDEN_GATEWAY"] == "1"
