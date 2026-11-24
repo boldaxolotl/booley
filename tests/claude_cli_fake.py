@@ -7,6 +7,9 @@ import stat
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 _SCRIPT = """#!{python}
 import json, sys
@@ -34,3 +37,33 @@ def write_claude_cli(directory: Path, events: list[dict]) -> Path:
     path.write_bytes(textwrap.dedent(text).encode("utf-8"))
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
+
+
+def record_sdk_options(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Replace the Claude Agent SDK's ``query`` and return the options each call receives.
+
+    The SDK is where Booley hands off to the Claude CLI; the fake answers with
+    one successful result.
+    """
+    from claude_agent_sdk import ResultMessage
+
+    from booley.runtime import _claude_backend
+
+    seen: list[Any] = []
+
+    async def query(*, prompt: Any, options: Any):
+        seen.append(options)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+            result="",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+        )
+
+    monkeypatch.setattr(_claude_backend, "query", query)
+    return seen
