@@ -254,8 +254,10 @@ made-up output is provisional at best.
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are
   three PRs. Size caps are in
   [coding principle 18](CODING_PRINCIPLES.md#18-pull-requests-stay-small).
-- **Record a user-visible change as a changelog fragment** in `changelog.d/`;
-  never edit `CHANGELOG.md`. The rules are in
+- **Record a user-visible change as a changelog fragment** in `changelog.d/`,
+  named `<issue>.<kind>.md`; never edit `CHANGELOG.md`. Put a `major` or
+  `upgrade` fragment, or any note that must wait for the next minor release,
+  in `changelog.d/next-minor/`. The kinds and when to hold a fragment are in
   [changelog.d/README.md](../../changelog.d/README.md).
 - **Pyright exclusions and test timeouts** are documented where they are
   configured: `[tool.pyright] exclude` in `pyproject.toml`, and the timeout
