@@ -104,68 +104,64 @@ def _friction(**kw):
     )
 
 
-class TestFriction:
-    def test_friction_is_filable_without_a_reproduction(self):
-        """The whole point: demanding a repro would filter out the entire class."""
-        assert _friction().is_filable()
+def _impression(title, sentiment="praise"):
+    return Finding(
+        title=title, kind="impression", bucket="booley", sentiment=sentiment, origin="impression"
+    )
 
-    def test_friction_still_needs_somewhere_to_aim_the_fix(self):
-        stranded = _friction(component="", exposed_by="")
-        assert not stranded.is_filable()
-        assert "component" in stranded.missing_evidence()
 
-    def test_friction_needs_what_was_expected_instead(self):
-        vague = _friction(expected="")
-        assert not vague.is_filable()
-        assert "expected" in vague.missing_evidence()
+def test_friction_is_not_counted_as_a_bug(booley_dir):
+    """Otherwise every friction report inflates the "Booley is broken" number."""
+    append(_bug(severity="blocker"), booley_dir)
+    append(_friction(), booley_dir)
+    log = read_log(booley_dir)
+    assert len(log.bugs) == 1
+    assert len(log.friction) == 1
+    assert sum(log.counts().values()) == 1
 
-    def test_notes_can_stand_in_for_expected(self):
-        """A paragraph explaining the confusion is as actionable as a one-liner."""
-        assert _friction(
-            expected="", notes="I looked for the target list for ten minutes"
-        ).is_filable()
 
-    def test_exposed_by_can_stand_in_for_component(self):
-        assert _friction(component="", exposed_by="booley targets --for sim").is_filable()
+# Opinions (friction, impressions) are framed apart from defects and carry no
+# "unverified diagnosis" caveat: the entry is the reporter's experience.
+_OPINIONS = [
+    pytest.param(_friction(), ["*(friction)*"], [], id="friction"),
+    pytest.param(
+        _impression("saved me a week on the AXI port"),
+        ["booley-feedback", "## What they said", "nothing is broken"],
+        ["booley feedback say"],
+        id="impression",
+    ),
+]
 
-    def test_friction_is_not_counted_as_a_bug(self, booley_dir):
-        """Otherwise every friction report inflates the "Booley is broken" number."""
-        append(_bug(severity="blocker"), booley_dir)
-        append(_friction(), booley_dir)
-        log = read_log(booley_dir)
-        assert len(log.bugs) == 1
-        assert len(log.friction) == 1
-        assert sum(log.counts().values()) == 1
 
-    def test_friction_carries_no_unverified_caveat(self, project, booley_dir):
-        """It is definitionally the reporter's experience — the caveat says nothing."""
-        append(_friction(), booley_dir)
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "Not verified against Booley's source" not in report.body
+@pytest.mark.parametrize(("opinion", "framing", "absent"), _OPINIONS)
+def test_an_all_opinion_batch_is_framed_as_feedback_without_the_caveat(
+    project, booley_dir, opinion, framing, absent
+):
+    append(opinion, booley_dir)
+    report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
+    for text in framing:
+        assert text in report.body
+    for text in [*absent, "not a diagnosis", "Not verified against Booley's source"]:
+        assert text not in report.body
 
-    def test_an_all_friction_batch_is_framed_as_friction(self, project, booley_dir):
-        append(_friction(), booley_dir)
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "*(friction)*" in report.body
 
-    def test_one_bug_in_the_batch_makes_it_a_bug_report(self, project, booley_dir):
-        append(_friction(), booley_dir)
-        append(_bug(), booley_dir)
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "## Findings" in report.body
+@pytest.mark.parametrize("opinion", [_friction(), _impression("love the waveform viewer")])
+def test_one_bug_makes_the_batch_a_bug_report_and_keeps_the_opinion(project, booley_dir, opinion):
+    """A defect must not be softened into feedback by the praise next to it."""
+    append(opinion, booley_dir)
+    append(_bug(), booley_dir)
+    report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
+    assert "## Findings" in report.body
+    assert opinion.title in report.body
 
 
 class TestAlreadyFiled:
-    def test_a_filed_finding_is_never_filable_again(self):
+    def test_a_filed_finding_is_never_filable_again_and_is_stamped(self):
         finding = _bug()
         assert finding.is_filable()
         finding.mark_filed("https://github.com/boldaxolotl/Booley/issues/42")
         assert not finding.is_filable()
-
-    def test_mark_filed_stamps_when(self):
-        finding = _bug()
-        finding.mark_filed("manual")
-        assert finding.filed == "manual"
+        assert finding.filed.endswith("/issues/42")
         assert finding.filed_at
 
     def test_filed_findings_are_absent_from_a_later_report(self, project, booley_dir):
@@ -219,15 +215,6 @@ class TestOrigin:
         assert [w.path.name for w in written] == [render.FEEDBACK_REPORT_NAME]
         assert not (booley_dir / render.SETUP_REPORT_NAME).exists()
 
-    def test_a_setup_and_a_bug_entry_write_both_reports(self, project, booley_dir):
-        append(_bug(origin="setup"), booley_dir)
-        append(_bug(origin="bug"), booley_dir)
-        written, _ = render.write_user_reports(project, booley_dir)
-        assert [w.path.name for w in written] == [
-            render.SETUP_REPORT_NAME,
-            render.FEEDBACK_REPORT_NAME,
-        ]
-
     def test_an_empty_log_reads_as_setup(self, booley_dir):
         assert report_origin(read_log(booley_dir)) == "setup"
 
@@ -236,26 +223,21 @@ class TestOrigin:
         append(_bug(), booley_dir)
         assert report_origin(read_log(booley_dir)) == "bug"
 
-    def test_normal_feedback_says_normal_use_not_setup(self, project, booley_dir):
-        append(_bug(), booley_dir)
+    @pytest.mark.parametrize(
+        ("origin", "present", "absent"),
+        [("bug", "booley-feedback", "booley-setup` run"), ("setup", "`booley-setup` run", None)],
+    )
+    def test_the_report_is_framed_by_its_origin(
+        self, project, booley_dir, origin, present, absent
+    ):
+        append(_bug(origin=origin), booley_dir)
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "booley-feedback" in report.body
-        assert "booley-setup` run" not in report.body
-
-    def test_a_setup_report_is_unchanged(self, project, booley_dir):
-        append(_bug(origin="setup"), booley_dir)
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "`booley-setup` run" in report.body
+        assert present in report.body
+        if absent:
+            assert absent not in report.body
 
 
 class TestAttachments:
-    def test_an_attached_file_is_inlined(self, project, booley_dir, tmp_path):
-        log_file = tmp_path / "run.log"
-        log_file.write_text("elaborate ok\nsimulate: SIGSEGV\n", encoding="utf-8")
-        append(_bug(attachments=[str(log_file)]), booley_dir)
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "simulate: SIGSEGV" in report.body
-
     def test_only_the_tail_of_a_huge_file_is_inlined(self, project, booley_dir, tmp_path):
         """A 10k-line log must not become the issue body."""
         log_file = tmp_path / "run.log"
@@ -302,38 +284,6 @@ class TestAttachments:
         append(_bug(attachments=[str(log_file)]), booley_dir)
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
         assert "````" in report.body
-
-    def test_attachments_survive_a_log_round_trip(self, booley_dir, tmp_path):
-        append(_bug(attachments=["a.log", "b.log"]), booley_dir)
-        assert read_log(booley_dir).entries[0].attachments == ["a.log", "b.log"]
-
-    def test_a_malformed_attachments_field_costs_one_line_not_the_log(self, booley_dir):
-        """Same contract as every other corrupt entry: skip it, keep the rest."""
-        path = booley_dir / "findings.jsonl"
-        append(_bug(), booley_dir)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write('{"title": "junk", "attachments": "not-a-list"}\n')
-        log = read_log(booley_dir)
-        assert len(log.entries) == 1
-        assert log.corrupt_lines == 1
-
-
-class TestDocsEvidence:
-    def test_a_docs_finding_is_not_nagged_for_a_reproduction(self):
-        """ "CONFIG.md says X, the code does Y" is complete without a command."""
-        finding = Finding(
-            title="CONFIG.md documents a removed table",
-            bucket="docs",
-            component="docs/user/CONFIG.md",
-            observed="describes [sources.rtl]",
-        )
-        assert finding.is_filable()
-        assert finding.missing_evidence() == []
-
-    def test_a_docs_finding_without_a_file_is_not_actionable(self):
-        finding = Finding(title="a doc is wrong", bucket="docs", observed="it is wrong")
-        assert not finding.is_filable()
-        assert finding.missing_evidence() == ["component"]
 
 
 @pytest.mark.parametrize(

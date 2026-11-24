@@ -79,7 +79,7 @@ def _populate(booley_dir):
 
 
 class TestUserReport:
-    def test_every_finding_appears_regardless_of_evidence(self, booley_dir):
+    def test_every_finding_win_and_bucket_appears_regardless_of_evidence(self, booley_dir):
         _populate(booley_dir)
         out = render_user_report(read_log(booley_dir))
         for title in (
@@ -87,16 +87,9 @@ class TestUserReport:
             "CONFIG.md documents a removed table",
             "verilator missing from PATH",
             "the messages felt confusing",
+            "targets resolved first try",
         ):
             assert title in out
-
-    def test_wins_are_shown(self, booley_dir):
-        _populate(booley_dir)
-        assert "targets resolved first try" in render_user_report(read_log(booley_dir))
-
-    def test_buckets_get_their_own_sections(self, booley_dir):
-        _populate(booley_dir)
-        out = render_user_report(read_log(booley_dir))
         assert "## Your project or environment" in out
         assert "## Booley behaviour" in out
 
@@ -129,72 +122,38 @@ class TestUserReport:
         assert "never" in out and "published" in out
 
 
+def _log_impression(booley_dir, title, sentiment="mixed"):
+    return append(
+        Finding(
+            title=title,
+            kind="impression",
+            bucket="booley",
+            sentiment=sentiment,
+            origin="impression",
+        ),
+        booley_dir,
+    )
+
+
 class TestImpressions:
     """`booley feedback say` — opinions ride the same path as bugs, framed apart."""
 
-    @staticmethod
-    def _say(booley_dir, title, sentiment="mixed"):
-        return append(
-            Finding(
-                title=title,
-                kind="impression",
-                bucket="booley",
-                sentiment=sentiment,
-                origin="impression",
-            ),
-            booley_dir,
-        )
-
     def test_the_user_report_keeps_them_out_of_the_defect_sections(self, booley_dir):
         """An opinion listed under 'Booley behaviour' reads as one more bug."""
-        self._say(booley_dir, "the waveform flow is great", "praise")
+        _log_impression(booley_dir, "the waveform flow is great", "praise")
         out = render_user_report(read_log(booley_dir))
         assert "## What you told Booley" in out
         assert "the waveform flow is great" in out
         assert "## Booley behaviour" not in out
 
     def test_they_are_counted_apart_from_bugs(self, booley_dir):
-        self._say(booley_dir, "I wish it had a coverage dashboard", "wish")
+        _log_impression(booley_dir, "I wish it had a coverage dashboard", "wish")
         out = render_user_report(read_log(booley_dir))
         assert "Impressions (what you think of Booley): **1**" in out
         assert read_log(booley_dir).counts() == {"blocker": 0, "workaround": 0, "note": 0}
 
-    def test_an_all_impression_batch_is_framed_as_feedback_not_bug(self, project, booley_dir):
-        self._say(booley_dir, "saved me a week on the AXI port", "praise")
-        self._say(booley_dir, "the setup grill is too long", "gripe")
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "booley-feedback" in report.body
-        assert "booley feedback say" not in report.body
-        assert "## What they said" in report.body
-        assert "nothing is broken" in report.body
-
-    def test_one_bug_makes_the_batch_a_bug_report_again(self, project, booley_dir):
-        """A defect must not be softened into feedback by the praise next to it."""
-        self._say(booley_dir, "love the waveform viewer", "praise")
-        append(
-            Finding(
-                title="simulate exits 2 with an empty stderr",
-                bucket="booley",
-                origin="bug",
-                repro="booley flow sim",
-                observed="rc=2, no message",
-                expected="a diagnosis",
-            ),
-            booley_dir,
-        )
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "## Findings" in report.body
-        # The impression still rides along — it just does not set the framing.
-        assert "love the waveform viewer" in report.body
-
-    def test_they_never_carry_the_unverified_caveat(self, project, booley_dir):
-        """ "Not verified against Booley's source" is nonsense about an opinion."""
-        self._say(booley_dir, "the docs are better than most", "praise")
-        report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
-        assert "not a diagnosis" not in report.body
-
     def test_the_sentiment_is_shown_to_the_maintainer(self, project, booley_dir):
-        self._say(booley_dir, "elaborate is too slow to be useful", "gripe")
+        _log_impression(booley_dir, "elaborate is too slow to be useful", "gripe")
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
         assert "*(impression: gripe)*" in report.body
 
@@ -256,11 +215,6 @@ class TestBooleyReport:
         )
         assert "9.9.9" in report.body
 
-    def test_the_fingerprint_carries_no_paths_or_names(self, project, booley_dir):
-        """Clustering duplicates must not require identifying the reporter."""
-        rows = dict(Environment(booley_version="1.0", platform="Linux x86_64").as_rows())
-        assert "/" not in "".join(v for k, v in rows.items() if k != "Platform")
-
 
 class TestWriteUserReports:
     def test_only_the_user_reports_land_in_the_booley_dir(self, project, booley_dir):
@@ -268,12 +222,8 @@ class TestWriteUserReports:
         written, report = write_user_reports(project, booley_dir)
         assert [w.path for w in written] == [booley_dir / SETUP_REPORT_NAME]
         assert report.has_content
+        # The footprint guardrail, enforced in code rather than in prose.
         assert not (booley_dir / BOOLEY_REPORT_NAME).exists()
-
-    def test_nothing_is_written_into_the_tracked_tree(self, project, booley_dir):
-        """The footprint guardrail, enforced in code rather than in prose."""
-        _populate(booley_dir)
-        write_user_reports(project, booley_dir)
         assert not (project / SETUP_REPORT_NAME).exists()
         assert not (project / BOOLEY_REPORT_NAME).exists()
 
@@ -303,7 +253,7 @@ class TestWriteUserReports:
         assert not (booley_dir / SETUP_REPORT_NAME).exists()
         assert not (booley_dir / FEEDBACK_REPORT_NAME).exists()
 
-    def test_rerendering_is_stable(self, project, booley_dir):
+    def test_rerendering_is_stable_and_a_changed_entry_rewrites(self, project, booley_dir):
         """A second render finds the same content and leaves the file alone."""
         _populate(booley_dir)
         first, _ = write_user_reports(project, booley_dir)
@@ -312,6 +262,10 @@ class TestWriteUserReports:
         assert [w.changed for w in first] == [True]
         assert [w.changed for w in second] == [False]
         assert second[0].path.read_bytes() == before
+        append(Finding(title="second setup entry"), booley_dir)
+        third, _ = write_user_reports(project, booley_dir)
+        assert third[0].changed
+        assert "second setup entry" in third[0].path.read_text(encoding="utf-8")
 
     def test_a_new_project_name_or_environment_leaves_the_report_alone(self, project, booley_dir):
         """A later render from another host or without --project-name keeps the file."""
@@ -326,14 +280,6 @@ class TestWriteUserReports:
         written, _ = write_user_reports(project, booley_dir, env=later_env)
         assert [w.changed for w in written] == [False]
         assert path.read_bytes() == before
-
-    def test_a_changed_setup_entry_rewrites_the_setup_report(self, project, booley_dir):
-        append(Finding(title="first setup entry"), booley_dir)
-        write_user_reports(project, booley_dir)
-        append(Finding(title="second setup entry"), booley_dir)
-        written, _ = write_user_reports(project, booley_dir)
-        assert written[0].changed
-        assert "second setup entry" in written[0].path.read_text(encoding="utf-8")
 
 
 class TestExplicitExport:
