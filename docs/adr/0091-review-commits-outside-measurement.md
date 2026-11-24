@@ -49,7 +49,8 @@ Reviews are declared per Target, in a file of their own beside
   `booley review --verify`, which re-checks only those findings and adds none.
   What remains open is reported for the human.
 - **Reviewed Commit.** The commit on which verify leaves nothing open at or
-  above `resolve`. It is a record of what happened on that sha, not a
+  above `resolve`. A discovery run that leaves nothing open also makes its
+  commit Reviewed. It is a record of what happened on that sha, not a
   reproducible property, and never gates CI. It is independent of Measured
   Commit; the user may ask for either or both.
 - **Review Run.** One stored `booley review` run, kept under
