@@ -379,8 +379,9 @@ def test_an_mcp_cancel_stops_the_measurement_and_its_children(
 ) -> None:
     from booley.mcp.call_context import resolve_call_context
 
-    # The MCP server builds its Job manager only inside its own lifetime; the test drives that
-    # manager's real submit and cancel with no server around it.
+    # The MCP server builds its Job manager only inside its own lifetime, and the public
+    # JobLifecycle's default repository finds records differently from the server's; the test
+    # drives the server's real submit and cancel with no server around it.
     from booley.mcp.server import _JobManager
     from tests.mcp_tools.test_mcp_dispatch import _FakeLifetime
 

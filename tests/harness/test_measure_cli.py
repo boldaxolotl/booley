@@ -31,7 +31,7 @@ from booley.harness.standalone_job import (
     standalone_log_path,
     standalone_log_root,
 )
-from booley.measurement.measuring_rules import ERROR_RULE
+from booley.measurement.measuring_rules import ERROR_RULE, UNMET_RULE
 from booley.measurement.metrics_file import TableRules
 from booley.measurement.run_document import RunStatus, TableRun
 from booley.measurement.run_key import resolve_measurement_key
@@ -339,8 +339,18 @@ def test_unmet_and_error_together_exit_two(
             "--base 'no-such-revision' cannot be used",
             id="base",
         ),
-        pytest.param(ONE_LINT_TABLE, ["--", "no-such-revision"], "is not a commit", id="revision"),
-        pytest.param(ONE_LINT_TABLE, ["--", "--exec=x"], "is not a commit", id="option-revision"),
+        pytest.param(
+            ONE_LINT_TABLE,
+            ["--", "no-such-revision"],
+            "is not a commit of this Project",
+            id="revision",
+        ),
+        pytest.param(
+            ONE_LINT_TABLE,
+            ["--", "--exec=x"],
+            "is not a commit of this Project",
+            id="option-revision",
+        ),
     ],
 )
 def test_a_refused_measurement_exits_two_and_stores_nothing(
@@ -588,7 +598,8 @@ def test_a_measured_commit_is_shown_without_a_checkout_or_a_flow(
     steps = script_children(monkeypatch, lambda tables, _c: outcome_of(tables, [0]))
     assert run_command(monkeypatch, project) == 0
     (first,) = stored_runs(project)
-    assert "Exit " not in capsys.readouterr().err  # a met run prints no rule
+    err = capsys.readouterr().err  # a met run prints no rule
+    assert UNMET_RULE not in err and ERROR_RULE not in err
     exports: list[tuple[object, ...]] = []
     export = importlib.import_module(COMMAND).export_commit
 
@@ -596,6 +607,7 @@ def test_a_measured_commit_is_shown_without_a_checkout_or_a_flow(
         exports.append(args)
         return export(*args)  # type: ignore[arg-type]
 
+    # The checkout is observable only through this call: the command exports and discards it.
     monkeypatch.setattr(f"{COMMAND}.export_commit", recording_export)
 
     assert run_command(monkeypatch, project) == 0
@@ -846,7 +858,8 @@ def test_cancelled_before_any_child_finished_stores_nothing(
         run_command(monkeypatch, project)
 
     err = capsys.readouterr().err
-    assert "nothing stored" in err and "Exit " not in err  # a cancelled run prints no rule
+    assert "nothing stored" in err  # a cancelled run prints no rule
+    assert UNMET_RULE not in err and ERROR_RULE not in err
     assert not (project / ".booley" / "measurements").exists()
     record = job_record(project)
     assert (record.status, record.exit_code) == ("cancelled", 130)
@@ -1105,6 +1118,7 @@ def test_a_measurement_outside_the_main_thread_runs_without_signal_handlers(
     worker.start()
     worker.join(DEADLINE_S)
 
+    assert not worker.is_alive()
     assert codes == [0]
     assert len(stored_runs(project)) == 1
 
