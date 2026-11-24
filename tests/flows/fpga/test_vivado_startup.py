@@ -63,7 +63,12 @@ def _fake_vivado(directory: Path, body: str) -> Path:
 @pytest.mark.parametrize(
     ("returncode", "stdout", "stderr", "cause"),
     [
-        (0, "ERROR: Tcl initialization failed: libncurses.so.5", "", None),
+        (
+            0,
+            "ERROR: Tcl initialization failed: libncurses.so.5",
+            "",
+            "ERROR: Tcl initialization failed: libncurses.so.5",
+        ),
         (0, "", "", "current Tcl startup marker missing (exit 0)"),
         (0, "", "  fatal: bad install  ", "fatal: bad install"),
         # The inner ``timeout`` exit codes, 124 and the 137 kill, name its bound.
@@ -73,14 +78,14 @@ def _fake_vivado(directory: Path, body: str) -> Path:
     ids=["error-line", "no-marker", "stderr-line", "inner-timeout", "inner-kill"],
 )
 def test_failed_startup_names_its_cause(
-    tmp_path: Path, returncode: int, stdout: str, stderr: str, cause: str | None
+    tmp_path: Path, returncode: int, stdout: str, stderr: str, cause: str
 ) -> None:
     """A start without this attempt's marker FAILs with the tool's error line or a generic cause."""
     result = SubprocessResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
     report = _inspect(tmp_path, command=lambda _argv: canned_command(result))
 
-    assert _summary(report) == [(Severity.FAIL, f"{_LABEL}: {cause or stdout}", _DEPENDENCY_FIX)]
+    assert _summary(report) == [(Severity.FAIL, f"{_LABEL}: {cause}", _DEPENDENCY_FIX)]
 
 
 def test_actual_batch_marker_and_owned_directory(tmp_path, monkeypatch):
