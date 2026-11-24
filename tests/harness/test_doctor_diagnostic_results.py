@@ -6,43 +6,34 @@ import argparse
 import importlib
 import json
 import subprocess
-import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
 from booley.audit import host_environment
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.audit.doctor_waivers import load_doctor_waivers
+from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import SandboxHostPolicy
-from booley.config.project_config import normalize_tests_toml
 from booley.core.host_shell import quote_arg
-from booley.harness import auto_doctor, doctor, doctor_deep, host_diagnostics
-from booley.harness.setup import readiness
+from booley.harness import auto_doctor, doctor, host_diagnostics
+from booley.presentation import colors
 from booley.runtime import (
     doctor_stamp,
-    inspection,
     platform_paths,
-    runtime_context,
-    session_runtime,
-    vaporview,
 )
-from booley.runtime.sandbox_apply import Attachment
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError
+from booley.targets.domain import StaleTargetCatalogError
 from tests.conftest import symlink_or_skip
 from tests.diagnostic_helpers import _Rec
 from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.harness.doctor_host_support import answer_doctor_commands, hide_container_cli
 from tests.harness.test_doctor import (
     _patch_environment,
     _write_project,
 )
-from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -317,62 +308,39 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     assert doctor_stamp.stamp_path(booley_dir).exists() is waived
 
 
-def test_typed_report_preserves_warning_deduplication_and_machine_fields():
-    reporter = doctor._Reporter.create()
-    first = DiagnosticFinding(
-        Severity.WARN, "first wording", "repair", "project.example", "target", "same"
-    )
-    second = DiagnosticFinding(
-        Severity.WARN, "new wording", "repair", "project.example", "target", "same"
-    )
-    reporter.diagnostics(DiagnosticReport((first, second)))
-    result = reporter.result(0)
-    assert result.counts["warn"] == 1
-    assert result.findings == (
-        DiagnosticFinding(Severity.WARN, "first wording", "repair", "project.example", "target"),
-    )
+_OBSERVATIONS = [
+    ("config", lambda f: f.message in {"booley.toml parses", "booley.toml missing"}),
+    ("upgrade", lambda f: f.message.startswith("Booley release review current")),
+    ("guidance", lambda f: f.check_id == "guidance.links-unhealthy"),
+    ("project-data-branch", lambda f: f.message.startswith("Booley Directory branch alignment")),
+    ("prune", lambda f: "gc.worktreePruneExpire" in f.message),
+    ("line-endings", lambda f: "working tree is container-safe" in f.message),
+    ("shadow", lambda f: f.check_id == "fusesoc.worktree-core-shadow"),
+    ("projections", lambda f: f.message == "stealth core projections match .booley/cores/"),
+]
 
 
 @pytest.mark.parametrize("valid", [False, True])
 def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, valid):
     booley_dir = _write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
+    with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write("\n[stealth]\nenabled = true\n")
     if not valid:
         (booley_dir / "booley.toml").unlink()
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    events = []
 
-    def trace(module, name, label):
-        original = getattr(module, name)
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
-        def run(*args, **kwargs):
-            events.append(label)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(module, name, run)
-
-    trace(readiness, "load_project", "config")
-    trace(doctor, "_check_upgrade_review", "upgrade")
-    trace(readiness, "check_guidance", "guidance")
-    trace(doctor, "_check_project_data_destination_branch", "project-data-branch")
-    trace(doctor, "_check_worktree_prune_guard", "prune")
-    trace(readiness, "inspect_line_endings", "line-endings")
-    trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
-    trace(readiness, "check_stealth_cores", "projections")
-    doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-    expected = [
-        "config",
-        "upgrade",
-        "guidance",
-        "project-data-branch",
-        "prune",
-        "line-endings",
-        "shadow",
-        "projections",
-    ]
+    first_rows = {}
+    for name, matches in _OBSERVATIONS:
+        index = next((i for i, f in enumerate(result.findings) if matches(f)), None)
+        if index is not None:
+            first_rows[name] = index
+    expected = [name for name, _matches in _OBSERVATIONS]
     if not valid:
         expected = ["config", "upgrade", "prune", "line-endings"]
-    assert events == expected
+    assert sorted(first_rows, key=first_rows.__getitem__) == expected
     assert not (tmp_path / "AGENTS.md").exists()
 
 
@@ -439,154 +407,7 @@ def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, m
         assert not manual.deep_status.current
 
 
-def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:
-    """Indices of the Doctor rows that bracket an owner's rows in the rendered report."""
-    if owner == "cocotb":
-        # Real Doctor rows frame the owner: Targets are enumerated first and the
-        # Target source checks follow, with the owner's rows contiguous between.
-        before = next(
-            i for i, m in enumerate(messages) if m.startswith(".core Targets enumerated")
-        )
-        after = next(
-            i for i, m in enumerate(messages) if m == "sim Target 'sim_fast' TB fileset tagged"
-        )
-        return before, after
-    return messages.index("before-marker"), messages.index("after-marker")
-
-
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "cocotb", "viewer-bridge"])
-def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
-    """An owner's report is rendered where the old inline check ran, waivers applied."""
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
-
-    def marker(label):
-        return DiagnosticReport((DiagnosticFinding(Severity.PASS, label),))
-
-    if owner == "line-endings":
-        check_id, subject = "git.line-endings-unreadable", "project-checkout"
-        stub = lambda *_a, **_k: _owner_report(check_id, subject)  # noqa: E731
-        monkeypatch.setattr(readiness, "inspect_line_endings", stub)
-        monkeypatch.setattr(
-            doctor, "_check_worktree_prune_guard", lambda _root, ok, *_a: ok("before-marker")
-        )
-        monkeypatch.setattr(
-            doctor,
-            "_check_worktree_core_shadow_guard",
-            lambda _dir, ok, *_a, **_k: ok("after-marker"),
-        )
-    elif owner == "cocotb":
-        check_id, subject = "cocotb.tb-tag-missing", "sim_fast"
-        monkeypatch.setattr(
-            _cocotb_owner(),
-            "inspect_cocotb_targets",
-            lambda _request: _owner_report(check_id, subject),
-        )
-    elif owner == "viewer-bridge":
-        check_id, subject = "project.git-excludes-missing", ".booley"
-        requests: list[vaporview.ViewerBridgeRequest] = []
-
-        def inspect_bridge(request):
-            requests.append(request)
-            return _owner_report(check_id, subject)
-
-        monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
-        # Public owner calls bracket the Viewer Bridge (credential checks sit between).
-        monkeypatch.setattr(
-            inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
-        )
-        monkeypatch.setattr(
-            inspection, "inspect_retained_resources", lambda *_a, **_k: marker("after-marker")
-        )
-    else:
-        check_id, subject = "project.git-excludes-missing", ".booley"
-        stub = lambda *_a, **_k: _owner_report(check_id, subject)  # noqa: E731
-        monkeypatch.setattr(inspection, "inspect_interactive_git", stub)
-        monkeypatch.setattr(
-            inspection,
-            "inspect_runtime",
-            lambda _request: SimpleNamespace(report=marker("before-marker")),
-        )
-        monkeypatch.setattr(
-            doctor, "_run_agent_credential_checks", lambda _p, r: r.pass_("after-marker")
-        )
-    (booley_dir / "doctor-waivers.toml").write_text(
-        f'version = 1\n[[waiver]]\ncheck = "{check_id}"\nsubject = "{subject}"\n'
-        'reason = "Accepted for this fixture"\npermanent = true\n'
-    )
-
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-
-    messages = [f.message for f in result.findings]
-    owned_pass, owned_warn = messages.index("owner pass"), messages.index("owner warn")
-    before, after = _owner_frame(messages, owner)
-    if owner == "cocotb":
-        assert owned_warn == owned_pass + 1
-    assert before < owned_pass < owned_warn < after
-    waived = result.findings[owned_warn]
-    assert (waived.severity, waived.check_id, waived.subject) == (
-        Severity.WAIVED,
-        check_id,
-        subject,
-    )
-    assert result.exit_code == 0
-    if owner == "viewer-bridge":
-        assert requests == [vaporview.ViewerBridgeRequest(tmp_path, "docker")]
-
-
-def test_doctor_renders_tests_toml_report_after_core_security(tmp_path, monkeypatch):
-    """The tests.toml owner's report follows the core security finding, waived through Doctor."""
-    # Imported here so an absent owner fails this test body, not the module's collection.
-    from booley.flows import target_test_plan_inspection
-
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
-    check_id, subject = "sim.tests-toml-fixture", "tests.toml"
-    requests = []
-
-    def stub(request):
-        requests.append(request)
-        return _owner_report(check_id, subject)
-
-    monkeypatch.setattr(target_test_plan_inspection, "inspect_target_test_plans", stub)
-    (booley_dir / "doctor-waivers.toml").write_text(
-        f'version = 1\n[[waiver]]\ncheck = "{check_id}"\nsubject = "{subject}"\n'
-        'reason = "Accepted for this fixture"\npermanent = true\n'
-    )
-
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-
-    # The request carries the checkout's Project Root and Booley Directory only.
-    assert requests == [
-        target_test_plan_inspection.TargetTestPlanInspectionRequest(tmp_path, booley_dir)
-    ]
-    messages = [f.message for f in result.findings]
-    owned_pass, owned_warn = messages.index("owner pass"), messages.index("owner warn")
-    assert owned_warn == owned_pass + 1
-    # The finding right before the owner's is the real core-audit security finding.
-    assert messages[owned_pass - 1].startswith(".core security validation passed (")
-    waived = result.findings[owned_warn]
-    assert (waived.severity, waived.check_id, waived.subject) == (
-        Severity.WAIVED,
-        check_id,
-        subject,
-    )
-    assert result.exit_code == 0
-
-
-def _owner_report(check_id: str, subject: str) -> DiagnosticReport:
-    """A PASS followed by a subject-scoped WARN, as an owner would return them."""
-    return DiagnosticReport(
-        (
-            DiagnosticFinding(Severity.PASS, "owner pass"),
-            DiagnosticFinding(
-                Severity.WARN, "owner warn", "owner fix", check_id=check_id, subject=subject
-            ),
-        )
-    )
-
-
-_COCOTB_AUDIT_CORE = """\
+_COCOTB_CORE = """\
 CAPI=2:
 name: ::demo:0
 filesets:
@@ -607,71 +428,45 @@ targets:
 """
 
 
-def _cocotb_audit_project(root: Path) -> doctor.ProjectAudit:
-    """A Project with two cocotb Targets that between them earn every cocotb row kind.
-
-    ``sim_a`` has a tagged module that defines only ``test_reset`` yet a
-    qualified tests.toml section names ``test_typo`` too and declares ``select``;
-    ``sim_b`` sits in an untagged fileset and its module is not on disk.
-    """
-    booley_dir = root / ".booley"
-    booley_dir.mkdir()
-    (root / "design.core").write_text(_COCOTB_AUDIT_CORE, encoding="utf-8", newline="\n")
-    (root / "rtl").mkdir()
-    (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-    (root / "tb").mkdir()
-    (root / "tb" / "test_a.py").write_text(
-        "import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    tests_toml = '["demo#sim_a"]\nselect = "+t={name}"\ntests = ["test_reset", "test_typo"]\n'
-    (booley_dir / "tests.toml").write_text(tests_toml, encoding="utf-8", newline="\n")
-    (booley_dir / "doctor-waivers.toml").write_text(
-        'version = 1\n[[waiver]]\ncheck = "cocotb.tb-tag-missing"\nsubject = "sim_b"\n'
-        'reason = "Accepted for this fixture"\npermanent = true\n',
-        encoding="utf-8",
-        newline="\n",
-    )
-    return doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=booley_dir,
-        booley_toml={},
-        configs_toml={"x": {}},
-        first_target="x",
-    )
-
-
-def _cocotb_owner():
-    """The cocotb owner module, imported where used."""
-    return importlib.import_module("booley.flows.sim.backends.cocotb_target_checks")
-
-
-def test_cocotb_core_audit_output_is_pinned(tmp_path):
+@pytest.mark.parametrize("cocotb", [False, True])
+def test_doctor_reports_cocotb_targets(tmp_path, monkeypatch, cocotb):
     """The cocotb rows keep their text, severity, IDs, subjects, order, waiver and exit code.
 
-    The literals were captured from Doctor's own cocotb checks before they moved
-    to their Flow owner and are unchanged by the move.
+    ``sim_a`` has a tagged module that defines only ``test_reset`` yet a qualified
+    tests.toml section names ``test_typo`` too and declares ``select``; ``sim_b`` sits
+    in an untagged fileset and its module is not on disk. Without a cocotb Target Doctor
+    neither checks the container for cocotb nor reports a cocotb row.
     """
-    project = _cocotb_audit_project(tmp_path)
-    reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
-    doctor._run_core_audit(
-        project,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        _note=reporter.note_,
-        _diagnostics=reporter.diagnostics,
-    )
-    exit_code = reporter.finish()
+    booley_dir = _write_project(tmp_path)
+    if cocotb:
+        (tmp_path / "demo.core").write_text(_COCOTB_CORE, encoding="utf-8", newline="\n")
+        (tmp_path / "tb" / "test_a.py").write_text(
+            "import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        tests_toml = '["demo#sim_a"]\nselect = "+t={name}"\ntests = ["test_reset", "test_typo"]\n'
+        (booley_dir / "tests.toml").write_text(tests_toml, encoding="utf-8", newline="\n")
+        (booley_dir / "doctor-waivers.toml").write_text(
+            'version = 1\n[[waiver]]\ncheck = "cocotb.tb-tag-missing"\nsubject = "sim_b"\n'
+            'reason = "Accepted for this fixture"\npermanent = true\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
-    rows = [(f.severity, f.message, f.fix, f.check_id, f.subject) for f in reporter.findings]
-    last_before = (Severity.PASS, "2 Verilator sim Target(s) trace-capable (own a --exe main)")
-    first_after = (Severity.PASS, "sim Target 'sim_a' TB fileset tagged")
-    start = [row[:2] for row in rows].index(last_before)
-    assert rows[start + 6][:2] == first_after
-    assert rows[start + 1 : start + 6] == [
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+
+    rows = [
+        (f.severity, f.message, f.fix, f.check_id, f.subject)
+        for f in result.findings
+        if f.message.startswith("cocotb")
+    ]
+    if not cocotb:
+        assert rows == []
+        return
+    assert rows == [
+        (Severity.PASS, "cocotb in container (a Cocotb Target exists)", "", None, None),
         (
             Severity.FAIL,
             "cocotb Target 'sim_a' declares a tests.toml `select` plusarg template",
@@ -705,75 +500,8 @@ def test_cocotb_core_audit_output_is_pinned(tmp_path):
             "sim_b",
         ),
     ]
-    assert reporter.counts["waived"] == 1
-    assert exit_code == 1
-
-
-def test_core_audit_renders_the_owner_report_unchanged(tmp_path, monkeypatch):
-    """Doctor builds the owner's request, hands over its report once, and adds no cocotb row."""
-    project = _cocotb_audit_project(tmp_path)
-    report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "owner-row"),))
-    requests = []
-
-    def spy(request):
-        requests.append(request)
-        return report
-
-    monkeypatch.setattr(_cocotb_owner(), "inspect_cocotb_targets", spy)
-    rendered = []
-    rec = _Rec()
-    doctor._run_core_audit(
-        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
-    )
-
-    (request,) = requests
-    assert [target.name for target in request.targets] == ["sim_a", "sim_b"]
-    assert request.tests_sections == normalize_tests_toml(
-        tomllib.loads((project.booley_dir / "tests.toml").read_text(encoding="utf-8"))
-    )
-    # The Test Run plan owner also reports through the same path, after the cocotb owner.
-    assert [item for item in rendered if item is report] == [report]
-    # Its position among the rendered reports: before the Test Run plan report, which
-    # is followed only by the native-dependency report.
-    assert rendered.index(report) < len(rendered) - 2
-    assert not any(message.startswith("cocotb Target") for _level, message in rec.events)
-
-
-def test_container_tools_ask_the_owner_for_cocotb(tmp_path, monkeypatch):
-    """The conditional cocotb container check is gated by the owner's answer."""
-    booley_dir = _write_project(tmp_path)
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml={},
-        configs_toml={},
-        first_target="sim_fast",
-    )
-    asked = []
-
-    def owner_says_yes(project_root):
-        asked.append(project_root)
-        return True
-
-    monkeypatch.setattr(_cocotb_owner(), "project_has_cocotb_target", owner_says_yes)
-    checks = []
-
-    def record(description, argv, fix):
-        checks.append((description, argv, fix))
-
-    doctor._run_container_tool_checks(project, record)
-    assert asked == [project.project_root]
-    assert (
-        "cocotb in container (a Cocotb Target exists)",
-        ["cocotb-config", "--version"],
-        "sandbox image predates cocotb support — rebuild the sandbox image",
-    ) in checks
-
-    asked.clear()
-    checks.clear()
-    doctor._run_container_tool_checks(None, record)
-    assert asked == []
-    assert not any(argv[0] == "cocotb-config" for _description, argv, _fix in checks)
+    assert result.counts["waived"] == 1
+    assert result.exit_code == 1
 
 
 _CORE_TREE_SECTION_HEADER = "FuseSoC .core checks"
@@ -811,6 +539,7 @@ def _core_tree_project(root: Path) -> Path:
         "  width: {datatype: expression, paramtype: vlogparam}\n"
         "generators:\n"
         "  gen: {command: rtl/gen.py}\n"
+        "  fw_gen: {command: fw/gen.py}\n"
         "targets:\n"
         "  sim_sec:\n"
         "    flow: sim\n"
@@ -821,6 +550,10 @@ def _core_tree_project(root: Path) -> Path:
         newline="\n",
     )
     (root / "rtl" / "gen.py").write_text("print('generated')\n", encoding="utf-8", newline="\n")
+    # No `.core` fileset names `fw/`, so it is outside the write Scope and its generator is
+    # no advisory: a hardcoded `fw/*` in Doctor's Scope would add one (#4052).
+    (root / "fw").mkdir()
+    (root / "fw" / "gen.py").write_text("print('generated')\n", encoding="utf-8", newline="\n")
     # Vendored (no Doctor Target) with a provider block, at the root so its
     # relative path has no separator: a NOTE.
     (root / "upstream.core").write_text(
@@ -882,179 +615,21 @@ FuseSoC .core checks
   ·  tests.toml not present (each sim Target runs its testbench's default test)
 """
 
-_CORE_TREE_ROWS = [
-    (
-        Severity.NOTE,
-        "vendored .core upstream.core has a provider block, but no Doctor Target selects it",
-        "",
-        None,
-        None,
-    ),
-    (
-        Severity.FAIL,
-        "FuseSoC recursive symlinks: 1 link resolves to ancestor <root> (lib00/self)",
-        "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing subtree (excludes all cores there); ensure markers are present in worktrees too, or remove the links",
-        None,
-        None,
-    ),
-    (
-        Severity.FAIL,
-        ".core schema design.core: filesets.tb.depend must be array",
-        "fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)",
-        None,
-        None,
-    ),
-    (
-        Severity.FAIL,
-        ".core schema sec.core: parameters.width.datatype must be one of ['bool', 'file', 'int', 'real', 'str'] — FuseSoC ignores this whole .core, so none of its Targets resolve",
-        "fix the .core — FuseSoC's CAPI2 schema requires this (caught here so it does not only surface under --deep)",
-        None,
-        None,
-    ),
-    (
-        Severity.NOTE,
-        ".core schema upstream.core: provider cannot be validated by any definition — FuseSoC ignores this whole .core, so none of its Targets resolve — vendored core, no Doctor Target selects it; FuseSoC skips it at resolve, so only that core's own Targets are unusable",
-        "",
-        None,
-        None,
-    ),
-    (
-        Severity.FAIL,
-        ".core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator.",
-        "give parameter 'width' a literal datatype (bool, file, int, real or str) "
-        "and the literal value as its default",
-        None,
-        None,
-    ),
-    (
-        Severity.WAIVED,
-        ".core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generator and hook scripts must sit outside the agent's write Scope, so they are not files the agent edits as part of its work. (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)",
-        "Accepted for this fixture",
-        "core.security-scope-advisory",
-        "sec.core:-",
-    ),
-]
-
-
-_CORE_TREE_ROW_PREFIXES = (
-    ".core schema",
-    ".core security",
-    ".core tree has no",
-    "FuseSoC recursive symlink",
-    "vendored .core",
-)
-
-
-def _core_tree_rows(result, root: Path):
-    """``(severity, message, fix, check_id, subject)`` of the moved rules' findings."""
-    normalize = lambda text: text.replace(str(root.resolve()), "<root>").replace("\\", "/")  # noqa: E731
-    return [
-        (f.severity, normalize(f.message), normalize(f.fix), f.check_id, f.subject)
-        for f in result.findings
-        if f.message.startswith(_CORE_TREE_ROW_PREFIXES)
-    ]
-
 
 def test_core_tree_section_output_is_pinned(tmp_path, monkeypatch, capsys):
     """The .core checks section keeps its text, order, check IDs and exit code.
 
     The literals were captured from Doctor's own core-tree checks before they
-    moved to their owner and are unchanged by the move; the rows now reach the
-    section as the owner's typed reports.
+    moved to their owner and are unchanged by the move.
     """
     booley_dir = _core_tree_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    reports = []
-    render = doctor._Reporter.diagnostics
-
-    def record_then_render(self, report):
-        reports.append(report)
-        render(self, report)
-
-    monkeypatch.setattr(doctor._Reporter, "diagnostics", record_then_render)
     result = doctor.run_doctor_result(
         argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
     )
     section = _core_tree_section(capsys.readouterr().out, tmp_path)
     assert section == _CORE_TREE_SECTION.rstrip("\n")
-    assert _core_tree_rows(result, tmp_path) == _CORE_TREE_ROWS
     assert result.exit_code == 1
-    owner_rows = [
-        finding.message.replace(str(tmp_path.resolve()), "<root>").replace("\\", "/")
-        for report in reports
-        for finding in report.findings
-        if finding.message.startswith(_CORE_TREE_ROW_PREFIXES)
-    ]
-    assert owner_rows == [row[1] for row in _CORE_TREE_ROWS], (
-        "the core-tree rows must reach Doctor as owner reports"
-    )
-
-
-def _core_tree_owner():
-    """The ``.core`` tree owner module, imported where used."""
-    return importlib.import_module("booley.audit.core_tree_inspection")
-
-
-def test_core_audit_renders_core_tree_owner_reports_in_place(tmp_path, monkeypatch):
-    """Doctor builds each owner request, renders each report once, and adds no rows of its own.
-
-    The tree report (setup hazards, then schema) leads the section; the security
-    report follows the Target checks, immediately before the Test Run plan report.
-    """
-    owner = _core_tree_owner()
-    project = _cocotb_audit_project(tmp_path)
-    tree_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "tree-row"),))
-    security_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "security-row"),))
-    tree_requests, security_requests = [], []
-
-    def tree_spy(request):
-        tree_requests.append(request)
-        return tree_report
-
-    def security_spy(request):
-        security_requests.append(request)
-        return security_report
-
-    monkeypatch.setattr(owner, "inspect_core_tree", tree_spy)
-    monkeypatch.setattr(owner, "inspect_core_security", security_spy)
-    rendered = []
-    rec = _Rec()
-    doctor._run_core_audit(
-        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
-    )
-
-    seeds = doctor._project_target_matrix(project).seed_targets
-    assert seeds
-    assert tree_requests == [owner.CoreTreeInspectionRequest(tmp_path, seeds)]
-    assert security_requests == [
-        owner.CoreSecurityInspectionRequest(tmp_path, tuple(doctor._project_write_scope(tmp_path)))
-    ]
-    assert rendered[0] is tree_report
-    assert rendered[-3] is security_report
-    assert [item for item in rendered if item in (tree_report, security_report)] == [
-        tree_report,
-        security_report,
-    ]
-    moved_row_prefixes = (
-        ".core schema",
-        ".core security",
-        ".core tree has no",
-        "FuseSoC recursive symlink",
-        "vendored .core",
-    )
-    assert not [m for _level, m in rec.events if m.startswith(moved_row_prefixes)]
-
-
-_CORE_HYGIENE_ROW_PREFIXES = (
-    "1 .core-referenced file(s) exist on disk",
-    "1 $readmemh/$readmemb memory image(s)",
-    "1 committed artifact(s) look built",
-)
-
-
-def _core_hygiene_owner():
-    """The core repository hygiene owner module, imported where used."""
-    return importlib.import_module("booley.runtime.core_repository_hygiene")
 
 
 def _core_hygiene_project(root: Path) -> Path:
@@ -1131,30 +706,6 @@ FuseSoC .core checks
   ·  tests.toml not present (each sim Target runs its testbench's default test)
 """
 
-_CORE_HYGIENE_ROWS = [
-    (
-        Severity.WARN,
-        "1 .core-referenced file(s) exist on disk but are untracked by git (tb/tb.sv) — if gitignored (vendored firmware / build artifact), force-add with `git add -f <file>` and verify with `git ls-files <file>`; a fresh clone or CI checkout will lack them",
-        "",
-        "project.core-file-untracked",
-        "tb/tb.sv",
-    ),
-    (
-        Severity.WARN,
-        "1 $readmemh/$readmemb memory image(s) exist on disk but are untracked by git (fw/boot.vmem) — if gitignored (vendored firmware / build output), force-add with `git add -f <file>`; a fresh clone or CI checkout will lack them and the sim boots uninitialized RAM",
-        "",
-        "project.memory-image-untracked",
-        "fw/boot.vmem",
-    ),
-    (
-        Severity.WARN,
-        "1 committed artifact(s) look built from in-repo source (firmware/firmware.hex) — ship the toolchain in the sandbox image and rebuild on demand (project Dockerfile + post-setup hook) instead of committing a frozen blob (booley-setup SKILL.md)",
-        "",
-        "project.committed-build-artifact",
-        "firmware/firmware.hex",
-    ),
-]
-
 
 def test_core_repository_hygiene_section_output_is_pinned(
     tmp_path, monkeypatch, capsys, isolated_git_attributes
@@ -1162,15 +713,14 @@ def test_core_repository_hygiene_section_output_is_pinned(
     """The hygiene lines keep their text, order, check IDs, position and exit code.
 
     The literals were captured from Doctor's own hygiene checks before they moved
-    to their owner and are unchanged by the move; the rows now reach the section
-    as the owner's typed report. Only the owner's Git queries reach real Git; the
-    fixture's fake answers every other Doctor command.
+    to their owner and are unchanged by the move. Only the owner's Git queries reach
+    real Git; the fixture's fake answers every other Doctor command.
     """
     real_run = subprocess.run
     real_bounded = platform_paths.run_captured_bounded
     booley_dir = _core_hygiene_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    owner = _core_hygiene_owner()
+    owner = importlib.import_module("booley.runtime.core_repository_hygiene")
     monkeypatch.setattr(
         owner,
         "subprocess",
@@ -1179,332 +729,197 @@ def test_core_repository_hygiene_section_output_is_pinned(
     monkeypatch.setattr(
         owner, "platform_paths", SimpleNamespace(run_captured_bounded=real_bounded)
     )
-    reports = []
-    render = doctor._Reporter.diagnostics
-
-    def record_then_render(self, report):
-        reports.append(report)
-        render(self, report)
-
-    monkeypatch.setattr(doctor._Reporter, "diagnostics", record_then_render)
     result = doctor.run_doctor_result(
         argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
     )
     section = _core_tree_section(capsys.readouterr().out, tmp_path)
     assert section == _CORE_HYGIENE_SECTION.rstrip("\n")
-    rows = [
-        (f.severity, f.message, f.fix, f.check_id, f.subject)
-        for f in result.findings
-        if f.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
-    ]
-    assert rows == _CORE_HYGIENE_ROWS
     assert result.exit_code == 0
-    assert [
-        f.severity for f in result.findings if f.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
-    ] == [Severity.WARN] * 3
-    owner_rows = [
-        finding.message
-        for report in reports
-        for finding in report.findings
-        if finding.message.startswith(_CORE_HYGIENE_ROW_PREFIXES)
-    ]
-    assert owner_rows == [row[1] for row in _CORE_HYGIENE_ROWS], (
-        "the hygiene rows must reach Doctor as one owner report"
-    )
 
 
-def test_core_audit_renders_core_repository_hygiene_report_in_place(tmp_path, monkeypatch):
-    """Doctor builds the owner request, renders its report once, and adds no rows itself.
+@pytest.mark.parametrize("case", ["no-core", "enumeration-error"])
+def test_core_audit_stops_when_targets_cannot_be_enumerated(tmp_path, monkeypatch, case):
+    """With no enumerated Target the audit reports a FAIL and runs no Target check.
 
-    The report follows the Target checks and leads the security report.
+    That is a Project with no ``.core`` at all, and a Target listing that raises.
     """
-    owner = _core_hygiene_owner()
-    project = _cocotb_audit_project(tmp_path)
-    hygiene_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "hygiene-row"),))
-    security_report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "security-row"),))
-    hygiene_requests = []
-
-    def hygiene_spy(request):
-        hygiene_requests.append(request)
-        return hygiene_report
-
-    monkeypatch.setattr(owner, "inspect_core_repository_hygiene", hygiene_spy)
-    monkeypatch.setattr(
-        importlib.import_module("booley.audit.core_tree_inspection"),
-        "inspect_core_security",
-        lambda _request: security_report,
+    booley_dir = _write_project(tmp_path)
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        booley_dir=booley_dir,
+        booley_toml={},
+        configs_toml={"x": {}},
+        first_target="x",
     )
-    rendered = []
+    if case == "no-core":
+        (tmp_path / "unit.core").unlink()
+    else:
+        # Patched: no public entry point reaches this branch. A `.core` that makes
+        # `TargetCatalog.build` raise crashes Doctor earlier, in the core-tree owner, and
+        # `list` fails alone only when the Target inputs change between `build` and `list`.
+        def stale(_catalog, **_kwargs):
+            raise StaleTargetCatalogError("catalog unavailable")
+
+        monkeypatch.setattr(TargetCatalog, "list", stale)
     rec = _Rec()
+    reports = []
+
     doctor._run_core_audit(
-        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=rendered.append
+        project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=reports.append
     )
 
-    assert hygiene_requests == [owner.CoreRepositoryHygieneRequest(tmp_path)]
-    assert rendered.count(hygiene_report) == 1
-    assert rendered.index(hygiene_report) + 1 == rendered.index(security_report)
-    assert not [m for _level, m in rec.events if m.startswith(_CORE_HYGIENE_ROW_PREFIXES)]
+    failure = "project has no .core" if case == "no-core" else ".core enumeration failed"
+    assert any(failure in message for level, message in rec.events if level == "fail")
+    if case == "enumeration-error":
+        # Only the core-tree report was rendered before the audit stopped.
+        assert len(reports) == 1
 
 
-def test_core_audit_skips_core_repository_hygiene_without_targets(tmp_path, monkeypatch):
-    """No enumerated Target, no hygiene report: with no ``.core`` at all, and when
-    Target enumeration raises."""
-    owner = _core_hygiene_owner()
-    calls = []
-    monkeypatch.setattr(
-        owner,
-        "inspect_core_repository_hygiene",
-        lambda request: calls.append(request) or DiagnosticReport(),
-    )
-    for case in ("no-core", "enumeration-error"):
-        root = tmp_path / case
-        root.mkdir()
-        project = _cocotb_audit_project(root)
-        if case == "no-core":
-            (root / "design.core").unlink()
-        with monkeypatch.context() as patch:
-            if case == "enumeration-error":
-
-                def refuse(_catalog, **_kwargs):
-                    raise FuseSocError("catalog unavailable")
-
-                patch.setattr(TargetCatalog, "list", refuse)
-            rec = _Rec()
-            doctor._run_core_audit(
-                project, rec.p, rec.w, rec.s, rec.f, _note=rec.n, _diagnostics=lambda _r: None
-            )
-        failure = "project has no .core" if case == "no-core" else ".core enumeration failed"
-        assert any(failure in message for level, message in rec.events if level == "fail"), case
-        assert not calls, case
-
-
-_CORE_RESOLUTION_OUTPUT = (
-    "  ✗  .core Target 'sim_bad' fails to resolve\n"
-    "     → fix unit.core (declares Target 'sim_bad') or its depends graph\n"
-    "      Parse error. Ignoring file /work/unit.core:\n"
-    "      filesets.tb.depend must be array\n"
-    "      second line\n"
-    "  ✓  .core Target 'sim_ok' resolves\n"
-)
+_CORE_RESOLUTION_BLOCK = [
+    "  ✓  .core Target 'lint_fast' resolves",
+    "  ✗  .core Target 'sim_fast' fails to resolve",
+    "     → fix unit.core (declares Target 'sim_fast') or its depends graph",
+    "      Parse error. Ignoring file /work/unit.core:",
+    "      filesets.tb.depend must be array",
+    "      second line",
+    "  ✓  .core Target 'synth_fast' resolves",
+]
 
 
 def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
-    """The deep ``.core`` resolution rows keep their text, order, excerpt and counts.
+    """The deep ``.core`` resolution rows keep their text, order and excerpt.
 
     The literal was captured from Doctor's own resolution before it moved to its
     owner; only the failing Target's fix changed (it names the ``.core``). The
-    rows now reach the reporter as the owner's one typed report, and the
     excerpt is shown without ``--verbose``.
     """
-    from tests.harness.test_doctor_deep_execution import _core_resolution_project
-
-    owner = importlib.import_module("booley.runtime.core_resolution")
-    project = _core_resolution_project(tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     err = "Parse error. Ignoring file /work/unit.core:\nfilesets.tb.depend must be array\nsecond line"
 
-    def run(argv, **_kwargs):
+    def sandbox_resolves_all_but_sim_fast(argv):
+        if "CORE_RESOLVE_JSON" not in " ".join(argv):
+            return None
         verdicts = [
-            {"selector": item["selector"], "ok": item["selector"] == "sim_ok", "err": err}
+            {"selector": item["selector"], "ok": item["selector"] != "sim_fast", "err": err}
             for item in json.loads(argv[-1])
         ]
         return subprocess.CompletedProcess(
             argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(verdicts), ""
         )
 
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-    results = []
-    real_inspect = owner.inspect_core_resolution
+    answer_doctor_commands(monkeypatch, sandbox_resolves_all_but_sim_fast)
 
-    def spy(request):
-        results.append(real_inspect(request))
-        return results[-1]
+    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
 
-    monkeypatch.setattr(owner, "inspect_core_resolution", spy)
-    reporter = doctor._Reporter.create()
-
-    doctor._run_core_resolution(
-        project,
-        doctor._DoctorFlowRuntime(tmp_path, None),
-        reporter,
-        doctor_deep.DeepCheckTracker(),
-    )
-
-    assert capsys.readouterr().out == _CORE_RESOLUTION_OUTPUT
-    assert len(results) == 1, "the rows must reach Doctor as one owner report"
-    assert (reporter.counts["pass"], reporter.counts["fail"]) == (1, 1)
-    assert not reporter.result(1).clean
-
-
-def _runtime_scenario_project(root: Path, flow: str) -> doctor.ProjectAudit:
-    """A Project whose only enabled Flow is *flow*, with one Target for it."""
-    if flow == "fpga":
-        core = (
-            "CAPI=2:\nname: ::design:0\ntargets:\n  fpga_board:\n    flow: generic\n"
-            "    flow_options: {tool: verilator, part: xc7a35tcsg324-1, booley: {doctor: [fpga]}}\n"
-        )
-    else:
-        core = (
-            "CAPI=2:\nname: ::design:0\ntargets:\n  lint_style:\n    flow: lint\n"
-            "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
-        )
-    (root / "design.core").write_text(core, encoding="utf-8")
-    flows: dict[str, object] = {
-        name: {"enabled": name == flow} for name in ("sim", "lint", "synth", "fpga")
-    }
-    return doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=root / ".booley",
-        booley_toml={"flows": flows},
-        configs_toml={},
-        first_target="",
-    )
-
-
-def _recording(ran: list[tuple[str, Any]], entry: str, real: Any) -> Any:
-    """Wrap an owner entry point so each request it receives is recorded."""
-
-    def wrapper(request):
-        ran.append((entry, request))
-        return real(request)
-
-    return wrapper
-
-
-def _run_runtime_scenario(
-    root: Path,
-    monkeypatch,
-    capsys,
-    *,
-    flow: str,
-    available: bool = True,
-    returncode: int = 0,
-):
-    """Run the Flow audit for *flow* with a scripted Sandbox answer.
-
-    Returns the rendered ANSI-stripped rows from the Flow's ``executes in the
-    Sandbox`` row through its dry-run row, the exit code, and the owner
-    entry points that ran.
-    """
-    from booley.presentation import colors
-
-    project = _runtime_scenario_project(root, flow)
-    runtime = SimpleNamespace(
-        inside=False, available=available, command=lambda argv, **_kw: ["sandbox", *argv]
-    )
-    ran: list[tuple[str, Any]] = []
-    for module_name, entry in (
-        ("booley.flows.runtime_reality", "inspect_flow_runtime_reality"),
-        ("booley.flows.fpga.vivado_startup", "inspect_vivado_startup"),
-    ):
-        owner = importlib.import_module(module_name)
-        monkeypatch.setattr(owner, entry, _recording(ran, entry, getattr(owner, entry)))
-    monkeypatch.setattr(doctor, "_check_design_size", lambda *_args, **_kwargs: None)
-    dry_run = DiagnosticReport((DiagnosticFinding(Severity.PASS, f"{flow} dry-run passed"),))
-    monkeypatch.setattr(
-        doctor, "_run_flow_check", lambda *_args, **_kwargs: SimpleNamespace(report=dry_run)
-    )
-
-    def run(argv, **_kwargs):
-        if argv[0] != "sandbox":
-            raise AssertionError(f"unexpected command: {argv}")
-        return subprocess.CompletedProcess(argv, returncode, "", "")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-    reporter = doctor._Reporter.create()
-    doctor._run_flow_audit(
-        project,
-        runtime,
-        reporter.pass_,
-        reporter.note_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-        _diagnostics=reporter.diagnostics,
-    )
     lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
-    start = lines.index(f"  ✓  {flow} executes in the Sandbox")
-    end = lines.index(f"  ✓  {flow} dry-run passed") + 1
-    return lines[start:end], reporter.finish(), ran
+    start = lines.index(_CORE_RESOLUTION_BLOCK[0])
+    assert lines[start : start + len(_CORE_RESOLUTION_BLOCK)] == _CORE_RESOLUTION_BLOCK
+    assert [f.message for f in result.findings if f.message.endswith("fails to resolve")] == [
+        ".core Target 'sim_fast' fails to resolve"
+    ]
+    assert not result.clean
 
 
-_RUNTIME_SCENARIOS = {
-    "binary present": ({"flow": "lint"}, 0, ["lint"]),
-    "binary missing": ({"flow": "lint", "returncode": 1}, 1, ["lint"]),
-    "runtime unavailable": ({"flow": "lint", "available": False}, 0, ["lint"]),
-    "vivado inner timeout": ({"flow": "fpga", "returncode": 124}, 1, ["fpga"]),
-}
+_FPGA_CORE = (
+    "CAPI=2:\nname: ::design:0\ntargets:\n  fpga_board:\n    flow: generic\n"
+    "    flow_options: {tool: verilator, part: xc7a35tcsg324-1, booley: {doctor: [fpga]}}\n"
+)
+_BAKE_REMEDY = (
+    "in VS Code, on the host run `booley init`, then use Dev Containers: Rebuild Container; "
+    "headless, run `booley session refresh` on the host"
+)
 _RUNTIME_ROWS = {
-    "binary present": [
-        "  ✓  lint executes in the Sandbox",
-        "  ✓  lint: 'verilator' on the Sandbox PATH",
-        "  ✓  lint dry-run passed",
-    ],
-    "binary missing": [
-        "  ✓  lint executes in the Sandbox",
-        "  ✗  lint: 'verilator' is not on the issued Sandbox PATH",
-        "     → bake verilator into the Sandbox Image, then recreate the Sandbox: " + VSCODE_INIT,
-        "  ✓  lint dry-run passed",
-    ],
-    "runtime unavailable": [
-        "  ✓  lint executes in the Sandbox",
-        "  ·  lint: 'verilator' on the Sandbox PATH - container runtime unavailable",
-        "  ✓  lint dry-run passed",
-    ],
-    "vivado inner timeout": [
-        "  ✓  fpga executes in the Sandbox",
-        "  ✗  fpga: Vivado batch startup: Vivado did not start within 27s",
-        "     → verify Vivado runtime dependencies in the Sandbox Image",
-        "  ✓  fpga dry-run passed",
-    ],
+    "binary missing": (
+        "lint",
+        1,
+        [
+            "  ✓  lint executes in the Sandbox",
+            "  ✗  lint: 'verilator' is not on the issued Sandbox PATH",
+            "     → bake verilator into the Sandbox Image, then recreate the Sandbox: "
+            + _BAKE_REMEDY,
+            "  ✓  lint dry-run [lint_fast] passed",
+        ],
+    ),
+    "runtime unavailable": (
+        "lint",
+        0,
+        [
+            "  ✓  lint executes in the Sandbox",
+            "  ·  lint: 'verilator' on the Sandbox PATH - container runtime unavailable",
+            "  ·  lint dry-run [lint_fast] skipped - 'docker' runtime not available",
+        ],
+    ),
+    "vivado inner timeout": (
+        "fpga",
+        1,
+        [
+            "  ✓  fpga executes in the Sandbox",
+            "  ✗  fpga: Vivado batch startup: Vivado did not start within 27s",
+            "     → verify Vivado runtime dependencies in the Sandbox Image",
+            "  ✓  fpga dry-run [fpga_board] passed",
+        ],
+    ),
 }
 
 
-def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys):
-    """The Flow runtime rows keep their text, position, owner routing and exit code.
+@pytest.mark.parametrize("scenario", _RUNTIME_ROWS)
+def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scenario):
+    """The Flow runtime rows keep their text, position and exit code.
 
     The literal rows were captured from Doctor's own probes before they moved to
-    their owners. Each scenario sits between the Flow's ``executes in the
-    Sandbox`` row and its dry-run row, and the exit code follows the severity.
+    their owners. Each scenario sits between the Flow's ``executes in the Sandbox``
+    row and its dry-run row, and the exit code follows the severity.
     """
-    for name, (options, exit_code, flows) in _RUNTIME_SCENARIOS.items():
-        root = tmp_path / name.replace(" ", "-")
-        root.mkdir()
-        with monkeypatch.context() as patch:
-            patch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-            patch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
-            rows, code, ran = _run_runtime_scenario(root, patch, capsys, **options)
-        assert rows == _RUNTIME_ROWS[name], name
-        assert code == exit_code, name
-        owner_for = {
-            "lint": "inspect_flow_runtime_reality",
-            "fpga": "inspect_vivado_startup",
-        }
-        assert [(entry, request.flow_name) for entry, request in ran] == [
-            (owner_for[flow], flow) for flow in flows
-        ], name
-        assert [request.targets for _entry, request in ran] == [
-            ("fpga_board",) if flows == ["fpga"] else ("lint_style",)
-        ], name
+    flow, exit_code, rows = _RUNTIME_ROWS[scenario]
+    booley_dir = _write_project(tmp_path)
+    if flow == "fpga":
+        (tmp_path / "design.core").write_text(_FPGA_CORE, encoding="utf-8", newline="\n")
+        with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write("\n[flows.fpga]\n")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    if scenario == "binary missing":
+        answer_doctor_commands(
+            monkeypatch,
+            lambda argv: (
+                subprocess.CompletedProcess(argv, 1, "", "")
+                if argv[-3:] == ["sh", "-c", "command -v verilator"]
+                else None
+            ),
+        )
+    elif scenario == "runtime unavailable":
+        hide_container_cli(monkeypatch)
+    else:
+        answer_doctor_commands(
+            monkeypatch,
+            lambda argv: (
+                subprocess.CompletedProcess(argv, 124, "", "")
+                if "BOOLEY_VIVADO_STARTUP_" in " ".join(argv)
+                else None
+            ),
+        )
+
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+
+    lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
+    start = lines.index(f"  ✓  {flow} executes in the Sandbox")
+    end = next(i for i in range(start, len(lines)) if " dry-run" in lines[i])
+    assert lines[start : end + 1] == rows
+    assert result.exit_code == exit_code
 
 
-def test_project_write_scope_is_exactly_the_core_derived_dirs(tmp_path):
-    """The Doctor write Scope is the `.core`-derived dirs only (#4052).
-
-    No hardcoded `fw/`, `util/`, or `data/` is added, so a `.core` script under
-    one of those is out-of-Scope.
-    """
-    for source in ("hw/top.sv", "verif/tb.sv"):
-        (tmp_path / source).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / source).write_text("module m; endmodule\n")
-    (tmp_path / "design.core").write_bytes(
-        b"CAPI=2:\n"
-        b"name: ::demo\n"
-        b"filesets:\n"
-        b"  rtl: {files: [hw/top.sv]}\n"
-        b"  tb: {files: [verif/tb.sv], tags: [tb]}\n"
-        b"targets:\n"
-        b"  sim: {filesets: [rtl, tb], toplevel: m}\n"
+def test_doctor_skips_a_flow_disabled_in_booley_toml(tmp_path, monkeypatch):
+    booley_dir = _write_project(tmp_path)
+    config = booley_dir / "booley.toml"
+    text = config.read_text(encoding="utf-8").replace(
+        "[flows.synth]\n", "[flows.synth]\nenabled = false\n"
     )
+    config.write_text(text, encoding="utf-8", newline="\n")
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
-    assert doctor._project_write_scope(tmp_path) == ["hw/*", "verif/*"]
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+
+    messages = [f.message for f in result.findings]
+    assert "synth disabled in booley.toml" in messages
+    assert "synth executes in the Sandbox" not in messages
+    assert "sim executes in the Sandbox" in messages

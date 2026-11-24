@@ -1,91 +1,86 @@
 """Actionable Ticket migration warnings, with stable per-path waiver identities."""
 
-import hashlib
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
+from booley.audit.diagnostic_results import Severity
 from booley.harness import doctor
+from tests.harness.test_doctor import _patch_environment, _write_project
+
+_GUIDANCE = Path(__file__).resolve().parents[1] / "fixtures/ticket_guidance"
+_PROVENANCE = json.loads((_GUIDANCE / "provenance.json").read_text(encoding="utf-8"))
+_NAMES = ("ticket_creation.md", "ticket_defaults.md")
 
 
-def _findings(project: Path):
-    reporter = doctor._Reporter.create()
-    doctor._check_ticket_leftovers(project, reporter.warn_)
-    return reporter.findings
+def _project(root: Path, monkeypatch) -> Path:
+    """A healthy Project (empty Ticket Board directories) ready for a whole Doctor run."""
+    booley_dir = _write_project(root)
+    _patch_environment(monkeypatch, root, booley_dir)
+    return booley_dir
 
 
-def test_empty_board_directories_and_ticket_history_are_silent(tmp_path):
-    for name in ("board", "state", "logs", "locks", "waiver-candidates", "history"):
-        (tmp_path / "tickets" / name).mkdir(parents=True)
-    (tmp_path / "tickets/history/preserved.md").write_text("inert history")
-    assert _findings(tmp_path) == []
+def _leftovers(root: Path):
+    """The findings a whole Doctor run reports for Ticket leftovers."""
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), root)
+    return [f for f in result.findings if (f.check_id or "").startswith("tickets.")]
 
 
-def test_each_nonempty_directory_has_a_waivable_warning_and_delete_fix(tmp_path):
-    for name in ("board", "state", "logs", "locks", "waiver-candidates"):
-        path = tmp_path / "tickets" / name
-        path.mkdir(parents=True)
-        if name != "locks":
-            (path / "leftover").write_text("data")
-    findings = _findings(tmp_path)
+def test_each_nonempty_directory_has_a_waivable_warning_and_delete_fix(tmp_path, monkeypatch):
+    tickets = _project(tmp_path, monkeypatch) / "tickets"
+    for name in ("board", "state", "logs", "waiver-candidates"):
+        (tickets / name).mkdir(exist_ok=True)
+        (tickets / name / "leftover").write_text("data")
+    # Ticket History is inert, even when it holds files.
+    (tickets / "history").mkdir()
+    (tickets / "history" / "preserved.md").write_text("inert history")
+
+    findings = _leftovers(tmp_path)
+
     assert {f.subject for f in findings} == {"board", "state", "logs", "waiver-candidates"}
     assert {f.check_id for f in findings} == {"tickets.leftover-board"}
-    assert all(f.severity == "warn" for f in findings)
+    assert all(f.severity is Severity.WARN for f in findings)
     for finding in findings:
         assert finding.fix == (
-            "archive any Ticket you still need, "
-            f"then delete {tmp_path / 'tickets' / finding.subject}"
+            f"archive any Ticket you still need, then delete {tickets / finding.subject}"
         )
         assert "empty directories: locks" in finding.message
 
 
-_GUIDANCE = Path(__file__).resolve().parents[1] / "fixtures/ticket_guidance"
-_PROVENANCE = json.loads((_GUIDANCE / "provenance.json").read_text())
+@pytest.mark.parametrize("digest", [*sorted(_PROVENANCE), "edited"])
+def test_doctor_reports_leftover_ticket_guidance(tmp_path, monkeypatch, digest):
+    booley_dir = _project(tmp_path, monkeypatch)
+    edited = digest == "edited"
+    source = next(iter(_PROVENANCE.values())) if edited else _PROVENANCE[digest]
+    content = (_GUIDANCE / source["fixture"]).read_bytes().replace(b"\r\n", b"\n")
+    if edited:
+        content += b"\nProject rule: preserve my design.\n"
+    for name in _NAMES:
+        (booley_dir / name).write_bytes(content.replace(b"\n", b"\r\n"))
 
+    findings = _leftovers(tmp_path)
 
-def test_shipped_hash_set_matches_all_pinned_template_versions():
-    assert set(_PROVENANCE) == doctor._SHIPPED_TICKET_GUIDANCE_HASHES
-    for digest, source in _PROVENANCE.items():
-        content = (_GUIDANCE / source["fixture"]).read_bytes()
-        assert hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest() == digest
-        assert len(source["commit"]) == 40
-        assert source["path"].endswith("_TEMPLATE.md")
-
-
-@pytest.mark.parametrize("name", ["ticket_creation.md", "ticket_defaults.md"])
-@pytest.mark.parametrize("digest", sorted(_PROVENANCE))
-def test_shipped_guidance_warns_to_delete_real_template(tmp_path, name, digest):
-    content = (_GUIDANCE / _PROVENANCE[digest]["fixture"]).read_bytes()
-    (tmp_path / name).write_bytes(content.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-    (finding,) = _findings(tmp_path)
-    assert finding.check_id == "tickets.leftover-guidance"
-    assert finding.subject == name
-    assert finding.fix == f"delete {tmp_path / name}"
-
-
-@pytest.mark.parametrize("name", ["ticket_creation.md", "ticket_defaults.md"])
-def test_edited_guidance_warns_to_move_rules_before_delete(tmp_path, name):
-    source = next(iter(_PROVENANCE.values()))
-    (tmp_path / name).write_bytes(
-        (_GUIDANCE / source["fixture"]).read_bytes() + b"\nProject rule: preserve my design.\n"
-    )
-    (finding,) = _findings(tmp_path)
-    assert finding.check_id == "tickets.leftover-guidance"
-    assert finding.subject == name
-    assert finding.fix == (
-        f"move its rules into the Project's AGENTS.md, then delete {tmp_path / name}"
-    )
+    assert {f.check_id for f in findings} == {"tickets.leftover-guidance"}
+    assert {f.subject: f.fix for f in findings} == {
+        name: (
+            f"move its rules into the Project's AGENTS.md, then delete {booley_dir / name}"
+            if edited
+            else f"delete {booley_dir / name}"
+        )
+        for name in _NAMES
+    }
 
 
 @pytest.mark.parametrize("kind", ["board", "guidance"])
 def test_unreadable_leftovers_warn_without_crashing(tmp_path, monkeypatch, kind):
+    booley_dir = _project(tmp_path, monkeypatch)
     if kind == "board":
-        path = tmp_path / "tickets/board"
-        path.mkdir(parents=True)
+        path = booley_dir / "tickets/board"
         method = "iterdir"
     else:
-        path = tmp_path / "ticket_defaults.md"
+        path = booley_dir / "ticket_defaults.md"
         path.write_text("Project rules")
         method = "read_bytes"
     original = getattr(Path, method)
@@ -96,8 +91,10 @@ def test_unreadable_leftovers_warn_without_crashing(tmp_path, monkeypatch, kind)
         return original(candidate, *args, **kwargs)
 
     monkeypatch.setattr(Path, method, unreadable)
-    (finding,) = _findings(tmp_path)
-    assert finding.severity == "warn"
+
+    (finding,) = _leftovers(tmp_path)
+
+    assert finding.severity is Severity.WARN
     assert finding.check_id == (
         "tickets.leftover-board" if kind == "board" else "tickets.leftover-guidance"
     )

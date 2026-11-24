@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from booley.harness import host_diagnostics
 from tests.git_command_fake import REAL_RUN
 from tests.harness.test_doctor import _patch_environment
 
@@ -35,3 +39,36 @@ def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> No
         return host_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+
+
+def answer_doctor_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Callable[[list[str]], subprocess.CompletedProcess[str] | None],
+) -> None:
+    """Give the commands *answer* replies to its reply; pass every other one on.
+
+    "Every other one" goes to the fake already installed, such as the one
+    ``_patch_environment`` sets up. *answer* receives the command as strings.
+    """
+    other_commands = subprocess.run
+
+    def run(command, **kwargs):
+        reply = answer([str(part) for part in command])
+        return other_commands(command, **kwargs) if reply is None else reply
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run Doctor as on a host where no container CLI is installed.
+
+    Doctor learns the CLI from the host inspection and from a command lookup; both answer
+    "none". The host inspection otherwise keeps the fake already installed.
+    """
+    inspect_host = host_diagnostics.inspect_host
+    monkeypatch.setattr(
+        host_diagnostics,
+        "inspect_host",
+        lambda root: replace(inspect_host(root), docker_exe=None),
+    )
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
