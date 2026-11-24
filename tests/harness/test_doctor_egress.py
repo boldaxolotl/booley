@@ -23,8 +23,9 @@ def _unresolvable(host, *_args):
 def sandbox_doctor(monkeypatch, tmp_path):
     """A Project whose Doctor runs inside the Sandbox, with no ambient egress or proxy."""
     _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
-    for var in "BOOLEY_EGRESS CLAUDECODE HTTP_PROXY HTTPS_PROXY http_proxy https_proxy".split():
+    for var in ("BOOLEY_EGRESS", "CLAUDECODE", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("https_proxy", raising=False)
     enter_sandbox(monkeypatch)
     return tmp_path
 

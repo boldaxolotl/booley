@@ -26,8 +26,7 @@ def _plain_output(monkeypatch):
 
 
 def _reporter() -> doctor._Reporter:
-    # private: the Reporter renders Doctor's rows and Summary, and a whole run cannot choose its
-    # findings, while these tests need one row of each kind and exact counts.
+    # private: a whole run cannot choose its findings, and these tests need one row of each kind.
     return doctor._Reporter.create()
 
 
