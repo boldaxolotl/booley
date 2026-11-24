@@ -346,22 +346,6 @@ class AttachController {
     }
 }
 
-// The `bwave gui` Viewer Bridge runs in every window, independent of the
-// Dashboard attach policy; a failure is logged and never blocks the Dashboard.
-function startBridge(context) {
-    let bridge;
-    try {
-        bridge = Promise.resolve(require('./vaporview_bridge').start(context));
-    } catch (error) {
-        bridge = Promise.reject(error);
-    }
-    bridge.catch(error => {
-        const output = vscode.window.createOutputChannel('Booley VaporView Bridge');
-        context.subscriptions.push(output);
-        output.appendLine(`Viewer Bridge failed to start: ${error.message}`);
-    });
-}
-
 // Recent VS Code opens its Chat panel in the secondary side bar the first time a
 // workspace opens. Booley's agent runs as a terminal CLI, so in a Sandbox the
 // panel only takes space. A devcontainer setting cannot hide it: the browser
@@ -445,7 +429,6 @@ async function applyStartupEditorAssociations(context) {
 }
 
 exports.activate = context => {
-    startBridge(context);
     void closeChatSideBarOnce(context);
     void applyStartupEditorAssociations(context);
     void new AttachController(context).open();

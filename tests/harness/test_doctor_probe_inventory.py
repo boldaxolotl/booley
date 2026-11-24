@@ -36,7 +36,7 @@ _DOCTOR_SRC = Path(doctor.__file__)
 # _check_* (single probe), _run_* (sub-orchestrator / grouped probe), or
 # _audit_* (config-section audit), or a named public owner entry point.
 _PROBE_NAME_RE = re.compile(
-    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_viewer_bridge$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$|inspect_flow_runtime_reality$|inspect_vivado_startup$)"
+    r"^(_check_|_run_|_audit_|inspect_runtime$|inspect_retained_resources$|inspect_host$|load_project$|check_guidance$|check_stealth_cores$|inspect_worktree_portability$|inspect_line_endings$|inspect_interactive_git$|inspect_cocotb_targets$|project_has_cocotb_target$|inspect_target_test_plans$|inspect_core_tree$|inspect_core_security$|inspect_core_repository_hygiene$|inspect_bundled_extensions$|inspect_native_dependencies$|inspect_core_resolution$|inspect_mcp_server$|inspect_flow_runtime_reality$|inspect_vivado_startup$)"
 )
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_runtime",
             "inspect_retained_resources",
             "inspect_interactive_git",
-            "inspect_viewer_bridge",
+            "inspect_bundled_extensions",
             "_run_agent_credential_checks",
             "_check_sandbox_mcp_server",
             "inspect_mcp_server",

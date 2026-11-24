@@ -22,12 +22,12 @@ from booley.core.host_shell import quote_arg
 from booley.harness import auto_doctor, doctor, doctor_deep, host_diagnostics
 from booley.harness.setup import readiness
 from booley.runtime import (
+    bundled_extensions,
     doctor_stamp,
     inspection,
     platform_paths,
     runtime_context,
     session_runtime,
-    vaporview,
 )
 from booley.runtime.sandbox_apply import Attachment
 from booley.targets.catalog import TargetCatalog
@@ -454,7 +454,9 @@ def _owner_frame(messages: list[str], owner: str) -> tuple[int, int]:
     return messages.index("before-marker"), messages.index("after-marker")
 
 
-@pytest.mark.parametrize("owner", ["line-endings", "interactive-git", "cocotb", "viewer-bridge"])
+@pytest.mark.parametrize(
+    "owner", ["line-endings", "interactive-git", "cocotb", "bundled-extensions"]
+)
 def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
     """An owner's report is rendered where the old inline check ran, waivers applied."""
     booley_dir = _write_project(tmp_path)
@@ -482,16 +484,16 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
             "inspect_cocotb_targets",
             lambda _request: _owner_report(check_id, subject),
         )
-    elif owner == "viewer-bridge":
+    elif owner == "bundled-extensions":
         check_id, subject = "project.git-excludes-missing", ".booley"
-        requests: list[vaporview.ViewerBridgeRequest] = []
+        requests: list[bundled_extensions.BundledExtensionsRequest] = []
 
-        def inspect_bridge(request):
+        def inspect_extensions(request):
             requests.append(request)
             return _owner_report(check_id, subject)
 
-        monkeypatch.setattr(vaporview, "inspect_viewer_bridge", inspect_bridge)
-        # Public owner calls bracket the Viewer Bridge (credential checks sit between).
+        monkeypatch.setattr(bundled_extensions, "inspect_bundled_extensions", inspect_extensions)
+        # Public owner calls bracket the bundled-extension check (credential checks sit between).
         monkeypatch.setattr(
             inspection, "inspect_interactive_git", lambda *_a, **_k: marker("before-marker")
         )
@@ -530,8 +532,8 @@ def test_doctor_renders_owner_report_in_place(tmp_path, monkeypatch, owner):
         subject,
     )
     assert result.exit_code == 0
-    if owner == "viewer-bridge":
-        assert requests == [vaporview.ViewerBridgeRequest(tmp_path, "docker")]
+    if owner == "bundled-extensions":
+        assert requests == [bundled_extensions.BundledExtensionsRequest(tmp_path, "docker")]
 
 
 def test_doctor_renders_tests_toml_report_after_core_security(tmp_path, monkeypatch):

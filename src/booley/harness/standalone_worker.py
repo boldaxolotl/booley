@@ -60,9 +60,6 @@ def submit(booley_dir: Path, request: StandaloneRequest) -> str:
     The caller may exit at once. A start failure (bad request, unknown Flow,
     missing worktree) leaves a ``failed`` record with the reason in ``job.log``;
     ``OSError`` is raised only when the record itself cannot be written.
-
-    Limit: a worker submitted from inside a ``booley session`` terminal attachment
-    ends with that attachment's command (see :mod:`booley.runtime.detached_job`).
     """
     # One validated stem names both run and endpoint, so a bad name still
     # yields a Job the Dashboard can list as failed.

@@ -57,8 +57,11 @@ booley session down                     # stop and remove the Sandbox
 ```
 
 `session enter` works like a terminal inside the container, so every
-in-Sandbox command works through it; `Ctrl-C` stops everything the command
-started. `up` and `enter` reuse a running Sandbox, including one VS Code opened.
+in-Sandbox command works through it. Ending a `session enter` command, with
+`Ctrl-C` or by closing the shell, stops everything it started, background
+processes included, except a Flow or Specialist started from the Dashboard:
+that Standalone Job keeps running until it finishes or the Sandbox stops. `up`
+and `enter` reuse a running Sandbox, including one VS Code opened.
 `session down` also stops any `booley flow` or `booley specialist` run typed in
 a Sandbox shell.
 
@@ -430,8 +433,7 @@ These steps apply when `[sandbox].image` names an image Booley doesn't build.
 
 After upgrading Booley, first rebuild your image with the new Booley wheel
 installed, and run `python3 -I -m booley.runtime.dashboard_extension` as root
-in its recipe. Without that step, Dashboard auto-open and `bwave gui` views are
-unavailable.
+in its recipe. Without that step, Dashboard auto-open is unavailable.
 
 Then, after an upgrade or a settings change:
 

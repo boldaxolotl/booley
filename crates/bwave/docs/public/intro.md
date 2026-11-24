@@ -3,7 +3,7 @@
 B-Wave is a command-line tool for querying RTL simulation waveforms. `bwave
 build` converts a VCD from any simulator into an `.fst` waveform store once;
 every query then reads that store instead of re-parsing the VCD. The store is
-a plain FST file, so GTKWave and VaporView open it too. Read this page for a
+a plain FST file, so GTKWave and Surfer open it too. Read this page for a
 map of the docs; each topic below is one `bwave docs show <topic>` away.
 
 ## Start here

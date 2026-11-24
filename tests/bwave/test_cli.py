@@ -1,23 +1,20 @@
-"""Tests for `bwave gui` — the Waveform Viewer wrapper verb (ADR 0040/0078).
+"""Tests for `bwave gui`: target resolution, selection checks, and the no-viewer exit.
 
-Three layers:
-  - trace resolution / format gate (shared _resolve_trace)
-  - bare open: the bridge opens/focuses when a window answers, editor-CLI
-    fallback otherwise
-  - scoped open (--signals/--time/--cursor/--append): drives a fake VaporView
-    behind the bridge client; the Rust binary is faked with canned JSON
-    envelopes. The bridge wire itself is covered by test_vaporview_bridge.py.
+Booley has no waveform viewer for now, so
+`gui` resolves its target and selection, then exits non-zero. The selection is
+checked through `_build_gui_plan`; the Rust binary is faked with canned JSON
+envelopes.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import fnmatch
 import itertools
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -25,17 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from booley.bwave import vaporview_bridge as bwave_bridge
 from booley.core.host_shell import quote_arg
-from booley.runtime import vaporview
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.subprocess_budget import run_bounded_child
-from tests.time_budget import scaled
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# `open` never reads the trace contents (the viewer does), but discovery does
+# `gui` never reads the trace contents, but discovery does
 # check the store is real — header plus at least one value-change block, so a
 # header-only stub does not read as a queryable trace.
 _FAKE_TRACE_BYTES = MINIMAL_FST_BYTES
@@ -45,18 +39,6 @@ _FAKE_TRACE_BYTES = MINIMAL_FST_BYTES
 def _inside_session_runtime(monkeypatch):
     """bwave is container-only (ADR 0028); simulate the Sandbox."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-
-
-@pytest.fixture(autouse=True)
-def _no_bridge(monkeypatch):
-    """No attached VS Code window by default.
-
-    Bare-open tests must exercise the editor-CLI fallback deterministically
-    even when a real bridge happens to run on the dev host; viewer tests
-    install their fake window explicitly.
-    """
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], []))
-    monkeypatch.delenv(bwave_bridge.SOCKET_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -86,9 +68,29 @@ def _make_trace(tmp_path: Path, name: str = "trace.fst") -> Path:
     return trace
 
 
-def _gui(target: str | None = None, **kwargs) -> None:
-    from booley.bwave import cli as bwave
+_NO_VIEWER = (
+    "ERROR: Booley has no waveform viewer until the web Dashboard's waveform "
+    "view ships. The text queries still work: see `bwave --help`."
+)
 
+
+@pytest.fixture()
+def no_viewer_host(monkeypatch, tmp_path):
+    """A host with no editor CLI and an empty home, so no viewer can answer."""
+    real_which = shutil.which
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **kw: (
+            None
+            if name in ("code", "code-insiders", "cursor", "codium")
+            else real_which(name, *a, **kw)
+        ),
+    )
+
+
+def _args(target: str | None = None, **kwargs) -> argparse.Namespace:
     ns = argparse.Namespace(
         target=target,
         signals=kwargs.pop("signals", []),
@@ -99,26 +101,29 @@ def _gui(target: str | None = None, **kwargs) -> None:
         groups=kwargs.pop("groups", []),
         max_signals=kwargs.pop("max_signals", None),
     )
-    assert not kwargs, f"unknown open args: {kwargs}"
-    bwave.cmd_gui(ns)
+    assert not kwargs, f"unknown gui args: {kwargs}"
+    return ns
 
 
-def _probe_finds(monkeypatch, present: set[str]) -> None:
-    """Pretend exactly *present* editor CLIs resolve on PATH, VaporView installed.
-
-    Stubbing `_extension_missing` keeps these tests from probing a real host
-    `code --list-extensions`; the probe itself is tested separately below.
-    """
+def _gui(target: str | None = None, **kwargs) -> None:
     from booley.bwave import cli as bwave
-    from booley.runtime.vaporview import ExtensionState
 
-    monkeypatch.setattr(
-        bwave.shutil,
-        "which",
-        lambda name: name if name in present else None,
-    )
-    monkeypatch.setattr(bwave, "_extension_missing", lambda cli: False)
-    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.INSTALLED)
+    bwave.cmd_gui(_args(target, **kwargs))
+
+
+def _plan(trace: Path, **kwargs):
+    """The resolved selection `gui` checks, for a trace registered as the default."""
+    from booley.bwave import cli as bwave
+
+    return bwave._build_gui_plan(str(trace.resolve()), "_last", _args(**kwargs))
+
+
+def _names(signals) -> list[str]:
+    return [signal.bwave_name for signal in signals]
+
+
+def _style(signals) -> list[tuple[str, str | None, str | None]]:
+    return [(signal.bwave_name, signal.number_format, signal.color) for signal in signals]
 
 
 def test_gui_parser_accepts_repeatable_named_groups():
@@ -150,62 +155,26 @@ def test_gui_help_advertises_composable_radix_and_color_suffixes(capsys):
     assert "@red/@blue/@green" in help_text
 
 
-@pytest.fixture()
-def launched(monkeypatch):
-    """Stub `code` onto PATH and record successful _launch_viewer calls."""
-    from booley.bwave import cli as bwave
-
-    _probe_finds(monkeypatch, {"code"})
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        bwave,
-        "_launch_viewer",
-        lambda cli, trace: calls.append([cli, trace]) or 0,
-    )
-    return calls
-
-
 # ── resolution (reuses _resolve_trace; keep lean) ─────────────────────────
 
 
-def test_gui_alias_resolves_registered_trace(tmp_path, launched):
-    trace = _make_trace(tmp_path)
-    _write_sessions({"dut": _make_entry(str(trace))})
-
-    _gui("@dut")
-
-    assert launched == [["code", str(trace.resolve())]]
-
-
-def test_gui_unknown_alias_errors(tmp_path, launched):
+def test_gui_unknown_alias_errors(tmp_path):
     _write_sessions({"dut": _make_entry(str(_make_trace(tmp_path)))})
 
     with pytest.raises(SystemExit) as exc:
         _gui("@ghost")
 
     assert "No registered alias" in str(exc.value)
-    assert launched == []
 
 
-def test_gui_no_session_errors(launched):
+def test_gui_no_session_errors():
     with pytest.raises(SystemExit) as exc:
         _gui()
 
     assert "register" in str(exc.value)
-    assert launched == []
 
 
-def test_gui_explicit_path_wins_over_session(tmp_path, launched):
-    session_trace = _make_trace(tmp_path, "session.fst")
-    explicit = _make_trace(tmp_path, "explicit.fst")
-    _write_sessions({"_last": _make_entry(str(session_trace))})
-
-    _gui(str(explicit))
-
-    assert launched == [["code", str(explicit.resolve())]]
-
-
-def test_gui_nonexistent_path_errors_not_falls_back(tmp_path, launched):
+def test_gui_nonexistent_path_errors_not_falls_back(tmp_path):
     # `query` treats a nonexistent token as query args and uses the session
     # trace; `open` must refuse rather than silently open a different trace.
     _write_sessions({"_last": _make_entry(str(_make_trace(tmp_path)))})
@@ -214,10 +183,9 @@ def test_gui_nonexistent_path_errors_not_falls_back(tmp_path, launched):
         _gui(str(tmp_path / "missing.fst"))
 
     assert "not found" in str(exc.value)
-    assert launched == []
 
 
-def test_gui_empty_alias_errors_not_default_session(tmp_path, launched):
+def test_gui_empty_alias_errors_not_default_session(tmp_path):
     # `bwave open @` must not silently resolve `_last` — an empty alias is
     # a typo. (Guard lives in shared _resolve_trace, so `query` gets it too.)
     _write_sessions({"_last": _make_entry(str(_make_trace(tmp_path)))})
@@ -226,22 +194,9 @@ def test_gui_empty_alias_errors_not_default_session(tmp_path, launched):
         _gui("@")
 
     assert "Empty alias" in str(exc.value)
-    assert launched == []
 
 
-def test_gui_directory_discovers_trace(tmp_path, launched):
-    # Users type `bwave open SIM_DIR` by analogy with `bwave register
-    # SIM_DIR` — discover the trace instead of opening a folder window.
-    sim_dir = tmp_path / "work"
-    sim_dir.mkdir()
-    trace = _make_trace(sim_dir)
-
-    _gui(str(sim_dir))
-
-    assert launched == [["code", str(trace.resolve())]]
-
-
-def test_gui_directory_without_trace_errors(tmp_path, launched):
+def test_gui_directory_without_trace_errors(tmp_path):
     sim_dir = tmp_path / "empty_sim"
     sim_dir.mkdir()
     (sim_dir / "sim.log").write_text("no dump\n", encoding="utf-8")
@@ -250,10 +205,9 @@ def test_gui_directory_without_trace_errors(tmp_path, launched):
         _gui(str(sim_dir))
 
     assert str(exc.value) == f"ERROR: No trace file found in {sim_dir}"
-    assert launched == []
 
 
-def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
+def test_gui_directory_names_stray_vcd_dump(tmp_path):
     sim_dir = tmp_path / "it's work"
     sim_dir.mkdir()
     dump = sim_dir / "sim.vcd"
@@ -266,14 +220,13 @@ def test_gui_directory_names_stray_vcd_dump(tmp_path, launched):
     assert "not named trace.vcd: sim.vcd" in message
     assert "[flows.sim].trace_files" in message
     assert f"bwave register {quote_arg(str(dump))} --as ALIAS --build" in message
-    assert f"bwave gui {quote_arg(str(dump))}" in message
-    assert launched == []
+    assert "bwave gui" not in message
 
 
 # ── format gate ────────────────────────────────────────────────────────────
 
 
-def test_gui_legacy_bwave_rejected(tmp_path, launched, capsys):
+def test_gui_legacy_bwave_rejected(tmp_path, capsys):
     legacy = tmp_path / "trace.bwave"
     legacy.write_bytes(_FAKE_TRACE_BYTES)
     _write_sessions({"dut": _make_entry(str(legacy))})
@@ -286,10 +239,9 @@ def test_gui_legacy_bwave_rejected(tmp_path, launched, capsys):
     msg = capsys.readouterr().err
     assert "legacy .bwave" in msg
     assert "re-run the sim" in msg
-    assert launched == []
 
 
-def test_gui_legacy_bwave_gate_is_case_insensitive(tmp_path, launched, capsys):
+def test_gui_legacy_bwave_gate_is_case_insensitive(tmp_path, capsys):
     # A case-insensitive host FS resolves TRACE.BWAVE to a real .bwave file;
     # the gate must not be fooled by suffix casing.
     legacy = tmp_path / "TRACE.BWAVE"
@@ -301,43 +253,6 @@ def test_gui_legacy_bwave_gate_is_case_insensitive(tmp_path, launched, capsys):
 
     assert exc.value.code == 2
     assert "legacy .bwave" in capsys.readouterr().err
-    assert launched == []
-
-
-def test_gui_vcd_passes_through(tmp_path, launched):
-    # The .fst case is the default trace every bare-open test already uses.
-    trace = _make_trace(tmp_path, "trace.vcd")
-    _write_sessions({"_last": _make_entry(str(trace))})
-
-    _gui()
-
-    assert launched == [["code", str(trace.resolve())]]
-
-
-def test_bare_open_names_a_broken_window_before_the_editor_cli(
-    tmp_path, monkeypatch, launched, capsys
-):
-    trace = _seed_default(tmp_path)
-    problem = "window-1.sock: ping: malformed bridge reply"
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], [problem]))
-
-    _gui()
-
-    assert launched == [["code", str(trace.resolve())]]
-    err = capsys.readouterr().err
-    assert "WARNING: Waveform Viewer Bridge problem" in err and problem in err
-
-
-def test_bare_open_without_any_window_falls_back_quietly(tmp_path, launched, capsys):
-    trace = _seed_default(tmp_path)
-
-    _gui()
-
-    assert launched == [["code", str(trace.resolve())]]
-    assert capsys.readouterr().err == ""
-
-
-# ── bare open: editor-CLI fallback (no attached window) ─────────────────────
 
 
 def _seed_default(tmp_path) -> Path:
@@ -346,232 +261,17 @@ def _seed_default(tmp_path) -> Path:
     return trace
 
 
-def test_probe_falls_back_to_cursor(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-    calls = []
-    _probe_finds(monkeypatch, {"cursor"})
-    monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: calls.append([c, t]) or 0)
-
-    _gui()
-
-    assert calls == [["cursor", str(trace.resolve())]]
-
-
-def test_probe_prefers_code_over_cursor(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-    calls = []
-    _probe_finds(monkeypatch, {"code", "cursor"})
-    monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: calls.append([c, t]) or 0)
-
-    _gui()
-
-    assert calls == [["code", str(trace.resolve())]]
-
-
-def test_no_viewer_cli_prints_path_and_hint(tmp_path, monkeypatch):
-    trace = _seed_default(tmp_path)
-    _probe_finds(monkeypatch, set())
-
-    with pytest.raises(SystemExit) as exc:
-        _gui()
-
-    msg = str(exc.value)
-    assert str(trace.resolve()) in msg
-    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
-    assert exc.value.code  # nonzero exit
-
-
-def test_failed_launch_prints_same_fallback(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-    _probe_finds(monkeypatch, {"code"})
-    monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: 1)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui()
-
-    msg = str(exc.value)
-    assert str(trace.resolve()) in msg
-    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
-    assert exc.value.code
-
-
-def test_launch_viewer_missing_cli_is_nonzero(tmp_path):
-    from booley.bwave import cli as bwave
-
-    rc = bwave._launch_viewer(str(tmp_path / "no-such-editor-cli"), "trace.fst")
-
-    assert rc != 0
-
-
-# ── extension probe (pre-rebuild containers) ────────────────────────────────
-#
-# The editor CLI exits 0 opening a trace even without the VaporView extension,
-# so the fallback path probes `--list-extensions` before launching.
-
-
-def _fake_list_extensions(monkeypatch, *, rc: int = 0, stdout: str = "") -> None:
-    from booley.bwave import cli as bwave
-
-    monkeypatch.setattr(
-        bwave.subprocess,
-        "run",
-        lambda cmd, **kw: subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr=""),
-    )
-
-
-def test_extension_missing_true_when_absent(monkeypatch):
-    from booley.bwave import cli as bwave
-
-    _fake_list_extensions(monkeypatch, stdout="ms-python.python\n")
-
-    assert bwave._extension_missing("code") is True
-
-
-def test_extension_missing_false_when_listed_any_case(monkeypatch):
-    from booley.bwave import cli as bwave
-
-    _fake_list_extensions(
-        monkeypatch,
-        stdout="ms-python.python\nLramseyer.VaporView\n",
-    )
-
-    assert bwave._extension_missing("code") is False
-
-
-def test_extension_missing_false_on_probe_failure(monkeypatch):
-    # Nonzero probe exit means "unknown", not "missing" — never block a
-    # launch that might work.
-    from booley.bwave import cli as bwave
-
-    _fake_list_extensions(monkeypatch, rc=1)
-
-    assert bwave._extension_missing("code") is False
-
-
-def test_extension_missing_false_on_oserror(tmp_path):
-    from booley.bwave import cli as bwave
-
-    assert bwave._extension_missing(str(tmp_path / "no-such-editor-cli")) is False
-
-
-def test_missing_extension_prints_hint_and_skips_launch(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-    monkeypatch.setattr(
-        bwave.shutil,
-        "which",
-        lambda name: name if name == "code" else None,
-    )
-    monkeypatch.setattr(bwave, "_extension_missing", lambda cli: True)
-    calls = []
-    monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: calls.append([c, t]) or 0)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui()
-
-    msg = str(exc.value)
-    assert str(trace.resolve()) in msg
-    assert f"code --install-extension {vaporview.BUNDLED_VSIX}" in msg
-    assert exc.value.code
-    assert calls == []  # a raw-binary tab helps nobody — don't launch
-
-
-def test_missing_extension_hint_names_the_probed_cli(tmp_path, monkeypatch):
-    from booley.bwave import cli as bwave
-
-    _seed_default(tmp_path)
-    monkeypatch.setattr(
-        bwave.shutil,
-        "which",
-        lambda name: name if name == "cursor" else None,
-    )
-    monkeypatch.setattr(bwave, "_extension_missing", lambda cli: True)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui()
-
-    assert f"cursor --install-extension {vaporview.BUNDLED_VSIX}" in str(exc.value)
-
-
-# ── bare open through the bridge ────────────────────────────────────────────
-
-
-def test_bare_open_uses_the_bridge_when_a_window_answers(tmp_path, monkeypatch, launched, capsys):
-    trace = _seed_default(tmp_path)
-    viewer = _install_viewer(monkeypatch, open_docs=[])
-
-    _gui()
-
-    assert viewer.ops() == ["open"]  # bare open keeps VaporView's default view
-    assert viewer.docs == {str(trace.resolve())}
-    assert launched == []  # the bridge path never launches the editor CLI
-    assert "Opened in the Waveform Viewer" in capsys.readouterr().out
-
-
-def test_bare_open_focuses_already_open_document(tmp_path, monkeypatch, launched, capsys):
-    trace = _seed_default(tmp_path)
-    _install_viewer(monkeypatch, open_docs=[str(trace.resolve())])
-
-    _gui()
-
-    assert launched == []
-    assert "Already open" in capsys.readouterr().out
-
-
-def test_bare_open_without_vaporview_in_the_window_uses_the_editor_cli(
-    tmp_path, monkeypatch, launched
-):
-    trace = _seed_default(tmp_path)
-    viewer = _install_viewer(monkeypatch, open_docs=[], version=None)
-
-    _gui()
-
-    assert viewer.ops() == []
-    assert launched == [["code", str(trace.resolve())]]
-
-
-def test_bare_open_with_ambiguous_windows_uses_the_editor_cli(tmp_path, monkeypatch, launched):
-    from booley.bwave import cli as bwave
-
-    trace = _seed_default(tmp_path)
-
-    def ambiguous(_trace):
-        raise bwave.vaporview_bridge.BridgeAmbiguousError("2 VS Code windows are attached")
-
-    monkeypatch.setattr(bwave.vaporview_bridge, "find_bridge", ambiguous)
-
-    _gui()
-
-    assert launched == [["code", str(trace.resolve())]]
-
-
-# ── scoped open (--signals / --time / --cursor / --append) ──────────────────
+# ── selection (--signals / --group / --time / --cursor / --append) ──────────
 #
 # The Rust binary is faked at the subprocess seam with canned JSON envelopes:
 # list → signal paths, value --at TOKEN → target_tick, stats → total_ticks.
 
 # What `bwave list` prints: (name, width). The vector is the crux of this
-# fixture — its name carries the bit range, VaporView's netlist does not.
+# fixture — its name carries the bit range, which the plan splits off.
 _CANNED_SIGNALS = [
     ("tb.dut.fifo.full", 1),
     ("tb.dut.fifo.empty", 1),
     ("tb.dut.fifo.count[3:0]", 4),
-]
-# The viewer's netlist: BARE instance paths, plus a couple of items standing in
-# for the ones VaporView auto-populates on a fresh open.
-_CANNED_NETLIST = [
-    "tb.dut.fifo.full",
-    "tb.dut.fifo.empty",
-    "tb.dut.fifo.count",
-    "tb.clk",
-    "tb.rst_n",
 ]
 # token → tick; the fake uses a 10-tick clock and a 1-ps file timescale.
 _TICKS_PER_CYCLE = 10
@@ -616,169 +316,12 @@ def _fake_signal_matches(name: str, pattern: str) -> bool:
     )
 
 
-class _FakeViewer:
-    """VaporView 1.6.0 behind the Booley bridge, modeled the way it behaves.
-
-    - ``apply`` replaces every row; markers/viewport only when their keys are
-      present (viewport needs both zoomRatio and scrollLeft).
-    - Rows resolve by BARE instance path; an unresolved row stays on screen as
-      a placeholder whose saved form lacks ``netlistId``.
-    - Saved rows never carry msb/lsb, and always report a number format and a
-      color index (VaporView's defaults when none was requested).
-    - State readback lags an apply by ``lag`` reads, like the real webview.
-    """
-
-    def __init__(
-        self, netlist: list[str], *, rows=(), open_docs=(), version=vaporview.VERIFIED_VERSION
-    ):
-        self.ids = {path: i for i, path in enumerate(netlist, start=1)}
-        # 1-bit signals: VaporView renders them as a binary waveform, ignores a
-        # requested radix, and reports numberFormat/renderType "binary".
-        self.one_bit: set[str] = set()
-        self.version = version
-        self.docs = set(open_docs)
-        self.rows = [self._resolve(row) for row in rows]
-        self.session = {
-            "markerTime": 11,
-            "altMarkerTime": 22,
-            "displayTimeUnit": "ns",
-            "zoomRatio": 1.5,
-            "scrollLeft": 7,
-        }
-        self.calls: list[tuple[str, dict]] = []
-        self.lag = 0
-        self._pending = 0
-        self._stale: dict | None = None
-        self.after_apply = None  # hook(viewer, state) to model viewer faults
-        # Model a viewer that drops an unresolved row instead of keeping a
-        # placeholder (1.6.0 keeps placeholders; both shapes must work).
-        self.omit_unresolved = False
-        # VaporView 1.6.0 ends with an EMPTY view when a load replaces a view
-        # holding a signal group with rows that leave that group out.
-        self.blank_on_group_replace = True
-        self.fail_op: dict[str, str] = {}
-
-    # -- modeled behavior ---------------------------------------------------
-    def _resolve(self, row: dict) -> dict:
-        if row.get("dataType") == "signal-group":
-            return {
-                "dataType": "signal-group",
-                "groupName": row.get("groupName"),
-                "collapseState": row.get("collapseState", 2),
-                "children": [self._resolve(child) for child in row.get("children", [])],
-            }
-        if row.get("dataType") != "netlist-variable":
-            return copy.deepcopy(row)
-        saved = {
-            "dataType": "netlist-variable",
-            "name": row["name"],
-            "numberFormat": row.get("numberFormat", "binary"),
-            "colorIndex": row.get("colorIndex", 1),
-        }
-        if row["name"] in self.ids:
-            saved["netlistId"] = self.ids[row["name"]]
-        if row["name"] in self.one_bit:
-            saved["numberFormat"] = "binary"
-            saved["renderType"] = "binary"
-        return saved
-
-    def _resolve_all(self, rows: list[dict]) -> list[dict]:
-        resolved = [self._resolve(row) for row in rows]
-        if self.omit_unresolved:
-            resolved = [self._prune(row) for row in resolved if self._kept(row)]
-        return resolved
-
-    def _kept(self, row: dict) -> bool:
-        return row.get("dataType") != "netlist-variable" or "netlistId" in row
-
-    def _prune(self, row: dict) -> dict:
-        if row.get("dataType") == "signal-group":
-            row["children"] = [self._prune(c) for c in row["children"] if self._kept(c)]
-        return row
-
-    def _drops_a_group(self, new_rows: list[dict]) -> bool:
-        def group_names(rows: list[dict]) -> set:
-            return {row["groupName"] for row in rows if row.get("dataType") == "signal-group"}
-
-        return bool(new_rows) and not group_names(self.rows) <= group_names(new_rows)
-
-    def _snapshot(self) -> dict:
-        return copy.deepcopy({**self.session, "displayedSignals": self.rows})
-
-    # -- BridgeClient surface ---------------------------------------------
-    def _record(self, op: str, **params) -> None:
-        self.calls.append((op, copy.deepcopy(params)))
-        if op in self.fail_op:
-            raise bwave_bridge.BridgeRequestError(op, self.fail_op[op])
-
-    def open(self, path: str) -> bool:
-        self._record("open", path=path)
-        opened = path not in self.docs
-        self.docs.add(path)
-        return opened
-
-    def state(self, path: str) -> dict | None:
-        if path not in self.docs:
-            return None
-        if self._pending:
-            self._pending -= 1
-            return copy.deepcopy(self._stale)
-        return self._snapshot()
-
-    def apply(self, path: str, state: dict) -> None:
-        self._record("apply", path=path, state=state)
-        if path not in self.docs:  # the real bridge refuses a closed document
-            raise bwave_bridge.BridgeRequestError("apply", f"{path} is not open")
-        self._stale, self._pending = self._snapshot(), self.lag
-        rows = self._resolve_all(state["displayedSignals"])
-        if self.blank_on_group_replace and self._drops_a_group(rows):
-            rows = []
-        self.rows = rows
-        for key in ("markerTime", "altMarkerTime", "displayTimeUnit"):
-            if key in state:
-                self.session[key] = state[key]
-        if "zoomRatio" in state and "scrollLeft" in state:
-            self.session["zoomRatio"] = state["zoomRatio"]
-            self.session["scrollLeft"] = state["scrollLeft"]
-        if self.after_apply is not None:
-            self.after_apply(self, state)
-
-    def set_viewport(self, path: str, start: int, end: int) -> None:
-        self._record("viewport", path=path, start=start, end=end)
-
-    def reveal_time(self, path: str, tick: int) -> None:
-        self._record("reveal", path=path, time=tick)
-
-    # -- assertions ---------------------------------------------------------
-    def ops(self) -> list[str]:
-        return [op for op, _ in self.calls]
-
-    def applied(self) -> list[dict]:
-        return [params["state"] for op, params in self.calls if op == "apply"]
-
-    @classmethod
-    def names(cls, rows: list[dict]) -> list[str]:
-        out: list[str] = []
-        for row in rows:
-            if row.get("dataType") == "signal-group":
-                out.extend(cls.names(row.get("children", [])))
-            elif isinstance(row.get("name"), str):
-                out.append(row["name"])
-        return out
-
-    def shown(self) -> list[str]:
-        return self.names(self.rows)
-
-
 @pytest.fixture()
 def fake_rust(monkeypatch):
     """Fake the Rust bwave binary; returns the recorded query argv list."""
     from booley.bwave import cli as bwave
 
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-rust"])
-    # The viewer model answers synchronously, so only a genuine drop waits out
-    # the settle poll; keep that wait short enough not to drag the suite.
-    monkeypatch.setattr(bwave, "_VIEW_SETTLE_TIMEOUT", scaled(0.3))
     state = {"signals": list(_CANNED_SIGNALS), "total_ticks": 1_000_000, "clock": "tb.clk"}
     calls: list[list[str]] = []
 
@@ -856,477 +399,271 @@ def fake_rust(monkeypatch):
     return calls_and_state
 
 
-def _install_viewer(
-    monkeypatch,
-    *,
-    netlist: list[str] | None = None,
-    rows=(),
-    open_docs=(),
-    version: str | None = vaporview.VERIFIED_VERSION,
-) -> _FakeViewer:
-    """Attach one fake window: discovery finds it and the client drives it."""
-    viewer = _FakeViewer(
-        _CANNED_NETLIST if netlist is None else netlist,
-        rows=rows,
-        open_docs=open_docs,
-        version=version,
-    )
-    info = bwave_bridge.BridgeInfo(
-        Path("/fake/window-1.sock"),
-        version,
-        True,
-        1.0,
-        tuple(viewer.docs),
-        None if version else "VaporView (lramseyer.vaporview) is not installed",
-    )
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([info], []))
-    monkeypatch.setattr(bwave_bridge, "BridgeClient", lambda path: viewer)
-    return viewer
+# ── no viewer: the criterion tests ──────────────────────────────────────────
 
 
-def _viewer_for(trace: Path, monkeypatch, *, opened: bool = True, **kwargs) -> _FakeViewer:
-    docs = [str(trace.resolve())] if opened else []
-    return _install_viewer(monkeypatch, open_docs=docs, **kwargs)
+def test_valid_selection_reports_no_viewer(tmp_path, fake_rust, no_viewer_host, capsys):
+    _seed_default(tmp_path)
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(
+            signals=["tb.dut.fifo.*%h@red", "tb.nothing"],
+            groups=["Ctl=tb.dut.fifo.empty"],
+            time="100c:200c",
+            cursor="150c",
+        )
+
+    assert exc.value.code == _NO_VIEWER
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no signals match --signals 'tb.nothing'" in captured.err
+    assert {call[1] for call in fake_rust["calls"]} == {"list", "value"}
 
 
-def _row(name: str, **extra) -> dict:
-    return {"dataType": "netlist-variable", "name": name, **extra}
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        ("trace.fst", "@dut"),
+        ("trace.fst", "{trace}"),
+        ("trace.fst", "{directory}"),
+        ("trace.vcd", "{trace}"),
+    ],
+    ids=["alias", "explicit-path", "sim-dir", "vcd-file"],
+)
+def test_gui_without_selection_reports_no_viewer(tmp_path, no_viewer_host, name, target):
+    trace = _make_trace(tmp_path, name)
+    _write_sessions({"dut": _make_entry(str(trace))})
+
+    with pytest.raises(SystemExit) as exc:
+        _gui(target.format(trace=trace, directory=tmp_path))
+
+    assert exc.value.code == _NO_VIEWER
 
 
-def test_scoped_gui_happy_path(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    # A stale row in a fresh document must not survive the replacement.
-    viewer = _viewer_for(trace, monkeypatch, opened=False, rows=[_row("tb.rst_n")])
+# ── selection resolution (checked through the plan `gui` builds) ───────────
 
-    _gui(signals=["tb.dut.fifo.*"], time="100c:200c")
 
-    assert viewer.ops() == ["open", "apply", "viewport"]
-    state = viewer.applied()[0]
-    assert state["displayedSignals"] == [
-        _row("tb.clk"),  # clock is row 1, unasked-for
-        _row("tb.dut.fifo.full"),
-        _row("tb.dut.fifo.empty"),
-        _row("tb.dut.fifo.count", msb=3, lsb=0),  # bare path + bit range
-    ]
-    # The range is bracketed by the two markers, so the viewer reports its span.
-    assert state["markerTime"] == 100 * _TICKS_PER_CYCLE
-    assert state["altMarkerTime"] == 200 * _TICKS_PER_CYCLE
-    assert "zoomRatio" not in state  # the exact window is set after the rows
-    assert viewer.calls[-1] == (
-        "viewport",
-        {"path": str(trace.resolve()), "start": 1000, "end": 2000},
-    )
-    assert viewer.shown() == [
+def test_selection_resolves_clock_vector_and_range(tmp_path, fake_rust):
+    plan = _plan(_seed_default(tmp_path), signals=["tb.dut.fifo.*"], time="100c:200c")
+
+    assert _names(plan.signals) == [
         "tb.clk",
         "tb.dut.fifo.full",
         "tb.dut.fifo.empty",
-        "tb.dut.fifo.count",
+        "tb.dut.fifo.count[3:0]",
     ]
-    out = capsys.readouterr().out
-    assert "opened, scoped to" in out
-    assert "tb.dut.fifo.count[3:0]" in out and "viewport: 1000..2000 ticks" in out
-    assert "START marker: 1000 ticks" in out and "END marker: 2000 ticks" in out
+    count = plan.signals[-1]
+    assert (count.instance_path, count.msb, count.lsb) == ("tb.dut.fifo.count", 3, 0)
+    assert plan.viewport == (1000, 2000)
+    assert plan.markers == [(1000, "markerTime", "START"), (2000, "altMarkerTime", "END")]
 
 
-def test_readback_lag_is_polled_until_the_view_settles(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.rst_n")])
-    viewer.lag = 3
-
-    _gui(signals=["tb.dut.fifo.full"])
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-    assert "WARNING" not in capsys.readouterr().err
-
-
-def test_explicit_named_groups_share_one_native_group(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(groups=["Status=tb.dut.fifo.full", "Status=tb.dut.fifo.empty"])
-
-    rows = viewer.applied()[-1]["displayedSignals"]
-    assert rows[0] == _row("tb.clk")
-    assert rows[1]["groupName"] == "Status"
-    assert [item["name"] for item in rows[1]["children"]] == [
-        "tb.dut.fifo.full",
-        "tb.dut.fifo.empty",
-    ]
-    assert "Status:" in capsys.readouterr().out
-
-
-def test_radix_and_color_suffixes_apply_to_flat_grouped_and_clock_rows(
-    tmp_path, monkeypatch, fake_rust
+@pytest.mark.parametrize(
+    ("kwargs", "viewport", "markers"),
+    [
+        (
+            {"time": "100c:200c", "cursor": "120c"},
+            (1000, 2000),
+            [(1200, "markerTime", "START"), (2000, "altMarkerTime", "END")],
+        ),
+        ({"cursor": "120c"}, None, [(1200, "markerTime", "cursor")]),
+        (
+            {"time": "100c:"},
+            (1000, 1_000_000),
+            [(1000, "markerTime", "START"), (1_000_000, "altMarkerTime", "END")],
+        ),
+    ],
+    ids=["cursor-inside-range", "lone-cursor", "open-ended-range"],
+)
+def test_time_and_cursor_resolve_to_viewport_and_markers(
+    tmp_path, fake_rust, kwargs, viewport, markers
 ):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.clk", 1), ("tb.dut.fifo.full", 1), ("tb.dut.fifo.count[3:0]", 4)]
-    viewer = _viewer_for(trace, monkeypatch)
+    plan = _plan(_seed_default(tmp_path), append=True, **kwargs)
 
-    _gui(
+    assert (plan.viewport, plan.markers) == (viewport, markers)
+    # `stats` walks every transition and times out on a large store.
+    assert "stats" not in [call[1] for call in fake_rust["calls"]]
+
+
+@pytest.mark.parametrize(
+    ("groups", "expected"),
+    [
+        (
+            ["Status=tb.dut.fifo.full", "Status=tb.dut.fifo.empty"],
+            [("Status", ["tb.dut.fifo.full", "tb.dut.fifo.empty"])],
+        ),
+        (
+            ["Backpressure=tb.dut.fifo.full", "Availability=tb.dut.fifo.empty"],
+            [("Backpressure", ["tb.dut.fifo.full"]), ("Availability", ["tb.dut.fifo.empty"])],
+        ),
+    ],
+    ids=["same-name-merges", "distinct-names-keep-order"],
+)
+def test_named_groups_merge_by_name_and_keep_requested_order(
+    tmp_path, fake_rust, groups, expected
+):
+    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
+
+    plan = _plan(_seed_default(tmp_path), groups=groups)
+
+    assert [(group.name, _names(group.signals)) for group in plan.groups] == expected
+
+
+def test_radix_and_color_suffixes_apply_to_flat_grouped_and_clock_rows(tmp_path, fake_rust):
+    fake_rust["signals"] = [("tb.clk", 1), ("tb.dut.fifo.full", 1), ("tb.dut.fifo.count[3:0]", 4)]
+
+    plan = _plan(
+        _seed_default(tmp_path),
         signals=["tb.clk%b@red", "tb.dut.fifo.full%b@green"],
         groups=["State=tb.dut.fifo.count*%d@blue"],
     )
 
     # Annotations are wrapper syntax; only clean signal globs reach B-Wave.
     list_calls = [call for call in fake_rust["calls"] if call[1] == "list"]
-    assert list_calls
-    assert all("%" not in token and "@red" not in token for call in list_calls for token in call)
-    rows = viewer.applied()[-1]["displayedSignals"]
-    assert rows[0] == _row("tb.clk", numberFormat="binary", colorIndex=4)
-    assert rows[1] == _row("tb.dut.fifo.full", numberFormat="binary", colorIndex=6)
-    assert rows[2]["groupName"] == "State"
-    assert rows[2]["children"] == [
-        _row("tb.dut.fifo.count", msb=3, lsb=0, numberFormat="decimal", colorIndex=5)
+    assert all("%" not in token and "@" not in token for call in list_calls for token in call)
+    assert _style(plan.signals) == [
+        ("tb.clk", "binary", "red"),
+        ("tb.dut.fifo.full", "binary", "green"),
+        ("tb.dut.fifo.count[3:0]", "decimal", "blue"),
     ]
+    assert _style(plan.groups[0].signals) == [("tb.dut.fifo.count[3:0]", "decimal", "blue")]
 
 
-def test_exact_indexed_selector_keeps_radix_and_color(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.words[56]", 1)]
-    viewer = _viewer_for(trace, monkeypatch, netlist=["tb.dut.words"])
-
-    _gui(signals=["words[56]%h@blue"], no_clock=True)
-
-    assert viewer.rows == [
-        _row("tb.dut.words", numberFormat="hexadecimal", colorIndex=5, netlistId=1)
-    ]
-
-
-def test_append_restyles_an_existing_row_without_adding_it(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    existing = [_row("tb.dut.fifo.full", numberFormat="hexadecimal", colorIndex=0)]
-    viewer = _viewer_for(trace, monkeypatch, rows=existing)
-
-    _gui(signals=["tb.dut.fifo.full%b@blue"], append=True)
-
-    assert viewer.names(viewer.applied()[-1]["displayedSignals"]) == ["tb.dut.fifo.full"]
-    assert viewer.rows == [
-        _row("tb.dut.fifo.full", numberFormat="binary", colorIndex=5, netlistId=1)
-    ]
-
-
-def test_group_radix_tolerates_one_bit_rows_the_viewer_keeps_binary(
-    tmp_path, monkeypatch, fake_rust
+@pytest.mark.parametrize(
+    ("selector", "signal", "expected"),
+    [
+        ("words[56]%h@blue", ("tb.dut.words[56]", 1), ("tb.dut.words", 56, "hexadecimal", "blue")),
+        ("tb.dut.mem*", ("tb.dut.mem[0]", 8), ("tb.dut.mem[0]", None, None, None)),
+    ],
+    ids=["exact-index-keeps-style", "wide-bracketed-identifier-is-not-split"],
+)
+def test_bracketed_names_split_only_when_they_are_a_bit_select(
+    tmp_path, fake_rust, selector, signal, expected
 ):
-    # VaporView draws 1-bit rows as binary waveforms and ignores a requested
-    # radix; a `%h` group spanning 1-bit and multi-bit signals must still succeed.
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.count[3:0]", 4)]
-    viewer = _viewer_for(trace, monkeypatch)
-    viewer.one_bit = {"tb.clk", "tb.dut.fifo.full"}
+    fake_rust["signals"] = [signal]
 
-    _gui(groups=["G=tb.dut.fifo.*%h@red"])
+    (resolved,) = _plan(_seed_default(tmp_path), signals=[selector], no_clock=True).signals
 
-    group = viewer.rows[-1]
-    assert group["groupName"] == "G"
-    by_name = {child["name"]: child for child in group["children"]}
-    assert by_name["tb.dut.fifo.full"]["numberFormat"] == "binary"
-    assert by_name["tb.dut.fifo.full"]["colorIndex"] == 4
-    assert by_name["tb.dut.fifo.count"]["numberFormat"] == "hexadecimal"
-    assert by_name["tb.dut.fifo.count"]["colorIndex"] == 4
+    path, msb, number_format, color = expected
+    assert (resolved.instance_path, resolved.msb, resolved.number_format, resolved.color) == (
+        path,
+        msb,
+        number_format,
+        color,
+    )
 
 
-def test_replacing_a_grouped_view_clears_it_first(tmp_path, monkeypatch, fake_rust, capsys):
-    # VaporView 1.6.0 blanks the view when a load drops a group the view held;
-    # loading an empty view first avoids it, so no row is reported as dropped.
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    group = {
-        "dataType": "signal-group",
-        "groupName": "G",
-        "children": [_row("tb.dut.fifo.full")],
-    }
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), group])
-    # Like the live viewer: right after the load, state still reads the
-    # cleared view, which must not pass for "every row was dropped".
-    viewer.lag = 1
+@pytest.mark.parametrize(
+    ("kwargs", "clock", "signals", "expected"),
+    [
+        ({"signals": ["tb.dut.fifo.full"]}, "tb.clk", [], ["tb.clk", "tb.dut.fifo.full"]),
+        ({"signals": ["tb.dut.fifo.full"], "no_clock": True}, "tb.clk", [], ["tb.dut.fifo.full"]),
+        ({"signals": ["tb.dut.fifo.full"], "append": True}, "tb.clk", [], ["tb.dut.fifo.full"]),
+        ({"signals": ["tb.*"]}, "tb.clk", [("tb.clk", 1)], ["tb.clk", "tb.dut.fifo.full"]),
+        ({"signals": ["tb.dut.fifo.full"]}, None, [], ["tb.dut.fifo.full"]),
+    ],
+    ids=["new-view", "no-clock", "append", "glob-matched-clock", "async-trace"],
+)
+def test_clock_is_row_one_unless_the_selection_opts_out(
+    tmp_path, fake_rust, kwargs, clock, signals, expected
+):
+    fake_rust["clock"] = clock
+    fake_rust["signals"] = [*signals, ("tb.dut.fifo.full", 1)]
 
-    _gui(signals=["tb.dut.fifo.empty"])
+    plan = _plan(_seed_default(tmp_path), **kwargs)
 
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
-    assert viewer.applied()[0]["displayedSignals"] == []
-    assert "WARNING" not in capsys.readouterr().err
-
-
-def test_replacing_a_flat_view_does_not_clear_it_first(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.dut.fifo.full")])
-
-    _gui(signals=["tb.dut.fifo.empty"])
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.empty"]
-    assert all(state["displayedSignals"] for state in viewer.applied())
+    assert _names(plan.signals) == expected
+    # The clock rides on the `list` call gui already makes.
+    assert [call[1] for call in fake_rust["calls"]] == ["list"]
 
 
-def test_unmatched_signal_glob_warns_and_shows_the_rest(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
+def test_unmatched_signal_glob_warns_and_keeps_the_rest(tmp_path, fake_rust, capsys):
     fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
 
-    _gui(signals=["tb.dut.fifo.full", "tb.nope"])
+    plan = _plan(_seed_default(tmp_path), signals=["tb.dut.fifo.full", "tb.nope"])
 
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
+    assert _names(plan.signals) == ["tb.clk", "tb.dut.fifo.full"]
     err = capsys.readouterr().err
     assert "no signals match --signals 'tb.nope'" in err
     assert "tb.dut.fifo.full'" not in err
 
 
-def test_one_bit_row_still_requires_the_requested_color(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-    viewer.one_bit = {"tb.dut.fifo.full"}
+def test_max_signals_raises_the_cap(tmp_path, fake_rust):
+    fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(65)]
 
-    def drop_color(model, state):
-        for row in model.rows:
-            row["colorIndex"] = 1
+    plan = _plan(_seed_default(tmp_path), signals=["tb.dut.bus.*"], max_signals=100, no_clock=True)
 
-    viewer.after_apply = drop_color
-
-    with pytest.raises(SystemExit, match="exact requested signal presentation"):
-        _gui(signals=["tb.dut.fifo.full%h@green"], append=True)
-    assert viewer.rows == []
+    assert _names(plan.signals) == fake_rust["signals"]
 
 
-def test_style_readback_mismatch_is_an_error_and_restores(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    def drop_style(model, state):
-        for row in model.rows:
-            row["numberFormat"] = "binary"
-            row["colorIndex"] = 1
-
-    viewer.after_apply = drop_style
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.full%h@green"], append=True)
-
-    assert "did not apply the exact requested signal presentation" in str(exc.value)
-    assert viewer.rows == []
-
-
-def test_replace_rejects_inexact_tree_and_restores_previous_rows(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    previous = [_row("tb.dut.fifo.empty", colorIndex=3)]
-    viewer = _viewer_for(trace, monkeypatch, rows=previous)
-    original = copy.deepcopy(viewer.rows)
-
-    def add_unrequested_row(model, state):
-        if model.names(state["displayedSignals"]) != ["tb.dut.fifo.empty"]:
-            model.rows.append(model._resolve(_row("tb.rst_n")))
-
-    viewer.after_apply = add_unrequested_row
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.full"], no_clock=True)
-
-    assert "did not apply the requested signal rows" in str(exc.value)
-    assert viewer.rows == original
-    restore = viewer.applied()[-1]
-    assert restore["markerTime"] == 11 and restore["altMarkerTime"] == 22
-    assert restore["zoomRatio"] == 1.5 and restore["scrollLeft"] == 7
-
-
-def test_failed_restore_reports_both_failures(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-    viewer.fail_op["viewport"] = "Invalid time range"
-
-    def break_restore(model, state):
-        if "zoomRatio" in state:  # only the restore carries the old viewport
-            model.rows = [model._resolve(_row("tb.junk"))]
-
-    viewer.after_apply = break_restore
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.full"], time="100c:200c")
-
-    message = str(exc.value)
-    assert "Invalid time range" in message
-    assert "restoring the previous presentation also failed" in message
+# ── time tokens ─────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
-    ("selector", "message"),
-    [
+    ("time", "viewport"),
+    [("10000t:20000t", (10000, 20000)), ("100ns:200ns", (100000, 200000))],
+)
+def test_absolute_time_tokens_resolve_exactly_on_a_clockless_trace(
+    tmp_path, fake_rust, time, viewport
+):
+    fake_rust["clock"] = None
+
+    plan = _plan(_seed_default(tmp_path), time=time, append=True, no_clock=True)
+
+    assert plan.viewport == viewport
+    assert all("--async" in call for call in fake_rust["calls"] if call[1] == "value")
+
+
+def test_physical_time_range_is_not_shifted_by_sync_origin(tmp_path, fake_rust):
+    plan = _plan(_seed_default(tmp_path), time="50ns:150ns", append=True)
+
+    assert plan.viewport == (50000, 150000)
+    assert all("--async" in call for call in fake_rust["calls"] if call[1] == "value")
+
+
+def test_marker_names_resolve_in_time_range(tmp_path, fake_rust, capsys):
+    trace = _make_trace(tmp_path)
+    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200, "1400c": 7})})
+    from booley.bwave import cli as bwave
+
+    plan = bwave._build_gui_plan(str(trace.resolve()), "dut", _args(time="overflow:1400c"))
+
+    # The marker resolves to its cycle with an explicit 'c' suffix before
+    # hitting the Rust converter.
+    value_tokens = [c[c.index("--at") + 1] for c in fake_rust["calls"] if c[1] == "value"]
+    assert value_tokens == ["1200c", "1400c"]
+    assert plan.viewport == (1200 * _TICKS_PER_CYCLE, 1400 * _TICKS_PER_CYCLE)
+    assert "marker '1400c' on @dut does not apply" in capsys.readouterr().err
+
+
+def test_time_end_past_the_trace_is_clamped(tmp_path, fake_rust, capsys):
+    end = fake_rust["total_ticks"]
+
+    plan = _plan(_seed_default(tmp_path), time="100c:999999c", append=True)
+
+    assert plan.viewport == (1000, end)
+    assert f"--time end 999999c is past the end of the trace; checking up to tick {end}" in (
+        capsys.readouterr().err
+    )
+
+
+# ── selector errors are still reported ──────────────────────────────────────
+
+
+def test_invalid_display_suffix_is_a_usage_error(tmp_path, fake_rust, capsys):
+    _seed_default(tmp_path)
+
+    for selector, message in [
         ("tb.dut.fifo.full%u", "unknown radix suffix '%u'"),
         ("tb.dut.fifo.full@orange", "unknown waveform color '@orange'"),
         ("tb.dut.fifo.full@red%h", "radix must precede color"),
-    ],
-)
-def test_invalid_display_suffix_fails_before_viewer_mutation(
-    tmp_path, monkeypatch, fake_rust, capsys, selector, message
-):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
+    ]:
+        with pytest.raises(SystemExit) as exc:
+            _gui(signals=[selector])
 
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=[selector])
-
-    assert exc.value.code == 2
-    assert message in capsys.readouterr().err
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
     assert fake_rust["calls"] == []
-    assert viewer.calls == []
-
-
-def test_distinct_named_groups_preserve_requested_order(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(groups=["Backpressure=tb.dut.fifo.full", "Availability=tb.dut.fifo.empty"])
-
-    rows = viewer.applied()[-1]["displayedSignals"]
-    assert [item["groupName"] for item in rows[1:]] == ["Backpressure", "Availability"]
-
-
-def test_group_readback_rejects_reordered_hierarchy(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    def reorder_groups(model, state):
-        if len(model.rows) > 2:
-            model.rows[1:] = reversed(model.rows[1:])
-
-    viewer.after_apply = reorder_groups
-
-    with pytest.raises(SystemExit, match="requested signal rows"):
-        _gui(groups=["Backpressure=tb.dut.fifo.full", "Availability=tb.dut.fifo.empty"])
-
-
-def test_append_merges_into_existing_group_and_preserves_its_state(
-    tmp_path, monkeypatch, fake_rust
-):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    existing = [
-        _row("tb.clk"),
-        {
-            "dataType": "signal-group",
-            "groupName": "Status",
-            "collapseState": 1,
-            "children": [_row("tb.dut.fifo.full", colorIndex=3)],
-        },
-    ]
-    viewer = _viewer_for(trace, monkeypatch, rows=existing)
-
-    _gui(groups=["Status=tb.dut.fifo.*"], append=True)
-
-    status = viewer.applied()[-1]["displayedSignals"][1]
-    assert status["collapseState"] == 1
-    assert status["children"][0]["colorIndex"] == 3
-    assert [item["name"] for item in status["children"]] == [
-        "tb.dut.fifo.full",
-        "tb.dut.fifo.empty",
-    ]
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full", "tb.dut.fifo.empty"]
-
-
-def test_append_moves_an_existing_top_level_row_into_a_group(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    existing = [_row("tb.clk"), _row("tb.dut.fifo.full", colorIndex=3)]
-    viewer = _viewer_for(trace, monkeypatch, rows=existing)
-
-    _gui(groups=["Backpressure=tb.dut.fifo.full"], append=True)
-
-    rows = viewer.applied()[0]["displayedSignals"]
-    assert [item.get("name") for item in rows if "name" in item] == ["tb.clk"]
-    assert rows[1]["groupName"] == "Backpressure"
-    assert [(r["name"], r["colorIndex"]) for r in rows[1]["children"]] == [("tb.dut.fifo.full", 3)]
-
-
-def test_append_recognizes_native_saved_vector_without_lookup_range(
-    tmp_path, monkeypatch, fake_rust
-):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.bus[3:0]", 4)]
-    viewer = _viewer_for(trace, monkeypatch, netlist=["tb.dut.bus"], rows=[_row("tb.dut.bus")])
-
-    _gui(groups=["Low word=tb.dut.bus*"], append=True)
-
-    rows = viewer.applied()[0]["displayedSignals"]
-    assert len(rows) == 1
-    assert rows[0]["children"][0]["name"] == "tb.dut.bus"
-    assert "msb" not in rows[0]["children"][0]  # the preserved row, not a new one
-
-
-def test_late_viewport_failure_restores_the_original_view(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.rst_n", colorIndex=4)])
-    original = copy.deepcopy(viewer.rows)
-    viewer.fail_op["viewport"] = "viewport rejected"
-
-    with pytest.raises(SystemExit, match="viewport rejected"):
-        _gui(groups=["Status=tb.dut.fifo.full"], time="10c:20c")
-
-    assert viewer.rows == original
-    assert viewer.session["markerTime"] == 11
-    assert viewer.session["altMarkerTime"] == 22
-
-
-def test_marker_readback_mismatch_is_an_error(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    def ignore_markers(model, state):
-        model.session["altMarkerTime"] = 22
-
-    viewer.after_apply = ignore_markers
-
-    with pytest.raises(SystemExit, match="exact requested signal presentation"):
-        _gui(signals=["tb.dut.fifo.full"], time="100c:200c")
-
-
-def test_document_closed_mid_update_is_an_error(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    def close_tab(model, state):
-        model.docs.clear()
-
-    viewer.after_apply = close_tab
-
-    with pytest.raises(SystemExit, match="is not open in the Waveform Viewer"):
-        _gui(signals=["tb.dut.fifo.full"])
-
-
-def test_wrong_vaporview_version_refuses_before_mutation(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, version="1.5.9")
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.full"])
-
-    message = str(exc.value)
-    assert "runs VaporView 1.5.9" in message
-    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in message
-    assert viewer.calls == []
-
-
-def test_window_without_vaporview_refuses_with_install_guidance(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, version=None)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.full"])
-
-    message = str(exc.value)
-    assert "no usable VaporView extension" in message
-    assert "is not installed" in message
-    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in message
-    assert viewer.calls == []
 
 
 def test_group_rejects_a_missing_name_glob_separator(tmp_path, capsys):
@@ -1339,7 +676,7 @@ def test_group_rejects_a_missing_name_glob_separator(tmp_path, capsys):
     assert "NAME=GLOB" in capsys.readouterr().err
 
 
-def test_group_rejects_html_control_characters_in_the_viewer_label(tmp_path, capsys):
+def test_group_rejects_html_control_characters_in_the_group_name(tmp_path, capsys):
     _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
@@ -1349,505 +686,7 @@ def test_group_rejects_html_control_characters_in_the_viewer_label(tmp_path, cap
     assert "cannot contain" in capsys.readouterr().err
 
 
-def test_multibit_vector_reaches_the_viewer(tmp_path, monkeypatch, fake_rust, capsys):
-    """Regression: a vector must be sent as bare path + bit range.
-
-    `bwave list` names a 4-bit register `count[3:0]`; VaporView's netlist keys
-    it as `count` with msb/lsb, so the bracketed path would resolve to nothing.
-    """
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.fifo.*"])
-
-    assert _row("tb.dut.fifo.count", msb=3, lsb=0) in viewer.applied()[0]["displayedSignals"]
-    # The viewer really resolved the vector — not just an ack that says so.
-    assert viewer.rows[-1]["netlistId"] == viewer.ids["tb.dut.fifo.count"]
-    captured = capsys.readouterr()
-    # Reported under the name the user typed and `bwave list` prints.
-    assert "tb.dut.fifo.count[3:0]" in captured.out
-    assert "WARNING" not in captured.err
-
-
-# ── clock-first / markers ───────────────────────────────────────────────────
-
-
-def test_new_view_gets_the_clock_as_row_one(tmp_path, monkeypatch, fake_rust, capsys):
-    """A waveform without its clock is unreadable — you cannot count cycles."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.fifo.full"])
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-    # It rides on the `list` call gui already makes — never a `stats` walk,
-    # which on a large store runs for minutes and blows the query timeout.
-    assert [c[1] for c in fake_rust["calls"]] == ["list"]
-    assert "tb.clk" in capsys.readouterr().out
-
-
-def test_no_clock_opts_out(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.fifo.full"], no_clock=True)
-
-    assert viewer.shown() == ["tb.dut.fifo.full"]
-
-
-def test_append_does_not_re_add_the_clock(tmp_path, monkeypatch, fake_rust):
-    """--append builds on a view that already has its clock row."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    _gui(signals=["tb.dut.fifo.full"], append=True)
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-
-
-def test_append_does_not_duplicate_an_already_displayed_signal(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), _row("tb.dut.fifo.full")])
-
-    _gui(signals=["tb.dut.fifo.full"], append=True)
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-
-
-def test_clock_is_not_duplicated_when_the_glob_already_matched_it(
-    tmp_path, monkeypatch, fake_rust
-):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.clk", 1), ("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.*"])
-
-    assert viewer.names(viewer.applied()[0]["displayedSignals"]) == ["tb.clk", "tb.dut.fifo.full"]
-
-
-def test_async_trace_without_a_clock_still_opens(tmp_path, monkeypatch, fake_rust):
-    """No clock detected (async trace) → no row 1, no crash."""
-    trace = _seed_default(tmp_path)
-    fake_rust["clock"] = None
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.fifo.full"])
-
-    assert viewer.shown() == ["tb.dut.fifo.full"]
-
-
-def test_gui_never_walks_the_trace_with_stats(tmp_path, monkeypatch, fake_rust):
-    """`stats` is minutes on a large store — gui must not touch it, ever.
-
-    An open-ended range resolves its end through `list`, which reads the
-    hierarchy only; `stats` walks every transition of every signal.
-    """
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.fifo.*"], time="100c:")
-
-    assert "stats" not in [c[1] for c in fake_rust["calls"]]
-    assert viewer.calls[-1][1]["end"] == fake_rust["total_ticks"]
-
-
-def test_cursor_moves_start_marker_and_end_stays(tmp_path, monkeypatch, fake_rust):
-    """--cursor relocates START (main) inside the range; END (alt) holds."""
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(time="100c:200c", cursor="120c", append=True)
-
-    state = viewer.applied()[0]
-    assert (state["markerTime"], state["altMarkerTime"]) == (1200, 2000)
-    assert viewer.calls[-1][0] == "viewport"
-
-
-def test_cursor_without_a_range_is_a_lone_main_marker_scrolled_into_view(
-    tmp_path, monkeypatch, fake_rust
-):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    _gui(cursor="120c", append=True)
-
-    state = viewer.applied()[0]
-    assert state["markerTime"] == 1200
-    assert "altMarkerTime" not in state  # the other marker stays where it was
-    assert viewer.session["altMarkerTime"] == 22
-    assert viewer.shown() == ["tb.clk"]  # append keeps every row
-    assert viewer.calls[-1] == ("reveal", {"path": str(trace.resolve()), "time": 1200})
-
-
-def test_signals_the_viewer_drops_are_reported_and_not_left_on_screen(
-    tmp_path, monkeypatch, fake_rust, capsys
-):
-    """A signal the viewer cannot resolve gets a warning, never a placeholder row."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.ghost[7:0]", 8)]
-    # `ghost` is in the trace but absent from the viewer's netlist.
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(signals=["tb.dut.*"])
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-    captured = capsys.readouterr()
-    assert "tb.dut.fifo.full" in captured.out
-    assert "tb.dut.ghost[7:0]" not in captured.out  # never claim what did not land
-    assert "WARNING" in captured.err and "tb.dut.ghost[7:0]" in captured.err
-
-
-def test_dropped_group_member_leaves_no_empty_group(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.ghost", 1)]
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(groups=["Ghosts=tb.dut.ghost"])
-
-    assert viewer.rows == [_row("tb.clk", numberFormat="binary", colorIndex=1, netlistId=4)]
-    assert "Ghosts" not in capsys.readouterr().out
-
-
-def test_append_keeps_a_users_unresolved_row(tmp_path, monkeypatch, fake_rust):
-    """Only rows this run added are judged; the user's own rows are preserved."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.old.gone")])
-
-    _gui(signals=["tb.dut.fifo.full"], append=True)
-
-    assert viewer.shown() == ["tb.old.gone", "tb.dut.fifo.full"]
-
-
-@pytest.mark.parametrize("lag", [0, 3], ids=["immediate", "stale-readback"])
-def test_viewer_that_omits_unresolved_rows_still_takes_the_warning_path(
-    tmp_path, monkeypatch, fake_rust, capsys, lag
-):
-    """Placeholder or no row at all: a missing signal is a WARNING, never a failure."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.ghost[7:0]", 8)]
-    viewer = _viewer_for(trace, monkeypatch, opened=False)
-    viewer.omit_unresolved = True
-    viewer.lag = lag
-
-    _gui(signals=["tb.dut.*"])
-
-    assert viewer.shown() == ["tb.clk", "tb.dut.fifo.full"]
-    captured = capsys.readouterr()
-    assert "WARNING" in captured.err and "tb.dut.ghost[7:0]" in captured.err
-    assert "tb.dut.ghost" not in captured.out
-
-
-def test_omitted_group_member_with_stale_rows_is_dropped(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.ghost", 1)]
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.rst_n")])
-    viewer.omit_unresolved = True
-    viewer.lag = 2
-
-    _gui(groups=["Mixed=tb.dut.*"])
-
-    assert viewer.names(viewer.rows) == ["tb.clk", "tb.dut.fifo.full"]
-    assert viewer.rows[1]["groupName"] == "Mixed"
-
-
-def test_bracketed_identifier_falls_back_to_the_raw_name(tmp_path, monkeypatch, fake_rust, capsys):
-    """A 1-bit `mem[0]` may be an array element, not a bit-select.
-
-    The name alone cannot settle it, so the bare-path attempt is retried under
-    the raw name when the viewer does not resolve it.
-    """
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.mem[0]", 1)]
-    viewer = _viewer_for(trace, monkeypatch, netlist=["tb.dut.mem[0]"])
-
-    _gui(signals=["tb.dut.mem*"], no_clock=True)
-
-    first, retry = viewer.applied()
-    assert first["displayedSignals"] == [_row("tb.dut.mem", msb=0, lsb=0)]  # bit-select
-    assert retry["displayedSignals"] == [_row("tb.dut.mem[0]")]  # …unresolved: identifier
-    assert viewer.shown() == ["tb.dut.mem[0]"]
-    captured = capsys.readouterr()
-    assert "tb.dut.mem[0]" in captured.out
-    assert "WARNING" not in captured.err
-
-
-def test_wide_bracketed_identifier_is_never_split(tmp_path, monkeypatch, fake_rust):
-    """A wider-than-1-bit `mem[0]` can only be an identifier — no retry needed."""
-    trace = _seed_default(tmp_path)
-    fake_rust["signals"] = [("tb.dut.mem[0]", 8)]
-    viewer = _viewer_for(trace, monkeypatch, netlist=["tb.dut.mem[0]"])
-
-    _gui(signals=["tb.dut.mem*"], no_clock=True)
-
-    assert [s["displayedSignals"] for s in viewer.applied()] == [[_row("tb.dut.mem[0]")]]
-
-
-def test_append_adds_without_clearing(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    _gui(signals=["tb.dut.fifo.*"], append=True)
-
-    assert viewer.shown() == [
-        "tb.clk",  # kept
-        "tb.dut.fifo.full",
-        "tb.dut.fifo.empty",
-        "tb.dut.fifo.count",
-    ]
-
-
-def test_scoped_replace_on_already_open_document(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), _row("tb.rst_n")])
-
-    _gui(signals=["tb.dut.fifo.*"])
-
-    assert viewer.ops() == ["open", "apply"]  # open only reveals the tab
-    assert viewer.shown() == [
-        "tb.clk",
-        "tb.dut.fifo.full",
-        "tb.dut.fifo.empty",
-        "tb.dut.fifo.count",
-    ]
-    assert "Waveform Viewer scoped to" in capsys.readouterr().out
-
-
-def test_time_only_moves_viewport_without_changing_rows(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    _gui(time="100c:200c", append=True)
-
-    assert viewer.shown() == ["tb.clk"]
-    assert viewer.calls[-1] == (
-        "viewport",
-        {"path": str(trace.resolve()), "start": 1000, "end": 2000},
-    )
-
-
-def test_time_alone_keeps_rows_and_verifies_markers(tmp_path, monkeypatch, fake_rust, capsys):
-    """Without --signals/--group, -t moves the window and markers, never the rows."""
-    trace = _seed_default(tmp_path)
-    existing = [_row("tb.clk"), _row("tb.dut.fifo.full", colorIndex=3)]
-    viewer = _viewer_for(trace, monkeypatch, rows=existing)
-    before = copy.deepcopy(viewer.rows)
-
-    _gui(time="100c:200c")
-
-    assert viewer.rows == before
-    state = viewer.applied()[0]
-    assert viewer.names(state["displayedSignals"]) == ["tb.clk", "tb.dut.fifo.full"]
-    assert (viewer.session["markerTime"], viewer.session["altMarkerTime"]) == (1000, 2000)
-    assert viewer.calls[-1] == (
-        "viewport",
-        {"path": str(trace.resolve()), "start": 1000, "end": 2000},
-    )
-    assert "START marker: 1000 ticks" in capsys.readouterr().out
-
-
-def test_time_alone_rejects_markers_the_viewer_did_not_take(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    def ignore_markers(model, state):
-        model.session["markerTime"] = 11
-
-    viewer.after_apply = ignore_markers
-
-    with pytest.raises(SystemExit, match="exact requested signal presentation"):
-        _gui(time="100c:200c")
-
-    assert viewer.shown() == ["tb.clk"]
-
-
-def test_time_alone_opens_an_unopened_trace_without_rows(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, opened=False)
-
-    _gui(time="100c:200c")
-
-    assert viewer.ops() == ["open", "apply", "viewport"]
-    assert viewer.rows == []
-    assert viewer.session["altMarkerTime"] == 2000
-    assert "opened, scoped to" in capsys.readouterr().out
-
-
-def test_cursor_alone_without_append_keeps_rows(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-
-    _gui(cursor="120c")
-
-    assert viewer.shown() == ["tb.clk"]
-    assert viewer.session["markerTime"] == 1200
-
-
-def test_tick_range_is_exact_on_clockless_trace(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["clock"] = None
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(time="10000t:20000t", append=True, no_clock=True)
-
-    value_calls = [call for call in fake_rust["calls"] if call[1] == "value"]
-    assert all("--async" in call for call in value_calls)
-    assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 10000, "end": 20000}
-
-
-def test_physical_range_works_on_clockless_trace(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    fake_rust["clock"] = None
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(time="100ns:200ns", append=True, no_clock=True)
-
-    value_calls = [call for call in fake_rust["calls"] if call[1] == "value"]
-    assert all("--async" in call for call in value_calls)
-    assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 100000, "end": 200000}
-
-
-def test_physical_time_range_is_not_shifted_by_sync_origin(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(time="50ns:150ns", append=True)
-
-    value_calls = [call for call in fake_rust["calls"] if call[1] == "value"]
-    assert all("--async" in call for call in value_calls)
-    assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 50000, "end": 150000}
-
-
-def test_scoped_open_without_a_bridge_hard_errors(tmp_path, monkeypatch, fake_rust, launched):
-    # The autouse _no_bridge fixture leaves no attached window.
-    _seed_default(tmp_path)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "no window answered" in msg
-    assert 'run "Developer: Reload Window"' in msg
-    assert "refresh the Sandbox" in msg
-    assert exc.value.code
-    assert launched == []  # never degrade a scoped request to a bare launch
-
-
-def test_scoped_open_missing_extension_leads_with_install(
-    tmp_path, monkeypatch, fake_rust, launched
-):
-    from booley.bwave import cli as bwave
-    from booley.runtime.vaporview import ExtensionState
-
-    _seed_default(tmp_path)
-    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.MISSING)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "VaporView extension is not installed" in msg
-    assert "--install-extension" in msg
-    assert f"--install-extension {vaporview.BUNDLED_VSIX}" in msg
-    assert 'Reload Window" there' not in msg
-    assert launched == []
-
-
-def test_scoped_open_empty_remote_registry_beats_unavailable_editor_probe(
-    tmp_path, monkeypatch, fake_rust
-):
-    from booley.bwave import cli as bwave
-
-    _seed_default(tmp_path)
-    home = tmp_path / "home"
-    (home / ".vscode-server" / "extensions").mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(bwave.shutil, "which", lambda name: None)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "VaporView extension is not installed" in msg
-    assert "no window answered" not in msg
-
-
-def test_scoped_open_cursor_only_names_cursor_installer(tmp_path, monkeypatch, fake_rust):
-    from booley.bwave import cli as bwave
-    from booley.runtime.vaporview import ExtensionState
-
-    _seed_default(tmp_path)
-    monkeypatch.setattr(bwave.shutil, "which", lambda name: "cursor" if name == "cursor" else None)
-    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.MISSING)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    assert f"cursor --install-extension {vaporview.BUNDLED_VSIX}" in str(exc.value)
-
-
-def test_scoped_open_unknown_extension_state_does_not_claim_it_is_missing(
-    tmp_path, monkeypatch, fake_rust, launched
-):
-    from booley.bwave import cli as bwave
-    from booley.runtime.vaporview import ExtensionState
-
-    _seed_default(tmp_path)
-    monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.UNKNOWN)
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "could not determine whether the VaporView extension is installed" in msg
-    assert "VaporView extension is not installed" not in msg
-    assert launched == []
-
-
-def test_scoped_protocol_failure_names_the_probe_failure(
-    tmp_path, monkeypatch, fake_rust, launched
-):
-    _seed_default(tmp_path)
-
-    problem = "window-1.sock: ping: unsupported bridge protocol 2; refresh the Sandbox"
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: ([], [problem]))
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "no attached window's bridge answered properly" in msg
-    assert "no window answered" not in msg
-    assert 'run "Developer: Reload Window"' in msg
-    assert f"skipped: {problem}" in msg
-    assert launched == []
-
-
-def test_scoped_open_with_ambiguous_windows_says_how_to_pick(tmp_path, monkeypatch, fake_rust):
-    _seed_default(tmp_path)
-    windows = [
-        bwave_bridge.BridgeInfo(
-            Path(f"/fake/window-{i}.sock"), vaporview.VERIFIED_VERSION, False, 0.0, ()
-        )
-        for i in (1, 2)
-    ]
-    monkeypatch.setattr(bwave_bridge, "discover", lambda home=None: (windows, []))
-
-    with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.fifo.*"])
-
-    msg = str(exc.value)
-    assert "2 VS Code windows are attached" in msg
-    assert bwave_bridge.SOCKET_ENV in msg
-
-
-def test_glob_without_match_errors_before_the_viewer(tmp_path, monkeypatch, fake_rust, capsys):
+def test_glob_without_match_errors_before_the_viewer(tmp_path, fake_rust, capsys):
     _seed_default(tmp_path)
     fake_rust["signals"] = []
 
@@ -1860,7 +699,7 @@ def test_glob_without_match_errors_before_the_viewer(tmp_path, monkeypatch, fake
     assert "no signals match" in capsys.readouterr().err
 
 
-def test_glob_total_miss_relays_the_binary_suggestion(tmp_path, monkeypatch, fake_rust, capsys):
+def test_glob_total_miss_relays_the_binary_suggestion(tmp_path, fake_rust, capsys):
     """The anchored form the binary suggests rides on gui's own total-miss error."""
     _seed_default(tmp_path)
     fake_rust["signals"] = []
@@ -1876,7 +715,7 @@ def test_glob_total_miss_relays_the_binary_suggestion(tmp_path, monkeypatch, fak
     assert "unrelated warning" not in err
 
 
-def test_signal_cap_is_a_hard_error(tmp_path, monkeypatch, fake_rust, capsys):
+def test_signal_cap_is_a_hard_error(tmp_path, fake_rust, capsys):
     _seed_default(tmp_path)
     fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(65)]
 
@@ -1888,9 +727,7 @@ def test_signal_cap_is_a_hard_error(tmp_path, monkeypatch, fake_rust, capsys):
     assert "65 signals" in msg and "--max-signals" in msg
 
 
-def test_signal_cap_counts_flat_and_grouped_selections_together(
-    tmp_path, monkeypatch, fake_rust, capsys
-):
+def test_signal_cap_counts_flat_and_grouped_selections_together(tmp_path, fake_rust, capsys):
     _seed_default(tmp_path)
     fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(10)]
 
@@ -1906,97 +743,26 @@ def test_signal_cap_counts_flat_and_grouped_selections_together(
     assert "10 signals" in msg and "--max-signals" in msg
 
 
-def test_max_signals_raises_the_cap(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    bus = [f"tb.dut.bus.bit{i}" for i in range(65)]
-    fake_rust["signals"] = bus
-    viewer = _viewer_for(trace, monkeypatch, netlist=bus)
-
-    _gui(signals=["tb.dut.bus.*"], max_signals=100, no_clock=True)
-
-    assert viewer.shown() == bus
-
-
-def test_marker_names_resolve_in_time_range(tmp_path, monkeypatch, fake_rust, capsys):
-    trace = _make_trace(tmp_path)
-    _write_sessions({"dut": _make_entry(str(trace), markers={"overflow": 1200, "1400c": 7})})
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui("@dut", time="overflow:1400c")
-
-    # The marker resolves to its cycle with an explicit 'c' suffix before
-    # hitting the Rust converter.
-    value_tokens = [c[c.index("--at") + 1] for c in fake_rust["calls"] if c[1] == "value"]
-    assert value_tokens == ["1200c", "1400c"]
-    assert viewer.calls[-1][1] == {
-        "path": str(trace.resolve()),
-        "start": 1200 * _TICKS_PER_CYCLE,
-        "end": 1400 * _TICKS_PER_CYCLE,
-    }
-    assert "marker '1400c' on @dut does not apply" in capsys.readouterr().err
-
-
-def test_gui_ended_range_uses_list_total_ticks(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
-
-    _gui(time="100c:", append=True)
-
-    assert viewer.calls[-1][1]["end"] == fake_rust["total_ticks"]
-
-
-def test_time_end_past_the_trace_is_clamped(tmp_path, monkeypatch, fake_rust, capsys):
-    """VaporView rejects a window past the trace end, so clamp before any change."""
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-    end = fake_rust["total_ticks"]
-
-    _gui(time="100c:999999c")
-
-    assert viewer.calls[-1][1] == {"path": str(trace.resolve()), "start": 1000, "end": end}
-    assert viewer.session["altMarkerTime"] == end
-    assert f"--time end 999999c is past the end of the trace; showing up to tick {end}" in (
-        capsys.readouterr().err
-    )
-
-
-def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
+def test_time_starting_past_the_trace_fails_before_the_viewer(tmp_path, fake_rust):
+    _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
         _gui(time="200000c:300000c")
 
     assert "--time start 200000c is past the end of the trace" in str(exc.value)
     assert "--at-time" not in str(exc.value)  # no hint aimed at `bwave value`
-    assert viewer.calls == []
 
 
-def test_cursor_past_the_trace_fails_before_the_viewer(tmp_path, monkeypatch, fake_rust):
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch)
+def test_cursor_past_the_trace_fails_before_the_viewer(tmp_path, fake_rust):
+    _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
         _gui(time="100c:200c", cursor="999999c")
 
     assert "--cursor 999999c is past the end of the trace" in str(exc.value)
-    assert viewer.calls == []
 
 
-def test_a_marker_the_plan_does_not_set_is_left_and_not_verified(tmp_path, monkeypatch, fake_rust):
-    """VaporView cannot clear a marker; an old END marker stays and must not fail."""
-    trace = _seed_default(tmp_path)
-    viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk")])
-    viewer.session["altMarkerTime"] = 987_654
-
-    _gui(cursor="120c")
-
-    assert viewer.session["markerTime"] == 1200
-    assert viewer.session["altMarkerTime"] == 987_654
-    assert "altMarkerTime" not in viewer.applied()[0]
-
-
-def test_empty_time_range_rejected(tmp_path, monkeypatch, fake_rust):
+def test_empty_time_range_rejected(tmp_path, fake_rust):
     _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
@@ -2005,7 +771,7 @@ def test_empty_time_range_rejected(tmp_path, monkeypatch, fake_rust):
     assert "empty --time range" in str(exc.value)
 
 
-def test_time_without_colon_rejected(tmp_path, monkeypatch, fake_rust):
+def test_time_without_colon_rejected(tmp_path, fake_rust):
     _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
@@ -2014,7 +780,7 @@ def test_time_without_colon_rejected(tmp_path, monkeypatch, fake_rust):
     assert "START:END" in str(exc.value)
 
 
-def test_append_with_nothing_to_do_errors(tmp_path, monkeypatch, fake_rust):
+def test_append_with_nothing_to_do_errors(tmp_path, fake_rust):
     _seed_default(tmp_path)
 
     with pytest.raises(SystemExit) as exc:
@@ -2200,57 +966,33 @@ def test_gui_is_container_only(monkeypatch, capsys):
 
 
 def test_gui_subprocess_smoke(tmp_path):
-    """`python -m booley.bwave.cli gui @dut` end-to-end with a stub editor CLI.
+    """`python -m booley.bwave.cli gui @dut` end-to-end: routed, then no viewer.
 
     Covers the argv-routing seam (_KNOWN_COMMANDS, dispatch) that in-process
-    Namespace tests bypass — an unrouted `open` would fall through to query
-    and die on "No query mode specified".
+    Namespace tests bypass. A stub `code` on PATH proves no editor is started.
     """
-    trace = _make_trace(tmp_path)
-    _write_sessions({"dut": _make_entry(str(trace))})
-
+    _write_sessions({"dut": _make_entry(str(_make_trace(tmp_path)))})
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
     argv_log = tmp_path / "code_argv.txt"
-    # The stub must answer the pre-launch `--list-extensions` probe with
-    # VaporView's id, and log argv for the actual launch call.
+    stub = stub_dir / ("code.cmd" if sys.platform == "win32" else "code")
     if sys.platform == "win32":
-        stub = stub_dir / "code.cmd"
-        stub.write_text(
-            "@echo off\r\n"
-            'if "%1"=="--list-extensions" (\r\n'
-            "  echo lramseyer.vaporview\r\n"
-            ") else (\r\n"
-            f'  echo %* > "{argv_log}"\r\n'
-            ")\r\n"
-        )
+        stub.write_bytes(f'@echo off\r\necho %* > "{argv_log}"\r\n'.encode())
     else:
-        stub = stub_dir / "code"
-        stub.write_text(
-            "#!/bin/sh\n"
-            'if [ "$1" = "--list-extensions" ]; then\n'
-            "  echo lramseyer.vaporview\n"
-            "else\n"
-            f'  echo "$@" > "{argv_log}"\n'
-            "fi\n"
-        )
+        stub.write_bytes(f'#!/bin/sh\necho "$@" > "{argv_log}"\n'.encode())
         stub.chmod(0o755)
 
     env = os.environ.copy()
     env["PATH"] = str(stub_dir) + os.pathsep + env["PATH"]
     env["PYTHONPATH"] = str(BOOLEY_ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     env["BOOLEY_CONTAINER"] = "1"
-    env["HOME"] = str(tmp_path / "home")  # no bridge sockets: editor-CLI fallback
+    env["HOME"] = str(tmp_path / "home")
 
-    r = run_bounded_child(
-        [sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"],
-        env=env,
-    )
+    r = run_bounded_child([sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"], env=env)
 
-    assert r.returncode == 0, f"stderr: {r.stderr}"
-    assert r.stderr.strip() == ""
-    assert argv_log.exists(), "stub `code` CLI was never invoked"
-    assert str(trace.resolve()) in argv_log.read_text()
+    assert r.returncode == 1
+    assert _NO_VIEWER in r.stderr
+    assert not argv_log.exists(), "gui started the stub `code` CLI"
 
 
 @pytest.mark.parametrize("command", ["find", "sample", "distance"])

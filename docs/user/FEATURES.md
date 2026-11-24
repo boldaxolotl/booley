@@ -82,9 +82,8 @@ tools, waveforms, run status, and review evidence share a single VS Code
 window.
 
 - **Hands-on.** Work through conversation: ask for an edit, run Booley Flows,
-  debug a failure, open a scoped waveform view (`bwave gui`, see
-  [Waveform-Based Debug](#waveform-based-debug)). You can still read and edit
-  RTL yourself between agent turns.
+  debug a failure. You can still read and edit RTL yourself between agent
+  turns.
 - **Parallel.** Leave sessions running in container terminals alongside, each
   on its own branch and worktree ([Parallel Sessions](#parallel-sessions)).
   The Booley Dashboard shows every session and Job; you step in when an agent
@@ -341,8 +340,7 @@ trace data through the design: systematic debugging instead of guesswork.
 **FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so
 Booley's successful trace artifact is FST: the open, transition-based waveform
 format, typically 10-50x smaller than the source VCD and readable by any
-off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view
-straight into the user's VS Code window. Booley reads a Target's authored
+off-the-shelf viewer (GTKWave, Surfer). Booley reads a Target's authored
 native FST directly. Otherwise Booley converts VCD to FST, during or after the
 run depending on the simulator (see [FLOW-SIM
 waveforms](FLOW-SIM.md#waveforms)). The reasoning is in

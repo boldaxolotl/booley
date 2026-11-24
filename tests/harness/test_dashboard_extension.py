@@ -8,7 +8,6 @@ import math
 import os
 import shutil
 import subprocess
-import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
@@ -35,7 +34,6 @@ def test_vsix_is_deterministic_and_contains_installable_workspace_manifest(tmp_p
         assert manifest["license"] == "Apache-2.0"
         assert b"Apache License" in archive.read("extension/LICENSE.txt")
         assert b"exports.activate" in archive.read("extension/extension.js")
-        assert b"exports.start" in archive.read("extension/vaporview_bridge.js")
         xml = ElementTree.fromstring(archive.read("extension.vsixmanifest"))
         identity = xml.find("{*}Metadata/{*}Identity")
         assert identity is not None
@@ -168,21 +166,9 @@ def test_workspace_extension_lifecycle_in_node(tmp_path):
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="the bridge serves Unix sockets inside Linux Sandboxes"
-)
-@pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
-def test_vaporview_bridge_in_node(tmp_path):
-    _run_node_suite(
-        "vaporview_bridge.test.cjs",
-        suite_label="VaporView bridge suite",
-        output_dir=tmp_path,
-    )
-
-
-def test_disabled_dashboard_keeps_the_viewer_bridge_but_never_opens_the_dashboard():
-    # The extension also hosts the `bwave gui` viewer bridge, so it is always
-    # installed; the attach protocol alone keeps the Dashboard terminal closed.
+def test_disabled_dashboard_keeps_the_extension_but_never_opens_the_dashboard():
+    # The extension is always installed; the attach protocol alone keeps the
+    # Dashboard terminal closed.
     spec = build_spec(dashboard=False)
     settings = spec["customizations"]["vscode"]
     assert dashboard_extension.VSIX_PATH in settings["extensions"]

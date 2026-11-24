@@ -303,16 +303,6 @@
       "currentValueTemplate": "master"
     },
     {
-      "description": "Copy of the VaporView pin: the verified-version constant.",
-      "customType": "regex",
-      "managerFilePatterns": ["/^src/booley/runtime/vaporview\\.py$/"],
-      "matchStrings": [
-        "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\""
-      ],
-      "datasourceTemplate": "custom.openvsx",
-      "depNameTemplate": "lramseyer/vaporview"
-    },
-    {
       "description": "Copies of the Verilog-HDL extension pin: the devcontainer constant and the session runtime bundle list.",
       "customType": "regex",
       "managerFilePatterns": [
@@ -503,7 +493,6 @@
       "description": "sandbox-base: Node, the editor extensions and the Ubuntu parent image (also pinned in Dockerfile.riscv, held equal by tests/docker/test_sandbox_dockerfile.py).",
       "matchDepNames": [
         "node",
-        "lramseyer/vaporview",
         "mshr-h/veriloghdl",
         "ms-vscode/live-server",
         "docker.io/library/ubuntu"
@@ -570,13 +559,6 @@
       "matchDepNames": ["cocotb"],
       "prBodyNotes": [
         "Re-verify these places, which cite cocotb releases: the frozen results parser in `src/booley/flows/sim/backends/cocotb_results.py` and the example versions in `src/booley/harness/init_cmd.py` and `src/booley/runtime/project_image.py`."
-      ]
-    },
-    {
-      "description": "PR note: VaporView provenance and patched VSIX.",
-      "matchDepNames": ["lramseyer/vaporview"],
-      "prBodyNotes": [
-        "Re-verify these places, which depend on the VaporView release: the empty-view claim in `src/booley/bwave/cli.py` and the compatibility edits in `src/booley/runtime/vaporview_vsix.py`."
       ]
     },
     {
