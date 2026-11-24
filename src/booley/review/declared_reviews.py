@@ -21,16 +21,18 @@ Target catalog and the files are in :mod:`booley.review.review_resolution`.
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, Literal, cast, get_args
 
 from booley.core.boundary import is_str_list
+from booley.measurement.base import resolve_rules_base
 from booley.measurement.metrics_file import table_header
 from booley.measurement.rules_diff import commit_file
 from booley.measurement.run_key import KeyedCommit, booley_dir_at
 from booley.runtime.commit_export import versioned_booley_dir
+from booley.runtime.pinned_history import FileCommitError
 from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
 REVIEWS_FILE = "reviews.toml"
@@ -341,3 +343,87 @@ def declared_reviews_at(repository: Path, keyed: KeyedCommit) -> tuple[TargetRev
         source, commit, place = paired, keyed.booley_commit, PurePosixPath()
     raw = commit_file(source, commit, (place / REVIEWS_FILE).as_posix())
     return () if raw is None else parse_reviews_as_written(raw)
+
+
+def _spec_paths(declared: tuple[TargetReviews, ...]) -> Iterator[str]:
+    for table in declared:
+        if table.spec:
+            yield table.spec
+        yield from (entry.spec for entry in table.paths if entry.spec)
+
+
+def _spec_changed(
+    repository: Path, keyed: KeyedCommit, base: str, rules_base: str | None, spec: str
+) -> bool:
+    """Whether *spec* differs between the Base and the commit, in the repository that owns it.
+
+    A path under the commit's Booley Directory placement belongs to the Versioned Booley
+    Directory when the commit has one: it is compared there, relative to the placement,
+    between its rules Base and ``keyed.booley_commit``. Any other path is compared in
+    *repository* between *base* and ``keyed.commit``. What cannot be read counts as changed.
+    """
+    path = PurePosixPath(spec)
+    try:
+        place = booley_dir_at(repository, keyed.commit)
+        if keyed.booley_commit is None or not path.is_relative_to(place):
+            return commit_file(repository, base, spec) != commit_file(
+                repository, keyed.commit, spec
+            )
+        paired = versioned_booley_dir(repository)
+        if paired is None or rules_base is None:
+            return False
+        inside = path.relative_to(place).as_posix()
+        return commit_file(paired, rules_base, inside) != commit_file(
+            paired, keyed.booley_commit, inside
+        )
+    except (FileCommitError, ValueError):
+        return True
+
+
+def _rules_base_of(repository: Path, keyed: KeyedCommit) -> str | None:
+    """The commit of the Versioned Booley Directory the rules are compared with, if any."""
+    paired = versioned_booley_dir(repository)
+    if keyed.booley_commit is None or paired is None:
+        return None
+    return resolve_rules_base(paired, keyed.booley_commit).commit
+
+
+def review_rules_changes(
+    repository: Path, keyed: KeyedCommit, base: str, checkout: Path
+) -> tuple[str, ...]:
+    """What the commit changed in its review rules since *base*: the files, as declared.
+
+    ``reviews.toml`` when the effective Declared Reviews differ (read with
+    :func:`declared_reviews_at`; a Base side that cannot be read counts as different), then
+    each declared spec path, from either side, whose content differs. A spec that is a
+    symlink in *checkout* (the export of the commit) is compared as the link and as its
+    target inside the checkout, because the Reviewer reads the target. With a Versioned
+    Booley Directory the Base side is its own rules Base; with none, nothing of it
+    changed. The commit's own declarations are read as :func:`declared_reviews_at` does and
+    their errors propagate.
+    """
+    after = declared_reviews_at(repository, keyed)
+    rules_base = _rules_base_of(repository, keyed)
+    before: tuple[TargetReviews, ...] | None = after  # no rules Base: nothing changed there
+    if keyed.booley_commit is None or rules_base is not None:
+        try:
+            before = declared_reviews_at(
+                repository, replace(keyed, commit=base, booley_commit=rules_base)
+            )
+        except (ReviewsFileError, ValueError, FileCommitError):
+            before = None
+    changed: list[str] = []
+    if before is None or frozenset(before) != frozenset(after):
+        changed.append(REVIEWS_FILE)
+    specs = sorted({*_spec_paths(after), *_spec_paths(before or ())})
+    for spec in specs:
+        link = checkout / spec
+        targets = [spec]
+        if link.is_symlink():
+            root = checkout.resolve()
+            target = link.resolve()
+            if target.is_relative_to(root):
+                targets.append(target.relative_to(root).as_posix())
+        if any(_spec_changed(repository, keyed, base, rules_base, path) for path in targets):
+            changed.append(spec)
+    return tuple(changed)

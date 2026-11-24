@@ -21,6 +21,7 @@ from typing import Any
 from booley.evidence.review_vocabulary import OPEN_STATUSES
 from booley.measurement.base import Base
 from booley.review.review_resolution import DeclaredReview
+from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.timefmt import compact_utc_now
 from booley.specialists.review_contract import reviewable
@@ -88,6 +89,8 @@ class RunFacts:
     base: Base
     changed_files: tuple[str, ...]
     reviews: tuple[tuple[PlannedReview, ReviewResult], ...]
+    message: str  # the commit message
+    rules_changed: tuple[str, ...]  # review rules changed since the Base, as declared
 
 
 def new_run_id() -> str:
@@ -159,6 +162,8 @@ def review_document(facts: RunFacts) -> dict[str, Any]:
         "finished_at": facts.finished_at,
         "commit": facts.commit,
         "booley_commit": facts.booley_commit,
+        "message": facts.message,
+        "rules_changed": list(facts.rules_changed),
         "base": asdict(facts.base),  # the choice is a StrEnum: JSON writes its wording
         "changed_files": list(facts.changed_files),
         "reviews": [
@@ -180,9 +185,14 @@ def review_document(facts: RunFacts) -> dict[str, Any]:
     }
 
 
-def store_review_run(main_booley_dir: Path, document: dict[str, Any]) -> Path:
-    """Write *document* under ``reviews/<commit>/<run id>.json``; earlier runs stay."""
+def store_review_run(main_booley_dir: Path, document: dict[str, Any], markdown: str) -> Path:
+    """Write *markdown* and then *document* under ``reviews/<commit>/<run id>``; earlier runs stay.
+
+    The JSON is the source of truth: a failure between the two writes leaves a Markdown file
+    no loader reads. Returns the JSON path.
+    """
     path = main_booley_dir / REVIEWS_DIR / document["commit"] / f"{document['run_id']}.json"
+    atomic_replace_bytes(path.with_suffix(".md"), markdown.encode("utf-8"), mode=0o644)
     atomic_write_json(path, document)
     return path
 
@@ -257,6 +267,8 @@ class VerifyFacts:
     discovery: Mapping[str, Any]  # the discovery run being verified
     commits: tuple[str, ...]  # after the discovery commit, up to ``commit``, oldest first
     reviews: tuple[VerifiedReview, ...]
+    message: str  # the commit message
+    rules_changed: tuple[str, ...]  # review rules changed since the Base, as declared
 
 
 def verify_document(facts: VerifyFacts) -> dict[str, Any]:
@@ -269,6 +281,8 @@ def verify_document(facts: VerifyFacts) -> dict[str, Any]:
         "finished_at": facts.finished_at,
         "commit": facts.commit,
         "booley_commit": facts.booley_commit,
+        "message": facts.message,
+        "rules_changed": list(facts.rules_changed),
         "base": asdict(facts.base),
         "discovery": {"commit": facts.discovery["commit"], "run_id": facts.discovery["run_id"]},
         "commits": list(facts.commits),
