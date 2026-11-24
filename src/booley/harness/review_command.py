@@ -5,7 +5,8 @@ does, exports the commit into a clean checkout, reads that checkout's own Declar
 and for each distinct review that has a changed file runs the Reviewer in the export, one
 run after another and in this process. Two Targets that declare the same review share one
 Reviewer run. The result is stored as a Review Run in the Main Booley Directory, unless
-``--target`` is given: such a run is only printed.
+``--target`` is given: such a run is only printed. ``--verify`` and ``--status`` are routed
+to ``review_verify``.
 
 Exit status: 0 when no finding is open, 1 when a finding the commit introduced is open at
 or above its review's ``resolve`` level, 2 when a Reviewer run failed or the command was

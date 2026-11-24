@@ -991,7 +991,9 @@ def _add_review_subparser(sub) -> None:
         metavar="<name>",
         help="Run only this Target's reviews; the run is printed, never stored",
     )
-    parser.add_argument("--json", action="store_true", help="Print the Review Run as JSON")
+    parser.add_argument(
+        "--json", action="store_true", help="Print the Review Run as JSON (not with --status)"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--verify",

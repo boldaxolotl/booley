@@ -1,10 +1,11 @@
 """Plan the reviews of a commit and write its Review Run (issue #3272).
 
 A Review Run is the JSON document ``booley review`` stores for one discovery run of a
-commit: every Declared Review that had a changed file, what it found, and the Base the
-change was taken from. This module holds the pure parts: which reviews a change needs
-(one per distinct review, however many Targets declare it), the document, and its
-storage. It runs no Reviewer and prints nothing.
+commit (or, with ``--verify``, one verify run of a fix commit): every Declared Review that
+had a changed file, what it found, and the Base the change was taken from. This module
+holds the pure parts: which reviews a change needs (one per distinct review, however many
+Targets declare it), the documents, their storage, and which commits are Reviewed. It runs
+no Reviewer and prints nothing.
 """
 
 from __future__ import annotations
@@ -198,7 +199,7 @@ def review_declarations(planned: Collection[PlannedReview]) -> frozenset[Declara
             review.spec,
             review.resolve,
             review.spec_digest,
-            tuple((target.target, target.files) for target in review.targets),
+            tuple(sorted((target.target, target.files) for target in review.targets)),
         )
         for review in planned
     )
@@ -213,7 +214,9 @@ def review_declarations_of(document: Mapping[str, Any]) -> frozenset[Declaration
             review["spec"],
             review["resolve"],
             review.get("spec_digest"),
-            tuple((target["target"], tuple(target["files"])) for target in review["targets"]),
+            tuple(
+                sorted((target["target"], tuple(target["files"])) for target in review["targets"])
+            ),
         )
         for review in document["reviews"]
     )

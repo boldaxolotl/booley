@@ -8,11 +8,18 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from booley.review.review_run import (
+    PlannedReview,
+    TargetFiles,
+    review_declarations,
+    review_declarations_of,
+)
 from tests.conftest import FeatureFlagHelper
 from tests.mcp_tools.reviewer_support import ScriptedAgent
 from tests.review.test_review_command import (
@@ -349,3 +356,13 @@ def test_the_latest_verify_run_decides_and_a_bad_run_is_an_error(
 
     assert review(monkeypatch, root, "--status", first) == 2
     assert "0-broken.json cannot be read" in capsys.readouterr().err
+
+
+def test_declarations_ignore_the_order_of_a_reviews_targets() -> None:
+    """A Target declaring one review over two file sets lists them in hash order."""
+    targets = (TargetFiles("p#t", ("rtl/a.sv",), True), TargetFiles("p#t", ("rtl/b.sv",), True))
+    planned = [PlannedReview("bugs", "rtl", None, "major", targets)]
+    reordered = [PlannedReview("bugs", "rtl", None, "major", targets[::-1])]
+    document: dict[str, Any] = {"reviews": [asdict(r) for r in reordered]}
+
+    assert review_declarations(planned) == review_declarations_of(document)
