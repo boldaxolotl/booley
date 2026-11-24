@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Final
 
 from booley.core.boundary import as_dict
+from booley.harness.dashboard.jobs import FINISHED_JOB_STATES, JobView
 from booley.harness.dashboard.run_form import Field, text_words
 from booley.runtime.timefmt import format_clock, parse_timestamp
 
@@ -160,6 +161,17 @@ class CoverageRecordChoice:
 
     path: str
     label: str
+
+
+def sim_runs(jobs: Iterable[JobView]) -> tuple[SimRun, ...]:
+    """The finished Simulation Jobs among *jobs* that have a report: their invocation directories."""
+    return tuple(
+        SimRun(job.report_path.parent, job.record.ended_at or "")
+        for job in jobs
+        if job.record.endpoint == "sim"
+        and job.state in FINISHED_JOB_STATES
+        and job.report_path is not None
+    )
 
 
 def _complete_target(directory: Path) -> str | None:

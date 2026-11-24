@@ -21,6 +21,7 @@ from booley.harness.dashboard.jobs import (
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
 from booley.harness.dashboard.sessions import session_key_label
+from booley.harness.dashboard.specialist_form import SimRun, sim_runs
 from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.presentation.report_results import present_job_report
 from booley.runtime import job_records, job_slots
@@ -77,6 +78,11 @@ def find_report(reader: JobReader, worktree: Path, report: str) -> Path | None:
         ),
         None,
     )
+
+
+def finished_sim_runs(reader: JobReader, worktree: Path) -> tuple[SimRun, ...]:
+    """The finished Simulation Jobs of *worktree*, read now: their directories hold Coverage Records."""
+    return sim_runs(_worktree_jobs(worktree, _read_jobs(reader, worktree, wall_clock())))
 
 
 def _read_jobs(reader: JobReader, worktree: Path, now: float) -> tuple[JobView, ...]:
