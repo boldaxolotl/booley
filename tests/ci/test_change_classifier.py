@@ -499,9 +499,9 @@ _STABLE_BASE_JOBS = _ORDINARY_PYTHON_JOBS | {"bwave-smoke", "riscv-image"}
         pytest.param(["AGENTS.md"], _BASE_JOBS, id="root-markdown"),
         pytest.param(["qa/AREAS.md"], _BASE_JOBS, id="qa-markdown"),
         # A changelog fragment is documentation, never the release category.
-        pytest.param(["changelog.d/3606.md"], _BASE_JOBS, id="changelog-fragment"),
+        pytest.param(["changelog.d/3606.fix.md"], _BASE_JOBS, id="changelog-fragment"),
         pytest.param(
-            ["changelog.d/README.md", "changelog.d/fix-typo.md"],
+            ["changelog.d/README.md", "changelog.d/fix-typo.fix.md"],
             _BASE_JOBS,
             id="changelog-fragment-readme",
         ),

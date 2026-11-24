@@ -267,8 +267,8 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
         {"docs/internals/RELEASE-NOTES.md": ("postreview", "default")},
     ),
     "changelog-fragment": (
-        {"changelog.d/123.md": "Fixed a thing.\n"},
-        {"changelog.d/123.md": ("postreview", "default")},
+        {"changelog.d/123.fix.md": "Fixed a thing.\n"},
+        {"changelog.d/123.fix.md": ("postreview", "default")},
     ),
 }
 

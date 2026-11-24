@@ -86,7 +86,7 @@ def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
     owned = [
         "CHANGELOG.md",
         "src/booley/data/refs/CHANGELOG.md",
-        "changelog.d/1.md",
+        "changelog.d/1.fix.md",
         "tests/fixtures/ticket_guidance/x.md",
     ]
     _commit(repo, dict.fromkeys(owned, _LONG + "\n"), "owned")
