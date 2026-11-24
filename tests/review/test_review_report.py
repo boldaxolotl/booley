@@ -222,5 +222,6 @@ def test_the_state_line_tells_whether_anything_needs_the_user(case: str, state: 
     shown = terminal_report(chain, stored=case != "target")
 
     assert shown.splitlines()[1].startswith(state)
-    assert f"**{state}" in markdown_report(chain) or case == "target"
+    if case != "target":  # the Markdown file exists only for a stored run
+        assert f"**{state}" in markdown_report(chain)
     assert "Needs you" in shown if case == "one-open" else "Needs you" not in shown

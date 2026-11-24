@@ -9,7 +9,7 @@ Waivers, what Needs you, what is Fixed, what is non-blocking, and the reviews no
 A finding is blocking exactly when it was introduced, is still open in the reported run and
 is at or above its review's ``resolve`` (:func:`booley.specialists.reviewer.at_or_above`,
 the rule ``--fail-on`` applies). A review whose re-check errored judged nothing, so its
-findings keep the state of the last run that judged them, never "fixed". A section with
+findings keep their discovery state, never "fixed". A section with
 nothing to show is left out; the Run section and the state line are always shown.
 """
 
@@ -31,6 +31,7 @@ from booley.presentation.report_blocks import (
     paint,
     terminal_sections,
 )
+from booley.review.review_run import ERROR, NOT_NEEDED, NOTHING_TO_REVIEW
 from booley.specialists.reviewer import at_or_above
 
 _SHORT = 12  # hex digits of a commit shown in the report
@@ -66,7 +67,7 @@ def _judged(run: _Run, key: _Key, finding_id: str) -> _Run | None:
     re-check errored carries the discovery rows over without judging them.
     """
     for review in run["reviews"]:
-        if _key(review) == key and review["outcome"] != "error":
+        if _key(review) == key and review["outcome"] != ERROR:
             return next((r for r in review["introduced"] if r["finding_id"] == finding_id), None)
     return None
 
@@ -114,14 +115,14 @@ def _state(chain: Sequence[_Run], findings: Sequence[_Finding], *, stored: bool)
     """Whether the reported commit is Reviewed, in words; the terminal also colours it."""
     run = chain[-1]
     needs = sum(finding.blocking for finding in findings)
-    if any(review["outcome"] == "error" for review in run["reviews"]):
+    if any(review["outcome"] == ERROR for review in run["reviews"]):
         return Text("Not Reviewed: a review failed", "fail")
     if needs:
         verb = "needs" if needs == 1 else "need"
         return Text(f"Not Reviewed: {_count(needs, 'finding')} {verb} you", "fail")
     if not stored:
         return Text("Not Reviewed: not stored (--target)", "warn")
-    if run["outcome"] == "nothing-to-review":
+    if run["outcome"] == NOTHING_TO_REVIEW:
         return Text(
             "Reviewed: nothing to review: no Declared Review has a changed file since the Base",
             "met",
@@ -238,7 +239,7 @@ def _sections(chain: Sequence[_Run], findings: Sequence[_Finding]) -> list[Secti
             [
                 Text(f"{_review_name(review)}: no changed file")
                 for review in reviews
-                if review["outcome"] == "not-needed"
+                if review["outcome"] == NOT_NEEDED
             ],
         ),
     ]

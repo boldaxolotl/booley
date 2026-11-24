@@ -309,7 +309,7 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
             (planned, _run_reviewer(planned, under))
             for planned in plan_reviews(declared, changed, checkout)
         )
-        rules_changed = review_rules_changes(project_root, keyed, base_commit, checkout)
+        rules_changed = review_rules_changes(project_root, keyed, base_commit)
     facts = RunFacts(
         run_id,
         rfc3339_from_datetime(started_at),

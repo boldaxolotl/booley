@@ -470,7 +470,7 @@ def test_review_rules_changes_since_the_base(tmp_path: Path, case: str) -> None:
         write(repo / path, text)
     head = commit_all(repo, "head")
 
-    changed = review_rules_changes(repo, resolve_measurement_key(repo, head), base, repo)
+    changed = review_rules_changes(repo, resolve_measurement_key(repo, head), base)
 
     assert changed == expected
 
@@ -505,8 +505,43 @@ def test_review_rules_changes_compare_a_versioned_booley_directory_with_its_rule
     commit_all(booley, case, staged_only=True)
     head = git(checkout, "rev-parse", "HEAD")
 
-    changed = review_rules_changes(
-        checkout, resolve_measurement_key(checkout, head), head, checkout
-    )
+    changed = review_rules_changes(checkout, resolve_measurement_key(checkout, head), head)
 
     assert changed == expected
+
+
+@pytest.mark.parametrize("spec", ["docs/spec.md", "vendor/spec.md"])
+def test_review_rules_changes_read_symlinks_and_submodules_as_the_reviewer_does(
+    tmp_path: Path, spec: str
+) -> None:
+    """AC3: a symlinked reviews.toml parses, a retargeted link and a moved submodule pin count."""
+    from booley.measurement.run_key import resolve_measurement_key
+    from booley.review.declared_reviews import review_rules_changes
+
+    if sys.platform == "win32":
+        pytest.skip("needs symlinks")
+    sub = new_repository(tmp_path / "sub")
+    write(sub / "spec.md", "one\n")
+    sub_one = commit_all(sub, "one")
+    write(sub / "spec.md", "two\n")
+    sub_two = commit_all(sub, "two")
+    repo = new_repository(tmp_path / "repo")
+    write(repo / ".booley" / "booley.toml", "[project]\n")
+    write(repo / "rtl.v", "rtl\n")
+    write(repo / "config" / "reviews.toml", IN_TREE_REVIEWS.replace("docs/spec.md", spec))
+    (repo / REVIEWS_PATH).symlink_to("../config/reviews.toml")
+    write(repo / "docs" / "old.md", "old\n")
+    write(repo / "docs" / "new.md", "new\n")
+    (repo / "docs" / "alias.md").symlink_to("old.md")
+    (repo / "docs" / "spec.md").symlink_to("alias.md")
+    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub), "vendor")
+    git(repo / "vendor", "checkout", "-q", sub_one)
+    base = commit_all(repo, "base")
+    (repo / "docs" / "alias.md").unlink()
+    (repo / "docs" / "alias.md").symlink_to("new.md")
+    git(repo / "vendor", "checkout", "-q", sub_two)
+    head = commit_all(repo, "head")
+
+    changed = review_rules_changes(repo, resolve_measurement_key(repo, head), base)
+
+    assert changed == (spec,)

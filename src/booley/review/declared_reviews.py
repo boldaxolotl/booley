@@ -20,6 +20,7 @@ Target catalog and the files are in :mod:`booley.review.review_resolution`.
 
 from __future__ import annotations
 
+import posixpath
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
@@ -32,7 +33,7 @@ from booley.measurement.metrics_file import table_header
 from booley.measurement.rules_diff import commit_file
 from booley.measurement.run_key import KeyedCommit, booley_dir_at
 from booley.runtime.commit_export import versioned_booley_dir
-from booley.runtime.pinned_history import FileCommitError
+from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
 REVIEWS_FILE = "reviews.toml"
@@ -341,8 +342,54 @@ def declared_reviews_at(repository: Path, keyed: KeyedCommit) -> tuple[TargetRev
                 f"but {repository} has none"
             )
         source, commit, place = paired, keyed.booley_commit, PurePosixPath()
-    raw = commit_file(source, commit, (place / REVIEWS_FILE).as_posix())
+    raw = _resolved_file(source, commit, (place / REVIEWS_FILE).as_posix())
     return () if raw is None else parse_reviews_as_written(raw)
+
+
+_GITLINK_MODE: Final = "160000"
+_SYMLINK_MODE: Final = "120000"
+_MAX_LINK_HOPS: Final = 8
+
+
+def _tree_entry(repository: Path, commit: str, path: str) -> tuple[str, str] | None:
+    """The (mode, object id) Git records for *path* at *commit*, or None when absent."""
+    listing = raw_git(repository, "ls-tree", commit, "--", path).decode().strip()
+    if not listing:
+        return None
+    meta = listing.split("\t", 1)[0].split()
+    return meta[0], meta[2]
+
+
+def _resolved_file(repository: Path, commit: str, path: str, hops: int = 0) -> bytes | None:
+    """The content *path* has at *commit* as the Reviewer reads it, or None when absent.
+
+    Follows a symlink at any component of the path inside the commit, and a path inside a
+    submodule at the commit its gitlink pins. A link that leaves the repository, or more
+    than ``_MAX_LINK_HOPS`` links, raises :class:`FileCommitError`.
+    """
+    if hops > _MAX_LINK_HOPS:
+        raise FileCommitError(f"{path} passes through too many symlinks")
+    parts = PurePosixPath(path).parts
+    for index in range(1, len(parts) + 1):
+        prefix = PurePosixPath(*parts[:index]).as_posix()
+        entry = _tree_entry(repository, commit, prefix)
+        if entry is None:
+            return None
+        mode, object_id = entry
+        rest = PurePosixPath(*parts[index:]).as_posix() if index < len(parts) else None
+        if mode == _GITLINK_MODE:
+            if rest is None:
+                raise FileCommitError(f"{path} is a submodule, not a file")
+            return _resolved_file(repository / prefix, object_id, rest, hops)
+        if mode == _SYMLINK_MODE:
+            link = raw_git(repository, "cat-file", "blob", object_id).decode()
+            parent = PurePosixPath(*parts[: index - 1]).as_posix()
+            target = posixpath.normpath(posixpath.join(parent, link))
+            if target.startswith("..") or posixpath.isabs(target):
+                raise FileCommitError(f"{path} links outside the repository")
+            followed = target if rest is None else f"{target}/{rest}"
+            return _resolved_file(repository, commit, followed, hops + 1)
+    return commit_file(repository, commit, path)
 
 
 def _spec_paths(declared: tuple[TargetReviews, ...]) -> Iterator[str]:
@@ -366,14 +413,14 @@ def _spec_changed(
     try:
         place = booley_dir_at(repository, keyed.commit)
         if keyed.booley_commit is None or not path.is_relative_to(place):
-            return commit_file(repository, base, spec) != commit_file(
+            return _resolved_file(repository, base, spec) != _resolved_file(
                 repository, keyed.commit, spec
             )
         paired = versioned_booley_dir(repository)
         if paired is None or rules_base is None:
             return False
         inside = path.relative_to(place).as_posix()
-        return commit_file(paired, rules_base, inside) != commit_file(
+        return _resolved_file(paired, rules_base, inside) != _resolved_file(
             paired, keyed.booley_commit, inside
         )
     except (FileCommitError, ValueError):
@@ -388,16 +435,14 @@ def _rules_base_of(repository: Path, keyed: KeyedCommit) -> str | None:
     return resolve_rules_base(paired, keyed.booley_commit).commit
 
 
-def review_rules_changes(
-    repository: Path, keyed: KeyedCommit, base: str, checkout: Path
-) -> tuple[str, ...]:
+def review_rules_changes(repository: Path, keyed: KeyedCommit, base: str) -> tuple[str, ...]:
     """What the commit changed in its review rules since *base*: the files, as declared.
 
     ``reviews.toml`` when the effective Declared Reviews differ (read with
     :func:`declared_reviews_at`; a Base side that cannot be read counts as different), then
-    each declared spec path, from either side, whose content differs. A spec that is a
-    symlink in *checkout* (the export of the commit) is compared as the link and as its
-    target inside the checkout, because the Reviewer reads the target. With a Versioned
+    each declared spec path, from either side, whose content differs. Both sides are read
+    as the Reviewer reads them: through symlinks, and into submodules at their pinned
+    commit. With a Versioned
     Booley Directory the Base side is its own rules Base; with none, nothing of it
     changed. The commit's own declarations are read as :func:`declared_reviews_at` does and
     their errors propagate.
@@ -417,13 +462,6 @@ def review_rules_changes(
         changed.append(REVIEWS_FILE)
     specs = sorted({*_spec_paths(after), *_spec_paths(before or ())})
     for spec in specs:
-        link = checkout / spec
-        targets = [spec]
-        if link.is_symlink():
-            root = checkout.resolve()
-            target = link.resolve()
-            if target.is_relative_to(root):
-                targets.append(target.relative_to(root).as_posix())
-        if any(_spec_changed(repository, keyed, base, rules_base, path) for path in targets):
+        if _spec_changed(repository, keyed, base, rules_base, spec):
             changed.append(spec)
     return tuple(changed)

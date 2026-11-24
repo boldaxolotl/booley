@@ -253,7 +253,7 @@ def verify_review(project_root: Path, request: ReviewRequest) -> int:
         declared = load_reviews(checkout, None)
         planned = plan_reviews(declared, frozenset(), checkout)
         _refuse_changed_declarations(discovery, planned, sha)
-        rules_changed = review_rules_changes(project_root, keyed, base_commit, checkout)
+        rules_changed = review_rules_changes(project_root, keyed, base_commit)
         path = str(main / "reviews" / discovery["commit"] / f"{discovery['run_id']}.json")
         reviews = tuple(
             _verify_one(discovery["reviews"][index], path, checkout, proposals)
