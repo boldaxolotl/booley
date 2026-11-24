@@ -54,8 +54,9 @@ _CLAUSE = re.compile(r"[.;:,()\n]|\s+(?:or|and|then)\s+|\s+[—-]\s+")
 _FORMAT_FIELD = re.compile(r"\{[^{}]*\}")
 _BASE_ATTRIBUTES = {"fail_": "fail", "fail": "fail", "warn_": "warn", "warn": "warn"}
 _NOT_SINK_RECEIVERS = frozenset({"pytest", "warnings"})
-_REPORTER_CLASS = "_Reporter"
-_WARNING_SINK = "_warning_sink"
+# The scan keys on these Doctor names; `_Reporter` and `_warning_sink` have no public alias.
+_REPORTER_CLASS = "_Reporter"  # no public alias: scan keys on the name
+_WARNING_SINK = "_warning_sink"  # no public alias: scan keys on the name
 _MAX_DEPTH = 6
 _MAX_TEXTS = 64
 
@@ -173,9 +174,9 @@ class _Collector:
 
     def _visit(self, node: ast.AST, func: _Func, owner: str | None) -> None:
         for child in ast.iter_child_nodes(node):
-            self._dispatch(child, func, owner)
+            self._scan_node(child, func, owner)
 
-    def _dispatch(self, node: ast.AST, func: _Func, owner: str | None) -> None:
+    def _scan_node(self, node: ast.AST, func: _Func, owner: str | None) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             self._enter_function(node, func, owner)
             return
@@ -189,7 +190,7 @@ class _Collector:
             self._visit(node, func, node.name)
             self._add_field_constructor(node, func)
             return
-        self._record(node, func)
+        self._note_site(node, func)
         self._visit(node, func, owner)
 
     def _add_field_constructor(self, node: ast.ClassDef, func: _Func) -> None:
@@ -219,7 +220,7 @@ class _Collector:
             func.nested[node.name] = new
         self._visit(node, new, owner)
 
-    def _record(self, node: ast.AST, func: _Func) -> None:
+    def _note_site(self, node: ast.AST, func: _Func) -> None:
         if isinstance(node, ast.Call):
             func.calls.append(node)
         elif isinstance(node, ast.Return) and node.value is not None:
@@ -476,16 +477,16 @@ class _Analysis:
             changed = False
             for func in self.funcs:
                 for call in func.calls:
-                    changed |= self._propagate(call, func)
+                    changed |= self._spread_taint(call, func)
             for func in self.funcs:
-                forwarded = self._forwarded(func)
+                forwarded = self._forwarded_params(func)
                 if forwarded - self.derived.get(func, set()):
                     self.derived.setdefault(func, set()).update(forwarded)
                     changed = True
             if not changed:
                 return
 
-    def _propagate(self, call: ast.Call, func: _Func) -> bool:
+    def _spread_taint(self, call: ast.Call, func: _Func) -> bool:
         """Mark the parameters of *call*'s callee that receive a sink value."""
         if _is_name(call.func, _WARNING_SINK):
             return False
@@ -501,7 +502,7 @@ class _Analysis:
                 changed = True
         return changed
 
-    def _forwarded(self, func: _Func) -> set[str]:
+    def _forwarded_params(self, func: _Func) -> set[str]:
         """The parameters *func* hands on as a message or fix."""
         names: set[str] = set()
         for call in func.calls:
@@ -553,12 +554,12 @@ class _Analysis:
         if depth >= _MAX_DEPTH:
             return
         self.expanded.add(item.func)
-        inner = self._bind(item.func, item.call, func, env)
+        inner = self._bind_call(item.func, item.call, func, env)
         for call in item.func.calls:
             for nested in self.emissions(call, item.func):
                 yield from self._expand(nested, item.func, inner, depth + 1)
 
-    def _bind(self, callee: _Func, call: ast.Call, scope: _Func, env: _Env) -> _Env:
+    def _bind_call(self, callee: _Func, call: ast.Call, scope: _Func, env: _Env) -> _Env:
         bound: dict[str, list[str] | None] = {}
         for name, argument in _bind_arguments(callee, call):
             bound[name] = self.resolve(argument, scope, env)
@@ -613,9 +614,9 @@ class _Analysis:
         if text is not None:
             return [text]
         if isinstance(expr, ast.JoinedStr):
-            return self._join(expr.values, scope, env, depth)
+            return self._join_values(expr.values, scope, env, depth)
         if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-            return self._join([expr.left, expr.right], scope, env, depth)
+            return self._join_values([expr.left, expr.right], scope, env, depth)
         if isinstance(expr, ast.IfExp):
             return self._union([expr.body, expr.orelse], scope, env, depth)
         if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
@@ -639,7 +640,7 @@ class _Analysis:
             found += texts
         return found
 
-    def _join(
+    def _join_values(
         self, parts: list[ast.expr], scope: _Func, env: _Env, depth: int
     ) -> list[str] | None:
         """Concatenate parts; a part that cannot be resolved becomes an opaque hole."""
@@ -691,7 +692,7 @@ class _Analysis:
         callee = self.callee(expr.func, scope)
         if callee is None or not callee.returns:
             return None
-        inner = self._bind(callee, expr, scope, env)
+        inner = self._bind_call(callee, expr, scope, env)
         return self._union(callee.returns, callee, inner, depth)
 
     # -- untraced sink values -----------------------------------------------------------

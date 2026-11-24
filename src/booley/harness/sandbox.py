@@ -207,20 +207,11 @@ class DockerRunner:
         with contextlib.suppress(Exception):
             self.stop_proxy()
 
-    def _build_docker_cmd(
-        self,
-        cmd: list[str],
-        *,
-        cwd: str = "/work",
-        interactive: bool = False,
-        tty: bool = False,
-        remove: bool = False,
-    ) -> list[str]:
+    def _build_docker_cmd(self, cmd: list[str], *, tty: bool) -> list[str]:
         """Build the full `docker run` command."""
         proxy_url, effective_network = self._resolve_network()
-        docker_cmd = self._base_docker_flags(cwd, effective_network, remove=remove)
-        if interactive:
-            docker_cmd.insert(3, "-i")
+        docker_cmd = self._base_docker_flags(effective_network)
+        docker_cmd.insert(3, "-i")
         if tty:
             docker_cmd.insert(3, "-t")
 
@@ -249,12 +240,7 @@ class DockerRunner:
         one-off command); ``tty`` allocates a pseudo-TTY for interactive use.
         The caller execs this directly and inherits stdio.
         """
-        return self._build_docker_cmd(
-            payload,
-            interactive=True,
-            tty=tty,
-            remove=True,
-        )
+        return self._build_docker_cmd(payload, tty=tty)
 
     def cleanup_ephemeral(self) -> None:
         """Release transient resources created while building an ephemeral argv.
@@ -279,26 +265,20 @@ class DockerRunner:
             return self._ensure_proxy(), "bridge"
         return None, "none"
 
-    def _base_docker_flags(
-        self,
-        cwd: str,
-        network: str,
-        *,
-        remove: bool = False,
-    ) -> list[str]:
+    def _base_docker_flags(self, network: str) -> list[str]:
         """Build core docker run flags (worktree, security, resource limits)."""
         mount_spec = f"type=bind,src={_docker_mount_path(self.worktree)},target=/work"
         flags = [
             "docker",
             "run",
             "--init",
-            *(["--rm"] if remove else []),
+            "--rm",
             "--label",
             f"booley.project={project_name(self.worktree)}",
             "--mount",
             mount_spec,
             "-w",
-            cwd,
+            "/work",
             "--network",
             network,
             "--memory",

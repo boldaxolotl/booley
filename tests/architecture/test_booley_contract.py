@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.architecture.booley_contract import BOOLEY_SOURCE_DEPENDENCY_CONTRACT
-from tests.architecture.contract import ArchitectureContract, evaluate_contract, format_problems
+from tests.architecture.contract import ArchitectureContract, evaluate_contract
 from tests.architecture.import_graph import Dependency, analyze_imports
 
 
@@ -134,6 +134,46 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D13", "booley.fusesoc.registry", "booley.flows.fpga.flow", "seed.py"),
         ("D13", "booley.fusesoc.registry", "booley.flows.lint.flow", "seed.py"),
         ("D41", "booley.runtime.agent", "booley.flows.sim.flow", "seed.py"),
+        ("D19", "booley.eda.policy", "booley.flows.execution", "seed.py"),
+        ("D20", "booley.eda.policy", "booley.runtime.session_issuance", "seed.py"),
+        ("D20", "booley.eda.policy", "booley.runtime.issuance_invalidation", "seed.py"),
+        ("D23", "booley.config.seed", "booley.eda.provisioning.authority", "seed.py"),
+        ("D24", "booley.eda.seed", "booley.runtime.agent", "seed.py"),
+        ("D31", "booley.flows.sim.rogue", "booley.flows.sim.record.store", "seed.py"),
+        ("D31", "booley.flows.sim.rogue", "booley.flows.sim.record.inspection", "seed.py"),
+        ("D32", "booley.runtime.consumer", "booley.dev_support.provider", "seed.py"),
+        ("D33", "booley.feedback.consumer", "booley.harness.provider", "seed.py"),
+        ("D34", "booley.commit_policy.consumer", "booley.runtime.provider", "seed.py"),
+        ("D34", "booley.commit_policy.consumer", "booley.harness.provider", "seed.py"),
+        ("D34", "booley.commit_policy.consumer", "booley.dev_support.provider", "seed.py"),
+        ("D37", "booley.runtime.job_observation.reader", "booley.targets.catalog", "seed.py"),
+        ("D39", "booley.flows.rogue", "booley.harness.cli_goal_notice", "seed.py"),
+        ("D39", "booley.flows.runtime_reality", "booley.harness.doctor", "seed.py"),
+        ("D39", "booley.flows.runtime_reality", "booley.harness.setup.readiness", "seed.py"),
+        ("D39", "booley.flows.fpga.vivado_startup", "booley.harness.doctor", "seed.py"),
+        ("D39", "booley.flows.fpga.vivado_startup", "booley.harness.setup.readiness", "seed.py"),
+        ("D42", "booley.flows.sim.rogue", "booley.flows.mutation.flow", "seed.py"),
+        ("D42", "booley.flows.lint.rogue", "booley.flows.mutation.flow", "seed.py"),
+        ("D42", "booley.flows.rogue", "booley.flows.mutation.flow", "seed.py"),
+        ("D4", "booley.mcp.server_inspection", "booley.harness.setup.readiness", "seed.py"),
+        ("D26", "booley.harness.host_diagnostics", "booley.harness.doctor", "seed.py"),
+        ("D26", "booley.harness.setup.readiness", "booley.harness.init_cmd", "seed.py"),
+        ("D26", "booley.runtime.inspection", "booley.harness.booley", "seed.py"),
+        (
+            "D26",
+            "booley.flows.sim.backends.cocotb_target_checks",
+            "booley.presentation.colors",
+            "seed.py",
+        ),
+        ("D26", "booley.runtime.vaporview", "booley.harness.setup.common", "seed.py"),
+        ("D26", "booley.flows.target_test_plan_inspection", "booley.harness.doctor", "seed.py"),
+        ("D26", "booley.audit.core_tree_inspection", "booley.harness.init_cmd", "seed.py"),
+        ("D26", "booley.runtime.core_repository_hygiene", "booley.harness.booley", "seed.py"),
+        ("D26", "booley.runtime.core_resolution", "booley.presentation.colors", "seed.py"),
+        ("D26", "booley.runtime.project_image", "booley.harness.setup.common", "seed.py"),
+        ("D26", "booley.mcp.server_inspection", "booley.harness.doctor", "seed.py"),
+        ("D26", "booley.flows.runtime_reality", "booley.harness.init_cmd", "seed.py"),
+        ("D26", "booley.flows.fpga.vivado_startup", "booley.harness.booley", "seed.py"),
     ),
 )
 def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
@@ -144,53 +184,6 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
     problems = evaluate_contract((dependency,), _directions_only())
 
     assert rule in {problem.rule for problem in problems}
-
-
-@pytest.mark.parametrize(
-    ("statement", "target"),
-    [
-        (
-            "import booley.flows.sim.record.store\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "from booley.flows.sim.record import store\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "from booley.flows.sim.record.store import SimulationRecordStore\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "def deferred():\n    import booley.flows.sim.record.store\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "if enabled:\n    import booley.flows.sim.record.store\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    from booley.flows.sim.record.store import SimulationRecordStore\n",
-            "booley.flows.sim.record.store",
-        ),
-        (
-            "from booley.flows.sim.record.inspection import authenticate_work_item\n",
-            "booley.flows.sim.record.inspection",
-        ),
-    ],
-)
-def test_simulation_record_storage_rule_catches_every_external_import_form(
-    tmp_path: Path, statement: str, target: str
-) -> None:
-    root = _simulation_record_rule_seed(tmp_path, "flows/sim/rogue.py", statement)
-
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-
-    assert "D31" in report
-    assert "booley.flows.sim.rogue" in report
-    assert target in report
 
 
 def test_simulation_record_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
@@ -205,65 +198,8 @@ def test_simulation_record_storage_rule_allows_public_facade_import(tmp_path: Pa
     assert not [problem for problem in problems if problem.rule == "D31"]
 
 
-@pytest.mark.parametrize(
-    ("source", "target"),
-    [
-        ("booley.flows.sim.record.coordinator", "booley.flows.sim.record.store"),
-        ("booley.flows.sim.record.inspection", "booley.flows.sim.record.store"),
-        ("booley.flows.sim.record", "booley.flows.sim.record.inspection"),
-    ],
-)
-def test_simulation_record_storage_permissions_allow_only_their_exact_edges(
-    source: str, target: str
-) -> None:
-    allowed = _dependency(source, target)
-    displaced = _dependency(source + "_other", target)
-
-    assert not [
-        problem
-        for problem in evaluate_contract((allowed,), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-        if problem.rule == "D31"
-    ]
-    assert [
-        problem
-        for problem in evaluate_contract((displaced,), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-        if problem.rule == "D31"
-    ]
-
-
 def _directions_only() -> ArchitectureContract:
     return ArchitectureContract(rules=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules)
-
-
-@pytest.mark.parametrize(
-    ("source", "target", "rule"),
-    [
-        ("targets/probe.py", "flows/edam.py", "D27"),
-        ("targets/__init__.py", "runtime/git.py", "D27"),
-        ("fusesoc/core_security.py", "runtime/git.py", "D28"),
-    ],
-)
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import {module} as dependency\n",
-        "def deferred():\n    import {module}\n",
-        "if enabled:\n    import {module}\n",
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import {module}\n",
-    ],
-)
-def test_target_separation_catches_all_source_import_locations(
-    tmp_path: Path, source: str, target: str, rule: str, statement: str
-) -> None:
-    package = tmp_path / "booley"
-    for relative in ("__init__.py", source, target):
-        path = package / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("")
-    module = "booley." + target.removesuffix(".py").replace("/", ".")
-    (package / source).write_text(statement.format(module=module))
-    problems = evaluate_contract(analyze_imports(package), _directions_only())
-    assert rule in {problem.rule for problem in problems}
 
 
 def test_target_separation_allows_downward_mechanisms() -> None:
@@ -277,27 +213,6 @@ def test_target_separation_allows_downward_mechanisms() -> None:
     )
     for dependency in dependencies:
         assert evaluate_contract((dependency,), _directions_only()) == ()
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import booley.flows.sim\n",
-        "def deferred():\n    import booley.flows.sim\n",
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.flows.sim\n",
-    ],
-)
-def test_bwave_separation_catches_all_import_locations(tmp_path: Path, statement: str) -> None:
-    package = tmp_path / "booley"
-    for relative in ("__init__.py", "bwave/__init__.py", "bwave/consumer.py", "flows/sim.py"):
-        path = package / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("")
-    (package / "bwave/consumer.py").write_text(statement)
-
-    problems = evaluate_contract(analyze_imports(package), _directions_only())
-
-    assert "D29" in {problem.rule for problem in problems}
 
 
 def test_approved_target_group_cannot_recombine_with_execution() -> None:

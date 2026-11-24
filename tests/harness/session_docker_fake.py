@@ -139,6 +139,15 @@ class SandboxDocker:
         self.created: dict | None = None
         self.exec_reply: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None
         self.on_call: Callable[[list[str]], None] | None = None
+        self.scripted: list[
+            tuple[tuple[str, ...], subprocess.CompletedProcess[str] | Exception]
+        ] = []
+
+    def script(
+        self, prefix: tuple[str, ...], reply: subprocess.CompletedProcess[str] | Exception
+    ) -> None:
+        """Answer (or raise, for an exception) every call whose words start with *prefix*."""
+        self.scripted.append((prefix, reply))
 
     def find(self, key: str) -> str | None:
         for name, state in self.containers.items():
@@ -152,6 +161,11 @@ class SandboxDocker:
         if self.on_call is not None:
             self.on_call(argv)
         self.calls.append(argv)
+        for prefix, reply in self.scripted:
+            if tuple(argv[1 : 1 + len(prefix)]) == prefix:
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
         verb, *args = argv[1:]
         if verb == "rm":
             self.rm_attempts.append(argv)
@@ -310,7 +324,9 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     # The two seams that replace the Docker CLI; no public entry takes a runner.
     monkeypatch.setattr(session_runtime, "_run", docker.run)
     monkeypatch.setattr(
-        host_docker, "_run_docker", lambda args, **_kw: docker.run(["docker", *args])
+        host_docker,
+        "_run_docker",
+        lambda args, *, executable="docker", **_kw: docker.run([executable, *args]),
     )
     return docker
 
