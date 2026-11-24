@@ -175,6 +175,8 @@ def test_timeout_evidence_child_failure_keeps_stack_and_kill(
 
 
 def test_timeout_evidence_one_failing_child_keeps_its_pid(tmp_path: Path) -> None:
+    # private: the nested session breaks the plugin's own child-state reader (a real child
+    # cannot be made to fail it).
     (tmp_path / "conftest.py").write_text(
         "import timeout_evidence\n"
         "def _boom(popen):\n    raise RuntimeError('state boom')\n"

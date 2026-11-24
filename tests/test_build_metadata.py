@@ -26,6 +26,7 @@ def _installed_distribution(monkeypatch):
 
 def _bake_wheel_revision(monkeypatch, commit):
     """Install the wheel-build revision stamp as the importable ``booley._build_commit``."""
+    # private: the wheel build generates this stamp module untracked; no public seam creates it.
     stamp = types.ModuleType("booley._build_commit")
     stamp.COMMIT = commit
     monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)

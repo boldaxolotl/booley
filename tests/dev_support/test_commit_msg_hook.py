@@ -76,11 +76,6 @@ def _run_hook(
     return rc, err.getvalue(), msg_file.read_bytes()
 
 
-# ---------------------------------------------------------------------------
-# Banned terms: the message file is never rewritten
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("config", "original", "expected"),
     [
@@ -202,11 +197,6 @@ def test_merge_commit_message_file_gets_merge_hint(tmp_path: Path) -> None:
     assert "merge commit" not in plain_err
 
 
-# ---------------------------------------------------------------------------
-# Attribution footers are rejected without echoing the identity
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("config", "footer"),
     [
@@ -281,11 +271,6 @@ def test_attribution_payload_equality_is_not_broadened_by_substrings(
     assert "attribution footer" in err
 
 
-# ---------------------------------------------------------------------------
-# BOOLEY_SKIP_COMMIT_VALIDATION skips convention checks only
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "raw",
     [
@@ -325,11 +310,6 @@ def test_body_cap_errors_are_listed_with_banned_terms_unless_skipped(
     _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
     assert "'llm' in the subject" in err
     assert ("max_body_lines" in err) is not skip
-
-
-# ---------------------------------------------------------------------------
-# main()
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("argv", [["commit-msg"], ["commit-msg", "no_such_file"]])

@@ -91,11 +91,6 @@ def test_find_banned_escapes_regex_metacharacters_and_respects_boundaries() -> N
     assert StealthPolicy(True, (), None, ()).find_banned("claude") == []
 
 
-# ---------------------------------------------------------------------------
-# [stealth] settings read from the Project configuration
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("toml_body", "expected"),
     [
@@ -249,11 +244,6 @@ def test_stealth_uses_explicit_relocated_project_data(
     assert stealth_enabled(root, booley_dir=data) is expected
 
 
-# ---------------------------------------------------------------------------
-# source_checkout_policy_owner import fallbacks
-# ---------------------------------------------------------------------------
-
-
 def test_source_tree_fallback_adds_package_parent() -> None:
     """A directly launched source hook can recover the canonical classifier."""
     source_root = Path(__file__).resolve().parents[2]
@@ -294,11 +284,6 @@ def test_source_tree_fallback_is_fail_closed_when_classifier_cannot_load() -> No
 
     with patch("builtins.__import__", side_effect=block_classifiers):
         assert not source_checkout_policy_owner(source_root)
-
-
-# ---------------------------------------------------------------------------
-# validate_push_configuration
-# ---------------------------------------------------------------------------
 
 
 def _push_config(root: Path) -> Path:
@@ -397,11 +382,6 @@ def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -
     _push_config(tmp_path).write_text('stealth = "enabled"\n')
     with pytest.raises(ValueError, match=r"\[stealth\] must be a table"):
         validate_push_configuration(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Vocabulary tiers and identifier matching
-# ---------------------------------------------------------------------------
 
 
 def test_identifier_reported_spellings_and_generic_controls() -> None:

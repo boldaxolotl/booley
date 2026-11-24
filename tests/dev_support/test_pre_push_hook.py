@@ -163,14 +163,20 @@ def _stdin(local_sha: str, remote_sha: str = _ZERO_SHA):
 
 
 class TestMain:
-    @pytest.mark.parametrize("scenario", ["clean", "escape-hatch", "stealth-off", "deletion"])
+    @pytest.mark.parametrize(
+        "scenario", ["clean", "escape-hatch", "stealth-off", "deletion", "second-pattern"]
+    )
     def test_allows_push(self, repo, monkeypatch, scenario):
         """Each way past the guard returns 0 although an unlisted author is outgoing."""
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
         clean = _head(repo)
         sha = _commit(repo, "test(mut): mutation muxes", author="mut-creator <mut@local>")
         _enable_stealth(
-            repo / ".booley", enabled=scenario != "stealth-off", allowed=["*@example.com"]
+            repo / ".booley",
+            enabled=scenario != "stealth-off",
+            allowed=["*@example.com", "mut@local"]
+            if scenario == "second-pattern"
+            else ["*@example.com"],
         )
         if scenario == "escape-hatch":
             monkeypatch.setenv("BOOLEY_SKIP_PUSH_GUARD", "1")
@@ -337,10 +343,12 @@ def _push(sha, old=_ZERO_SHA):
         return main()
 
 
-def _blocked(capsys, sha: str, message: str, old: str = _ZERO_SHA) -> None:
-    """Push *sha* and expect a refusal whose stderr names *message*."""
+def _blocked(capsys, sha: str, message: str, old: str = _ZERO_SHA) -> str:
+    """Push *sha*, expect a refusal whose stderr names *message*, and return that stderr."""
     assert _push(sha, old) == 1
-    assert message in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert message in err
+    return err
 
 
 def test_minimum_git_generated_only_first_import(matrix_repo):
@@ -601,7 +609,10 @@ def test_deep_history_oldest_leak_and_bounded_batches(repo, monkeypatch):
     ],
 )
 def test_bypassed_trailer_remains_blocked(repo, trail):
-    assert _push(_commit(repo, f"fix(core): ordinary work\n\n{trail}")) == 1
+    # A clean first body line and a clean middle paragraph: the whole body is scanned.
+    assert (
+        _push(_commit(repo, f"fix(core): ordinary work\n\nfirst line\n\nsecond\n\n{trail}")) == 1
+    )
 
 
 def _tilde_destination(repo: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Path]:
@@ -1104,8 +1115,8 @@ def test_available_advertised_object_read_error_is_not_optional_discovery_failur
             else result
         ),
     )
-    _blocked(capsys, _head(repo), "Git inspection failed")
-    assert "advertisement unavailable" not in capsys.readouterr().err
+    err = _blocked(capsys, _head(repo), "Git inspection failed")
+    assert "advertisement unavailable" not in err
 
 
 @pytest.mark.parametrize(
