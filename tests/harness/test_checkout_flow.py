@@ -541,9 +541,10 @@ def test_checkout_flow_refuses_booley_config_outside_the_checkout(
         run_checkout_flow(request)
 
     assert str(offending.resolve()) in str(refused.value)
-    assert {"own-root": "selects its own root", "unusable-config": "unusable Booley"}.get(
-        case, ""
-    ) in str(refused.value)
+    if case in ("own-root", "unusable-config"):
+        assert {"own-root": "selects its own root", "unusable-config": "unusable Booley"}[
+            case
+        ] in str(refused.value)
     # Refused before anything was created: no Job record, no environment directory.
     assert not standalone_jobs_dir(world.main).exists()
     assert not list(checkout.parent.glob(".*env-*"))
@@ -583,28 +584,23 @@ def test_checkout_flow_refuses_an_unusable_request_or_runner(
         monkeypatch.setenv(RETIRED_ENV, "")
     if case == "unwritable-record":
         monkeypatch.setattr(checkout_flow.job_records, "write_record_strict", unwritable)
-    request = {
-        "missing-checkout": world.request("pass", checkout=world.checkout / "gone"),
-        "bad-flow-name": world.request("pass", flow="../escape"),
-        "bad-target": world.request("bad\0target"),
-        "empty-target": world.request("  "),
-        "several-targets": world.request("a,b"),
-        "nan-timeout": world.request("pass", timeout_s=float("nan")),
-        "outside-sandbox": world.request("pass"),
-        "runner-env": world.request("pass"),
-        "unwritable-record": world.request("pass"),
+    request, message = {
+        "missing-checkout": (world.request("pass", checkout=world.checkout / "gone"), "not a dir"),
+        "bad-flow-name": (world.request("pass", flow="../escape"), "invalid Flow name"),
+        "bad-target": (world.request("bad\0target"), "invalid Target"),
+        "empty-target": (world.request("  "), "exactly one Target"),
+        "several-targets": (world.request("a,b"), "exactly one Target"),
+        "nan-timeout": (world.request("pass", timeout_s=float("nan")), "positive"),
+        "outside-sandbox": (world.request("pass"), "only inside the Sandbox"),
+        "runner-env": (world.request("pass"), "runner's environment is unusable"),
+        "unwritable-record": (world.request("pass"), "read-only file system"),
     }[case]
 
-    with pytest.raises(
-        CheckoutFlowError,
-        match=(
-            r"not a directory|invalid Flow name|invalid Target|exactly one Target|positive"
-            r"|only inside the Sandbox|runner's environment is unusable|read-only file system"
-        ),
-    ):
+    with pytest.raises(CheckoutFlowError, match=message):
         run_checkout_flow(request)
 
     assert not standalone_jobs_dir(world.main).exists()
+    assert not (world.ctl / "started").exists()
 
 
 @linux_only
@@ -1134,17 +1130,16 @@ def test_checkout_flow_derives_the_live_tree(
     from booley.runtime import sandbox_layout
 
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
-    missing_work = str(world.live / "missing")
+    if case != "git-work":  # that case keeps the world's ``/work``, a Git checkout
+        monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(world.live / "missing"))
     detached_main = tmp_path / "detached-main"  # outside every Git checkout
     detached_main.mkdir()
     request = world.request("pass")
     if case == "around-main":
         # Without a ``/work`` mount the live tree is the Git checkout around Main.
-        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
         monkeypatch.chdir(world.checkout.parent)
     elif case == "around-cwd":
         # Only the caller's directory shows the tree.
-        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
         monkeypatch.chdir(world.live)
         request = replace(request, main_booley_dir=detached_main)
     elif case == "empty-work":
@@ -1157,15 +1152,17 @@ def test_checkout_flow_derives_the_live_tree(
         request = replace(request, main_booley_dir=detached_main)
     elif case == "nowhere":
         # Neither Main, the caller's directory nor ``/work`` is a Git checkout.
-        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
         monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
     else:
         # A linked Booley Directory with its own repository is not the live tree around it.
         git(world.main, "init", "-q")
-        monkeypatch.setattr(sandbox_layout, "WORK_DIR", missing_work)
         monkeypatch.chdir(world.checkout.parent)
 
-    refusal = "no live working tree found" if case == "nowhere" else r"ip\.core names .*live"
+    refusal = (
+        "no live working tree found"
+        if case == "nowhere"
+        else r"ip\.core names .*live working tree"
+    )
     with pytest.raises(CheckoutFlowError, match=refusal):
         run_checkout_flow(request)
 
@@ -1415,7 +1412,7 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         with ThreadPoolExecutor(max_workers=1) as pool:
             watcher = pool.submit(interrupt_once_started)
             with pytest.raises(KeyboardInterrupt):
-                run_checkout_flow(world.request("probe"))
+                run_checkout_flow(world.request("probe", timeout_s=hang_guard_s()))
             watcher.result(timeout=TIMEOUT_S)
     else:
         with pytest.raises(
