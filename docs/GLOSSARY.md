@@ -189,6 +189,12 @@ The Project mode, Stealth Mode in user docs, set by `[stealth] enabled = true`,
 that keeps Booley out of the RTL repository and its history. It is off unless
 enabled.
 
+**Feature Flag**:
+A maintainer-only switch, named in Booley's registry and enabled per
+**Project**, that keeps an unfinished major feature or breaking change
+invisible until a minor release deletes it.
+_Avoid_: feature toggle, experiment
+
 **Project Inventory**:
 The host-owned catalog of canonical Project paths and their **Project Grants**, including Projects whose **Booley Directory** is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan

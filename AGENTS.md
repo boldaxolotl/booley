@@ -46,6 +46,9 @@ simulation, synthesis, linting, and measurement workflows.
   Mergify reports an authorized merge, delete its local branch and worktree
   and its GitHub branch.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
+- Gate a major feature or a breaking change behind a Feature Flag, so a patch
+  release never carries it. See "Feature Flags and releases" in
+  `docs/internals/CONTRIBUTING.md` and `docs/adr/0095-gate-major-features-behind-feature-flags.md`.
 - Read `docs/internals/DOCS_PRINCIPLES.md` before writing, editing, or
   reviewing docs. For a user doc or the cheatsheet, also read
   `docs/internals/USER_DOCS_PRINCIPLES.md`; its Scope lists those files.

@@ -218,3 +218,40 @@ def test_init_help_says_it_runs_in_a_hand_written_sandbox() -> None:
     help_text = " ".join(sub.choices["init"].format_help().split())
     assert "hand-written Sandbox" in help_text
     assert "Booley-issued Sandbox refuses it" in help_text
+
+
+def test_gated_command_exists_only_while_its_flag_is_on(
+    plain,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    feature_flags,
+) -> None:
+    # `cheat` is an existing Project-independent command; gating it with a test
+    # flag exercises the gate without a production flag.
+    monkeypatch.setitem(cli.GATED_COMMANDS, "cheat", "test-flag")
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(b'[project]\nname = "unit"\n')
+    monkeypatch.chdir(tmp_path)
+    feature_flags.register("test-flag")
+
+    assert not re.search(r"^  cheat\s", _run_cli(monkeypatch, capsys, "--help"), re.M)
+    monkeypatch.setattr("sys.argv", ["booley", "cheat", "--list"])
+    with pytest.raises(SystemExit) as gated:
+        cli.main()
+    assert gated.value.code == 2
+    gated_err = capsys.readouterr().err
+    monkeypatch.setattr("sys.argv", ["booley", "no-such-command"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    unknown_err = capsys.readouterr().err
+    assert "invalid choice: 'cheat'" in gated_err
+    assert "invalid choice: 'no-such-command'" in unknown_err
+
+    feature_flags.enable(booley_dir, "test-flag")
+    assert re.search(r"^  cheat\s", _run_cli(monkeypatch, capsys, "--help"), re.M)
+    monkeypatch.setattr("sys.argv", ["booley", "cheat", "--list"])
+    assert cli.main() == 0
+    assert capsys.readouterr().out.strip()

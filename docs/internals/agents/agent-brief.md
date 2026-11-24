@@ -43,7 +43,9 @@ Required:
 Optional:
 
 - `**Key interfaces:**` commands, types, functions, or config keys the change
-  touches, named without paths.
+  touches, named without paths. A brief for a major feature names its Feature
+  Flag here and adds a criterion that the feature is absent while the flag is
+  off ([ADR 0095](../../adr/0095-gate-major-features-behind-feature-flags.md)).
 - `**Audit:**`, `**Review:**`, `**GUI:**`: see below.
 - `Blocked by: #<n>` lines, which count as much as the issue body's.
 

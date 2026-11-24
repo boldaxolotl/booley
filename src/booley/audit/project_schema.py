@@ -12,7 +12,9 @@ from booley.audit.config_common import (
     ConfigTableAudit,
     fail_finding,
     failure,
+    pass_finding,
 )
+from booley.config.feature_flags import FEATURES_TABLE, FeatureConfigError, parse_enabled_features
 from booley.config.sandbox import parse_dashboard
 from booley.core.boundary import (
     BoundaryError,
@@ -76,6 +78,8 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     for key in data:
         if key in KNOWN_BOOLEY_TOML_TABLES or key in IGNORED_BOOLEY_TOML_TABLES:
             continue
+        if key == FEATURES_TABLE:  # maintainer-only; audit_features_table reports it
+            continue
         if key == "goals":  # a retired section: audit_retired_goals_section reports it
             continue
         if key == "mcp_tools":
@@ -103,6 +107,19 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
             )
         )
     return ConfigTableAudit(tuple(findings))
+
+
+def audit_features_table(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Validate ``[features]`` and name the Feature Flags it enables."""
+    try:
+        enabled = parse_enabled_features(data)
+    except FeatureConfigError as exc:
+        return failure(str(exc), "remove it from [features].enable")
+    if not enabled:
+        return ConfigTableAudit()
+    return ConfigTableAudit(
+        (pass_finding(f"Feature Flags enabled: {', '.join(sorted(enabled))}"),)
+    )
 
 
 def audit_specialist_table(

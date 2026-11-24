@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config.agent import AGENT_CLIS
+from booley.config.feature_flags import FeatureConfigError, enabled_features, feature_enabled
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
@@ -155,14 +156,26 @@ RETIRED_COMMAND_POINTERS = {
 }
 
 
-def command_locations() -> dict[str, CommandLocation]:
-    """Return human-facing commands in location order, then alphabetically."""
+# Command word -> the Feature Flag that hides it (ADR 0095). Empty in production.
+GATED_COMMANDS: dict[str, str] = {}
+
+
+def _gated_off(command: str, features: frozenset[str]) -> bool:
+    flag = GATED_COMMANDS.get(command)
+    return flag is not None and not feature_enabled(flag, features)
+
+
+def command_locations(features: frozenset[str] = frozenset()) -> dict[str, CommandLocation]:
+    """Return human-facing commands in location order, then alphabetically.
+
+    *features* is the enabled Feature Flag set; the default renders every flag off.
+    """
     return dict(
         sorted(
             (
                 (command, location)
                 for command, location in COMMAND_LOCATIONS.items()
-                if command not in _HIDDEN_COMMANDS
+                if command not in _HIDDEN_COMMANDS and not _gated_off(command, features)
             ),
             key=lambda item: (_COMMAND_LOCATION_ORDER[item[1]], item[0]),
         )
@@ -510,8 +523,11 @@ def _session_name(value: str) -> str:
     return name
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the CLI argument parser with subcommands + legacy flags."""
+def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentParser:
+    """Build the CLI argument parser with subcommands + legacy flags.
+
+    A command gated off by *features* is absent from help and parses as unknown.
+    """
     parser = argparse.ArgumentParser(
         prog="booley",
         usage="booley [options] <command> [args]",
@@ -528,7 +544,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # the grouped listing built by `_describe_commands`.
     sub = parser.add_subparsers(
         dest="command",
-        metavar=f"{{{','.join(command_locations())}}}",
+        metavar=f"{{{','.join(command_locations(features))}}}",
         help=argparse.SUPPRESS,  # The description lists commands by location instead.
         prog="booley",  # Not the custom usage: subcommand usage stays `booley <command>`.
     )
@@ -547,8 +563,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_utility_subparsers(sub)
     _add_dashboard_subparser(sub)
 
+    for command in GATED_COMMANDS:
+        if _gated_off(command, features):
+            sub.choices.pop(command, None)
+
     _install_project_options(parser)
-    _describe_commands(parser, sub)
+    _describe_commands(parser, sub, features)
 
     return parser
 
@@ -582,14 +602,16 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
 
 
 def _describe_commands(
-    parser: argparse.ArgumentParser, subparsers: argparse._SubParsersAction
+    parser: argparse.ArgumentParser,
+    subparsers: argparse._SubParsersAction,
+    features: frozenset[str],
 ) -> None:
     """Advertise public commands only, grouped under one header per location.
 
     Descriptions wrap under one shared column and are never cut: agents read
     this help through a pipe.
     """
-    locations = command_locations()
+    locations = command_locations(features)
     advertised = {action.dest: action for action in subparsers._choices_actions}
     subparsers._choices_actions[:] = [advertised[name] for name in locations]
     width = _help_width()
@@ -1280,10 +1302,25 @@ def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], li
     return argv[: command_index + 1] + tail[:own_end], agent_args
 
 
+def _parse_features() -> frozenset[str]:
+    """The ambient Project's enabled flags, or none when they cannot be read.
+
+    The parser exists before a Project is selected, so this only decides what help
+    shows and which command words parse; dispatch validates the selected Project.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+
+    try:
+        return enabled_features()
+    # FeatureConfigError and tomllib.TOMLDecodeError are ValueErrors; a pin error is a layout error.
+    except (BooleyLayoutError, OSError, ValueError):
+        return frozenset()
+
+
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
-    parser = _build_parser()
+    parser = _build_parser(_parse_features())
     argv = sys.argv[1:]
     command_index = _argv_command_index(argv, _global_options_parser())
     command = None if command_index is None else argv[command_index]
@@ -2438,8 +2475,19 @@ def _dispatch_main() -> int:
     )
     if project_root is not None and not exempt:
         refuse_retired_config(project_root)
+    if project_root is not None and binding is not ProjectBinding.INDEPENDENT:
+        _refuse_gated_command(command, project_root)
 
     return _dispatch_selected(args, command, project_root, binding)
+
+
+def _refuse_gated_command(command: str, project_root: Path) -> None:
+    """Validate the selected Project's ``[features]`` and refuse a command it keeps off."""
+    if command in {"doctor", "init"}:
+        return  # Doctor reports an invalid table as a FAIL; init creates the Project.
+    selected = enabled_features(project_root)
+    if _gated_off(command, selected):
+        _build_parser(selected).parse_args([command])  # argparse's own unknown-command exit
 
 
 def _dispatch_selected(
@@ -2525,6 +2573,7 @@ def main() -> int:
         EndpointConfigError,
         ProjectRequiredError,
         RetiredConfigError,
+        FeatureConfigError,
         SourceCheckoutProjectError,
         runtime_context.EgressModeError,
     ) as exc:
