@@ -465,11 +465,12 @@ def test_worker_refuses_a_bad_invocation(
 def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> None:
     slots_root = booley_dir_of(project) / "runtime" / "jobs" / "slots"
     store = job_slots.SlotStore(slots_root)
-    # A Shell run holds the memory class alone; its captured process identity keeps it live.
+    # A Shell run holds the memory class alone; its own command line keeps the holder live.
     holders = [
         store.acquire(
             job_slots.CLASS_MEMORY,
             pid=os.getpid(),
+            argv=list(sys.orig_argv),
             memory=job_slots.MemoryClaim(budget_mb=1024, run_alone=True),
         )
     ]

@@ -86,7 +86,6 @@ def write_project(root: Path, booley_dir: Path) -> None:
     for kind, (module, base, abstract) in KINDS.items():
         source = STUB.format(module=module, base=base, abstract=abstract)
         (tools / f"stub_{kind}.py").write_bytes(source.encode("utf-8"))
-    (root / ".git").mkdir(exist_ok=True)
     os.chdir(root)
 
 
