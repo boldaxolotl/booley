@@ -1,8 +1,8 @@
 """A clean-checkout Flow run returns its typed values or why it has none (issue #3950).
 
 Each test runs the real ``sim`` or ``lint`` Flow in-process with only the process edge faked,
-so it writes the ``report.json`` the checkout runner reads. It then calls the runner's
-``_result_from`` on that report directory, as the runner does after its child exits. The
+so it writes the ``report.json`` the checkout runner reads. It then settles a finished
+child on that report directory, as the runner does after its child exits. The
 child-process half is covered with a stub Flow in ``test_checkout_flow.py``. The runner
 modules are imported inside the test bodies so a missing one fails the test, not collection.
 """
@@ -42,6 +42,7 @@ from tests.flows.sim.test_sim_flow_metrics import (
     _MixedCoverageExecution,
     _TimedOutCoverageExecution,
 )
+from tests.harness.process_fake import FakeProcess
 from tests.target_test_support import install_lenient_target_catalog
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ LINT_ERROR = "%Error: rtl/mod_a.sv:3:1: syntax error\n"
 
 def checkout_result(outer: Path, flow: str, exit_code: int) -> CheckoutFlowResult:
     """The runner's view of a *flow* run whose reports are under ``outer/flow-reports``."""
-    from booley.harness import checkout_flow
+    from booley.harness.checkout_flow import CheckoutFlowChild, CheckoutFlowRequest
 
     final = job_records.JobRecord(RUN_ID, flow, "2026-11-13T00:00:00Z", 60)
     final.status = "done" if exit_code == 0 else "failed"
@@ -75,8 +76,11 @@ def checkout_result(outer: Path, flow: str, exit_code: int) -> CheckoutFlowResul
     outer.mkdir(parents=True, exist_ok=True)
     log = outer / "job.log"
     log.write_bytes(b"")
-    request = checkout_flow.CheckoutFlowRequest(outer, outer, outer, flow, "t")
-    return checkout_flow._result_from(request, RUN_ID, final, log, outer, timed_out=False)
+    request = CheckoutFlowRequest(outer, outer, outer, flow, "t")
+    process: Any = FakeProcess(exit_code)
+    return CheckoutFlowChild(
+        process, request, RUN_ID, final, outer, log, outer, outer / "gone"
+    ).settle()
 
 
 def sim_result(
@@ -128,6 +132,7 @@ def lint_result(
             real_catalog_build=_REAL_CATALOG_BUILD,
             fallback_handle=lambda root, token: _target_handle(token, project_root=root),
         )
+        # private: no Verilator on the host and no shared fake of Flow commands to reach these.
         with (
             patch.object(LintFlow, "_prepare_lint_command", **prepared),
             patch.object(LintFlow, "_execute", return_value=execution),
@@ -328,6 +333,7 @@ def unfinished_simulation_record_result(
     """The runner's view of a ``sim`` run that stopped, reported by the production failure path."""
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
     outcome = _simulation_outcome(tmp_path, observations, complete=complete)
+    # private: no public input makes the engine raise after observing some tests.
     reported = SimulateFlow()._ordinary_simulation_record_failure(
         RuntimeError("stopped"), [outcome]
     )
