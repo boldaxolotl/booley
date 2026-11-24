@@ -110,6 +110,71 @@ with Booley. Add your own rules in `.booley/rtl_style_guide.md` (RTL) and
 `.booley/tb_style_guide.md` (testbench), in plain Markdown. Where your rules
 and Booley's conflict, yours win.
 
+## Declare reviews in `reviews.toml`
+
+`reviews.toml` sits in the Booley Directory, `.booley/` at the top of your
+repository. It lists, for each Target, the reviews Booley runs on it, so you
+write them once instead of in each request. Booley checks the file when it runs
+the declared reviews with `booley review`, which is not released yet (see the
+[roadmap](../internals/ROADMAP.md)). Without the file, a Project declares no
+reviews.
+
+A Target's reviews are a `[<target>.review]` table. Its keys:
+
+- `rtl` and `tb`: the [focuses](#choosing-a-focus) to run on the Target's RTL
+  files and testbench files. Use `rtl` for the RTL focuses and `tb` for
+  `quality`; a focus under the other key is a load error.
+- `spec`: the path of the spec the review checks against. The `spec` focus
+  needs one.
+- `resolve`: the lowest severity that has to be resolved, `critical`, `major`
+  or `minor`. It is `major` when you write none.
+- `exclude`: globs of files no review of this Target reads.
+
+`[defaults.review]` takes the same keys and fills each one a Target's table
+leaves out. It never creates a table: a Target without a `[<target>.review]`
+table declares no review. A key a Target writes replaces the default whole;
+lists are not merged.
+
+Add a `[[<target>.review.paths]]` entry to review some files with more
+focuses or another `spec` or `resolve`. Its `paths` key lists globs, and it
+takes `rtl`, `tb`, `spec` and `resolve`; a `spec` or `resolve` it leaves out
+comes from the Target's table. An entry adds reviews to the Target's own and
+never replaces them. An excluded file is in no review, not even an entry's.
+
+```toml
+[defaults.review]
+tb = ["quality"]
+resolve = "minor"
+
+[sim_core.review]
+rtl = ["spec", "bugs"]
+spec = "docs/spec.md"
+exclude = ["rtl/gen/*.sv"]
+
+[[sim_core.review.paths]]
+paths = ["rtl/**"]
+rtl = ["security"]
+resolve = "critical"
+```
+
+Here `sim_core` gets a `spec` and a `bugs` review of its RTL files and a
+`quality` review of its testbench files, all resolved at `minor`, plus a
+`security` review of the files under `rtl/` resolved at `critical`. The
+generated files `rtl/gen/*.sv` are in none of them. `sim_fifo` has no table, so
+the defaults do not apply to it.
+
+The file fails to load, naming the table and key, when:
+
+- a key, focus or value is unknown or of the wrong kind;
+- a table or entry names no focus, or `paths` is missing or empty;
+- a Target key matches no Target;
+- `spec` is not a file of the project;
+- a glob in `exclude` or `paths` matches no file of the Target, or matches a
+  file outside the Target's filesets, or, in an entry, matches no file of the
+  role the entry reviews. `rtl/**` therefore fails when `rtl/` also holds a
+  file such as a README that no fileset lists; write the file type, `rtl/*.sv`.
+  A default `exclude` glob is checked against each Target it fills.
+
 ## Running it yourself
 
 In a container terminal:
