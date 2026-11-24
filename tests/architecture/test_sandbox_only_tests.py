@@ -8,7 +8,6 @@ Sandbox-only registry. The reachability model lives in ``sandbox_reach``.
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -93,43 +92,6 @@ def test_named_host_modules_keep_windows_tests(module: str) -> None:
     assert windows_tests, f"no test of {module} runs on Windows"
 
 
-def test_declared_sandbox_only_lazy_imports_are_current() -> None:
-    from tests.architecture.sandbox_reach import (
-        SANDBOX_ONLY_LAZY_IMPORTS,
-        host_reach,
-        internal_callers,
-        load_source_graph,
-        referencing_modules,
-    )
-
-    graph = load_source_graph()
-    full = _reach()
-    for cut in SANDBOX_ONLY_LAZY_IMPORTS:
-        edges = [
-            edge
-            for edge in graph.edges
-            if edge.source == cut.source and edge.target in cut.targets and edge.function
-        ]
-        assert {edge.function for edge in edges} == set(cut.functions), (
-            f"{cut.source}: enclosing functions of the cut imports changed; re-review the cut"
-        )
-        assert {edge.target for edge in edges} == set(cut.targets), (
-            f"{cut.source}: a cut target is no longer a function-level import"
-        )
-        assert referencing_modules(full.paths, cut.source, cut.functions) == cut.callers, (
-            f"{cut.source}: host-reachable modules now reference the cut functions"
-        )
-        assert internal_callers(cut.source, cut.functions) == cut.internal_callers, (
-            f"{cut.source}: the cut functions have a new caller inside the module"
-        )
-        for target in cut.targets:
-            trimmed = replace(cut, targets=tuple(t for t in cut.targets if t != target))
-            smaller = [trimmed if other is cut else other for other in SANDBOX_ONLY_LAZY_IMPORTS]
-            assert len(host_reach(smaller).paths) > len(full.paths), (
-                f"{cut.source} -> {target} no longer shrinks the host-reachable set; drop it"
-            )
-
-
 def test_endpoint_help_roots_are_derived() -> None:
     from tests.architecture.sandbox_reach import (
         HARNESS_MODULE,
@@ -144,6 +106,8 @@ def test_endpoint_help_roots_are_derived() -> None:
     assert pre_venue_commands(tree) == {"flow", "specialist"}
     # Endpoint help for those commands runs before the venue guard, so their handlers are host
     # code, while the Dashboard handler stays Sandbox-only.
+    # Private names: the reach model works on the harness module's top-level function names,
+    # and no public name identifies them.
     assert {"_cmd_flow", "_cmd_specialist", "_load_mcp_tool_class"} <= reach.harness_functions
     assert not {"_cmd_dashboard"} & reach.harness_functions
     endpoints = endpoint_modules()

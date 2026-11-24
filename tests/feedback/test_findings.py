@@ -22,7 +22,7 @@ from booley.feedback.findings import (
     read_log,
     rewrite,
 )
-from tests.time_budget import hang_guard_s, scaled
+from tests.time_budget import hang_guard_s
 
 # Waits that a healthy run ends at once; twice the hang guard keeps them above the hang-guard joins.
 _WAIT_S = 2 * hang_guard_s()
@@ -40,26 +40,11 @@ def test_append_assigns_sequential_ids(booley_dir):
         assert append(Finding(title="x"), booley_dir).id == expected
 
 
-def test_an_impression_is_filable_with_no_evidence_at_all(booley_dir):
-    """The evidence bar that protects the bug queue must not gate opinions."""
-    entry = append(
-        Finding(title="Booley is not worth the setup cost", kind="impression", bucket="booley"),
-        booley_dir,
-    )
-    assert entry.missing_evidence() == []
-    assert entry.is_filable()
-
-
 def test_an_impression_is_not_counted_as_a_bug(booley_dir):
     append(Finding(title="great framework", kind="impression", bucket="booley"), booley_dir)
     log = read_log(booley_dir)
     assert log.impressions and not log.bugs
     assert log.counts() == {"blocker": 0, "workaround": 0, "note": 0}
-
-
-def test_sentiment_is_validated(booley_dir):
-    with pytest.raises(ValueError, match="sentiment"):
-        Finding(title="x", kind="impression", sentiment="grumpy")
 
 
 def test_append_creates_the_booley_dir(tmp_path):
@@ -75,34 +60,25 @@ def test_read_log_of_missing_file_is_empty_not_an_error(booley_dir):
     assert log.corrupt_lines == 0
 
 
-def test_non_object_json_line_is_a_corrupt_line_not_a_crash(booley_dir):
+@pytest.mark.parametrize(
+    ("raw", "corrupt"),
+    [
+        ("[1, 2]\n", 1),  # valid JSON that is not an object (fix 216e8477d)
+        ("{not json at all\n", 1),
+        ('{"title": "junk", "attachments": "not-a-list"}\n', 1),
+        ("\n   \n", 0),  # blank lines are ignored silently
+    ],
+    ids=["non-object", "not-json", "malformed-attachments", "blank-lines"],
+)
+def test_a_bad_line_costs_at_most_one_finding_not_the_log(booley_dir, raw, corrupt):
     append(Finding(title="good one"), booley_dir)
-    with log_path(booley_dir).open("a", encoding="utf-8") as fh:
-        fh.write("[1, 2]\n")
-
-    log = read_log(booley_dir)
-    assert [e.title for e in log.entries] == ["good one"]
-    assert log.corrupt_lines == 1
-
-
-def test_corrupt_line_costs_one_finding_not_the_log(booley_dir):
-    append(Finding(title="good one"), booley_dir)
-    with log_path(booley_dir).open("a", encoding="utf-8") as fh:
-        fh.write("{not json at all\n")
+    with log_path(booley_dir).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(raw)
     append(Finding(title="another good one"), booley_dir)
 
     log = read_log(booley_dir)
     assert [e.title for e in log.entries] == ["good one", "another good one"]
-    assert log.corrupt_lines == 1
-
-
-def test_blank_lines_are_ignored_silently(booley_dir):
-    append(Finding(title="x"), booley_dir)
-    with log_path(booley_dir).open("a", encoding="utf-8") as fh:
-        fh.write("\n   \n")
-    log = read_log(booley_dir)
-    assert len(log.entries) == 1
-    assert log.corrupt_lines == 0
+    assert log.corrupt_lines == corrupt
 
 
 def test_unknown_fields_from_a_newer_booley_are_dropped_not_fatal(booley_dir):
@@ -113,20 +89,15 @@ def test_unknown_fields_from_a_newer_booley_are_dropped_not_fatal(booley_dir):
     assert [e.title for e in log.entries] == ["from the future"]
 
 
-def test_wins_and_findings_are_separated(booley_dir):
-    append(Finding(title="broke"), booley_dir)
-    append(Finding(title="worked", kind="win"), booley_dir)
-    log = read_log(booley_dir)
-    assert [f.title for f in log.findings] == ["broke"]
-    assert [w.title for w in log.wins] == ["worked"]
-
-
-def test_counts_are_per_severity(booley_dir):
+def test_wins_are_separated_and_counts_are_per_severity(booley_dir):
     append(Finding(title="a", severity="blocker"), booley_dir)
     append(Finding(title="b", severity="note"), booley_dir)
     append(Finding(title="c", severity="note"), booley_dir)
-    append(Finding(title="w", kind="win"), booley_dir)  # must not be counted
-    assert read_log(booley_dir).counts() == {"blocker": 1, "workaround": 0, "note": 2}
+    append(Finding(title="worked", kind="win"), booley_dir)  # must not be counted
+    log = read_log(booley_dir)
+    assert [w.title for w in log.wins] == ["worked"]
+    assert [f.title for f in log.findings] == ["a", "b", "c"]
+    assert log.counts() == {"blocker": 1, "workaround": 0, "note": 2}
 
 
 @pytest.mark.parametrize(
@@ -135,6 +106,7 @@ def test_counts_are_per_severity(booley_dir):
         {"title": "x", "severity": "catastrophic"},
         {"title": "x", "bucket": "someone-elses"},
         {"title": "x", "kind": "rumour"},
+        {"title": "x", "kind": "impression", "sentiment": "grumpy"},
         {"title": "   "},
     ],
 )
@@ -150,17 +122,6 @@ def test_created_timestamp_is_stamped_once(booley_dir):
     assert read_log(booley_dir).entries[0].created == finding.created
 
 
-def test_rewrite_replaces_the_log_atomically(booley_dir):
-    append(Finding(title="a"), booley_dir)
-    append(Finding(title="b"), booley_dir)
-    rewrite(lambda entries: setattr(entries[0], "bucket", "booley"), booley_dir)
-
-    reread = read_log(booley_dir)
-    assert [e.bucket for e in reread.entries] == ["booley", "unknown"]
-    # No temp file left behind for the next reader to trip over.
-    assert not list(booley_dir.glob("*.tmp"))
-
-
 def test_rewrite_refuses_to_drop_unparseable_raw_evidence(booley_dir):
     append(Finding(title="good"), booley_dir)
     path = log_path(booley_dir)
@@ -174,50 +135,62 @@ def test_rewrite_refuses_to_drop_unparseable_raw_evidence(booley_dir):
     assert path.read_bytes() == before
 
 
-class TestFilability:
-    """The evidence gate. This is what keeps the issue tracker usable."""
+_EVIDENCE = {"repro": "booley doctor", "observed": "FAIL", "expected": "PASS"}
+_FRICTION = {
+    "kind": "friction",
+    "bucket": "booley",
+    "component": "targets",
+    "expected": "a line saying the filter matched nothing",
+}
 
-    def test_impression_without_evidence_is_not_filable(self):
-        finding = Finding(title="the output was confusing", bucket="booley")
-        assert not finding.is_filable()
-        assert finding.missing_evidence() == ["repro", "observed", "expected"]
 
-    def test_full_evidence_is_filable(self):
-        finding = Finding(
-            title="doctor fails on valid config",
-            bucket="booley",
-            repro="booley doctor",
-            observed="FAIL",
-            expected="PASS",
-        )
-        assert finding.is_filable()
-        assert finding.missing_evidence() == []
-
-    def test_partial_evidence_is_not_filable(self):
-        finding = Finding(title="x", bucket="booley", repro="booley doctor", observed="FAIL")
-        assert not finding.is_filable()
-        assert finding.missing_evidence() == ["expected"]
-
-    def test_docs_finding_still_needs_a_component_and_observation(self):
-        assert not Finding(title="docs are wrong somewhere", bucket="docs").is_filable()
-
-    def test_the_users_own_problems_are_never_filable(self):
-        finding = Finding(
-            title="verilator missing from PATH",
-            bucket="project",
-            repro="verilator --version",
-            observed="not found",
-            expected="a version",
-        )
-        assert not finding.is_filable()
-
-    def test_untriaged_findings_are_never_filable(self):
-        """Nothing goes upstream that nobody decided was Booley's fault."""
-        finding = Finding(title="x", bucket="unknown", repro="c", observed="o", expected="e")
-        assert not finding.is_filable()
-
-    def test_a_win_is_never_filable(self):
-        assert not Finding(title="worked", kind="win", bucket="booley").is_filable()
+@pytest.mark.parametrize(
+    ("kwargs", "filable", "missing"),
+    [
+        ({"bucket": "booley"}, False, ["repro", "observed", "expected"]),
+        ({"bucket": "booley", **_EVIDENCE}, True, []),
+        ({"bucket": "booley", "repro": "booley doctor", "observed": "FAIL"}, False, ["expected"]),
+        # Docs findings need a file and an observation, not a command.
+        ({"bucket": "docs", "component": "docs/user/CONFIG.md", "observed": "x"}, True, []),
+        ({"bucket": "docs", "observed": "it is wrong"}, False, ["component"]),
+        ({"bucket": "docs"}, False, None),
+        # Nothing goes upstream that nobody decided was Booley's fault.
+        ({"bucket": "project", **_EVIDENCE}, False, None),
+        ({"bucket": "unknown", **_EVIDENCE}, False, None),
+        ({"kind": "win", "bucket": "booley"}, False, None),
+        # An opinion has no evidence bar.
+        ({"kind": "impression", "bucket": "booley"}, True, []),
+        # Friction clears a different bar: no repro, but somewhere to aim the fix.
+        (_FRICTION, True, []),
+        ({**_FRICTION, "component": ""}, False, ["component"]),
+        ({**_FRICTION, "expected": ""}, False, ["expected"]),
+        ({**_FRICTION, "expected": "", "notes": "I looked for ten minutes"}, True, []),
+        ({**_FRICTION, "component": "", "exposed_by": "booley targets"}, True, []),
+    ],
+    ids=[
+        "no-evidence",
+        "full-evidence",
+        "partial-evidence",
+        "docs-file-and-observation",
+        "docs-without-file",
+        "docs-empty",
+        "users-own-problem",
+        "untriaged",
+        "win",
+        "impression",
+        "friction",
+        "friction-without-component",
+        "friction-without-expected",
+        "friction-notes-stand-in-for-expected",
+        "friction-exposed-by-stands-in-for-component",
+    ],
+)
+def test_the_evidence_gate(kwargs, filable, missing):
+    """The gate that keeps the issue tracker usable."""
+    finding = Finding(title="a finding", **kwargs)
+    assert finding.is_filable() is filable
+    if missing is not None:
+        assert finding.missing_evidence() == missing
 
 
 # Spawned workers use the same first parsed read in both the old and fixed APIs.
@@ -235,6 +208,7 @@ def _run_publication_worker(directory, connection, operation):
     """Pause a materializing writer just before it publishes the rewritten log."""
     from booley.feedback import materialize
 
+    # The race needs a pause between the parsed read and publication; no public hook exists there.
     materialize._rewrite_attachments_only = _publication_barrier(
         connection, materialize._rewrite_attachments_only
     )
@@ -248,9 +222,13 @@ def _run_publication_worker(directory, connection, operation):
 
 def _paused_feedback_writer(directory, connection, operation, attempted):
     import argparse
+    import contextlib
+    import io
 
     from booley.feedback import cli, findings, materialize
+    from booley.harness import feedback_view
 
+    # No public hook lengthens the lock wait for a race worker.
     findings._LOCK_TIMEOUT_S = _WAIT_S
     original = findings.read_log
     wait_for_lock = getattr(findings, "wait_for_file_lock", None)
@@ -287,7 +265,9 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
         if operation == "triage_attach":
             command += ["--attach", str(directory / "late.log")]
         args = parser.parse_args(command)
-        assert cli._cmd_triage(args, directory) == 0
+        # The triage summary holds a non-ASCII arrow that a Windows worker's cp1252 stdout rejects.
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cli.run(args, directory.parent, list_view=feedback_view.render_listing) == 0
     else:
         _run_publication_worker(directory, connection, operation)
     connection.send("done")
@@ -455,7 +435,7 @@ def holding_findings_lock(directory):
 
 
 def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
-    booley_dir, monkeypatch
+    booley_dir, lock_wait_expires
 ):
     from booley.feedback import findings
 
@@ -463,7 +443,6 @@ def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
     path = log_path(booley_dir)
     before = path.read_bytes()
     candidate = Finding(title="waiting")
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with holding_findings_lock(booley_dir) as holder:
         with pytest.raises(findings.FindingsLockTimeoutError, match=r"append.*findings.lock"):
             append(candidate, booley_dir)
@@ -496,6 +475,9 @@ def test_rewrite_preserves_unknown_json_and_latest_rows(booley_dir):
     assert rows[0]["future"] == {"nested": [1, 2]}
     assert rows[0]["bucket"] == "booley"
     assert rows[1]["title"] == "new"
+    assert rows[1]["bucket"] == "unknown"
+    # No temp file left behind for the next reader to trip over.
+    assert not list(booley_dir.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("mutation", ["add", "remove", "reverse", "replace", "id"])

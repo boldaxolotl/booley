@@ -38,12 +38,18 @@ def _reference(target: Path, nested: Path) -> Path:
     return reference
 
 
-@pytest.mark.parametrize("mode", ["truncated-gzip", "duplicate-point", "symlink"])
-@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
-def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_kind):
+def _owned_copy(tmp_path: Path) -> Path:
+    """Create the disposable copy directory the fault fixture is allowed to mutate."""
     owned = tmp_path / "owned"
     owned.mkdir()
     (owned / ".qa-coverage-fault-copy").touch()
+    return owned
+
+
+@pytest.mark.parametrize("mode", ["truncated-gzip", "duplicate-point", "symlink"])
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_kind):
+    owned = _owned_copy(tmp_path)
     manifest = owned / NESTED
     manifest.parent.mkdir(parents=True)
     manifest.write_text("{}")
@@ -65,9 +71,7 @@ def test_linked_point_store_cannot_mutate_outside_sentinel(tmp_path, mode, link_
 
 
 def test_mutate_refuses_a_nested_manifest_instead_of_the_reference(tmp_path: Path) -> None:
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    (owned / ".qa-coverage-fault-copy").touch()
+    owned = _owned_copy(tmp_path)
     manifest = owned / "coverage.json"
     manifest.write_text(json.dumps({"$schema": "booley.coverage-record/v1"}))
     with pytest.raises(ValueError, match=r"Target coverage\.json"):
@@ -189,9 +193,7 @@ def test_older_layout_reaches_the_older_booley_refusal(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("link_kind", ["symlink", "hardlink", "outside"])
 def test_nested_manifest_cannot_mutate_borrowed_file(tmp_path: Path, link_kind: str) -> None:
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    (owned / ".qa-coverage-fault-copy").touch()
+    owned = _owned_copy(tmp_path)
     sentinel = tmp_path / "borrowed.json"
     sentinel.write_text('{"preserve": true}')
     manifest = owned / NESTED
@@ -221,9 +223,7 @@ def test_nested_manifest_cannot_mutate_borrowed_file(tmp_path: Path, link_kind: 
 
 def test_wrong_evaluation_refuses_a_scored_evaluation(tmp_path: Path) -> None:
     """A scored verdict is rescored on load, so forging it would be accepted silently."""
-    owned = tmp_path / "owned"
-    owned.mkdir()
-    (owned / ".qa-coverage-fault-copy").touch()
+    owned = _owned_copy(tmp_path)
     manifest = owned / NESTED
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"evaluation": {"status": "pass"}}))

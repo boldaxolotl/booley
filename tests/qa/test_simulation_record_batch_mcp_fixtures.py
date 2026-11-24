@@ -150,6 +150,14 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
     result.update(attempt_id=ATTEMPT_IDS[0], attempt_ordinal=1)
 
 
+def _foreign_interrupted_copy(simulation_record: Path) -> None:
+    """Corrupt the pre-resume attempt copy that sits beside the Simulation Record."""
+    _rewrite(
+        simulation_record.parent / "interrupted-attempt.json",
+        lambda attempt: attempt.update(simulation_record_id="other"),
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -183,6 +191,7 @@ def _bind_result_to_interrupted_attempt(result: dict) -> None:
             ),
             "do not bind",
         ),
+        (_foreign_interrupted_copy, "copy differs from the Simulation Record's first attempt"),
     ],
 )
 def test_taxi_batch_validator_rejects_unbound_or_partial_retry(
@@ -191,17 +200,6 @@ def test_taxi_batch_validator_rejects_unbound_or_partial_retry(
     simulation_record, interrupted = _taxi_batch_files(tmp_path)
     mutation(simulation_record)
     with pytest.raises(ValueError, match=message):
-        taxi.validate_cocotb_batch(simulation_record, interrupted)
-
-
-def test_taxi_batch_validator_rejects_foreign_interrupted_attempt_copy(
-    taxi, tmp_path: Path
-) -> None:
-    simulation_record, interrupted = _taxi_batch_files(tmp_path)
-    _rewrite(interrupted, lambda attempt: attempt.update(simulation_record_id="other"))
-    with pytest.raises(
-        ValueError, match="copy differs from the Simulation Record's first attempt"
-    ):
         taxi.validate_cocotb_batch(simulation_record, interrupted)
 
 
@@ -310,11 +308,38 @@ def _validate_mcp(taxi, response: Path, invocation: Path, **locations: Path) -> 
     taxi.validate_mcp_response(response, response.stat().st_size, invocation, **locations)
 
 
-@pytest.mark.parametrize("structured_key", ["structured_content", "structuredContent"])
+@pytest.mark.parametrize(
+    ("mutate", "names", "structured_key"),
+    [
+        pytest.param(None, ("alpha", "beta"), "structured_content", id="snake-case-key"),
+        pytest.param(None, ("alpha", "beta"), "structuredContent", id="camel-case-key"),
+        pytest.param(
+            None,
+            tuple(f"test-{index:02d}" for index in range(40)),
+            "structured_content",
+            id="truncated-preview-of-full-selection",
+        ),
+        pytest.param(
+            lambda simulation_record: simulation_record.update(grade="inconclusive"),
+            ("alpha", "beta"),
+            "structured_content",
+            id="inconclusive-grade",
+        ),
+    ],
+)
 def test_taxi_mcp_validator_accepts_authenticated_response(
-    taxi, tmp_path: Path, structured_key: str
+    taxi,
+    tmp_path: Path,
+    mutate: Callable[[dict], object] | None,
+    names: tuple[str, ...],
+    structured_key: str,
 ) -> None:
-    response, invocation = _mcp_response(tmp_path, structured_key=structured_key)
+    response, invocation = _mcp_response(
+        tmp_path,
+        mutate or (lambda simulation_record: None),
+        names=names,
+        structured_key=structured_key,
+    )
     _validate_mcp(taxi, response, invocation)
     with pytest.raises(ValueError, match="declared bound"):
         taxi.validate_mcp_response(response, response.stat().st_size - 1, invocation)
@@ -324,21 +349,6 @@ def test_taxi_mcp_validator_accepts_captured_response(taxi) -> None:
     _validate_mcp(
         taxi, CAPTURED / "mcp/mcp-sim-response.json", CAPTURED / "mcp/flow-reports/sim/1"
     )
-
-
-def test_taxi_mcp_validator_accepts_truncated_preview_of_full_selection(
-    taxi, tmp_path: Path
-) -> None:
-    names = tuple(f"test-{index:02d}" for index in range(40))
-    response, invocation = _mcp_response(tmp_path, names=names)
-    _validate_mcp(taxi, response, invocation)
-
-
-def test_taxi_mcp_validator_accepts_inconclusive_grade(taxi, tmp_path: Path) -> None:
-    response, invocation = _mcp_response(
-        tmp_path, lambda simulation_record: simulation_record.update(grade="inconclusive")
-    )
-    _validate_mcp(taxi, response, invocation)
 
 
 def test_taxi_mcp_validator_authenticates_optional_coverage_artifact(taxi, tmp_path: Path) -> None:
