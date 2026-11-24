@@ -98,6 +98,12 @@ def stored_runs(root: Path, commit: str | None = None) -> list[dict[str, Any]]:
     return [json.loads(path.read_bytes()) for path in sorted(folder.glob(pattern))]
 
 
+def stored_report(root: Path, commit: str, run: dict[str, Any]) -> str:
+    """The Markdown report stored beside the JSON of *run*."""
+    path = root / ".booley" / "reviews" / commit / f"{run['run_id']}.md"
+    return path.read_text(encoding="utf-8")
+
+
 def finding(origin: str = "introduced", **overrides: Any) -> dict[str, Any]:
     row = issue(
         **{"file": "rtl/a.sv", "line": 3, "ticket_clause": "Output follows input", **overrides}
@@ -156,7 +162,14 @@ def test_review_runs_needed_reviews_in_the_export_and_keeps_every_run(
     ]
     assert (tb["role"], tb["focus"], tb["outcome"]) == ("tb", "quality", "not-needed")
     assert (tb["introduced"], tb["pre_existing"]) == ([], [])
-    assert "Review Run" in capsys.readouterr().out
+    assert (run["message"].strip(), run["rules_changed"]) == ("Edit a", [])
+    shown = capsys.readouterr().out
+    assert shown.startswith("Review Report\nReviewed\n")
+    where = shown.splitlines()[-1]
+    assert where.startswith("Review Run ") and where.endswith(f"{run['run_id']}.json")
+    markdown = stored_report(root, commit, run)
+    assert markdown.startswith("# Review Report\n")
+    assert "## Reviews not needed\n\n- tb quality: no changed file" in markdown
 
     assert review(monkeypatch, root) == 0
 
@@ -180,6 +193,7 @@ def test_exit_code_follows_open_introduced_findings(
     monkeypatch: pytest.MonkeyPatch,
     feature_flags: FeatureFlagHelper,
     agent: ScriptedAgent,
+    capsys: pytest.CaptureFixture[str],
     answer: Any,
     resolve: str,
     exit_code: int,
@@ -203,6 +217,10 @@ def test_exit_code_follows_open_introduced_findings(
     assert (rtl["outcome"], run["outcome"]) == (outcome, outcome)
     if introduced:
         assert rtl["introduced"][0]["file"] == "rtl/a.sv"
+    shown = capsys.readouterr().out
+    assert ("Needs you" in shown) == (exit_code == 1)
+    assert ("Non-blocking: introduced" in shown) == (outcome == "pass" and introduced == 1)
+    assert ("Non-blocking: pre-existing" in shown) == bool(pre_existing)
 
 
 def test_a_submodule_pin_move_reviews_the_files_it_changed(
@@ -342,7 +360,7 @@ BUGS_ONLY = '[sim_core.review]\nrtl = ["bugs"]\n'
             (),
             "missing.md",
         ),
-        (BUGS_ONLY, "main", (), "no Base"),
+        (BUGS_ONLY, "main", (), "pass --base <sha>"),
         (BUGS_ONLY, "feature", ("--", "no-such-revision"), "is not a commit of this Project"),
         (BUGS_ONLY, "feature", ("--", "--exec=x"), "is not a commit of this Project"),
         (BUGS_ONLY, "feature", ("--base", "no-such-base"), "--base 'no-such-base' cannot be used"),
@@ -474,9 +492,15 @@ def test_target_run_is_not_stored_and_json_prints_the_run(
 
     assert review(monkeypatch, root) == 0
 
-    assert "nothing to review" in capsys.readouterr().out
+    shown = capsys.readouterr().out
+    assert "nothing to review" in shown
+    assert "rules changed since the Base: docs/spec.md" in shown
     assert agent.calls == []
-    assert [run["outcome"] for run in stored_runs(root, docs_only)] == ["nothing-to-review"]
+    (docs_run,) = stored_runs(root, docs_only)
+    assert (docs_run["outcome"], docs_run["rules_changed"]) == (
+        "nothing-to-review",
+        ["docs/spec.md"],
+    )
 
 
 def test_review_is_absent_while_its_flag_is_off(
