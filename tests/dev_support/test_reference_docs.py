@@ -133,53 +133,49 @@ def test_launcher_names_itself_as_the_fix_command(monkeypatch: pytest.MonkeyPatc
     assert seen["sync_command"] == "python3 .github/scripts/sync_packaged_copies.py"
 
 
-def test_links_to_shipped_docs_become_sibling_links() -> None:
-    text = (
-        "[a](TARGETS.md#submodules) [b](../user/TESTS.md) "
-        "[c](../internals/FLOW_REPORTS.md#reports) "
-        "[d](https://booley.dev/docs/flow-sim/#pre-sim-commands) "
-        "[e](https://github.com/boldaxolotl/Booley/blob/main/docs/user/COVERAGE.md#x) "
-        "[f](<CONFIG.md> 'title') [g](CONFIG.md#own-anchor)"
-    )
-
-    assert _render(text) == (
-        "[a](TARGETS.md#submodules) [b](TESTS.md) [c](FLOW_REPORTS.md#reports) "
-        "[d](FLOW-SIM.md#pre-sim-commands) [e](COVERAGE.md#x) "
-        "[f](<CONFIG.md> 'title') [g](CONFIG.md#own-anchor)"
-    )
+_EXTERNAL_AND_FENCED = (
+    "[issue](https://github.com/boldaxolotl/Booley/issues/1) [fuse](https://fusesoc.net/x.md) "
+    "[mail](mailto:a@b.example) [top](#top) escaped \\[x](SETUP.md) code `[y](SETUP.md)` "
+    "![shot](https://example.com/a.png)\n"
+    "```console\n[z](SETUP.md)\n```\n"
+    "~~~\n[w](../user/USAGE.md)\n~~~\n"
+    "[ftp](ftp://host/doc.md)\n"
+)
 
 
-def test_links_to_unshipped_docs_become_marked_plain_text() -> None:
-    text = (
-        "[Setup](SETUP.md#first) [roadmap](../internals/ROADMAP.md) "
-        "[doctor](https://booley.dev/docs/doctor/#checks) "
-        '[`[models]`](STEALTH.md "Stealth") done'
-    )
-
-    assert _render(text) == (
-        f"Setup {MARKER} roadmap {MARKER} doctor {MARKER} `[models]` {MARKER} done"
-    )
-
-
-def test_external_links_anchors_and_fenced_code_are_unchanged() -> None:
-    text = (
-        "[issue](https://github.com/boldaxolotl/Booley/issues/1) [fuse](https://fusesoc.net/x.md) "
-        "[mail](mailto:a@b.example) [top](#top) escaped \\[x](SETUP.md) code `[y](SETUP.md)` "
-        "![shot](https://example.com/a.png)\n"
-        "```console\n[z](SETUP.md)\n```\n"
-        "~~~\n[w](../user/USAGE.md)\n~~~\n"
-        "[ftp](ftp://host/doc.md)\n"
-    )
-
-    assert _render(text) == text
-
-
-def test_wrapped_link_text_is_rewritten() -> None:
-    text = "see [the setup\nguide](SETUP.md) and [the config\nreference](CONFIG.md#x) now"
-
-    assert _render(text) == (
-        f"see the setup\nguide {MARKER} and [the config\nreference](CONFIG.md#x) now"
-    )
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "[a](TARGETS.md#submodules) [b](../user/TESTS.md) "
+            "[c](../internals/FLOW_REPORTS.md#reports) "
+            "[d](https://booley.dev/docs/flow-sim/#pre-sim-commands) "
+            "[e](https://github.com/boldaxolotl/Booley/blob/main/docs/user/COVERAGE.md#x) "
+            "[f](<CONFIG.md> 'title') [g](CONFIG.md#own-anchor)",
+            "[a](TARGETS.md#submodules) [b](TESTS.md) [c](FLOW_REPORTS.md#reports) "
+            "[d](FLOW-SIM.md#pre-sim-commands) [e](COVERAGE.md#x) "
+            "[f](<CONFIG.md> 'title') [g](CONFIG.md#own-anchor)",
+            id="shipped-docs-become-sibling-links",
+        ),
+        pytest.param(
+            "[Setup](SETUP.md#first) [roadmap](../internals/ROADMAP.md) "
+            "[doctor](https://booley.dev/docs/doctor/#checks) "
+            '[`[models]`](STEALTH.md "Stealth") done',
+            f"Setup {MARKER} roadmap {MARKER} doctor {MARKER} `[models]` {MARKER} done",
+            id="unshipped-docs-become-marked-plain-text",
+        ),
+        pytest.param(
+            _EXTERNAL_AND_FENCED, _EXTERNAL_AND_FENCED, id="external-anchor-and-fenced-unchanged"
+        ),
+        pytest.param(
+            "see [the setup\nguide](SETUP.md) and [the config\nreference](CONFIG.md#x) now",
+            f"see the setup\nguide {MARKER} and [the config\nreference](CONFIG.md#x) now",
+            id="wrapped-link-text-is-rewritten",
+        ),
+    ],
+)
+def test_render_rewrites_links(text: str, expected: str) -> None:
+    assert _render(text) == expected
 
 
 @pytest.mark.parametrize(

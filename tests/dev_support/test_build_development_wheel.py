@@ -71,8 +71,11 @@ def init_git(root, *, timeout: float = SUBPROCESS_TIMEOUT_S):
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
+    # private: the fixture mirrors the build stamp's input set; write_build_stamp reads exactly
+    # these paths.
     for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
         (root / tree).mkdir(parents=True, exist_ok=True)
+    # private: same input set as above.
     for name in build_stamp._DEVELOPMENT_CONTEXT_FILES:
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +268,7 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
         "src/booley",
         "crates/bwave",
         ".github/scripts",
-        *build_stamp._DEVELOPMENT_CONTEXT_FILES,
+        *build_stamp._DEVELOPMENT_CONTEXT_FILES,  # private: same input set as the fixture above
     )
     copied_owner = root / "src/booley/dev_support/build_development_wheel.py"
     owner_source = copied_owner.read_text()
@@ -377,6 +380,8 @@ def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
         ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
         check=True,
     )
+    # private: the fixture mirrors the build stamp's input set; write_build_stamp reads exactly
+    # these paths.
     for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
         (linked / tree).mkdir(parents=True, exist_ok=True)
     for source in checkout.rglob("*"):

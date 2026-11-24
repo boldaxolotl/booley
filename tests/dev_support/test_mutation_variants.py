@@ -49,35 +49,26 @@ def test_baseline_snapshot_is_never_rewritten(tmp_path: Path):
     assert plan.source_fingerprint().startswith("sha256:")
 
 
-def test_rejects_text_that_is_not_exactly_on_the_declared_line(tmp_path: Path):
-    _source(tmp_path)
+@pytest.mark.parametrize(
+    ("source_text", "proposal", "message"),
+    [
+        # Text not exactly on the declared line.
+        (None, Proposal(line=3), r"not found.*dut.sv:3"),
+        # The same text twice on one line.
+        ("module dut;\nassign y = (a + b) + (a + b);\nendmodule\n", Proposal(), "ambiguous"),
+        # A file outside the declared scope.
+        (None, Proposal(file="rtl/other.sv"), "escapes scope"),
+    ],
+    ids=["wrong-line", "ambiguous", "scope-escape"],
+)
+def test_resolve_rejects_without_touching_the_file(tmp_path, source_text, proposal, message):
+    path = _source(tmp_path) if source_text is None else _source(tmp_path, source_text)
+    pristine = path.read_bytes()
 
-    with pytest.raises(MutationVariantError, match=r"not found.*dut.sv:3"):
-        MutationVariantPlan.resolve(
-            [Proposal(line=3)],
-            tmp_path,
-            ["rtl/dut.sv"],
-        )
+    with pytest.raises(MutationVariantError, match=message):
+        MutationVariantPlan.resolve([proposal], tmp_path, ["rtl/dut.sv"])
 
-
-def test_rejects_ambiguous_text_on_one_line(tmp_path: Path):
-    _source(tmp_path, "module dut;\nassign y = (a + b) + (a + b);\nendmodule\n")
-
-    with pytest.raises(MutationVariantError, match="ambiguous"):
-        MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
-
-
-def test_rejects_scope_escape_without_touching_the_file(tmp_path: Path):
-    path = _source(tmp_path)
-
-    with pytest.raises(MutationVariantError, match="escapes scope"):
-        MutationVariantPlan.resolve(
-            [Proposal(file="rtl/other.sv")],
-            tmp_path,
-            ["rtl/dut.sv"],
-        )
-
-    assert "a + b" in path.read_text(encoding="utf-8")
+    assert path.read_bytes() == pristine
 
 
 def test_writes_one_auditable_source_file_per_mutant(tmp_path: Path):

@@ -51,22 +51,32 @@ class TestRunCommand:
         assert not run.ok
         assert "timed out" in run.failure_excerpt()
 
-    def test_input_text_piped_to_stdin(self):
-        run = run_command(
-            [PY, "-c", "import sys; sys.stdout.write(sys.stdin.read())"], input_text="echoed"
-        )
-        assert run.stdout == "echoed"
+    @pytest.mark.parametrize(
+        ("script", "options", "expected"),
+        [
+            pytest.param(
+                "import sys; sys.stdout.write(sys.stdin.read())",
+                {"input_text": "echoed"},
+                "echoed",
+                id="input-text-piped-to-stdin",
+            ),
+            pytest.param(
+                "import os; print(os.environ.get('BOOLEY_TEST_X'))",
+                {"extra_env": {"BOOLEY_TEST_X": "42"}},
+                "42",
+                id="extra-env-overlays-environment",
+            ),
+            pytest.param("import os; print(os.getcwd())", {"cwd": "tmp"}, "tmp", id="cwd"),
+        ],
+    )
+    def test_options_reach_the_child(self, tmp_path, script, options, expected):
+        if options.get("cwd") == "tmp":
+            options = {"cwd": tmp_path}
+            expected = str(tmp_path)
 
-    def test_extra_env_overlays_environment(self):
-        run = run_command(
-            [PY, "-c", "import os; print(os.environ.get('BOOLEY_TEST_X'))"],
-            extra_env={"BOOLEY_TEST_X": "42"},
-        )
-        assert "42" in run.stdout
+        run = run_command([PY, "-c", script], **options)
 
-    def test_cwd_is_respected(self, tmp_path):
-        run = run_command([PY, "-c", "import os; print(os.getcwd())"], cwd=tmp_path)
-        assert str(tmp_path) in run.stdout
+        assert expected in run.stdout
 
 
 class TestFailureExcerpt:
