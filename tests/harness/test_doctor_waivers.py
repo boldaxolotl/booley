@@ -16,7 +16,7 @@ from tests.harness.test_doctor import _patch_environment, _write_project
 
 
 def _write(tmp_path, body: str) -> None:
-    (tmp_path / "doctor-waivers.toml").write_text(body, encoding="utf-8")
+    (tmp_path / "doctor-waivers.toml").write_text(body, encoding="utf-8", newline="\n")
 
 
 def test_exact_subject_beats_check_wide_waiver(tmp_path):
