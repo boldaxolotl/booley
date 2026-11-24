@@ -636,13 +636,14 @@ def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label(
         "user": {"login": "owner"},
         "created_at": "2026-11-03T10:00:05Z",
     }
+    undated = {"id": 1, "body": "@mergifyio queue", "user": {"login": "owner"}}
     answer_reads(
         gh,
         pull=[
             open_pull(labels=[{"name": "queued"}]),
             open_pull(labels=[{"name": "dequeued"}]),
         ],
-        comments=json.dumps([[comment], []]),
+        comments=json.dumps([[undated, comment], []]),
     )
     events = [
         event("labeled", "dequeued", "2026-11-03T09:00:00Z"),
@@ -659,7 +660,10 @@ def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label(
 
     assert queued.dequeued_at is None
     assert dequeued.dequeued_at == datetime.fromisoformat("2026-11-03T09:40:00Z")
-    assert dequeued.comments == (queue_command("2026-11-03T10:00:05Z"),)
+    assert dequeued.comments == (
+        watch_pr.Comment("1", "@mergifyio queue", "owner"),
+        queue_command("2026-11-03T10:00:05Z"),
+    )
     assert sum(EVENTS_PATH in call.args for call in gh.calls()) == 1
 
 
