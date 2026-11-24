@@ -1676,7 +1676,7 @@ def _check_worktree_core_shadow_guard(
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
-    ``booley init`` and ``worktree_create.sh`` drop the marker that suppresses
+    ``booley init`` and ``booley worktree new`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """

@@ -98,6 +98,18 @@ def _run_worktree_create(
     return subprocess.CompletedProcess(completed.args, completed.returncode, stdout, stderr)
 
 
+def _create_and_set_up(project_root: Path, name: str) -> subprocess.CompletedProcess[str]:
+    """Run the outer-worktree script, then Python's setup of that worktree."""
+    from booley.runtime.worktree_setup import set_up_linked_worktree
+
+    result = _run_worktree_create(project_root, name)
+    if result.returncode == 0:
+        set_up_linked_worktree(
+            project_root, project_root / ".booley" / "worktrees" / name, paired=False
+        )
+    return result
+
+
 class TestWorktreeCreateScript:
     def test_rejects_missing_explicit_branch_without_removing_stale_path(
         self, tmp_path: Path
@@ -152,7 +164,7 @@ class TestWorktreeCreateScript:
 
         _git(project_root, "config", "user.name", "Human")
         _git(project_root, "config", "user.email", "human@example.invalid")
-        result = _run_worktree_create(project_root, "configured-identity")
+        result = _create_and_set_up(project_root, "configured-identity")
         assert _git(project_root, "config", "user.name").stdout.strip() == "Human"
         assert _git(project_root, "config", "user.email").stdout.strip() == "human@example.invalid"
 
@@ -172,7 +184,7 @@ class TestWorktreeCreateScript:
             encoding="utf-8",
         )
 
-        result = _run_worktree_create(project_root, "no-legacy-identity")
+        result = _create_and_set_up(project_root, "no-legacy-identity")
 
         assert result.returncode == 0, result.stderr
         worktree = project_data / "worktrees" / "no-legacy-identity"
@@ -187,10 +199,10 @@ class TestWorktreeCreateScript:
             encoding="utf-8",
         )
 
-        result = _run_worktree_create(project_root, "invalid-identity")
+        from booley.runtime.worktree_setup import WorktreeSetupError
 
-        assert result.returncode != 0
-        assert "[agent.git] name must be a string" in result.stderr
+        with pytest.raises(WorktreeSetupError, match=r"\[agent.git\] name must be a string"):
+            _create_and_set_up(project_root, "invalid-identity")
 
     @pytest.mark.timeout(120)
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
@@ -253,8 +265,7 @@ class TestWorktreeCreateScript:
     @pytest.mark.timeout(120)
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
-        from booley.runtime.paths import worktree_create_script
-        from booley.runtime.platform_paths import bash_bin
+        from booley.runtime.worktree_setup import mark_fusesoc_ignore
 
         project_root = tmp_path / "repo"
         project_root.mkdir()
@@ -275,19 +286,8 @@ class TestWorktreeCreateScript:
         _git(project_root, "config", "core.worktree", "/work")
 
         slug = "core-worktree-repro"
-        result = subprocess.run(
-            [bash_bin(), str(worktree_create_script())],
-            input=json.dumps({"name": slug, "cwd": str(project_root)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            # The harness default BOOLEY_DIR sits beside the repository; a Sandbox's is its own.
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
+        mark_fusesoc_ignore(project_data, paired=False)
+        result = _create_and_set_up(project_root, slug)
 
         assert result.returncode == 0, result.stderr
         worktree = project_data / "worktrees" / slug
@@ -298,6 +298,52 @@ class TestWorktreeCreateScript:
         # stale copy shadow the source at the Project Root (silently building wrong RTL).
         assert (project_data / "FUSESOC_IGNORE").is_file()
         assert (worktree / "FUSESOC_IGNORE").read_text(encoding="utf-8") == "quarantine\n"
+        settings = {
+            "core.autocrlf": "false",
+            "submodule.recurse": "false",
+            "diff.ignoreSubmodules": "all",
+            "status.submoduleSummary": "false",
+        }
+        for key, value in settings.items():
+            assert _git(worktree, "config", "--worktree", "--get", key).stdout.strip() == value
+        core_worktree = _git(worktree, "config", "--worktree", "--get", "core.worktree")
+        assert not Path(core_worktree.stdout.strip()).is_absolute()
+
+    def test_worktree_git_config_waits_for_the_parent_git_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.core.file_lock import LockTimeoutError, nonblocking_file_lock
+        from booley.runtime import worktree_setup
+
+        project_root, project_data = _submodule_project(tmp_path)
+        assert _run_worktree_create(project_root, "locked").returncode == 0
+        worktree = project_data / "worktrees" / "locked"
+        # The bound is the only way to observe the wait deterministically.
+        monkeypatch.setattr(worktree_setup, "_PARENT_LOCK_TIMEOUT_S", 0.2)
+        lock = project_data / "worktrees" / ".locks" / "_parent_git.lock"
+
+        with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+            with pytest.raises(LockTimeoutError):
+                worktree_setup.configure_worktree_git(
+                    project_root, worktree, booley_dir=project_data
+                )
+            assert _git(worktree, "config", "--worktree", "--get", "core.worktree").returncode != 0
+
+        worktree_setup.configure_worktree_git(project_root, worktree, booley_dir=project_data)
+        assert _git(worktree, "config", "--worktree", "--get", "core.worktree").stdout.strip()
+
+    def test_relative_worktree_policy_refuses_an_absolute_pointer(self, tmp_path: Path):
+        from booley.runtime.worktree_setup import WorktreeSetupError, configure_worktree_git
+
+        project_root, project_data = _submodule_project(tmp_path)
+        assert _run_worktree_create(project_root, "absolute").returncode == 0
+        worktree = project_data / "worktrees" / "absolute"
+        git_dir = _git(worktree, "rev-parse", "--absolute-git-dir").stdout.strip()
+        (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8", newline="\n")
+        _git(project_root, "config", "worktree.useRelativePaths", "true")
+
+        with pytest.raises(WorktreeSetupError, match="non-portable metadata"):
+            configure_worktree_git(project_root, worktree, booley_dir=project_data)
 
 
 # ===========================================================================

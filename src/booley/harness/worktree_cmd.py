@@ -1,7 +1,7 @@
 """``booley worktree new <name>``: create a linked worktree with a Worktree Booley Directory.
 
-The command wraps the packaged ``worktree_create.sh`` with its default
-``refuse`` policy, so an existing destination (possibly an active worktree
+The packaged ``worktree_create.sh`` creates the outer worktree with its default
+``refuse`` policy and Python sets it up (Git config, Snapshot), so an existing destination (possibly an active worktree
 holding someone's work) is never deleted. The worktree lands at
 ``<Booley Directory>/worktrees/<name>`` (``.booley`` unless ``[project].dir`` relocates
 it inside the checkout), on a new branch
@@ -58,7 +58,12 @@ from booley.runtime.submodule_materialization import (
     materialize_worktree_submodules,
 )
 from booley.runtime.worktree_paths import BooleyDirMismatchError, worktree_booley_dir
-from booley.runtime.worktree_snapshot import SKIPPED_PREFIX
+from booley.runtime.worktree_setup import (
+    WorktreeSetupError,
+    mark_fusesoc_ignore,
+    set_up_linked_worktree,
+)
+from booley.runtime.worktree_snapshot import skipped_line
 from booley.runtime.worktree_usage import WORKTREE_NAME, stamp_worktree, worktree_branch
 
 # Bounds the script so a wedged Git call cannot hang the CLI.
@@ -193,6 +198,7 @@ _REPORTED_FAILURES = (
     WorktreeCreationError,
     WorktreeMountRepairError,
     ProjectPairingError,
+    WorktreeSetupError,
     OSError,
 )
 
@@ -247,12 +253,12 @@ def _create_outer(
     script = worktree_create_script()
     if not script.is_file():
         raise WorktreeCreationError(f"worktree script not found: {script}")
+    mark_fusesoc_ignore(own_booley_dir(project_root), paired=paired_project)
     payload = {"name": name, "cwd": str(project_root), "on_existing": "refuse"}
     if new_branch is not None:
         payload["new_branch"] = new_branch.name
         payload["start_point"] = new_branch.start_point
     environment = {**os.environ}
-    environment["BOOLEY_WORKTREE_PAIRED_PROJECT"] = "1" if paired_project else "0"
     environment.setdefault("BOOLEY_PYTHON", sys.executable)
     try:
         result = subprocess.run(
@@ -279,10 +285,15 @@ def _create_outer(
         ]
         detail = "\n".join(errors) or result.stderr.strip() or "(no output)"
         raise WorktreeCreationError(detail)
+    worktree = worktree_path(project_root, name)
+    try:
+        skipped = set_up_linked_worktree(project_root, worktree, paired=paired_project)
+    except BaseException as exc:
+        _rollback_creation(project_root, worktree, name, exc, new_branch=new_branch)
+        raise
     # Name the Booley Directory paths the Snapshot left behind for lack of a classification.
-    for line in result.stderr.splitlines():
-        if line.startswith(SKIPPED_PREFIX):
-            print(line, file=sys.stderr)
+    for path in skipped:
+        print(skipped_line(path), file=sys.stderr)
 
 
 @dataclass(frozen=True)
