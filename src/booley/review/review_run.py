@@ -1,20 +1,24 @@
 """Plan the reviews of a commit and write its Review Run (issue #3272).
 
 A Review Run is the JSON document ``booley review`` stores for one discovery run of a
-commit: every Declared Review that had a changed file, what it found, and the Base the
-change was taken from. This module holds the pure parts: which reviews a change needs
-(one per distinct review, however many Targets declare it), the document, and its
-storage. It runs no Reviewer and prints nothing.
+commit (or, with ``--verify``, one verify run of a fix commit): every Declared Review that
+had a changed file, what it found, and the Base the change was taken from. This module
+holds the pure parts: which reviews a change needs (one per distinct review, however many
+Targets declare it), the documents, their storage, and which commits are Reviewed. It runs
+no Reviewer and prints nothing.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.evidence.review_vocabulary import OPEN_STATUSES
 from booley.measurement.base import Base
 from booley.review.review_resolution import DeclaredReview
 from booley.runtime.execution_records import atomic_write_json
@@ -22,7 +26,8 @@ from booley.runtime.timefmt import compact_utc_now
 from booley.specialists.review_contract import reviewable
 
 SCHEMA_VERSION = 1
-KIND = "discovery"
+DISCOVERY_KIND = "discovery"
+VERIFY_KIND = "verify"
 REVIEWS_DIR = "reviews"
 NOT_NEEDED = "not-needed"
 PASS = "pass"
@@ -49,6 +54,7 @@ class PlannedReview:
     spec: str | None
     resolve: str
     targets: tuple[TargetFiles, ...]
+    spec_digest: str | None = None  # "sha256:<hex>" of the spec file's bytes, null without one
 
     @property
     def needed(self) -> bool:
@@ -85,17 +91,27 @@ class RunFacts:
 
 
 def new_run_id() -> str:
-    """A run id that sorts by time and does not repeat within a second."""
-    return f"{compact_utc_now()}-{secrets.token_hex(3)}"
+    """A run id that sorts by start time, to the microsecond, and does not repeat."""
+    return f"{compact_utc_now(microseconds=True)}-{secrets.token_hex(3)}"
+
+
+def spec_digest(checkout: Path, spec: str | None) -> str | None:
+    """``sha256:<hex>`` of the bytes of *spec* in *checkout*; null without a spec."""
+    if spec is None:
+        return None
+    return "sha256:" + hashlib.sha256((checkout / spec).read_bytes()).hexdigest()
 
 
 def plan_reviews(
-    declared: Mapping[str, Collection[DeclaredReview]], changed: Collection[str]
+    declared: Mapping[str, Collection[DeclaredReview]],
+    changed: Collection[str],
+    checkout: Path | None = None,
 ) -> list[PlannedReview]:
     """Group the Targets' reviews by what they ask the Reviewer, and mark the needed ones.
 
     A Target needs a review when one of the review's reviewable files changed, so two
-    Targets that share a changed file share one run of the same review.
+    Targets that share a changed file share one run of the same review. With *checkout*,
+    each review records the digest of its spec file there.
     """
     groups: dict[tuple[str, str, str | None, str], list[TargetFiles]] = {}
     for target in sorted(declared):
@@ -105,7 +121,14 @@ def plan_reviews(
             key = (review.role, review.focus, review.spec, review.resolve)
             groups.setdefault(key, []).append(TargetFiles(target, files, needed))
     return [
-        PlannedReview(role, focus, spec, resolve, tuple(targets))
+        PlannedReview(
+            role,
+            focus,
+            spec,
+            resolve,
+            tuple(targets),
+            spec_digest(checkout, spec) if checkout is not None else None,
+        )
         for (role, focus, spec, resolve), targets in sorted(
             groups.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or "", item[0][3])
         )
@@ -130,7 +153,7 @@ def review_document(facts: RunFacts) -> dict[str, Any]:
     """The Review Run document of *facts*."""
     return {
         "schema_version": SCHEMA_VERSION,
-        "kind": KIND,
+        "kind": DISCOVERY_KIND,
         "run_id": facts.run_id,
         "started_at": facts.started_at,
         "finished_at": facts.finished_at,
@@ -144,6 +167,7 @@ def review_document(facts: RunFacts) -> dict[str, Any]:
                 "focus": planned.focus,
                 "spec": planned.spec,
                 "resolve": planned.resolve,
+                "spec_digest": planned.spec_digest,
                 "targets": [asdict(target) for target in planned.targets],
                 "outcome": result.outcome,
                 "introduced": list(result.introduced),
@@ -161,3 +185,133 @@ def store_review_run(main_booley_dir: Path, document: dict[str, Any]) -> Path:
     path = main_booley_dir / REVIEWS_DIR / document["commit"] / f"{document['run_id']}.json"
     atomic_write_json(path, document)
     return path
+
+
+Declaration = tuple[str, str, str | None, str, str | None, tuple[tuple[str, tuple[str, ...]], ...]]
+
+
+def review_declarations(planned: Collection[PlannedReview]) -> frozenset[Declaration]:
+    """What each planned review covers: role, focus, spec and its digest, resolve, Target files."""
+    return frozenset(
+        (
+            review.role,
+            review.focus,
+            review.spec,
+            review.resolve,
+            review.spec_digest,
+            tuple(sorted((target.target, target.files) for target in review.targets)),
+        )
+        for review in planned
+    )
+
+
+def review_declarations_of(document: Mapping[str, Any]) -> frozenset[Declaration]:
+    """The declarations of a stored discovery run, comparable with ``review_declarations``."""
+    return frozenset(
+        (
+            review["role"],
+            review["focus"],
+            review["spec"],
+            review["resolve"],
+            review.get("spec_digest"),
+            tuple(
+                sorted((target["target"], tuple(target["files"])) for target in review["targets"])
+            ),
+        )
+        for review in document["reviews"]
+    )
+
+
+def open_finding_ids(document: Mapping[str, Any]) -> dict[int, frozenset[str]]:
+    """Per review index of a run, the IDs of its introduced findings that are still open."""
+    return {
+        index: ids
+        for index, review in enumerate(document["reviews"])
+        if (
+            ids := frozenset(
+                r["finding_id"] for r in review["introduced"] if r["status"] in OPEN_STATUSES
+            )
+        )
+    }
+
+
+@dataclass(frozen=True)
+class VerifiedReview:
+    """One discovery review re-checked: the stored review, what the Reviewer said, the waivers."""
+
+    review: Mapping[str, Any]
+    result: ReviewResult
+    waivers: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class VerifyFacts:
+    """What a verify run document records."""
+
+    run_id: str
+    started_at: str
+    finished_at: str
+    commit: str
+    booley_commit: str | None
+    base: Base
+    discovery: Mapping[str, Any]  # the discovery run being verified
+    commits: tuple[str, ...]  # after the discovery commit, up to ``commit``, oldest first
+    reviews: tuple[VerifiedReview, ...]
+
+
+def verify_document(facts: VerifyFacts) -> dict[str, Any]:
+    """The verify Review Run document of *facts*: it adds no finding to the discovery run's."""
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": VERIFY_KIND,
+        "run_id": facts.run_id,
+        "started_at": facts.started_at,
+        "finished_at": facts.finished_at,
+        "commit": facts.commit,
+        "booley_commit": facts.booley_commit,
+        "base": asdict(facts.base),
+        "discovery": {"commit": facts.discovery["commit"], "run_id": facts.discovery["run_id"]},
+        "commits": list(facts.commits),
+        "reviews": [
+            {
+                **{k: item.review[k] for k in ("role", "focus", "spec", "resolve", "targets")},
+                "outcome": item.result.outcome,
+                "introduced": list(item.result.introduced),
+                "waivers": list(item.waivers),
+                "error": item.result.error,
+            }
+            for item in facts.reviews
+        ],
+        "outcome": run_outcome([item.result for item in facts.reviews]),
+    }
+
+
+def load_review_runs(main_booley_dir: Path, commit: str) -> list[tuple[Path, dict[str, Any]]]:
+    """The stored runs of *commit*, oldest first; a malformed file raises ``ValueError``."""
+    runs: list[tuple[Path, dict[str, Any]]] = []
+    for path in sorted((main_booley_dir / REVIEWS_DIR / commit).glob("*.json")):
+        try:
+            document: Any = json.loads(path.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Review Run {path.name} cannot be read: {exc}") from exc
+        if not isinstance(document, dict) or document.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError(
+                f"Review Run {path.name} is not a schema version {SCHEMA_VERSION} run"
+            )
+        runs.append((path, document))  # pyright: ignore[reportUnknownArgumentType]
+    return runs
+
+
+def reviewed_by(runs: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The run that makes its commit a Reviewed Commit, or ``None``.
+
+    The latest verify run when it passed; else any discovery run that passed or had nothing
+    to review. A run with an open or errored outcome never does.
+    """
+    verified = [run for run in runs if run["kind"] == VERIFY_KIND]
+    if verified and verified[-1]["outcome"] == PASS:
+        return verified[-1]
+    clean = (PASS, NOTHING_TO_REVIEW)
+    return next(
+        (run for run in runs if run["kind"] == DISCOVERY_KIND and run["outcome"] in clean), None
+    )
