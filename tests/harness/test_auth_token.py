@@ -34,6 +34,8 @@ def home(tmp_path, monkeypatch):
     """Redirect the per-user config dir into a tmp tree, with no auth env leaking in."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv(auth_token.ENV_VAR, raising=False)
+    for var in ("BOOLEY_PRIMARY_AUTH", "BOOLEY_AGENT_APP"):
+        monkeypatch.delenv(var, raising=False)
     # The credential-resolution code ranks these above everything else, so a
     # developer's real key leaking into the test env would flip every verdict.
     for var in auth_token.API_KEY_ENV.values():
@@ -1196,7 +1198,7 @@ def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
     elif kind == "foreign":
         lock.write_text("unchanged")
         _foreign_owner(monkeypatch, lock)
-    # Storage admission is under test; the reseed past it needs the Sandbox issuance stack.
+    # Storage admission is under test; the reseed past it is stubbed (TestAuthReseed runs it).
     monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
     rc = _auth_stdin(monkeypatch, auth_project)
     if kind == "absent":
@@ -1223,7 +1225,7 @@ def test_auth_no_eda_consumer_ignores_unrelated_authority(auth_project, monkeypa
     monkeypatch.setattr(
         authority, "load_state", Mock(side_effect=AssertionError("no EDA consumer"))
     )
-    # Storage admission is under test; the reseed past it needs the Sandbox issuance stack.
+    # Storage admission is under test; the reseed past it is stubbed (TestAuthReseed runs it).
     monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
     assert _auth_stdin(monkeypatch, auth_project) == 0
     assert lock.is_dir()
