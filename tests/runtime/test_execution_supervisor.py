@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -31,6 +33,7 @@ from tests.time_budget import hang_guard_s, scaled
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
+    ExecutionPaths,
     atomic_write_json,
     execution_paths,
     force_cancellation_requested,
@@ -655,3 +658,217 @@ def test_register_on_a_terminal_record_keeps_it_and_kills_the_process(tmp_path: 
     finally:
         child.kill()
         child.wait()
+
+
+_FORGED_TOKEN = "f" * 32
+_RELEASED_PROCESSES = ("worker", "grandchild", "worker_forged", "plain", "forged")
+_SLEEPER = """\
+import os, sys, time
+from pathlib import Path
+pid_file = Path(sys.argv[1])
+pid_file.with_suffix(".tmp").write_text(str(os.getpid()), encoding="utf-8")
+pid_file.with_suffix(".tmp").replace(pid_file)
+time.sleep(float(sys.argv[2]))
+"""
+# The intermediate exits at once, so the supervisor adopts the grandchild.
+_WORKER = """\
+import os, subprocess, sys
+from pathlib import Path
+sleeper, seconds, root = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+subprocess.run(
+    [sys.executable, "-c", "import subprocess, sys; subprocess.Popen(sys.argv[1:])",
+     sys.executable, sleeper, str(root / "grandchild.pid"), seconds],
+    check=True,
+)
+forged = dict(os.environ, BOOLEY_RELEASE_TOKEN=sys.argv[4])
+subprocess.Popen([sys.executable, sleeper, str(root / "worker_forged.pid"), seconds], env=forged)
+os.execv(sys.executable, [sys.executable, sleeper, str(root / "worker.pid"), seconds])
+"""
+_COMMAND = """\
+import os, subprocess, sys, time
+from pathlib import Path
+from booley.runtime import detached_job
+root, worker, sleeper, seconds, forged_token, mode = sys.argv[1:7]
+root = Path(root)
+try:
+    detached_job.spawn(
+        [sys.executable, worker, sleeper, seconds, str(root), forged_token],
+        root / "job.log",
+        jobs_root=root / "jobs",
+        run_id="released-1",
+    )
+except OSError:
+    try:
+        os.waitpid(-1, os.WNOHANG)
+    except ChildProcessError:  # the refused spawn left no child behind
+        (root / "refused").write_text("1", encoding="utf-8")
+    sys.exit(0)
+subprocess.Popen(
+    [sys.executable, sleeper, str(root / "plain.pid"), seconds], start_new_session=True
+)
+forged = dict(os.environ, BOOLEY_RELEASE_TOKEN=forged_token)
+subprocess.Popen(
+    [sys.executable, sleeper, str(root / "forged.pid"), seconds],
+    start_new_session=True,
+    env=forged,
+)
+names = ("worker", "grandchild", "worker_forged", "plain", "forged")
+while not all((root / f"{name}.pid").exists() for name in names):
+    time.sleep(0.02)
+if mode == "exit":
+    sys.exit(0)
+time.sleep(float(seconds))
+"""
+
+
+def _write_scenario(tmp_path: Path, *, exit_after_ready: bool) -> list[str]:
+    """The supervised command that spawns a released worker and unreleased descendants.
+
+    The worker starts a grandchild whose parent has exited and a child with a
+    forged release token. The command itself starts a plain ``setsid``
+    descendant and a forged-token one.
+    """
+    (tmp_path / "jobs").mkdir(exist_ok=True)
+    scripts = {"command": _COMMAND, "worker": _WORKER, "sleeper": _SLEEPER}
+    for name, source in scripts.items():
+        (tmp_path / f"{name}.py").write_bytes(source.encode())
+    return [
+        sys.executable,
+        str(tmp_path / "command.py"),
+        str(tmp_path),
+        str(tmp_path / "worker.py"),
+        str(tmp_path / "sleeper.py"),
+        str(2 * hang_guard_s()),
+        _FORGED_TOKEN,
+        "exit" if exit_after_ready else "sleep",
+    ]
+
+
+def _recorded_pids(tmp_path: Path) -> dict[str, int]:
+    return {
+        name: int((tmp_path / f"{name}.pid").read_text(encoding="utf-8"))
+        for name in _RELEASED_PROCESSES
+        if (tmp_path / f"{name}.pid").exists()
+    }
+
+
+def _beat(paths: ExecutionPaths, ready: threading.Event) -> None:
+    """Change the attachment heartbeat until *ready*; it then expires."""
+    generation = 1
+    while not ready.wait(0.1):
+        generation += 1
+        write_attachment_heartbeat(paths, generation=generation)
+
+
+@pytest.mark.parametrize(
+    "ending", ["exited", "cancelled", "force_cancelled", "attachment_expired"]
+)
+def test_released_worker_outlives_the_attachment(tmp_path: Path, ending: str) -> None:
+    """A detached worker and its adopted grandchild survive; every other descendant ends."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    write_attachment_heartbeat(paths, generation=1)
+    expired = ending == "attachment_expired"
+    command = _write_scenario(tmp_path, exit_after_ready=ending == "exited")
+    # Kept on Popen: the test cancels and waits on the supervisor itself.
+    supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "booley.runtime.execution_supervisor",
+            "run",
+            "--execution-id",
+            execution_id,
+            "--grace-seconds",
+            str(scaled(0.1)),
+            "--attachment-timeout-seconds",
+            str(scaled(1.0) if expired else 2 * hang_guard_s()),
+            "--",
+            *command,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=runtime_env(booley_dir, execution_id),
+    )
+    ready = threading.Event()
+    heartbeat = threading.Thread(target=_beat, args=(paths, ready))
+    try:
+        if expired:
+            heartbeat.start()
+        wait_for(
+            lambda: len(_recorded_pids(tmp_path)) == len(_RELEASED_PROCESSES),
+            failure="the scenario did not start every process",
+        )
+        ready.set()
+        if ending == "cancelled":
+            request_cancellation(paths)
+        elif ending == "force_cancelled":
+            request_cancellation(paths, force=True)
+        expected = 0 if ending == "exited" else 130
+        assert supervisor.wait(timeout=hang_guard_s()) == expected
+
+        pids = _recorded_pids(tmp_path)
+        for name in ("plain", "forged", "worker_forged"):
+            wait_for(
+                lambda name=name: not _non_zombie_alive(pids[name]),
+                failure=f"the {name} descendant did not stop",
+            )
+        assert _non_zombie_alive(pids["worker"])
+        assert _non_zombie_alive(pids["grandchild"])
+        record = json.loads(paths.record.read_text(encoding="utf-8"))
+        assert set(record) == {
+            "schema_version",
+            "state",
+            "runtime_identity",
+            "supervisor",
+            "leader",
+            "exit_code",
+            "tree_terminal",
+            "terminal_cause",
+            "updated_at",
+        }
+        assert record["state"] == "terminal"
+        assert record["tree_terminal"] is True
+        assert record["exit_code"] == expected
+    finally:
+        ready.set()
+        if supervisor.poll() is None:
+            supervisor.kill()
+        # Kept on Popen: reaps the supervisor the test drives itself.
+        supervisor.communicate(timeout=hang_guard_s())
+        for pid in _recorded_pids(tmp_path).values():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+def test_unrecordable_release_token_starts_no_worker(tmp_path: Path) -> None:
+    """A release token that cannot be recorded makes the spawn raise before any worker starts."""
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    execution_id = _unique_execution_id()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
+    write_attachment_heartbeat(paths, generation=1)
+    (paths.root / "release-tokens").mkdir()
+    command = _write_scenario(tmp_path, exit_after_ready=True)
+
+    result = run_bounded_child(
+        [
+            sys.executable,
+            "-m",
+            "booley.runtime.execution_supervisor",
+            "run",
+            "--execution-id",
+            execution_id,
+            "--",
+            *command,
+        ],
+        env=runtime_env(booley_dir, execution_id),
+        timeout=2 * hang_guard_s(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "refused").exists()
+    assert _recorded_pids(tmp_path) == {}

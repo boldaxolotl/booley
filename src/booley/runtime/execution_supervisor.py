@@ -25,6 +25,7 @@ from typing import Any
 from booley.core.boundary import BoundaryError, as_float, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
+    RELEASE_TOKEN_ENV,
     ExecutionId,
     ExecutionPaths,
     atomic_write_json,
@@ -33,11 +34,16 @@ from booley.runtime.execution_records import (
     force_cancellation_requested,
     read_attachment_heartbeat,
     read_json,
+    read_release_tokens,
     request_cancellation,
 )
 from booley.runtime.heartbeat import touch_reaper_heartbeat
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
-from booley.runtime.process_tree import descendant_pids
+from booley.runtime.process_tree import (
+    descendant_pids,
+    environment_value,
+    is_zombie_child_of,
+)
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _PR_SET_CHILD_SUBREAPER = 36
@@ -143,8 +149,23 @@ def _signal_processes(pids: set[int], signum: int) -> None:
             os.kill(pid, signum)
 
 
-def _signal_owned_tree(signum: int) -> set[int]:
-    pids = set(descendant_pids(os.getpid()))
+def _owned_pids(paths: ExecutionPaths) -> list[int]:
+    """Descendants cleanup ends: all, except processes carrying a recorded release token.
+
+    The filter is per process: a live process below a released one that carries
+    no recorded token stays owned. An exited process whose released parent has
+    not collected it is not: it cannot run, and only that parent can reap it.
+    """
+    pids = descendant_pids(os.getpid())
+    tokens = read_release_tokens(paths)
+    if not tokens:
+        return pids
+    released = {pid for pid in pids if environment_value(pid, RELEASE_TOKEN_ENV) in tokens}
+    return [pid for pid in pids if pid not in released and not is_zombie_child_of(pid, released)]
+
+
+def _signal_owned_tree(signum: int, paths: ExecutionPaths) -> set[int]:
+    pids = set(_owned_pids(paths))
     _signal_processes(pids, signum)
     return pids
 
@@ -191,12 +212,12 @@ def _wait_for_tree_exit(
 ) -> tuple[bool, bool]:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        current = set(descendant_pids(os.getpid()))
+        current = set(_owned_pids(paths))
         targets = current if repeated_signal == signal.SIGKILL else current - signaled
         _signal_processes(targets, repeated_signal)
         signaled.update(current)
         _reap_adopted(child)
-        if not descendant_pids(os.getpid()):
+        if not _owned_pids(paths):
             return True, False
         cancel = read_json(paths.cancel)
         if watch_force and (
@@ -206,7 +227,7 @@ def _wait_for_tree_exit(
             return False, True
         time.sleep(_POLL_SECONDS)
     _reap_adopted(child)
-    return not descendant_pids(os.getpid()), False
+    return not _owned_pids(paths), False
 
 
 def _terminate_tree(
@@ -227,7 +248,7 @@ def _terminate_tree(
         ]
     )
     for signum, timeout_s in stages:
-        signaled = _signal_owned_tree(signum)
+        signaled = _signal_owned_tree(signum, paths)
         terminal, force_requested = _wait_for_tree_exit(
             child,
             timeout_s,
@@ -239,7 +260,7 @@ def _terminate_tree(
         if terminal:
             return True
         if force_requested:
-            signaled = _signal_owned_tree(signal.SIGKILL)
+            signaled = _signal_owned_tree(signal.SIGKILL, paths)
             terminal, _unused = _wait_for_tree_exit(
                 child,
                 _FORCE_REAP_SECONDS,

@@ -250,6 +250,13 @@ frees one only when the processes that used it are provably gone; otherwise a
 Job whose root process died could free its memory while its EDA tools still
 run, and the next Job would start on top of them.
 
+A `booley session` terminal command is supervised the same way: when it ends,
+every process it started ends with it, so none keeps running on memory that
+looks free. A detached Standalone Job started from it is the one exception: it
+keeps running, and its reservation is held and recovered by its own process, as
+[ADR 0095](../adr/0095-release-detached-job-workers-from-terminal-attachment-cleanup.md)
+describes.
+
 ## Booley Flows
 
 A **Booley Flow** deterministically turns a structured request into EDA tool

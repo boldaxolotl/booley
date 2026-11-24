@@ -379,6 +379,8 @@ def test_worker_environment_has_no_session_identity(project: Path, ctl: Path) ->
         assert name not in worker_env
     assert worker_env["BOOLEY_RUN_ID"] == run_id  # its own run, not the submitter's
     assert final.session_key is None
+    assert "BOOLEY_RELEASE_TOKEN" not in worker_env
+    assert not list((booley_dir_of(project) / ".runtime").rglob("release-tokens"))
 
 
 START_FAILURE_REASONS = {
