@@ -9,7 +9,6 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-import anyio
 import pytest
 
 _SCRIPT = """#!{python}
@@ -40,25 +39,15 @@ def write_claude_cli(directory: Path, events: list[dict]) -> Path:
     return path
 
 
-def sdk_message(kind: str, **fields: Any) -> Any:
-    """Build a Claude Agent SDK message of class ``kind`` without its constructor.
-
-    The constructors differ between SDK releases (and the harness stubs the SDK
-    when it is not installed), so each field is set on a bare instance.
-    """
-    import claude_agent_sdk
-
-    message = object.__new__(getattr(claude_agent_sdk, kind))
-    if kind == "AssistantMessage":
-        fields = {"content": [], "model": "test-model", "usage": None, **fields}
-    for name, value in fields.items():
-        object.__setattr__(message, name, value)
-    return message
-
-
 def sdk_result(text: str = "done", **fields: Any) -> Any:
-    """A successful ``ResultMessage`` with every field Booley reads."""
-    defaults: dict[str, Any] = {
+    """Build a successful ``ResultMessage`` of the loaded Claude Agent SDK.
+
+    Every field the backend reads is set, so the stub SDK a harness-only run
+    loads and the real SDK take the same message.
+    """
+    from claude_agent_sdk import ResultMessage
+
+    values: dict[str, Any] = {
         "subtype": "success",
         "duration_ms": 1,
         "duration_api_ms": 1,
@@ -67,20 +56,38 @@ def sdk_result(text: str = "done", **fields: Any) -> Any:
         "session_id": "test-session",
         "result": text,
         "structured_output": None,
-        "total_cost_usd": 0.01,
+        "total_cost_usd": None,
         "usage": None,
     }
-    return sdk_message("ResultMessage", **{**defaults, **fields})
+    values.update(fields)
+    return ResultMessage(**values)
+
+
+def sdk_message(kind: str, **fields: Any) -> Any:
+    """Build an ``AssistantMessage`` or ``UserMessage`` of the loaded SDK with ``fields`` set.
+
+    The harness conftest installs a stub SDK whose message classes take no
+    arguments when the real one was not imported first, so the fields are set
+    directly. Content blocks are plain namespaces: the backend reads them only
+    through ``getattr``.
+    """
+    import claude_agent_sdk
+
+    message = object.__new__(getattr(claude_agent_sdk, kind))
+    message.__dict__.update(fields)
+    return message
 
 
 def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]:
-    """Replace the Claude Agent SDK's ``query`` with a stream that replays ``steps``.
+    """Replace the Claude Agent SDK's ``query`` with a scripted stream; return each call's options.
 
-    The SDK is where Booley hands off to the Claude CLI. Every call walks the
-    steps in order: a message is yielded, an exception is raised, a callable is
-    called with the call's options (and may raise), a number is awaited as a
-    sleep. Returns the options of each call, so its length is the attempt count.
+    The SDK is where Booley hands off to the Claude CLI. Each step is one of:
+    an SDK message (yielded), a number (seconds to wait), an exception
+    (raised), or a callable (called with the call's options, for example to
+    write CLI stderr through ``options.stderr``).
     """
+    import anyio
+
     from booley.runtime import _claude_backend
 
     seen: list[Any] = []
@@ -90,10 +97,10 @@ def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]
         for step in steps:
             if isinstance(step, BaseException):
                 raise step
-            if callable(step):
-                step(options)
-            elif isinstance(step, (int, float)):
+            if isinstance(step, int | float):
                 await anyio.sleep(step)
+            elif callable(step):
+                step(options)
             else:
                 yield step
 
@@ -102,7 +109,11 @@ def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]
 
 
 def record_sdk_options(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-    """Replay one successful result and return the options each call receives."""
+    """Replace the Claude Agent SDK's ``query`` and return the options each call receives.
+
+    The fake answers with one successful result.
+    """
     return replay_sdk_stream(
-        monkeypatch, sdk_result("", usage={"input_tokens": 1, "output_tokens": 1})
+        monkeypatch,
+        sdk_result("", total_cost_usd=0.01, usage={"input_tokens": 1, "output_tokens": 1}),
     )

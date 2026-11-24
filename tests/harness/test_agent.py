@@ -405,6 +405,12 @@ def _fail_first(error: BaseException):
     return step
 
 
+def _assistant(**fields):
+    return sdk_message(
+        "AssistantMessage", **{"content": [], "model": "test-model", "usage": None, **fields}
+    )
+
+
 def _rate_limit(status: str, resets_at=None, utilization=None):
     info = SimpleNamespace(
         status=status,
@@ -467,8 +473,8 @@ class TestCallAgent:
         """AssistantMessage usage tokens are accumulated."""
         replay_sdk_stream(
             monkeypatch,
-            sdk_message("AssistantMessage", usage={"input_tokens": 500, "output_tokens": 200}),
-            sdk_message("AssistantMessage", usage={"input_tokens": 600, "output_tokens": 300}),
+            _assistant(usage={"input_tokens": 500, "output_tokens": 200}),
+            _assistant(usage={"input_tokens": 600, "output_tokens": 300}),
             sdk_result("done"),
         )
 
@@ -562,8 +568,8 @@ class TestCallAgent:
         ]
         replay_sdk_stream(
             monkeypatch,
-            sdk_message("AssistantMessage", content=blocks, usage={"input_tokens": 1}),
-            sdk_message("AssistantMessage"),
+            _assistant(content=blocks, usage={"input_tokens": 1}),
+            _assistant(),
             sdk_result(),
         )
         transcript = tmp_path / "transcripts" / "test.jsonl"
@@ -689,7 +695,7 @@ class TestCallAgent:
     ):
         attempts = replay_sdk_stream(
             monkeypatch,
-            sdk_message("AssistantMessage", usage={"input_tokens": 1, "output_tokens": 1}),
+            _assistant(usage={"input_tokens": 1, "output_tokens": 1}),
             _fail_first(ConnectionError("ECONNRESET")),
             sdk_result("recovered"),
         )
@@ -761,7 +767,7 @@ class TestCallAgent:
 
         attempts = replay_sdk_stream(
             monkeypatch,
-            sdk_message("AssistantMessage", usage={"input_tokens": 1, "output_tokens": 1}),
+            _assistant(usage={"input_tokens": 1, "output_tokens": 1}),
             sdk_result("finished"),
         )
         monkeypatch.setattr(sys, "stderr", BrokenPipe())
