@@ -99,7 +99,7 @@ def test_same_observations_reach_doctor_mcp_and_dashboard(
     assert snapshot.due is None
     message = health_presentation.brief_message(snapshot)
     _isolate_mcp_and_dashboard(monkeypatch, root)
-    assert "Health: " + message in server._format_status_card([])
+    assert "Health: " + message in server._format_status_card([], None)
     lines = dashboard.health_lines(root, directory)
     expected = "Doctor: OK" if clean else f"Doctor: 1 {severity.name}"
     assert tuple(line.text for line in lines) == (expected,)
@@ -299,7 +299,7 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     cli._report_session_health(root)
     assert f"Automatic Doctor is running in the Sandbox ({expired})" in capsys.readouterr().err
     # MCP retains full findings; the Dashboard shows compact counts and freshness.
-    assert "Health: " + message in server._format_status_card([])
+    assert "Health: " + message in server._format_status_card([], None)
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
         "Doctor: 1 FAIL · recheck due",
     )
