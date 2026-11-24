@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from tests.subprocess_budget import run_bounded_child
 from tests.t3_cli_fake import write_t3_server_cli
+from tests.time_budget import scaled
 
 _ROOT = Path(__file__).parents[2]
 _SCRIPT = _ROOT / ".github/scripts/verify_t3code_runtime.py"
@@ -24,16 +24,20 @@ _PAIRING = {
     "id": "1",
     "credential": "c",
     "scopes": ["owner"],
-    "expiresAt": (datetime.now(UTC) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+    "expiresAt": "2999-01-01T00:00:00.000Z",
     "pairUrl": "{base}/pair#token=c",
 }
 
 
 def _show(
-    *, settings: str = _SETTINGS, limits: dict[str, object] = _LIMITS, loaded: str = _LOADED
+    *,
+    source: str = "Booley (/etc/t3code/policy.json",
+    settings: str = _SETTINGS,
+    limits: dict[str, object] = _LIMITS,
+    loaded: str = _LOADED,
 ) -> str:
     return (
-        "Managed by Booley (/etc/t3code/policy.json, fingerprint 47f1ab130165).\n\n"
+        f"Managed by {source}, fingerprint 47f1ab130165).\n\n"
         f"{settings}\n\nLimits:\n{json.dumps(limits, indent=2)}\n\n{loaded}\n"
     )
 
@@ -63,13 +67,45 @@ _WITHOUT_CONNECT = {k: v for k, v in _LIMITS.items() if k != "connect"}
             id="missing-setting",
         ),
         pytest.param(
-            {"show": _show(loaded="The running server loaded Booley's policy. Restart T3 Code.")},
+            {
+                "show": _show(
+                    loaded=(
+                        "The running server (pid 31, started 2026-11-24T14:01:41.163Z) loaded "
+                        "Booley's policy from /etc/t3code/policy.json (fingerprint 47f1ab130165)."
+                        " Restart T3 Code to apply the installed policy."
+                    )
+                )
+            },
             "Restart T3 Code",
             id="restart-pending",
         ),
+        pytest.param({"show": ""}, "not in the form Booley reads", id="empty-show"),
+        pytest.param(
+            {"show": _show(source="Other (/etc/t3code/policy.json")},
+            "policy source: Other",
+            id="other-organization",
+        ),
+        pytest.param(
+            {"show": _show(source="Booley (/home/agent/policy.json")},
+            "policy source: Booley at /home/agent/policy.json",
+            id="other-policy-path",
+        ),
+        pytest.param(
+            {"show": _show(limits={**_LIMITS, "connect": 0})},
+            "limits.connect",
+            id="number-for-false",
+        ),
+        pytest.param({"serve": "dies"}, "exited during the checks", id="server-dies"),
         pytest.param(
             {"pairing": {**_PAIRING, "pairUrl": "{base}/pair"}}, "pairUrl", id="pairing-shape"
         ),
+        pytest.param(
+            {"pairing": {**_PAIRING, "expiresAt": "2000-01-01T00:00:00Z"}},
+            "expiresAt",
+            id="pairing-expired",
+        ),
+        pytest.param({"pairing": "not json"}, "did not print a JSON object", id="pairing-text"),
+        pytest.param({"pairing": "[1]"}, "did not print a JSON object", id="pairing-list"),
     ],
 )
 def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str) -> None:
@@ -96,7 +132,7 @@ def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str
 
     result = run_bounded_child(
         [sys.executable, str(_SCRIPT), "--policy", str(policy), "--evidence", str(evidence)]
-        + (["--ready-timeout", "2"] if fake.get("serve") == "hang" else []),
+        + (["--ready-timeout", f"{scaled(2):g}"] if fake.get("serve") == "hang" else []),
         env=env,
     )
 

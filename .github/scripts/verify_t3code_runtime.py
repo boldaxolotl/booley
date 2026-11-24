@@ -89,7 +89,8 @@ def _stop_server(server: subprocess.Popen[bytes]) -> None:
 
 
 def _parse_show(text: str) -> dict[str, Any]:
-    header = _HEADER.fullmatch(text.strip().splitlines()[0])
+    lines = text.strip().splitlines()
+    header = _HEADER.fullmatch(lines[0]) if lines else None
     limits_text = text.partition("Limits:\n")[2]
     if header is None or not limits_text:
         _fail("t3 policy show output is not in the form Booley reads", text)
@@ -105,8 +106,13 @@ def _parse_show(text: str) -> dict[str, Any]:
         "path": header["path"],
         "settings": settings,
         "limits": limits,
-        "status": text.strip().splitlines()[-1],
+        "status": lines[-1],
     }
+
+
+def _json(value: object) -> str:
+    """Return *value* as JSON, so ``False`` and ``0`` differ as they do on the wire."""
+    return json.dumps(value, sort_keys=True)
 
 
 def _differences(prefix: str, expected: dict[str, Any], shown: dict[str, Any]) -> list[str]:
@@ -114,7 +120,7 @@ def _differences(prefix: str, expected: dict[str, Any], shown: dict[str, Any]) -
     return [
         f"{prefix}.{key}: expected {expected.get(key, absent)!r}, shown {shown.get(key, absent)!r}"
         for key in sorted(expected.keys() | shown.keys())
-        if (key in expected) != (key in shown) or expected[key] != shown[key]
+        if (key in expected) != (key in shown) or _json(expected[key]) != _json(shown[key])
     ]
 
 
@@ -152,8 +158,11 @@ def _check_pairing(root: Path) -> dict[str, Any]:
     try:
         pairing = json.loads(result.stdout)
     except ValueError:
+        pairing = None
+    if not isinstance(pairing, dict):
         _fail(
-            "t3 auth pairing create did not print JSON", "(output withheld: it may hold a token)"
+            "t3 auth pairing create did not print a JSON object",
+            "(output withheld: it may hold a token)",
         )
     link = re.escape(_PAIRING_BASE_URL) + r"/pair#token=\S+"
     problems = []
@@ -186,6 +195,11 @@ def main() -> int:
             _wait_until_ready(server, log, args.ready_timeout)
             shown = _check_policy_show(root, policy)
             pairing = _check_pairing(root)
+            if server.poll() is not None:
+                _fail(
+                    f"T3 Code exited during the checks (exit status {server.poll()})",
+                    log.read_text(encoding="utf-8", errors="replace"),
+                )
         finally:
             _stop_server(server)
     evidence = {
