@@ -24,6 +24,8 @@ from pathlib import Path
 here = Path(__file__).parent
 replies = json.loads((here / "fake_docker_replies.json").read_text(encoding="utf-8"))
 command = sys.argv[1:]
+with (here / "fake_docker_calls.jsonl").open("a", encoding="utf-8") as calls:
+    calls.write(json.dumps(command) + "\\n")
 if command and command[0] == "build":
     (here / "build-started").touch()
 code, text = replies.get(command[0] if command else "", [0, ""])
@@ -42,6 +44,12 @@ class FakeDocker:
     @property
     def built(self) -> bool:
         return self.build_marker.exists()
+
+    @property
+    def calls(self) -> list[list[str]]:
+        """Every argument list the fake received, in order."""
+        log = self.build_marker.with_name("fake_docker_calls.jsonl")
+        return [json.loads(line) for line in log.read_text("utf-8").splitlines()]
 
 
 def install_fake_docker(
