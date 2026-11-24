@@ -116,7 +116,7 @@ def test_status_tool_description_uses_no_retired_mode_name() -> None:
 
     definition = catalog._status_mcp_tool_def()  # pyright: ignore[reportPrivateUsage]
 
-    assert definition["description"] == "Show whether Booley is ready in this tab."
+    assert not _PHRASE.search(definition["description"])
 
 
 def test_no_tracked_text_names_the_retired_variable_or_log_directory() -> None:
