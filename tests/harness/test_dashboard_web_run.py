@@ -409,6 +409,7 @@ SCOPE = "pid:[17]"
 def test_check_returns_the_review_screen_lines(
     world, feature_flags, empty_home, monkeypatch, body, expected
 ):
+    # The session registry scopes rows by the host's PID namespace, which the test cannot join.
     monkeypatch.setattr(model, "namespace", lambda: SCOPE)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     write_config(world.wt, '[agent]\nauth = "api_key"\n')
@@ -499,7 +500,7 @@ def test_a_job_record_that_cannot_be_written_is_a_server_error(world, feature_fl
     assert spawned == []
 
 
-@pytest.mark.parametrize("route", ["check", "submit"])
+@pytest.mark.parametrize("route", POSTS)
 @pytest.mark.parametrize(
     ("headers", "content", "status"),
     [
@@ -535,7 +536,8 @@ def test_a_launch_from_another_origin_or_without_json_starts_nothing(
 def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
     world, feature_flags, spawned, monkeypatch
 ):
-    monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")  # as the form route's test does
+    # No public entry point builds a Flow with an unplaced group.
+    monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
     with _client(world, feature_flags) as client:
         answers = [_post(client, route, world.wt, _run("lint")) for route in POSTS]
 

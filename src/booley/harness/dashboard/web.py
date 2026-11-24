@@ -12,8 +12,9 @@ With the flag on, ``POST /api/run/command``, ``/check`` and ``/submit`` take a J
 ``{"kind", "name", "values", "extra"}``: the equivalent CLI command, the review screen's lines
 and refusal, and the start of a Standalone Job. Each requires a page of this server (an ``Origin``
 of ``http://127.0.0.1:<port>``, the Host's own) and a JSON body, so no other site can launch;
-errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or Specialist), 422 (the form, the
-parser or the Agent CLI's sign-in check refuses) and 500 (the Job record cannot be written).
+errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or Specialist), 422 (the form or the
+parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the Job record cannot be
+written).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import sys
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -34,6 +35,7 @@ from starlette.staticfiles import StaticFiles
 from booley.config.feature_flags import enabled_features, feature_enabled
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError, git_common_directory
+from booley.core.boundary import require_dict
 from booley.core.resources import package_data_dir
 from booley.harness.dashboard import web_run
 from booley.harness.dashboard.jobs import JobReader
@@ -156,7 +158,7 @@ async def _guarded_json(request: Request) -> dict[str, Any]:
         raise _RefusalError(400, f"the body is not JSON: {exc}") from exc
     if not isinstance(body, dict):
         raise _RefusalError(400, "the body must be a JSON object")
-    return cast("dict[str, Any]", body)  # JSON object keys are text
+    return require_dict(body, field="body")
 
 
 def _run_posts(

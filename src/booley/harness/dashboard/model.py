@@ -128,6 +128,16 @@ class DashboardReader:
 HANDLE_NUMBER = re.compile(r"S(\d+)")
 
 
+def session_handle(snapshot: DashboardSnapshot, key: str) -> str:
+    """The session's handle, ``S?`` until one is reserved."""
+    return snapshot.session_handles.get(key, "S?")
+
+
+def session_title(snapshot: DashboardSnapshot, key: str) -> str:
+    """The handle with its ``--name`` label when the session has one."""
+    return snapshot.session_titles.get(key) or session_handle(snapshot, key)
+
+
 def session_checkouts(snapshot: DashboardSnapshot) -> list[tuple[Path, str]]:
     """Each connected session's checkout and ``S3 · uart-fix Interactive`` label, by handle number.
 
@@ -135,11 +145,8 @@ def session_checkouts(snapshot: DashboardSnapshot) -> list[tuple[Path, str]]:
     follows the handle number, never the title.
     """
 
-    def handle(key: str) -> str:
-        return snapshot.session_handles.get(key, "S?")
-
     def number(row: SessionRow) -> int:
-        match = HANDLE_NUMBER.fullmatch(handle(row.attribution.key))
+        match = HANDLE_NUMBER.fullmatch(session_handle(snapshot, row.attribution.key))
         return int(match[1]) if match else 1 << 30
 
     pairs: list[tuple[Path, str]] = []
@@ -147,8 +154,7 @@ def session_checkouts(snapshot: DashboardSnapshot) -> list[tuple[Path, str]]:
         facts = row.attribution
         checkout = facts.work_dir or facts.default_work_dir
         if checkout:
-            title = snapshot.session_titles.get(facts.key) or handle(facts.key)
-            pairs.append((Path(checkout), f"{title} {SESSION_MODE}"))
+            pairs.append((Path(checkout), f"{session_title(snapshot, facts.key)} {SESSION_MODE}"))
     return pairs
 
 

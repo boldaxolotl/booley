@@ -40,6 +40,8 @@ from booley.harness.dashboard.model import (
     HANDLE_NUMBER,
     DashboardSnapshot,
     session_checkouts,
+    session_handle,
+    session_title,
     worktree_occupants,
 )
 from booley.harness.dashboard.resources import Resources
@@ -1390,11 +1392,10 @@ class DashboardApp(App[None]):
         return target_arg(job.record.argv) or "Target —"
 
     def _session_handle(self, key: str) -> str:
-        return self.snapshot.session_handles.get(key, "S?")
+        return session_handle(self.snapshot, key)
 
     def _session_title(self, key: str) -> str:
-        """The handle with its ``--name`` label when the session has one."""
-        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+        return session_title(self.snapshot, key)
 
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
