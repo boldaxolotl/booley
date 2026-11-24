@@ -477,8 +477,8 @@ def test_layout_proof_refuses_changed_configuration_or_layers(
         ([], ["extra"], "substituted parent"),
         (["base"], ["base"], "substituted parent"),
         (["base"], ["extra", "other"], "substituted parent"),
-        (["base"], ["unknown operation", "base"], "history"),
-        (["base"], ["/bin/sh -c change payload", "base"], "history"),
+        (["base"], ["unknown operation", "base"], "unknown operation"),
+        (["base"], ["/bin/sh -c change payload", "base"], "differs from its trusted recipe"),
         (["base"], ["x" * 1_048_577], "exceeds bounds"),
     ],
 )
@@ -532,8 +532,8 @@ def test_layout_docker_transport_failure_is_controlled(layout: _Layout, tmp_path
     layout.extra[f"history {layout.parent_id}"] = (1, "")
     with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout build history"):
         layout.verify()
-    # The probe runs only after both histories succeeded through the same executable, so no
-    # public call reaches this ``except`` exit; call the step itself.
+    # A missing executable fails the histories before the probe starts, so no public call
+    # reaches the probe's transport ``except``; call the step itself.
     with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout directory"):
         project_image._probe_layout_directory("image", executable=missing)
 
@@ -556,6 +556,7 @@ def test_layout_inspection_preserves_exact_docker_record(
 ) -> None:
     record = {"Id": "sha256:" + "a" * 64, "Config": {"User": "1000"}}
     docker = install_fake_docker(tmp_path, monkeypatch, {"image": (0, json.dumps([record]))})
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # a call that drops the executable fails
 
     assert project_image.inspect_layout_image("candidate", executable=str(docker.path)) == record
     assert docker.calls == [["image", "inspect", "candidate"]]

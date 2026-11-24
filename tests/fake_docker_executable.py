@@ -28,8 +28,8 @@ with (here / "fake_docker_calls.jsonl").open("a", encoding="utf-8") as log:
     log.write(json.dumps(command) + "\\n")
 if command and command[0] == "build":
     (here / "build-started").touch()
-first = command[0] if command else ""
-code, text = replies.get(f"{first} {command[-1]}", replies.get(first, [0, ""]))
+first, last = (command[0], command[-1]) if command else ("", "")
+code, text = replies.get(f"{first} {last}", replies.get(first, [0, ""]))
 if text:
     print(text, file=sys.stdout if code == 0 else sys.stderr)
 raise SystemExit(code)
