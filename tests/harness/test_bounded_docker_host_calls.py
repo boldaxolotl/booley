@@ -108,6 +108,9 @@ class _Events:
         return self._record("fail")
 
 
+# private: each site below is driven through its own private function. The public commands that
+# reach it (`booley doctor`, `booley bootstrap`, `booley init`, the MCP status tool) issue other
+# Docker calls first, so the audit could not attribute an unbounded call to its site.
 def _bootstrap_state(name: str, flag: str) -> str:
     return bootstrap._tool_finding(name, flag).state.name
 
@@ -225,6 +228,7 @@ def _flow_check_result(root: Path) -> tuple[int | None, list[str]]:
     return (None if result is None else result.returncode), messages
 
 
+# private: the same reason as for the drivers above.
 def _sites() -> list[_Site]:
     riscv_command = list(eda_environment.riscv_probe_specs()[0].command)
     riscv_description = eda_environment.riscv_probe_specs()[0].description
@@ -628,6 +632,7 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
         limit = scaled(40 if os.name == "nt" else 25)
         timeout_s = math.ceil(scaled(2))
         start = time.monotonic()
+        # private: the same reason as for the drivers above.
         result = doctor._execute_selftest(
             SimpleNamespace(project_root=tmp_path),  # type: ignore[arg-type]
             cmd,

@@ -183,10 +183,7 @@ def reconcile_sidecars(
 ) -> SidecarResult:
     """Inspect or converge all global Docker objects in dependency order."""
     docker = _docker_adapter()
-    try:
-        specs = _required_image_specs(booley_root, policy.egress)
-    except SidecarError as exc:
-        return SidecarResult((SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc)),))
+    specs = _required_image_specs(booley_root, policy.egress)
     if policy.egress == _UNPROXIED:
         return _reconcile_unproxied(policy, intent, specs, docker, capacity_plan)
     findings = list(_reconcile_images(specs, intent, docker, capacity_plan))
@@ -819,8 +816,6 @@ def _inspect_network(docker: _DockerPort) -> _NetworkState:
 def _network_container_names(containers: dict[Any, Any]) -> tuple[str, ...]:
     names = []
     for container_id, raw in containers.items():
-        if as_str(container_id) is None:
-            raise BoundaryError("network container IDs must be strings")
         entry = require_dict(raw, field=f"network container {container_id}")
         names.append(require_str(entry, "Name"))
     return tuple(sorted(names))
@@ -965,7 +960,6 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
         attached = require_dict(
             networks.get("Networks"), field=f"container {name}.NetworkSettings.Networks"
         )
-        attached_names = _string_keys(attached, f"container {name} networks")
         labels = _string_labels(config.get("Labels"), f"container {name}")
         project_root = _project_root_from_inspection(document, labels, name)
     except BoundaryError as exc:
@@ -975,7 +969,7 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
         image_id,
         running,
         labels,
-        frozenset(attached_names),
+        frozenset(attached),
         project_root,
     )
 
@@ -1175,13 +1169,6 @@ def _required_bool(value: dict[Any, Any], key: str) -> bool:
     if key not in value:
         raise BoundaryError(f"{key} is required")
     return require_bool(value, key)
-
-
-def _string_keys(value: dict[Any, Any], description: str) -> tuple[str, ...]:
-    keys = tuple(as_str(key) for key in value)
-    if any(key is None for key in keys):
-        raise BoundaryError(f"{description} must use string keys")
-    return tuple(key for key in keys if key is not None)
 
 
 def _is_missing(result: subprocess.CompletedProcess[str]) -> bool:
