@@ -102,6 +102,7 @@ def _child_evidence() -> list[dict[str, Any]]:
         _CHILDREN_LOCK.release()
     if os.name != "nt":
         # Popens dropped while their child still runs live here, not in the registry.
+        # private: CPython's own ``subprocess._active``; no public list of live children exists.
         popens += [popen for popen in subprocess._active or () if popen not in popens]  # type: ignore[attr-defined]
     entries = []
     for popen in popens:
