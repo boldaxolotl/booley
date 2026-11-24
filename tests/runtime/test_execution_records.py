@@ -292,6 +292,7 @@ def test_gc_collects_record_lock_and_staged_leftovers(tmp_path: Path) -> None:
     _old_terminal(tmp_path, execution_id)
     paths = execution_paths(execution_id, booley_dir=tmp_path)
     (paths.root / "record.lock").write_bytes(b"")
+    (paths.root / "release-tokens").write_bytes(b"\n" + b"b" * 32 + b"\n")
     (paths.root / ".context.json.x.booley-staged").write_bytes(b"{")
 
     removed = gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10)

@@ -71,12 +71,13 @@ fix when authentication is missing.
 - A Standalone Job is never Goal evidence: it has no Goal binding and never
   records, satisfies or invalidates evidence, even in a worktree in Goal Mode.
   The Developer Agent must run its own check.
-- Standalone Jobs live as long as the Sandbox. `booley session down` lists the
+- Standalone Jobs live as long as the Sandbox; a terminal attachment releases
+  them as [ADR 0095][adr-0095] describes. `booley session down` lists the
   running ones and warns before it proceeds.
 
 ## Consequences
 
 - The Dashboard now starts processes. Two runners share one record format:
   foreground for the shell, detached for the Dashboard.
-- A detached worker started from inside a `booley session` terminal still ends
-  with that attachment.
+
+[adr-0095]: 0095-release-detached-job-workers-from-terminal-attachment-cleanup.md
