@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
@@ -28,9 +30,11 @@ _HANG_S = hang_guard_s()
 # The repository manifest is the single source of the pinned CLI versions. Reading
 # it (CI mounts the checkout at /work) checks the image against the current pins.
 _MANIFEST = Path(__file__).resolve().parents[2] / "src/booley/data/docker/agent-clis-package.json"
-_PINNED = json.loads(_MANIFEST.read_text(encoding="utf-8"))["dependencies"]
-EXPECTED_CLAUDE = _PINNED["@anthropic-ai/claude-code"]
-EXPECTED_CODEX = _PINNED["@openai/codex"]
+_PINS = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+EXPECTED_CLAUDE = _PINS["dependencies"]["@anthropic-ai/claude-code"]
+EXPECTED_CODEX = _PINS["dependencies"]["@openai/codex"]
+EXPECTED_T3CODE = _PINS["t3code"]["version"]
+T3CODE_POLICY = Path("/etc/t3code/policy.json")
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
@@ -75,15 +79,53 @@ def _assert_versions(expected_node: str, expected_npm: str) -> dict[str, str]:
         "npm": _run(["npm", "--version"]).stdout.strip(),
         "claude": _run(["claude", "--version"]).stdout.split()[0],
         "codex": _run(["codex", "--version"]).stdout.split()[1],
+        "t3": _run(["t3", "--version"]).stdout.split()[1].removeprefix("v"),
     }
     expected = {
         "node": expected_node,
         "npm": expected_npm,
         "claude": EXPECTED_CLAUDE,
         "codex": EXPECTED_CODEX,
+        "t3": EXPECTED_T3CODE,
     }
     assert versions == expected, f"runtime versions differ: {versions!r} != {expected!r}"
     return versions
+
+
+def _assert_t3code_policy_is_read_only() -> dict[str, Any]:
+    """The Sandbox user finds the policy as shipped and cannot change it or its directory."""
+    shipped = _MANIFEST.with_name("t3code-policy.json").read_bytes()
+    assert T3CODE_POLICY.read_bytes() == shipped, "installed policy differs from the repository's"
+    owners = {
+        name: (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+        for name, info in (
+            ("directory", T3CODE_POLICY.parent.stat()),
+            ("file", T3CODE_POLICY.stat()),
+        )
+    }
+    assert owners == {"directory": (0, 0, 0o755), "file": (0, 0, 0o644)}, owners
+    refused: list[str] = []
+    # The spare lives on the container's root filesystem, like /etc: a rename
+    # across mounts fails with EXDEV before any permission check.
+    with tempfile.TemporaryDirectory(dir="/tmp") as spare_dir:
+        spare = Path(spare_dir) / "spare.json"
+        spare.write_bytes(shipped)
+        attempts: dict[str, Callable[[], object]] = {
+            "modify": lambda: T3CODE_POLICY.open("ab"),
+            "chmod": lambda: T3CODE_POLICY.chmod(0o666),
+            "replace": lambda: spare.replace(T3CODE_POLICY),
+            "delete": T3CODE_POLICY.unlink,
+            "create": lambda: (T3CODE_POLICY.parent / "extra.json").open("xb"),
+        }
+        for action, attempt in attempts.items():
+            try:
+                attempt()
+            except PermissionError:
+                refused.append(action)
+            else:
+                raise AssertionError(f"the Sandbox user could {action} the T3 Code policy")
+    assert T3CODE_POLICY.read_bytes() == shipped
+    return {"owners": owners, "refused": refused}
 
 
 def _assert_diagnostics() -> None:
@@ -444,6 +486,7 @@ def main() -> None:
         root = Path(temporary)
         evidence = {
             "versions": _assert_versions(*_recipe_versions()),
+            "t3code_policy": _assert_t3code_policy_is_read_only(),
             "installed_packages": _assert_npm_tree(),
             "sdk_cli": _assert_sdk_uses_system_claude(),
             "booley_configuration": _assert_booley_configuration(root),

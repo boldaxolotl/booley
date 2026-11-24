@@ -11,6 +11,11 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz
 
+RUN T3CODE_VERSION="$(t3code_pin version)" \
+    && curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/pingdotgg/t3code/releases/download/v${T3CODE_VERSION}/t3-${T3CODE_VERSION}-linux-x64.tar.gz" \
+        -o /tmp/t3code.tar.gz
+
 ARG VERILOGHDL_VERSION=1.29.0
 ARG VERILOGHDL_SHA256=f657680f6eaf485923a3c2b07efd8cc3a8231f327762b2c8eb70062b4730709c
 ARG VERILOGHDL_SOURCE_TAG=v1.29.0

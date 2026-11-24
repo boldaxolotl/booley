@@ -357,12 +357,38 @@ RUN agent_cli_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.
     && test "$(claude --version | awk '{print $1}')" = "$(agent_cli_pin @anthropic-ai/claude-code)" \
     && test "$(codex --version | awk '{print $2}')" = "$(agent_cli_pin @openai/codex)"
 
+# T3 Code ships as a release tarball: its npm package downloads the real binary
+# on first run, which the Sandbox egress rules block. The manifest holds the
+# version and sha256. The launcher gives every way of starting T3 Code, and so
+# its child processes, NODE_USE_ENV_PROXY=1 (Node's fetch ignores HTTPS_PROXY
+# without it); an image-level ENV would reach every other Node program too.
+RUN t3code_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["t3code"][sys.argv[2]])' /opt/agent-clis/package.json "$1"; } \
+    && T3CODE_VERSION="$(t3code_pin version)" \
+    && T3CODE_SHA256="$(t3code_pin sha256)" \
+    && echo ">>> Installing T3 Code ${T3CODE_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/pingdotgg/t3code/releases/download/v${T3CODE_VERSION}/t3-${T3CODE_VERSION}-linux-x64.tar.gz" \
+        -o /tmp/t3code.tar.gz \
+    && echo "${T3CODE_SHA256}  /tmp/t3code.tar.gz" | sha256sum -c - \
+    && install -d -m 0755 /opt/t3code \
+    && tar -xzf /tmp/t3code.tar.gz -C /opt/t3code --strip-components=1 --no-same-owner \
+    && rm -f /tmp/t3code.tar.gz \
+    && printf '%s\n' '#!/bin/sh' 'export NODE_USE_ENV_PROXY=1' 'exec /opt/t3code/t3 "$@"' \
+        > /usr/local/bin/t3 \
+    && chmod 0755 /usr/local/bin/t3 \
+    && test "$(t3 --version)" = "t3 v${T3CODE_VERSION}"
+
 # The container's network namespace is not the whole agent boundary: both
 # clients can expose provider-hosted web MCP tools whose requests never originate
 # in Docker. Enforce the offline contract in each client's system policy so
 # user/project config and full-access modes cannot turn those MCP tools back on.
 COPY src/booley/data/docker/codex-requirements.toml /etc/codex/requirements.toml
 COPY src/booley/data/docker/claude-managed-settings.json /etc/claude-code/managed-settings.json
+COPY src/booley/data/docker/t3code-policy.json /etc/t3code/policy.json
+# T3 Code refuses to start (exit 77) on a policy it cannot use: fail the build instead.
+RUN chmod 0755 /etc/t3code \
+    && chmod 0644 /etc/t3code/policy.json \
+    && t3 policy check /etc/t3code/policy.json
 # Both policy files also run this hook on client lifecycle events so the
 # Dashboard can show session activity (ADR 0068). It is a standalone
 # standard-library script, not a `booley` import: the client waits for it on

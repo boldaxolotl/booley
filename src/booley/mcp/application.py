@@ -22,6 +22,7 @@ from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.mcp.agent_thread import AgentThread
 from booley.mcp.session_registry import Attribution
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,8 @@ class McpRequestContext:
     # Checkout of the calling agent's own process, resolved at the SDK boundary (see
     # peer_checkout); never read from arguments. ``None`` means the server cwd.
     checkout: Path | None = None
+    # The agent client and thread behind the call, resolved at the SDK boundary.
+    agent: AgentThread | None = None
 
     def session_key(self, fallback: Callable[[], str | None] | None = None) -> str | None:
         """Advisory caller key; invoke a legacy worktree fallback only when needed."""

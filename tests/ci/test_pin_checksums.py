@@ -36,6 +36,7 @@ _FIXTURES = Path(__file__).parent / "fixtures/pin_checksums"
 _RECORDED: dict[str, Any] = json.loads((_FIXTURES / "recorded.json").read_text(encoding="utf-8"))
 
 _BASE = "src/booley/data/docker/Dockerfile.base"
+_MANIFEST = "src/booley/data/docker/agent-clis-package.json"
 _RISCV = "src/booley/data/docker/Dockerfile.riscv"
 _WORKFLOW = ".github/workflows/test.yml"
 _DEMO = ".github/contracts/picorv32-demo.toml"
@@ -107,6 +108,7 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
         {_BASE: _vsix("LIVE_PREVIEW")},
     ),
     "node": ("node", "24.21.0", _NODE, {_BASE: _arg("NODE_SHA256", "NPM_VERSION")}),
+    "t3code": ("pingdotgg/t3code", "0.1.10", _GITHUB, {_MANIFEST: [r'^    "sha256": "(.*)"$']}),
 }
 
 
@@ -117,6 +119,7 @@ _PACKAGE_FILES = {
     "riscv/riscv-debug-spec": _RISCV,
     "riscv-non-isa/riscv-elf-psabi-doc": _RISCV,
     "rhysd/actionlint": _WORKFLOW,
+    "pingdotgg/t3code": _MANIFEST,
 }
 _SESSION_CONTRACT = ".github/contracts/session-runtime.toml"
 _DATA_FILE_ENV = "RENOVATE_POST_UPGRADE_COMMAND_DATA_FILE"
