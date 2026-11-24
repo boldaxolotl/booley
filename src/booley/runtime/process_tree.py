@@ -23,6 +23,29 @@ def _ppid_of(pid: int) -> int | None:
     return _parse_ppid(stat)
 
 
+def environment_value(pid: int, name: str) -> str | None:
+    """Return *name* from ``/proc/<pid>/environ``, or ``None`` when absent or unreadable."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    prefix = f"{name}=".encode()
+    for entry in raw.split(b"\0"):
+        if entry.startswith(prefix):
+            return entry[len(prefix) :].decode(errors="replace")
+    return None
+
+
+def is_zombie_child_of(pid: int, parents: Collection[int]) -> bool:
+    """Return whether *pid* is an exited process still waiting for a parent in *parents*."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        state, ppid = stat.rsplit(")", 1)[1].split()[:2]
+    except (OSError, ValueError):
+        return False
+    return state == "Z" and ppid.isdigit() and int(ppid) in parents
+
+
 def has_ancestor(
     pid: int,
     ancestor_pid: int,
