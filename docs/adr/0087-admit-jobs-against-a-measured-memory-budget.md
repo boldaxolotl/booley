@@ -43,7 +43,8 @@ read-only, and delegating it would loosen the hardening.
   would defeat OpenROAD reuse).
 - The Memory Budget is always computed from the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
-  reserve for the agent, the MCP server and the Dashboard. Doctor warns when
+  reserve for the agent, the MCP server, the Dashboard, `t3 serve` and the
+  headless Chrome processes, each measured while it runs. Doctor warns when
   `[sandbox].memory` is unset. There is no override: one that replaces the
   computed budget subtracts no reserve, so the natural setting lets Jobs eat
   the memory the agents are using and invites OOM kills.
