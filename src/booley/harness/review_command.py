@@ -19,6 +19,8 @@ import shutil
 import sys
 import tempfile
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,7 +48,8 @@ from booley.review.review_run import (
     review_document,
     store_review_run,
 )
-from booley.runtime.commit_export import CommitExportError, export_commit
+from booley.runtime.commit_export import CommitExport, CommitExportError, export_commit
+from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.runtime.timefmt import rfc3339_from_datetime
 from booley.specialists.review_change import committed_review_change, under_folder
@@ -68,6 +71,9 @@ class ReviewRequest:
     base: str | None  # --base
     target: str | None  # --target
     as_json: bool  # --json
+    verify: bool = False  # --verify
+    status: bool = False  # --status
+    waive: tuple[tuple[str, str], ...] = ()  # --waive <finding-id> <justification>
 
 
 class ReviewRefusedError(Exception):
@@ -81,7 +87,7 @@ def run_review(project_root: Path, request: ReviewRequest) -> int:
     ``KeyboardInterrupt`` passes through.
     """
     try:
-        return _review(project_root, request)
+        return _dispatch(project_root, request)
     except ReviewRefusedError as refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
     except Exception as failure:  # noqa: BLE001 - the command boundary: infrastructure failures
@@ -90,7 +96,34 @@ def run_review(project_root: Path, request: ReviewRequest) -> int:
     return _EXIT_REFUSED
 
 
-def _resolve_commit(project_root: Path, revision: str) -> str:
+def _dispatch(project_root: Path, request: ReviewRequest) -> int:
+    """Refuse options that do not go together, then run status, verify or discovery."""
+    _refuse_conflicts(request)
+    if request.status:
+        from booley.harness.review_verify import review_status
+
+        return review_status(project_root, request)
+    if request.verify:
+        from booley.harness.review_verify import verify_review
+
+        return verify_review(project_root, request)
+    return _review(project_root, request)
+
+
+def _refuse_conflicts(request: ReviewRequest) -> None:
+    """An option the chosen mode cannot honor is a refusal, before anything runs."""
+    if request.waive and not request.verify:
+        raise ReviewRefusedError("--waive needs --verify")
+    mode = "--status" if request.status else "--verify" if request.verify else None
+    if mode and request.target is not None:
+        raise ReviewRefusedError(f"--target cannot be used with {mode}")
+    if request.status:
+        for option, given in (("--base", request.base is not None), ("--json", request.as_json)):
+            if given:
+                raise ReviewRefusedError(f"{option} cannot be used with --status")
+
+
+def resolve_commit(project_root: Path, revision: str) -> str:
     """The full sha of *revision*; an option-like or unknown revision is a refusal."""
     try:
         if revision.startswith("-"):
@@ -101,7 +134,7 @@ def _resolve_commit(project_root: Path, revision: str) -> str:
     return raw.decode("utf-8", "replace").strip()
 
 
-def _resolve_base(project_root: Path, commit: str, requested: str | None) -> tuple[Base, str]:
+def resolve_base_of(project_root: Path, commit: str, requested: str | None) -> tuple[Base, str]:
     """The Base, chosen as ``booley measure`` chooses it, and its sha; none is a refusal."""
     try:
         base = resolve_base(project_root, commit, requested)
@@ -112,7 +145,7 @@ def _resolve_base(project_root: Path, commit: str, requested: str | None) -> tup
     return base, base.commit
 
 
-def _key_of(project_root: Path, commit: str, paired_commit: str | None = None) -> KeyedCommit:
+def key_of(project_root: Path, commit: str, paired_commit: str | None = None) -> KeyedCommit:
     """The commit's key: rules that are not versioned cannot be reviewed as of a commit."""
     try:
         return resolve_measurement_key(project_root, commit, booley_commit=paired_commit)
@@ -120,7 +153,7 @@ def _key_of(project_root: Path, commit: str, paired_commit: str | None = None) -
         raise ReviewRefusedError(str(exc)) from exc
 
 
-def _load_reviews(checkout: Path, target: str | None) -> dict[str, frozenset[DeclaredReview]]:
+def load_reviews(checkout: Path, target: str | None) -> dict[str, frozenset[DeclaredReview]]:
     """The checkout's Declared Reviews by Target identity, narrowed to *target* when given."""
     try:
         declared = load_declared_reviews(checkout).reviews
@@ -181,6 +214,19 @@ def _run_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
         return ReviewResult(ERROR, error=" ".join(str(exc).split())[:_ERROR_LINE])
 
 
+def run_reviewer(reviewer: ReviewerSpecialist, argv: list[str]) -> EndpointOutcome:
+    """Run *reviewer* with *argv* in this process and return its outcome."""
+    reviewer.parse_args(argv)
+    prepared = reviewer.prepare_endpoint_invocation()
+    return prepared.run(None) if isinstance(prepared, PreparedInvocation) else prepared
+
+
+def failure_text(outcome: EndpointOutcome) -> str:
+    """A failed Reviewer run's report on one line, trimmed for the Review Run."""
+    text = " ".join(outcome.report_text.split()) or "the Reviewer failed"
+    return text[:_ERROR_LINE]
+
+
 def _call_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
     files = planned.files
     change = committed_review_change(
@@ -198,34 +244,35 @@ def _call_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
         *("--scope", ",".join(files), "--fail-on", planned.resolve),
         *(("--spec", planned.spec) if planned.spec else ()),
     ]
-    reviewer = ReviewerSpecialist(change=change)
-    reviewer.parse_args(argv)
-    prepared = reviewer.prepare_endpoint_invocation()
-    outcome = prepared.run(None) if isinstance(prepared, PreparedInvocation) else prepared
+    outcome = run_reviewer(ReviewerSpecialist(change=change), argv)
     if outcome.exit_code not in (0, 1):
-        text = " ".join(outcome.report_text.split()) or "the Reviewer failed"
-        return ReviewResult(ERROR, error=text[:_ERROR_LINE])
+        return ReviewResult(ERROR, error=failure_text(outcome))
     rows = outcome.detail.get("issue_list", [])
     pre = tuple(row for row in rows if row.get("origin") == ORIGIN_PRE_EXISTING)
     introduced = tuple(row for row in rows if row.get("origin") != ORIGIN_PRE_EXISTING)
     return ReviewResult(OPEN if outcome.exit_code == 1 else PASS, introduced, pre)
 
 
-def _review(project_root: Path, request: ReviewRequest) -> int:
-    from booley.config.agent import get_agent_settings
-    from booley.core.booley_dir import main_booley_dir_of, reset_cache, resolve_booley_dir
+def load_live_settings(project_root: Path) -> None:
+    """Read the agent settings from the live Project, before any Reviewer run moves the directory.
 
-    # Each Reviewer run selects the export with --project, which moves the process's Booley
-    # Directory there. Read the agent settings now, from the live Project, so the model is
-    # the Project's and not the reviewed commit's.
+    Each Reviewer run selects the export with --project, which moves the process's Booley
+    Directory there; the model must be the Project's and not the reviewed commit's.
+    """
+    from booley.config.agent import get_agent_settings
+    from booley.core.booley_dir import resolve_booley_dir
+
     resolve_booley_dir(project_root)
     get_agent_settings()
-    started_at = datetime.now(UTC)
-    commit = _resolve_commit(project_root, request.revision)
-    base, base_commit = _resolve_base(project_root, commit, request.base)
-    _key_of(project_root, commit)  # a refusal now saves the export
-    main = main_booley_dir_of(project_root)
-    run_id = new_run_id()
+
+
+@contextmanager
+def exported_commit(
+    project_root: Path, commit: str, main: Path, run_id: str
+) -> Iterator[tuple[Path, CommitExport]]:
+    """A clean, prepared export of *commit*; it and the cached Booley Directory go on exit."""
+    from booley.core.booley_dir import reset_cache
+
     scratch = Path(tempfile.mkdtemp(prefix="booley-review-"))
     try:
         checkout = scratch / "checkout"
@@ -233,19 +280,34 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
             export = export_commit(project_root, commit, checkout)
         except CommitExportError as exc:
             raise ReviewRefusedError(f"the commit cannot be exported: {exc}") from exc
-        keyed = _key_of(project_root, commit, export.paired_commit)
         _prepare_checkout(checkout, main, run_id)
-        declared = _load_reviews(checkout, request.target)
+        yield checkout, export
+    finally:
+        reset_cache()  # it names the export, which is deleted next
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _review(project_root: Path, request: ReviewRequest) -> int:
+    from booley.core.booley_dir import main_booley_dir_of
+
+    load_live_settings(project_root)
+    started_at = datetime.now(UTC)
+    commit = resolve_commit(project_root, request.revision)
+    base, base_commit = resolve_base_of(project_root, commit, request.base)
+    key_of(project_root, commit)  # a refusal now saves the export
+    main = main_booley_dir_of(project_root)
+    run_id = new_run_id()
+    with exported_commit(project_root, commit, main, run_id) as (checkout, export):
+        keyed = key_of(project_root, commit, export.paired_commit)
+        declared = load_reviews(checkout, request.target)
         changed, folders = _changed_paths(
             changed_files(project_root, base_commit, commit), checkout, declared
         )
         under = _Commit(project_root, checkout, base_commit, commit, changed, folders)
         results = tuple(
-            (planned, _run_reviewer(planned, under)) for planned in plan_reviews(declared, changed)
+            (planned, _run_reviewer(planned, under))
+            for planned in plan_reviews(declared, changed, checkout)
         )
-    finally:
-        reset_cache()  # it names the export, which is deleted next
-        shutil.rmtree(scratch, ignore_errors=True)
     facts = RunFacts(
         run_id,
         rfc3339_from_datetime(started_at),

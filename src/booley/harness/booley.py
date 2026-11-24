@@ -992,6 +992,27 @@ def _add_review_subparser(sub) -> None:
         help="Run only this Target's reviews; the run is printed, never stored",
     )
     parser.add_argument("--json", action="store_true", help="Print the Review Run as JSON")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--verify",
+        action="store_true",
+        help="Re-check the open findings of the latest discovery Review Run of <sha> or an "
+        "ancestor; add no finding",
+    )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="Print whether <sha> is a Reviewed Commit; exit 0 if it is, 1 if not",
+    )
+    parser.add_argument(
+        "--waive",
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("<finding-id>", "<justification>"),
+        help="With --verify: propose waiving an open finding; the Reviewer accepts or refuses "
+        "it. Repeatable",
+    )
 
 
 def _add_commit_subparsers(sub) -> None:
@@ -2069,7 +2090,16 @@ def _cmd_review(args: argparse.Namespace, project_root: Path) -> int:
     from booley.harness.review_command import ReviewRequest, run_review
 
     return run_review(
-        project_root, ReviewRequest(args.revision, args.base, args.target, args.json)
+        project_root,
+        ReviewRequest(
+            args.revision,
+            args.base,
+            args.target,
+            args.json,
+            args.verify,
+            args.status,
+            tuple((finding_id, reason) for finding_id, reason in args.waive),
+        ),
     )
 
 
