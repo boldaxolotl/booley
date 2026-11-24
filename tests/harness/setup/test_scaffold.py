@@ -637,7 +637,7 @@ def _doctor_findings(root: Path, monkeypatch) -> list:
 
     The host and its commands are healthy, so no finding may warn or fail.
     """
-    (root / ".booley" / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
+    (root / ".booley" / "AGENTS.md").write_bytes(b"Run Booley Flows inside the Sandbox.\n")
     ensure_guidance_links(root, root / ".booley")  # the setup skill's guidance step
     dc.write_devcontainer(
         root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
@@ -645,8 +645,10 @@ def _doctor_findings(root: Path, monkeypatch) -> list:
     with (root / ".git/info/exclude").open("a", encoding="utf-8") as exclude:
         exclude.write("/.devcontainer\n/home/\n")  # the fake host's home is <root>/home
     config = root / ".booley" / "booley.toml"
-    config.write_text(
-        config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
+    # LF bytes: write_text would turn the tracked file's LF into CRLF on Windows, which
+    # Doctor reports as a CRLF checkout.
+    config.write_bytes(
+        config.read_bytes() + b'\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
     )
     serve_healthy_doctor_host(monkeypatch, root)
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), root, record_clean=False)
