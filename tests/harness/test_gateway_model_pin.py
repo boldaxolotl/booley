@@ -87,6 +87,12 @@ def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
         }
         # A model pin without an effort pin keeps the default effort.
         assert settings.effort_for("codex") == "high"
+        # The pin does not pull other models onto Codex: they keep the CLI their name selects.
+        assert [settings.cli_for_model_id(m) for m in (_PIN, "claude-opus-5-5", "gpt-6-luna")] == [
+            "codex",
+            "claude",
+            "codex",
+        ]
 
 
 def test_developer_probe_uses_gateway_model(project, monkeypatch):

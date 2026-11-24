@@ -230,7 +230,7 @@ def test_doctor_grades_an_exported_key_under_the_policy(
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
     pin_venue(monkeypatch, inside=inside)
-    # Host venue, pinned: a Sandbox without a seed sidecar reports a different NOTE.
+    # Pin the venue: a Sandbox without a seed sidecar reports a different NOTE.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
     install_agent_clis(Path.home())
 
