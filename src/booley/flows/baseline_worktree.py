@@ -54,6 +54,7 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
+from booley.runtime.worktree_setup import copy_root_fusesoc_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def baseline_worktree(
         dangling = (
             _mirror_booley_directory(project_root, wt_dir, ref) if paired_baseline is None else []
         )
-        _copy_root_quarantine_marker(project_root, wt_dir)
+        copy_root_fusesoc_ignore(project_root, wt_dir)
         _run_post_setup(wt_dir, ref)
         _refuse_dangling_links(dangling, wt_dir, ref)
         prepare_core_library_plan(wt_dir)
@@ -313,13 +314,6 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
             baseline,
             (result.stderr or result.stdout or "").strip(),
         )
-
-
-def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
-    """Preserve an untracked root FuseSoC quarantine in a baseline checkout."""
-    marker = project_root / "FUSESOC_IGNORE"
-    if marker.is_file():
-        shutil.copy2(marker, wt_dir / marker.name)
 
 
 def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> list[Path]:
