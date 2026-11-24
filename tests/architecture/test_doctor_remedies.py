@@ -192,6 +192,7 @@ _UNRESOLVED: dict[str, str] = {
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,
+    'fail - audit/project_schema.py::audit_features_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_interactive_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_known_tables "booley.toml [mcp_tools] is retired"': _RETIRED_HINT,
     'fail - audit/project_schema.py::audit_sandbox_table "message"': _EXCEPTION_TEXT,

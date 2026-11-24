@@ -2485,7 +2485,12 @@ def _refuse_gated_command(command: str, project_root: Path) -> None:
     """Validate the selected Project's ``[features]`` and refuse a command it keeps off."""
     if command in {"doctor", "init"}:
         return  # Doctor reports an invalid table as a FAIL; init creates the Project.
-    selected = enabled_features(project_root)
+    try:
+        selected = enabled_features(project_root)
+    except FeatureConfigError:
+        raise
+    except ValueError:
+        return  # Unparsable booley.toml: the command's own loader reports it.
     if _gated_off(command, selected):
         _build_parser(selected).parse_args([command])  # argparse's own unknown-command exit
 
