@@ -115,7 +115,7 @@ def test_issuance_forwards_gateway_refs_and_seeds_no_codex_login(tmp_path, monke
     assert "OPENAI_API_KEY" not in remote
     targets = _targets(spec)
     assert _CLAUDE_CREDS_SEED in targets
-    assert not [mount for mount in spec["mounts"] if "codex" in mount and "seed" in mount]
+    assert not [t for t in targets if t.endswith(auth_token.TOKEN_SEED_BASENAME["codex"])]
     assert ".codex/auth.json" not in _hooks(spec)
     project_id = dc.canonical_project_id(project)
     volumes = [m for m in spec["mounts"] if "type=volume" in m.split(",")]

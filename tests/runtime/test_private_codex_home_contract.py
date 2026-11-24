@@ -72,6 +72,25 @@ async def test_nested_codex_home_links_the_real_login_and_carries_scoped_environ
         shutil.rmtree(nested, ignore_errors=True)
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="nested homes exist only in the Linux Sandbox")
+@pytest.mark.parametrize("auth_mode", ["api_key", "gateway"])
+async def test_nested_codex_home_leaves_the_login_out_for_a_non_subscription_mode(
+    fake_codex, tmp_path, monkeypatch, auth_mode
+):
+    """A mode that must not use the stored login gets a nested home without it (#1537)."""
+    require_symlinks(tmp_path)
+    write_codex_login(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_TOKEN")
+    report = await codex_report(tmp_path, auth_mode=auth_mode, nested_mcp_tools=["lint"])
+    try:
+        assert report["auth_json_exists"] is False
+    finally:
+        shutil.rmtree(Path(report["home"]).parent, ignore_errors=True)
+
+
 @pytest.mark.parametrize("policy", [auth_token.VISITOR_AUTH, "subscription", "api_key", "gateway"])
 def test_missing_login_leaves_no_auth_entry(tmp_path, policy):
     """No login, or a policy that excludes it: no file and no dangling link."""

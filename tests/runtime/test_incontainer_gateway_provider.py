@@ -261,6 +261,7 @@ def test_gateway_skips_leave_the_provider_out(
     assert ("cannot take it" in warning) is (kind != "invalid")
     config = _parsed(home)
     assert "model_provider" not in config
+    assert "fast_mode" not in config.get("features", {})
     assert _PROVIDER not in config.get("model_providers", {})
     assert "booley" in config["mcp_servers"]
     if kind == "inline-providers":
