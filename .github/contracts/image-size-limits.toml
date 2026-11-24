@@ -6,7 +6,8 @@ schema = 1
 # T3 Code, about 500 MB unpacked and 186 MB compressed). Every ceiling remains well below
 # the committed 0.2.10 control, so accidental restoration of the OpenROAD
 # development tree, Rust toolchain, duplicate CLIs, or unstripped artifacts
-# fails before promotion.
+# fails before promotion. The RISC-V docker_local_size_bytes stays below that
+# control (a test pins it), so its headroom over T3 Code is under 10%.
 [images.sandbox]
 registry_compressed_layer_bytes = 2_285_000_000
 docker_local_size_bytes = 4_055_000_000
@@ -15,6 +16,6 @@ merged_visible_filesystem_bytes = 4_035_000_000
 
 [images.riscv]
 registry_compressed_layer_bytes = 2_780_000_000
-docker_local_size_bytes = 5_905_000_000
+docker_local_size_bytes = 5_500_000_000
 unpacked_layer_history_bytes = 6_455_000_000
 merged_visible_filesystem_bytes = 5_875_000_000
