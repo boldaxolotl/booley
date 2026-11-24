@@ -633,18 +633,21 @@ def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch
     ):
         _job(world, run_id, world.wt, target=run_id, session=session, client=client, thread=thread)
 
+    from booley.harness.dashboard import thread_titles
+
     if t3 != "unavailable" and sys.platform == "win32":
         pytest.skip("the t3 fake is a POSIX script")
     cli, log = write_t3_cli(
-        tmp_path, {"t3-claude-thread-1a2b3c4d": "Fix the UART"}, stall=t3 == "stalled"
+        tmp_path,
+        {"t3-claude-thread-1a2b3c4d": "Fix the UART"},
+        delay_s=hang_guard_s() if t3 == "stalled" else 0,
     )
     monkeypatch.setenv(
         "T3CODE_CLI_PATH", str(tmp_path / "missing" if t3 == "unavailable" else cli)
     )
-    if t3 == "stalled":
-        from booley.harness.dashboard import thread_titles
-
-        monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", scaled(0.5))
+    # A stall must outlast the budget; a working lookup keeps the real one, scaled for slow hosts.
+    budget = scaled(0.5 if t3 == "stalled" else thread_titles._LOOKUP_BUDGET_S)
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", budget)
 
     with _client(world, monkeypatch) as client:
         owners = [
@@ -665,6 +668,32 @@ def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch
     # call before T3 Code is given up on.
     calls = len(log.read_text().split()) if log.exists() else 0
     assert calls == {"available": 2, "stalled": 1, "unavailable": 0}[t3]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the t3 fake is a POSIX script")
+def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(
+    world, monkeypatch, tmp_path
+):
+    from booley.harness.dashboard import thread_titles
+
+    titles = {f"t3-thread-{n}": f"Title {n}" for n in range(3)}
+    for n, thread in enumerate(titles):
+        _job(world, f"run{n}", world.wt, target=f"run{n}", client="claude", thread=thread)
+    cli, log = write_t3_cli(tmp_path, titles, delay_s=scaled(0.4))
+    monkeypatch.setenv("T3CODE_CLI_PATH", str(cli))
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", scaled(1.2))
+
+    with _client(world, monkeypatch) as client:
+        rounds = [
+            {row["target"]: row["owner"] for row in _snapshot(client, world.wt)["results"]["jobs"]}
+            for _ in range(3)
+        ]
+
+    # The first snapshot runs out of time for the third thread, which a slow T3 Code must not
+    # read as a stalled one: the next snapshots title it, each thread looked up once.
+    assert rounds[0] != rounds[-1]
+    assert rounds[-1] == {f"run{n}": f"Title {n}" for n in range(3)}
+    assert len(log.read_text().split()) == 3
 
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):

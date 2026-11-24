@@ -151,7 +151,7 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key", "report_root"):
+    for key in ("work_dir", "session_key", "report_root", "client", "thread"):
         if data.get(key) is not None:
             require_str(data, key)
 

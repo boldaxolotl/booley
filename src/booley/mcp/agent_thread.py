@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any
 from booley.mcp.session_registry import Attribution, codex_client
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import valid_thread_id
+
+logger = logging.getLogger(__name__)
 
 T3_THREAD_ENV = "T3CODE_THREAD_ID"
 
@@ -51,7 +54,8 @@ def _t3_thread(process: ProcessIdentity, proc_root: Path) -> str | None:
     """T3 Code's thread id from *process*'s environment; ``None`` when unreadable or recycled."""
     try:
         environment = (proc_root / str(process.pid) / "environ").read_bytes().split(b"\0")
-    except OSError:
+    except OSError as exc:
+        logger.debug("cannot read the environment of process %s: %s", process.pid, exc)
         return None
     if capture_process_identity(process.pid, proc_root=proc_root) != process:
         return None  # The PID now belongs to another process.

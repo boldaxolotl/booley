@@ -209,7 +209,7 @@ _NEEDS_PROC = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("client_name", "thread_meta", "peer", "t3_thread", "expected"),
+    ("client_name", "thread_meta", "peer", "t3_thread", "expected", "owner"),
     [
         pytest.param(
             "claude-code",
@@ -217,18 +217,52 @@ _NEEDS_PROC = pytest.mark.skipif(
             "child",
             "t3-1",
             ("claude", "t3-1"),
+            "mcp-test|claude:t3-1",
             id="claude-t3",
             marks=_NEEDS_PROC,
         ),
         pytest.param(
-            "claude-code", None, "child", None, ("claude", None), id="neither", marks=_NEEDS_PROC
+            "claude-code",
+            None,
+            "child",
+            None,
+            ("claude", None),
+            None,
+            id="neither",
+            marks=_NEEDS_PROC,
         ),
-        pytest.param("codex-mcp-client", "cx-1", None, None, ("codex", "cx-1"), id="codex"),
-        pytest.param("codex-mcp-client", "cx-2", "chat", None, ("codex", "cx-2"), id="codex-chat"),
+        pytest.param(
+            "cursor",
+            None,
+            "child",
+            "t3-1",
+            (None, None),
+            None,
+            id="other-client",
+            marks=_NEEDS_PROC,
+        ),
+        pytest.param(
+            "codex-mcp-client",
+            "cx-1",
+            None,
+            None,
+            ("codex", "cx-1"),
+            "mcp-test|codex:cx-1",
+            id="codex",
+        ),
+        pytest.param(
+            "codex-mcp-client",
+            "cx-2",
+            "chat",
+            None,
+            ("codex", "cx-2"),
+            "mcp-test|codex:cx-2",
+            id="codex-chat",
+        ),
     ],
 )
 async def test_job_records_the_agent_client_and_thread(
-    tmp_path, monkeypatch, client_name, thread_meta, peer, t3_thread, expected
+    tmp_path, monkeypatch, client_name, thread_meta, peer, t3_thread, expected, owner
 ):
     from booley.mcp import session_observer
     from booley.runtime import chat_sessions
@@ -238,34 +272,68 @@ async def test_job_records_the_agent_client_and_thread(
     from tests.runtime.test_chat_sessions import process
 
     proc = tmp_path / "proc"
-    # A Claude peer is a real process with, or without, the thread variable of T3 Code in its
+    # A peer is a real process with, or without, the thread variable of T3 Code in its
     # environment; a Booley chat tab's peer sits under a marked launch in a fake /proc.
     environment = {k: v for k, v in os.environ.items() if k != "T3CODE_THREAD_ID"}
     environment.update({} if t3_thread is None else {"T3CODE_THREAD_ID": t3_thread})
+    child = (
+        subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({hang_guard_s()})"], env=environment
+        )
+        if peer == "child"
+        else None
+    )
+    try:
+        launch = process(proc, 100, 1, executable="node") if peer == "chat" else None
+        if launch is not None:
+            chat_sessions.reserve_codex_chat(tmp_path, launch)
+        identity = {
+            None: None,
+            "child": None if child is None else capture_process_identity(child.pid),
+            "chat": process(proc, 101, 100) if launch is not None else None,
+        }[peer]
+        monkeypatch.setattr(session_observer, "observed_peer", lambda _request: identity)
+        await _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta)
+    finally:
+        if child is not None:
+            child.kill()
+            child.wait()
+    (rec,) = job_records.list_records(session_jobs_dir())
+    assert (rec.client, rec.thread) == expected
+    assert rec.owner == (owner or f"mcp-test|{rec.session_key}")
+    if launch is not None:
+        assert rec.session_key == process_session_key(launch)
+
+
+@_NEEDS_PROC
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exited", [True, False])
+async def test_a_claude_caller_that_cannot_be_read_records_no_thread(exited):
+    from dataclasses import replace
+
+    from booley.mcp.agent_thread import resolve_agent_thread
+    from booley.runtime.pid import capture_process_identity
+
+    # Either the process is gone (no environment to read) or its PID now names another process.
+    environment = {**os.environ, "T3CODE_THREAD_ID": "t3-1"}
     child = subprocess.Popen(
         [sys.executable, "-c", f"import time; time.sleep({hang_guard_s()})"], env=environment
     )
-    launch = process(proc, 100, 1, executable="node") if peer == "chat" else None
-    if launch is not None:
-        chat_sessions.reserve_codex_chat(tmp_path, launch)
-    identity = {
-        None: None,
-        "child": capture_process_identity(child.pid),
-        "chat": process(proc, 101, 100) if launch is not None else None,
-    }[peer]
-    monkeypatch.setattr(session_observer, "observed_peer", lambda _request: identity)
     try:
-        await _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta)
+        identity = capture_process_identity(child.pid)
+        assert identity is not None
+        if exited:
+            child.kill()
+            child.wait()
+        else:
+            identity = replace(identity, start_token=identity.start_token + 1)
+        attribution = Attribution("pid:x", "process", "/w", "wk", process=identity)
+        agent = await resolve_agent_thread("claude-code", {}, attribution)
     finally:
         child.kill()
         child.wait()
-    (rec,) = job_records.list_records(session_jobs_dir())
-    assert (rec.client, rec.thread) == expected
-    assert rec.owner == "mcp-test|" + (
-        f"{rec.client}:{rec.thread}" if rec.thread else rec.session_key
-    )
-    if launch is not None:
-        assert rec.session_key == process_session_key(launch)
+    assert agent is not None
+    assert (agent.client, agent.thread) == ("claude", None)
 
 
 async def _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta):
@@ -282,10 +350,13 @@ async def _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta):
     async def run(*_args, **_kwargs):
         return 0, "", "", False
 
+    # The Job's child process, its command and its timeout are not the subject; no public
+    # entry point replaces them without spawning a real Flow.
     monkeypatch.setattr(server, "_run_subprocess", run)
     monkeypatch.setattr(server, "_endpoint_command", lambda *_: ["fake"])
     monkeypatch.setattr(server, "_mcp_tool_timeout_seconds", lambda *_a, **_k: 60)
     observer = SessionObserver(budget=hang_guard_s())
+    # The observer reads the registry under the process's /proc; the test's own is fake.
     monkeypatch.setattr(observer, "_registry", lambda: SessionRegistry(tmp_path, proc_root=proc))
     jobs = server._JobManager(_FakeLifetime())
 
