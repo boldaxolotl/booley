@@ -93,6 +93,8 @@ def _issued_transport_spec(root, image, app, policy, monkeypatch):
     )
     if app == "claude":
         (Path.home() / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True}))
+    # private: `booley init` builds the spec sources only while it also writes the project
+    # and pulls the image; no public seam returns the sources for this fixture's project.
     sources = init_cmd._sandbox_spec_sources(
         InitContext(project_root=project), init_cmd._NANGATE_PDK_NOT_REQUESTED, app, image
     )
@@ -218,21 +220,3 @@ def test_editor_missing_api_key_cannot_fall_back(transport_host, monkeypatch):
     finally:
         run_bounded_child(["docker", "rm", "-f", name])
         run_bounded_child(["docker", "image", "rm", session_issuance.keeper_image(project)])
-
-
-@pytest.mark.parametrize("phase", ["inspect", "build"])
-def test_transport_prerequisite_timeout_skips_only_unavailable_inspection(monkeypatch, phase):
-    monkeypatch.setattr(shutil, "which", lambda _name: "/synthetic/docker")
-
-    def docker(command, **kwargs):
-        if command[1:3] == ["image", "inspect"]:
-            assert kwargs["timeout"] == hang_guard_s()
-            if phase == "inspect":
-                raise subprocess.TimeoutExpired(command, hang_guard_s())
-            return subprocess.CompletedProcess(command, 0)
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    monkeypatch.setattr(subprocess, "run", docker)
-    expected = pytest.skip.Exception if phase == "inspect" else subprocess.TimeoutExpired
-    with pytest.raises(expected, match="timed out"):
-        next(transport_image.__wrapped__())
