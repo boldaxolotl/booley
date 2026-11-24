@@ -286,6 +286,7 @@ def test_shipped_allowlist_is_valid_and_points_the_stall_monitor_at_its_issue() 
 
     entries = load_allowlist(_TESTS_DIR / "thread_leak_allowlist.toml")
 
+    # private: the allowlist names the production stall-monitor thread by its own (private) target name.
     stall = [entry for entry in entries if entry.thread and "_monitor_stalls" in entry.thread]
     assert [entry.issue for entry in stall] == [3139]
 
