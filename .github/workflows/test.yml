@@ -1413,7 +1413,7 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb; do
+          for validation in agent-policy openroad verible chrome isolation fifo native-fst verilator coverage-release simulator cocotb; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
@@ -1462,6 +1462,17 @@ jobs:
               .github/scripts/run_with_container_cleanup.sh
               "${BOOLEY_DOCKER_NAME_PREFIX}"
               pytest tests/docker/test_sandbox_verible_e2e.py
+              -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
+
+          - name: Run headless Chrome production-image test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/chrome
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/chrome
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-chrome
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              pytest tests/docker/test_sandbox_headless_chrome_e2e.py
               -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
 
           - name: Run sandbox isolation suite

@@ -89,6 +89,7 @@ can replace the Python packages.
 | FuseSoC / Edalize | 2.4.7 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.5 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
+| Headless Chrome | `chrome-headless-shell` 157.0.8103.78, at `/opt/chrome-headless-shell/chrome-headless-shell` and on `PATH`, for T3 Code's preview panel |
 
 <details markdown>
 <summary>With the RISC-V image</summary>

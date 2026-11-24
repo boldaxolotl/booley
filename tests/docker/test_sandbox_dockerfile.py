@@ -332,6 +332,53 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
         assert "MIT" in (licenses / "SOURCE.txt").read_text()
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("unzip") is None,
+    reason="installing requires a POSIX shell, sha256sum and unzip",
+)
+@pytest.mark.parametrize("case", ["good", "checksum"])
+def test_headless_chrome_install_verifies_its_pin(tmp_path: Path, case: str) -> None:
+    """The shipped RUN installs the browser only from an archive with the pinned sha256."""
+    instructions = logical_instructions(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
+    body = next(
+        (
+            item.value
+            for item in instructions
+            if item.keyword == "RUN" and "/tmp/chrome-headless-shell.zip" in item.value
+        ),
+        None,
+    )
+    assert body is not None, "Dockerfile.base never installs chrome-headless-shell"
+    environment = os.environ.copy()
+    for instruction in instructions:
+        if instruction.keyword == "ARG" and "=" in instruction.value:
+            key, value = instruction.value.split("=", 1)
+            environment[key] = value
+    version = environment["CHROME_HEADLESS_SHELL_VERSION"]
+    fixture = tmp_path / "fixture.zip"
+    entry = zipfile.ZipInfo("chrome-headless-shell-linux64/chrome-headless-shell")
+    entry.external_attr = 0o755 << 16
+    with zipfile.ZipFile(fixture, "w") as archive:
+        archive.writestr(entry, f"#!/bin/sh\necho 'Google Chrome for Testing {version}'\n")
+    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    environment["CHROME_HEADLESS_SHELL_SHA256"] = "0" * 64 if case == "checksum" else digest
+    environment["FIXTURE"] = str(fixture)
+    root = tmp_path / "root"
+    (root / "opt").mkdir(parents=True)
+    (root / "usr/local/bin").mkdir(parents=True)
+    environment["PATH"] = f"{root / 'usr/local/bin'}{os.pathsep}{environment['PATH']}"
+    body = body.replace("/tmp/", f"{tmp_path}/").replace("/opt/", f"{root}/opt/")
+    body = body.replace("/usr/local", str(root / "usr/local"))
+    # Substitute the network download only; run the shipped verification commands.
+    curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
+    result = run_bounded_child(["sh", "-c", curl + body], env=environment)
+    browser = root / "opt/chrome-headless-shell/chrome-headless-shell"
+    assert (result.returncode == 0) == (case == "good"), result.stderr
+    assert browser.exists() == (case == "good")
+    if case == "good":
+        assert (root / "usr/local/bin/chrome-headless-shell").resolve() == browser.resolve()
+
+
 # Files that may name a CLI version besides the manifest: its lockfile, provenance
 # comments, and historical records.
 _CLI_VERSION_ALLOWED = (
