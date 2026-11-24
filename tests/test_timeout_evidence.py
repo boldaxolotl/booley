@@ -139,12 +139,29 @@ def test_timeout_evidence_reports_exited_unreaped_child(tmp_path: Path) -> None:
     assert "reaped_elsewhere" not in entry
 
 
-def test_timeout_evidence_collection_error_keeps_stack_and_kill(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("conftest_body", "error_text"),
+    [
+        pytest.param(
+            "def _boom():\n    raise RuntimeError('collection boom')\n"
+            "timeout_evidence._child_evidence = _boom\n",
+            "RuntimeError: collection boom",
+            id="collection-error",
+        ),
+        pytest.param(
+            "timeout_evidence._child_evidence = lambda: [object()]\n",
+            "",
+            id="unserializable-children",
+        ),
+    ],
+)
+def test_timeout_evidence_child_failure_keeps_stack_and_kill(
+    tmp_path: Path, conftest_body: str, error_text: str
+) -> None:
+    # private: the nested session breaks the plugin's own child collector (the failure
+    # cannot be provoked through a real child).
     (tmp_path / "conftest.py").write_text(
-        "import timeout_evidence\n"
-        "def _boom():\n    raise RuntimeError('collection boom')\n"
-        "timeout_evidence._child_evidence = _boom\n",
-        encoding="utf-8",
+        "import timeout_evidence\n" + conftest_body, encoding="utf-8"
     )
     result, evidence = _run_pytest_case(tmp_path, 1, "")
 
@@ -152,23 +169,7 @@ def test_timeout_evidence_collection_error_keeps_stack_and_kill(tmp_path: Path) 
     assert "Not properly terminated" in result.stdout
     metadata, stack = _read_header(evidence)
     assert {"nodeid", "timeout_seconds", "worker", "pid"} <= metadata.keys()
-    assert "children_error" in metadata, metadata
-    assert "RuntimeError: collection boom" in metadata["children_error"]
-    assert "children" not in metadata
-    assert "test_case.py" in "\n".join(stack)
-
-
-def test_timeout_evidence_unserializable_children_keeps_stack_and_kill(tmp_path: Path) -> None:
-    (tmp_path / "conftest.py").write_text(
-        "import timeout_evidence\ntimeout_evidence._child_evidence = lambda: [object()]\n",
-        encoding="utf-8",
-    )
-    result, evidence = _run_pytest_case(tmp_path, 1, "")
-
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "Not properly terminated" in result.stdout
-    metadata, stack = _read_header(evidence)
-    assert "children_error" in metadata, metadata
+    assert error_text in str(metadata["children_error"]), metadata
     assert "children" not in metadata
     assert "test_case.py" in "\n".join(stack)
 
@@ -272,38 +273,35 @@ def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
     assert "Not properly terminated" in result.stdout
 
 
-@pytest.mark.parametrize("workers", [0, 1])
-def test_native_crash_retains_fatal_stack(tmp_path: Path, workers: int) -> None:
-    result, evidence = _run_pytest_case(
-        tmp_path, workers, "@pytest.mark.timeout(10)", _NATIVE_CRASH
-    )
+@pytest.mark.parametrize(
+    ("workers", "in_unconfigure"),
+    [(0, False), (1, False), (0, True)],
+    ids=["inline", "worker", "unconfigure"],
+)
+def test_native_crash_retains_fatal_stack(
+    tmp_path: Path, workers: int, in_unconfigure: bool
+) -> None:
+    body = "pass" if in_unconfigure else _NATIVE_CRASH
+    if in_unconfigure:
+        (tmp_path / "conftest.py").write_text(
+            "import pytest\n@pytest.hookimpl(tryfirst=True)\n"
+            f"def pytest_unconfigure(config):\n    {_NATIVE_CRASH}\n",
+            encoding="utf-8",
+        )
+    result, evidence = _run_pytest_case(tmp_path, workers, "@pytest.mark.timeout(10)", body)
 
     assert result.returncode in ({1} if workers else _NATIVE_EXIT_CODES), (
         result.stdout + result.stderr
     )
     reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
     assert len(reports) == 1
-    stack = reports[0].read_text(encoding="utf-8")
-    assert "test_case.py" in stack
+    assert ("conftest.py" if in_unconfigure else "test_case.py") in reports[0].read_text(
+        encoding="utf-8"
+    )
     assert not list(evidence.glob("timeout-*.log"))
     if workers:
         exit_report = json.loads((evidence / "worker-exit-gw0.json").read_text())
         assert exit_report["exit_code"] in _NATIVE_EXIT_CODES
-
-
-def test_native_crash_during_unconfigure_retains_fatal_stack(tmp_path: Path) -> None:
-    (tmp_path / "conftest.py").write_text(
-        "import pytest\n@pytest.hookimpl(tryfirst=True)\ndef pytest_unconfigure(config):\n    "
-        + _NATIVE_CRASH
-        + "\n",
-        encoding="utf-8",
-    )
-    result, evidence = _run_pytest_case(tmp_path, 0, "@pytest.mark.timeout(10)", "pass")
-
-    assert result.returncode in _NATIVE_EXIT_CODES, result.stdout + result.stderr
-    reports = [path for path in evidence.glob("fatal-*.log") if path.stat().st_size]
-    assert len(reports) == 1
-    assert "conftest.py" in reports[0].read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("workers", [0, 1])

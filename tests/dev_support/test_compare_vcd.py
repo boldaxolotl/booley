@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
+
+import pytest
 
 from booley.dev_support.compare_vcd import (
     VCDData,
     VCDSignal,
-    _leaf_from_hier_path,
+    _leaf_from_hier_path,  # private: see test_empty_falls_back_to_default
     build_dut_signal_map,
     compare_signals,
+    main,
     normalize_value,
     parse_vcd,
+    print_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -116,30 +121,19 @@ class TestParseVcd:
         assert vcd.transitions["#"][0] == (0, "b00001111")
         assert vcd.transitions["#"][1] == (10, "b11110000")
 
-    def test_empty_sim_no_crash(self, tmp_path):
-        content = """\
-        $timescale 1ns $end
+    @pytest.mark.parametrize("timescale", ["1ns", "1ps"])
+    def test_empty_sim_no_crash_and_timescale_parsed(self, tmp_path, timescale):
+        content = f"""\
+        $timescale {timescale} $end
         $scope module tb $end
         $var wire 1 ! clk $end
         $upscope $end
         $enddefinitions $end
         """
-        p = _write_vcd(tmp_path, "a.vcd", content)
-        vcd = parse_vcd(p)
+        vcd = parse_vcd(_write_vcd(tmp_path, "a.vcd", content))
         assert vcd.end_time == 0
         assert len(vcd.transitions) == 0
-
-    def test_timescale_parsed(self, tmp_path):
-        content = """\
-        $timescale 1ps $end
-        $scope module tb $end
-        $var wire 1 ! clk $end
-        $upscope $end
-        $enddefinitions $end
-        """
-        p = _write_vcd(tmp_path, "a.vcd", content)
-        vcd = parse_vcd(p)
-        assert vcd.timescale == "1ps"
+        assert vcd.timescale == timescale
 
     def test_malformed_var_width_skipped(self, tmp_path):
         # A non-integer width field must not crash the parse (consistent with
@@ -158,175 +152,122 @@ class TestParseVcd:
 
 
 # ---------------------------------------------------------------------------
-# normalize_value tests
+# --dut-hier-path leaf extraction, through main()
 # ---------------------------------------------------------------------------
 
 
-class TestLeafFromHierPath:
-    """Leaf extraction from a traced hierarchical signal path."""
+@pytest.mark.parametrize(
+    ("hier_path", "dut_scope"),
+    [
+        ("tb.dut", "tb.dut"),
+        ("tb.uu_alu", "tb.uu_alu"),
+        ("tb.gen.uut", "tb.gen.uut"),
+        ("tb.gen[0].uut", "tb.gen.uut"),  # brackets stripped from the path
+        ("tb.dut_a[1]", "tb.dut_a"),  # array leaf stripped to its base name
+        ("tb.", "tb.dut"),  # empty leaf falls back to the default instance
+    ],
+)
+def test_main_dut_hier_path_selects_leaf(tmp_path, monkeypatch, capsys, hier_path, dut_scope):
+    """The leaf of --dut-hier-path picks the DUT instance whose signals are compared."""
+    trans = "#0\n0!\nb00000000 #\n#10\n1!\n"
+    vcd_a = _make_simple_vcd(tmp_path, "a.vcd", scope=dut_scope, transitions=trans)
+    vcd_b = _make_simple_vcd(tmp_path, "b.vcd", scope=dut_scope, transitions=trans)
+    monkeypatch.setattr(
+        sys, "argv", ["compare_vcd", str(vcd_a), str(vcd_b), "--dut-hier-path", hier_path]
+    )
 
-    def test_simple_path(self):
-        assert _leaf_from_hier_path("tb.dut") == "dut"
+    with pytest.raises(SystemExit) as exit_info:
+        main()
 
-    def test_renamed_instance(self):
-        assert _leaf_from_hier_path("tb.uu_alu") == "uu_alu"
-
-    def test_generic_uut(self):
-        assert _leaf_from_hier_path("tb.gen.uut") == "uut"
-
-    def test_brackets_stripped(self):
-        assert _leaf_from_hier_path("tb.gen[0].uut") == "uut"
-
-    def test_array_leaf_stripped(self):
-        assert _leaf_from_hier_path("tb.dut_a[1]") == "dut_a"
-
-    def test_empty_falls_back_to_default(self):
-        assert _leaf_from_hier_path("") == "dut"
-
-
-class TestBuildDutSignalMapCustomInstance:
-    """Phase 8.4: build_dut_signal_map honours custom dut_instance."""
-
-    def _vcd_with(self, full_names: list[str]) -> VCDData:
-        vcd = VCDData()
-        for i, name in enumerate(full_names):
-            code = chr(ord("!") + i)
-            parts = name.rsplit(".", 1)
-            scope = parts[0] if len(parts) > 1 else ""
-            local = parts[-1]
-            vcd.signals[code] = VCDSignal(
-                code=code,
-                size=1,
-                name=local,
-                scope=scope,
-                full_name=name,
-            )
-        return vcd
-
-    def test_uut_instance_picked_up(self):
-        vcd = self._vcd_with(["tb.uut.clk", "tb.uut.q", "tb.tb_only"])
-        m = build_dut_signal_map(vcd, dut_instance="uut")
-        assert "clk" in m and "q" in m
-        assert len(m) == 2
-
-    def test_wrong_instance_misses(self):
-        vcd = self._vcd_with(["tb.uut.clk"])
-        m = build_dut_signal_map(vcd, dut_instance="dut")
-        assert m == {}
+    assert exit_info.value.code == 0
+    assert "Total DUT signals compared: 2" in capsys.readouterr().out
 
 
-class TestNormalizeValue:
-    def test_strip_b_prefix(self):
-        assert normalize_value("b1010", 4) == "1010"
+def test_empty_falls_back_to_default():
+    # private: main() skips the helper when --dut-hier-path is empty
+    # (_parse_and_compare), so its `if not hier_path` branch has no public entry.
+    assert _leaf_from_hier_path("") == "dut"
 
-    def test_zero_extend(self):
-        assert normalize_value("b10", 8) == "00000010"
 
-    def test_x_extend(self):
-        assert normalize_value("bx1", 4) == "xxx1"
+def _vcd_with_names(full_names: list[str]) -> VCDData:
+    """Build a VCDData of 1-bit signals, one per dotted full name, coded ``!``, ``"``, ..."""
+    vcd = VCDData()
+    for i, full_name in enumerate(full_names):
+        code = chr(ord("!") + i)
+        scope, _, name = full_name.rpartition(".")
+        vcd.signals[code] = VCDSignal(
+            code=code, size=1, name=name, scope=scope, full_name=full_name
+        )
+    return vcd
 
-    def test_z_extend(self):
-        assert normalize_value("bz0", 4) == "zzz0"
 
-    def test_scalar(self):
-        assert normalize_value("1", 1) == "1"
-
-    def test_uppercase_b(self):
-        assert normalize_value("B1010", 4) == "1010"
-
-    def test_bare_b_is_zero_filled(self):
+@pytest.mark.parametrize(
+    ("value", "width", "expected"),
+    [
+        ("b1010", 4, "1010"),  # b prefix stripped
+        ("b10", 8, "00000010"),  # zero-extended
+        ("bx1", 4, "xxx1"),  # x extends from the MSB
+        ("bz0", 4, "zzz0"),  # z extends from the MSB
+        ("1", 1, "1"),  # scalar
+        ("B1010", 4, "1010"),  # uppercase prefix
         # A bare "b" (empty value after stripping the prefix) has no MSB to
-        # extend from — must zero-fill, not IndexError on val[0].
-        assert normalize_value("b", 4) == "0000"
-
-    def test_empty_value_is_zero_filled(self):
-        assert normalize_value("", 3) == "000"
-
-    def test_empty_zero_width(self):
-        assert normalize_value("b", 0) == ""
-
-
-# ---------------------------------------------------------------------------
-# build_dut_signal_map tests
-# ---------------------------------------------------------------------------
+        # extend from: must zero-fill, not IndexError on val[0].
+        ("b", 4, "0000"),
+        ("", 3, "000"),
+        ("b", 0, ""),
+    ],
+)
+def test_normalize_value(value, width, expected):
+    assert normalize_value(value, width) == expected
 
 
 class TestBuildDutSignalMap:
-    def _make_vcd_with_signals(self, sigs: list[tuple[str, str]]) -> VCDData:
-        """Helper: sigs = [(full_name, code), ...]"""
-        vcd = VCDData()
-        for full_name, code in sigs:
-            parts = full_name.rsplit(".", 1)
-            scope = parts[0] if len(parts) > 1 else ""
-            name = parts[-1]
-            vcd.signals[code] = VCDSignal(
-                code=code,
-                size=1,
-                name=name,
-                scope=scope,
-                full_name=full_name,
-            )
-        return vcd
+    def test_custom_instance_picked_up(self):
+        vcd = _vcd_with_names(["tb.uut.clk", "tb.uut.q", "tb.tb_only"])
+        m = build_dut_signal_map(vcd, dut_instance="uut")
+        assert set(m) == {"clk", "q"}
+
+    def test_wrong_instance_misses(self):
+        vcd = _vcd_with_names(["tb.uut.clk"])
+        assert build_dut_signal_map(vcd, dut_instance="dut") == {}
 
     def test_auto_detect_dut(self):
-        vcd = self._make_vcd_with_signals(
-            [
-                ("tb.dut.core.clk", "!"),
-                ("tb.dut.core.data", "#"),
-                ("tb.tb_clk", "$"),  # outside dut — excluded
-            ]
-        )
-        m = build_dut_signal_map(vcd)
-        assert "core.clk" in m
-        assert "core.data" in m
-        assert len(m) == 2
+        # "tb.tb_clk" sits outside the dut and is excluded.
+        vcd = _vcd_with_names(["tb.dut.core.clk", "tb.dut.core.data", "tb.tb_clk"])
+        assert set(build_dut_signal_map(vcd)) == {"core.clk", "core.data"}
 
     def test_explicit_scope(self):
-        vcd = self._make_vcd_with_signals(
-            [
-                ("TOP.tb.dut.core.clk", "!"),
-                ("TOP.tb.dut.core.data", "#"),
-            ]
-        )
+        vcd = _vcd_with_names(["TOP.tb.dut.core.clk", "TOP.tb.dut.core.data"])
         m = build_dut_signal_map(vcd, dut_scope="TOP.tb.dut")
-        assert "core.clk" in m
-        assert "core.data" in m
+        assert set(m) == {"core.clk", "core.data"}
 
     def test_bit_range_stripped_in_key(self):
-        vcd = VCDData()
-        vcd.signals["#"] = VCDSignal(
-            code="#",
-            size=8,
-            name="data",
-            scope="tb.dut",
-            full_name="tb.dut.data[7:0]",
-        )
-        m = build_dut_signal_map(vcd)
-        assert "data" in m
+        vcd = _vcd_with_names(["tb.dut.data[7:0]"])
+        assert "data" in build_dut_signal_map(vcd)
 
     def test_no_dut_scope_returns_empty(self):
-        vcd = self._make_vcd_with_signals(
-            [
-                ("tb.core.clk", "!"),  # no "dut" in path
-            ]
-        )
-        m = build_dut_signal_map(vcd)
-        assert len(m) == 0
+        assert build_dut_signal_map(_vcd_with_names(["tb.core.clk"])) == {}
 
 
 # ---------------------------------------------------------------------------
 # compare_signals tests
 # ---------------------------------------------------------------------------
 
+_CLK = [("clk", 1, "!")]
+_DATA = [("data", 8, "#")]
+
+
+def _compare(tmp_path, trans_a, trans_b, *, signals=None, scope_b="tb.dut", **options):
+    """Write two VCDs with the given transitions and run compare_signals on them."""
+    a = _make_simple_vcd(tmp_path, "a.vcd", signals=signals, transitions=trans_a)
+    b = _make_simple_vcd(tmp_path, "b.vcd", scope=scope_b, signals=signals, transitions=trans_b)
+    return compare_signals(parse_vcd(a), parse_vcd(b), **options)
+
 
 class TestCompareSignals:
     def test_identical_vcds_match(self, tmp_path):
         trans = "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n#20\n0!\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", transitions=trans)
-        b = _make_simple_vcd(tmp_path, "b.vcd", transitions=trans)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
+        res = _compare(tmp_path, trans, trans)
         assert res.mismatched_signals == 0
         assert res.matched_signals == 2
         assert len(res.sim_a_only) == 0
@@ -335,11 +276,7 @@ class TestCompareSignals:
     def test_single_mismatch_detected(self, tmp_path):
         trans_a = "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n"
         trans_b = "#0\n0!\nb00000000 #\n#10\n1!\nb11111111 #\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
+        res = _compare(tmp_path, trans_a, trans_b)
         assert res.mismatched_signals == 1
         assert res.matched_signals == 1  # clk still matches
         assert len(res.mismatches) == 1
@@ -352,84 +289,47 @@ class TestCompareSignals:
         trans = "#0\n0!\nb00000000 #\n"
         a = _make_simple_vcd(tmp_path, "a.vcd", signals=sigs_a, transitions=trans + "0$\n")
         b = _make_simple_vcd(tmp_path, "b.vcd", signals=sigs_b, transitions=trans)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
+        res = compare_signals(parse_vcd(a), parse_vcd(b))
         assert "extra" in res.sim_a_only
         assert len(res.sim_b_only) == 0
 
-    def test_time_windowing(self, tmp_path):
-        # Mismatch at t=5 (before window), match at t=15 (in window)
-        trans_a = "#0\n0!\n#5\n1!\n#15\n0!\n"
-        trans_b = "#0\n0!\n#5\n0!\n#15\n0!\n"  # differs at t=5
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("clk", 1, "!")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("clk", 1, "!")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        # Window starts at t=10 — the mismatch at t=5 should be suppressed
-        res = compare_signals(viv, ver, start_time=10)
-        assert res.mismatched_signals == 0
-
-    def test_value_normalization_zero_extend(self, tmp_path):
-        # Short binary in one, full-width in other — should still match
-        trans_a = "#0\nb1010 #\n"
-        trans_b = "#0\nb00001010 #\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("data", 8, "#")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("data", 8, "#")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
-        assert res.mismatched_signals == 0
-
-    def test_ignore_pattern_filters(self, tmp_path):
-        trans = "#0\n0!\nb00000000 #\n#10\n1!\nb11111111 #\n"
-        trans2 = "#0\n0!\nb00000000 #\n#10\n1!\nb00000000 #\n"  # data differs
-        a = _make_simple_vcd(tmp_path, "a.vcd", transitions=trans)
-        b = _make_simple_vcd(tmp_path, "b.vcd", transitions=trans2)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        # Ignore "data" — should suppress the mismatch
-        res = compare_signals(viv, ver, ignore_patterns=["data"])
+    @pytest.mark.parametrize(
+        ("signals", "trans_a", "trans_b", "options"),
+        [
+            # time windowing: the mismatch at t=5 lies before the t=10 window start
+            (_CLK, "#0\n0!\n#5\n1!\n#15\n0!\n", "#0\n0!\n#5\n0!\n#15\n0!\n", {"start_time": 10}),
+            # end-time windowing: the mismatch at t=20 lies after the t=15 window end
+            (_CLK, "#0\n0!\n#5\n1!\n#20\n0!\n", "#0\n0!\n#5\n1!\n#20\n1!\n", {"end_time": 15}),
+            # a short binary value still matches the same value at full width
+            (_DATA, "#0\nb1010 #\n", "#0\nb00001010 #\n", {}),
+            # an ignore pattern suppresses the differing "data" signal
+            (
+                [("clk", 1, "!"), ("data", 8, "#")],
+                "#0\n0!\nb00000000 #\n#10\n1!\nb11111111 #\n",
+                "#0\n0!\nb00000000 #\n#10\n1!\nb00000000 #\n",
+                {"ignore_patterns": ["data"]},
+            ),
+        ],
+        ids=["start-time", "end-time", "zero-extend", "ignore-pattern"],
+    )
+    def test_mismatch_suppressed(self, tmp_path, signals, trans_a, trans_b, options):
+        res = _compare(tmp_path, trans_a, trans_b, signals=signals, **options)
         assert res.mismatched_signals == 0
 
     def test_max_mismatches_per_signal_capped(self, tmp_path):
-        # Generate many transitions that differ
         trans_a = "#0\nb00000000 #\n"
         trans_b = "#0\nb11111111 #\n"
         for t in range(1, 20):
             trans_a += f"#{t * 10}\nb{'0' * 8} #\n"
             trans_b += f"#{t * 10}\nb{'1' * 8} #\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("data", 8, "#")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("data", 8, "#")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver, max_mismatches_per_signal=3)
+        res = _compare(tmp_path, trans_a, trans_b, signals=_DATA, max_mismatches_per_signal=3)
         assert len(res.mismatches) == 3
 
     def test_different_scopes_across_simulators(self, tmp_path):
         """Different scope prefixes (e.g. tb.dut.* vs TOP.tb.dut.*) should still match."""
         trans = "#0\n0!\n#10\n1!\n"
-        a = _make_simple_vcd(
-            tmp_path, "a.vcd", scope="tb.dut", signals=[("clk", 1, "!")], transitions=trans
-        )
-        b = _make_simple_vcd(
-            tmp_path, "b.vcd", scope="TOP.tb.dut", signals=[("clk", 1, "!")], transitions=trans
-        )
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
+        res = _compare(tmp_path, trans, trans, signals=_CLK, scope_b="TOP.tb.dut")
         assert res.matched_signals == 1
-        assert res.mismatched_signals == 0
-
-    def test_end_time_windowing(self, tmp_path):
-        # Match at t=5, mismatch at t=20 (after window)
-        trans_a = "#0\n0!\n#5\n1!\n#20\n0!\n"
-        trans_b = "#0\n0!\n#5\n1!\n#20\n1!\n"  # differs at t=20
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("clk", 1, "!")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("clk", 1, "!")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver, end_time=15)
         assert res.mismatched_signals == 0
 
 
@@ -438,44 +338,20 @@ class TestCompareSignals:
 # ---------------------------------------------------------------------------
 
 
-class TestPrintReport:
-    def test_pass_verdict(self, tmp_path, capsys):
-        from booley.dev_support.compare_vcd import print_report
-
-        trans = "#0\n0!\n#10\n1!\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("clk", 1, "!")], transitions=trans)
-        viv = parse_vcd(a)
-        ver = parse_vcd(a)
-        res = compare_signals(viv, ver)
-        print_report(res)
-        out = capsys.readouterr().out
-        assert "PASS" in out
-
-    def test_fail_verdict(self, tmp_path, capsys):
-        from booley.dev_support.compare_vcd import print_report
-
-        trans_a = "#0\n0!\n#10\n1!\n"
-        trans_b = "#0\n0!\n#10\n0!\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("clk", 1, "!")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("clk", 1, "!")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
-        print_report(res)
-        out = capsys.readouterr().out
-        assert "FAIL" in out
-
-    def test_summary_only_suppresses_details(self, tmp_path, capsys):
-        from booley.dev_support.compare_vcd import print_report
-
-        trans_a = "#0\n0!\n#10\n1!\n"
-        trans_b = "#0\n0!\n#10\n0!\n"
-        a = _make_simple_vcd(tmp_path, "a.vcd", signals=[("clk", 1, "!")], transitions=trans_a)
-        b = _make_simple_vcd(tmp_path, "b.vcd", signals=[("clk", 1, "!")], transitions=trans_b)
-        viv = parse_vcd(a)
-        ver = parse_vcd(b)
-        res = compare_signals(viv, ver)
-        print_report(res, summary_only=True)
-        out = capsys.readouterr().out
-        assert "Mismatches" not in out
-        assert "FAIL" in out
+@pytest.mark.parametrize(
+    ("differs", "summary_only", "expected", "unexpected"),
+    [
+        (False, False, "PASS", "FAIL"),
+        (True, False, "FAIL", "PASS"),
+        (True, True, "FAIL", "Mismatches"),  # summary-only suppresses the details
+    ],
+    ids=["pass", "fail", "summary-only"],
+)
+def test_print_report_verdict(tmp_path, capsys, differs, summary_only, expected, unexpected):
+    trans_a = "#0\n0!\n#10\n1!\n"
+    trans_b = "#0\n0!\n#10\n0!\n" if differs else trans_a
+    res = _compare(tmp_path, trans_a, trans_b, signals=_CLK)
+    print_report(res, summary_only=summary_only)
+    out = capsys.readouterr().out
+    assert expected in out
+    assert unexpected not in out

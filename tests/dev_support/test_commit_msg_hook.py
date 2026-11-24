@@ -7,7 +7,6 @@ import io
 import os
 import shutil
 import sys
-from collections.abc import Iterator
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
@@ -17,7 +16,12 @@ from tests.subprocess_budget import run_bounded_child
 
 from booley.core.host_shell import quote_arg
 from booley.dev_support import commit_msg_hook
-from booley.dev_support.commit_msg_hook import main
+from booley.dev_support.commit_msg_hook import main, message_lines
+
+RETRY_HINT = "-v -e -F"
+EMPTY_WORDS = "[stealth]\nenabled = true\nbanned_words = []\n"
+BANNED_ONLY = '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n'
+CAP_ZERO = "[stealth]\nenabled = true\nmax_body_lines = 0\n"
 
 
 def test_bundled_hook_falls_back_to_the_host_shell_beside_it(monkeypatch: pytest.MonkeyPatch):
@@ -31,26 +35,30 @@ def test_bundled_hook_falls_back_to_the_host_shell_beside_it(monkeypatch: pytest
 
 
 @pytest.fixture(autouse=True)
-def project(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[Path]:
+def project(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Unit-test the vendored Project hook, not this source checkout's role.
 
     The hook acts only in Stealth Mode, so the default Project enables it explicitly.
-    Git ignores the developer's own configuration, so a global ``core.commentChar``
-    cannot change what the hook skips.
+    It runs in a real Git repository of its own, and Git ignores the developer's own
+    configuration, so a global ``core.commentChar`` cannot change what the hook skips.
     """
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     project_root = tmp_path_factory.mktemp("stealth-project")
+    assert run_bounded_child(["git", "init", "-q", str(project_root)]).returncode == 0
     (project_root / ".booley").mkdir()
     _write_config(project_root, "[stealth]\nenabled = true\n")
-    with patch("validate_commit_msg._current_repo_root", return_value=project_root):
-        yield project_root
+    monkeypatch.chdir(project_root)
+    return project_root
 
 
 def _write_config(project_root: Path, text: str) -> None:
     (project_root / ".booley" / "booley.toml").write_text(text, encoding="utf-8")
+
+
+def _git_config(project_root: Path, key: str, value: str) -> None:
+    result = run_bounded_child(["git", "-C", str(project_root), "config", key, value])
+    assert result.returncode == 0, result.stderr
 
 
 def _run_hook(
@@ -68,352 +76,325 @@ def _run_hook(
     return rc, err.getvalue(), msg_file.read_bytes()
 
 
-class TestBannedTermRejection:
-    """A banned term rejects the commit; the message file is never rewritten."""
+# ---------------------------------------------------------------------------
+# Banned terms: the message file is never rewritten
+# ---------------------------------------------------------------------------
 
-    def test_word_in_subject_rejected_file_unchanged(self, tmp_path: Path):
-        original = "fix(sim): rebuild the llm base image\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-        assert "'llm' in the subject" in err
 
-    def test_vendor_name_inside_identifier_rejected(self, tmp_path: Path):
-        original = (
-            "fix(core): repair widget\n\nSplit the helper.\nRenamed BooleyRunner to Runner.\n"
-        )
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-        assert "'booley' on line 4" in err
+@pytest.mark.parametrize(
+    ("config", "original", "expected"),
+    [
+        pytest.param(
+            "[stealth]\nenabled = true\n",
+            "fix(sim): rebuild the llm base image\n",
+            "'llm' in the subject",
+            id="word-in-subject",
+        ),
+        pytest.param(
+            "[stealth]\nenabled = true\n",
+            "fix(core): repair widget\n\nSplit the helper.\nRenamed BooleyRunner to Runner.\n",
+            "'booley' on line 4",
+            id="vendor-name-inside-identifier",
+        ),
+        pytest.param(
+            '[stealth]\nenabled = true\nbanned_substrings = ["quokka"]\n',
+            "fix(core): repair myquokkafile\n",
+            "'quokka' in the subject",
+            id="banned-substring",
+        ),
+    ],
+)
+def test_banned_term_rejects_and_leaves_the_file_unchanged(
+    tmp_path: Path, project: Path, config: str, original: str, expected: str
+) -> None:
+    _write_config(project, config)
+    rc, err, after = _run_hook(tmp_path, original)
+    assert rc == 1
+    assert after == original.encode()
+    assert expected in err
 
-    def test_banned_substring_rejected(self, tmp_path: Path, project: Path):
-        _write_config(project, '[stealth]\nenabled = true\nbanned_substrings = ["quokka"]\n')
-        original = "fix(core): repair myquokkafile\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-        assert "'quokka' in the subject" in err
 
-    def test_rejection_lists_every_match_and_both_ways_out(self, tmp_path: Path):
-        original = "fix(llm): tune the claude build\n\nRan booley twice.\nbooley again.\n"
-        rc, err, _ = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert "'llm' in the subject" in err
-        assert "'claude' in the subject" in err
-        assert "'booley' on line 3" in err
-        assert "'booley' on line 4" in err
-        assert "Reword the message" in err
-        assert "banned_words" in err and "banned_substrings" in err
-        assert "-v -e -F" in err
+def test_rejection_lists_every_match_once_and_both_ways_out(tmp_path: Path) -> None:
+    original = "fix(llm): tune the claude build llm LLM\n\nRan booley twice.\nbooley again.\n"
+    rc, err, _ = _run_hook(tmp_path, original)
+    assert rc == 1
+    assert err.count("'llm'") == 1  # one entry per term per line
+    assert "'claude' in the subject" in err
+    assert "'booley' on line 3" in err
+    assert "'booley' on line 4" in err
+    assert "Reword the message" in err
+    assert "banned_words" in err and "banned_substrings" in err
+    assert RETRY_HINT in err
 
-    def test_one_entry_per_term_per_line(self, tmp_path: Path):
-        _, err, _ = _run_hook(tmp_path, "fix(core): llm llm LLM\n")
-        assert err.count("'llm'") == 1
 
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            pytest.param("fix(core): repair widget\n# booley is mentioned here\n", id="comment"),
-            pytest.param(
-                "fix(core): repair widget\n\n# ------------------------ >8 ------------------------\n"
-                "diff --git a/booley.py b/booley.py\n+import booley\n",
-                id="scissors",
-            ),
-        ],
-    )
-    def test_ignored_lines_do_not_reject(self, tmp_path: Path, raw: str):
-        rc, err, after = _run_hook(tmp_path, raw)
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("fix(core): repair widget\n# booley is mentioned here\n", id="comment"),
+        pytest.param(
+            "fix(core): repair widget\n\n# ------------------------ >8 ------------------------\n"
+            "diff --git a/booley.py b/booley.py\n+import booley\n",
+            id="scissors",
+        ),
+    ],
+)
+def test_ignored_lines_do_not_reject(tmp_path: Path, raw: str) -> None:
+    rc, err, after = _run_hook(tmp_path, raw)
+    assert rc == 0, err
+    assert after == raw.encode()
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "raw", "rejected_line"),
+    [
+        pytest.param("core.commentChar", ";", "; booley here\n", None, id="configured-char"),
+        pytest.param("core.commentChar", ";", "# booley here\n", 2, id="hash-is-text-then"),
+        pytest.param("core.commentChar", "auto", "# booley here\n", None, id="auto-hash"),
+        pytest.param(
+            "core.commentChar",
+            "auto",
+            "\n; On branch booley/x\n; ------------------------ >8 ------------------------\n"
+            "+import booley\n",
+            None,
+            id="auto-skips-any-char-git-may-pick",
+        ),
+        # A ``core.commentString`` of ``"# "`` leaves ``#booley`` as message text.
+        pytest.param(
+            "core.commentString", "# ", "# comment\n#booley\n", 3, id="comment-string-space"
+        ),
+    ],
+)
+def test_configured_comment_prefix_is_honored(
+    tmp_path: Path, project: Path, key: str, value: str, raw: str, rejected_line: int | None
+) -> None:
+    _git_config(project, key, value)
+    rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n" + raw)
+    if rejected_line is None:
         assert rc == 0, err
-        assert after == raw.encode()
-
-    def test_configured_comment_char_is_honored(self, tmp_path: Path, project: Path):
-        self._git_config(project, "core.commentChar", ";")
-        rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n; booley here\n")
-        assert rc == 0, err
-        rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# booley here\n")
+    else:
         assert rc == 1
-        assert "'booley' on line 2" in err
-
-    def test_comment_char_auto_falls_back_to_hash(self, tmp_path: Path, project: Path):
-        self._git_config(project, "core.commentChar", "auto")
-        rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# booley here\n")
-        assert rc == 0, err
-
-    def test_accepted_message_file_is_never_written(self, tmp_path: Path):
-        original = b"fix(core): repair widget\r\n\r\n# a comment\r\nBody line.\r\n\r\n\r\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 0, err
-        assert err == ""
-        assert after == original
-
-    def test_message_lines_keeps_file_line_numbers(self):
-        from booley.dev_support.commit_msg_hook import message_lines
-
-        assert message_lines("a\n# c\nb\n", ("#",)) == [(1, "a"), (3, "b"), (4, "")]
-
-    def test_scissors_line_must_match_exactly(self):
-        """Git cuts only at the exact scissors line, so text after it on the line is kept."""
-        from booley.dev_support.commit_msg_hook import message_lines
-
-        raw = "a\n# ------------------------ >8 ------------------------ booley\nb\n"
-        assert [text for _, text in message_lines(raw, ("#",))] == ["a", "b", ""]
-
-    def test_comment_string_keeps_trailing_space(self, tmp_path: Path, project: Path):
-        """A ``core.commentString`` of ``"# "`` leaves ``#booley`` as message text."""
-        self._git_config(project, "core.commentString", "# ")
-        rc, err, _ = _run_hook(tmp_path, "fix(core): repair widget\n# comment\n#booley\n")
-        assert rc == 1
-        assert "'booley' on line 3" in err
-
-    def test_comment_char_auto_skips_any_char_git_may_pick(self, tmp_path: Path, project: Path):
-        """A retry with ``-F`` can make ``auto`` pick ``;``: that template is not scanned."""
-        self._git_config(project, "core.commentChar", "auto")
-        raw = (
-            "fix(core): repair widget\n\n; On branch booley/x\n"
-            "; ------------------------ >8 ------------------------\n+import booley\n"
-        )
-        rc, err, _ = _run_hook(tmp_path, raw)
-        assert rc == 0, err
-
-    @staticmethod
-    def _git_config(project: Path, key: str, value: str) -> None:
-        for argv in (
-            ["git", "init", "-q", str(project)],
-            ["git", "-C", str(project), "config", key, value],
-        ):
-            assert run_bounded_child(argv).returncode == 0
-
-    def test_merge_commit_message_file_gets_merge_hint(self, tmp_path: Path):
-        folder = tmp_path / "it's $HOME"
-        folder.mkdir()
-        rc, err, _ = _run_hook(folder, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
-        assert rc == 1
-        assert "git commit -m" in err and "git merge" in err
-        assert f"git commit -v -e -F {quote_arg(str((folder / 'MERGE_MSG').resolve()))}" in err
-
-    def test_plain_rejection_has_no_merge_hint(self, tmp_path: Path):
-        _, err, _ = _run_hook(tmp_path, "fix(core): llm\n")
-        assert "merge commit" not in err
-
-    def test_body_cap_errors_listed_with_banned_terms(self, tmp_path: Path, project: Path):
-        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
-        _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
-        assert "'llm' in the subject" in err
-        assert "max_body_lines = 0" in err
+        assert f"'booley' on line {rejected_line}" in err
 
 
-class TestAttributionRejection:
-    """Attribution footers are rejected without echoing the identity."""
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("a\n# c\nb\n", [(1, "a"), (3, "b"), (4, "")]),
+        # Git cuts only at the exact scissors line, so text after it on the line is kept.
+        ("a\n# ------------------------ >8 ------------------------ booley\nb\n", None),
+    ],
+)
+def test_message_lines_keeps_file_line_numbers(
+    raw: str, expected: list[tuple[int, str]] | None
+) -> None:
+    kept = message_lines(raw, ("#",))
+    assert kept == expected if expected is not None else [t for _, t in kept] == ["a", "b", ""]
 
-    @pytest.mark.parametrize(
-        "footer",
-        [
-            "  co-authored-by  : Person <person@example.test>",
-            "  \U0001f916 Generated with private-identity",
-        ],
-    )
-    def test_structural_attribution_rejected_without_echo(self, tmp_path: Path, footer: str):
-        original = f"fix(core): repair edge case\n\nUseful rationale.\n\n{footer}\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-        assert footer.strip() not in err
-        assert "remove" in err.lower() and "retry" in err.lower()
-        assert "-v -e -F" in err
 
-    @pytest.mark.parametrize(
-        "footer",
-        [
-            "Generated with assistant-identity",
-            "  GENERATED   WITH   assistant-identity  ",
+def test_merge_commit_message_file_gets_merge_hint(tmp_path: Path) -> None:
+    folder = tmp_path / "it's $HOME"
+    folder.mkdir()
+    rc, err, _ = _run_hook(folder, "Merge branch 'llm-fix'\n", name="MERGE_MSG")
+    assert rc == 1
+    assert "git commit -m" in err and "git merge" in err
+    assert f"git commit -v -e -F {quote_arg(str((folder / 'MERGE_MSG').resolve()))}" in err
+    _, plain_err, _ = _run_hook(tmp_path, "fix(core): llm\n")
+    assert "merge commit" not in plain_err
+
+
+# ---------------------------------------------------------------------------
+# Attribution footers are rejected without echoing the identity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("config", "footer"),
+    [
+        ("[stealth]\nenabled = true\n", "  co-authored-by  : Person <person@example.test>"),
+        ("[stealth]\nenabled = true\n", "  \U0001f916 Generated with private-identity"),
+        (BANNED_ONLY, "Generated with assistant-identity"),
+        (BANNED_ONLY, "  GENERATED   WITH   assistant-identity  "),
+        (
+            BANNED_ONLY,
             "Generated with [assistant-identity](https://example.test/assistant-identity)",
-        ],
+        ),
+    ],
+)
+def test_attribution_footer_rejected_without_echoing_the_identity(
+    tmp_path: Path, project: Path, config: str, footer: str
+) -> None:
+    """Structural footers always reject; plain ``Generated with`` uses the Project vocabulary."""
+    _write_config(project, config)
+    original = f"fix(core): repair edge case\n\nUseful rationale.\n\n{footer}\n"
+    rc, err, after = _run_hook(tmp_path, original)
+    assert rc == 1
+    assert after == original.encode()
+    assert "identity" not in err and footer.strip() not in err
+    assert "remove" in err.lower() and "retry" in err.lower()
+    assert RETRY_HINT in err
+
+
+def test_generated_prose_with_banned_term_is_a_term_rejection(
+    tmp_path: Path, project: Path
+) -> None:
+    _write_config(project, '[stealth]\nenabled = true\nbanned_words = ["generated", "docker"]\n')
+    rc, err, _ = _run_hook(
+        tmp_path, "fix(core): repair widget\n\nGenerated with Docker for reproducibility.\n"
     )
-    def test_plain_attribution_uses_project_vocabulary(
-        self, tmp_path: Path, project: Path, footer: str
-    ):
-        _write_config(
-            project,
-            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
-        )
-        original = f"fix(core): repair widget\n\nUseful rationale.\n\n{footer}\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-        assert "assistant-identity" not in err
-
-    def test_generated_prose_with_banned_term_is_a_term_rejection(
-        self, tmp_path: Path, project: Path
-    ):
-        _write_config(
-            project,
-            '[stealth]\nenabled = true\nbanned_words = ["generated", "docker"]\n',
-        )
-        rc, err, _ = _run_hook(
-            tmp_path, "fix(core): repair widget\n\nGenerated with Docker for reproducibility.\n"
-        )
-        assert rc == 1
-        assert "'generated' on line 3" in err
-        assert "attribution footer" not in err
-
-    def test_empty_vocabulary_accepts_plain_shape_but_rejects_structural(
-        self, tmp_path: Path, project: Path
-    ):
-        _write_config(project, "[stealth]\nenabled = true\nbanned_words = []\n")
-        plain = "fix(core): repair widget\n\nGenerated with assistant-identity\n"
-        rc, err, after = _run_hook(tmp_path, plain)
-        assert rc == 0, err
-        assert after == plain.encode()
-        rc, _, _ = _run_hook(
-            tmp_path, "fix(core): repair widget\n\nCo-Authored-By: Person <person@example.test>\n"
-        )
-        assert rc == 1
-
-    def test_attribution_in_git_comment_is_ignored(self, tmp_path: Path, project: Path):
-        _write_config(
-            project,
-            '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
-        )
-        rc, err, _ = _run_hook(
-            tmp_path, "fix(core): repair widget\n# Generated with assistant-identity\n"
-        )
-        assert rc == 0, err
-
-    def test_merge_commit_rejects_attribution(self, tmp_path: Path):
-        original = "Merge branch 'dev'\n\nClean line\nCo-Authored-By: bot\nAnother clean line\n"
-        rc, _, after = _run_hook(tmp_path, original)
-        assert rc == 1
-        assert after == original.encode()
-
-    def test_default_generated_footer_is_accepted_verbatim(self, tmp_path: Path):
-        original = "fix(core): repair widget\n\nGenerated with care by the whole team\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 0, err
-        assert after == original.encode()
-
-    def test_attribution_payload_equality_is_not_broadened_by_substrings(
-        self, tmp_path: Path, project: Path
-    ):
-        _write_config(
-            project,
-            '[stealth]\nenabled = true\nbanned_words = []\nbanned_substrings = ["quokka"]\n',
-        )
-        rc, err, _ = _run_hook(tmp_path, "fix: repair\n\nGenerated with QuokkaRunner\n")
-        assert rc == 1
-        assert "attribution footer" not in err
-        assert "'quokka' on line 3" in err
-        rc, err, _ = _run_hook(tmp_path, "fix: repair\n\nGenerated with quokka\n")
-        assert rc == 1
-        assert "attribution footer" in err
+    assert rc == 1
+    assert "'generated' on line 3" in err
+    assert "attribution footer" not in err
 
 
-class TestSkipVariable:
-    """BOOLEY_SKIP_COMMIT_VALIDATION skips convention checks only."""
+@pytest.mark.parametrize(
+    ("config", "raw", "rc"),
+    [
+        # With an empty vocabulary the plain shape is prose; the structural shape still rejects.
+        (EMPTY_WORDS, "Generated with assistant-identity", 0),
+        (EMPTY_WORDS, "Co-Authored-By: Person <person@example.test>", 1),
+        # Git comments are not part of the message; merge commits are checked like any other.
+        (BANNED_ONLY, "# Generated with assistant-identity", 0),
+        ("[stealth]\nenabled = true\n", "Clean line\nCo-Authored-By: bot\nAnother clean line", 1),
+    ],
+)
+def test_attribution_verdicts(
+    tmp_path: Path, project: Path, config: str, raw: str, rc: int
+) -> None:
+    _write_config(project, config)
+    original = f"Merge branch 'dev'\n\n{raw}\n"
+    code, err, after = _run_hook(tmp_path, original)
+    assert (code, after) == (rc, original.encode()), err
 
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            pytest.param("fix(core): repair the llm path\n", id="banned"),
-            pytest.param("fix(core): repair edge case\n\nCo-Authored-By: bot\n", id="attribution"),
-        ],
+
+def test_attribution_payload_equality_is_not_broadened_by_substrings(
+    tmp_path: Path, project: Path
+) -> None:
+    _write_config(
+        project, '[stealth]\nenabled = true\nbanned_words = []\nbanned_substrings = ["quokka"]\n'
     )
-    def test_skip_still_rejects(self, tmp_path: Path, monkeypatch, raw: str):
+    rc, err, _ = _run_hook(tmp_path, "fix: repair\n\nGenerated with QuokkaRunner\n")
+    assert rc == 1
+    assert "attribution footer" not in err
+    assert "'quokka' on line 3" in err
+    rc, err, _ = _run_hook(tmp_path, "fix: repair\n\nGenerated with quokka\n")
+    assert rc == 1
+    assert "attribution footer" in err
+
+
+# ---------------------------------------------------------------------------
+# BOOLEY_SKIP_COMMIT_VALIDATION skips convention checks only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("fix(core): repair the llm path\n", id="banned"),
+        pytest.param("fix(core): repair edge case\n\nCo-Authored-By: bot\n", id="attribution"),
+    ],
+)
+def test_skip_still_rejects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
+    rc, err, after = _run_hook(tmp_path, raw)
+    assert rc == 1
+    assert after == raw.encode()
+    assert RETRY_HINT in err
+
+
+def test_skip_skips_body_cap(tmp_path: Path, project: Path, monkeypatch) -> None:
+    _write_config(project, CAP_ZERO)
+    raw = "Upstream style summary\n\nA body line.\n"
+    rc, err, _ = _run_hook(tmp_path, raw)
+    assert rc == 1
+    assert "Commit message validation FAILED" in err
+    assert "max_body_lines = 0" in err
+    assert "banned terms and attribution footers are still rejected" in err
+    monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
+    rc, err, after = _run_hook(tmp_path, raw)
+    assert rc == 0, err
+    assert after == raw.encode()
+
+
+@pytest.mark.parametrize("skip", [False, True])
+def test_body_cap_errors_are_listed_with_banned_terms_unless_skipped(
+    tmp_path: Path, project: Path, monkeypatch: pytest.MonkeyPatch, skip: bool
+) -> None:
+    _write_config(project, CAP_ZERO)
+    if skip:
         monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
-        rc, err, after = _run_hook(tmp_path, raw)
-        assert rc == 1
-        assert after == raw.encode()
-        assert "-v -e -F" in err
-
-    def test_skip_skips_body_cap(self, tmp_path: Path, project: Path, monkeypatch):
-        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
-        raw = "Upstream style summary\n\nA body line.\n"
-        rc, err, _ = _run_hook(tmp_path, raw)
-        assert rc == 1
-        assert "Commit message validation FAILED" in err
-        assert "banned terms and attribution footers are still rejected" in err
-        monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
-        rc, err, after = _run_hook(tmp_path, raw)
-        assert rc == 0, err
-        assert after == raw.encode()
-
-    def test_skip_omits_body_cap_errors_from_banned_rejection(
-        self, tmp_path: Path, project: Path, monkeypatch
-    ):
-        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
-        monkeypatch.setenv("BOOLEY_SKIP_COMMIT_VALIDATION", "1")
-        _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
-        assert "'llm' in the subject" in err
-        assert "max_body_lines" not in err
+    _, err, _ = _run_hook(tmp_path, "Update llm\n\nA body line.\n")
+    assert "'llm' in the subject" in err
+    assert ("max_body_lines" in err) is not skip
 
 
-class TestMain:
-    def test_no_args(self):
-        """main() returns 1 when no message file argument is given."""
-        with patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg"]):
-            assert main() == 1
+# ---------------------------------------------------------------------------
+# main()
+# ---------------------------------------------------------------------------
 
-    def test_missing_file(self, tmp_path: Path):
-        """main() returns 1 when the message file doesn't exist."""
-        missing = tmp_path / "no_such_file"
-        with patch("booley.dev_support.commit_msg_hook.sys.argv", ["commit-msg", str(missing)]):
-            assert main() == 1
 
-    def test_validation_failure(self, tmp_path: Path, project: Path):
-        """main() returns 1 when the body-length check reports errors."""
-        _write_config(project, "[stealth]\nenabled = true\nmax_body_lines = 0\n")
-        rc, err, _ = _run_hook(tmp_path, "Update ALU\n\nA body line.\n")
-        assert rc == 1
-        assert "max_body_lines = 0" in err
+@pytest.mark.parametrize("argv", [["commit-msg"], ["commit-msg", "no_such_file"]])
+def test_missing_argument_or_file_fails(argv: list[str]) -> None:
+    with patch("booley.dev_support.commit_msg_hook.sys.argv", argv):
+        assert main() == 1
 
-    @pytest.mark.parametrize("raw", ["Update ALU\n", "just a random message\n", "x" * 200 + "\n"])
-    def test_any_subject_format_is_accepted(self, tmp_path: Path, raw: str):
-        """Booley enforces no ``type(scope): summary`` convention or subject length."""
-        rc, err, after = _run_hook(tmp_path, raw)
-        assert rc == 0, err
-        assert after == raw.encode()
 
-    def test_stealth_disabled_leaves_message_unchanged(self, tmp_path: Path, project: Path):
-        _write_config(
-            project,
-            '[stealth]\nenabled = false\nbanned_words = ["generated", "assistant-identity"]\n',
-        )
-        original = "fix(core): repair edge case\n\nGenerated with assistant-identity llm\n"
-        rc, err, after = _run_hook(tmp_path, original)
-        assert rc == 0
-        assert after == original.encode()
-        assert err == ""
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Booley enforces no ``type(scope): summary`` convention or subject length.
+        "Update ALU\n",
+        "just a random message\n",
+        "x" * 200 + "\n",
+        "fix(core): repair widget\n\nGenerated with care by the whole team\n",
+        b"fix(core): repair widget\r\n\r\n# a comment\r\nBody line.\r\n\r\n\r\n",
+    ],
+)
+def test_accepted_message_is_never_written(tmp_path: Path, raw: str | bytes) -> None:
+    rc, err, after = _run_hook(tmp_path, raw)
+    assert rc == 0, err
+    assert err == ""
+    assert after == (raw if isinstance(raw, bytes) else raw.encode())
 
-    def test_standalone_hook_leaves_source_checkout_message_unchanged(self, tmp_path: Path):
-        """A standalone hook member cannot depend on installed ``booley``."""
-        root = tmp_path / "source"
-        hooks = root / "stale-hooks"
-        hooks.mkdir(parents=True)
-        (root / "pyproject.toml").write_text(
-            "[tool.booley]\nsource_checkout = true\n",
-            encoding="utf-8",
-        )
-        init = run_bounded_child(["git", "init", "-q", str(root)])
-        assert init.returncode == 0, init.stderr
-        support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
-        for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
-            shutil.copy2(support / name, hooks / name)
-        package = support.parent
-        shutil.copy2(package / "commit_policy" / "policy.py", hooks / "booley_commit_policy.py")
-        shutil.copy2(
-            package / "commit_policy" / "validation.py",
-            hooks / "booley_commit_validation.py",
-        )
-        shutil.copy2(package / "core" / "checkout_role.py", hooks / "checkout_role.py")
-        shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
-        message = root / "COMMIT_EDITMSG"
-        original = "docs: explain Booley architecture\n"
-        message.write_text(original, encoding="utf-8")
 
-        result = run_bounded_child(
-            [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
-            cwd=root,
-        )
+def test_stealth_disabled_leaves_message_unchanged(tmp_path: Path, project: Path) -> None:
+    _write_config(project, BANNED_ONLY.replace("true", "false"))
+    original = "fix(core): repair edge case\n\nGenerated with assistant-identity llm\n"
+    rc, err, after = _run_hook(tmp_path, original)
+    assert rc == 0
+    assert after == original.encode()
+    assert err == ""
 
-        assert result.returncode == 0, result.stderr
-        assert message.read_text(encoding="utf-8") == original
+
+def test_standalone_hook_leaves_source_checkout_message_unchanged(tmp_path: Path) -> None:
+    """A standalone hook member cannot depend on installed ``booley``."""
+    root = tmp_path / "source"
+    hooks = root / "stale-hooks"
+    hooks.mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+    init = run_bounded_child(["git", "init", "-q", str(root)])
+    assert init.returncode == 0, init.stderr
+    support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
+    for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
+        shutil.copy2(support / name, hooks / name)
+    package = support.parent
+    shutil.copy2(package / "commit_policy" / "policy.py", hooks / "booley_commit_policy.py")
+    shutil.copy2(
+        package / "commit_policy" / "validation.py",
+        hooks / "booley_commit_validation.py",
+    )
+    shutil.copy2(package / "core" / "checkout_role.py", hooks / "checkout_role.py")
+    shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
+    message = root / "COMMIT_EDITMSG"
+    original = "docs: explain Booley architecture\n"
+    message.write_text(original, encoding="utf-8")
+
+    result = run_bounded_child(
+        [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
+        cwd=root,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert message.read_text(encoding="utf-8") == original

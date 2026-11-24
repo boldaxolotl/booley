@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 import booley
@@ -21,8 +24,15 @@ def _installed_distribution(monkeypatch):
     )
 
 
+def _bake_wheel_revision(monkeypatch, commit):
+    """Install the wheel-build revision stamp as the importable ``booley._build_commit``."""
+    stamp = types.ModuleType("booley._build_commit")
+    stamp.COMMIT = commit
+    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+
+
 def test_status_line_uses_baked_image_metadata(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "")
+    _bake_wheel_revision(monkeypatch, "")
     monkeypatch.setenv("BOOLEY_VERSION", __version__)
     monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "abc123")
     monkeypatch.setenv("BOOLEY_SOURCE_UPDATED_AT", "2026-08-09T22:15:00+04:00")
@@ -37,7 +47,7 @@ def test_status_line_uses_baked_image_metadata(monkeypatch):
 
 
 def test_status_line_marks_metadata_from_old_images_unknown(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "legacy123")
+    _bake_wheel_revision(monkeypatch, "legacy123")
     monkeypatch.delenv("BOOLEY_VERSION", raising=False)
     monkeypatch.delenv("BOOLEY_SOURCE_REVISION", raising=False)
     monkeypatch.delenv("BOOLEY_SOURCE_UPDATED_AT", raising=False)
@@ -51,7 +61,7 @@ def test_status_line_marks_metadata_from_old_images_unknown(monkeypatch):
 
 
 def test_updated_package_does_not_claim_old_image_source_metadata(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "")
+    _bake_wheel_revision(monkeypatch, "")
     monkeypatch.setenv("BOOLEY_VERSION", "different-version")
     monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "old123")
     monkeypatch.setenv("BOOLEY_SOURCE_UPDATED_AT", "2026-01-01T00:00:00Z")
@@ -86,7 +96,7 @@ def test_source_without_git_does_not_borrow_wheel_or_image_revision(tmp_path, mo
         ),
     )
     monkeypatch.setattr(booley, "__version__", "9.9.9")
-    monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "wheel123")
+    _bake_wheel_revision(monkeypatch, "wheel123")
     monkeypatch.setenv("BOOLEY_VERSION", "9.9.9")
     monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "image123")
     monkeypatch.setenv("BOOLEY_SOURCE_UPDATED_AT", "2026-01-01T00:00:00Z")

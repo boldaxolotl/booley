@@ -43,8 +43,8 @@ class _TimeoutScanner(ast.NodeVisitor):
     """Collect ``file:line`` sites whose literal timeout lacks a keep comment."""
 
     def __init__(self, relative_path: str, source: str, tree: ast.Module) -> None:
-        self._relative_path = relative_path
-        self._lines = source.splitlines()
+        self._file_label = relative_path
+        self._source_lines = source.splitlines()
         self._module_numeric: dict[str, ast.expr] = {}
         for node in tree.body:
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
@@ -121,7 +121,7 @@ class _TimeoutScanner(ast.NodeVisitor):
 
     def _has_keep_comment(self, statement: ast.stmt, call: ast.Call) -> bool:
         for anchor in {call.lineno, statement.lineno}:
-            if anchor >= 2 and self._lines[anchor - 2].strip().startswith(_KEEP_PREFIX):
+            if anchor >= 2 and self._source_lines[anchor - 2].strip().startswith(_KEEP_PREFIX):
                 return True
         return False
 
@@ -151,7 +151,7 @@ class _TimeoutScanner(ast.NodeVisitor):
                     and self._is_literal_budget(keyword.value)
                     and not self._has_keep_comment(self._statements[-1], node)
                 ):
-                    self.offenders.append(f"{self._relative_path}:{node.lineno}")
+                    self.offenders.append(f"{self._file_label}:{node.lineno}")
         self.generic_visit(node)
 
 
