@@ -1,8 +1,9 @@
 """``booley worktree new <name>``: create a linked worktree with a Worktree Booley Directory.
 
 The packaged ``worktree_create.sh`` creates the outer worktree with its default
-``refuse`` policy and Python sets it up (Git config, Snapshot), so an existing destination (possibly an active worktree
-holding someone's work) is never deleted. The worktree lands at
+``refuse`` policy, so an existing destination (possibly an active worktree
+holding someone's work) is never deleted; Python then sets it up (Git config,
+Snapshot, markers). The worktree lands at
 ``<Booley Directory>/worktrees/<name>`` (``.booley`` unless ``[project].dir`` relocates
 it inside the checkout), on a new branch
 ``booley/<name>`` (``wt/<name>`` in Stealth Mode) at the workspace's current commit

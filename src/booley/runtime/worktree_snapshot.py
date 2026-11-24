@@ -1,4 +1,4 @@
-"""Choose what a Snapshot copies from the Main Booley Directory (ADR 0082).
+"""Choose and copy what a Snapshot holds of the Main Booley Directory (ADR 0082).
 
 The Snapshot is an allowlist read from
 :data:`booley.core.booley_dir_parts.BOOLEY_DIR_PATHS`: only paths classified as
@@ -145,6 +145,15 @@ def _place(source: Path, destination: Path) -> None:
         raise OSError(f"cannot copy special file {source}")
 
 
+def _refuse_linked_ancestors(destination: Path, path: str) -> None:
+    """Refuse a *path* below a symlink, which could alias the source it is copied from."""
+    parent = destination
+    for part in PurePosixPath(path).parts[:-1]:
+        parent = parent / part
+        if parent.is_symlink():
+            raise OSError(f"{parent} is a symbolic link, so {path} cannot be copied below it")
+
+
 def copy_snapshot(source: Path, destination: Path) -> list[str]:
     """Copy the Snapshot of the Booley Directory *source* into *destination*.
 
@@ -161,6 +170,7 @@ def copy_snapshot(source: Path, destination: Path) -> list[str]:
         destination.mkdir(parents=True, exist_ok=True)
         for path in copied:
             if _LEFT_OUT_NAMES.isdisjoint(PurePosixPath(path).parts):
+                _refuse_linked_ancestors(destination, path)
                 _place(source / path, destination / path)
     except OSError as exc:
         raise SnapshotError(f"copying the Snapshot failed: {exc}") from exc

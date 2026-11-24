@@ -66,8 +66,8 @@ if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
 fi
 
 # Python's os.getcwd() returns Windows-style paths (C:\...) which break the
-# POSIX path handling below (a colon is no path character there).
-# Convert to POSIX (/c/...) on MSYS2/Cygwin; no-op elsewhere.
+# script's POSIX path handling (git, flock, mkdir) on MSYS2/Cygwin.
+# Convert to POSIX (/c/...) there; no-op elsewhere.
 if command -v cygpath >/dev/null 2>&1; then
     CWD_MIXED=$(cygpath -m "$CWD")
     if [[ "$CWD_MIXED" =~ ^([A-Za-z]):/(.*)$ ]]; then
