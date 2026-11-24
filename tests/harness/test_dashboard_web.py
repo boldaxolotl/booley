@@ -670,18 +670,25 @@ def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch
     assert calls == {"available": 2, "stalled": 1, "unavailable": 0}[t3]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the t3 fake is a POSIX script")
-def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(
-    world, monkeypatch, tmp_path
-):
+def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(world, monkeypatch):
     from booley.harness.dashboard import thread_titles
 
     titles = {f"t3-thread-{n}": f"Title {n}" for n in range(3)}
     for n, thread in enumerate(titles):
         _job(world, f"run{n}", world.wt, target=f"run{n}", client="claude", thread=thread)
-    cli, log = write_t3_cli(tmp_path, titles, delay_s=scaled(0.4))
-    monkeypatch.setenv("T3CODE_CLI_PATH", str(cli))
-    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", scaled(1.2))
+    # A clock the lookups advance, so how many fit in one snapshot's budget does not depend on
+    # how fast the host starts a process: each lookup takes 0.4 s of a 1.2 s budget.
+    now = [0.0]
+    looked_up: list[str] = []
+
+    def lookup(thread: str, timeout: float) -> str:
+        looked_up.append(thread)
+        now[0] += 0.4
+        return titles[thread]
+
+    monkeypatch.setattr(thread_titles, "monotonic", lambda: now[0])
+    monkeypatch.setattr(thread_titles, "_lookup", lookup)
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", 1.2)
 
     with _client(world, monkeypatch) as client:
         rounds = [
@@ -690,10 +697,11 @@ def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(
         ]
 
     # The first snapshot runs out of time for the third thread, which a slow T3 Code must not
-    # read as a stalled one: the next snapshots title it, each thread looked up once.
-    assert rounds[0] != rounds[-1]
-    assert rounds[-1] == {f"run{n}": f"Title {n}" for n in range(3)}
-    assert len(log.read_text().split()) == 3
+    # read as a stalled one: the next snapshot titles it, each thread looked up once.
+    assert len(rounds[0]) == 3
+    assert sum(owner.startswith("Title") for owner in rounds[0].values()) == 2
+    assert rounds[1] == rounds[2] == {f"run{n}": f"Title {n}" for n in range(3)}
+    assert sorted(looked_up) == sorted(titles)
 
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
