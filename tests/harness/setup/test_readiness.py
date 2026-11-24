@@ -12,12 +12,8 @@ from booley.harness.setup import readiness
 from booley.harness.setup.guidance_links import ensure_guidance_links
 from booley.harness.setup.project_origin import record_scaffold_origin
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
-from booley.runtime import platform_paths
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
-from tests.diagnostic_helpers import (
-    _Rec,
-    _record_report,
-)
+from booley.runtime.paths import skills_dir
 from tests.harness.test_doctor import _write_project
 from tests.subprocess_budget import run_bounded_child
 
@@ -66,118 +62,73 @@ def test_doctor_names_enabled_flags_without_changing_its_verdict(
     assert [f.severity for f in named] == ["pass"]
 
 
-class TestStealthCoresCheck:
-    """ADR 0036 contract: authored cores live in .booley/cores/ (and
-    nowhere else in the Booley Directory), and never share a VLNV with a repo core."""
+def _core(name: str) -> str:
+    return f"CAPI=2:\nname: ::{name}:0\n"
 
-    def _project(self, tmp_path: Path) -> tuple[Path, Path]:
-        root = tmp_path / "repo"
-        booley_dir = root / ".booley"
-        (booley_dir / "cores").mkdir(parents=True)
-        return root, booley_dir
 
-    def test_clean_layout_passes(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        (root / "repo.core").write_text("CAPI=2:\nname: ::repo:0\n", encoding="utf-8")
-        (booley_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("cores", "stealth", "failure"),
+    [
+        pytest.param(
+            {"repo.core": "repo", ".booley/cores/s.core": "stealth"}, True, None, id="clean"
+        ),
+        # The original stealth layout: cores directly under .booley/ are skipped, so their
+        # Targets silently vanish.
+        pytest.param({".booley/stranded.core": "s"}, False, "stranded.core", id="stranded"),
+        pytest.param(
+            {
+                ".booley/worktrees/t1/copy.core": "c",
+                ".booley/.baseline-wt-7-abc/copy.core": "c",
+                ".booley/tmp/fusesoc-isolated-cores/copy.core": "c",
+            },
+            False,
+            None,
+            id="worktree-and-registry-copies",
+        ),
+        pytest.param(
+            {"repo.core": "dup", ".booley/cores/s.core": "dup"},
+            False,
+            "both core roots",
+            id="cross-root-collision",
+        ),
+        pytest.param(
+            {".booley/cores/s.core": "stealth"},
+            False,
+            "stealth mode is disabled",
+            id="hidden-without-stealth",
+        ),
+    ],
+)
+def test_stealth_cores_live_only_in_booley_cores(
+    tmp_path: Path, cores: dict[str, str], stealth: bool, failure: str | None
+):
+    """ADR 0036: authored cores live in .booley/cores/ (and nowhere else in the Booley
+    Directory), and never share a VLNV with a repo core."""
+    root = tmp_path / "repo"
+    (root / ".booley" / "cores").mkdir(parents=True)
+    for rel, name in cores.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(_core(name), encoding="utf-8")
+    if stealth:
+        (root / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         core_projection.reconcile_projected_cores(root)
-        rec = _Rec()
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-        assert rec.kinds() == {"pass"}
+    audit = readiness.ProjectAudit(
+        root, root / ".booley", {"stealth": {"enabled": stealth}}, {}, ""
+    )
 
-    def test_stranded_core_fails_with_move_hint(self, tmp_path: Path):
-        # The original stealth-project layout: authored cores directly under
-        # .booley/ — structurally skipped, so Targets silently vanish.
-        root, booley_dir = self._project(tmp_path)
-        (booley_dir / "stranded.core").write_text("CAPI=2:\nname: ::s:0\n", encoding="utf-8")
-        rec = _Rec()
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-        assert "stranded" in rec.fails()[0]
-        assert "stranded.core" in rec.fails()[0]
+    report = readiness.check_stealth_cores(audit)
 
-    def test_worktree_copies_are_not_stranded(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        wt = booley_dir / "worktrees" / "t1"
-        wt.mkdir(parents=True)
-        (wt / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        bl = booley_dir / ".baseline-wt-7-abc"
-        bl.mkdir()
-        (bl / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        rec = _Rec()
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_private_registry_copies_are_not_stranded(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        registry = booley_dir / "tmp" / "fusesoc-isolated-cores"
-        registry.mkdir(parents=True)
-        (registry / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        rec = _Rec()
-
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-
-        assert rec.kinds() == {"pass"}
-
-    def test_cross_root_collision_fails(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        (root / "repo.core").write_text("CAPI=2:\nname: ::dup:0\n", encoding="utf-8")
-        (booley_dir / "cores" / "s.core").write_text("CAPI=2:\nname: ::dup:1\n", encoding="utf-8")
-        rec = _Rec()
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-        assert any("both core roots" in msg for msg in rec.fails())
-
-    def test_hidden_cores_require_stealth_mode(self, tmp_path: Path):
-        root, booley_dir = self._project(tmp_path)
-        (booley_dir / "cores" / "s.core").write_text(
-            "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
-        )
-        rec = _Rec()
-
-        _record_report(
-            readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
-            ),
-            passed=rec.p,
-            failed=rec.f,
-        )
-
-        assert any("stealth mode is disabled" in msg for msg in rec.fails())
+    if failure is None:
+        assert all(f.severity is Severity.PASS for f in report.findings), report.findings
+    else:
+        failures = [f.message for f in report.findings if f.severity is Severity.FAIL]
+        assert any(failure in message for message in failures), report.findings
 
 
 _SCAFFOLD_CHECK = "stealth.scaffold-core-tracked"
+_SCAFFOLD_TEXT = "CAPI=2:\nname: ::my_ip:0\ndescription: {}\n"
+_SCAFFOLD_DESCRIPTION = "my_ip starter IP (scaffolded by booley init --scaffold)"
+_SELFTEST_CORE = "verif/booley_doctor_selftest.core"
 
 
 def _commit_all(root: Path) -> None:
@@ -204,181 +155,134 @@ def _write_scaffold(root: Path) -> None:
     record_scaffold_origin(root / ".booley/booley.toml")
 
 
-class TestScaffoldRootCoresTracked:
-    """A scaffold Project switched to Stealth Mode with root cores still tracked."""
+def test_tracked_scaffold_cores_warn_in_stealth(tmp_path: Path, monkeypatch):
+    _write_scaffold(tmp_path)
+    _commit_all(tmp_path)
+    # "Switched to Stealth Mode" after the cores were committed.
+    toml = tmp_path / ".booley/booley.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace("enabled = false", "enabled = true"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path.parent)  # relative git paths must not read from cwd
 
-    def test_tracked_scaffold_cores_warn_in_stealth(self, tmp_path: Path, monkeypatch):
-        _write_scaffold(tmp_path)
+    findings = _scaffold_core_findings(tmp_path)
+
+    assert {f.subject for f in findings} == {"my_ip.core", _SELFTEST_CORE}
+    assert all(".booley/cores/" in f.fix for f in findings)
+    assert all(f.subject in f.message for f in findings)
+
+
+def _native_core(root: Path, _scaffolded: str) -> None:
+    (root / "ip.core").write_text(_SCAFFOLD_TEXT.format("A hand-written IP"), encoding="utf-8")
+
+
+def _port_origin(root: Path, _scaffolded: str) -> None:
+    toml = root / ".booley/booley.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            "# booley-init-origin: scaffold", "# booley-init-origin: port"
+        ),
+        encoding="utf-8",
+    )
+    (root / "my_ip.core").write_text(
+        _SCAFFOLD_TEXT.format(_SCAFFOLD_DESCRIPTION), encoding="utf-8"
+    )
+
+
+def _projection(root: Path, _scaffolded: str) -> None:
+    (root / ".booley-projected-my_ip.core").write_text(
+        _SCAFFOLD_TEXT.format(_SCAFFOLD_DESCRIPTION), encoding="utf-8"
+    )
+
+
+def _unreadable_core(root: Path, _scaffolded: str) -> None:
+    (root / "my_ip.core").write_text("CAPI=2:\nname: [unclosed\n", encoding="utf-8")
+
+
+def _relocated_core(root: Path, scaffolded: str) -> None:
+    (root / ".booley/cores").mkdir(parents=True)
+    (root / ".booley/cores/my_ip.core").write_text(scaffolded, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param(_native_core, id="native-core"),
+        pytest.param(_port_origin, id="port-origin"),
+        pytest.param(_projection, id="projection"),
+        # A tracked core Booley cannot parse is the core audit's finding, not this one.
+        pytest.param(_unreadable_core, id="unreadable-core"),
+        pytest.param(_relocated_core, id="relocated-stealth-core"),
+    ],
+)
+def test_scaffold_core_warning_skips_cores_that_are_not_tracked_scaffold_cores(
+    tmp_path: Path, edit
+):
+    _write_scaffold(tmp_path)
+    scaffolded = (tmp_path / "my_ip.core").read_text(encoding="utf-8")
+    for rel in ("my_ip.core", _SELFTEST_CORE):
+        (tmp_path / rel).unlink()
+    edit(tmp_path, scaffolded)
+    _commit_all(tmp_path)
+
+    assert _scaffold_core_findings(tmp_path) == []
+
+
+@pytest.mark.parametrize("git", ["no-repository", "no-git-executable"])
+def test_scaffold_core_warning_needs_git_to_say_what_is_tracked(
+    tmp_path: Path, monkeypatch, git: str
+):
+    _write_scaffold(tmp_path)
+    if git == "no-git-executable":
         _commit_all(tmp_path)
-        # "Switched to Stealth Mode" after the cores were committed.
-        toml = tmp_path / ".booley/booley.toml"
-        toml.write_text(
-            toml.read_text(encoding="utf-8").replace("enabled = false", "enabled = true"),
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(tmp_path.parent)  # relative git paths must not read from cwd
+        monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
 
-        findings = _scaffold_core_findings(tmp_path)
-
-        assert {f.subject for f in findings} == {"my_ip.core", "verif/booley_doctor_selftest.core"}
-        assert all(".booley/cores/" in f.fix for f in findings)
-        assert all(f.subject in f.message for f in findings)
-
-    @pytest.mark.parametrize("case", ["native-core", "port-origin", "projection"])
-    def test_native_root_core_not_flagged(self, tmp_path: Path, case: str):
-        _write_scaffold(tmp_path)
-        for rel in ("my_ip.core", "verif/booley_doctor_selftest.core"):
-            (tmp_path / rel).unlink()
-        scaffold_text = "CAPI=2:\nname: ::my_ip:0\ndescription: {}\n"
-        if case == "native-core":
-            (tmp_path / "ip.core").write_text(scaffold_text.format("A hand-written IP"))
-        elif case == "port-origin":
-            toml = tmp_path / ".booley/booley.toml"
-            toml.write_text(
-                toml.read_text(encoding="utf-8").replace(
-                    "# booley-init-origin: scaffold", "# booley-init-origin: port"
-                ),
-                encoding="utf-8",
-            )
-            (tmp_path / "my_ip.core").write_text(
-                scaffold_text.format("my_ip starter IP (scaffolded by booley init --scaffold)")
-            )
-        else:
-            (tmp_path / ".booley-projected-my_ip.core").write_text(
-                scaffold_text.format("my_ip starter IP (scaffolded by booley init --scaffold)")
-            )
-        _commit_all(tmp_path)
-
-        assert _scaffold_core_findings(tmp_path) == []
-
-    def test_no_findings_outside_a_git_repository(self, tmp_path: Path):
-        _write_scaffold(tmp_path)  # never committed: git cannot say what is tracked
-
-        assert _scaffold_core_findings(tmp_path) == []
-
-    def test_no_findings_when_git_cannot_run(self, tmp_path: Path, monkeypatch):
-        _write_scaffold(tmp_path)
-        _commit_all(tmp_path)
-
-        def _missing_git(*args, **kwargs):
-            raise FileNotFoundError("git")
-
-        monkeypatch.setattr(readiness.subprocess, "run", _missing_git)
-        # The Git common-dir lookup goes through the bounded helper instead.
-        monkeypatch.setattr(platform_paths, "run_captured_bounded", _missing_git)
-
-        assert _scaffold_core_findings(tmp_path) == []
-
-    def test_unreadable_tracked_core_is_left_to_the_core_audit(self, tmp_path: Path):
-        _write_scaffold(tmp_path)
-        (tmp_path / "my_ip.core").write_text("CAPI=2:\nname: [unclosed\n", encoding="utf-8")
-        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
-        _commit_all(tmp_path)
-
-        assert _scaffold_core_findings(tmp_path) == []
-
-    def test_relocated_stealth_core_is_not_flagged(self, tmp_path: Path):
-        _write_scaffold(tmp_path)
-        cores = tmp_path / ".booley/cores"
-        cores.mkdir(parents=True)
-        (tmp_path / "my_ip.core").rename(cores / "my_ip.core")
-        (tmp_path / "verif/booley_doctor_selftest.core").unlink()
-        _commit_all(tmp_path)
-
-        assert _scaffold_core_findings(tmp_path) == []
+    assert _scaffold_core_findings(tmp_path) == []
 
 
-class TestGuidanceVenueNote:
-    """Guidance that names Booley Flows must scope them to the Sandbox.
+_SCOPED = "- The MCP tools below exist only {}.\n- At the start of a tab, call `booley_status`.\n"
 
-    The Project Root's CLAUDE.md link resolves on the host too, so an unscoped
-    file tells a host-side agent to call MCP tools that do not exist there.
-    """
 
-    def _canon(self, tmp_path: Path, body: str, *, links: bool = True) -> Path:
-        if tmp_path.name != ".booley":
-            tmp_path = tmp_path / ".booley"
-            tmp_path.mkdir()
-        canon = tmp_path / "AGENTS.md"
-        canon.write_text(body, encoding="utf-8")
-        if links:
-            ensure_guidance_links(tmp_path.parent, tmp_path)
-        return canon
-
-    @pytest.mark.parametrize("location", ("inside the Sandbox", "Session Runtime"))
-    def test_scoped_guidance_passes(self, tmp_path, location):
-        canon = self._canon(
-            tmp_path,
-            f"- The MCP tools below exist only {location}.\n"
+@pytest.mark.parametrize(
+    ("body", "links", "warnings"),
+    [
+        pytest.param(_SCOPED.format("inside the Sandbox"), True, [], id="scoped-sandbox"),
+        pytest.param(_SCOPED.format("Session Runtime"), True, [], id="scoped-runtime"),
+        # The root CLAUDE.md link resolves on the host too, so unscoped guidance tells a
+        # host-side agent to call MCP tools that do not exist there.
+        pytest.param(
             "- At the start of a tab, call `booley_status`.\n",
-        )
-        rec = _Rec()
-        _record_report(
-            readiness.check_guidance(
-                readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-            ),
-            passed=rec.p,
-            warned=rec.w,
-        )
-        assert rec.kinds() == {"pass"}
+            True,
+            ["guidance.session-runtime-scope"],
+            id="unscoped-tools",
+        ),
+        pytest.param("# AGENTS.md\n\n- Project purpose: a UART.\n", True, [], id="no-tools"),
+        # The template Doctor's fix hint points at must itself pass.
+        pytest.param(None, True, [], id="shipped-template"),
+        pytest.param("# Project guidance\n", False, ["guidance.links-unhealthy"], id="no-links"),
+    ],
+)
+def test_guidance_must_scope_booley_tools_to_the_sandbox(
+    tmp_path: Path, body: str | None, links: bool, warnings: list[str]
+):
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    template = skills_dir() / "booley-setup" / "AGENTS_TEMPLATE.md"
+    text = template.read_text(encoding="utf-8") if body is None else body
+    (booley_dir / "AGENTS.md").write_text(text, encoding="utf-8")
+    if links:
+        ensure_guidance_links(tmp_path, booley_dir)
 
-    def test_unscoped_btool_guidance_warns(self, tmp_path):
-        canon = self._canon(tmp_path, "- At the start of a tab, call `booley_status`.\n")
-        rec = _Rec()
-        _record_report(
-            readiness.check_guidance(
-                readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-            ),
-            passed=rec.p,
-            warned=rec.w,
-        )
-        assert rec.kinds() == {"pass", "warn"}
-        assert any("host-side agent session" in message for _, message in rec.events)
+    report = readiness.check_guidance(readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, ""))
 
-    def test_guidance_without_btools_is_silent(self, tmp_path):
-        """Nothing to scope — a project may legitimately not mention them."""
-        canon = self._canon(tmp_path, "# AGENTS.md\n\n- Project purpose: a UART.\n")
-        rec = _Rec()
-        _record_report(
-            readiness.check_guidance(
-                readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-            ),
-            passed=rec.p,
-            warned=rec.w,
-        )
-        assert rec.kinds() == {"pass"}
-        assert all("scopes Booley" not in message for _, message in rec.events)
-
-    def test_shipped_template_satisfies_the_check(self, tmp_path):
-        """The template doctor's fix hint points at must itself pass the check."""
-        from booley.runtime.paths import skills_dir
-
-        template = skills_dir() / "booley-setup" / "AGENTS_TEMPLATE.md"
-        canon = self._canon(tmp_path, template.read_text(encoding="utf-8"))
-        rec = _Rec()
-        _record_report(
-            readiness.check_guidance(
-                readiness.ProjectAudit(canon.parent.parent, canon.parent, {}, {}, ""),
-            ),
-            passed=rec.p,
-            warned=rec.w,
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_missing_links_are_reported_without_creating_them(self, tmp_path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        self._canon(booley_dir, "# Project guidance\n", links=False)
-        project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
-
-        report = readiness.check_guidance(project)
-
-        assert [(f.severity, f.check_id) for f in report.findings] == [
-            (Severity.WARN, "guidance.links-unhealthy")
-        ]
-        assert "booley init" in report.findings[0].fix
-        assert not (tmp_path / "AGENTS.md").exists()
-        assert not (tmp_path / "CLAUDE.md").exists()
+    assert [f.check_id for f in report.findings if f.severity is not Severity.PASS] == warnings
+    assert all(f.severity in (Severity.PASS, Severity.WARN) for f in report.findings)
+    assert any("root links current" in f.message for f in report.findings) is links
+    # Doctor only reports broken links; `booley init` owns the repair.
+    assert all((tmp_path / name).exists() is links for name in ("AGENTS.md", "CLAUDE.md"))
+    unhealthy = [f for f in report.findings if f.check_id == "guidance.links-unhealthy"]
+    assert all("booley init" in f.fix for f in unhealthy)
 
 
 def test_project_audit_reports_a_missing_booley_directory(tmp_path, monkeypatch):
