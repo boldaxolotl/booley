@@ -15,20 +15,13 @@ A handler passes if it does any of:
     ``sys.exit(exc.returncode)``), or
   * contains a ``raise`` (re-raises / raises a richer error).
 
-New swallow sites should adopt ``run_command`` instead. If a genuinely-benign
-swallow is unavoidable, add it to ``_ALLOWLIST`` with a one-line reason.
+New swallow sites should adopt ``run_command`` instead.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
-
-# (relative posix path under src/booley, enclosing function name) -> reason.
-# Empty by design: every current CalledProcessError handler surfaces, propagates,
-# or re-raises. Add an entry only for a genuinely-benign swallow that can't use
-# run_command, with a one-line justification.
-_ALLOWLIST: dict[tuple[str, str], str] = {}
 
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "booley"
 _SURFACING_ATTRS = {"stderr", "stdout", "output", "returncode"}
@@ -80,8 +73,6 @@ def _find_violations() -> list[str]:
             if _handler_surfaces_error(node):
                 continue
             func = _enclosing_func(tree, node)
-            if (rel, func) in _ALLOWLIST:
-                continue
             violations.append(f"{rel}:{node.lineno} (in {func}())")
     return violations
 
@@ -93,24 +84,3 @@ def test_no_swallowed_subprocess_errors() -> None:
         "exc.stderr/.returncode, re-raise, or use booley.core.run_command "
         "(which always captures stderr):\n  " + "\n  ".join(violations)
     )
-
-
-def test_allowlisted_sites_still_exist() -> None:
-    """Keep the allowlist honest: a listed site that no longer swallows (or
-    moved) should be removed so the entry can't mask a future real swallow."""
-    live = {
-        (rel, func)
-        for rel, func in (
-            (
-                path.relative_to(_SRC_ROOT).as_posix(),
-                _enclosing_func(ast.parse(path.read_text(encoding="utf-8")), node),
-            )
-            for path in _SRC_ROOT.rglob("*.py")
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-            if isinstance(node, ast.ExceptHandler)
-            and _is_called_process_error(node)
-            and not _handler_surfaces_error(node)
-        )
-    }
-    stale = set(_ALLOWLIST) - live
-    assert not stale, f"Allowlist entries no longer apply (remove them): {stale}"

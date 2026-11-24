@@ -55,6 +55,7 @@ def describe(thread: threading.Thread) -> str:
     nothing public names the callable. ``Timer`` and ``run`` overrides carry no
     target, so fall back to the timer's function, then to the thread's class.
     """
+    # private: CPython's own Thread._target (see docstring).
     target: Any = getattr(thread, "_target", None) or getattr(thread, "function", None)
     if target is None:
         kind = type(thread)

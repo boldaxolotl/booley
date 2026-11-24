@@ -24,43 +24,49 @@ from pathlib import Path
 here = Path(__file__).parent
 replies = json.loads((here / "fake_docker_replies.json").read_text(encoding="utf-8"))
 command = sys.argv[1:]
-with (here / "fake_docker_calls.jsonl").open("a", encoding="utf-8") as calls:
-    calls.write(json.dumps(command) + "\\n")
+with (here / "fake_docker_calls.jsonl").open("a", encoding="utf-8") as log:
+    log.write(json.dumps(command) + "\\n")
 if command and command[0] == "build":
     (here / "build-started").touch()
-code, text = replies.get(command[0] if command else "", [0, ""])
-print(text, file=sys.stdout if code == 0 else sys.stderr)
+first, last = (command[0], command[-1]) if command else ("", "")
+code, text = replies.get(f"{first} {last}", replies.get(first, [0, ""]))
+if text:
+    print(text, file=sys.stdout if code == 0 else sys.stderr)
 raise SystemExit(code)
 """
 
 
 @dataclass(frozen=True)
 class FakeDocker:
-    """The installed fake: the program name and the marker a ``docker build`` leaves."""
+    """The installed fake: the program name and path, the marker a ``docker build`` leaves."""
 
     name: str
     build_marker: Path
+    path: Path
+    replies_path: Path  # rewrite it to change the replies: the program rereads it per call
+
+    @property
+    def calls(self) -> list[list[str]]:
+        """Every argument list the program was called with, in order."""
+        log = (self.path.parent / "fake_docker_calls.jsonl").read_text(encoding="utf-8")
+        return [json.loads(line) for line in log.splitlines()]
 
     @property
     def built(self) -> bool:
         return self.build_marker.exists()
 
-    @property
-    def calls(self) -> list[list[str]]:
-        """Every argument list the fake received, in order."""
-        log = self.build_marker.with_name("fake_docker_calls.jsonl")
-        return [json.loads(line) for line in log.read_text("utf-8").splitlines()]
-
 
 def install_fake_docker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replies: Mapping[str, tuple[int, str]]
 ) -> FakeDocker:
-    """Put a ``docker`` on ``PATH`` answering by first argument with ``(exit code, text)``.
+    """Put a ``docker`` on ``PATH`` answering with ``(exit code, text)``.
 
-    The text goes to stdout on exit code 0 and to stderr otherwise; an argument without a
-    reply exits 0 with no output. A ``build`` also touches ``build_marker``.
+    A reply keyed ``"<first> <last>"`` argument (``"image sha256:aa"``) wins over one keyed
+    by the first argument. The text goes to stdout on exit code 0 and to stderr otherwise;
+    a call without a reply exits 0 with no output. A ``build`` also touches ``build_marker``.
     """
-    (tmp_path / "fake_docker_replies.json").write_bytes(json.dumps(replies).encode("utf-8"))
+    replies_path = tmp_path / "fake_docker_replies.json"
+    replies_path.write_bytes(json.dumps(replies).encode("utf-8"))
     script = tmp_path / "fake_docker.py"
     script.write_bytes(_SCRIPT.encode("utf-8"))
     if os.name == "nt":
@@ -73,4 +79,4 @@ def install_fake_docker(
         )
         docker.chmod(0o755)
     monkeypatch.setenv("PATH", os.pathsep.join((str(tmp_path), os.environ["PATH"])))
-    return FakeDocker(docker.name, tmp_path / "build-started")
+    return FakeDocker(docker.name, tmp_path / "build-started", docker, replies_path)
