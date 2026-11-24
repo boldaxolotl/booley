@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.time_budget import scaled
 
 ROOT = Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults"
 SPEC = importlib.util.spec_from_file_location("qa_provider", ROOT / "provider.py")
@@ -21,7 +22,7 @@ def test_burst_messages_do_not_wait_for_more_fd_input():
     os.write(writer, b'{"id":1}\n{"id":2}\n')
     with os.fdopen(reader) as stream:
         try:
-            deadline = time.monotonic() + 0.1
+            deadline = time.monotonic() + scaled(0.1)
             assert provider.receive(stream, deadline) == {"id": 1}
             assert provider.receive(stream, deadline) == {"id": 2}
         finally:
@@ -47,10 +48,10 @@ def test_observed_hit_candidate_has_proof_to_isolate_contradiction():
 def test_cross_simulation_record_uses_actual_foreign_selector(tmp_path, monkeypatch):
     foreign = tmp_path / "coverage.json"
     foreign.write_text("{}")
-    monkeypatch.setenv("QA_FOREIGN_CAMPAIGN", str(foreign))
+    monkeypatch.setenv("QA_FOREIGN_RECORD", str(foreign))
     evidence = Recorder()
-    provider.query_fault(evidence, "cross-campaign")
-    assert evidence.requests[-1] == {"view": "overview", "campaign": str(foreign)}
+    provider.query_fault(evidence, "cross-record")
+    assert evidence.requests[-1] == {"view": "overview", "coverage_record": str(foreign)}
     provider.query_fault(evidence, "undelivered")
     assert evidence.requests[-1] == {"view": "source", "point_refs": ["point:999999999"]}
 

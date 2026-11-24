@@ -769,24 +769,86 @@ def test_queued_claim_reports_its_need_free_memory_position_and_largest_holders(
     assert store.memory_wait(999) is None
 
 
+def test_waiters_being_admitted_at_a_release_count_as_holders(root, world):
+    store = make_store(root, world)
+    holder = join(store, world, 101, claim(800))
+    assert store.refresh(holder).state == HOLDING
+    for pid, size, name in ((102, 700, "a"), (103, 50, "b"), (104, 300, "c"), (105, 100, "d")):
+        join(store, world, pid, claim(size), job=label(f"run-{name}", "sim", name))
+    store.release(holder)  # no waiter refreshed yet: A and B are about to be admitted
+
+    second = store.memory_wait(103)
+    third = store.memory_wait(104)
+    fourth = store.memory_wait(105)
+
+    # B starts right after A: position 1, waiting only on A's place in queue order.
+    assert second is not None and second.position == 1
+    assert second.describe() == (
+        "waits in queue order behind run-a (sim, a); needs 50 MiB; "
+        "300 MiB free of the 1,000 MiB Memory Budget; largest holders: run-a (sim, a) 700 MiB"
+    )
+
+    assert third is not None and third.position == 1
+    assert third.describe() == (
+        "needs 300 MiB; 250 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-a (sim, a) 700 MiB, run-b (sim, b) 50 MiB"
+    )
+    assert fourth is not None and fourth.position == 2
+    assert fourth.describe() == (
+        "waits in queue order behind run-c (sim, c); needs 100 MiB; "
+        "250 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-a (sim, a) 700 MiB, run-b (sim, b) 50 MiB"
+    )
+
+
 def test_queued_run_alone_claim_says_it_waits_to_run_alone(root, world):
     store = make_store(root, world)
     holder = join(store, world, 101, claim(500), job=label("run-1", "sim", "a"))
     alone = join(store, world, 102, claim(run_alone=True))
     unsized = join(store, world, 103, claim(run_alone=True, budget_mb=0.0))
+    unmeasured = join(
+        store,
+        world,
+        104,
+        job_slots.MemoryClaim(
+            budget_mb=BUDGET_MB, run_alone=True, unmeasured="synth on Target chip"
+        ),
+    )
     assert store.refresh(holder).state == HOLDING
     assert store.refresh(alone).state == QUEUED and store.refresh(unsized).state == QUEUED
+    assert store.refresh(unmeasured).state == QUEUED
+    spawn(world, 105)
+    requeued = store.submit(
+        job_slots.CLASS_MEMORY,
+        pid=105,
+        memory=claim(run_alone=True),
+        role=ROLE_INTERACTIVE,
+        queue_reason=REQUEUE_REASON,
+    )
+    assert store.refresh(requeued).state == QUEUED
 
     wait = store.memory_wait(102)
     no_budget = store.memory_wait(103)
+    no_measurement = store.memory_wait(104)
+    oom_requeue = store.memory_wait(105)
 
-    assert wait is not None and no_budget is not None
+    assert wait is not None and no_budget is not None and no_measurement is not None
+    assert oom_requeue is not None
+    assert no_measurement.describe() == (
+        "waits to run alone (no memory measurement yet for synth on Target chip); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
+    )
     assert wait.describe() == (
         "waits to run alone (memory estimate unknown or above the Memory Budget); "
         "largest holders: run-1 (sim, a) 500 MiB"
     )
     assert no_budget.describe() == (
-        "waits to run alone (Memory Budget unavailable); largest holders: run-1 (sim, a) 500 MiB"
+        "waits to run alone (Memory Budget unavailable); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
+    )
+    assert oom_requeue.describe() == (
+        "waits to run alone (requeued after out-of-memory); "
+        "waits in queue order behind pid 102; largest holders: run-1 (sim, a) 500 MiB"
     )
 
 
@@ -794,15 +856,24 @@ def test_seat_blocked_claim_names_the_tool_it_waits_for(root, world):
     store = make_store(root, world)
     holder = join(store, world, 101, seated(100, 1), job=label("run-1", "fpga", "a"))
     waiting = join(store, world, 102, seated(100, 1))
+    behind = join(store, world, 103, seated(950, 1))
     assert store.refresh(holder).state == HOLDING
     assert store.refresh(waiting).state == QUEUED
 
     wait = store.memory_wait(102)
+    behind_wait = store.memory_wait(103)
 
-    assert wait is not None
+    assert wait is not None and behind_wait is not None
+    assert store.refresh(behind).state == QUEUED
     assert wait.describe() == (
+        "waits for a vivado seat (1 of 1 held); "
         "needs 100 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
-        "waits for a vivado seat (1 of 1 held); largest holders: run-1 (fpga, a) 100 MiB"
+        "largest holders: run-1 (fpga, a) 100 MiB"
+    )
+    assert behind_wait.describe() == (
+        "needs 950 MiB; 900 MiB free of the 1,000 MiB Memory Budget; "
+        "waits for a vivado seat (1 of 1 held); waits in queue order behind pid 102; "
+        "largest holders: run-1 (fpga, a) 100 MiB"
     )
 
 
@@ -837,6 +908,25 @@ def test_unlabelled_holder_is_named_by_its_pid_and_at_most_three_are_listed(root
     )
 
 
+def test_holders_that_reserve_nothing_are_not_named_largest(root, world):
+    store = make_store(root, world)
+    flow = join(store, world, 101, claim(300), job=label("run-3", "sim", "a"))
+    assert store.refresh(flow).state == HOLDING
+    assert store.shrink_reservation(flow, 0)
+    coordinator = join(store, world, 102, companion(0), job=label("run-3", "sim", "b"))
+    big = join(store, world, 103, claim(600), job=label("run-3", "sim", "c"))
+    join(store, world, 104, claim(500))
+    assert store.refresh(coordinator).state == HOLDING and store.refresh(big).state == HOLDING
+
+    wait = store.memory_wait(104)
+
+    assert wait is not None
+    assert wait.describe() == (
+        "needs 500 MiB; 400 MiB free of the 1,000 MiB Memory Budget; "
+        "largest holders: run-3 (sim, c) 600 MiB"
+    )
+
+
 def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, world):
     store = make_store(root, world)
     token = join(store, world, 101, claim(100), job=label("run-1", "sim", "a"))
@@ -844,9 +934,28 @@ def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, 
     (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
     assert holders[0].job == label("run-1", "sim", "a")
 
+    item = join(
+        store,
+        world,
+        102,
+        claim(100),
+        job=label("run-1", "sim", "a, b").for_work_item("a", ["t1", "t2", "t3", "t4"]),
+    )
+    assert store.refresh(item).state == HOLDING
+    (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
+    assert holders[1].job == job_slots.JobLabel("run-1", "sim", "a", "t1,t2,t3,+1", True)
+    assert job_slots.JobLabel.from_payload(holders[1].job.to_payload()) == holders[1].job
+    assert job_slots._holder_name(holders[1]) == "run-1 (sim, a, t1,t2,t3,+1)"
+
     entry = token.path
     payload = json.loads(entry.read_text(encoding="utf-8"))
-    for malformed in ("run-1", {"run_id": 1, "flow": "sim", "target": "a"}, {"run_id": "r"}):
+    malformed_labels = (
+        "run-1",
+        {"run_id": 1, "flow": "sim", "target": "a"},
+        {"run_id": "r"},
+        {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
+    )
+    for malformed in malformed_labels:
         payload["job"] = malformed
         entry.write_text(json.dumps(payload), encoding="utf-8")
         (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
@@ -946,3 +1055,100 @@ def test_the_coordinator_does_not_reduce_how_many_specialists_fit(root, world):
 def test_a_companion_claim_is_never_run_alone():
     with pytest.raises(ValueError, match="never run-alone"):
         job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)
+
+
+def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, monkeypatch):
+    spawn(world, 100)
+    store = make_store(root, world)
+
+    def always_taken(_path, _target):
+        raise FileExistsError
+
+    monkeypatch.setattr(Path, "hardlink_to", always_taken)
+    with pytest.raises(RuntimeError, match="unique Memory Reservation entry"):
+        store.submit(job_slots.CLASS_MEMORY, memory=claim(1.0), pid=100)
+
+
+def take_over(store: SlotStore, holder: job_slots.SlotToken, memory) -> job_slots.SlotToken:
+    """Submit *memory* from the holder's own process, taking over the holder's place (#4482)."""
+    return store.submit(job_slots.CLASS_MEMORY, pid=holder.pid, memory=memory, succeeds=holder)
+
+
+@pytest.mark.parametrize(("wall_s", "expected"), [(180.0, HOLDING), (720.0, QUEUED)])
+def test_a_short_later_claim_still_jumps_a_successor_that_cannot_start(
+    root, world, wall_s, expected
+):
+    store = make_store(root, world)
+    hold(store, world, 101, claim(300, wall_s=600.0))  # frees its memory in 10 min
+    flow = hold(store, world, 102, claim(500))
+    later = join(store, world, 103, claim(300, wall_s=wall_s))
+    successor = take_over(store, flow, claim(800))
+    assert store.refresh(successor) == TokenState(QUEUED, position=0)
+    assert store.refresh(later).state == expected
+    assert store._load_token(flow.path).memory.reservation_mb == 0
+
+
+def test_a_claim_takes_over_only_a_holder_that_still_reserves(root, world):
+    store = make_store(root, world)
+    flow = hold(store, world, 101, claim(500))
+    later = join(store, world, 102, claim(100))
+    assert store.shrink_reservation(flow, 0)
+    behind = take_over(store, flow, claim(100))  # nothing to take over: queues at the back
+    assert store.refresh(later).state == HOLDING
+    assert store.refresh(behind).state == HOLDING
+    assert behind.seq > later.seq
+    # A holder whose lease is gone refuses the takeover and leaves no waiter behind.
+    lost = hold(store, world, 103, claim(100))
+    store.release(lost)
+    with pytest.raises(job_slots.ClaimLostError):
+        take_over(store, lost, claim(100))
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == []
+
+
+def test_no_waiter_ranks_while_a_claim_takes_over_a_holder(root, world, monkeypatch):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    real_shrink = store.shrink_reservation
+    gate_taken: list[bool] = []
+
+    def shrink_after_rival_tries_the_gate(token, reservation_mb):
+        with rival._promotion_gate(later) as acquired:
+            gate_taken.append(acquired)
+        return real_shrink(token, reservation_mb)
+
+    monkeypatch.setattr(store, "shrink_reservation", shrink_after_rival_tries_the_gate)
+    successor = take_over(store, flow, claim(None, run_alone=True))
+    assert gate_taken == [False]  # no ranking can interleave with the takeover
+    assert rival.refresh(later).state == QUEUED
+    assert store.refresh(successor).state == HOLDING
+
+
+def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
+    store = make_store(root, world)
+    rival = make_store(root, world)
+    flow = hold(store, world, 101, claim(None, run_alone=True))
+    later = join(rival, world, 102, claim(100))
+    with rival._promotion_gate(later) as acquired:
+        assert acquired
+        with pytest.raises(job_slots.TakeoverBusyError):
+            take_over(store, flow, claim(None, run_alone=True))
+        with pytest.raises(job_slots.ClaimAbortedError):
+            store.acquire(
+                job_slots.CLASS_MEMORY,
+                pid=101,
+                memory=claim(None, run_alone=True),
+                succeeds=flow,
+                should_abort=lambda: True,
+            )
+    assert store._load_token(flow.path).memory.run_alone
+    assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
+    # Once the gate is free the takeover goes through at the holder's place.
+    successor = store.acquire(
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        memory=claim(None, run_alone=True),
+        succeeds=flow,
+    )
+    assert successor.seq == flow.seq

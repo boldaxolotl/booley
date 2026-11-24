@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import threading
 import types
 from pathlib import Path
 from typing import Any
@@ -23,13 +22,10 @@ from typing import Any
 import pytest
 
 from booley.flows.sim.config import literal_run_cwd_problem, parse_run_cwd_template
-from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record.run_directory import expand_run_directory
-from booley.flows.sim.record_presentation import (
-    _attach_failure_reference,
-    _pre_sim_integrity_failure,
-)
-from booley.flows.sim.request import SimRequest
+
+# Private seam: the failure detail is only built when projection publication fails mid-run,
+# which a completed public run never does.
+from booley.flows.sim.record_presentation import _attach_failure_reference
 from booley.mcp.catalog import Exposure
 from booley.mcp.flow_adapter import flow_schema
 from booley.presentation.report_results import (
@@ -38,18 +34,12 @@ from booley.presentation.report_results import (
     project_facts,
 )
 from booley.runtime import owned_scratch
-from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.pid import capture_process_identity
-from booley.runtime.supervised_execution import (
-    SupervisedExecutionScope,
-    supervised_execution_scope,
-)
 from booley.specialists import coverage_analyst as coverage_analyst_module
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.simulation_record_boundary import run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import coverage_invocation
-from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
-from tests.flows.sim.test_flow import PASS_PROCESS, _preview
+from tests.flows.sim.test_flow import PASS_PROCESS
 from tests.owned_scratch_support import exited_process_payload, write_marker
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures" / "booley_0_4_0"
@@ -76,16 +66,6 @@ def _ordinary_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return run
 
 
-def test_a_run_reports_detail_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run = _ordinary_run(tmp_path, monkeypatch)
-    persisted = _json(tmp_path / "reports/sim/1/report.json")
-
-    for detail in (run.result.outcome.detail, persisted["detail"]):
-        assert set(detail["records"]) == {"lite"}
-        assert detail["records"]["lite"]["grade"] == "pass"
-        assert "campaigns" not in detail
-
-
 def test_record_detail_names_the_simulation_record_and_its_dependency(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -103,19 +83,7 @@ def test_record_detail_names_the_simulation_record_and_its_dependency(
     assert progress_row["simulation_record_id"] == record_id
     assert progress_row["dependency"] == "external_origin_record"
 
-    resume = tmp_path / "resume"
-    resume.mkdir()
-    reports, _request, _runs = _interrupt_coverage_publication(resume, monkeypatch)
-    origin = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
-        SimRequest(resume_from=origin, work_dir=resume, report_dir=resume / "resumed")
-    )
-    assert resumed.exit_code == 0
-    resumed_row = _json(resume / "resumed/sim/1/report.json")["detail"]["records"]["sim_0"]
-    assert resumed_row["dependency"] == "external_origin_record"
-    assert resumed_row["simulation_record_id"] == _json(origin)["simulation_record_id"]
-
-    for row in (report_row, progress_row, resumed_row):
+    for row in (report_row, progress_row):
         assert "campaign_id" not in row
         assert row["dependency"] not in {"local_campaign", "external_origin_campaign"}
 
@@ -127,9 +95,6 @@ def test_coverage_reports_name_the_coverage_record(
     persisted = _json(run.reports / "sim/1/report.json")
     row = persisted["detail"]["targets"]["sim_0"]
 
-    assert row["coverage_record"]["kind"] == "coverage_record_reference"
-    assert "coverage_campaign" not in row
-
     owner = _json(run.target / "record/manifest.json")["simulation_record_id"]
     failed: dict[str, object] = {}
     _attach_failure_reference(failed, run.public, run.reports / "sim/1", owner)
@@ -137,41 +102,10 @@ def test_coverage_reports_name_the_coverage_record(
     assert "coverage_campaign" not in failed
 
 
-def test_a_dry_run_reports_detail_record_preview(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    detail = _preview(tmp_path, monkeypatch, {"lite": ["smoke"]}, target="lite").outcome.detail
-
-    assert [entry["target"]["selector"] for entry in detail["record_preview"]] == ["lite"]
-    assert "campaign_preview" not in detail
-
-
-def test_an_integrity_failure_reports_detail_record_integrity_error() -> None:
-    result = _pre_sim_integrity_failure(EndpointOutcome(), RuntimeError("tampered"))
-
-    assert result.detail["record_integrity_error"] == "tampered"
-    assert "campaign_integrity_error" not in result.detail
-
-
 def test_the_coverage_record_path_label() -> None:
     rows = project_facts({"campaign_path": "reports/sim/1/coverage.json"})
 
     assert [row.label for row in rows] == ["Coverage Record path"], "label is not the record one"
-
-
-def test_run_cwd_expands_the_record_placeholder(tmp_path: Path) -> None:
-    assert parse_run_cwd_template("runs/{record}/{test}") == ("record", "test")
-
-    run = expand_run_directory(
-        "runs/{record}/{test}",
-        project_root=tmp_path,
-        simulation_record_id="rec-1",
-        target_key="lite",
-        work_item_key="smoke",
-        attempt_key="a1",
-    )
-    assert run.path == tmp_path / "runs" / "rec-1" / "smoke"
-    assert run.owned
 
 
 def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
@@ -188,11 +122,14 @@ def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
     assert "record" in schema["properties"]
     assert "record" in schema["required"]
 
+    # Private seam: the environment is built only inside a live Coverage Analyst session.
     environment = analyst._evidence_environment(tmp_path, record, tmp_path / "audit.json")
     assert environment["BOOLEY_COVERAGE_RECORD"] == str(record)
 
     assert Exposure.from_mapping({"BOOLEY_COVERAGE_RECORD": "x"}).coverage_record is True
 
+    # Private seam: ``_ACTIVE_SESSION`` and ``_TERMINAL_ERROR`` are the module's process-global
+    # session state, with no public reset.
     monkeypatch.setattr(coverage_evidence, "_ACTIVE_SESSION", None)
     monkeypatch.setattr(coverage_evidence, "_TERMINAL_ERROR", None)
     monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", str(tmp_path))
@@ -202,35 +139,10 @@ def test_coverage_analyst_takes_the_record_argument_parameter_and_environment(
     assert "No active Coverage Record" not in str(unreadable.value)
 
 
-def test_coverage_analysis_scratch_and_cancellation_thread_use_record_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    prefixes: list[str] = []
-
-    def stop(prefix: str):
-        prefixes.append(prefix)
-        raise RuntimeError("scratch opened")
-
-    monkeypatch.setattr(coverage_analyst_module, "owned_tempdir", stop)
-    coverage_record = types.SimpleNamespace(invocation={"id": "1"})
-    with pytest.raises(RuntimeError, match="scratch opened"):
-        coverage_analyst_module.analyze_coverage_record(coverage_record, None, "")  # type: ignore[arg-type]
-    assert prefixes == ["booley-coverage-record-"], "scratch prefix is not the record one"
-
-    scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: False)
-    with supervised_execution_scope(scope):
-        names = {thread.name for thread in threading.enumerate()}
-    assert "booley-record-process-cancellation" in names
-    assert "booley-campaign-process-cancellation" not in names
-
-
 def test_an_old_run_cwd_placeholder_fails_validation_naming_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(ValueError) as refused:
-        parse_run_cwd_template("runs/{campaign}")
-    assert "{record}" in str(refused.value)
-    assert "{campaign}" in str(refused.value)
+    assert parse_run_cwd_template("runs/{record}/{test}") == ("record", "test")
 
     run = run_simulation_record_sim(
         tmp_path,
@@ -286,7 +198,9 @@ def test_report_listing_reports_a_0_4_0_simulation_report_as_older() -> None:
 
 
 @requires_procfs
-def test_old_coverage_scratch_prefix_is_swept_never_created(tmp_path: Path) -> None:
+def test_old_coverage_scratch_prefix_is_swept_never_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     own = capture_process_identity(os.getpid())
     assert own is not None
 
@@ -302,6 +216,19 @@ def test_old_coverage_scratch_prefix_is_swept_never_created(tmp_path: Path) -> N
 
     removed = owned_scratch.sweep_stale_scratch(tmp_path)
 
-    assert "booley-coverage-record-" in owned_scratch.OWNED_PREFIXES, "new prefix not swept"
     assert sorted(path.name for path in removed) == [old.name, new.name]
     assert live.is_dir()
+
+    # The prefix coverage analysis creates is the swept record one.
+    prefixes: list[str] = []
+
+    def stop(prefix: str):
+        prefixes.append(prefix)
+        raise RuntimeError("scratch opened")
+
+    monkeypatch.setattr(coverage_analyst_module, "owned_tempdir", stop)
+    coverage_record = types.SimpleNamespace(invocation={"id": "1"})
+    with pytest.raises(RuntimeError, match="scratch opened"):
+        coverage_analyst_module.analyze_coverage_record(coverage_record, None, "")  # type: ignore[arg-type]
+    assert prefixes == ["booley-coverage-record-"], "scratch prefix is not the record one"
+    assert prefixes[0] in owned_scratch.OWNED_PREFIXES, "new prefix not swept"

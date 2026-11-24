@@ -66,7 +66,23 @@ against what the RTL happens to do.
    finding has an ID, a severity, and a location.
 3. Decide which findings to fix, and ask the agent to fix them.
 
-A new review replaces the findings of the previous one.
+### Checking your fixes
+
+Run one full review, then ask the agent to re-check its findings after each
+round of fixes: *"Re-check the review's findings."* The Reviewer looks only at
+the findings that are still open, against the current files, and reports each as
+`fixed`, `still open`, or `can't tell`. It reports no new findings, and each
+`fixed` names the code that shows the fix. Repeat until every finding is fixed;
+a `can't tell` finding counts as open. A new full review replaces the earlier
+findings, so run one only when you want fresh findings.
+
+To leave a finding as it is on purpose, propose a waiver with the re-check:
+*"Re-check the review's findings and waive finding `<ID>` because
+`<reason>`."* The Reviewer accepts or refuses each proposal. An accepted
+waiver marks the finding `waived`: it does not fail a gated run, the report
+lists it under `ACCEPTED WAIVERS` with your reason, and later re-checks keep it
+waived. A refused waiver leaves the finding judged as
+`fixed`, `still open` or `can't tell`, and the report says why it was refused.
 
 ### Reviewing only a change
 
@@ -94,6 +110,62 @@ with Booley. Add your own rules in `.booley/rtl_style_guide.md` (RTL) and
 `.booley/tb_style_guide.md` (testbench), in plain Markdown. Where your rules
 and Booley's conflict, yours win.
 
+## Declare reviews in `reviews.toml`
+
+`reviews.toml` sits in the Booley Directory, `.booley/` at the top of your
+Project. It lists, for each Target, the reviews Booley runs on it, so you
+write them once instead of in each request. No released version runs them yet.
+Without the file, a Project declares no reviews.
+
+A Target's reviews are a `[<target>.review]` table. Its keys:
+
+- `rtl` and `tb`: the [focuses](#choosing-a-focus) to run on the Target's RTL
+  files and testbench files. Use `rtl` for the RTL focuses and `tb` for
+  `quality`.
+- `spec`: the path of the spec the review checks against. The `spec` focus
+  needs one.
+- `resolve`: the lowest severity that has to be resolved, `critical`, `major`
+  or `minor`. It is `major` when you write none.
+- `exclude`: globs of files no review of this Target reads.
+
+`[defaults.review]` takes the same keys and fills each one a Target's table
+leaves out. It never creates a table: a Target without a `[<target>.review]`
+table declares no review. A key a Target writes replaces the default whole;
+lists are not merged.
+
+Add a `[[<target>.review.paths]]` entry to review some files with more
+focuses or another `spec` or `resolve`. Its `paths` key lists globs, and it
+takes `rtl`, `tb`, `spec` and `resolve`; a `spec` or `resolve` it leaves out
+comes from the Target's table. An entry adds reviews to the Target's own and
+never replaces them. An excluded file is in no review, not even an entry's.
+
+```toml
+[defaults.review]
+tb = ["quality"]
+resolve = "minor"
+
+[sim_core.review]
+rtl = ["spec", "bugs"]
+spec = "docs/spec.md"
+exclude = ["rtl/gen/*.sv"]
+
+[[sim_core.review.paths]]
+paths = ["rtl/*.sv"]
+rtl = ["security"]
+resolve = "critical"
+```
+
+Here `sim_core` gets `spec` and `bugs` reviews of its RTL files and a
+`quality` review of its testbench files, all resolved at `minor`, plus a
+`security` review of the `.sv` files in `rtl/` resolved at `critical`. The
+generated files `rtl/gen/*.sv` are in none of them.
+
+The file fails to load, naming the table and key, when a key, focus or value
+is unknown or of the wrong kind, a table or entry names no focus, `spec` is
+not a file of the Project, or a glob in `exclude` or `paths` matches no file
+of the Target or reaches a file outside it. Write the file type
+(`rtl/*.sv`, not `rtl/**`) so a README in `rtl/` is not matched.
+
 ## Running it yourself
 
 In a container terminal:
@@ -111,7 +183,9 @@ booley specialist reviewer --category rtl --focus spec --scope rtl/fifo.sv --spe
 | `--spec <path>` / `--spec-text "<text>"` | The specification to check against (one, not both). Required for `--focus spec`. |
 | `--steer "<text>"` | Extra context for the Reviewer. Repeatable. |
 | `--base <commit>` | [Review only the change](#reviewing-only-a-change) since the merge-base of `<commit>` and HEAD, uncommitted changes included. Pass every file of the category as `--scope` so the Reviewer also reads the files that use the changed ones. |
-| `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. |
+| `--fail-on critical\|major\|minor` | Exit 1 when an open finding is at or above that severity. Without it, a completed review exits 0 even with open findings. With `--recheck`, only `still open` and `can't tell` findings count. |
+| `--recheck <evidence file>` | [Re-check the open findings](#checking-your-fixes) of the saved review report at that path. It takes the category, focus and files from the report, so it refuses `--category`, `--focus`, `--scope`, `--base`, `--spec`, `--spec-text` and `--steer`. |
+| `--waive <finding ID> "<reason>"` | With `--recheck` only: [propose a waiver](#checking-your-fixes) for an open finding. Repeat it for more findings. A reason that starts with `-` is not accepted. |
 | `--dry-run` | Preview the call without running the review: lists the checks it would run; a `bugs`, `protocol`, `security`, `optimization` or testbench `quality` review shows two. |
 
 The options every Specialist shares are in [Specialists](SPECIALISTS.md#running-a-specialist).

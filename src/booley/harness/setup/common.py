@@ -98,6 +98,11 @@ def banner(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stdin_is_a_terminal() -> bool:
+    """Ask the current ``sys.stdin``, which may have been replaced since import."""
+    return sys.stdin.isatty()
+
+
 @dataclass
 class StepResult:
     name: str
@@ -115,7 +120,7 @@ class InitContext:
     force: bool = False
     verbose: bool = False
     fix_line_endings: bool = False
-    interactive: bool = field(default_factory=sys.stdin.isatty)
+    interactive: bool = field(default_factory=_stdin_is_a_terminal)
     show_step_banners: bool = True
     #: Never rewrite an existing tracked file: steps that would only inspect and
     #: report (``warn``) what ``booley init`` applies. Creating missing files, Git

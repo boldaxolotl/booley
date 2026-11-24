@@ -7,19 +7,25 @@ with the actionable reason and a bounded, marker-free output tail.
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import re
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
 import booley.flows.sim.build as build_module
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.adapter_transport import AdapterResult, AdapterTestResult
 from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.execution import SimulationOptions
-from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, SimulateFlow
+from booley.flows.sim.execution.contract import SimulationTestOutcome
+from booley.flows.sim.execution.engine import SimulationExecution
 from booley.flows.sim.record.codec import (
     MAX_DETAIL_BYTES,
     canonical_json_bytes,
@@ -33,18 +39,38 @@ from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
+from booley.flows.source_paths import ProjectSourcePaths
+from booley.flows.terminal_progress import TerminalProgress
+from booley.fusesoc.fusesoc_registry import ResolvedFile
 from booley.mcp.base import EXIT_ERROR
-from tests.flows.sim import test_simulation_record_crash_matrix as crash_matrix
+from booley.targets.catalog import TargetCatalog
+from tests.flows.failing_compiler import put_failing_iverilog_on_path
+from tests.flows.sim.prepared_group import run_prepared_group
+from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _FailedCoverageBuild,
+    _named_manifest,
+    _plan,
     _run_coverage_simulation_record,
 )
-from tests.flows.sim.test_execution_engine import _handle, _prepared, _run_execution
+from tests.flows.sim.simulation_record_test_support import _handle as _shared_handle
+from tests.flows.sim.test_execution_engine import (
+    _handle,
+    _prepared,
+    _real_fusesoc,
+    _run_execution,
+    _subprocess_invoker,
+    _write_fake_icarus_tools,
+    _write_runtime_input_project,
+    _write_vvp,
+)
 from tests.flows.sim.test_verilator_coverage_execution import (
     _build_coverage,
     _execution_fixture,
+    _run_request,
 )
+from tests.time_budget import hang_guard_s
 
 TIMEOUT_REASON = "build timed out after 600 s (raise [flows.sim].build_timeout_ms)"
 OOM_REMEDY = (
@@ -53,6 +79,12 @@ OOM_REMEDY = (
 )
 HEAD_LINE = "make: Entering directory '/work/build' HEADMARKER"
 LAST_LINE = "last line before kill"
+HOSTILE_BUILD_OUTPUT = (
+    '\\"\t漢字' * 200
+    + "\x1b[31mred\x1b[0m\x00\n"
+    + "y" * 10_000
+    + "\nBOOLEY_BUILD_STAGE token=abc123 rc=137\n"
+)
 
 
 def _long_output() -> str:
@@ -69,22 +101,6 @@ def _timed_out_result(stdout: str | None = None) -> SubprocessResult:
         stdout=_long_output() if stdout is None else stdout,
         timed_out=True,
     )
-
-
-def _timeout_outcome():
-    return classify_build_outcome(_timed_out_result(), "abc123", timeout_s=600)
-
-
-def test_timed_out_build_report_leads_with_timeout_limit_and_knob() -> None:
-    result = _timed_out_result()
-    outcome = classify_build_outcome(result, "abc123", timeout_s=600)
-
-    assert outcome.reason == TIMEOUT_REASON
-    assert outcome.output == result.stdout
-    report = build_module.build_failure_report(outcome)
-    assert report.splitlines()[0] == outcome.reason
-    assert LAST_LINE in report
-    assert HEAD_LINE not in report
 
 
 @pytest.mark.parametrize(
@@ -124,10 +140,32 @@ def test_oom_build_names_oom_evidence_and_remedy(
         f"build failed while the Sandbox recorded an OOM kill ({peak_text}; {OOM_REMEDY})"
     )
     assert outcome.failure_kind == "infrastructure"
-    report = build_module.build_failure_report(outcome)
+    report = build_module.build_failure_report(outcome, ProjectSourcePaths())
     assert report.splitlines()[0] == outcome.reason
     assert "Error 137" in report
     assert "BOOLEY_BUILD_STAGE" not in report
+
+
+def test_host_oom_build_names_host_memory_not_a_sandbox_remedy() -> None:
+    outcome = classify_build_outcome(
+        SubprocessResult(
+            returncode=137,
+            stdout="make: *** Error 137\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            oom_kill_delta=1,
+            oom_killed=True,
+            host_oom_kill=True,
+            peak_rss_mb=2048.0,
+        ),
+        "abc123",
+        timeout_s=600,
+    )
+
+    assert (
+        outcome.reason
+        == "build failed: the host ran out of memory and killed it (build peak RSS 2048 MB)"
+    )
+    assert "raise [sandbox].memory" not in (outcome.reason or "")
+    assert outcome.failure_kind == "infrastructure"
 
 
 def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypatch) -> None:
@@ -147,30 +185,98 @@ def test_ordinary_build_failure_during_another_jobs_oom_kill_is_not_oom(monkeypa
     assert diagnostic in outcome.output
 
 
-def test_compile_error_still_shows_compiler_lines(tmp_path: Path) -> None:
-    diagnostic = "%Error: rtl/top.sv:4:3: syntax error"
-    outcome = classify_build_outcome(
-        SubprocessResult(
-            returncode=1, stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n"
-        ),
-        "abc123",
-    )
-    assert outcome.design_failed
+_DESIGN = ("{core}:4: syntax error", "gen/other.sv:2: error: Unknown module type: other")
+_SORRY = ("{core}:4: sorry: Constant user functions are not supported.",)
 
-    handle = _handle(tmp_path)
-    prepared = _prepared(handle, cocotb=False)
-    result = _run_execution(
-        handle,
-        prepared,
-        lambda _command, timeout: SubprocessResult(
-            returncode=1, stdout=f"{diagnostic}\nBOOLEY_BUILD_STAGE token=abc123 rc=1\n"
-        ),
-        ("smoke",),
-        cocotb=False,
-        canned_at="build",
+
+@pytest.mark.parametrize(
+    ("trace", "lines"),
+    [(False, _DESIGN), (True, _DESIGN), (False, _SORRY)],
+    ids=["design", "trace-overlay", "infrastructure"],
+)
+def test_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trace: bool, lines: tuple[str, ...]
+) -> None:
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    core = f"src/acme_lib_runtime_input{'-booleytrace' if trace else ''}_1/tb.sv"
+    printed = [line.format(core=core) for line in lines]
+    put_failing_iverilog_on_path(tmp_path, monkeypatch, printed)
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    options = SimulationOptions(trace=trace, timeout_ms=hang_guard_s() * 1000)
+    with _real_fusesoc():
+        outcome = run_prepared_group(
+            SimulationExecution(invoke=_subprocess_invoker(project), options=options), handle, ()
+        )
+
+    failure = outcome.infrastructure_failure
+    shown = (failure.detail if failure else outcome.tests[0].error_tail).splitlines()
+    assert (failure is not None) == (lines == _SORRY)
+    for line in lines:
+        assert line.format(core="tb.sv") in shown
+    if failure is None:
+        # The persisted build output keeps the raw build-tree spelling.
+        assert printed[0] in outcome.builds[0].output
+
+
+def test_runtime_failure_names_project_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pytest.importorskip("fusesoc")
+    pytest.importorskip("edalize")
+    project = tmp_path / "project"
+    state = _write_runtime_input_project(project)
+    (state / "tests.toml").write_text('[sim]\ntests = ["t"]\n', encoding="utf-8")
+    raw = "src/acme_lib_runtime_input_1/tb.sv"
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    _write_vvp(fake_bin, raw)  # a vvp that fails naming the build-tree file
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    sink = TerminalProgress("sim", "t", tmp_path / "progress", stream=io.StringIO())
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project, observed=True),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
     )
-    assert result.infrastructure_failure is None
-    assert diagnostic in result.tests[0].error_tail
+    with _real_fusesoc(), sink.installed():
+        outcome = run_prepared_group(execution, handle, ("t",))
+
+    (test,) = outcome.tests
+    assert "Unable to open tb.sv for reading" in test.error_tail
+    assert raw not in test.error_tail + test.reason
+    assert "Unable to open tb.sv for reading" in sink.stream.getvalue()
+    assert raw not in sink.stream.getvalue()
+    assert raw in sink.log_path.read_text(encoding="utf-8")
+
+
+def test_project_text_leaves_longer_unmapped_filenames_alone() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+    text = "src/core/top.sv:4: bad; src/core/top.sv.generated:4: note; src/core/top.sv."
+    assert (
+        paths.project_text(text)
+        == "rtl/top.sv:4: bad; src/core/top.sv.generated:4: note; rtl/top.sv."
+    )
+
+
+def test_project_text_maps_a_name_printed_with_backslashes() -> None:
+    paths = ProjectSourcePaths({"src/core/top.sv": "rtl/top.sv"})
+    assert paths.project_text("src\\core\\top.sv:4: bad; src\\core/top.sv:5") == (
+        "rtl/top.sv:4: bad; rtl/top.sv:5"
+    )
+
+
+def test_merged_mappings_keep_both_targets_and_let_the_newer_win() -> None:
+    first = ProjectSourcePaths({"src/a/top.sv": "rtl/a.sv", "src/c/x.sv": "old/x.sv"})
+    second = ProjectSourcePaths({"src/b/top.sv": "rtl/b.sv", "src/c/x.sv": "new/x.sv"})
+
+    merged = first.merged(second)
+
+    assert dict(merged.by_name) == {
+        "src/a/top.sv": "rtl/a.sv",
+        "src/b/top.sv": "rtl/b.sv",
+        "src/c/x.sv": "new/x.sv",
+    }
+    assert first.merged(ProjectSourcePaths()) is first
 
 
 def _engine_timeout_outcome(tmp_path: Path):
@@ -185,18 +291,6 @@ def _engine_timeout_outcome(tmp_path: Path):
         canned_at="build",
         options=SimulationOptions(build_timeout_ms=600_000),
     )
-
-
-def test_engine_build_timeout_outcome_is_reason_first(tmp_path: Path) -> None:
-    outcome = _engine_timeout_outcome(tmp_path)
-
-    failure = outcome.infrastructure_failure
-    assert failure is not None
-    assert failure.message == TIMEOUT_REASON
-    assert failure.detail.splitlines()[0] == TIMEOUT_REASON
-    assert HEAD_LINE not in failure.detail
-    assert LAST_LINE in failure.detail
-    assert outcome.builds[-1].timed_out
 
 
 class _InfrastructureGroup:
@@ -223,46 +317,32 @@ def _first_build_result(store: SimulationRecordStore) -> dict[str, object]:
     return json.loads(path.read_text())
 
 
-def _run_private_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
-    monkeypatch.setattr(
-        crash_matrix,
-        "_FailedBuildGroup",
-        lambda root, _infrastructure: _InfrastructureGroup(root, outcome),
+def _shared_executor(root: Path, outcome) -> OrdinaryHdlSerialExecutor:
+    class Execution:
+        @contextmanager
+        def ordinary_group(self, _handle, _names, _test_runs=None):
+            yield _InfrastructureGroup(root, outcome)
+
+    return OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
+        execution_factory=lambda _options: Execution(),  # type: ignore[arg-type,return-value]
     )
-    executor, request, invocation = crash_matrix._failed_build_case(
-        tmp_path, monkeypatch, "compile_spawn", crash_matrix._CrashOnce("never")
-    )
-    (request.project_root / ".booley").mkdir(exist_ok=True)
-    monkeypatch.setenv("BOOLEY_DIR", str(request.project_root / ".booley"))
-    return executor, request, invocation
 
 
 def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
-    from tests.flows.sim.simulation_record_test_support import _handle as shared_handle
-    from tests.flows.sim.simulation_record_test_support import _named_manifest
-
     plan = create_simulation_record_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
-    handle = shared_handle(project)
+    handle = _shared_handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: handle),
     )
     root = tmp_path / "engine-build"
     root.mkdir()
-
-    class Execution:
-        @contextmanager
-        def ordinary_group(self, _handle, _names, _test_runs=None):
-            yield _InfrastructureGroup(root, outcome)
-
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: Execution(),  # type: ignore[arg-type,return-value]
-    )
+    executor = _shared_executor(root, outcome)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     request = NewSimulationRecordRunRequest(
@@ -271,135 +351,183 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
     return executor, request, invocation
 
 
-@pytest.mark.parametrize("path", ["shared", "private"])
-def test_simulation_record_build_timeout_publishes_terminal_infrastructure_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
-) -> None:
-    outcome = _engine_timeout_outcome(tmp_path / "engine")
-    runner = _run_shared_timeout if path == "shared" else _run_private_timeout
-    executor, request, invocation = runner(tmp_path, monkeypatch, outcome)
-
+def _published_build_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome):
+    """Run the shared executor to a terminal error record; return its build result."""
+    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
     simulation_record = SimulationRecord(executor).run(request)
     assert simulation_record.complete is True
     assert simulation_record.aggregate_grade == "error"
-    assert simulation_record.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
     store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
+    assert store.scan().interrupted == ()
     result = _first_build_result(store)
     assert result["state"] == "infrastructure_error"
+    return simulation_record, result
+
+
+def test_simulation_record_build_timeout_publishes_terminal_infrastructure_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome = _engine_timeout_outcome(tmp_path / "engine")
+    failure = outcome.infrastructure_failure
+    assert failure is not None
+    assert failure.detail.splitlines()[0] == TIMEOUT_REASON
+    assert HEAD_LINE not in failure.detail
+    simulation_record, result = _published_build_result(tmp_path, monkeypatch, outcome)
+
+    assert simulation_record.observations[0]["detail"]["reason"].splitlines()[0] == TIMEOUT_REASON
     observation = result["observation"]
     assert observation["message"] == TIMEOUT_REASON
     assert observation["detail"]["text"].splitlines()[0] == TIMEOUT_REASON
-    assert store.scan().interrupted == ()
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    endpoint = flow._simulation_record_endpoint_outcome([simulation_record])
-    assert endpoint.exit_code == EXIT_ERROR
-    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
-    assert endpoint.detail["target"] == "sim"
-    stage = endpoint.detail["build_stage"]
-    assert stage["timed_out"] is True
-    assert stage["failure_class"] == "infrastructure"
-    assert stage["ran"] is outcome.builds[-1].ran
-    assert {"elapsed_s", "terminal_record", "cache_decision"}.issubset(stage)
-    assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
 
 
-def test_simulation_record_endpoint_reports_build_timeout_first(tmp_path: Path) -> None:
-    outcome = _timeout_outcome()
-    error = build_module.SimulationBuildInfrastructureError("sim", outcome)
-    flow = SimulateFlow()
-    invocation = tmp_path / "reports" / "1"
-    invocation.mkdir(parents=True)
-    with (
-        patch.object(SimulateFlow, "reserve_invocation_dir", return_value=invocation),
-        patch.object(SimulateFlow, "_write_simulation_record_progress"),
-        patch.object(SimulateFlow, "_candidate_simulation_record_requests", return_value=[]),
-        patch.object(
-            SimulateFlow, "_publish_and_run_simulation_record_requests", side_effect=error
-        ),
-    ):
-        endpoint = flow._execute_simulation_record(
-            _admission(),
-            flow._ordinary_simulation_record_run(
-                OrdinarySimulationRecordPlanning((), {"sim": []})
-            ),
-        )
+def test_flow_sim_build_timeout_report_leads_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = run_simulation_record_sim(
+        tmp_path, monkeypatch, {"sim": ["t1"]}, PASS_PROCESS, build=_timed_out_result()
+    )
 
-    assert endpoint.exit_code == EXIT_ERROR
-    first_line = endpoint.report_text.splitlines()[0]
-    assert TIMEOUT_REASON in first_line
-    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
-    assert endpoint.detail["build_stage"]["timed_out"] is True
-    assert LAST_LINE in endpoint.report_text
-    assert HEAD_LINE not in endpoint.report_text
+    outcome = run.result.outcome
+    assert run.result.exit_code == EXIT_ERROR
+    first_line = outcome.report_text.splitlines()[0]
+    assert "build timed out" in first_line
+    assert "(raise [flows.sim].build_timeout_ms)" in first_line
+    assert outcome.detail["eda_tool_error"] == "build_infrastructure"
+    assert outcome.detail["build_stage"]["timed_out"] is True
+    assert LAST_LINE in outcome.report_text
+    assert HEAD_LINE not in outcome.report_text
+    assert run.launched == []
 
 
-def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch)
+def _failed_coverage_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    build_stage: Callable[[str], SubprocessResult],
+    files: tuple[ResolvedFile, ...] = (),
+):
+    execution, target, _raw, _captured = _execution_fixture(tmp_path, monkeypatch, files=files)
     execution._options = SimulationOptions(build_timeout_ms=600_000)
     original = execution._invoke
 
     def invoke(command, *, timeout):
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            return _timed_out_result()
+            return build_stage(command[-1])
         return original(command, timeout=timeout)
 
     execution._invoke = invoke
     return _build_coverage(execution, target)
 
 
+def _timed_out_coverage_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str):
+    return _failed_coverage_build(tmp_path, monkeypatch, lambda _script: _timed_out_result(stdout))
+
+
+def test_coverage_build_failure_names_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = "src/acme_demo_counter-booleycoverage_1"
+    files = (
+        ResolvedFile(
+            f"{prefix}/rtl/counter.sv",
+            "systemVerilogSource",
+            core="acme:demo:counter-booleycoverage:1",
+        ),
+    )
+
+    def build_stage(script: str) -> SubprocessResult:
+        token = re.search(r"token=([0-9a-f]+)", script)
+        assert token is not None
+        return SubprocessResult(
+            returncode=1,
+            stdout=(
+                f"%Error: {prefix}/rtl/counter.sv:1:8: syntax error\n"
+                "%Error: gen/other.sv:2:3: syntax error\n"
+                f"BOOLEY_BUILD_STAGE token={token.group(1)} rc=1\n"
+            ),
+        )
+
+    build = _failed_coverage_build(tmp_path, monkeypatch, build_stage, files)
+
+    assert build.success is False
+    assert build.infrastructure_error is False
+    assert build.output.splitlines()[:2] == [
+        "%Error: rtl/counter.sv:1:8: syntax error",
+        "%Error: gen/other.sv:2:3: syntax error",
+    ]
+
+
+def test_coverage_relay_and_run_output_name_project_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = "src/acme_demo_counter-booleycoverage_1/rtl/counter.sv"
+    files = (ResolvedFile(raw, "systemVerilogSource", core="acme:demo:counter-booleycoverage:1"),)
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch, files=files)
+    detail = f"{raw}:1:8: mismatch"
+    captured["result"] = AdapterResult(
+        passed=False,
+        inconclusive=False,
+        sva_errors=0,
+        tests=("wrap",),
+        termination="fatal_init",
+        failure_kind="infrastructure",
+        detail=detail,
+        test_results=(
+            AdapterTestResult(
+                "wrap",
+                "fail",
+                detail=detail,
+                termination="fatal_init",
+                failure_kind="infrastructure",
+            ),
+        ),
+    )
+    original = execution._invoke
+    sink = TerminalProgress("sim", "t", tmp_path / "progress", stream=io.StringIO())
+
+    def invoke(command, *, timeout):
+        if "BOOLEY_BUILD_STAGE" in command[-1]:
+            sink.begin_command()
+            sink.observe("stdout", f"{detail}\n".encode())
+            sink.end_command()
+        return original(command, timeout=timeout)
+
+    execution._invoke = invoke
+    with sink.installed():
+        assert _build_coverage(execution, target).success
+        result = execution.run(_run_request(target, raw_path))
+
+    assert "rtl/counter.sv:1:8: mismatch" in result.output
+    assert raw not in result.output
+    assert "rtl/counter.sv:1:8: mismatch" in sink.stream.getvalue()
+    assert raw not in sink.stream.getvalue()
+
+
 def test_coverage_build_timeout_is_infrastructure_with_reason_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    build = _timed_out_coverage_build(tmp_path, monkeypatch)
+    build = _timed_out_coverage_build(tmp_path, monkeypatch, "z" * 2_000 + f"\n{LAST_LINE}\n")
 
     assert build.success is False
     assert build.infrastructure_error is True
     assert build.reason == TIMEOUT_REASON
     assert build.output.splitlines()[0] == TIMEOUT_REASON
+    assert len(build.output) < 1_000
 
 
-def test_coverage_build_timeout_reports_not_run_infrastructure_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("reason", "output", "message"),
+    [
+        (TIMEOUT_REASON, f"{TIMEOUT_REASON}\n--- output tail ---\n{LAST_LINE}", TIMEOUT_REASON),
+        (None, "coverage Verilator identity mismatch", "coverage Verilator identity mismatch"),
+    ],
+    ids=["reason", "reasonless"],
+)
+def test_coverage_simulation_record_build_failure_message_is_reason(
+    tmp_path: Path, reason: str | None, output: str, message: str
 ) -> None:
-    from dataclasses import replace
-
-    from booley.flows.sim.coverage_invocation import (
-        CoverageInvocationRequest,
-        prepare_coverage_invocation,
-    )
-    from tests.flows.sim.test_coverage_invocation import project
-    from tests.flows.sim.test_coverage_transaction import NativeExecution, run_target
-
-    # Separate roots: both fixtures write the same FuseSoC core.
-    (tmp_path / "adapter").mkdir()
-    (tmp_path / "coverage_project").mkdir()
-    timed_out = _timed_out_coverage_build(tmp_path / "adapter", monkeypatch)
-    tmp_path = tmp_path / "coverage_project"
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
-
-    class TimedOut(NativeExecution):
-        def build(self, request):
-            return timed_out
-
-    outcome = run_target(plan, TimedOut())
-
-    assert outcome.exit_code == 2
-    assert outcome.detail["passed"] is None
-    assert outcome.detail["simulation"] == "not_run"
-    assert outcome.detail["collection"] == "infrastructure_error"
-
-
-def test_coverage_simulation_record_build_failure_message_is_reason(tmp_path: Path) -> None:
     failing = _FailedCoverageBuild(infrastructure=True)
     failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
-        False,
-        f"{TIMEOUT_REASON}\n--- output tail ---\n{LAST_LINE}",
-        infrastructure_error=True,
-        reason=TIMEOUT_REASON,
+        False, output, infrastructure_error=True, reason=reason
     )
     simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
     assert simulation_record.complete is True
@@ -407,36 +535,9 @@ def test_coverage_simulation_record_build_failure_message_is_reason(tmp_path: Pa
 
     store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
     observation = _first_build_result(store)["observation"]
-    assert observation["message"] == TIMEOUT_REASON
-    assert LAST_LINE in observation["detail"]["text"]
-
-
-def test_coverage_simulation_record_build_timeout_is_not_an_integrity_error(
-    tmp_path: Path,
-) -> None:
-    failing = _FailedCoverageBuild(infrastructure=True)
-    failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
-        False, f"{TIMEOUT_REASON}\ntail", infrastructure_error=True, reason=TIMEOUT_REASON
-    )
-    simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
-    assert simulation_record.complete is True
-    assert simulation_record.aggregate_grade == "error"
-    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
+    assert observation["message"] == message
+    assert output.splitlines()[-1] in observation["detail"]["text"]
     assert store.scan().interrupted == ()
-
-
-def test_reasonless_coverage_infrastructure_keeps_its_message(tmp_path: Path) -> None:
-    failing = _FailedCoverageBuild(infrastructure=True)
-    failing.build = lambda _request: SimulationBuildResult(  # type: ignore[method-assign]
-        False, "coverage Verilator identity mismatch", infrastructure_error=True
-    )
-    simulation_record, _invocation = _run_coverage_simulation_record(tmp_path, failing)
-    assert simulation_record.complete is True
-    assert simulation_record.aggregate_grade == "error"
-
-    store = SimulationRecordStore(tmp_path / "reports/1/targets/sim_0/record")
-    message = _first_build_result(store)["observation"]["message"]
-    assert message == "coverage Verilator identity mismatch"
 
 
 def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> None:
@@ -455,55 +556,22 @@ def test_prepared_build_failure_reports_missing_executable(tmp_path: Path) -> No
         assert outcome.infrastructure_failure.missing_executable == "verilator"
 
 
-def test_build_report_fits_codec_detail_ceiling() -> None:
-    hostile = (
-        '\\"\t漢字' * 200
-        + "\x1b[31mred\x1b[0m\x00\n"
-        + "y" * 10_000
-        + "\n"
-        + "BOOLEY_BUILD_STAGE token=abc123 rc=137\n"
-    )
-    outcome = classify_build_outcome(
-        SubprocessResult(
-            returncode=137, stdout=hostile, oom_kill_delta=1, oom_killed=True, peak_rss_mb=31744.4
-        ),
-        "abc123",
-        timeout_s=600,
-    )
-
-    report = build_module.build_failure_report(outcome)
-
-    assert len(canonical_json_bytes({"text": report})) <= MAX_DETAIL_BYTES
-    assert "\x1b" not in report
-    assert "\x00" not in report
-    assert "BOOLEY_BUILD_STAGE" not in report
-
-
 def test_ansi_prefixed_marker_line_is_dropped_from_tail() -> None:
-    tail = build_module.build_output_tail(
-        "compiling\n\x1b[31mBOOLEY_BUILD_STAGE token=abc rc=1\x1b[0m\nlast\n"
-    )
+    output = "a\n\x1b[31mBOOLEY_BUILD_STAGE token=abc rc=1\x1b[0m\nb\n"
 
-    assert "BOOLEY_BUILD_STAGE" not in tail
-    assert tail == "compiling\nlast"
+    assert build_module.build_output_tail(output) == "a\nb"
 
 
 def test_hostile_oom_build_output_publishes_and_decodes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    hostile = (
-        '\\"\t漢字' * 200
-        + "\x1b[31mred\x1b[0m\x00\n"
-        + "y" * 10_000
-        + "\nBOOLEY_BUILD_STAGE token=abc123 rc=137\n"
-    )
     handle = _handle(tmp_path / "engine")
     outcome = _run_execution(
         handle,
         _prepared(handle, cocotb=False),
         lambda _command, timeout: SubprocessResult(
             returncode=137,
-            stdout=hostile,
+            stdout=HOSTILE_BUILD_OUTPUT,
             oom_kill_delta=1,
             oom_killed=True,
             peak_rss_mb=31744.4,
@@ -512,39 +580,14 @@ def test_hostile_oom_build_output_publishes_and_decodes(
         cocotb=False,
         canned_at="build",
     )
-    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
+    _record, result = _published_build_result(tmp_path, monkeypatch, outcome)
 
-    simulation_record = SimulationRecord(executor).run(request)
-    assert simulation_record.complete is True
-    assert simulation_record.aggregate_grade == "error"
-
-    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
-    result = _first_build_result(store)
     text = result["observation"]["detail"]["text"]
-    assert result["state"] == "infrastructure_error"
     assert "OOM kill" in text.splitlines()[0]
     assert "\x1b" not in text
+    assert "\x00" not in text
     assert "BOOLEY_BUILD_STAGE" not in text
     assert len(canonical_json_bytes({"text": text})) <= MAX_DETAIL_BYTES
-    assert store.scan().interrupted == ()
-
-
-def test_simulation_record_resume_failure_reports_build_timeout_first() -> None:
-    error = build_module.SimulationBuildInfrastructureError("sim", _timeout_outcome())
-
-    with patch(
-        "booley.flows.sim.flow_resume._fresh_simulation_record_recovery_detail", return_value={}
-    ):
-        endpoint = SimulateFlow()._simulation_record_resume_failure(
-            SimpleNamespace(), SimpleNamespace(), Path(), error
-        )
-
-    assert endpoint.exit_code == EXIT_ERROR
-    assert TIMEOUT_REASON in endpoint.report_text.splitlines()[0]
-    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
-    assert endpoint.detail["build_stage"]["timed_out"] is True
-    assert LAST_LINE in endpoint.report_text
-    assert HEAD_LINE not in endpoint.report_text
 
 
 @pytest.mark.parametrize("executable", ["verilator_bin", "iverilog"])
@@ -565,10 +608,6 @@ def test_build_owned_loader_startup_is_infrastructure(executable):
 def test_large_batch_build_failure_publishes_bounded_terminal_result(
     tmp_path, monkeypatch, access
 ) -> None:
-    from dataclasses import replace
-
-    from tests.flows.sim.simulation_record_test_support import _plan
-
     names = tuple(f"test_{index}" for index in range(1000))
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names, access=access)
     outcome = _engine_timeout_outcome(tmp_path / "engine")
@@ -578,8 +617,6 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
         infrastructure_failure=replace(outcome.infrastructure_failure, detail="界" * 4000),
         builds=(replace(outcome.builds[0], reason="compiler failed: " + "界" * 200),),
     )
-    from booley.flows.sim.execution.contract import SimulationTestOutcome
-
     if access == "legacy-per-test":
         outcome = replace(
             outcome,
@@ -593,15 +630,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     root = tmp_path / "failed-build"
     root.mkdir()
 
-    class Execution:
-        @contextmanager
-        def ordinary_group(self, _handle, _names, _test_runs=None):
-            yield _InfrastructureGroup(root, outcome)
-
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,
-        execution_factory=lambda _options: Execution(),
-    )
+    executor = _shared_executor(root, outcome)
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
     simulation_record = SimulationRecord(executor).run(
@@ -616,12 +645,6 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert _first_build_result(store)["observation"]["detail"]["build_stage"]["timed_out"]
-    flow = SimulateFlow()
-    flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"], result_verbosity="brief")
-    endpoint = flow._simulation_record_endpoint_outcome([simulation_record])
-    assert endpoint.detail["eda_tool_error"] == "build_infrastructure"
-    assert endpoint.detail["build_stage"]["timed_out"] is True
     assert "compiler failed:" in simulation_record.observations[0]["detail"]["reason"]
     if access == "legacy-per-test":
         assert "tail sentinel" in simulation_record.observations[0]["detail"]["reason"]
@@ -630,8 +653,6 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
 def test_escaped_build_metadata_stays_within_canonical_detail_budget(
     tmp_path, monkeypatch
 ) -> None:
-    from dataclasses import replace
-
     outcome = _engine_timeout_outcome(tmp_path / "engine")
     assert outcome.infrastructure_failure is not None
     outcome = replace(
@@ -647,11 +668,8 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
             ),
         ),
     )
-    executor, request, invocation = _run_shared_timeout(tmp_path, monkeypatch, outcome)
-    simulation_record = SimulationRecord(executor).run(request)
-    assert simulation_record.complete
-    store = SimulationRecordStore(invocation / "targets/sim/record")
-    detail = _first_build_result(store)["observation"]["detail"]
+    _record, result = _published_build_result(tmp_path, monkeypatch, outcome)
+    detail = result["observation"]["detail"]
+
     assert len(canonical_json_bytes(detail)) <= MAX_DETAIL_BYTES
     assert detail["build_stage"]["timed_out"] is True
-    assert store.scan().interrupted == ()

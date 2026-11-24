@@ -291,6 +291,63 @@ def _communicate_sliced(
                 raise
 
 
+class _DeadlineKiller:
+    """Kill *proc*'s tree from a separate thread once *timeout* seconds pass.
+
+    Defense in depth for #4323, whose cause is unproven: once on Windows CI the
+    waiting thread returned 38 s past a 2 s deadline, when the hung tree exited
+    on its own, and saw a normal exit. If that thread was blocked on something
+    the tree held, such as its pipes, this kill ends the wait at the deadline.
+    It does not help when the whole process stalls (for example on the GIL):
+    this thread's timed wait uses the same timed-lock mechanism as the waiting
+    thread's ``Thread.join``.
+
+    A child that has already exited is left alone, even when its wait has not
+    returned yet: it finished in time, and its PID may already be reaped. If a
+    descendant still holds the pipes, the waiting thread's own deadline kills
+    the tree.
+    """
+
+    def __init__(self, proc: subprocess.Popen[bytes], timeout: float) -> None:
+        self._proc = proc
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._expired = False
+        self._thread = threading.Thread(
+            target=self._kill_at_deadline,
+            # Event.wait raises OverflowError above TIMEOUT_MAX (an inf timeout).
+            args=(min(timeout, threading.TIMEOUT_MAX),),
+            name="bounded-capture-deadline",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        """Arm the deadline."""
+        self._thread.start()
+
+    def _kill_at_deadline(self, timeout: float) -> None:
+        if self._stopped.wait(timeout):
+            return
+        with self._lock:
+            # stop() may have run between the wait's timeout and this lock.
+            if self._stopped.is_set() or self._proc.poll() is not None:
+                return
+            self._expired = True
+        kill_process_tree(self._proc)
+
+    def stop(self) -> bool:
+        """Disarm, wait for a kill in progress, and say whether the deadline fired.
+
+        After this returns the tree is killed exactly when the result is True,
+        and no kill runs later. Safe when :meth:`start` failed or never ran.
+        """
+        with self._lock:
+            self._stopped.set()
+        if self._thread.ident is not None:
+            self._thread.join()
+        return self._expired
+
+
 def _close_unowned_pipes(proc: subprocess.Popen[bytes]) -> None:
     """Close *proc*'s output pipes after an abandoned or interrupted ``communicate``.
 
@@ -320,11 +377,17 @@ def _run_bounded(
 ) -> subprocess.CompletedProcess[bytes]:
     """Bytes core of :func:`run_captured_bounded`: kill the tree, bound every wait."""
     proc, feeder = _spawn(argv, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout)
+    # On POSIX poll() can return None while another thread reaps the child.
+    # Windows polls its process handle and can tell whether the child exited.
+    killer = _DeadlineKiller(proc, timeout) if sys.platform == "win32" else None
     try:
         try:
+            if killer is not None:
+                killer.start()
             out, err = _communicate_sliced(proc, timeout)
         except subprocess.TimeoutExpired:
-            kill_process_tree(proc)
+            if killer is None or not killer.stop():
+                kill_process_tree(proc)
             try:
                 out, err = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
             except subprocess.TimeoutExpired:
@@ -334,9 +397,13 @@ def _run_bounded(
                 _close_unowned_pipes(proc)
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
         except BaseException:
-            kill_process_tree(proc)
+            if killer is None or not killer.stop():
+                kill_process_tree(proc)
             _close_unowned_pipes(proc)
             raise
+        if killer is not None and killer.stop():
+            # The child was still running at the deadline and was killed.
+            raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
     finally:
         if feeder is not None:
             # Abandoned when an escaped descendant still holds the pipe unread.
@@ -391,7 +458,9 @@ def run_captured_bounded(
     Unlike ``subprocess.run(..., timeout=...)``, which kills only the direct
     child and (on Windows) then waits for the output pipes to reach EOF with no
     limit, this starts the child in its own process group, kills the whole tree
-    on timeout and abandons pipes a surviving descendant still holds.
+    on timeout and abandons pipes a surviving descendant still holds. As defense
+    in depth, a separate thread also kills a still-running child at the
+    deadline, in case the waiting thread stalls (#4323).
     *cwd* and *env* are the child's working directory and complete environment;
     ``None`` inherits the caller's.
 

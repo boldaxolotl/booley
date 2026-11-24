@@ -43,17 +43,20 @@ def test_project_commands_refuse_a_goals_section(
         err = capsys.readouterr().err
         assert "[goals] section (line 4)" in err, argv
         assert "delete the [goals] tables (lines 4-5)" in err, argv
-        assert "booley-heal" in err, argv
+        assert "type /booley-heal in a Developer Agent chat" in err, argv
 
 
-def test_doctor_and_upgrade_are_not_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_heal_route_is_not_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _project(tmp_path / "proj")
     reached: list[str] = []
     monkeypatch.setattr(
         cli, "_dispatch_selected", lambda _args, command, *_rest: reached.append(command) or 0
     )
-    for argv in (("doctor",), ("upgrade", "status", "--json")):
+    for argv in (
+        ("doctor",),
+        ("upgrade", "status", "--json"),
+        ("session", "enter", "--", "true"),
+        ("session", "prepare"),
+    ):
         assert _run(root, monkeypatch, *argv) == 0, argv
-    assert reached == ["doctor", "upgrade"]
+    assert reached == ["doctor", "upgrade", "session", "session"]

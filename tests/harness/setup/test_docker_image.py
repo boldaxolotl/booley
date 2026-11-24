@@ -20,7 +20,7 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import host_base_acquisition as owner
-from booley.runtime import interactive_docker
+from booley.runtime import host_docker
 from booley.runtime.docker_build import DockerBuildResult
 from booley.runtime.packaged_docs import MissingShippedDocError
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
@@ -259,7 +259,7 @@ def test_local_candidate_reports_runtime_base_inspect_failure(tmp_path, monkeypa
     # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
     # does not hide `docker` on Windows.
     monkeypatch.setattr(init_docker_image.subprocess, "run", docker_missing)
-    monkeypatch.setattr(interactive_docker, "_run_docker", docker_missing)
+    monkeypatch.setattr(host_docker, "_run_docker", docker_missing)
     monkeypatch.setattr(
         init_docker_image,
         "_docker_build_image",

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config.agent import AGENT_CLIS
+from booley.config.feature_flags import FeatureConfigError, enabled_features, feature_enabled
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
@@ -57,6 +58,8 @@ from booley.runtime.paths import cheatsheet_path
 
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from booley.harness.sandbox import DockerSandboxConfig
 
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
@@ -153,14 +156,26 @@ RETIRED_COMMAND_POINTERS = {
 }
 
 
-def command_locations() -> dict[str, CommandLocation]:
-    """Return human-facing commands in location order, then alphabetically."""
+# Command word -> the Feature Flag that hides it (ADR 0095). Empty in production.
+GATED_COMMANDS: dict[str, str] = {}
+
+
+def _gated_off(command: str, features: frozenset[str]) -> bool:
+    flag = GATED_COMMANDS.get(command)
+    return flag is not None and not feature_enabled(flag, features)
+
+
+def command_locations(features: frozenset[str] = frozenset()) -> dict[str, CommandLocation]:
+    """Return human-facing commands in location order, then alphabetically.
+
+    *features* is the enabled Feature Flag set; the default renders every flag off.
+    """
     return dict(
         sorted(
             (
                 (command, location)
                 for command, location in COMMAND_LOCATIONS.items()
-                if command not in _HIDDEN_COMMANDS
+                if command not in _HIDDEN_COMMANDS and not _gated_off(command, features)
             ),
             key=lambda item: (_COMMAND_LOCATION_ORDER[item[1]], item[0]),
         )
@@ -508,8 +523,11 @@ def _session_name(value: str) -> str:
     return name
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    """Build the CLI argument parser with subcommands + legacy flags."""
+def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentParser:
+    """Build the CLI argument parser with subcommands + legacy flags.
+
+    A command gated off by *features* is absent from help and parses as unknown.
+    """
     parser = argparse.ArgumentParser(
         prog="booley",
         usage="booley [options] <command> [args]",
@@ -526,7 +544,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # the grouped listing built by `_describe_commands`.
     sub = parser.add_subparsers(
         dest="command",
-        metavar=f"{{{','.join(command_locations())}}}",
+        metavar=f"{{{','.join(command_locations(features))}}}",
         help=argparse.SUPPRESS,  # The description lists commands by location instead.
         prog="booley",  # Not the custom usage: subcommand usage stays `booley <command>`.
     )
@@ -545,8 +563,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_utility_subparsers(sub)
     _add_dashboard_subparser(sub)
 
+    for command in GATED_COMMANDS:
+        if _gated_off(command, features):
+            sub.choices.pop(command, None)
+
     _install_project_options(parser)
-    _describe_commands(parser, sub)
+    _describe_commands(parser, sub, features)
 
     return parser
 
@@ -580,14 +602,16 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
 
 
 def _describe_commands(
-    parser: argparse.ArgumentParser, subparsers: argparse._SubParsersAction
+    parser: argparse.ArgumentParser,
+    subparsers: argparse._SubParsersAction,
+    features: frozenset[str],
 ) -> None:
     """Advertise public commands only, grouped under one header per location.
 
     Descriptions wrap under one shared column and are never cut: agents read
     this help through a pipe.
     """
-    locations = command_locations()
+    locations = command_locations(features)
     advertised = {action.dest: action for action in subparsers._choices_actions}
     subparsers._choices_actions[:] = [advertised[name] for name in locations]
     width = _help_width()
@@ -648,7 +672,8 @@ def _add_auth_subparser(sub) -> None:
         default=None,
         help=(
             "Agent CLI (credential changes default to claude; "
-            "status uses the Project's default CLI or both CLIs)"
+            "status reports this CLI only, else every Agent CLI the Project allows, "
+            "default first, or both outside a Project)"
         ),
     )
     # Historical spelling of --cli: same dest, so both parse identically.
@@ -798,7 +823,7 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--seed",
         action="store_true",
-        help="Seed only the Interactive Mode devcontainer for this folder/worktree "
+        help="Seed only the Sandbox devcontainer for this folder/worktree "
         "(no project scaffolding); run once per worktree",
     )
     init_p.add_argument(
@@ -925,7 +950,7 @@ def _add_measure_subparser(sub) -> None:
         "--again",
         action="store_true",
         help="Measure again even when the commit is already Measured; "
-        "otherwise its stored run is shown",
+        "otherwise, without --target, its stored run is shown",
     )
     parser.add_argument(
         "--target",
@@ -1277,10 +1302,25 @@ def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], li
     return argv[: command_index + 1] + tail[:own_end], agent_args
 
 
+def _parse_features() -> frozenset[str]:
+    """The ambient Project's enabled flags, or none when they cannot be read.
+
+    The parser exists before a Project is selected, so this only decides what help
+    shows and which command words parse; dispatch validates the selected Project.
+    """
+    from booley.core.booley_layout import BooleyLayoutError
+
+    try:
+        return enabled_features()
+    # FeatureConfigError and tomllib.TOMLDecodeError are ValueErrors; a pin error is a layout error.
+    except (BooleyLayoutError, OSError, ValueError):
+        return frozenset()
+
+
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
-    parser = _build_parser()
+    parser = _build_parser(_parse_features())
     argv = sys.argv[1:]
     command_index = _argv_command_index(argv, _global_options_parser())
     command = None if command_index is None else argv[command_index]
@@ -1381,7 +1421,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         text = _METRICS_BLOCK.sub(_METRICS_PLACEHOLDER, text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
-    # shows live registry/criteria tables). --all keeps the whole sheet.
+    # shows live registry tables). --all keeps the whole sheet.
     text = cheatsheet.select(
         text,
         []
@@ -1483,12 +1523,16 @@ def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
     raw = list(getattr(args, "exec_cmd", []) or [])
     if raw and raw[0] == "--":
         raw = raw[1:]
-    return sr.enter(
-        project_root,
-        raw or None,
-        tty=sys.stdin.isatty() and sys.stdout.isatty(),
-        cwd=getattr(args, "_session_cwd", None),
-    )
+    try:
+        return sr.enter(
+            project_root,
+            raw or None,
+            tty=sys.stdin.isatty() and sys.stdout.isatty(),
+            cwd=getattr(args, "_session_cwd", None),
+        )
+    except KeyboardInterrupt:
+        print("interrupted; session enter cancelled", file=sys.stderr)
+        raise _CancelledRun from None
 
 
 def _warn_standalone_jobs(sandbox: Sandbox | None) -> None:
@@ -1577,6 +1621,19 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
         return 2
 
 
+def _set_shell_memory_swap(docker_cfg: DockerSandboxConfig, swap: str) -> str | None:
+    """Set the shell container's ``--memory-swap``; return an error message when it cannot."""
+    from booley.audit.resource_policy import memory_swap_limit
+    from booley.runtime.project_image import DockerImageError, probe_docker_host_memory
+
+    try:
+        host = probe_docker_host_memory(docker_cfg.image)
+    except DockerImageError as exc:
+        return str(exc)
+    docker_cfg.memory_swap = memory_swap_limit(docker_cfg.memory_limit, swap, host.swap_bytes)
+    return None
+
+
 def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     """Open an interactive shell (or run a one-off command) in a fresh sandbox.
 
@@ -1589,7 +1646,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     if runtime_context.inside_session_runtime():
         print(
             "ERROR: `booley shell` cannot run inside the Booley container.\n\n"
-            "  The sandbox has no Docker access by design (ADR 0016), so it "
+            "  The sandbox has no Docker access by design, so it "
             "cannot spawn\n  another container. You are already inside a sandbox "
             "— just use this shell.\n"
             "  Run `booley shell` from a HOST terminal to get a fresh sandbox.",
@@ -1630,7 +1687,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         # Sandbox the same Flows and Specialists normally run in.
         memory_limit=cfg.sandbox.memory or "4g",
     )
-    error = docker_cfg.verify()
+    error = docker_cfg.verify() or _set_shell_memory_swap(docker_cfg, cfg.sandbox.swap)
     if error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -1760,7 +1817,7 @@ def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
 
 
 class _CancelledRun(KeyboardInterrupt):
-    """A Ctrl-C the Standalone Job runner already recorded as cancelled and reported."""
+    """A Ctrl-C the command already reported."""
 
 
 def _quiet_keyboard_interrupt(
@@ -1869,10 +1926,13 @@ def _target_detail_payload(
     project_root: Path, selector: str, *, as_json: bool
 ) -> TargetDetailPayload:
     """Resolve Target detail in-Sandbox, or return actionable host metadata."""
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.targets import target_surface
 
     inside_runtime = runtime_context.inside_session_runtime()
-    payload = target_surface.detail_payload(project_root, selector, resolve=inside_runtime)
+    payload = target_surface.detail_payload(
+        project_root, selector, resolve=inside_runtime, synth_tools=synth_target_tools
+    )
     if inside_runtime:
         return payload
     command = ["booley", "session", "enter", "--", "booley", "targets", selector]
@@ -1892,6 +1952,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """
     import json as _json
 
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.fusesoc import fusesoc_registry
     from booley.harness import targets_view
     from booley.targets import target_surface
@@ -1933,12 +1994,13 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    payload = target_surface.surface_payload(surface, project_root, synth_tools=synth_target_tools)
     if as_json:
-        print(_json.dumps(target_surface.surface_payload(surface, project_root), indent=2))
+        print(_json.dumps(payload, indent=2))
     elif nothing_authored:
         print("no .core Targets authored yet")
     else:
-        print(targets_view.render_listing(target_surface.surface_payload(surface, project_root)))
+        print(targets_view.render_listing(payload))
     return 0
 
 
@@ -2007,6 +2069,13 @@ def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
                 f"  {table_header(table.target, table.flow)} {len(table.bounds)} bounds, "
                 f"{len(table.tracked)} tracked"
             )
+        from booley.core.booley_dir import main_booley_dir_of
+        from booley.measurement.clock_prefixes import unreported_clock_warnings
+        from booley.measurement.run_store import MeasurementStore
+
+        store = MeasurementStore(main_booley_dir_of(project_root))
+        for warning in unreported_clock_warnings(rules.tables, store):
+            print(f"warning: {warning}", file=sys.stderr)
     return 0
 
 
@@ -2398,12 +2467,32 @@ def _dispatch_main() -> int:
     if binding is ProjectBinding.REQUIRED:
         assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
-    # Doctor reports the retired keys as a FAIL; upgrade is booley-heal's first step.
-    exempt = command in {"doctor", "upgrade"} or binding is ProjectBinding.INDEPENDENT
+    # Doctor reports retired config as a FAIL; upgrade, session and chat open the
+    # Developer Agent chat where booley-heal removes it. Flows and MCP tools refuse.
+    exempt = (
+        command in {"doctor", "upgrade", "session", "chat"}
+        or binding is ProjectBinding.INDEPENDENT
+    )
     if project_root is not None and not exempt:
         refuse_retired_config(project_root)
+    if project_root is not None and binding is not ProjectBinding.INDEPENDENT:
+        _refuse_gated_command(command, project_root)
 
     return _dispatch_selected(args, command, project_root, binding)
+
+
+def _refuse_gated_command(command: str, project_root: Path) -> None:
+    """Validate the selected Project's ``[features]`` and refuse a command it keeps off."""
+    if command in {"doctor", "init"}:
+        return  # Doctor reports an invalid table as a FAIL; init creates the Project.
+    try:
+        selected = enabled_features(project_root)
+    except FeatureConfigError:
+        raise
+    except ValueError:
+        return  # Unparsable booley.toml: the command's own loader reports it.
+    if _gated_off(command, selected):
+        _build_parser(selected).parse_args([command])  # argparse's own unknown-command exit
 
 
 def _dispatch_selected(
@@ -2489,6 +2578,7 @@ def main() -> int:
         EndpointConfigError,
         ProjectRequiredError,
         RetiredConfigError,
+        FeatureConfigError,
         SourceCheckoutProjectError,
         runtime_context.EgressModeError,
     ) as exc:

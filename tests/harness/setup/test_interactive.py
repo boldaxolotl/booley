@@ -1,4 +1,4 @@
-"""Tests for the Interactive Mode Project Initialization planning seam."""
+"""Tests for the Sandbox Project Initialization planning seam."""
 
 from __future__ import annotations
 

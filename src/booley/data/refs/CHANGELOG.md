@@ -9,244 +9,468 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
-- Booley no longer enforces any commit-message convention. `[stealth]
-  enforce_convention`, which required `type(scope): summary` subjects, is
-  retired: Booley ignores it, and you can delete it. Specialists commit with the message the
-  agent wrote, no longer rewritten into `type(scope): summary` form.
-  `BOOLEY_SKIP_COMMIT_VALIDATION=1` now skips only the `max_body_lines` cap.
-  Rerun `booley init` in each Stealth Project to install the new hook.
-- Mutation testing now generates Mutants deterministically and runs no LLM:
-- Stealth Mode now rejects a commit message that contains a banned term
-  instead of rewriting it with `redacted`. The commit-msg hook never changes the
-  message file: it lists each match, says where your message is kept, and gives
-  the `git commit -v -e -F "<path>"` retry (a rejected merge commit says how to
-  finish it). Comment lines and everything below the scissors line aren't
-  checked. `BOOLEY_SKIP_COMMIT_VALIDATION=1` no longer skips banned terms, only
-  the body-length check. A Specialist whose commit message has a
-  banned term now fails with the validation error instead of committing under
-  its default message. `cursor` and `ticket` left the default banned list; add
-  them to `banned_words` to keep them. Rerun `booley init` in each Stealth
-  Project to install the new hook
-  ([#3597](https://github.com/boldaxolotl/Booley/issues/3597)).
-- The Sandbox start step now registers Booley's MCP server and skills for every
-  allowed Agent CLI, not only the default: a Sandbox issued for `claude` and
-  `codex` serves both. A CLI whose registration is refused is reported as
-  `<cli>:refused` (the error line names the CLI) and no longer stops the others.
-  With `BOOLEY_AGENT_APP=auto`, every CLI with a credential is allowed, Claude
-  the default when both have one; `booley doctor` audits each
-  ([#2756](https://github.com/boldaxolotl/Booley/issues/2756)).
-- A traced `sim` run now registers each traced Target's waveform as B-Wave
-  session `@<target>` (its last Test Run that did not pass, else its last) and
-  the last Target's as the default session, so `bwave @<target> list` and a path-less
-  `bwave list` work without finding the trace file. Each checkout keeps its own
-  session store in its Booley Directory, so `@<target>` and the default session
-  belong to that checkout's latest traced run
-  ([#3483](https://github.com/boldaxolotl/Booley/issues/3483)); outside a
-  Project the store stays in the temporary directory. Sessions and markers
-  registered before the upgrade are not carried over. `bwave` without a trace
-  path or session now says to rerun the simulation with `--trace`.
-- The Mutation Tester now generates Mutants deterministically and runs no LLM:
-  the same RTL, `--count`, and the new `--seed` (default 0) give identical
-  Mutants. `--scope` is optional and defaults to the Target's own RTL. The
-  default pass threshold is 80 % of the count, rounded up, also for an
-  existing Goal without `min_detected` (it used to require every Mutant). Each Mutant's per-test timeout scales with the
-  baseline run (10 x, 30 s minimum, 300 s cap), and a timed-out Mutant counts
-  as detected and is reported as `detected (timeout)`. Results record scope
-  file hashes, generator and pyslang versions, seed, and count. `--steer` and
-  `--regen-lock` are removed, and the mutation lock is no longer used.
-  Mutation testing is now the Booley Flow `booley flow mutation` (same flags,
-  MCP tool `mutation`, plus the shared Flow options). `booley specialist
-  mutation_tester`, its MCP tool, and the `[models] mutation_tester` key are
-  removed: delete the key, and replace a `[specialists.mutation_tester]` table
-  with `[flows.mutation]` (`enabled`, `timeout_ms`). Reports move from
-  `mcp-tool-reports/` to `flow-reports/mutation/<N>/`. The `mutation_score`
-  criterion and `MUTATION:` Goals are unchanged.
+## 0.5.1 - 23 NOV 2026
 
-- The Dashboard top bar has a new **Run** item that starts a built-in Booley Flow
-  as a Standalone Job: choose the worktree, the Flow, and its arguments, check
-  the equivalent shell command, then submit or copy it. The Jobs window opens
-  with the new Job selected. The Dashboard is no longer read-only. The review
-  screen says whether the Job runs now or queues (with its position), refuses
-  Submit when the Job queue is full, warns about a connected session, running
-  Jobs, or uncommitted changes in the worktree, and shows the per-work-unit
-  timeout of synth and FPGA runs.
-  as a Standalone Job: choose the worktree and the Flow, fill in a form generated
-  from the Flow's options, check the equivalent shell command, then submit or
-  copy it. The Target and test fields pick from the worktree's compatible
-  Targets and the chosen Target's Test Runs. The Jobs window opens with the new
-  Job selected. The Dashboard is no longer read-only.
-- Job resource history keeps the newest 20 runs per Target, Job phase, flags,
-  and Test Run with no overall cap, and deletes a group that has had no run in
-  90 days. Peak memory now includes processes forked by any thread of a Job
-  command, and counts the Job's temporary files only when `TMPDIR` is on
-  tmpfs (they are still recorded as the temporary-file peak); earlier runs
-  keep their earlier peak.
-- A failed test function that a Cocotb Target without registered Tests discovered
-  now gets one `booley flow sim --target <name> --seed N` command that reruns the
-  whole batch, instead of a `--test=<name>@N` command that Booley refused with
-  exit 2.
-- `booley init` now records the default Agent CLI as `[agent] default` instead of
-  the older name `provider`, and the `--provider` conflict error names
-  `[agent] default`. An existing `provider` key is kept as written and still
-  works.
-- `booley resources` now keeps each Test Variant of a simulation apart
-  (`tests=first+slow`; the default Variant keeps the bare Test name, and the
-  seeds of one Variant share an entry). Flow runs that `booley doctor` starts
-  are no longer recorded, and each record stores the size of the Target's
-  source files when it is known.
-- The `sim` result card now names each Test Run that did not pass with its log
-  (`log:`) and, when it ran with `--trace`, its waveform (`waveform:`); a
-  `--trace` run lists its passing Test Runs with their waveform too.
-  `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace`
-  paths for every Test Run (`null` when absent), so nobody searches the
-  Campaign's work items for them.
-- A second `booley chat` while the main checkout is in use now starts in its
-  own worktree `s<N>` on branch `booley/s<N>`, named after the session handle,
-  and prints a line saying where it works. The first session and a lone
-  session run in the main checkout as before. `booley chat --new-worktree`
-  always uses a worktree, `booley chat --here` always uses the main checkout,
-  and `[worktree] chat = "auto" | "always" | "never"` sets the default
-  (`auto`). Run from inside an existing worktree, `booley chat` starts there.
-  A plain `claude` tab or VS Code panel does not hold the main checkout, so it
-  is noticed only on a best-effort basis.
-- New `booley coverage uncovered <coverage.json>` lists every uncovered scored
-  point of one retained coverage run as `source:line  metric  detail  hierarchy`,
-  sorted by source, line, and metric, with a summary count and the number of
-  waived points left out. `--metric` and `--source` narrow the list. It works
-  on the host and in the Sandbox, and the coverage guide uses it instead of the
-  `jq` recipes.
-- `booley flow sim --mode elab-only-standalone` now probes each module with the
-  simulator of the Targets that use it: Icarus for an Icarus Target, Verilator
-  for a Verilator Target, and both for a module shared by the two (a
-  mixed-simulator project can take up to twice as long). A parse error from the
-  Target's own compiler is now a design failure instead of "ungraded"; an
-  Icarus-only project is probed with Icarus even when Verilator is installed. The
-  `[flows.sim].standalone_frontend` key is retired: every Flow refuses to run
-  while it is set, so delete it.
-- A failed Simulation run of a Target without registered Tests is now listed as
-  `<default>` (`<default>@N` when seeded) in `simulation.json` and the "Test
-  Runs" lines, and its rerun command is `booley flow sim --target <name>
-  [--seed N]` instead of an unrunnable `--test=<name>@N`.
-- `[flows.sim].output_dir` is retired. It has had no effect; Doctor now warns
-  `config.flow-key-retired` while it is set. Delete it. `[flows.synth].output_dir`
-  is unchanged.
-- `booley init` now runs inside a hand-written Sandbox (such as a Codespace)
-  and performs Project Initialization only, so a spec can call it from
-  `onCreateCommand` on every create: guidance links, Dashboard task, Git
-  settings, and line endings, with no Docker or image work. It is idempotent
-  and exits 0 when nothing changes. A Booley-issued Sandbox still refuses it
-  and names the host command. The Dashboard attach refusal and Doctor hints
-  now say where to run `booley init`.
-- Stealth Mode is now off unless `.booley/booley.toml` sets
-  `[stealth] enabled = true`; a missing key means off. A fresh `booley init`
-  no longer hides `.booley/` or gives it its own repository before setup
-  records your choice; the booley-setup skill's hidden answer does both. A
-  Project set up earlier whose `booley.toml` has no `enabled` key has left
-  Stealth: commit messages are no longer checked and pushes are no longer
-  checked. `booley init` and Doctor warn `stealth.enabled-unset` while
-  `.booley/` is still excluded; add `enabled = true` to keep Stealth, or
-  `enabled = false` to confirm it is off. A `booley.toml` that can't be read
-  keeps Stealth on. Unattended setup now keeps `.booley/` in your repository
-  instead of hiding it.
-- String parameters now reach Verilator and Icarus through Edalize's own
-  quoting again, narrowing the 0.4.0 note that `str` and `file` vlogparams reach
-  them as strings. Plain values such as `MAC` work; values with quotes,
-  backslashes or whitespace, are not supported there. `default: ""` string
-  parameters are dropped by FuseSoC again in every flow: Yosys (slang) and sv2v
-  use the module's own HDL default for them, and the Vivado refusal does not
-  fire for them. Non-empty Yosys (slang), sv2v and Vivado behavior is unchanged.
-- `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the
-  host config, creating the file if needed and changing nothing else in it, then
-  bootstraps under that mode. `--check-only` reports the pending change without
-  writing it, and running Sandboxes still on the old mode are named with their
-  recreate steps.
-- A fresh Sandbox no longer shows Claude Code's auto-mode default nudge on the
-  first chat: registration marks it as seen (`hasSeenAutoDefaultNudge`), with or
-  without a credential, and keeps any value already in `~/.claude.json`.
-- `sim --trace` converts a declared `trace_files` VCD of any size; the 2 GiB
-  limit is gone. Post-run VCD-to-FST conversion now has its own
-  `[flows.sim].trace_convert_timeout_ms` budget (default `1800000`, 30 minutes)
-  on top of `timeout_ms`, so a simulation that passes near its timeout is no
-  longer reported as `timeout` while its waveform converts. A failed or
-  timed-out conversion reports a trace incident: a failing simulation stays
-  failed, a passing one is reported inconclusive, and neither is `timeout`.
-  Icarus no longer reports an unconverted raw VCD as a waveform.
-- A new IP now follows the same sequence as a port: `booley init`, then
-  `/booley-setup new` on the host. `/booley-setup new` asks the design choices
-  and writes the starter project with your answers, without prompting again. It
-  now also works after a completed plain `booley init`: it keeps the `[agent]`
-  settings, and unless you choose Stealth it removes an empty inner `.booley`
-  repository and `/.booley` git exclusion left by an older `booley init`, or
-  refuses (changing nothing) when that repository has commits. Plain `booley init` in a repo with no RTL now suggests
-  `/booley-setup new`.
-- `booley init --scaffold` now names Targets `<axis>_<ip>` (`sim_<ip>`,
-  `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`) with a matching `tests.toml` section.
-  Doctor notes a Target it runs (or one in a stealth core) named just `sim`,
-  `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`.
-- A Coverage Campaign whose stored rollups or pass/fail metric rows disagree
-  with its points now loads with values recomputed from the points instead of
-  failing. A forged pass/fail on a blocked or not-requested evaluation or one
-  that cannot be re-scored (no thresholds, invalid thresholds or a missing
-  rollup) is still refused (`COV_EVALUATION_MISMATCH`), as is an incomplete
-  collection (`COV_INCOMPLETE_EVALUATED`); an unknown threshold metric or
-  malformed or repeated metric rows are refused with the field codes. The
-  load no longer cross-checks collection state, selected tests against runs,
-  or native-format and unknown-record consistency; those fields load as stored.
-- `sim --trace` now converts a declared `trace_files` entry that is a literal
-  relative `.vcd` path inside the run directory while the test runs, so the
-  waveform is ready at run end and no VCD is left on disk. Other entries still
-  convert after the run. `bwave build` now fails on a VCD holding a second
-  header instead of merging the dumps.
-- Doctor now scans the per-Project Session stores on the host and fails when a
-  file is not named for the Project Root it holds, naming the file and its
-  repair. On Windows the stores now name a Project Root without regard to
-  case, so Sandbox issuance, pending refresh, and pending invalidation files
-  written by earlier releases are not migrated: each fails closed until it is
-  removed, naming the file. Remove it, then run
-  `booley init --seed --project <root>` on the host to reissue the Sandbox
-  spec. Linux and macOS file names do not change.
-- A Sandbox that Booley issues now accepts `[agent.auth] codex = "gateway"`. It
-  forwards the gateway settings from your shell for Codex only, and hides them
-  from Claude sessions. Start VS Code from a shell that exports them (see
-  "Codex through a model gateway" in `docs/user/SANDBOX.md`).
-- Booley no longer migrates Sandbox state from releases before 0.3.0. The
-  host-issued Sandbox spec stamp format version is bumped, so every spec issued
-  by an earlier release is rejected as stale. Stamps at the old
-  `eda/session-specs` location, specs that use the old registrar module or the
-  `--project-root` initialize command, and stamps without a Booley Directory
-  layout are rejected the same way. Doctor names the repair: run
-  `booley init --seed` on the host.
+### Bug fixes
 
-  Finish or recover any interrupted `booley session refresh` before upgrading,
-  because its journal cannot be resumed after the upgrade. If you already
-  upgraded, every lifecycle command fails closed naming the journal file:
-  remove it, then run `booley init --seed --project <root>` on the host.
+- Fixed the release workflow permission that blocked publication of the
+  0.5.0 Python package and the GitHub Release with its standalone B-Wave
+  binary. Use 0.5.1 for these downloads.
+  ([#5353](https://github.com/boldaxolotl/booley/pull/5353))
 
-  A Sandbox Image without the current provenance schema is stale and is rebuilt
-  or re-pulled.
+### Upgrade notes
 
-  `booley session prepare` now refuses, rather than stops and removes, a running
-  VS Code container whose Booley Directory mounts are outdated, including any
-  from before 0.3.0. Close VS Code, stop and remove that container, run
-  `booley init --seed`, then reopen the folder in the container.
-- The Session Runtime now uses Verilator v5.054 at source commit
-  `bbb60a403932a9f695cb6ff001ceb73de6ad9234`. Verilator 5.054 moved `if`/`else`
-  and `?:` branch points out of `--coverage-line` into the new
-  `--coverage-branch` switch; `booley flow sim --coverage` now passes both, so
-  `branch` points are still collected. A project that passes `--coverage-line`
-  in its own `verilator_options` must add `--coverage-branch` to keep them.
-  ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
-- The egress proxy and reaper sidecars now run on Python 3.15.2 and the reaper
-  on the Docker 29.9.3 CLI; Booley rebuilds both automatically. The FlexNet
-  relay image also builds on Python 3.15.2, but an existing
-  `booley-flexnet-relay:1` image is kept: remove it with
-  `docker image rm booley-flexnet-relay:1` and the next licensed session builds
-  it again.
+- If you are upgrading from 0.4.x, read the
+  [0.5.0 feature and upgrade notes](https://github.com/boldaxolotl/booley/blob/v0.5.0/CHANGELOG.md#050---22-nov-2026).
+- If your Project pins a 0.5.0 Sandbox Image, update the pin to 0.5.1
+  to match the Python package.
 
-- The RISC-V Sandbox Image moves Spike to upstream master `4094d290`, which adds
-  configurable LR/SC reservation-set size, a Zvt tile fix, and a batch of
-  CSR and PMP fixes (`stopei`, `mstateen0`, `scountovf`, mcontrol6 triggers).
-  ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
+## 0.5.0 - 22 NOV 2026
+
+### Major features
+
+- **Metric-Driven Development replaces Goal Mode.** You accept work by measuring commits against reusable Target Metrics. In `metrics.toml`, you define enforced bounds and tracked values for Lint, Simulation, Coverage, ASIC Synthesis, FPGA Implementation, and Mutation. Adoption is optional. The [Metric-Driven Development guide](https://booley.dev/docs/metric-driven-development/) covers the workflow. ([#3045](https://github.com/boldaxolotl/Booley/issues/3045), [#4136](https://github.com/boldaxolotl/Booley/issues/4136))
+  - `booley init` creates a starter `metrics.toml`.
+  - `booley cheat --metrics` lists the metrics a Project can declare.
+  - `booley measure --validate` checks the rules.
+  - `booley measure [<sha>]` measures a clean export of the commit and its pinned submodules. It uses the committed rules and runs the Project's post-setup hook. With no SHA, it measures HEAD and reports any uncommitted changes it left out.
+  - A full run exits 0 when all enforced bounds are met, 1 when a bound is unmet, and 2 when a metric could not be evaluated or there is nothing to measure. Use `--all` to evaluate every table, `--json` for machine-readable output, or `--target` for an unstored check of one Target. ([#3953](https://github.com/boldaxolotl/Booley/issues/3953), [#3955](https://github.com/boldaxolotl/Booley/issues/3955))
+  - A stored result follows the Git tree. This includes the Booley Directory's tree when that directory is versioned separately. A message-only amend keeps the result.
+    Use `--again` to remeasure or `--base` to select a different Base. Stored Base results add deltas, and the report flags changes to rules and tests. The measured commit's own rules decide the verdict. Local results are advisory. ([#3954](https://github.com/boldaxolotl/Booley/issues/3954))
+  - The Developer Agent can submit, poll, and cancel a Measurement Run with `booley_measure`. Dashboard Sessions shows the progress, the latest Measured Commit, and its report. For an unmet bound, the report can show the Lint findings or surviving Mutants behind it. ([#4134](https://github.com/boldaxolotl/Booley/issues/4134), [#3509](https://github.com/boldaxolotl/Booley/issues/3509), [#4947](https://github.com/boldaxolotl/Booley/issues/4947))
+- **Dashboard Run wizard.** You can start a built-in Booley Flow or Specialist as a Standalone Job. Open the wizard from the Dashboard's top bar or from a Target's detail. ([#2301](https://github.com/boldaxolotl/Booley/issues/2301), [#2303](https://github.com/boldaxolotl/Booley/issues/2303), [#2304](https://github.com/boldaxolotl/Booley/issues/2304), [#2305](https://github.com/boldaxolotl/Booley/issues/2305))
+  - Choose a worktree, fill in the arguments, and inspect the shell command before you submit.
+  - The form lists compatible Targets, Test Runs, or Coverage Records, as applicable.
+  - It shows whether the Job will queue. It warns about active work and uncommitted changes.
+  - After you submit, it opens the Job in the Jobs window.
+  - Reviewer launches show the model, Agent CLI, token use, and per-call timeout.
+- **Memory-based Job scheduling.** Flows, Specialists, and parallel Simulation tests reserve their estimated peak memory. ([#4065](https://github.com/boldaxolotl/Booley/issues/4065), [#4540](https://github.com/boldaxolotl/Booley/issues/4540))
+  - Booley learns the estimates from past runs. It adjusts reservations as phases finish.
+  - Jobs wait in an unbounded queue.
+  - The CLI, MCP, and Dashboard show what is holding a Job, such as memory, a Vivado seat, or an earlier Job.
+  - A run that hits the Sandbox memory limit can retry once by itself.
+  - If the host runs out of memory, Booley reports the cause and does not retry.
+- **Deterministic Mutation Flow.** `booley flow mutation` replaces the LLM-backed Mutation Tester. ([#2856](https://github.com/boldaxolotl/Booley/issues/2856), [#2936](https://github.com/boldaxolotl/Booley/issues/2936), [#4388](https://github.com/boldaxolotl/Booley/issues/4388))
+  - **Generation.** The Flow generates Mutants from the Target's elaborated RTL with a repeatable seed. The seed defaults to 0.
+  - **Sample size.** Set it with `--count`, or use `--count auto` to derive it from the scope and time budget.
+  - **Scope.** The scope defaults to the Target's own RTL.
+  - **Candidate replacement.** Booley replaces candidates that fail to build. On Verilator Targets, it also replaces Mutants whose generated simulator duplicates the baseline or a Mutant already kept. If candidates run short, the report shows how many were scored.
+  - **Pass criterion.** By default, a run passes when tests detect at least 80% of the scored Mutants, rounded up.
+  - **Timeouts.** A test timeout counts as detection. The limit is ten times that test's baseline duration, clamped to 30–300 seconds.
+  - **Metrics.** A `[<target>.mutation]` table in `metrics.toml` can measure `mutation_score`, `mutants_detected`, and `mutants_survived`.
+
+### Regular features
+
+#### Setup, Sandbox, and worktrees
+
+- **Agent CLI registration.** A Sandbox registers Booley's tools and skills for every allowed Agent CLI. If one CLI refuses registration, the error names that CLI and the others stay available. `booley auth --status` shows the Project's choices and the credential status for each CLI. ([#2756](https://github.com/boldaxolotl/Booley/issues/2756), [#4769](https://github.com/boldaxolotl/Booley/issues/4769))
+- **Worktree commands.** After a Sandbox mount change, Booley repairs worktree pointers. ([#3146](https://github.com/boldaxolotl/Booley/pull/3146), [#2611](https://github.com/boldaxolotl/Booley/issues/2611))
+  - `booley worktree list` shows worktrees and unmerged work.
+  - `booley worktree rm <name>` removes a worktree and keeps its branches.
+  - `booley worktree gc` removes idle worktrees that are safe to remove.
+- **Sandbox swap.** `[sandbox].swap` sets swap beyond the Sandbox memory limit. The default is one quarter of the limit, capped by available host swap. `swap = "0"` disables it.
+- **`booley init` in a hand-written Sandbox.** `booley init` now runs inside a hand-written Sandbox, such as a Codespace. There it performs Project Initialization only: guidance links, the Dashboard task, Git settings, and line endings. It does no Docker or image work.
+  - It is idempotent and exits 0 when nothing changes. A spec can call it from `onCreateCommand` on every create.
+  - A Booley-issued Sandbox still refuses it and names the host command.
+  - The Dashboard attach refusal and Doctor hints say where to run `booley init`.
+- **Egress mode.** `booley bootstrap --egress proxy|unproxied` records `[sandbox] egress` in the host config, then bootstraps under that mode. It creates the file if needed and changes nothing else in it.
+  - `--check-only` reports the pending change without writing it.
+  - Running Sandboxes still on the old mode are named, with their recreate steps.
+- **New IPs.** A new IP follows the same sequence as a port: `booley init`, then `/booley-setup new` on the host.
+  - `/booley-setup new` asks the design questions and writes the starter project from your answers. It does not prompt again.
+  - It works after a completed plain `booley init` and keeps the `[agent]` settings.
+  - Unless you choose Stealth, it removes an empty inner `.booley` repository and `/.booley` Git exclusion left by an older `booley init`. If that repository has commits, it refuses and changes nothing.
+  - Plain `booley init` in a repo with no RTL suggests `/booley-setup new`.
+- **Scaffold Target names.** `booley init --scaffold` names Targets `<axis>_<ip>` (`sim_<ip>`, `lint_<ip>`, `synth_<ip>`, `fpga_<ip>`), with a matching `tests.toml` section. Doctor notes any Target named just `sim`, `lint`, `synth`, or `fpga` and suggests `<axis>_<core name>`. This covers Targets Doctor runs and Targets in a stealth core.
+- **Default lint Targets.** Project Setup and `/booley-setup new` create two lint Targets by default: a Verilator lint Target with `-Wall` and a Verible style lint Target. You can decline either one in the plan. `booley init --scaffold --no-style-lint` skips the style Target. Existing Projects are unchanged. ([#4055](https://github.com/boldaxolotl/booley/issues/4055))
+- **Codex through a gateway.** A Booley-issued Sandbox accepts `[agent.auth] codex = "gateway"`. It forwards the gateway settings from your shell to Codex only and hides them from Claude sessions. Start VS Code from a shell that exports those settings. See "Codex through a model gateway" in `docs/user/SANDBOX.md`.
+- **Stealth branch names.** In Stealth Mode, `booley worktree new` and `booley chat` create the branch `wt/<name>` instead of `booley/<name>`. A session worktree uses `wt/s<N>`. ([#3608](https://github.com/boldaxolotl/booley/issues/3608))
+  - The pre-push hook blocks a push that creates or updates a remote branch or tag whose name contains a banned word from the `[stealth]` list. To push the branch anyway, use another name: `git push <remote> <local>:<new-name>`. Deleting such a ref is allowed.
+  - Existing worktrees keep their branches.
+  - If a branch already occupies `wt/<name>`, the error names it.
+  - Handle allocation skips any number taken under either prefix.
+  - Run `booley init` in each existing Stealth Project to update its vendored pre-push hook.
+- **Session labels.** `booley chat --name <label>` labels the session `S3 · <label>`. The label appears in the terminal tab, the Claude session name, and the Dashboard's session list, header, and worktree picker. A conversation resumed in its worktree keeps its label. A leading `--name` now belongs to Booley. To pass Claude's own option, use `booley chat -- --name <name>`. ([#3629](https://github.com/boldaxolotl/Booley/issues/3629))
+- **Chat worktrees.** A second `booley chat` while the main checkout is in use starts in its own worktree `s<N>` on branch `booley/s<N>`. It prints where it works.
+  - The first session, or a lone session, runs in the main checkout.
+  - `--new-worktree` always uses a worktree. `--here` always uses the main checkout.
+  - `[worktree] chat = "auto" | "always" | "never"` sets the default, which is `auto`.
+  - Run from inside a worktree, `booley chat` starts there.
+  - A plain `claude` tab or VS Code panel does not hold the main checkout. Booley detects it only on a best-effort basis.
+- **CRLF repair.** `booley init` converts CRLF checkouts to LF through Git and sets `core.eol=lf` unless it is already `lf`. ([#3799](https://github.com/boldaxolotl/booley/issues/3799))
+  - This fixes the repair on Git for Windows with `* text=auto`.
+  - Files that Git cannot re-create with LF are left as they are and listed. For example, a file that a Git filter changes on every checkout.
+  - A hard-linked file no longer blocks the repair.
+  - Init recognizes a folder that is not a Git repository when Git's messages are localized.
+- **Line-ending attributes.** `booley init` no longer adds, moves, or inspects a line-ending attributes rule, in or out of Stealth Mode. Line-ending safety relies on the repository-local `core.autocrlf=false` and `core.eol=lf` settings plus the CRLF repair. ([#3802](https://github.com/boldaxolotl/booley/issues/3802))
+  - Booley sets no commit-side policy. To have Git normalize CRLF on commit, add your own `.gitattributes`.
+  - A rule written by an earlier Booley stays in place and is no longer reported. To remove it:
+    1. Delete the `* text=auto eol=lf` line from the root `.gitattributes`, `.booley/.gitattributes`, or `.git/info/attributes`.
+    2. Delete the file if it is now empty.
+    3. Commit if the file is tracked.
+  - The Doctor checks `git.attributes-policy-unknown` and `git.line-ending-migration` are removed. Waivers for them now match nothing.
+  - `booley doctor` and `booley init` no longer warn `project.inputs-ignored` when Git ignores a root `.gitattributes` that holds that rule. ([#3804](https://github.com/boldaxolotl/booley/issues/3804))
+
+#### Simulation, Coverage, Synthesis, and B-Wave
+
+- **OpenROAD result reuse.** Physical ASIC Synthesis reuses OpenROAD results when the netlist, script, library, constraints, toolchain, and environment all match. `--no-cache` reruns OpenROAD. ([#2473](https://github.com/boldaxolotl/Booley/issues/2473))
+- **B-Wave sessions from traced runs.** A traced `sim` run registers each traced Target's waveform as B-Wave session `@<target>`. The session uses the Target's last Test Run that did not pass, or its last Test Run if all passed. The last Target becomes the default session. ([#3483](https://github.com/boldaxolotl/Booley/issues/3483))
+  - `bwave @<target> list` and a path-less `bwave list` work without locating the trace file.
+  - Each checkout keeps its own session store in its Booley Directory. Outside a Project, the store stays in the temporary directory.
+  - Sessions and markers from before the upgrade are not carried over.
+  - `bwave` with no trace path or session tells you to rerun the simulation with `--trace`.
+- **Uncovered points.** `booley coverage uncovered <coverage.json>` lists the uncovered scored points in a retained Coverage Record, with counts and locations.
+  - `--metric` accepts `line`, `branch`, `expression`, `toggle`, or `cover_property`.
+  - `--source` narrows the listing to one file.
+- **Trace conversion.** `sim --trace` converts a declared `trace_files` VCD of any size. The 2 GiB limit is gone.
+  - VCD-to-FST conversion has its own budget, `[flows.sim].trace_convert_timeout_ms`, in addition to `timeout_ms`. The default is `1800000` (30 minutes). A simulation that passes near its timeout is no longer reported as `timeout` while its waveform converts.
+  - A failed or timed-out conversion reports a trace incident. A failing simulation stays failed. A passing one is reported as inconclusive. Neither is reported as `timeout`.
+  - A literal relative `.vcd` path inside the run directory is converted while the test runs. No VCD is left on disk. Other entries still convert after the run.
+  - Icarus no longer reports an unconverted raw VCD as a waveform.
+  - `bwave build` fails on a VCD that holds a second header instead of merging the dumps.
+- **Expected loops and latches.** You can declare intentional combinational loops and latches in `booley.toml` with `[flows.synth].expected_comb_loops`, `[flows.fpga].expected_latches`, and `[flows.fpga].expected_comb_loops`. ([#3868](https://github.com/boldaxolotl/Booley/issues/3868), [#4866](https://github.com/boldaxolotl/Booley/issues/4866))
+  - Each is a non-negative integer that defaults to 0, like `[flows.synth].expected_latches`.
+  - Only the excess over the declared count fails the run. The report names the actual, expected, and excess counts.
+  - `[flows.synth].expected_comb_loops` also covers loop warnings. Within the declared count they are listed as notes, and the run can end `PASS`.
+- **Read-only simulator builds.** Simulation stores the simulator once per build and launches each test attempt from it read-only. Booley verifies the build before each launch and after the process exits. An attempt that finds a changed or extra file fails as an infrastructure error with no accepted result. ([#4161](https://github.com/boldaxolotl/Booley/issues/4161))
+- **Verilator build-reuse warnings.** Booley warns, naming the Target and the fix, when a Verilator Target's `make_options` defeats build reuse. ([#4231](https://github.com/boldaxolotl/Booley/issues/4231))
+  - Setting `OBJCACHE` turns off build reuse.
+  - Setting `USER_CPPFLAGS` with the compiler cache on makes builds with `-g` miss the cache.
+- **Malformed VCD warnings.** `bwave build` warns on stderr about malformed value-change lines, value changes for undeclared identifiers, and a final line with no newline. Each warning gives a count and the first byte offset. The build still exits 0 and stores what it could read. ([#5058](https://github.com/boldaxolotl/Booley/issues/5058))
+
+#### Sessions, Jobs, and resources
+
+- **Polling for any Job.** `booley_poll` without a Job ID waits for any of your Jobs. MCP tool responses list your unread completed Jobs.
+- **Resource history.** Job resource history keeps the newest 20 runs for each combination of Target, Job phase, flags, and Test Run. There is no overall cap. A group with no run in 90 days is deleted.
+  - Peak memory includes processes forked by any thread of a Job command.
+  - The Job's temporary files count toward peak memory only when `TMPDIR` is on tmpfs. They are always recorded as the temporary-file peak.
+  - Earlier runs keep the peak they recorded.
+- **`booley resources` changes.**
+  - Each Test Variant is listed separately, for example `tests=first+slow`. The default Variant keeps the bare Test name. Seeds of one Variant share an entry.
+  - Flow runs started by `booley doctor` are not recorded.
+  - Each record stores the size of the Target's source files when it is known.
+  - Each Specialist is listed, with the peak memory and run time of its Agent CLI processes over the newest 20 runs. ([#4067](https://github.com/boldaxolotl/Booley/issues/4067))
+- **Web dashboard.** `booley dashboard --web` serves a read-only page and JSON view of each worktree's Jobs, resource use, and admission state. It listens on `127.0.0.1:8090` by default. `--port` selects another port. ([#4223](https://github.com/boldaxolotl/Booley/issues/4223), [#4225](https://github.com/boldaxolotl/Booley/issues/4225))
+
+#### Reviewer
+
+- **Dry runs and guide names.** `booley specialist reviewer --dry-run` lists the review guides it would load. The result detail gives each guide's kind (`checklist` or `hunt`) and name. ([#4013](https://github.com/boldaxolotl/Booley/issues/4013))
+  - The packaged guides are renamed by kind, for example `bugs-checklist`, `spec-hunt`, and `hdl-checklist`.
+  - The spec guide's `Checklist` section is now `Trace targets`.
+- **Parallel checklist and hunt.** Several focuses now make two model calls in parallel: the existing checklist and a new scenario hunt. Each such review costs about twice as much in model time and tokens, and `--dry-run` lists both checks. Existing receipts for these focuses become stale once.
+  - **`bugs`.** The hunt traces reset, back-to-back, full and empty, and abort cases through the RTL. ([#4016](https://github.com/boldaxolotl/Booley/issues/4016))
+    - Findings at the same file, line, and kind are merged, and each finding records which pass found it.
+    - A failed call is retried once. If it fails again, the whole review fails.
+    - Editing a review guide makes existing receipts stale.
+  - **`protocol`.** The hunt traces interface transactions and clock/reset domain crossings, scenario by scenario. ([#4018](https://github.com/boldaxolotl/Booley/issues/4018))
+  - **`security`.** The hunt traces attacker-controlled inputs, debug and test access, resets, and error and fault paths. ([#4019](https://github.com/boldaxolotl/Booley/issues/4019))
+  - **`optimization`.** The hunt looks for the following. Findings at the same file, line, and kind are merged. ([#4020](https://github.com/boldaxolotl/Booley/issues/4020))
+    - redundant, oversized, and critical-path logic
+    - registers that could share storage
+    - dead logic that changes no behavior
+  - **Testbench `quality`.** The hunt looks for false passes. It follows the project's configured pass and fail messages and trace files. ([#4021](https://github.com/boldaxolotl/Booley/issues/4021))
+- **Guide content.** The bugs, optimization, protocol, security, and spec guides gained checks for patterns found in measured misses. ([#4022](https://github.com/boldaxolotl/Booley/issues/4022))
+  - The `bugs` guides now leave lint-reported checks to your lint Targets: width mismatch, undriven, latch, multi-driven, unnamed generate, `casex`, and unbalanced `ifdef`.
+  - The `bugs` guides judge `ifdef` code only in the configurations a Target builds.
+  - Long combinational chains moved to the `optimization` checklist. Its dead-RTL check now asks for functionally dead logic.
+  - The RTL style guide drops the ascending bit-range rule.
+  - Earlier receipts for these focuses become stale once. ([#4056](https://github.com/boldaxolotl/Booley/issues/4056))
+- **Rechecks and waivers.** `reviewer --recheck <evidence file>` revisits open findings. It reports which were fixed, which remain open, and which could not be verified. `--waive <finding ID> "<reason>"` with a recheck proposes a waiver. Accepted waivers are recorded and excluded from `--fail-on`. ([#4522](https://github.com/boldaxolotl/Booley/issues/4522), [#4523](https://github.com/boldaxolotl/Booley/issues/4523))
+
+### Quality of life
+
+#### Setup, Doctor, and the Sandbox
+
+- **Sandbox repair messages.** Sandbox remedy and repair messages name the steps from [Applying Sandbox changes](https://booley.dev/docs/sandbox/#applying-sandbox-changes) for the way you open the Sandbox, whether its container is running or stopped. ([#4182](https://github.com/boldaxolotl/Booley/issues/4182), [#4204](https://github.com/boldaxolotl/booley/issues/4204))
+  - A VS Code Sandbox is told to run `booley init` and use **Dev Containers: Rebuild Container**. It is never told to use `booley session refresh` or `booley init --force`.
+  - `upgrade.runtime-stale` says to recreate the Sandbox before `/booley-heal`.
+  - Inside the Sandbox, where the owner is unknown, messages name both the VS Code and the headless steps.
+  - `handles.map-size` names the smallest restart for each owner.
+  - A missing EDA binary message says plain `booley init`.
+- **MCP server check.** Sandbox-side `booley doctor` fails when the Booley MCP server is not serving. It shows the end of the server log and names the fix. When the check passes, it says to restart the Agent CLI if `booley` is missing from its MCP list. ([#4227](https://github.com/boldaxolotl/Booley/issues/4227))
+- **Custom endpoint warnings.** `booley doctor` warns for each custom endpoint file it skips, naming the file, the reason, and the fix. It no longer reports custom endpoints as validated while a file is skipped. ([#4230](https://github.com/boldaxolotl/Booley/issues/4230))
+- **Unresolved `.core` dependencies.** Doctor, Flow setup failures, and `booley targets` name a `depend:` that no Project `.core` provides. They give two fixes: copy the dependency into the repository as a `.core`, or drop the `depend:`. Doctor's other `.core` resolution failures name the `.core` file. ([#4242](https://github.com/boldaxolotl/Booley/issues/4242))
+- **`.core` security findings.** These findings name the `.core` change that clears them. ([#4493](https://github.com/boldaxolotl/Booley/issues/4493))
+- **Disabled Specialists and Flows.** Doctor notes which Specialists and custom Flows `booley.toml` disables. ([#3649](https://github.com/boldaxolotl/Booley/issues/3649))
+- **Stale image detection.** Host `booley doctor` runs the `booley init --check-only` provenance check. It warns `sandbox.image-stale` with the reason and the steps to apply the settings, for example after a `[sandbox].pip_requirements` edit. It says when the check could not run. ([#4867](https://github.com/boldaxolotl/Booley/issues/4867))
+- **Git credential helpers.** In-Sandbox Doctor warns `sandbox.git-credential-helper` when the system or global gitconfig sets a Git credential helper, such as the one VS Code adds. The warning names each helper and its file and says how to remove it. ([#4850](https://github.com/boldaxolotl/Booley/issues/4850))
+- **Memory drift.** In-Sandbox Doctor warns `sandbox.memory-drift` when `[sandbox].memory` was edited but the Sandbox was not recreated. The warning shows both values and the recreate steps. ([#4853](https://github.com/boldaxolotl/booley/issues/4853))
+- **Stale stamps.** Host Doctor notes Sandbox issuance stamps of deleted, forgotten Projects. It names `booley projects prune-stamps <root>...`, which removes only those stamps and their pending start claims and keeps images and state volumes. Another Project's Sandbox running with a different egress mode, and another Project's unusable stamp file, are notes rather than warnings or failures. ([#4863](https://github.com/boldaxolotl/Booley/issues/4863))
+- **Auth policy messages.** `booley auth` says whether the Project's auth policy uses the stored credential. When it does not, it names `[agent.auth] <cli>` and `booley session refresh`. ([#4786](https://github.com/boldaxolotl/Booley/issues/4786))
+- **Doctor no longer repairs links.** Doctor no longer recreates the root `AGENTS.md` and `CLAUDE.md` links or refreshes stealth core projections. It reports them and names `booley init`. While projections are stale, it skips the Flow dry-runs, the `.core` audit, and the deep checks. ([#5128](https://github.com/boldaxolotl/Booley/issues/5128))
+- **Stealth core copies.** ([#5252](https://github.com/boldaxolotl/Booley/issues/5252), [#5290](https://github.com/boldaxolotl/Booley/issues/5290))
+  - Missing or stale root copies of `.booley/cores/` cores now produce a warning, `stealth.projections-not-current`, instead of a failure. Any Flow run refreshes them.
+  - A foreign file at a copy's path, an unreadable core, or a missing Git exclusion still fails.
+  - A copy that outlived its deleted core is reported separately, with a hint to delete the file.
+- **Pending Sandbox recovery.** Host Doctor no longer completes interrupted Sandbox recovery for every Project. It warns `host.sandbox-recovery-pending`, skips the checks that need the Sandbox, and leaves recovery to `booley session up`. ([#5253](https://github.com/boldaxolotl/Booley/issues/5253))
+- **Retired Interactive Mode names.** These outputs no longer mention the retired Interactive Mode. ([#4546](https://github.com/boldaxolotl/Booley/issues/4546))
+  - Doctor's "Interactive Mode checks" section is now "Sandbox setup checks".
+  - `booley init` heads its Sandbox step "Sandbox (Reopen in Container)".
+  - `booley init --seed` prints "Seeding the Sandbox for <path>".
+- **Refused-model error.** A refused model's error no longer mentions Goal Mode. ([#4742](https://github.com/boldaxolotl/Booley/issues/4742))
+- **Coverage paths outside the artifact root.** Coverage collection reports `COV_RAW_FILE_UNSAFE` or `COV_NATIVE_MERGE_UNSAFE`, and does not read the file, when a raw native database or merge output is outside the coverage artifact root or is not a regular file.
+
+#### Sessions and Jobs
+
+- **Unknown session activity.** A Dashboard session with unknown activity says why: there is no report yet, there has been no event for 2 h, or the report is timed ahead of the Sandbox clock. ([#4241](https://github.com/boldaxolotl/booley/issues/4241))
+- **Dashboard did not open on attach.** VS Code shows a notification once per window with the reason. Possible reasons are:
+  - automatic tasks are off
+  - the window is untrusted
+  - more than one folder is open
+  - the folder has no Git Project Root
+- **Unwritable `--report-dir`.** Booley refuses a `--report-dir` it cannot create or write before the run starts. A report write that fails at the end of a run prints its `Completion failure` line once. ([#4763](https://github.com/boldaxolotl/Booley/issues/4763))
+
+#### Simulation, Coverage, Synthesis, and B-Wave
+
+- **Trace warnings in results.** The warnings that `bwave build` printed while converting a traced run's waveform appear under the card's `waveform:` line and in the Simulation diagnostics. ([#5059](https://github.com/boldaxolotl/Booley/issues/5059))
+- **Fallback to a declared waveform.** When a run falls back to a declared `trace_files` waveform, it prints one `[trace] note` pointing at `trace.fst.stderr`. ([#5316](https://github.com/boldaxolotl/Booley/issues/5316))
+- **Synthesis failure reasons.** A failed ASIC Synthesis run lists its cause in `implementation.status.failure_reasons`, and the Job result view shows it as a "Failure reason" row. A fatal timing violation is listed beside it. A failed run's status, RESULT line, and log show the tool's `ERROR:` line. ([#4899](https://github.com/boldaxolotl/Booley/issues/4899), [#4897](https://github.com/boldaxolotl/Booley/issues/4897))
+- **Synth Target detail.** `booley targets` and `booley_targets` show each synth Target's mode, RTL frontend, and EDA tools. ([#4856](https://github.com/boldaxolotl/Booley/issues/4856))
+- **Lint output.** `booley flow lint` names the linter on a failed Target's line and on the `RESULT` line. It echoes Verible findings in Verible's own format. ([#4906](https://github.com/boldaxolotl/Booley/issues/4906))
+- **Coverage Analyst output.** A manual `booley specialist coverage_analyst` run prints its hypotheses, recommendations, and limitations, then the saved report path. ([#4758](https://github.com/boldaxolotl/Booley/issues/4758))
+- **B-Wave diagnostics.**
+  - Unloadable stores name the cause and how to rebuild. A truncated store, or an FST with trailing bytes, now fails to load with exit 1 instead of returning empty data. ([#3648](https://github.com/boldaxolotl/Booley/issues/3648))
+  - B-Wave warns when a value literal needs more bits than its width prefix or the signal it is compared with. A hex value such as `'h100` no longer also matches its digits read as binary. ([#4698](https://github.com/boldaxolotl/Booley/issues/4698))
+  - A store with no usable clock gives one `no usable clock` warning that suggests `--clock PATTERN` or `--async`. The `# clock:` header says how the clock was chosen. ([#4699](https://github.com/boldaxolotl/Booley/issues/4699))
+  - Queries warn when their time window lies outside the trace. ([#4747](https://github.com/boldaxolotl/Booley/issues/4747))
+  - `find` with no matches explains why. `find` and `sample` say when `rising` or `falling` met multi-bit signals only. ([#4748](https://github.com/boldaxolotl/booley/issues/4748), [#4903](https://github.com/boldaxolotl/booley/issues/4903))
+  - `bwave markers set` refuses a name that is a time token (`5c`, `10ns`) or contains `:`. ([#4735](https://github.com/boldaxolotl/Booley/issues/4735))
+  - A bit range or index such as `qa.data[5:4]` selects those bits in every command. An out-of-range or reversed range, or a slice passed to `--clock`, `--reset`, or `bwave gui`, exits 2. ([#4898](https://github.com/boldaxolotl/Booley/issues/4898))
+
+#### Documentation
+
+- The CLI reference is now an index of commands that shows where each runs and which guide explains it. The Worktrees guide ships at `/booley-docs/WORKTREES.md`. ([#4910](https://github.com/boldaxolotl/Booley/issues/4910))
+- The [Sandbox guide](https://booley.dev/docs/sandbox/) is rewritten around concrete steps: what to run after changing settings, after upgrading, and with a self-managed image.
+- The Reviewer has its own page.
+- B-Wave docs were rewritten. The `--format json` contract now lives only in `bwave schema`.
+- `FLOW_REPORTS.md` names the Simulation Record and Coverage Record directories and schema IDs.
+- Troubleshooting now covers only problems Booley cannot report by itself.
+
+### Bug fixes
+
+#### Simulation and Coverage
+
+- **Rerun commands and missing tests.**
+  - A failed run of a Target without registered Tests is listed as `<default>`, or `<default>@N` when seeded. Its rerun command is `booley flow sim --target <name> [--seed N]`.
+  - A focused Cocotb run whose test ID matches no test now says so. ([#4847](https://github.com/boldaxolotl/booley/issues/4847))
+  - Self-skipped tests show their skip message. ([#4848](https://github.com/boldaxolotl/booley/issues/4848))
+  - A cocotb 2.x module import failure is named. ([#4854](https://github.com/boldaxolotl/Booley/issues/4854))
+- **Log and waveform paths.** The `sim` card names each Test Run that did not pass, with its `log:` and, for traced runs, its `waveform:`. `simulation.json` `tests[]` rows and the MCP result carry `log` and `trace` paths for every Test Run, `null` when absent.
+- **String parameters.** String parameters reach Verilator and Icarus through Edalize's own quoting again. Values with quotes, backslashes, or whitespace are not supported there. FuseSoC drops `default: ""` string parameters again in every flow.
+- **Coverage Record loading.** A Coverage Record whose rollups disagree with its points loads with recomputed values. Forged or unscorable evaluations are still refused with `COV_EVALUATION_MISMATCH`. Incomplete collections are refused with `COV_INCOMPLETE_EVALUATED`.
+- **Coverage hook errors.** Hook errors are reported instead of `COV_RAW_FILE_MISSING` or `COV_RAW_FILE_STALE`. The errors name the Target and `flow_options.booley.coverage.custom_main_hooks`. ([#4745](https://github.com/boldaxolotl/Booley/issues/4745), [#4927](https://github.com/boldaxolotl/Booley/issues/4927))
+- **Shared builds.** Many Test Runs sharing one build no longer each set up the build. A Test Run waiting for a build waits up to `build_timeout_ms`. ([#4843](https://github.com/boldaxolotl/Booley/issues/4843))
+- **Multi-Target coverage.** A finished Target's Coverage Record is readable while other Targets still run. A Target whose results were not saved is no longer reported as finished. ([#4923](https://github.com/boldaxolotl/Booley/issues/4923))
+- **Missing waiver directory.** A missing `[coverage.waivers]` directory no longer blocks coverage. ([#4925](https://github.com/boldaxolotl/Booley/issues/4925))
+- **Pre-Sim Commands.** Out-of-memory Pre-Sim Commands are reported. At the Sandbox limit, only the affected test may retry. ([#4884](https://github.com/boldaxolotl/Booley/issues/4884))
+- **Cleanup after cancelled runs.** The next Simulation run or Job recovery removes leftovers from a cancelled or killed run. Booley never overwrites or deletes a file of yours at one of these paths. ([#4233](https://github.com/boldaxolotl/Booley/issues/4233), [#5097](https://github.com/boldaxolotl/Booley/issues/5097), [#5181](https://github.com/boldaxolotl/Booley/issues/5181), [#5235](https://github.com/boldaxolotl/Booley/issues/5235), [#5237](https://github.com/boldaxolotl/Booley/issues/5237), [#5239](https://github.com/boldaxolotl/Booley/issues/5239))
+  - Booley-created trace pipes
+  - staged `copyto:` inputs
+  - overlay cores and dump modules
+  - partially created templated run directories
+- **Old builds.** Each Target keeps only its latest reusable build under `.booley/.runtime/edalize/sim`. ([#4926](https://github.com/boldaxolotl/Booley/issues/4926))
+- **Project paths in messages.** Build errors in Lint, Synthesis, FPGA, and Simulation messages now quote Project paths instead of FuseSoC build-tree copies. ([#4994](https://github.com/boldaxolotl/Booley/issues/4994)–[#4997](https://github.com/boldaxolotl/Booley/issues/4997))
+- **Dry runs match real runs.** `--dry-run` and plain `booley doctor` now fail like the real run in these cases. ([#5091](https://github.com/boldaxolotl/Booley/issues/5091), [#5092](https://github.com/boldaxolotl/Booley/issues/5092), [#5093](https://github.com/boldaxolotl/Booley/issues/5093))
+  - a missing or invalid `[flows.sim].run_cwd`
+  - a lint `toplevel` that no fileset declares
+  - retired `[flows.synth.timing]` keys
+- **Coverage Analyst in Stealth Mode.** The Coverage Analyst reads sources in Stealth Mode and can propose Waiver Candidates. ([#5119](https://github.com/boldaxolotl/Booley/issues/5119))
+- **Baseline checkouts.** A Flow's `--baseline` checkout runs the post-setup hook. ([#4729](https://github.com/boldaxolotl/Booley/issues/4729))
+
+#### Synthesis, FPGA, and Lint
+
+- **Combinational loops.** ASIC synthesis now fails when a combinational loop survives optimization. The loop is counted before technology mapping. ([#3674](https://github.com/boldaxolotl/booley/issues/3674))
+- **Frontend warnings.** Yosys frontend warnings count in `total_warnings` under category `frontend` and never cause `WARN`. ([#3672](https://github.com/boldaxolotl/booley/issues/3672))
+- **`--abc-delay-ps`.** `--abc-delay-ps` (`advanced_settings_yosys.abc_delay_ps`) now applies under every profile. A custom `--abc-script` uses it only where the script contains `{D}`. ([#4023](https://github.com/boldaxolotl/Booley/issues/4023))
+- **`max_frequency` profile.** `max_frequency` now maps like `balanced`. In physical mode, it runs stronger OpenROAD setup repair at 40% utilization and 0.70 density. ([#4024](https://github.com/boldaxolotl/Booley/issues/4024))
+  - Results of Targets that use it change. In logical mode they equal `balanced`.
+  - The recipe fingerprint now covers the effective Yosys and OpenROAD settings. Every synthesis fingerprint changes once, so stored baselines report a recipe change.
+- **Physical `cell_count`.** In physical mode, `cell_count` is the post-repair placed instance count. Reports add `cell_count_source` (`openroad_post_optimization` or `yosys_mapped`). Physical counts may differ from earlier releases. `--baseline` deltas stay like-for-like. ([#4844](https://github.com/boldaxolotl/Booley/issues/4844))
+- **Fmax and critical path.** These now come from the clocks of the worst path. A cross-clock path reports slack without an Fmax. ([#4861](https://github.com/boldaxolotl/Booley/issues/4861))
+- **FPGA source selection.** The fpga Flow selects Vivado sources by declared `file_type` rather than file name, and keeps `.core` order.
+- **FPGA output.** `booley flow fpga` names the baseline error and the comparison message in `RESULT:`. It prints its verdict on stdout when stdout is not a terminal. ([#4166](https://github.com/boldaxolotl/booley/issues/4166), [#4167](https://github.com/boldaxolotl/Booley/issues/4167))
+- **Deep checks.** `booley doctor --deep` runs the FPGA Flow on Targets marked for Doctor FPGA. ([#4219](https://github.com/boldaxolotl/Booley/issues/4219))
+- **Dry-run temporary directories.** Killed synth and fpga dry runs no longer leave hidden plan directories in the Project Root. ([#5236](https://github.com/boldaxolotl/Booley/issues/5236))
+- **`output_dir` type check.** A non-string `[flows.synth].output_dir` is rejected. ([#3807](https://github.com/boldaxolotl/Booley/issues/3807))
+
+#### Setup, Sandbox, and Windows
+
+- **Docker and Git hangs.** Docker and Git commands no longer hang past their timeouts, notably on Windows. The whole process tree is stopped. Sandbox listings give up after about 30 seconds. ([#3858](https://github.com/boldaxolotl/Booley/issues/3858)–[#3862](https://github.com/boldaxolotl/booley/issues/3862))
+- **Session stores on Windows.** On Windows, session store names ignore Project Root case. Issuance, pending refresh, and pending invalidation files from earlier releases are not migrated and fail closed. To recover:
+  1. Remove the file named in the error.
+  2. Run `booley init --seed --project <root>` on the host.
+  - For a pending invalidation file, first run the Docker commands the error names. ([#4240](https://github.com/boldaxolotl/Booley/issues/4240))
+- **`booley projects forget`.** It now withdraws the Project's issuance stamp and its pending VS Code start claim. It prints the exact `booley eda grant revoke` command when a Grant blocks it. ([#3937](https://github.com/boldaxolotl/Booley/issues/3937), [#4239](https://github.com/boldaxolotl/Booley/issues/4239))
+- **VS Code extension checks.** Doctor's VS Code extension checks read only roots with a live extension host. ([#4263](https://github.com/boldaxolotl/Booley/issues/4263))
+- **Duplicate Target names.** `booley targets <core>#<name>` no longer shows another core's data. ([#4859](https://github.com/boldaxolotl/Booley/issues/4859))
+- **Non-UTF-8 `.core` files.** These are reported as unreadable instead of crashing Doctor or Flows. ([#5287](https://github.com/boldaxolotl/Booley/issues/5287))
+- **Claude auto-mode nudge.** A fresh Sandbox no longer shows Claude Code's auto-mode nudge.
+- **Default directories without a `.core`.** The default RTL and testbench directories are `rtl/` and `tb/` only. ([#4052](https://github.com/boldaxolotl/Booley/issues/4052))
+
+#### Dashboard, Jobs, and worktrees
+
+- **Ctrl-C.** `booley flow` and `booley specialist` print `interrupted; run cancelled`, exit 130, and record the Job as cancelled. Ctrl-C in `booley session enter` prints one line. ([#3939](https://github.com/boldaxolotl/Booley/issues/3939), [#4731](https://github.com/boldaxolotl/Booley/issues/4731))
+- **Recovered executions and records.** A late update can no longer replace a recovered execution's terminal record. Simulation Record files appear under their final names only when complete. ([#4213](https://github.com/boldaxolotl/Booley/issues/4213))
+- **Removed checkouts.** A Flow whose checkout is removed during the run fails with `<flow> failed: checkout <path> was removed during the run`. ([#4787](https://github.com/boldaxolotl/Booley/issues/4787))
+- **`booley worktree new`.**
+  - From a Paired Checkout, it refuses. ([#4741](https://github.com/boldaxolotl/Booley/issues/4741))
+  - The new Snapshot carries an uncommitted `[coverage.waivers]` directory when its `anchor` is `project_data_repository`. ([#4904](https://github.com/boldaxolotl/Booley/issues/4904))
+- **Dashboard focus and conflicts.** In a Codespace, the Dashboard comes to the front after Trust and after a reconnect. When the Dashboard is open elsewhere, Booley says where. ([#5115](https://github.com/boldaxolotl/Booley/issues/5115), [#5116](https://github.com/boldaxolotl/Booley/issues/5116))
+- **Resource history outcomes.** Each run's outcome follows the Flow's result. FuseSoC setup is counted once. Lint, synth, and fpga setups are recorded as `lint_prepare`, `synth_prepare`, and `fpga_prepare`. ([#4538](https://github.com/boldaxolotl/Booley/issues/4538), [#4963](https://github.com/boldaxolotl/Booley/issues/4963), [#4964](https://github.com/boldaxolotl/Booley/issues/4964), [#5021](https://github.com/boldaxolotl/Booley/issues/5021))
+- **Stealth projection temporaries.** Killed Stealth projections no longer leave `..booley-projected-*` temporary files. ([#5238](https://github.com/boldaxolotl/Booley/issues/5238))
+
+#### B-Wave
+
+- **Malformed literals.** Malformed value literals exit 2 with an error naming the literal. ([#4703](https://github.com/boldaxolotl/Booley/issues/4703))
+- **Sync cycle 0.** Sync cycle 0 reads the tick before reset deasserts. ([#4739](https://github.com/boldaxolotl/Booley/issues/4739))
+- **Reset that starts inactive.** For a reset that begins inactive, sync queries start after its first pulse. Cycle numbers move for such traces. ([#4902](https://github.com/boldaxolotl/Booley/issues/4902))
+- **Markers in options.** Markers in `--before`, `--after`, `--time`, and `value --at`, including `=` spellings, resolve like cycles. ([#4762](https://github.com/boldaxolotl/Booley/issues/4762))
+- **`stats` cycle counts.** `stats` counts the same cycles as `wave`. ([#4764](https://github.com/boldaxolotl/Booley/issues/4764))
+- **`find` windows.** `find` honors windows on clockless stores and in `--async`. ([#4773](https://github.com/boldaxolotl/booley/issues/4773))
+- **Fractional nanoseconds.** Text output keeps fractional nanoseconds. ([#4858](https://github.com/boldaxolotl/Booley/issues/4858))
+
+#### Reviewer and agents
+
+- **Tool allow and deny lists.** Claude-backed agents now apply their tool lists. `WebFetch` and `WebSearch` are denied for every agent. The Reviewer has no write or shell tools. Under `bypassPermissions`, the allow list remains advisory.
+- **Firmware files.** The Reviewer no longer special-cases `fw/`. A `fw/` source is RTL only when the RTL fileset lists it.
+
+### Internal work
+
+- Release validation and public QA exercise the Measurement Run on the PicoRV32 demo, including a pinned Git submodule. QA missions cover the 0.5.0 major features. ([#3510](https://github.com/boldaxolotl/Booley/issues/3510), [#3894](https://github.com/boldaxolotl/Booley/issues/3894))
+- CI runs focused checks on main pushes and the full suite nightly. The merge queue splits failed batches. ([#3104](https://github.com/boldaxolotl/Booley/pull/3104), [#3125](https://github.com/boldaxolotl/Booley/pull/3125))
+- Pending changelog changes live in fragments that release preparation assembles. ([#3594](https://github.com/boldaxolotl/Booley/issues/3594))
+
+### Upgrade notes
+
+#### Before you upgrade
+
+- **Finish or discard interrupted Simulation runs.** Booley 0.5.0 refuses Simulation and Coverage Records written by 0.4.0 and earlier. Start a fresh run after upgrading. Save any old reports you still need.
+- **Finish interrupted Sandbox refreshes.** If a `booley session refresh` was interrupted, run `booley session up` or `booley session down` in that Project with the old Booley first. ([#3644](https://github.com/boldaxolotl/Booley/issues/3644))
+
+#### Configuration changes
+
+- **Goal Mode is removed.** Remove `[goals]` from `booley.toml`, or run `/booley-heal`. ([#3511](https://github.com/boldaxolotl/Booley/issues/3511), [#4303](https://github.com/boldaxolotl/Booley/issues/4303))
+  - Booley ignores `goals/`, `goalsets/`, and `criteria.toml`. Save any records you need before you remove them.
+  - `booley goal`, the Goal tools, the Dashboard Goal views, the `booley-goal` skill, and `booley cheat --goals` are gone.
+  - A historical commit with `[goals]` can still be measured.
+- **Job limits move to `[sandbox].memory`.** Remove `max_heavy`, `heavy_memory`, `max_light`, `queue_max`, and `memory_budget` from `[jobs]`, or run `/booley-heal`. ([#3247](https://github.com/boldaxolotl/Booley/issues/3247), [#4066](https://github.com/boldaxolotl/Booley/issues/4066), [#4069](https://github.com/boldaxolotl/Booley/issues/4069), [#4116](https://github.com/boldaxolotl/Booley/issues/4116))
+  - Booley subtracts its measured reserve from the Sandbox memory limit. Without a limit, it uses installed memory.
+  - If you run Vivado, add `vivado = <seats>` under `[jobs.seats]`.
+- **Record Agent CLI auth explicitly.** Run `booley init`, or replace `[agent] auth = "auto"` and any per-CLI `auto` entries with `subscription` or `api_key`. Doctor flags missing or retired values. ([#4078](https://github.com/boldaxolotl/Booley/issues/4078), [#4080](https://github.com/boldaxolotl/Booley/issues/4080), [#5264](https://github.com/boldaxolotl/Booley/issues/5264))
+  - Refresh a Sandbox issued under the previous policy. A refresh from `auto` to `subscription` keeps the Sandbox login, transcripts, and plans.
+  - In a hand-written Sandbox, such as a Codespace, record `auth = "visitor"`. It uses the visitor's sign-in or exported credential, with the spec's gateway as fallback.
+  - Missing auth resolves to `subscription`.
+  - Host `booley init` replaces `visitor` with the detected host policy.
+- **Mutation settings.** ([#2936](https://github.com/boldaxolotl/Booley/issues/2936))
+  - Use `booley flow mutation` and the `mutation` MCP tool instead of `mutation_tester`.
+  - Move `[specialists.mutation_tester]` settings to `[flows.mutation]`.
+  - Delete `[models] mutation_tester`.
+  - Remove `--steer` and `--regen-lock` from scripts.
+  - Reports now live under `flow-reports/mutation/<N>/`.
+- **Stealth Mode must be enabled explicitly.** Set `[stealth] enabled = true` to keep Stealth Mode. It defaults to off, even in an existing Project with no `enabled` key. ([#3597](https://github.com/boldaxolotl/Booley/issues/3597))
+  - Delete `enforce_convention` from `[stealth]`.
+  - Rerun `booley init` in each Stealth Project to install the updated commit and pre-push hooks.
+  - The updated commit hook rejects a banned term and keeps the message so you can edit and retry.
+  - `BOOLEY_SKIP_COMMIT_VALIDATION=1` skips only the body-length cap.
+  - Add `cursor` or `ticket` to `banned_words` if you still need to block either word.
+- **`[chat].worktree` moves to `[worktree].chat`.** The values remain `"auto"`, `"always"`, and `"never"`. ([#4071](https://github.com/boldaxolotl/Booley/issues/4071))
+- **Default Agent CLI key.** `booley init` writes `[agent] default` instead of `provider`. An existing `provider` key is kept and still works.
+- **`[flows.sim].standalone_frontend` is retired.** Every Flow refuses to run while it is set. Delete it.
+  - `--mode elab-only-standalone` now probes each module with the simulator of the Targets that use it. A mixed-simulator project can take up to twice as long.
+  - A parse error from the Target's own compiler is now a design failure.
+- **`[flows.sim].output_dir` is retired.** Doctor warns `config.flow-key-retired`. Delete it. `[flows.synth].output_dir` is unchanged.
+- **`.booley/.gitignore` patterns.** Rerun `booley init` to add `/plans/` and `/handoffs/` to `.booley/.gitignore`, then commit the file. Already-committed plans and handoffs stay tracked until you remove them from Git. ([#4865](https://github.com/boldaxolotl/Booley/issues/4865))
+- **Coverage branch points.** If your `verilator_options` passes `--coverage-line`, add `--coverage-branch` to keep collecting `branch` points. Verilator 5.054 moved branch points into that switch. ([PR #3464](https://github.com/boldaxolotl/booley/pull/3464))
+
+#### Sandbox
+
+- **Booley Directory mount.** The Sandbox mounts the Booley Directory at `/booley`, and `BOOLEY_DIR` is `/booley` inside the Sandbox. ([#4090](https://github.com/boldaxolotl/booley/issues/4090))
+  - `booley init` rebuilds managed images. Recreate each Sandbox.
+  - Rebuild self-managed images from the current Booley image.
+  - Records, worktrees, and links written under the old mount keep working.
+- **Developer Agent MCP marker.** The Developer Agent MCP server is marked by `BOOLEY_MCP_DEVELOPER_AGENT=1` instead of `BOOLEY_MCP_MODE=interactive`. ([#4547](https://github.com/boldaxolotl/Booley/issues/4547))
+  - Reissue each Project's Sandbox with `booley session refresh` or the step Doctor names.
+  - Session and Standalone Job logs now go to `job_logs/` instead of `.interactive_logs/`. Doctor warns about a leftover `.interactive_logs/` and prints the delete command.
+- **Rolling-forward refresh.** **Breaking:** `booley session refresh` rolls forward instead of back. On failure, the error names the failing step and what is still running. Rerun the command to finish the refresh. ([#3644](https://github.com/boldaxolotl/Booley/issues/3644))
+  - Floating-license Sandboxes refresh directly.
+  - Headless Sandboxes withdrawn by an EDA Grant change refresh directly.
+  - The old journal directory, `~/.config/booley/eda/session-refresh` (or under `$XDG_CONFIG_HOME/booley`), can be deleted.
+- **Pre-0.3.0 state is no longer migrated.** All earlier-issued Sandbox specs are rejected as stale. Run `booley init --seed` on the host.
+  - Sandbox Images without the current provenance schema are rebuilt or re-pulled.
+  - `booley session prepare` refuses a running VS Code container with outdated mounts. To recover:
+    1. Close VS Code.
+    2. Stop and remove the container.
+    3. Run `booley init --seed`.
+    4. Reopen the folder in the container.
+- **Toolchain versions.**
+  - **Verilator** v5.054, commit `bbb60a403932a9f695cb6ff001ceb73de6ad9234`.
+  - **Yosys** v0.70, commit `28ba3cb926fe376fa05ebfc1b921747d011d4557`. Slang messages now appear as Yosys log lines. Booley reads the new form, so no Target change is needed. ([PR #3632](https://github.com/boldaxolotl/booley/pull/3632), [#3586](https://github.com/boldaxolotl/Booley/issues/3586))
+  - **Spike** in the RISC-V Sandbox Image moves to upstream master `4094d290`. ([PR #3633](https://github.com/boldaxolotl/booley/pull/3633))
+  - **Sidecars.** The egress proxy and reaper sidecars run on Python 3.15.2, and the reaper on the Docker 29.9.3 CLI. Both rebuild automatically.
+  - **FlexNet relay.** Run `docker image rm booley-flexnet-relay:1` to rebuild the relay on Python 3.15.2.
+
+#### Simulation Record rename (breaking)
+
+Simulation renames the Campaign to the Simulation Record and the Coverage Campaign to the Coverage Record. No old name is accepted as an alias. ([#2711](https://github.com/boldaxolotl/Booley/issues/2711), [#2909](https://github.com/boldaxolotl/Booley/issues/2909))
+
+- **Directories.**
+  - `targets/<Target>/campaign/` → `targets/<Target>/record/`. Pass `record/manifest.json` to `booley flow sim --resume-from`.
+  - Each attempt's `coverage-campaign/` → `coverage-record/`.
+- **Simulation Record schemas.**
+  - `campaign_id` → `simulation_record_id`.
+  - `booley.simulation-campaign-manifest/v4` → `booley.simulation-record-manifest/v1`.
+  - `booley.simulation-result/v3` → `v5`.
+  - Attempt, build attempt, build result, and Pre-Sim evidence records: `v1` → `v2`.
+  - Simulator bundle: `v1` → `v3`.
+  - `booley.supervised-child-context/v2`. The lane causes `campaign_error` and `campaign_cancelled` are now `record_error` and `record_cancelled`.
+- **Summary, transport, and projection.**
+  - `booley.simulation-record-summary/v1`.
+  - `booley.cocotb-record-transport/v1`.
+  - `simulation.json` moves to `booley.simulation-projection/v4`, with these field renames:
+    - `campaign_id` → `simulation_record_id`
+    - `campaign_manifest` → `simulation_record_manifest`
+    - `coverage_campaign` → `coverage_record`
+  - Evidence kinds: `simulation_campaign_manifest` → `simulation_record_manifest`, and `coverage_campaign_reference` → `coverage_record_reference`.
+- **Coverage Record.**
+  - `booley.coverage-campaign/v5` → `booley.coverage-record/v1`, with `coverage_record_id`.
+  - Point store: `booley.coverage-points/v1` → `v2`.
+  - `booley.coverage-record-reference/v1` replaces the campaign reference, with these renames:
+    - `simulation_campaign_id` → `simulation_record_id`
+    - nested `coverage_campaign` → `coverage_record`
+    - `coverage_campaign_manifest` → `coverage_record_manifest`
+- **`coverage_analyst` report.**
+  - Schemas: `booley.coverage-analysis/v1` → `v3`, and `v2` → `v4`.
+  - Field renames:
+    - `campaign_id` → `coverage_record_id`
+    - `campaign_reference` → `coverage_record_reference`
+    - `observed_evidence.campaign_manifest` → `observed_evidence.coverage_record_manifest`
+    - category `cp1_not_in_campaign` → `cp1_not_in_record`
+- **`coverage_analyst` input.**
+  - `--campaign`/`campaign` → `--record`/`record`.
+  - `BOOLEY_COVERAGE_CAMPAIGN` → `BOOLEY_COVERAGE_RECORD`.
+- **Reports and progress.** In `report.json`, `progress.json`, MCP, and the Dashboard, these fields are renamed:
+  - `detail.campaigns` → `detail.records`
+  - `detail.campaign_integrity_error` → `detail.record_integrity_error`
+  - `detail.campaign_preview` → `detail.record_preview`
+  - In Target rows: `campaign_id` → `simulation_record_id`, and `coverage_campaign` → `coverage_record`.
+  - In `dependency` values: `local_campaign` → `local_record`, and `external_origin_campaign` → `external_origin_record`.
+  - `booley.simulation-report/v3` is unchanged.
+- **Configuration.** The `[flows.sim] run_cwd` placeholder `{campaign}` → `{record}`. A configuration that still uses `{campaign}` fails with a message naming `{record}`.
+
+#### Other breaking changes
+
+- **Synthesis cell count.** ASIC Synthesis reports, the `baseline` block, and the result detail name the cell count `cell_count` instead of `cells`. The rename itself leaves the value intact. Physical-mode reports also change how the value is counted. ([#4298](https://github.com/boldaxolotl/booley/issues/4298))
+- **Reviewer history.** The Reviewer keeps no review history. ([#4301](https://github.com/boldaxolotl/booley/issues/4301))
+  - `reviewer --verify` and standalone `--waive` are removed. Use `reviewer --recheck <evidence file>`.
+  - Changed sources no longer mark stored review verdicts stale.
+  - Overlapping review calls are no longer refused.
+- **Criterion fields.** Reports and `endpoint_end` events drop `criterion_key` and `criterion_met`. Remove them from custom endpoints that pass them to `McpToolResult`. ([#4421](https://github.com/boldaxolotl/Booley/issues/4421))
+- **Diagnostic option.** Remove `--diagnostic` from CLI calls and `diagnostic` from MCP calls. Update custom endpoints that read `self.args.diagnostic`. Reports drop the diagnostic `acceptance_effect` value. ([#4423](https://github.com/boldaxolotl/Booley/issues/4423))
+- **`--result-verbosity`.** `booley flow sim --result-verbosity` is removed. Passing it fails as an unknown option. ([#4851](https://github.com/boldaxolotl/Booley/issues/4851))
+- **Campaign retention command.** `python -m booley.flows.sim.campaign_retention` is removed. Delete finished run folders as described in [Cleaning up reports](https://booley.dev/docs/flow-reference/#cleaning-up-reports). Keep any run you may resume, and the run it continued from. ([#4160](https://github.com/boldaxolotl/Booley/issues/4160))
+- **Feedback origin.** `booley feedback add`, `friction`, and `win` require `--origin` (`setup`, `bug`, or `impression`). ([#4072](https://github.com/boldaxolotl/Booley/issues/4072))
+  - `booley feedback report` writes two files: `.booley/SETUP-REPORT.md` and `.booley/FEEDBACK-REPORT.md`.
+  - `--user-report-path` writes only the setup report.
 
 ## 0.4.0 - 04 NOV 2026
 

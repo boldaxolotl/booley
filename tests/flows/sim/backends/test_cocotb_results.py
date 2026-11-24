@@ -129,12 +129,23 @@ def test_timeout_progress_keeps_dots_inside_captured_parametrized_names(filtered
 
 # Captured from the pinned producer; provenance and reproduction live beside it.
 _RESULTS_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results.xml"
+_NO_MATCH_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
 
 
 def _write(tmp_path: Path, text: str) -> Path:
     p = tmp_path / "results.xml"
     p.write_text(text, encoding="utf-8")
     return p
+
+
+def _parse(tmp_path: Path, text: str) -> cr.CocotbResults:
+    return cr.parse_results_xml(_write(tmp_path, text))
+
+
+_RULE = (
+    "tests.toml must list each test by its cocotb test ID: a plain test's function name, "
+    'or a parametrized or generated test\'s rendered ID, such as "name/param=value".'
+)
 
 
 class TestParseResultsXml:
@@ -149,38 +160,28 @@ class TestParseResultsXml:
         assert by_name["test_fail"].status == cr.VERDICT_FAIL
         assert by_name["test_skipped"].status == "skipped"
 
-    def test_failure_text_carries_type_and_message(self):
-        res = cr.parse_results_xml(_RESULTS_XML)
-        fail = next(t for t in res.tests if t.name == "test_fail")
-        assert fail.failure_text == (
-            "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
-        )
-
-    def test_missing_file_is_missing_never_pass(self, tmp_path: Path):
-        res = cr.parse_results_xml(tmp_path / "nope.xml")
-        assert res.state == cr.STATE_MISSING
+    @pytest.mark.parametrize(
+        ("content", "state"),
+        [
+            (None, cr.STATE_MISSING),
+            # A SIGKILL mid-write leaves a torn file (S4).
+            ('<testsuites><testsuite><testcase name="interrupted"', cr.STATE_UNPARSEABLE),
+            ("DIRECTORY", cr.STATE_MISSING),
+        ],
+        ids=["missing-file", "truncated", "not-a-file"],
+    )
+    def test_unusable_results_file_never_passes(self, tmp_path: Path, content, state):
+        if content is None:
+            path = tmp_path / "nope.xml"
+        elif content == "DIRECTORY":
+            path = tmp_path
+        else:
+            path = _write(tmp_path, content)
+        res = cr.parse_results_xml(path)
+        assert res.state == state
         assert not res.tests
-
-    def test_truncated_xml_is_unparseable(self, tmp_path: Path):
-        # A SIGKILL mid-write leaves a torn file (S4).
-        res = cr.parse_results_xml(
-            _write(tmp_path, '<testsuites><testsuite><testcase name="interrupted"')
-        )
-        assert res.state == cr.STATE_UNPARSEABLE
-        assert "truncated or malformed" in res.detail
-
-    def test_empty_testsuite_is_empty(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                '<testsuites name="results"><testsuite name="all" package="all">'
-                "</testsuite></testsuites>",
-            )
-        )
-        assert res.state == cr.STATE_EMPTY
-
-    def test_not_a_file_is_missing(self, tmp_path: Path):
-        assert cr.parse_results_xml(tmp_path).state == cr.STATE_MISSING
+        if state == cr.STATE_UNPARSEABLE:
+            assert "truncated or malformed" in res.detail
 
     def test_duplicate_names_fail_wins(self, tmp_path: Path):
         res = cr.parse_results_xml(
@@ -210,6 +211,55 @@ class TestParseResultsXml:
         assert len(res.tests[0].failure_text) <= 500
 
 
+class TestAttachSkipCauses:
+    def _skipped(self, *names: str) -> cr.CocotbResults:
+        return cr.CocotbResults(
+            state=cr.STATE_OK, tests=tuple(cr.CocotbTest(n, "m", "skipped") for n in names)
+        )
+
+    def test_exact_name_match_keeps_a_prefix_name_from_taking_the_line(self):
+        log = "1.00ns INFO     cocotb.regression       skipping m.t_extra: other\n"
+        assert cr.attach_skip_causes(self._skipped("t"), log) == self._skipped("t")
+
+    def test_a_message_ends_at_the_next_timestamped_line(self):
+        log = (
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n"
+            "                                        second\n"
+            "2.00ns INFO     cocotb.regression       running m.u (2/2)\n"
+            "                                        not part of it\n"
+        )
+        (test,) = cr.attach_skip_causes(self._skipped("t"), log).tests
+        assert (test.skip_cause, test.skip_message) == ("runtime", "first\nsecond")
+
+    def test_a_decorator_skip_line_has_no_message(self):
+        log = "1.00ns INFO     cocotb.regression       skipping m.t (1/2)\n"
+        (test,) = cr.attach_skip_causes(self._skipped("t"), log).tests
+        assert (test.skip_cause, test.skip_message) == ("decorator", "")
+
+    def test_a_name_with_a_colon_is_not_taken_by_its_shorter_prefix(self):
+        log = (
+            "1.00ns INFO     cocotb.regression       skipping m.t:variant: other\n"
+            "2.00ns INFO     cocotb.regression       skipping m.t: own\n"
+        )
+        tests = cr.attach_skip_causes(self._skipped("t", "t:variant"), log).tests
+        assert [(t.name, t.skip_message) for t in tests] == [("t", "own"), ("t:variant", "other")]
+
+    def test_a_collector_keeps_skip_lines_and_their_continuation_only(self):
+        collector = cr.SkipLogCollector()
+        for line in (
+            "1.00ns INFO     cocotb.regression       running m.t (1/1)\n",
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n",
+            "                                        second\n",
+            "2.00ns INFO     user                    noise\n",
+            "                                        not a continuation\n",
+        ):
+            collector.feed(line)
+        assert collector.text() == (
+            "1.00ns INFO     cocotb.regression       skipping m.t: first\n"
+            "                                        second\n"
+        )
+
+
 class TestReconcile:
     def _ok(self) -> cr.CocotbResults:
         return cr.parse_results_xml(_RESULTS_XML)
@@ -227,7 +277,8 @@ class TestReconcile:
         assert verdicts[1][2] == (
             "AssertionError: deliberate failure: compatibility sample\nassert 1 == 0"
         )
-        assert "skipped" in verdicts[2][2]
+        # The XML alone names no cause: the detail says so instead of guessing.
+        assert verdicts[2][2] == "reported skipped by cocotb; the run log names no skip reason"
 
     def test_absent_expected_name_is_inconclusive_with_actionable_message(self):
         # decision 7: a tests.toml name with no matching @cocotb.test never
@@ -237,6 +288,44 @@ class TestReconcile:
         assert "no matching test ID" in detail
         assert "test_typo" in detail
         assert all(name in detail for name in ("test_reset", "test_fail", "test_skipped"))
+
+    @pytest.mark.parametrize(
+        ("xml", "selected", "expected"),
+        [
+            pytest.param(
+                None,
+                ["test_param", "test_other"],
+                [
+                    'no matching test ID "test_param" in cocotb results: no cocotb test ID '
+                    "matched the selected tests, so cocotb ran none. " + _RULE,
+                    'no matching test ID "test_other" in cocotb results: no cocotb test ID '
+                    "matched the selected tests, so cocotb ran none. " + _RULE,
+                ],
+                id="cocotb-2.1.0",
+            ),
+            pytest.param(
+                # The cocotb 2.0.1 shape: excluded tests are listed as skipped.
+                '<testsuites><testsuite name="all">'
+                '<testcase name="test_param/width=1" classname="m"><skipped/></testcase>'
+                '<testcase name="test_param/width=2" classname="m"><skipped/></testcase>'
+                "</testsuite></testsuites>",
+                ["test_param"],
+                [
+                    'no matching test ID "test_param" in cocotb results. cocotb reported '
+                    'test IDs: "test_param/width=1", "test_param/width=2". ' + _RULE
+                ],
+                id="cocotb-2.0.1",
+            ),
+        ],
+    )
+    def test_selected_ids_matching_no_test_are_inconclusive_with_the_rendered_id_rule(
+        self, tmp_path: Path, xml: str | None, selected: list[str], expected: list[str]
+    ):
+        res = cr.parse_results_xml(_NO_MATCH_XML) if xml is None else _parse(tmp_path, xml)
+        assert res.state == (cr.STATE_EMPTY if xml is None else cr.STATE_OK)
+        verdicts = cr.reconcile(selected, res)
+        assert [(n, v) for n, v, _ in verdicts] == [(n, cr.VERDICT_INCONCLUSIVE) for n in selected]
+        assert [d for _, _, d in verdicts] == expected
 
     def test_non_ok_state_maps_every_test_inconclusive(self, tmp_path: Path):
         res = cr.parse_results_xml(tmp_path / "gone.xml")
@@ -283,6 +372,59 @@ class TestFindImportFailure:
         )
         assert "invalid syntax" in detail
         assert "pip_requirements" not in detail
+
+    @pytest.mark.parametrize(
+        ("case", "prefix", "extra"),
+        [
+            (
+                "import-missing",
+                "cocotb could not import the test module 'import_missing_cases': "
+                "ModuleNotFoundError: No module named 'qa_no_such_module_xyz'",
+                "pip_requirements",
+            ),
+            (
+                "import-error",
+                "cocotb could not import the test module 'import_error_cases': "
+                "ImportError: cannot import name 'qa_no_such_name' from 'os' ",
+                "",
+            ),
+            (
+                "import-test-module-missing",
+                "cocotb could not import the test module: "
+                "ModuleNotFoundError: No module named 'qa_no_such_test_module'",
+                "",
+            ),
+        ],
+        ids=["import-missing", "import-error", "import-test-module-missing"],
+    )
+    def test_cocotb_2_discovery_traceback_is_an_import_failure(
+        self, case: str, prefix: str, extra: str
+    ):
+        """cocotb 2.x has no `Failed to import module` line; real 2.1.0 captures."""
+        logs = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0"
+        detail = cr.find_import_failure((logs / f"{case}.log").read_text(encoding="utf-8"))
+        assert detail.startswith(prefix)
+        assert extra in detail
+
+    @pytest.mark.parametrize(
+        ("tail", "expected"),
+        [
+            pytest.param(
+                "ImportError\n", "cocotb could not import the test module: ImportError", id="bare"
+            ),
+            pytest.param(
+                "ImportError: \nmore\n",
+                "cocotb could not import the test module: ImportError:",
+                id="bare-colon",
+            ),
+        ],
+    )
+    def test_cocotb_2_exception_line_without_a_message(self, tail: str, expected: str):
+        frame = '  File "/x/cocotb/regression.py", line 255, in discover_tests\n'
+        assert cr.find_import_failure(frame + tail) == expected
+
+    def test_import_traceback_outside_cocotb_discovery_is_ignored(self):
+        assert cr.find_import_failure("ModuleNotFoundError: No module named 'x'\n") == ""
 
     def test_clean_output_finds_nothing(self):
         assert cr.find_import_failure("0.00ns INFO cocotb  Running on Icarus\n") == ""
@@ -343,12 +485,6 @@ class TestResultsLineRoundTrip:
         assert "long IDs abbreviated" in detail
         assert "cocotb_results.json" in detail
 
-    @pytest.mark.parametrize("names", [None, "test", {}, [1], ["test", False]])
-    def test_invalid_reported_names_reject_transport(self, names):
-        payload = {"state": "ok", "tests": [], "reported_names": names}
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(payload)
-
     def test_large_candidate_detail_is_safe_for_simulation_record_evidence(self):
         from booley.flows.sim.record.codec import MAX_DETAIL_BYTES
 
@@ -365,62 +501,67 @@ class TestResultsLineRoundTrip:
         assert "\n" not in detail and "\x1b" not in detail
         assert "more" in detail and "cocotb_results.json" in detail
 
-    def test_round_trip_preserves_everything(self):
-        res = cr.parse_results_xml(_RESULTS_XML)
+    @pytest.mark.parametrize("skip_capture", [False, True], ids=["mixed", "skip-causes"])
+    def test_round_trip_preserves_everything(self, skip_capture):
+        if skip_capture:
+            fixtures = _RESULTS_XML.parent
+            res = cr.attach_skip_causes(
+                cr.parse_results_xml(fixtures / "results-skip-unfiltered.xml"),
+                (fixtures / "skip-unfiltered.log").read_text(encoding="utf-8"),
+            )
+            assert {t.skip_cause for t in res.tests} == {"runtime", "decorator"}
+        else:
+            res = cr.parse_results_xml(_RESULTS_XML)
         payload = cr.results_payload(res)
+        # Persisted-format contract: readers reject any version but 1 and 2.
+        assert payload["version"] == 2
         assert cr.decode_results_payload(payload) == res
         line = cr.format_results_line(payload)
         assert line.startswith(cr.COCOTB_RESULTS_PREFIX)
         assert cr.parse_results_line(f"noise\n{line}\ntrailing") == res
 
-    def test_missing_line_returns_none(self):
-        assert cr.parse_results_line("no sentinel here\n") is None
-
-    def test_malformed_line_returns_none_not_pass(self):
-        assert cr.parse_results_line(f"{cr.COCOTB_RESULTS_PREFIX}{{broken") is None
-
-    def test_non_object_or_non_list_payload_is_rejected(self):
-        for payload in ("[]", '"payload"', '{"tests": {}}'):
-            with pytest.raises(BoundaryError):
-                cr.decode_results_payload(json.loads(payload))
-        # parse_results_line keeps its fail-safe: a rejected payload is "no results".
-        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + "[]") is None
-
-    def test_non_object_test_entries_reject_the_transport(self):
-        payload = '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(json.loads(payload))
-
-    @pytest.mark.parametrize(
-        "testcase",
-        [
-            '{"name":{},"module":"m","status":"pass"}',
-            '{"name":"bad","module":[],"status":"pass"}',
-            '{"name":"bad","module":"m","status":true}',
-            '{"name":"bad","module":"m","status":"pass","failure":7}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":true}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":-1}',
-            '{"name":"bad","module":"m","status":"pass","elapsed_s":1e999}',
-        ],
-    )
-    def test_invalid_test_fields_reject_the_transport(self, testcase):
-        payload = f'{{"state":"ok","tests":[{testcase}]}}'
-        with pytest.raises(BoundaryError):
-            cr.decode_results_payload(json.loads(payload))
+    @pytest.mark.parametrize("line", ["no sentinel here\n", f"{cr.COCOTB_RESULTS_PREFIX}{{broken"])
+    def test_missing_or_malformed_line_returns_none_not_pass(self, line):
+        assert cr.parse_results_line(line) is None
 
     @pytest.mark.parametrize(
         "payload",
         [
+            "[]",
+            '"payload"',
+            '{"tests": {}}',
+            '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":{},"module":"m","status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":[],"status":"pass"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":true}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","failure":7}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":true}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":-1}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"pass","elapsed_s":1e999}]}',
             '{"state":7,"tests":[]}',
+            '{"version":3,"tests":[]}',
+            '{"version":"2","tests":[]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"skipped","skip_cause":"x"}]}',
+            '{"state":"ok","tests":[{"name":"b","module":"m","status":"skipped",'
+            '"skip_cause":"runtime","skip_message":7}]}',
             '{"state":"unknown","tests":[]}',
             '{"detail":{},"tests":[]}',
             '{"skipped_unselected":true,"tests":[]}',
             '{"skipped_unselected":-1,"tests":[]}',
+            '{"state":"ok","tests":[],"reported_names":null}',
+            '{"state":"ok","tests":[],"reported_names":"test"}',
+            '{"state":"ok","tests":[],"reported_names":{}}',
+            '{"state":"ok","tests":[],"reported_names":[1]}',
+            '{"state":"ok","tests":[],"reported_names":["test",false]}',
         ],
     )
-    def test_invalid_result_fields_reject_the_transport(self, payload):
+    def test_invalid_payload_rejects_the_transport(self, payload):
         with pytest.raises(BoundaryError):
             cr.decode_results_payload(json.loads(payload))
+
+    def test_a_rejected_line_payload_is_no_results(self):
+        # parse_results_line keeps its fail-safe: a rejected payload is "no results".
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + "[]") is None
 
     def test_last_line_wins(self):
         res = cr.parse_results_xml(_RESULTS_XML)
@@ -468,45 +609,30 @@ class TestFailureMessageDialects:
     cocotb 1.x writes ``message="Test failed with RANDOM_SEED=…"``.
     """
 
-    def test_cocotb1_message_attribute(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure('<failure message="Test failed with RANDOM_SEED=1783871502" />'),
-            )
-        )
-        assert res.tests[0].failure_text == "Test failed with RANDOM_SEED=1783871502"
-
-    def test_cocotb2_init_failure_msg_attribute(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(tmp_path, _xml_with_failure('<failure msg="Test initialization failed" />'))
-        )
-        assert res.tests[0].failure_text == "Test initialization failed"
-
-    def test_plain_junit_type_and_text(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure('<failure type="AssertionError">assert 1 == 0</failure>'),
-            )
-        )
-        assert res.tests[0].failure_text == "AssertionError: assert 1 == 0"
-        assert res.tests[0].elapsed_s == 0.012
-
-    def test_error_msg_still_wins_when_present(self, tmp_path: Path):
-        res = cr.parse_results_xml(
-            _write(
-                tmp_path,
-                _xml_with_failure(
-                    '<failure error_type="AssertionError" error_msg="count should be 0" '
-                    'message="Test failed with RANDOM_SEED=1" />'
-                ),
-            )
-        )
-        assert res.tests[0].failure_text == "AssertionError: count should be 0"
-
-    def test_bare_failure_element_still_yields_empty_text(self, tmp_path: Path):
-        # Honest limit: nothing to attribute, and we must not invent any.
-        res = cr.parse_results_xml(_write(tmp_path, _xml_with_failure("<failure />")))
+    @pytest.mark.parametrize(
+        ("child", "text"),
+        [
+            (
+                '<failure message="Test failed with RANDOM_SEED=1783871502" />',
+                "Test failed with RANDOM_SEED=1783871502",
+            ),
+            ('<failure msg="Test initialization failed" />', "Test initialization failed"),
+            (
+                '<failure type="AssertionError">assert 1 == 0</failure>',
+                "AssertionError: assert 1 == 0",
+            ),
+            (
+                '<failure error_type="AssertionError" error_msg="count should be 0" '
+                'message="Test failed with RANDOM_SEED=1" />',
+                "AssertionError: count should be 0",
+            ),
+            # Honest limit: nothing to attribute, and we must not invent any.
+            ("<failure />", ""),
+        ],
+        ids=["cocotb1-message", "cocotb2-init-msg", "junit-type-text", "error-msg-wins", "bare"],
+    )
+    def test_failure_text_by_dialect(self, tmp_path: Path, child, text):
+        res = _parse(tmp_path, _xml_with_failure(child))
         assert res.tests[0].status == cr.VERDICT_FAIL
-        assert res.tests[0].failure_text == ""
+        assert res.tests[0].failure_text == text
+        assert res.tests[0].elapsed_s == 0.012

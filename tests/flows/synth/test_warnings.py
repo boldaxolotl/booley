@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.warnings import parse_synth_diagnostics
 from tests.flows.synth.captured_yosys import diagnostic_sources
 
@@ -88,6 +89,46 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
     assert "Booley-generated deprecated query" in deprecation["rationale"]
 
 
+def test_4996_warnings_on_two_copies_of_one_project_file_form_one_group() -> None:
+    # Two cores that list one Project file export two copies of it. Renaming after
+    # grouping would leave two groups of one warning each.
+    paths = ProjectSourcePaths({"src/a_0/rtl/x.sv": "rtl/x.sv", "src/b_0/rtl/x.sv": "rtl/x.sv"})
+    sources = {
+        "sv2v": "WARNING: src/a_0/rtl/x.sv:3: unused\nWARNING: src/b_0/rtl/x.sv:3: unused\n",
+        "yosys": "Warning: wire w at src/a_0/rtl/x.sv:5 has no driver.\n",
+    }
+
+    summary = parse_synth_diagnostics(sources, paths.project_text).warnings
+
+    assert (summary.total_warnings, summary.unique_warnings) == (3, 2)
+    assert {(group.tool, group.message, group.count) for group in summary.representatives} == {
+        ("sv2v", "WARNING: rtl/x.sv:3: unused", 2),
+        ("yosys", "Warning: wire w at rtl/x.sv:5 has no driver.", 1),
+    }
+
+
+def test_4996_renaming_a_warning_keeps_its_classification() -> None:
+    # A copy that maps to a Project path whose name reads as a structural phrase.
+    paths = ProjectSourcePaths({"src/a_0/x.sv": "ip/found logic loop in module/x.sv"})
+    sources = {"yosys": "top.v:1: warning: see src/a_0/x.sv\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert "ip/found logic loop in module/x.sv" in warning.message
+    assert (warning.category, warning.disposition) == ("frontend", "informational")
+
+
+def test_4996_file_name_with_repeated_spaces_still_maps() -> None:
+    paths = ProjectSourcePaths(
+        {"src/a_0/a  b.sv": "rtl/first.sv", "src/a_0/a b.sv": "rtl/second.sv"}
+    )
+    sources = {"sv2v": "WARNING: src/a_0/a  b.sv:3: unused\n"}
+
+    warning = parse_synth_diagnostics(sources, paths.project_text).warnings.representatives[0]
+
+    assert warning.message == "WARNING: rtl/first.sv:3: unused"
+
+
 def test_huge_warning_message_is_bounded_and_traceable() -> None:
     instance_list = " ".join(f"u{i}" for i in range(500_000))
     warning = f"[WARNING STA-0349] missing clocks on {instance_list}\n"
@@ -123,26 +164,65 @@ def test_missing_final_check_is_incomplete_not_clean() -> None:
     assert diagnostics.warnings.total_warnings == 0
 
 
-def test_earlier_loop_is_advisory_when_final_check_is_clean() -> None:
+_EARLIER_LOOP = (
+    "Warning: found logic loop in module top:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
+)
+_EARLIER_DRIVER = "Warning: multiple conflicting drivers for top.sig:\n"
+
+
+@pytest.mark.parametrize(
+    ("expected_comb_loops", "final", "loop", "driver", "actionable"),
+    [
+        # Optimization removed both: actionable, and only loops have an allowance.
+        (0, _CLEAN_CHECK, "advisory", "advisory", 3),
+        (2, _CLEAN_CHECK, "informational", "advisory", 1),
+        # One more than declared warns again.
+        (1, _CLEAN_CHECK, "advisory", "advisory", 3),
+        # A net the final check still reports stays structural.
+        (2, _EARLIER_DRIVER + "Found and reported 1 problem.\n", "informational", "structural", 2),
+    ],
+    ids=["undeclared", "loops_declared", "one_more_loop", "driver_in_final"],
+)
+def test_removed_loop_warnings_need_a_declared_count(
+    expected_comb_loops, final, loop, driver, actionable
+) -> None:
     diagnostics = parse_synth_diagnostics(
         {
-            "yosys": "Warning: found logic loop in module top:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n",
+            "yosys": _EARLIER_LOOP * 2 + _EARLIER_DRIVER,
             "premap_check": _CLEAN_CHECK,
-            "final_check": _CLEAN_CHECK,
-        }
+            "final_check": final,
+        },
+        expected_comb_loops=expected_comb_loops,
     )
 
-    assert diagnostics.structural.complete is True
-    assert diagnostics.structural.comb_loops == 0
-    assert diagnostics.structural.multi_driven == 0
-    assert diagnostics.warnings.by_category == {"combinational_loop": 1}
-    assert diagnostics.warnings.advisory_warnings == 1
-    representative = diagnostics.warnings.representatives[0]
-    assert "$add$rtl.sv:7$1" in representative.message
-    assert "\\feedback" in representative.message
-    assert "completed post-optimisation check reports no combinational loops" in (
-        representative.rationale or ""
+    groups = {group.category: group for group in diagnostics.warnings.representatives}
+    assert groups["combinational_loop"].disposition == loop
+    assert groups["multi_driver"].disposition == driver
+    assert diagnostics.warnings.actionable_warnings == actionable
+    assert "$add$rtl.sv:7$1" in groups["combinational_loop"].message
+    rationale = groups["combinational_loop"].rationale or ""
+    assert "completed structural checks find no combinational loops" in rationale
+    assert f"expected_comb_loops (this run 2, declared {expected_comb_loops})" in rationale
+    driver_rationale = groups["multi_driver"].rationale
+    if driver == "structural":
+        assert driver_rationale is None
+    else:
+        assert "completed final check finds no multi-driven nets" in driver_rationale
+        assert "expected_comb_loops" not in driver_rationale
+
+
+def test_declared_removed_loop_survives_representative_saturation() -> None:
+    # The report reads its note from the capped representatives.
+    diagnostics = parse_synth_diagnostics(
+        {
+            "yosys": "".join(f"ABC: Warning: unrelated {n}\n" for n in range(12)) + _EARLIER_LOOP,
+            "premap_check": _CLEAN_CHECK,
+            "final_check": _CLEAN_CHECK,
+        },
+        expected_comb_loops=1,
     )
+    first = diagnostics.warnings.representatives[0]
+    assert (first.category, first.disposition) == ("combinational_loop", "informational")
 
 
 def test_final_check_without_completion_marker_is_incomplete() -> None:
@@ -208,18 +288,6 @@ def test_earlier_repeated_loops_do_not_change_exact_final_count(count):
     # The pre-mapping check is a count source only: it is not in the inventory.
     assert diagnostics.warnings.total_warnings == 20
     assert diagnostics.warnings.advisory_warnings == (20 if count == 0 else 0)
-
-
-def test_earlier_driver_clean_final_remains_inventory_only():
-    diagnostics = parse_synth_diagnostics(
-        {
-            "yosys": "Warning: multiple conflicting drivers for top.sig:\n",
-            "premap_check": _CLEAN_CHECK,
-            "final_check": _CLEAN_CHECK,
-        }
-    )
-    assert diagnostics.structural.multi_driven == 0
-    assert diagnostics.warnings.structural_warnings == 1
 
 
 def test_real_yosys_v070_check_output_is_counted() -> None:

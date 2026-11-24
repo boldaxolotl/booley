@@ -66,9 +66,22 @@ Never describe one of those partial outcomes as healed.
    `git status --short`, and `booley upgrade status --json`. Doctor is
    context-aware, so do not assume a host result proves the Sandbox or
    vice versa.
-2. Run plain `booley doctor` and retain its complete output. Manual Doctor is
-   the repair entry point for limited housekeeping such as guidance links; include those changes in the evidence and rerun before
-   diagnosing remaining rows.
+2. Run plain `booley doctor` and retain its complete output. Doctor changes no
+   Project file. Repair `guidance.links-unhealthy` with the command its `→` hint
+   names (`booley init`; as an external action when the hint says "on the
+   host"). Refresh `stealth.projections-not-current` (missing or stale root
+   copies of stealth cores) by running any Booley Flow in place, for example a
+   lint of one Target, never by handing it to the user. When that WARN names
+   copies that outlive their authored cores, delete the files its hint names
+   yourself; no Flow removes them while no Target is left. The `✗` projection
+   rows need the action their hint names: ask the user before moving or
+   deleting a foreign file, fix an authored core that cannot be read, and hand
+   the Git exclusion (`booley init` on the host) to the user in an issued
+   Sandbox.
+   Include each repair in the evidence and rerun before diagnosing remaining
+   rows. The `... skipped - stealth core projections are not current` rows
+   (Flow dry-runs, `.core` audit, deep checks) clear once the WARN and any
+   foreign-file or unreadable-core `✗` row are resolved.
    Then check the Project's guidance for the measuring pointer: when the
    canonical `<booley_dir>/AGENTS.md` exists and does not contain
    `booley cheat --metrics`, add this bullet (the `booley-setup` template's

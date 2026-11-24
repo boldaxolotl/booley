@@ -19,6 +19,7 @@ import pytest
 from booley.harness.dashboard import command, view_probe
 from booley.harness.dashboard.app import CURSOR_POSITION_REQUEST, DashboardApp
 from booley.harness.dashboard.model import DashboardSnapshot
+from tests.time_budget import hang_guard_s, scaled
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="Linux abstract sockets and /proc are required"
@@ -34,9 +35,9 @@ def scope(tmp_path):
 def _fast_probe(monkeypatch):
     monkeypatch.setattr(view_probe, "SEEN_WITHIN", 2.0)
     monkeypatch.setattr(view_probe, "UNSEEN_AFTER", 10.0)
-    monkeypatch.setattr(view_probe, "REPLY_SECONDS", 0.5)
-    monkeypatch.setattr(view_probe, "TERM_GRACE_SECONDS", 0.5)
-    monkeypatch.setattr(view_probe, "KILL_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(view_probe, "REPLY_SECONDS", scaled(0.5))
+    monkeypatch.setattr(view_probe, "TERM_GRACE_SECONDS", scaled(0.5))
+    monkeypatch.setattr(view_probe, "KILL_GRACE_SECONDS", scaled(0.5))
 
 
 class _Owner:
@@ -61,13 +62,13 @@ class _Owner:
                     with suppress(OSError):  # the probe may hang up before it reads
                         connection.sendall(reply)
                 else:  # accepted, then silent until the probe gives up and hangs up
-                    connection.settimeout(5.0)
+                    connection.settimeout(hang_guard_s())
                     with suppress(OSError):
                         connection.recv(1)
 
     def close(self):
         self.listener.close()
-        self.thread.join(timeout=3)
+        self.thread.join(timeout=hang_guard_s())
 
 
 @pytest.fixture
@@ -89,10 +90,11 @@ def _self_owner():
 
 def test_view_state_ages_from_start_until_the_terminal_answers():
     state = view_probe.ViewState()
-    time.sleep(0.05)
-    assert state.age() >= 0.05
+    age_s = scaled(0.05)
+    time.sleep(age_s)
+    assert state.age() >= age_s
     state.answered()
-    assert state.age() < 0.05
+    assert state.age() < age_s
 
 
 def test_serve_answers_with_the_age_and_stops_on_request(scope):
@@ -106,13 +108,13 @@ def test_serve_answers_with_the_age_and_stops_on_request(scope):
         assert reading is not None
         assert reading.owner == _self_owner()
         assert reading.age is not None
-        assert 0 <= reading.age < 5
+        assert 0 <= reading.age < scaled(5)
         # A peer that vanishes before the reply must not end the server.
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as rude:
             rude.connect(view_probe.socket_name(scope))
         assert view_probe._read_owner(scope) is not None
         stop.set()
-        server.join(timeout=3)
+        server.join(timeout=hang_guard_s())
         assert not server.is_alive()
 
 
@@ -122,7 +124,7 @@ def test_serve_ends_when_its_socket_is_closed(scope):
     listener.listen()
     server = view_probe.serve(listener, view_probe.ViewState(), threading.Event())
     listener.close()
-    server.join(timeout=3)
+    server.join(timeout=hang_guard_s())
     assert not server.is_alive()
 
 
@@ -207,7 +209,7 @@ def test_serve_survives_a_transient_accept_failure():
             return Connection(), None
 
     server = view_probe.serve(Listener(), view_probe.ViewState(), stop)  # type: ignore[arg-type]
-    server.join(timeout=3)
+    server.join(timeout=hang_guard_s())
     assert not server.is_alive()
     assert len(sent) == 1, "the reply thread gave up after one failed accept"
 
@@ -270,7 +272,7 @@ def _reap(child: subprocess.Popen[str]) -> None:
     if child.poll() is None:
         child.kill()
     # Kept on subprocess.Popen: child the test drives and signals.
-    child.wait(timeout=5)
+    child.wait(timeout=hang_guard_s())
     if child.stdout is not None:
         child.stdout.close()
 
@@ -330,9 +332,10 @@ def test_heartbeat_writes_the_cursor_request_and_records_the_answer():
     app._driver = SimpleNamespace(write=written.append, flush=lambda: written.append("flush"))
     app._request_view_heartbeat()
     assert written == [CURSOR_POSITION_REQUEST, "flush"]
-    time.sleep(0.05)
+    age_s = scaled(0.05)
+    time.sleep(age_s)
     app.on_cursor_position(SimpleNamespace())
-    assert state.age() < 0.05
+    assert state.age() < age_s
 
 
 def test_dashboard_without_a_view_state_neither_asks_nor_listens():
@@ -378,7 +381,7 @@ def test_claiming_the_view_covers_every_outcome(monkeypatch, capsys):
     assert claim.binds == 4
 
     # Another newcomer won the race for the freed address.
-    monkeypatch.setattr(command.view_probe, "RELEASE_GRACE_SECONDS", 0.2)
+    monkeypatch.setattr(command.view_probe, "RELEASE_GRACE_SECONDS", scaled(0.2))
     claim = _Claim(*[errno.EADDRINUSE] * 100)
     assert command._bind_view(claim, "s", on_attach=True) == command.ALREADY_OPEN
     assert command._bind_view(_Claim(*[errno.EADDRINUSE] * 100), "s", on_attach=False) == 0

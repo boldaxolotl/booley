@@ -1,17 +1,23 @@
+import hashlib
 import json
+import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
 
 import pytest
 
+from booley.flows.base import SubprocessResult
+from booley.flows.sim import coverage_source_gaps as gaps
+from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
 from booley.flows.sim.coverage_invocation import (
     CoverageInvocationRequest,
     prepare_coverage_invocation,
 )
 from booley.flows.sim.coverage_json import coverage_mapping_document, freeze_coverage_mapping
-from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
+from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold, coverage_metrics
 from booley.flows.sim.coverage_record import (
     NO_DECLARED_INPUTS_FINGERPRINT,
     DurableTargetIdentity,
@@ -19,14 +25,17 @@ from booley.flows.sim.coverage_record import (
 from booley.flows.sim.coverage_record_store import (
     load_coverage_record,
 )
+from booley.flows.sim.coverage_source_gaps import GAP_CODE
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
-from booley.flows.sim.execution.contract import PreSimEvidence
+from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
+from booley.flows.sim.execution.contract import PreSimEvidence, SimulationOptions
 from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     SimulationBuildResult,
     SimulationCommandResult,
     SimulationRunResult,
 )
+from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -41,6 +50,16 @@ class NativeExecution:
         self.executable.write_bytes(b"authenticated simulator image")
         self.verify_bundle = None
         self.evidence_root = None
+        self.lease_open = False
+
+    @contextmanager
+    def retaining_build_lease(self):
+        """Mirror the real execution's optional port method: the lease spans ``build``."""
+        self.lease_open = True
+        try:
+            yield
+        finally:
+            self.lease_open = False
 
     def build(self, request):
         return SimulationBuildResult(True, collector=PINNED_VERILATOR)
@@ -77,6 +96,24 @@ class NativeExecution:
         self.run_cwd = run_cwd
 
 
+_LINE_100 = CoverageCriterion(
+    DurableTargetIdentity("acme:demo:counter:1#sim_0"),
+    (CoverageThreshold("line", Fraction(100)),),
+    None,
+)
+
+
+def _gated(context, criterion=_LINE_100):
+    return replace(context, criteria={"coverage_sim_0": criterion})
+
+
+def target_plan(context, root, *, tests=None, no_waivers=False, invocation="1"):
+    """Prepare ``sim_0`` and place its Target plan under ``root / reports/sim / invocation``."""
+    request = CoverageInvocationRequest(("sim_0",), tests, no_waivers=no_waivers)
+    prepared = prepare_coverage_invocation(request, context)
+    return replace(prepared.plan.targets[0], invocation_dir=root / "reports/sim" / invocation)
+
+
 def run_target(plan, execution, **options):
     """Run one Target transaction under the attempt-owned root the Simulation Record executor uses."""
     return run_coverage_target(
@@ -88,9 +125,7 @@ def run_target(plan, execution, **options):
 
 
 def test_ungated_target_persists_valid_coverage_record_and_independent_simulation(tmp_path: Path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
     execution = NativeExecution()
     outcome = run_target(plan, execution)
     assert outcome.exit_code == 0
@@ -116,9 +151,7 @@ def test_ungated_target_persists_valid_coverage_record_and_independent_simulatio
 
 
 def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class PreSimFailure(NativeExecution):
         def run(self, request):
@@ -129,6 +162,9 @@ def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
                 "failed",
                 0.2,
                 "vector generator rejected input",
+                3,
+                "private stdout",
+                "private stderr",
             )
             return SimulationRunResult("elab_error", evidence.detail, evidence)
 
@@ -139,7 +175,11 @@ def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
 
     assert outcome.exit_code == 2
     simulation = coverage_mapping_document(outcome.detail)
-    assert simulation["tests"][0]["pre_sim"]["status"] == "failed"
+    pre_sim = simulation["tests"][0]["pre_sim"]
+    assert pre_sim["status"] == "failed"
+    assert "stdout_tail" not in pre_sim
+    assert "stderr_tail" not in pre_sim
+    assert (pre_sim["returncode"], pre_sim["command_count"]) == (3, 1)
     assert simulation["tests"][0]["error_tail"] == (
         "Pre-Sim Commands failed (failed): vector generator rejected input"
     )
@@ -148,9 +188,7 @@ def test_simulation_projection_preserves_pre_sim_failure_detail(tmp_path: Path):
 def test_missing_input_is_a_design_failure_with_structured_abort_projection(
     tmp_path: Path,
 ) -> None:
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class MissingInput(NativeExecution):
         def run(self, request):
@@ -232,16 +270,8 @@ def test_invalid_hook_evidence_withholds_scores_but_retains_diagnostics(
 def _invalid_hook_plan(tmp_path: Path, failure: str, gated: bool):
     context = project(tmp_path)
     if gated:
-        criterion = CoverageCriterion(
-            DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-            (CoverageThreshold("line", Fraction(100)),),
-            ("reset",),
-        )
-        context = replace(context, criteria={"coverage_sim_0": criterion})
-    prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), ("reset",)), context
-    )
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+        context = _gated(context, replace(_LINE_100, tests=("reset",)))
+    plan = target_plan(context, tmp_path, tests=("reset",))
     request = plan.collection_request
     assert request is not None
     custom_main = failure == "duplicate_write"
@@ -333,19 +363,8 @@ def _assert_invalid_hook_consumers(outcome: CoverageTargetOutcome) -> None:
 def test_gated_verdicts_preserve_independent_truth(
     tmp_path, verdict, hits, tests, expected, evaluation
 ):
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-
-    context = project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        ("reset", "wrap"),
-    )
-    context = replace(context, criteria={"coverage_sim_0": criterion})
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",), tests), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    criterion = replace(_LINE_100, tests=("reset", "wrap"))
+    plan = target_plan(_gated(project(tmp_path), criterion), tmp_path, tests=tests)
     outcome = run_target(plan, NativeExecution(verdict=verdict, hits=hits))
     assert outcome.exit_code == expected
     document = json.loads(outcome.coverage_record_path.read_text())
@@ -353,45 +372,10 @@ def test_gated_verdicts_preserve_independent_truth(
     assert {run["simulation_verdict"] for run in document["tests"]["runs"]} == {verdict}
 
 
-def test_threshold_miss_exits_zero_with_valid_coverage(tmp_path):
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    context = replace(project(tmp_path), criteria={"coverage_sim_0": criterion})
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
-
-    outcome = run_target(plan, NativeExecution(hits=0))
-
-    assert outcome.exit_code == 0
-    assert json.loads(outcome.coverage_record_path.read_text())["evaluation"]["status"] == "fail"
-
-
 def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_path):
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-
-    context = project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    context = replace(
-        context,
-        criteria={"coverage_sim_0": criterion},
-        skipped_tests={"sim_0": ("wrap",)},
-    )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    assert prepared.plan.targets[0].selected_tests == ("reset",)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    context = replace(_gated(project(tmp_path)), skipped_tests={"sim_0": ("wrap",)})
+    plan = target_plan(context, tmp_path)
+    assert plan.selected_tests == ("reset",)
 
     outcome = run_target(plan, NativeExecution())
 
@@ -412,9 +396,7 @@ def test_all_tests_criterion_reports_suite_mismatch_after_configured_skip(tmp_pa
 def test_collector_errors_are_durable_command_errors_without_changing_simulation(
     tmp_path, payload, missing
 ):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class BrokenNative(NativeExecution):
         def payload(self, hits):
@@ -438,29 +420,14 @@ def _run_with_waivers(
     no_waivers: bool = False,
     prepare=None,
 ):
-    """Run ``sim_0`` once under ``reports/sim/<invocation>``; return (context, plan, outcome)."""
+    """Run ``sim_0`` once under ``reports/sim/<invocation>``; return (plan, outcome)."""
     context = prepare() if prepare is not None else project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    context = replace(
-        context,
-        criteria={"coverage_sim_0": criterion} if gated else {},
-        waiver_config=waiver_config,
-    )
-    request = CoverageInvocationRequest(("sim_0",), no_waivers=no_waivers)
-    prepared = prepare_coverage_invocation(request, context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim" / invocation)
+    context = replace(_gated(context) if gated else context, waiver_config=waiver_config)
+    plan = target_plan(context, tmp_path, no_waivers=no_waivers, invocation=invocation)
     return plan, run_target(plan, NativeExecution())
 
 
 def test_ungated_run_applies_approved_waivers_and_no_waivers_reports_raw(tmp_path):
-    import hashlib
-
-    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
 
     context = project(tmp_path)
     _plan, first = _run_with_waivers(tmp_path, None, invocation="1", prepare=lambda: context)
@@ -511,7 +478,6 @@ approval_ref = "review:CR-1042"
 
 @pytest.mark.parametrize("invalid", ["unsafe_directory", "malformed_file"])
 def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
-    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
 
     results = {}
     for gated in (False, True):
@@ -542,27 +508,13 @@ def test_invalid_waivers_block_every_coverage_run(tmp_path, invalid):
 
 
 def test_no_waivers_criterion_skips_invalid_waivers(tmp_path):
-    from fractions import Fraction
-
-    from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold
-    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
-
-    context = project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
+    _plan, outcome = _run_with_waivers(
+        tmp_path,
+        CoverageWaiverConfig("rtl_repository", "../unsafe"),
+        invocation="1",
+        gated=True,
+        no_waivers=True,
     )
-    context = replace(
-        context,
-        criteria={"coverage_sim_0": criterion},
-        waiver_config=CoverageWaiverConfig("rtl_repository", "../unsafe"),
-    )
-    prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
-    )
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
-    outcome = run_target(plan, NativeExecution())
     evaluation = json.loads(outcome.coverage_record_path.read_text())["evaluation"]
     assert evaluation["status"] != "blocked"
     assert evaluation["approved_waiver_set_digest"] == (
@@ -571,9 +523,7 @@ def test_no_waivers_criterion_skips_invalid_waivers(tmp_path):
 
 
 def test_unknown_native_records_remain_in_canonical_coverage_record(tmp_path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class FutureNative(NativeExecution):
         def payload(self, hits):
@@ -592,9 +542,7 @@ def test_unknown_native_records_remain_in_canonical_coverage_record(tmp_path):
 
 
 def test_source_drift_after_preflight_never_runs_with_stale_provenance(tmp_path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
     (tmp_path / "rtl/counter.sv").write_text("module changed; endmodule\n")
     execution = NativeExecution()
     outcome = run_target(plan, execution)
@@ -605,9 +553,7 @@ def test_source_drift_after_preflight_never_runs_with_stale_provenance(tmp_path)
 
 @pytest.mark.parametrize("failure_at", ["merge", "second_run"])
 def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, failure_at):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class Interrupted(NativeExecution):
         def run(self, request):
@@ -635,9 +581,7 @@ def test_infrastructure_failure_preserves_completed_simulation_truth(tmp_path, f
 
 
 def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class MergeUnavailable(NativeExecution):
         def command(self, request):
@@ -662,9 +606,7 @@ def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_p
 
 
 def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
 
     class Unavailable(NativeExecution):
         def build(self, request):
@@ -679,13 +621,7 @@ def test_build_infrastructure_failure_does_not_invent_a_simulation_verdict(tmp_p
 
 
 def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp_path):
-    from booley.flows.base import SubprocessResult
-    from booley.flows.sim.execution.contract import SimulationOptions
-    from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
-
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
     execution = VerilatorCoverageExecution(
         plan.handle,
         invoke=lambda command, timeout: SubprocessResult(
@@ -703,9 +639,7 @@ def test_real_adapter_reports_missing_verilator_provenance_as_shared_failure(tmp
 
 
 def test_target_transaction_never_resumes_existing_native_state(tmp_path):
-    context = project(tmp_path)
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    plan = replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    plan = target_plan(project(tmp_path), tmp_path)
     original = run_target(plan, NativeExecution())
     before = original.coverage_record_path.read_bytes()
     second = NativeExecution(verdict="fail")
@@ -716,8 +650,6 @@ def test_target_transaction_never_resumes_existing_native_state(tmp_path):
 
 
 def persistence_fault(boundary):
-    import os
-
     original_replace, original_link = Path.replace, os.link
     filenames = {
         "point_store": "coverage-points.jsonl.gz",
@@ -740,17 +672,7 @@ def persistence_fault(boundary):
 
 def gated_plan(tmp_path):
     """A coverage-gated Target plan whose Simulation Record publishes under ``reports/sim/1``."""
-    context = project(tmp_path)
-    criterion = CoverageCriterion(
-        DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-        (CoverageThreshold("line", Fraction(100)),),
-        None,
-    )
-    prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("sim_0",)),
-        replace(context, criteria={"coverage_sim_0": criterion}),
-    )
-    return replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    return target_plan(_gated(project(tmp_path)), tmp_path)
 
 
 def gap_project(tmp_path, sources=None, *, includes=(), testbench=None):
@@ -787,26 +709,10 @@ def gap_project(tmp_path, sources=None, *, includes=(), testbench=None):
 def gap_plan(tmp_path, sources=None, *, includes=(), testbench=None, criterion=False):
     """A ``gap_project`` Target plan; ``criterion`` binds a 100% line Criterion to the Target."""
     context = gap_project(tmp_path, sources, includes=includes, testbench=testbench)
-    if criterion:
-        key = "coverage_sim_0"
-        context = replace(
-            context,
-            criteria={
-                key: CoverageCriterion(
-                    DurableTargetIdentity("acme:demo:counter:1#sim_0"),
-                    (CoverageThreshold("line", Fraction(100)),),
-                    None,
-                )
-            },
-        )
-    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
-    return replace(prepared.plan.targets[0], invocation_dir=tmp_path / "reports/sim/1")
+    return target_plan(_gated(context) if criterion else context, tmp_path)
 
 
 def test_direct_publication_preserves_source_gaps(tmp_path):
-    from booley.flows.sim import coverage_source_gaps as gaps
-    from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-
     plan = gap_plan(tmp_path / "gap", criterion=True)
     outcome = run_target(plan, NativeExecution())
     loaded = load_coverage_record(outcome.coverage_record_path)
@@ -834,8 +740,6 @@ def test_direct_publication_preserves_source_gaps(tmp_path):
 
 
 def test_incomplete_collection_never_accuses_module_sources(tmp_path):
-    from booley.flows.sim.coverage_source_gaps import GAP_CODE
-
     execution = NativeExecution()
     execution.missing = True
     outcome = run_target(gap_plan(tmp_path), execution)
@@ -846,8 +750,6 @@ def test_incomplete_collection_never_accuses_module_sources(tmp_path):
 
 @pytest.mark.parametrize("boundary", ["point_store", "coverage_record"])
 def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypatch, boundary):
-    import os
-
     plan = gated_plan(tmp_path)
     replace_file, link_file = persistence_fault(boundary)
     with monkeypatch.context() as patch:
@@ -865,7 +767,6 @@ def test_persistence_boundaries_abort_with_a_truthful_outcome(tmp_path, monkeypa
 
 
 def test_direct_coverage_outcome_includes_metrics(tmp_path):
-    from booley.flows.sim.coverage_waivers import CoverageWaiverConfig
 
     context = project(tmp_path)
     for number, (gated, invalid) in enumerate(((False, False), (True, False), (True, True)), 1):
@@ -896,7 +797,6 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
 
         retained = run_target(retained_plan, NativeExecution(), publication_checkpoint=checkpoint)
         assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
-    from booley.flows.sim.coverage_policy import coverage_metrics
 
     coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record
     for covered, eligible, percent, met in ((2, 3, 66.67, False), (0, 0, None, False)):
@@ -914,36 +814,3 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
         assert coverage_metrics(edge) == {
             "line": {"percent": percent, "threshold": 66.67, "met": met}
         }
-
-
-def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata():
-    from types import SimpleNamespace
-
-    from booley.flows.sim.coverage_transaction import _coverage_test_projection
-
-    evidence = {
-        "status": "passed",
-        "returncode": 0,
-        "command_count": 2,
-        "elapsed_s": 0.2,
-        "test_names": ("smoke",),
-        "stdout_tail": "private stdout",
-        "stderr_tail": "private stderr",
-    }
-    run = SimpleNamespace(
-        test="smoke",
-        test_run="smoke+fast@7",
-        variant="fast",
-        seed=7,
-        fingerprint="sha256:" + "0" * 64,
-        simulation_verdict="pass",
-        collection="complete",
-        attributes={"pre_sim": evidence},
-    )
-    projection = _coverage_test_projection(run)
-    assert "stdout_tail" not in projection["pre_sim"]
-    assert "stderr_tail" not in projection["pre_sim"]
-    assert projection["pre_sim"]["returncode"] == 0
-    assert projection["pre_sim"]["command_count"] == 2
-    assert (projection["name"], projection["test_run"]) == ("smoke", "smoke+fast@7")
-    assert (projection["variant"], projection["seed"]) == ("fast", 7)

@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.flows.synth import timing as synth_timing
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.openroad import reporting as openroad_reporting
-from booley.flows.synth.backends.pipeline import SynthSpec
+from booley.flows.synth.backends.pipeline import SynthSpec, configure_synthesis
+from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import SynthMode
-from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.synth.timing import OpenRoadPpaSettings, StaTimingConfig
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _SYNTH_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
@@ -45,6 +49,37 @@ def _spec(
     return SynthSpec(**fields)
 
 
+def _script(tmp_path: Path, **overrides) -> str:
+    """The rendered ``synth.ys`` text for a logical spec built from *overrides*."""
+    configure_synthesis(_spec(**overrides), tmp_path / "build")
+    return (tmp_path / "build" / "synth.ys").read_text(encoding="utf-8")
+
+
+def _run_yosys(
+    tmp_path: Path, liberty_text: str, rtl: str, **overrides
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    """Render the real ``synth.ys`` for *rtl*, run Yosys on it, return build dir and result.
+
+    The sv2v frontend reads ``sv2v_converted.v``, so *rtl* is written there.
+    """
+    liberty = tmp_path / "toy.lib"
+    liberty.write_text(liberty_text, encoding="utf-8")
+    build_dir = tmp_path / "build"
+    configure_synthesis(_spec(liberty=liberty, **overrides), build_dir)
+    (build_dir / "sv2v_converted.v").write_text(rtl, encoding="utf-8")
+    with syn_make.yosys_tmpdir() as yosys_tmp:
+        result = subprocess.run(
+            ["yosys", "-q", "-s", "synth.ys"],
+            cwd=build_dir,
+            env={**os.environ, "TMPDIR": str(yosys_tmp)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_S,
+        )
+    return build_dir, result
+
+
 # ---------------------------------------------------------------------------
 # resolve_liberty
 # ---------------------------------------------------------------------------
@@ -52,36 +87,26 @@ def _spec(
 
 class TestResolveLiberty:
     def test_cli_path_exists(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         lib = tmp_path / "test.lib"
         lib.write_text("liberty", encoding="utf-8")
-        result = syn_core.resolve_liberty(str(lib))
-        assert result == lib
+        assert syn_core.resolve_liberty(str(lib)) == lib
 
     def test_cli_path_missing_exits(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         with pytest.raises(SystemExit):
             syn_core.resolve_liberty(str(tmp_path / "nonexistent.lib"))
 
     def test_env_prj_lib_dir(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         lib_dir = tmp_path / "cell" / "lib"
         lib_dir.mkdir(parents=True)
         lib_file = lib_dir / "NangateOpenCellLibrary_typical_ccs.lib"
         lib_file.write_text("liberty", encoding="utf-8")
         monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path))
-        result = syn_core.resolve_liberty(None)
-        assert result == lib_file
+        assert syn_core.resolve_liberty(None) == lib_file
 
     def test_no_liberty_found_exits(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
-        # DEFAULT_LIBERTY moved to booley.flows.synth.backends.yosys.discovery (re-exported by
-        # syn_core); patch it where resolve_liberty now reads it.
+        # DEFAULT_LIBERTY lives in booley.flows.synth.backends.yosys.discovery
+        # (re-exported by syn_core); patch it where resolve_liberty reads it.
         monkeypatch.setattr(
             "booley.flows.synth.backends.yosys.discovery.DEFAULT_LIBERTY", Path("/nonexistent/lib")
         )
@@ -90,17 +115,6 @@ class TestResolveLiberty:
 
 
 class TestNangateAbcPolicy:
-    @staticmethod
-    def _script(liberty: Path) -> str:
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        return syn_core._build_yosys_script(
-            _spec(liberty=liberty),
-            sources=[Path("/work/dut.v")],
-            inc_dirs=[],
-            work_dir=Path("/work/out"),
-        )
-
     @pytest.mark.parametrize(
         "basename",
         [
@@ -108,71 +122,42 @@ class TestNangateAbcPolicy:
             "NangateOpenCellLibrary_typical.lib",
         ],
     )
-    def test_supported_nangate_libraries_exclude_multi_output_cells(self, basename):
-        script = self._script(Path("/pdk") / basename)
+    def test_supported_nangate_libraries_exclude_multi_output_cells(self, tmp_path, basename):
+        script = _script(tmp_path, liberty=Path("/pdk") / basename)
         assert "abc -liberty" in script
         assert "-dont_use FA_X1 -dont_use HA_X1" in script
 
-    def test_unrelated_library_has_no_nangate_exclusions(self):
-        script = self._script(Path("/pdk/other.lib"))
+    def test_unrelated_library_has_no_nangate_exclusions(self, tmp_path):
+        script = _script(tmp_path, liberty=Path("/pdk/other.lib"))
         assert "-dont_use FA_X1" not in script
         assert "-dont_use HA_X1" not in script
 
 
 @pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
 class TestFinalCheckImportIsolation:
-    @staticmethod
-    def _liberty(tmp_path: Path) -> Path:
-        liberty = tmp_path / "other.lib"
-        liberty.write_text(
-            """library(test) {
+    _LIBERTY = """library(test) {
   cell(BUF_X1) {
     area: 1;
     pin(A) { direction: input; }
     pin(Z) { direction: output; function: \"A\"; }
   }
 }
-""",
-            encoding="utf-8",
-        )
-        return liberty
-
-    @staticmethod
-    def _run(tmp_path: Path, rtl: str) -> subprocess.CompletedProcess[str]:
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        source = tmp_path / "dut.v"
-        source.write_text(rtl, encoding="utf-8")
-        script = syn_core._build_yosys_script(
-            _spec(liberty=TestFinalCheckImportIsolation._liberty(tmp_path)),
-            sources=[source],
-            inc_dirs=[],
-            work_dir=tmp_path,
-        )
-        script_path = tmp_path / "synth.ys"
-        script_path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
-        return subprocess.run(
-            ["yosys", "-q", "-s", str(script_path)],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
+"""
 
     def test_existing_library_cell_module_is_preserved(self, tmp_path):
-        result = self._run(
+        build_dir, result = _run_yosys(
             tmp_path,
+            self._LIBERTY,
             "module BUF_X1(input A, output Z); assign Z = A; endmodule\n"
             "module dut(input A, output Z); BUF_X1 u_buf(.A(A), .Z(Z)); endmodule\n",
         )
         assert result.returncode == 0, result.stderr
-        output = (tmp_path / "synth_dut.v").read_text(encoding="utf-8")
-        assert "module BUF_X1" in output
+        assert "module BUF_X1" in (build_dir / "synth_dut.v").read_text(encoding="utf-8")
 
     def test_reserved_attribute_collision_fails_before_deletion(self, tmp_path):
-        result = self._run(
+        _build_dir, result = _run_yosys(
             tmp_path,
+            self._LIBERTY,
             "(* booley_check_library = 1 *) module marker(input A, output Z); "
             "assign Z = A; endmodule\n"
             "module dut(input A, output Z); marker u_marker(.A(A), .Z(Z)); endmodule\n",
@@ -181,11 +166,8 @@ class TestFinalCheckImportIsolation:
         assert "Assertion failed" in result.stderr
 
 
-@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
-class TestAbcDelayTargetReachesMapping:
-    """The generated ABC script must use a placeholder spelling Yosys really expands."""
-
-    _LIBERTY = """library(test) {
+#: A toy Liberty that ABC can map multi-bit logic to; the buffer cell is required.
+_MAPPING_LIBERTY = """library(test) {
   cell(INV_X1) {
     area: 1;
     pin(A) { direction: input; capacitance: 1; }
@@ -209,39 +191,65 @@ class TestAbcDelayTargetReachesMapping:
     pin(A2) { direction: input; capacitance: 1; }
     pin(ZN) { direction: output; function: \"A1 & A2\"; }
   }
+  cell(BUF_X1) {
+    area: 2;
+    pin(A) { direction: input; capacitance: 1; }
+    pin(Z) { direction: output; function: \"A\"; }
+  }
 }
 """
 
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+class TestAbcDelayTargetReachesMapping:
+    """The generated ABC script must use a placeholder spelling Yosys really expands."""
+
+    _LIBERTY = _MAPPING_LIBERTY
+
     @pytest.mark.parametrize("abc_recipe", ["fast", "balanced"])
     def test_delay_target_is_passed_to_abc_map(self, tmp_path, abc_recipe):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        liberty = tmp_path / "toy.lib"
-        liberty.write_text(self._LIBERTY, encoding="utf-8")
-        source = tmp_path / "dut.v"
-        source.write_text(
+        build_dir, result = _run_yosys(
+            tmp_path,
+            self._LIBERTY,
             "module dut(input a, input b, output y); assign y = a & b; endmodule\n",
-            encoding="utf-8",
-        )
-        script = syn_core._build_yosys_script(
-            _spec(liberty=liberty, abc_recipe=abc_recipe, abc_delay_ps=3333),
-            sources=[source],
-            inc_dirs=[],
-            work_dir=tmp_path,
-        )
-        script_path = tmp_path / "synth.ys"
-        script_path.write_text("\n".join(script.split("; ")) + "\n", encoding="utf-8")
-        result = subprocess.run(
-            ["yosys", "-q", "-s", str(script_path)],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=SUBPROCESS_TIMEOUT_S,
+            abc_recipe=abc_recipe,
+            abc_delay_ps=3333,
         )
         assert result.returncode == 0, result.stderr
-        abc_log = (tmp_path / "log_abc_dut.txt").read_text(encoding="utf-8")
+        abc_log = (build_dir / "log_abc_dut.txt").read_text(encoding="utf-8")
         assert "map -D 3333" in abc_log
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="requires the pinned Yosys executable")
+def test_abc_completes_under_a_long_job_tmpdir(tmp_path):
+    """The pinned Yosys's ABC hangs once TMPDIR passes 35 characters (#4730)."""
+    liberty = tmp_path / "toy.lib"
+    liberty.write_text(_MAPPING_LIBERTY, encoding="utf-8")
+    build_dir = tmp_path / "build"
+    configure_synthesis(_spec(liberty=liberty), build_dir)
+    (build_dir / "sv2v_converted.v").write_text(
+        "module dut(input [7:0] a, input [7:0] b, input [7:0] c, output [7:0] y);\n"
+        "  assign y = a * b + c;\nendmodule\n",
+        encoding="utf-8",
+    )
+    job_tmp = tmp_path / ("j" * 80)
+    job_tmp.mkdir()
+
+    with syn_make.yosys_tmpdir() as yosys_tmp:
+        result = run_bounded_child(
+            [
+                "make",
+                "-o",
+                "sv2v",
+                "-C",
+                str(build_dir),
+                "yosys",
+                syn_make.yosys_tmpdir_assignment(yosys_tmp),
+            ],
+            env={**os.environ, "TMPDIR": str(job_tmp)},
+        )
+
+    assert result.returncode == 0, result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -250,75 +258,118 @@ class TestAbcDelayTargetReachesMapping:
 
 
 class TestParseParams:
-    def test_basic(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (["OP_W=32", "DEPTH=4"], {"OP_W": "32", "DEPTH": "4"}),
+            ([], {}),
+            (["EXPR=a=b"], {"EXPR": "a=b"}),  # a value containing '=' is preserved
+            (["  KEY  =  VAL  "], {"KEY": "VAL"}),
+        ],
+    )
+    def test_valid(self, raw, expected):
+        assert syn_core.parse_params(raw) == expected
 
-        result = syn_core.parse_params(["OP_W=32", "DEPTH=4"])
-        assert result == {"OP_W": "32", "DEPTH": "4"}
-
-    def test_empty_list(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        assert syn_core.parse_params([]) == {}
-
-    def test_missing_equals_exits(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    @pytest.mark.parametrize("raw", ["NO_VALUE", "=value"])
+    def test_invalid_exits(self, raw):
         with pytest.raises(SystemExit):
-            syn_core.parse_params(["NO_VALUE"])
-
-    def test_empty_name_exits(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        with pytest.raises(SystemExit):
-            syn_core.parse_params(["=value"])
-
-    def test_value_with_equals(self):
-        """Value containing '=' should be preserved."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        result = syn_core.parse_params(["EXPR=a=b"])
-        assert result == {"EXPR": "a=b"}
-
-    def test_whitespace_stripped(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        result = syn_core.parse_params(["  KEY  =  VAL  "])
-        assert result == {"KEY": "VAL"}
+            syn_core.parse_params([raw])
 
 
 # ---------------------------------------------------------------------------
 # scan_synth_logs — false-pass guard
 # ---------------------------------------------------------------------------
 
+_SCOPEINFO_LOG = (
+    "2.14. Printing statistics.\n"
+    "   Area for cell type $scopeinfo is unknown!\n"
+    "   Chip area for top module '\\top': 12345.6\n"
+)
+
 
 class TestScanSynthLogs:
-    def test_clean_logs_return_none(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "yosys.log").write_text("All good\nDone.\n", encoding="utf-8")
+    @pytest.mark.parametrize(
+        "files",
+        [
+            {"yosys.log": "All good\nDone.\n"},
+            {},
+            # sta.log is not scanned: timing violations are warnings, not failures.
+            {"sta.log": "ERROR: setup violation\n"},
+            # `$scopeinfo` is a zero-area Yosys metadata cell that survives flatten;
+            # its stat "unknown area" line is noise, not a corrupted total.
+            {"yosys.log": _SCOPEINFO_LOG},
+        ],
+        ids=["clean", "missing", "opensta-ignored", "benign-scopeinfo"],
+    )
+    def test_scan_passes(self, tmp_path, files):
+        for name, text in files.items():
+            (tmp_path / name).write_text(text, encoding="utf-8")
         assert syn_core.scan_synth_logs(tmp_path) is None
 
-    def test_missing_logs_return_none(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        assert syn_core.scan_synth_logs(tmp_path) is None
-
-    def test_detects_yosys_error_marker(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "yosys.log").write_text(
-            "Running ABC\nERROR: cannot map cell foo\nmore\n", encoding="utf-8"
-        )
+    @pytest.mark.parametrize(
+        ("log_name", "text", "present", "absent"),
+        [
+            (
+                "yosys.log",
+                "Running ABC\nERROR: cannot map cell foo\nmore\n",
+                ["ERROR: cannot map cell foo"],
+                [],
+            ),
+            ("sv2v.log", "Unsupported construct at line 7\n", ["Unsupported"], []),
+            # An unmapped cell (zero-area in `stat`) is a false PASS: Yosys exits 0
+            # but undercounts the design. Mirrors the exact Yosys output.
+            (
+                "yosys.log",
+                "2.14. Printing statistics.\n"
+                "   Area for cell type $_DFF_PN0_ is unknown!\n"
+                "   Number of cells: 1234\n",
+                ["Area for cell type $_DFF_PN0_ is unknown!"],
+                [],
+            ),
+            # A benign $scopeinfo line does not mask a real unmapped-cell failure.
+            (
+                "yosys.log",
+                "   Area for cell type $scopeinfo is unknown!\n"
+                "   Area for cell type $_DFF_PN0_ is unknown!\n",
+                ["$_DFF_PN0_"],
+                [],
+            ),
+            # A stat "unknown area" line must name its likely cause (F-30).
+            (
+                "yosys.log",
+                "Area for cell type $check is unknown!\n",
+                [
+                    "Area for cell type $check is unknown!",
+                    "assertion/formal cell",
+                    "chformal -remove",
+                    "OpenROAD",
+                ],
+                [],
+            ),
+            (
+                "yosys.log",
+                "Area for cell type $_DFF_PN0_ is unknown!\n",
+                ["ZERO area"],
+                ["assertion/formal"],
+            ),
+        ],
+        ids=[
+            "yosys-error-marker",
+            "sv2v-unsupported",
+            "unknown-cell-area",
+            "real-unknown-area-beside-scopeinfo",
+            "formal-cell-cause",
+            "ordinary-cell-cause",
+        ],
+    )
+    def test_scan_fails(self, tmp_path, log_name, text, present, absent):
+        (tmp_path / log_name).write_text(text, encoding="utf-8")
         line = syn_core.scan_synth_logs(tmp_path)
         assert line is not None
-        assert "ERROR: cannot map cell foo" in line
-
-    def test_detects_sv2v_unsupported(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "sv2v.log").write_text("Unsupported construct at line 7\n", encoding="utf-8")
-        assert "Unsupported" in syn_core.scan_synth_logs(tmp_path)
+        for fragment in present:
+            assert fragment in line
+        for fragment in absent:
+            assert fragment not in line
 
     def test_real_slang_log_echoed_markers_pass(self, tmp_path):
         r"""Echoed source containing ERROR:/Unsupported is not a diagnostic (#3673).
@@ -335,8 +386,6 @@ class TestScanSynthLogs:
         Slang echoes each of those lines (one indented, two at column 0) under
         an unknown-escape-sequence warning.
         """
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         log = (_SYNTH_FIXTURES / "slang_echoed_markers_yosys_0_70.txt").read_text(encoding="utf-8")
         assert syn_core.scan_synth_text(log) is None
         (tmp_path / "yosys.log").write_text(log, encoding="utf-8")
@@ -351,8 +400,6 @@ class TestScanSynthLogs:
         ids=["unlocated", "located"],
     )
     def test_warning_mentioning_unsupported_passes(self, warning):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         assert syn_core.scan_synth_text(f"Running\n{warning}\nDone.\n") is None
 
     @pytest.mark.parametrize(
@@ -368,129 +415,65 @@ class TestScanSynthLogs:
         ids=["located", "located-spaced-path-with-column", "warning-without-snippet-then-error"],
     )
     def test_genuine_error_still_fails(self, text, expected):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         failure = syn_core.scan_synth_text(text)
         assert failure is not None
         assert failure.startswith(expected)
 
     def test_genuine_error_after_echoed_snippets_still_fails(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         log = (_SYNTH_FIXTURES / "slang_echoed_markers_yosys_0_70.txt").read_text(encoding="utf-8")
         failure = syn_core.scan_synth_text(log + "ERROR: genuine failure after the snippets\n")
         assert failure == "ERROR: genuine failure after the snippets"
 
-    def test_opensta_log_ignored(self, tmp_path):
-        """sta.log is not scanned — timing violations are warnings, not failures."""
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        (tmp_path / "sta.log").write_text("ERROR: setup violation\n", encoding="utf-8")
-        assert syn_core.scan_synth_logs(tmp_path) is None
-
-    def test_detects_unknown_cell_area(self, tmp_path):
-        """An unmapped cell (zero-area in `stat`) is a false PASS — hard-fail it.
-
-        Yosys exits 0 but `stat` prints this line and scores the cell as zero
-        area, silently undercounting the design. Mirrors the exact Yosys output
-        (leading whitespace, real internal DFF type).
-        """
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "yosys.log").write_text(
-            "2.14. Printing statistics.\n"
-            "   Area for cell type $_DFF_PN0_ is unknown!\n"
-            "   Number of cells: 1234\n",
-            encoding="utf-8",
-        )
-        line = syn_core.scan_synth_logs(tmp_path)
-        assert line is not None
-        assert "Area for cell type $_DFF_PN0_ is unknown!" in line
-
-    def test_benign_scopeinfo_unknown_area_ignored(self, tmp_path):
-        """`$scopeinfo` is a zero-area Yosys metadata cell (survives flatten); a
-        stat 'unknown area' for it is noise, not a corrupted total — must NOT fail."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "yosys.log").write_text(
-            "2.14. Printing statistics.\n"
-            "   Area for cell type $scopeinfo is unknown!\n"
-            "   Chip area for top module '\\top': 12345.6\n",
-            encoding="utf-8",
-        )
-        assert syn_core.scan_synth_logs(tmp_path) is None
-
-    def test_real_unknown_area_still_fails_alongside_scopeinfo(self, tmp_path):
-        """A benign $scopeinfo line does not mask a real unmapped-cell failure."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        (tmp_path / "yosys.log").write_text(
-            "   Area for cell type $scopeinfo is unknown!\n"
-            "   Area for cell type $_DFF_PN0_ is unknown!\n",
-            encoding="utf-8",
-        )
-        line = syn_core.scan_synth_logs(tmp_path)
-        assert line is not None
-        assert "$_DFF_PN0_" in line
-
-
-# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # parse_area_from_stat
 # ---------------------------------------------------------------------------
 
 
 class TestParseAreaFromStat:
-    def test_top_module_area(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        stat = tmp_path / "stat_design.txt"
-        stat.write_text(
-            "Number of cells: 1234\n"
-            "Chip area for module '\\sub_mod': 100.50\n"
-            "Chip area for top module '\\design': 456.78\n",
-            encoding="utf-8",
-        )
-        assert syn_core.parse_area_from_stat(stat) == 456.78
-
-    def test_fallback_last_match(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "Number of cells: 1234\n"
+                "Chip area for module '\\sub_mod': 100.50\n"
+                "Chip area for top module '\\design': 456.78\n",
+                456.78,
+                id="top-module-area",
+            ),
+            pytest.param(
+                "Chip area for module '\\a': 100.0\nChip area for module '\\b': 200.0\n",
+                200.0,
+                id="fallback-last-match",
+            ),
+            pytest.param(None, None, id="missing-file"),
+            pytest.param("Number of cells: 42\n", None, id="no-area-line"),
+            # #1078: a non-finite or partial number is no area; the latest complete
+            # statistics section is the one selected.
+            *(
+                pytest.param(f"Chip area for top module dut: {token}\n", None, id=token)
+                for token in ("1.2.3", "1e999", "NaN", "inf", "-")
+            ),
+            pytest.param(
+                "1. Printing statistics.\n=== dut ===\n  Number of cells: 1\n"
+                "  Chip area for top module dut: 1\n"
+                "2. Printing statistics.\n=== dut ===\n  2 - cells\n"
+                "  Chip area for top module dut: 2e1\n"
+                "3. Printing statistics.\n=== dut ===\n",
+                20.0,
+                id="latest-complete-section",
+            ),
+        ],
+    )
+    def test_area(self, tmp_path, text, expected):
         stat = tmp_path / "stat.txt"
-        stat.write_text(
-            "Chip area for module '\\a': 100.0\nChip area for module '\\b': 200.0\n",
-            encoding="utf-8",
-        )
-        assert syn_core.parse_area_from_stat(stat) == 200.0
-
-    def test_missing_file(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        assert syn_core.parse_area_from_stat(tmp_path / "missing.txt") is None
-
-    def test_no_area_line(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        stat = tmp_path / "stat.txt"
-        stat.write_text("Number of cells: 42\n", encoding="utf-8")
-        assert syn_core.parse_area_from_stat(stat) is None
-
-    def test_malformed_area_degrades(self, tmp_path):
-        # ([\d.]+) can capture "1.2.3" — EDA-tool-output drift must not crash.
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        stat = tmp_path / "stat.txt"
-        stat.write_text(
-            "Chip area for top module '\\design': 1.2.3\n",
-            encoding="utf-8",
-        )
-        assert syn_core.parse_area_from_stat(stat) is None
+        if text is not None:
+            stat.write_text(text, encoding="utf-8")
+        assert syn_core.parse_area_from_stat(stat) == expected
 
 
 class TestParseAbcMappedDelay:
     def test_takes_slowest_positive_partition(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         output = (
             "ABC: netlist : i/o = 4/2 area =10.0 delay =83.15 lev = 3\n"
             "ABC: netlist : i/o = 8/4 area =20.0 delay =338.97 lev = 12\n"
@@ -498,8 +481,6 @@ class TestParseAbcMappedDelay:
         assert syn_core.parse_abc_mapped_delay_ps(output) == pytest.approx(338.97)
 
     def test_ignores_zero_and_unrelated_delay_text(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         output = "ABC: netlist : area =0.0 delay =0.00 lev = 0\nYOSYS_ABC_DELAY_PS: 3333\n"
         assert syn_core.parse_abc_mapped_delay_ps(output) is None
 
@@ -509,19 +490,15 @@ class TestParseAbcMappedDelay:
 # ---------------------------------------------------------------------------
 
 
-class TestAreaToKge:
-    def test_conversion(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        # NAND2_AREA_UM2 = 0.798
-        # 798 um^2 / (0.798 * 1000) = 1.0 kGE
-        kge = syn_core.area_to_kge(798.0)
-        assert abs(kge - 1.0) < 0.01
-
-    def test_none(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        assert syn_core.area_to_kge(None) is None
+@pytest.mark.parametrize(
+    ("area_um2", "expected"),
+    [
+        (798.0, pytest.approx(1.0, abs=0.01)),  # 798 um^2 / (0.798 * 1000) = 1.0 kGE
+        (None, None),
+    ],
+)
+def test_area_to_kge(area_um2, expected):
+    assert syn_core.area_to_kge(area_um2) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +508,6 @@ class TestAreaToKge:
 
 class TestPhysicalStaHelpers:
     def test_detect_clock_port_prefers_common_input(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         netlist = tmp_path / "sta_top.v"
         netlist.write_text(
             "module top(clk_i, rst_ni, y);\n"
@@ -545,12 +520,9 @@ class TestPhysicalStaHelpers:
         assert syn_core.detect_clock_port(netlist) == "clk_i"
 
     def test_parse_sta_worst_slack_marker(self):
-
         assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: -0.125") == -0.125
 
     def test_parse_sta_worst_slack_csv_takes_min(self, tmp_path, capsys):
-        from booley.flows.synth.timing import StaTimingConfig
-
         csv = tmp_path / "overall.csv.rpt"
         assert openroad_reporting.parse_overall_csv_worst_slack(csv) is None  # missing file
         csv.write_text("a,b,0.100\nc,d,-0.250\n", encoding="utf-8")
@@ -561,27 +533,13 @@ class TestPhysicalStaHelpers:
         report_dir = tmp_path / "reports"
         report_dir.mkdir()
         (report_dir / "overall.csv.rpt").write_text(csv.read_text(encoding="utf-8"))
-        stdout = "STA_CLOCK_PERIOD_NS: 10.000000\n"
         capsys.readouterr()
-        assert openroad_reporting.emit_timing_markers(
-            stdout, StaTimingConfig(mode="physical"), report_dir
-        )
+        assert openroad_reporting.emit_timing_markers("", report_dir)
         emitted = capsys.readouterr().out
         assert emitted.count("STA_WORST_SLACK_NS:") == 1
         assert "STA_WORST_SLACK_NS: -0.400000" in emitted
 
-    def test_parse_sta_worst_slack_malformed_marker_degrades(self, monkeypatch):
-        # Simulate STA marker-format drift: the regex matches but the
-        # captured group is not a valid float.  Must ignore the
-        # marker (returning None) rather than crashing synthesis.
-        import re
-
-        drifted = re.compile(r"STA_WORST_SLACK_NS:\s*(\S+)")
-        monkeypatch.setattr(openroad_reporting, "_STA_SLACK_RE", drifted)
-        assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: n/a") is None
-
     def test_reg2reg_tcl_is_register_scoped_and_guarded(self):
-
         tcl = openroad_reporting.reg2reg_timing_tcl()
         # Restricts the worst-path search to register endpoints (internal path).
         assert "-from [all_registers]" in tcl
@@ -591,13 +549,11 @@ class TestPhysicalStaHelpers:
         assert "STA_REG2REG_SLACK_NS" in tcl
 
     def test_reg2reg_tcl_omits_report_when_no_path_given(self):
-
         # Default stays the arg-free slack-only block: callers that only want
         # the marker (and the golden snapshot) must not grow a stray file write.
         assert "report_checks" not in openroad_reporting.reg2reg_timing_tcl()
 
     def test_reg2reg_tcl_writes_path_detail_when_asked(self):
-
         tcl = openroad_reporting.reg2reg_timing_tcl("reports/timing/reg2reg.rpt")
         # Full gate-by-gate detail of the *reg->reg* path, not the overall one.
         assert "report_checks" in tcl
@@ -607,38 +563,88 @@ class TestPhysicalStaHelpers:
         # write that chokes must not cost us the slack number.
         assert tcl.index("STA_REG2REG_SLACK_NS") < tcl.index("report_checks")
         assert "  catch {report_checks" in tcl
+        # The path's clocks are read before report_checks frees the path objects.
+        assert tcl.index("STA_REG2REG_CLOCKS") < tcl.index("report_checks")
 
     def test_perclock_tcl_iterates_all_clocks(self):
-
         tcl = openroad_reporting.perclock_timing_tcl()
         # Iterates every clock and reports paths ending in that clock domain.
         assert "all_clocks" in tcl
         assert "STA_PERCLOCK" in tcl
         assert "-to $_clk" in tcl
+        # The worst setup path's launch clock decides whether Fmax is derivable.
+        assert "startpoint_clock" in tcl
+        assert "setup_same_clock=%s" in tcl
         # Reports both setup (max) and hold (min) slack, guarded by catch.
         assert "-path_delay max" in tcl
         assert "-path_delay min" in tcl
         assert "catch" in tcl
 
     def test_parse_reg2reg_slack_marker(self):
-
         assert openroad_reporting.parse_reg2reg_slack("STA_REG2REG_SLACK_NS: -0.30") == -0.30
         assert openroad_reporting.parse_reg2reg_slack("nothing here") is None
 
     def test_print_reg2reg_fmax_emits_derived(self, capsys):
-
         # slack +0.5 ns at a 2000 ps period → crit 1500 ps → 666.667 MHz.
-        assert (
-            openroad_reporting.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000", 2000.0) is True
+        stdout = (
+            "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
         )
+        assert openroad_reporting.print_reg2reg_fmax(stdout) is True
         out = capsys.readouterr().out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
         assert "STA_REG2REG_FMAX_MHZ: 666.667" in out
 
     def test_print_reg2reg_fmax_noop_when_absent(self, capsys):
-
-        assert openroad_reporting.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0", 2000.0) is False
+        assert openroad_reporting.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0") is False
         assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "clocks",
+        [
+            pytest.param("", id="no-clocks-marker"),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=0 capture_period_ns=2.000000\n", id="cross"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=0 capture_period_ns=NA\n", id="unclocked"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=NA\n", id="no-period"
+            ),
+            pytest.param(
+                "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=0.400000\n",
+                id="slack-above-period",
+            ),
+        ],
+    )
+    def test_print_reg2reg_fmax_omits_without_same_clock_period(self, capsys, clocks):
+        # The slack is still reported by the Tcl marker; no critical path or Fmax is invented.
+        assert (
+            openroad_reporting.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000\n" + clocks)
+            is True
+        )
+        out = capsys.readouterr().out
+        assert "STA_REG2REG_FMAX_MHZ" not in out
+        if clocks.endswith("capture_period_ns=0.400000\n"):
+            assert "STA_REG2REG_CRITICAL_PATH_PS: -100.000" in out
+        else:
+            assert "STA_REG2REG_CRITICAL_PATH_PS" not in out
+
+    def test_path_clocks_tcl_compares_clock_handles_under_catch(self):
+        tcl = openroad_reporting.path_clocks_tcl("STA_X_CLOCKS", "[lindex $p 0]")
+        assert tcl.startswith("catch {")
+        assert "startpoint_clock" in tcl and "endpoint_clock" in tcl
+        assert "$_sc eq $_ec" in tcl
+        assert "STA_X_CLOCKS: same_clock=$_same capture_period_ns=$_cap" in tcl
+
+    def test_parse_path_clocks(self):
+        text = "STA_X: same_clock=1 capture_period_ns=6.400000\n"
+        assert openroad_reporting.parse_path_clocks(text, "STA_X") == (True, 6.4)
+        assert openroad_reporting.parse_path_clocks(
+            "STA_X: same_clock=0 capture_period_ns=NA", "STA_X"
+        ) == (False, None)
+        assert openroad_reporting.parse_path_clocks(text, "STA_Y") is None
 
 
 # ---------------------------------------------------------------------------
@@ -648,23 +654,14 @@ class TestPhysicalStaHelpers:
 
 
 class TestEmitTimingMarkers:
-    @staticmethod
-    def _config():
-        from booley.flows.synth.timing import StaTimingConfig
-
-        return StaTimingConfig(
-            mode="physical",
-            sdc=(),
-        )
-
     def test_overall_and_reg2reg_both_emitted(self, tmp_path, capsys):
-
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 2.000000\n"
             "STA_WORST_SLACK_NS: -0.100000\n"
+            "STA_WORST_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
             "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
         )
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 2100.000" in out
@@ -673,15 +670,13 @@ class TestEmitTimingMarkers:
 
     def test_no_path_log_reports_no_overall_slack(self, tmp_path, capsys):
         """No STA paths: GPL-0028's comma-separated numbers must not become slack."""
-
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
             "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-            "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA\n"
+            "STA_PERCLOCK: name=clk period_ns=10.000000 wns_ns=NA whs_ns=NA setup_same_clock=0\n"
         )
         (tmp_path / "overall.csv.rpt").write_text("", encoding="utf-8")
         (tmp_path / "overall.rpt").write_text("No paths found.\n", encoding="utf-8")
-        openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path)
+        openroad_reporting.emit_timing_markers(stdout, tmp_path)
         out = capsys.readouterr().out
         for marker in ("STA_WORST_SLACK_NS", "STA_CRITICAL_PATH_PS", "STA_FMAX_MHZ"):
             assert marker not in out
@@ -689,35 +684,32 @@ class TestEmitTimingMarkers:
 
     def test_marker_wins_over_comma_log_lines(self, tmp_path, capsys):
         """A real path keeps its marker slack even beside comma-separated log lines."""
-
         stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
             "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
             "STA_WORST_SLACK_NS: -0.100000\n"
+            "STA_WORST_CLOCKS: same_clock=1 capture_period_ns=10.000000\n"
         )
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 10100.000" in out
 
     def test_csv_slack_wins_over_comma_log_lines_without_marker(self, tmp_path, capsys):
         """No marker (killed run) but real CSV rows: the CSV slack, not GPL-0028's 4."""
-
-        stdout = (
-            "STA_CLOCK_PERIOD_NS: 10.000000\n"
-            "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
-        )
+        stdout = "[INFO GPL-0028] Bin count (X, Y):           4 ,      4\n"
         (tmp_path / "overall.csv.rpt").write_text("a,b,-0.250\n", encoding="utf-8")
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         assert "STA_WORST_SLACK_NS: -0.250000" in capsys.readouterr().out
 
     def test_reg2reg_survives_when_overall_absent(self, tmp_path, capsys):
         """A false-pathed / I/O-bound overall worst path leaves no
         STA_WORST_SLACK_NS, but the internal reg->reg Fmax must still surface."""
-
         # No overall marker, and no overall.csv.rpt on disk — only reg->reg.
-        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = (
+            "STA_REG2REG_SLACK_NS: 0.500000\n"
+            "STA_REG2REG_CLOCKS: same_clock=1 capture_period_ns=2.000000\n"
+        )
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS" not in out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
@@ -726,29 +718,17 @@ class TestEmitTimingMarkers:
         assert "STA_REPORT:" in out
 
     def test_nothing_surfaced_returns_false(self, tmp_path, capsys):
-
-        assert (
-            openroad_reporting.emit_timing_markers("no markers here", self._config(), tmp_path)
-            is False
-        )
-        out = capsys.readouterr().out
-        assert "STA_REPORT:" not in out
+        assert openroad_reporting.emit_timing_markers("no markers here", tmp_path) is False
+        assert "STA_REPORT:" not in capsys.readouterr().out
 
     def test_overall_from_csv_when_stdout_marker_absent(self, tmp_path, capsys):
-
         # Overall slack only in the CSV report; reg->reg absent.
-        (tmp_path / "overall.csv.rpt").write_text(
-            "startpt,endpt,-0.250000\n",
-            encoding="utf-8",
-        )
-        assert (
-            openroad_reporting.emit_timing_markers(
-                "STA_CLOCK_PERIOD_NS: 2.000000\n", self._config(), tmp_path
-            )
-            is True
-        )
+        (tmp_path / "overall.csv.rpt").write_text("startpt,endpt,-0.250000\n", encoding="utf-8")
+        assert openroad_reporting.emit_timing_markers("", tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.250000" in out
+        # The CSV report carries no clocks, so its slack gets no critical path or Fmax.
+        assert "STA_CRITICAL_PATH_PS" not in out and "STA_FMAX_MHZ" not in out
 
     def test_reg2reg_report_pointer_only_when_the_file_exists(self, tmp_path, capsys):
         """The reg->reg path detail is advertised only when it was written.
@@ -756,22 +736,20 @@ class TestEmitTimingMarkers:
         The Tcl skips the report on a register-free design and the pre-repair
         salvage path never reaches it, so an unconditional pointer would send
         the reader to a file that isn't there."""
-
-        stdout = "STA_CLOCK_PERIOD_NS: 2.000000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         assert "STA_REG2REG_REPORT:" not in capsys.readouterr().out
 
         (tmp_path / "reg2reg.rpt").write_text("Startpoint: ...\n", encoding="utf-8")
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert f"STA_REG2REG_REPORT: {tmp_path / 'reg2reg.rpt'}" in out
 
     def test_perclock_surfaces_when_overall_and_reg2reg_absent(self, tmp_path, capsys):
         # A design whose overall/reg2reg queries are empty still reports genuine
         # per-clock timing — emit_timing_markers must surface it (return True).
-
-        stdout = "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        stdout = _perclock_marker("clk", 2.0, 0.75, 0.1)
+        assert openroad_reporting.emit_timing_markers(stdout, tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_PERCLOCK: name=clk" in out
         assert "STA_REPORT:" in out
@@ -782,73 +760,89 @@ class TestEmitTimingMarkers:
 # ---------------------------------------------------------------------------
 
 
+def _perclock_marker(name, period, wns, whs, same_clock=True):
+    def tok(v):
+        return "NA" if v is None else f"{v:.6f}"
+
+    return (
+        f"STA_PERCLOCK: name={name} period_ns={period:.6f} wns_ns={tok(wns)} whs_ns={tok(whs)} "
+        f"setup_same_clock={int(same_clock)}\n"
+    )
+
+
 class TestPerClockMarkers:
-    @staticmethod
-    def _marker(name, period, wns, whs):
-        def tok(v):
-            return "NA" if v is None else f"{v:.6f}"
-
-        return (
-            f"STA_PERCLOCK: name={name} period_ns={period:.6f} "
-            f"wns_ns={tok(wns)} whs_ns={tok(whs)}\n"
-        )
-
-    def test_parse_basic(self):
-
-        rows = synth_timing.parse_perclock(self._marker("clk", 2.0, 0.75, 0.1))
-        assert rows == {"clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1}}
-
-    def test_parse_na_becomes_none(self):
-
-        row = synth_timing.parse_perclock(self._marker("clk", 2.0, None, None))["clk"]
-        assert row["period_ns"] == 2.0
-        assert row["wns_ns"] is None
-        assert row["whs_ns"] is None
-
-    def test_parse_dedup_keeps_min_slack(self):
-        # A clock reported twice: the most pessimistic (minimum) slack wins.
-
-        output = self._marker("clk", 2.0, 0.75, 0.30) + self._marker("clk", 2.0, 0.20, 0.05)
-        row = synth_timing.parse_perclock(output)["clk"]
-        assert row["wns_ns"] == 0.20
-        assert row["whs_ns"] == 0.05
-
-    def test_parse_na_never_displaces_real_value(self):
-        # A later NA must not overwrite an earlier real slack.
-
-        output = self._marker("clk", 2.0, 0.75, 0.30) + self._marker("clk", 2.0, None, None)
-        row = synth_timing.parse_perclock(output)["clk"]
-        assert row["wns_ns"] == 0.75
-        assert row["whs_ns"] == 0.30
-
-    def test_parse_multi_clock(self):
-
-        output = self._marker("clk_a", 2.0, 0.5, 0.1) + self._marker("clk_b", 4.0, 1.0, 0.2)
-        rows = synth_timing.parse_perclock(output)
-        assert set(rows) == {"clk_a", "clk_b"}
-        assert rows["clk_b"]["period_ns"] == 4.0
+    @pytest.mark.parametrize(
+        ("markers", "expected"),
+        [
+            pytest.param(
+                [("clk", 2.0, 0.75, 0.1)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.75, 0.1, True)},
+                id="basic",
+            ),
+            pytest.param(
+                [("clk", 2.0, None, None)],
+                {"clk": synth_timing.PerClockRow(2.0, None, None, True)},
+                id="na-becomes-none",
+            ),
+            # A clock reported twice: the most pessimistic (minimum) slack wins.
+            pytest.param(
+                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, 0.20, 0.05)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, True)},
+                id="dedup-keeps-min-slack",
+            ),
+            # A later NA must not overwrite an earlier real slack.
+            pytest.param(
+                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, None, None, False)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.75, 0.30, True)},
+                id="na-never-displaces-real-value",
+            ),
+            # The same-clock flag belongs to the marker whose setup slack wins.
+            pytest.param(
+                [("clk", 2.0, 0.75, 0.30), ("clk", 2.0, 0.20, 0.05, False)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, False)},
+                id="cross-clock-flag-follows-min-slack",
+            ),
+            pytest.param(
+                [("clk", 2.0, None, None, False), ("clk", 2.0, 0.20, 0.05)],
+                {"clk": synth_timing.PerClockRow(2.0, 0.20, 0.05, True)},
+                id="real-slack-replaces-na-flag",
+            ),
+            pytest.param(
+                [("clk_a", 2.0, 0.5, 0.1), ("clk_b", 4.0, 1.0, 0.2, False)],
+                {
+                    "clk_a": synth_timing.PerClockRow(2.0, 0.5, 0.1, True),
+                    "clk_b": synth_timing.PerClockRow(4.0, 1.0, 0.2, False),
+                },
+                id="multi-clock",
+            ),
+        ],
+    )
+    def test_parse(self, markers, expected):
+        output = "".join(_perclock_marker(*marker) for marker in markers)
+        assert synth_timing.parse_perclock(output) == expected
 
     def test_emit_perclock_roundtrip(self, capsys):
         # Re-emitting parses the input and prints canonical marker lines that
-        # parse back to the same values.
-
-        stdout = self._marker("clk", 2.0, 0.75, 0.1)
+        # parse back to the same values, including the cross-clock flag.
+        stdout = _perclock_marker("clk", 2.0, 0.75, 0.1) + _perclock_marker(
+            "other", 4.0, 1.5, 0.2, same_clock=False
+        )
         assert openroad_reporting.emit_perclock_markers(stdout) is True
         out = capsys.readouterr().out
         assert synth_timing.parse_perclock(out) == {
-            "clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1},
+            "clk": synth_timing.PerClockRow(2.0, 0.75, 0.1, True),
+            "other": synth_timing.PerClockRow(4.0, 1.5, 0.2, False),
         }
 
     def test_emit_perclock_na_roundtrips_as_na(self, capsys):
-
         assert (
-            openroad_reporting.emit_perclock_markers(self._marker("clk", 2.0, None, None)) is True
+            openroad_reporting.emit_perclock_markers(_perclock_marker("clk", 2.0, None, None))
+            is True
         )
         out = capsys.readouterr().out
         assert "wns_ns=NA" in out and "whs_ns=NA" in out
 
     def test_emit_perclock_noop_when_absent(self, capsys):
-
         assert openroad_reporting.emit_perclock_markers("no markers here") is False
         assert capsys.readouterr().out == ""
 
@@ -858,90 +852,63 @@ class TestPerClockMarkers:
 # ---------------------------------------------------------------------------
 
 
+def _timing_toml(root: Path, table: str = "") -> None:
+    """Write ``<root>/.booley/booley.toml`` holding ``[flows.synth.timing]`` plus *table*."""
+    config_dir = root / ".booley"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "booley.toml").write_text(f"[flows.synth.timing]\n{table}\n", encoding="utf-8")
+
+
 class TestSynthTimingConfigTomlBoundary:
-    @staticmethod
-    def _with_timing(monkeypatch, timing: dict) -> None:
-        """Make _load_rtl_config return a config carrying the given timing dict."""
-        cfg = {"flows": {"synth": {"timing": timing}}}
-        # Accepts the optional project_root the ADR 0037 in-process configure
-        # half threads through (None on the legacy CLI path exercised here).
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda project_root=None: cfg,
-        )
-
-    def test_timing_model_has_no_generated_constraint_fields(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {})
-        cfg = syn_core.synth_timing_config()
-        assert not hasattr(cfg, "clock")
-        assert not hasattr(cfg, "period_ps")
-        assert not hasattr(cfg, "input_delay_pct")
-        assert not hasattr(cfg, "output_delay_pct")
-
     @pytest.mark.parametrize(
-        ("key", "value"),
+        "line",
         [
-            ("period_ps", 2500),
-            ("clock", "clk_i"),
-            ("input_delay_pct", 25),
-            ("output_delay_pct", 60),
-            ("sdc", "false_paths.sdc"),
+            "period_ps = 2500",
+            'clock = "clk_i"',
+            "input_delay_pct = 25",
+            "output_delay_pct = 60",
+            'sdc = "false_paths.sdc"',
         ],
     )
-    def test_migrated_constraint_key_is_hard_error(self, monkeypatch, key, value):
+    def test_migrated_constraint_key_is_hard_error(self, tmp_path, line):
         # ADR 0029 decision 3 (hard cutoff): a design-constraint key still set in
         # booley.toml is a setup-time error naming the migration, not a silent
         # second source of truth.
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {key: value})
+        _timing_toml(tmp_path, line)
         with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config()
+            syn_core.synth_timing_config(project_root=tmp_path)
         msg = str(exc_info.value)
-        assert key in msg
+        assert line.split(" ")[0] in msg
         assert "file_type: SDC" in msg
 
-    def test_cli_sdc_list_resolves_against_project_root(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    def test_cli_sdc_list_resolves_against_project_root(self, tmp_path):
         # A relative --sta-sdc path resolves against the selected worktree root
-        # sandbox /work), not the process cwd — mirroring --inc-dir/--extra-rtl.
+        # (sandbox /work), not the process cwd — mirroring --inc-dir/--extra-rtl.
         sdc_file = tmp_path / "constraints" / "false_paths.sdc"
         sdc_file.parent.mkdir()
         sdc_file.write_text("# custom\n", encoding="utf-8")
-        self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config(
             sdc=["constraints/false_paths.sdc"], project_root=tmp_path
         )
         assert cfg.sdc == (sdc_file.resolve(),)
 
-    def test_cli_sdc_list_preserves_order(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    def test_cli_sdc_list_preserves_order(self, tmp_path):
         # Multiple SDCs concatenate in fileset (list) order, last-wins.
         first = tmp_path / "a.sdc"
         first.write_text("# a\n", encoding="utf-8")
         second = tmp_path / "b.sdc"
         second.write_text("# b\n", encoding="utf-8")
-        self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config(sdc=[str(first), str(second)], project_root=tmp_path)
         assert cfg.sdc == (first.resolve(), second.resolve())
 
-    def test_sdc_path_must_stay_inside_selected_checkout(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    def test_sdc_path_must_stay_inside_selected_checkout(self, tmp_path):
         outside = tmp_path.parent / "outside.sdc"
         outside.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
-        self._with_timing(monkeypatch, {})
         with pytest.raises(SystemExit, match="escapes the selected checkout"):
             syn_core.synth_timing_config(sdc=[str(outside)], project_root=tmp_path)
 
-    def test_sdc_follows_symlinked_booley_dir_entry(self, monkeypatch, tmp_path):
+    def test_sdc_follows_symlinked_booley_dir_entry(self, tmp_path):
         """A Codespace links ``/work/.booley`` elsewhere; its SDC stays named through the entry."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         root = tmp_path / "work"
         data = tmp_path / "workspaces" / "repo"
         elsewhere = tmp_path / "elsewhere"
@@ -951,7 +918,6 @@ class TestSynthTimingConfigTomlBoundary:
         symlink_or_skip(data / "linked", elsewhere)
         for sdc in (data / "cores" / "top.sdc", elsewhere / "top.sdc"):
             sdc.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
-        self._with_timing(monkeypatch, {})
 
         cfg = syn_core.synth_timing_config(sdc=[".booley/cores/top.sdc"], project_root=root)
         assert cfg.sdc == (root.resolve() / ".booley" / "cores" / "top.sdc",)
@@ -960,11 +926,8 @@ class TestSynthTimingConfigTomlBoundary:
         with pytest.raises(SystemExit, match="escapes the selected checkout"):
             syn_core.synth_timing_config(sdc=[".booley/linked/top.sdc"], project_root=root)
 
-    def test_missing_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    def test_missing_cli_sdc_file_raises_clear_error(self, tmp_path):
         # A silently-ignored bad path is the worst outcome; error loudly instead.
-        self._with_timing(monkeypatch, {})
         with pytest.raises(SystemExit) as exc_info:
             syn_core.synth_timing_config(
                 project_root=tmp_path, sdc=[str(tmp_path / "does_not_exist.sdc")]
@@ -972,8 +935,6 @@ class TestSynthTimingConfigTomlBoundary:
         assert "does_not_exist.sdc" in str(exc_info.value)
 
     def test_unreadable_cli_sdc_file_raises_clear_error(self, monkeypatch, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         sdc_file = tmp_path / "dut.sdc"
         sdc_file.write_text("create_clock -period 4 [get_ports clk]\n", encoding="utf-8")
         original_read_bytes = Path.read_bytes
@@ -983,33 +944,22 @@ class TestSynthTimingConfigTomlBoundary:
                 raise OSError("permission denied")
             return original_read_bytes(path)
 
-        self._with_timing(monkeypatch, {})
         monkeypatch.setattr(Path, "read_bytes", fail_for_sdc)
         with pytest.raises(SystemExit, match="is not readable"):
             syn_core.synth_timing_config(sdc=[str(sdc_file)], project_root=tmp_path)
 
-    def test_unknown_timing_key_warns(self, monkeypatch, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
+    def test_unknown_timing_key_warns(self, tmp_path, capsys):
         # A typo'd knob (here ``reepair_timing``) is silently ignored by design —
         # so it must at least surface a warning, not vanish.
-        self._with_timing(
-            monkeypatch,
-            {"reepair_timing": True},
-        )
-        syn_core.synth_timing_config()
+        _timing_toml(tmp_path, "reepair_timing = true")
+        syn_core.synth_timing_config(project_root=tmp_path)
         out = capsys.readouterr().out
         assert "unknown key 'reepair_timing'" in out
         assert "valid keys" in out
 
-    def test_known_timing_keys_do_not_warn(self, monkeypatch, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(
-            monkeypatch,
-            {"utilization_pct": 55, "repair_timing": False},
-        )
-        syn_core.synth_timing_config()
+    def test_known_timing_keys_do_not_warn(self, tmp_path, capsys):
+        _timing_toml(tmp_path, "utilization_pct = 55\nrepair_timing = false")
+        syn_core.synth_timing_config(project_root=tmp_path)
         assert "unknown key" not in capsys.readouterr().out
 
 
@@ -1019,81 +969,43 @@ class TestSynthTimingConfigTomlBoundary:
 
 
 class TestSynthTimingConfigModes:
-    @staticmethod
-    def _with_timing(monkeypatch, timing: dict) -> None:
-        cfg = {"flows": {"synth": {"timing": timing}}}
-        # Accepts the optional project_root the ADR 0037 in-process configure
-        # half threads through (None on the legacy CLI path exercised here).
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda project_root=None: cfg,
-        )
-
-    def test_physical_is_default_mode(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {})
-        cfg = syn_core.synth_timing_config()
+    def test_physical_is_default_mode(self, tmp_path):
+        cfg = syn_core.synth_timing_config(project_root=tmp_path)
         assert cfg.mode == "physical"
         # Defaulted OpenROAD knobs.
         assert cfg.utilization_pct == syn_core.DEFAULT_STA_UTILIZATION_PCT
         assert cfg.repair_timing is True
 
-    def test_logical_accepted_explicitly(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
+    def test_logical_accepted_explicitly(self, tmp_path):
+        assert (
+            syn_core.synth_timing_config(mode="logical", project_root=tmp_path).mode == "logical"
+        )
 
-        self._with_timing(monkeypatch, {})
-        assert syn_core.synth_timing_config(mode="logical").mode == "logical"
-
-    def test_retired_timing_engine_is_hard_error(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {"engine": "opensta"})
+    def test_retired_timing_engine_is_hard_error(self, tmp_path):
+        _timing_toml(tmp_path, 'engine = "opensta"')
         with pytest.raises(SystemExit, match="synth_mode"):
-            syn_core.synth_timing_config()
+            syn_core.synth_timing_config(project_root=tmp_path)
 
-    def test_invalid_mode_lists_two_modes(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {})
+    def test_invalid_mode_lists_two_modes(self, tmp_path):
         with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config(mode="bogus")
+            syn_core.synth_timing_config(mode="bogus", project_root=tmp_path)
         msg = str(exc_info.value)
         assert "physical" in msg and "logical" in msg
 
-    def test_utilization_and_repair_timing_from_toml(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(
-            monkeypatch,
-            {"utilization_pct": 55, "repair_timing": False},
-        )
-        cfg = syn_core.synth_timing_config()
-        assert cfg.utilization_pct == 55.0
-        assert cfg.repair_timing is False
-
-    def test_cli_overrides_win(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-        from booley.flows.synth.timing import OpenRoadPpaSettings
-
-        self._with_timing(
-            monkeypatch,
-            {"utilization_pct": 55, "repair_timing": True},
-        )
+    def test_cli_overrides_win(self, tmp_path):
+        _timing_toml(tmp_path, "utilization_pct = 55\nrepair_timing = true")
         cfg = syn_core.synth_timing_config(
             ppa=OpenRoadPpaSettings(
                 utilization_pct=70.0, placement_density=0.7, repair_setup=False
-            )
+            ),
+            project_root=tmp_path,
         )
         assert cfg.utilization_pct == 70.0
         assert cfg.repair_timing is False
 
-    def test_ppa_settings_drive_openroad_knobs(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-        from booley.flows.synth.timing import OpenRoadPpaSettings
-
+    def test_ppa_settings_drive_openroad_knobs(self, tmp_path):
         # TOML values must lose to explicit ppa when the legacy fallbacks are off.
-        self._with_timing(monkeypatch, {"utilization_pct": 55, "repair_timing": True})
+        _timing_toml(tmp_path, "utilization_pct = 55\nrepair_timing = true")
         ppa = OpenRoadPpaSettings(
             utilization_pct=63.0,
             placement_density=0.72,
@@ -1104,7 +1016,10 @@ class TestSynthTimingConfigModes:
             repair_tns_percent=80.0,
         )
         cfg = syn_core.synth_timing_config(
-            ppa=ppa, legacy_utilization_fallback=False, legacy_repair_fallback=False
+            ppa=ppa,
+            legacy_utilization_fallback=False,
+            legacy_repair_fallback=False,
+            project_root=tmp_path,
         )
         assert cfg.utilization_pct == 63.0
         assert cfg.repair_timing is False
@@ -1115,18 +1030,17 @@ class TestSynthTimingConfigModes:
         assert cfg.repair_tns_percent == 80.0
 
     @pytest.mark.parametrize(
-        ("toml", "utilization", "repair"),
+        ("table", "utilization", "repair"),
         [
-            ({}, 40.0, True),
-            ({"utilization_pct": 55, "repair_timing": False}, 55.0, False),
+            ("", 40.0, True),
+            ("utilization_pct = 55\nrepair_timing = false", 55.0, False),
         ],
     )
-    def test_omitted_ppa_matches_all_none_call(self, monkeypatch, toml, utilization, repair):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, toml)
+    def test_omitted_ppa_matches_all_none_call(self, tmp_path, table, utilization, repair):
+        if table:
+            _timing_toml(tmp_path, table)
         expected = StaTimingConfig(
-            mode=syn_core.synth_timing_config().mode,
+            mode=syn_core.synth_timing_config(project_root=tmp_path).mode,
             sdc=(),
             utilization_pct=utilization,
             repair_timing=repair,
@@ -1137,162 +1051,21 @@ class TestSynthTimingConfigModes:
             repair_tns_percent=None,
             report_paths=syn_core.DEFAULT_TIMING_REPORT_PATHS,
         )
-        assert syn_core.synth_timing_config(ppa=None) == expected
-        assert syn_core.synth_timing_config() == expected
+        assert syn_core.synth_timing_config(ppa=None, project_root=tmp_path) == expected
+        assert syn_core.synth_timing_config(project_root=tmp_path) == expected
 
-    def test_non_bool_repair_timing_raises(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {"repair_timing": "yes"})
-        with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config()
-        assert "repair_timing" in str(exc_info.value)
-
-    def test_non_numeric_utilization_raises(self, monkeypatch):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        self._with_timing(monkeypatch, {"utilization_pct": "high"})
-        with pytest.raises(SystemExit) as exc_info:
-            syn_core.synth_timing_config()
-        assert "utilization_pct" in str(exc_info.value)
-
-
-class TestSlangReadCommandOptions:
-    """Target flow_options.slang_options tokens reach the read_slang line."""
-
-    def test_slang_options_appended_verbatim_before_files(self):
-        """Extra tokens (e.g. --single-unit) land after the generated options.
-
-        Regression (ravenoc): slang's per-file compilation units break the
-        "defines header included once, macros leak across the filelist"
-        convention; without an option passthrough the slang frontend was
-        unusable on such repos.
-        """
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        cmd = syn_core._slang_read_command(
-            [Path("/work/a.sv"), Path("/work/b.sv")],
-            "dut",
-            [Path("/work/inc")],
-            ["SYNTHESIS"],
-            None,
-            ["--single-unit", "--allow-use-before-declare"],
-        )
-        assert cmd.startswith("read_slang --top dut ")
-        assert "-I /work/inc -D SYNTHESIS --single-unit --allow-use-before-declare" in cmd
-        # tokens precede the source files
-        assert cmd.index("--single-unit") < cmd.index("/work/a.sv")
-
-    def test_no_slang_options_leaves_command_unchanged(self):
-        """Default (None) produces the exact pre-knob command shape."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        cmd = syn_core._slang_read_command([Path("/work/a.sv")], "dut", [], [], None)
-        assert cmd == "read_slang --top dut /work/a.sv"
-
-
-# ---------------------------------------------------------------------------
-# ADR 0029 — Target-SDC period recovery + generated-default suppression
-# ---------------------------------------------------------------------------
-
-
-def _sdc_config(tmp_path, *sdc_texts):
-    """A StaTimingConfig whose SDC fileset is the given text(s), on disk."""
-    from booley.flows.synth.backends.yosys import core as syn_core
-
-    paths = []
-    for i, text in enumerate(sdc_texts):
-        p = tmp_path / f"user_{i}.sdc"
-        p.write_text(text, encoding="utf-8")
-        paths.append(p)
-    return syn_core.StaTimingConfig(
-        mode="physical",
-        sdc=tuple(paths),
+    @pytest.mark.parametrize(
+        ("line", "key"),
+        [
+            ('repair_timing = "yes"', "repair_timing"),
+            ('utilization_pct = "high"', "utilization_pct"),
+        ],
     )
-
-
-class TestSdcClockPeriodParsing:
-    def test_single_clock_ns_to_ps(self):
-
-        assert synth_timing.parse_sdc_clock_periods_ps(
-            "create_clock -name clk -period 25 [get_ports clk]"
-        ) == [25000.0]
-
-    def test_decimal_period(self):
-
-        assert synth_timing.parse_sdc_clock_periods_ps(
-            "create_clock -period 3.5 [get_ports clk]"
-        ) == [3500.0]
-
-    def test_multiple_clocks_in_order(self):
-
-        text = (
-            "create_clock -name a -period 10 [get_ports a]\n"
-            "create_clock -name b -period 4 [get_ports b]\n"
-        )
-        assert synth_timing.parse_sdc_clock_periods_ps(text) == [10000.0, 4000.0]
-
-    def test_commented_line_ignored(self):
-
-        text = (
-            "# create_clock -name old -period 999 [get_ports x]\n"
-            "create_clock -period 8 [get_ports clk]\n"
-        )
-        assert synth_timing.parse_sdc_clock_periods_ps(text) == [8000.0]
-
-    def test_no_period_yields_empty(self):
-
-        assert synth_timing.parse_sdc_clock_periods_ps("set_false_path -from x") == []
-
-    def test_sta_clock_period_marker(self):
-
-        assert openroad_reporting.parse_sta_clock_period_ps("STA_CLOCK_PERIOD_NS: 4.0") == 4000.0
-        assert openroad_reporting.parse_sta_clock_period_ps("nope") is None
-
-
-class TestEffectivePeriod:
-    def test_no_sdc_has_no_period_fallback(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        cfg = syn_core.StaTimingConfig(
-            mode="physical",
-            sdc=(),
-        )
-        assert openroad_reporting.effective_period_ps(cfg, "irrelevant stdout") is None
-
-    def test_sdc_owned_clock_wins(self, tmp_path):
-
-        cfg = _sdc_config(
-            tmp_path,
-            "create_clock -period 25 [get_ports clk_i]",
-        )
-        assert openroad_reporting.effective_period_ps(cfg, "") == 25000.0
-
-    def test_tightest_of_multiple_clocks(self, tmp_path):
-
-        cfg = _sdc_config(
-            tmp_path,
-            "create_clock -name a -period 10 [get_ports a]\n"
-            "create_clock -name b -period 4 [get_ports b]\n",
-        )
-        assert openroad_reporting.effective_period_ps(cfg, "") == 4000.0
-
-    def test_falls_back_to_sta_marker_when_no_period(self, tmp_path):
-        # Authored clock but no parseable -period → STA-reported period (prio 2).
-
-        cfg = _sdc_config(tmp_path, "create_clock -name clk_i [get_ports clk_i]")
-        assert openroad_reporting.effective_period_ps(cfg, "STA_CLOCK_PERIOD_NS: 6.0") == 6000.0
-
-    def test_concatenates_sdc_files_in_order(self, tmp_path):
-
-        cfg = _sdc_config(
-            tmp_path,
-            "set_false_path -from x\n",
-            "create_clock -period 12 [get_ports clk_i]\n",
-        )
-        text = synth_timing.read_user_sdc_text(cfg)
-        assert "set_false_path" in text and "create_clock" in text
-        assert openroad_reporting.effective_period_ps(cfg, "") == 12000.0
+    def test_ill_typed_timing_value_raises(self, tmp_path, line, key):
+        _timing_toml(tmp_path, line)
+        with pytest.raises(SystemExit) as exc_info:
+            syn_core.synth_timing_config(project_root=tmp_path)
+        assert key in str(exc_info.value)
 
 
 class TestFormalCellRemoval:
@@ -1305,78 +1078,28 @@ class TestFormalCellRemoval:
     with an undercounted area and no timing at all.
     """
 
-    @staticmethod
-    def _script(frontend: str) -> str:
-        from booley.flows.synth.backends.yosys import core as syn_core
+    def test_slang_script_removes_formal_cells(self, tmp_path):
+        assert "chformal -remove" in _script(tmp_path, frontend="slang").splitlines()
 
-        return syn_core._build_yosys_script(
-            _spec(frontend=frontend),
-            sources=[Path("/work/a.sv")],
-            inc_dirs=[],
-            work_dir=Path("/work/out"),
-        )
-
-    def test_slang_script_removes_formal_cells(self):
-        script = self._script("slang")
-        assert "chformal -remove" in script
-
-    def test_chformal_runs_after_proc_and_before_synth(self):
+    def test_chformal_runs_after_proc_and_before_synth(self, tmp_path):
         """Placement is load-bearing: `proc` lowers the last procedural
         assertions into cells, and the `synth` pass (which runs opt and techmap
         internally) is what chokes on them."""
-        script = self._script("slang")
-        assert script.index("; proc") < script.index("chformal -remove")
-        assert script.index("chformal -remove") < script.index("synth -top")
+        lines = _script(tmp_path, frontend="slang").splitlines()
+        synth_index = next(i for i, line in enumerate(lines) if line.startswith("synth -top"))
+        assert lines.index("proc") < lines.index("chformal -remove") < synth_index
 
-    def test_sv2v_script_unchanged(self):
+    def test_sv2v_script_unchanged(self, tmp_path):
         """sv2v strips SVA and plain read_verilog never makes a formal cell —
         so the sv2v script (and every area number taken through it) is
         untouched."""
-        assert "chformal" not in self._script("sv2v")
-
-
-class TestUnknownAreaCauseNaming:
-    """A stat "unknown area" line must name its likely cause (F-30)."""
-
-    @staticmethod
-    def _yosys_log(tmp_path, text: str) -> Path:
-        (tmp_path / "yosys.log").write_text(text, encoding="utf-8")
-        return tmp_path
-
-    def test_formal_cell_names_the_assertion_cause(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        work = self._yosys_log(tmp_path, "Area for cell type $check is unknown!\n")
-        line = syn_core.scan_synth_logs(work)
-        assert line is not None
-        assert "Area for cell type $check is unknown!" in line
-        assert "assertion/formal cell" in line
-        assert "chformal -remove" in line
-        # The downstream symptom the user actually saw is named too.
-        assert "OpenROAD" in line
-
-    def test_ordinary_cell_names_the_mapping_cause(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        work = self._yosys_log(tmp_path, "Area for cell type $_DFF_PN0_ is unknown!\n")
-        line = syn_core.scan_synth_logs(work)
-        assert line is not None
-        assert "ZERO area" in line
-        assert "assertion/formal" not in line
-
-    def test_benign_metadata_cell_still_passes(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        work = self._yosys_log(tmp_path, "Area for cell type $scopeinfo is unknown!\n")
-        assert syn_core.scan_synth_logs(work) is None
+        assert "chformal" not in _script(tmp_path, frontend="sv2v")
 
 
 class TestSv2vArgv:
     """`sv2v_argv` — one transpile command line for every caller (F-31)."""
 
     def test_shape(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         argv = syn_core.sv2v_argv(
             [Path("rtl/pkg.sv"), Path("rtl/dut.sv")],
             [Path("rtl/inc")],
@@ -1394,21 +1117,11 @@ class TestSv2vArgv:
             "build/sv2v_converted.v",
         ]
 
-    def test_params_are_not_passed_to_sv2v(self):
-        """Parameter overrides belong to Yosys (chparam) — passing them here
-        too would double-apply them."""
-        from booley.flows.synth.backends.yosys import core as syn_core
-
-        argv = syn_core.sv2v_argv([Path("a.sv")], [], [], "out.v")
-        assert not [a for a in argv if a.startswith("-P") or a.startswith("-G")]
-
 
 class TestEffectiveParameters:
     """Post-elaboration evidence and enabled-define classification (F-13)."""
 
     def test_parses_yosys_module_header(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         text = """\
 module \\dut
   parameter \\ENABLE_ZBB 1'0
@@ -1421,8 +1134,6 @@ end
         }
 
     def test_only_integral_nonzero_or_bare_defines_are_enabled(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         assert syn_core.enabled_define_names(
             [
                 "BARE",
@@ -1440,63 +1151,22 @@ class TestFrontendKnobResolution:
     """`resolve_frontend` / `resolve_slang_options` — one reader for both Flows."""
 
     def test_absent_knob_is_none(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         assert syn_core.resolve_frontend({}) is None
 
     def test_cli_override_wins(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         assert syn_core.resolve_frontend({"frontend": "sv2v"}, override="slang") == "slang"
 
     def test_unknown_frontend_rejected(self):
-        import pytest
-
-        from booley.core.boundary import BoundaryError
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         with pytest.raises(BoundaryError, match="must be one of"):
             syn_core.resolve_frontend({"frontend": "verific"})
 
     def test_slang_options_absent_is_empty(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         assert syn_core.resolve_slang_options({}) == []
 
     def test_slang_options_bare_string_rejected(self):
         """The TOML footgun: a bare string would iterate character-by-character."""
-        import pytest
-
-        from booley.core.boundary import BoundaryError
-        from booley.flows.synth.backends.yosys import core as syn_core
-
         with pytest.raises(BoundaryError, match="non-empty list"):
             syn_core.resolve_slang_options({"slang_options": "--single-unit"})
-
-
-@pytest.mark.parametrize("token", ["1.2.3", "1e999", "NaN", "inf", "-"])
-def test_stat_backend_rejects_nonfinite_or_partial_area(tmp_path, token):
-    from booley.flows.synth.backends.yosys import core as syn_core
-
-    stat = tmp_path / "stat.txt"
-    stat.write_text(f"Chip area for top module dut: {token}\n")
-    assert syn_core.parse_area_from_stat(stat) is None
-
-
-def test_stat_backend_latest_complete_area_matches_flow(tmp_path):
-    from booley.flows.synth.backends.yosys import core as syn_core
-    from booley.flows.synth.flow import _parse_area
-
-    text = (
-        "1. Printing statistics.\n=== dut ===\n  Number of cells: 1\n"
-        "  Chip area for top module dut: 1\n"
-        "2. Printing statistics.\n=== dut ===\n  2 - cells\n"
-        "  Chip area for top module dut: 2e1\n"
-        "3. Printing statistics.\n=== dut ===\n"
-    )
-    stat = tmp_path / "stat.txt"
-    stat.write_text(text)
-    assert syn_core.parse_area_from_stat(stat) == _parse_area(text)[0] == 20.0
 
 
 @pytest.mark.parametrize(
@@ -1510,31 +1180,5 @@ def test_stat_backend_latest_complete_area_matches_flow(tmp_path):
     ],
 )
 def test_1095_text_scan_preserves_path_adapter(tmp_path, text):
-    from booley.flows.synth.backends.yosys import core as syn_core
-
     (tmp_path / "yosys.log").write_text(text)
     assert syn_core.scan_synth_text(text) == syn_core.scan_synth_logs(tmp_path)
-
-
-def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
-    from booley.flows.synth.backends.yosys import core as syn_core
-    from booley.flows.target_parameters import ParameterValue, sv_byte_string_literal
-
-    raw_name = 'a" b\\c; d'
-    parameters = {"NAME": ParameterValue("str", raw_name), "N": "12", "B": "1", "R": "1.25"}
-    slang = syn_core._slang_read_command([tmp_path / "top.sv"], "top", [], [], parameters)
-    assert "-G N=12 -G B=1 -G R=1.25" in slang
-    # Pin the escaped form: a readable literal would let "; " split the script.
-    assert f"-G NAME={sv_byte_string_literal(raw_name)}" in slang
-    commands = syn_core._rtl_frontend_commands(
-        [tmp_path / "top.v"],
-        "top",
-        frontend="sv2v",
-        inc_dirs=[],
-        defines=[],
-        params=parameters,
-        slang_options=[],
-    )
-    assert "-set N 12 -set B 1 -set R 1.25" in commands
-    # The string travels as its UTF-8 bytes in one sized hex literal.
-    assert "-set NAME 72'h612220625c633b2064" in commands

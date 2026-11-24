@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.file_lock import LockContentionError, acquire_file_lock
 from booley.flows.base import SubprocessResult
 from booley.flows.sim import build_reuse
 from booley.flows.sim.build_session import simulation_build_slot
@@ -39,6 +40,7 @@ from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecu
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.sim import test_verilator_build_reuse_engine as engine
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -120,7 +122,7 @@ def _execution(project: Path, invoker: _Invoker) -> VerilatorCoverageExecution:
     return VerilatorCoverageExecution(
         _handle(project),
         invoke=invoker,
-        options=SimulationOptions(timeout_ms=10_000),
+        options=SimulationOptions(timeout_ms=hang_guard_s() * 1000),
         provenance_path=project.parent / "BOOLEY-SOURCE.txt",
         pre_sim_commands=(),
     )
@@ -247,14 +249,16 @@ def test_coverage_source_edit_rebuilds_and_never_launches_old_image(
     assert _current_build_root(coverage_env, _PLAIN) == new_root
 
 
-def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path) -> None:
+@pytest.mark.parametrize("tampered", ["header", "image"])
+def test_tampered_retained_read_closure_file_rebuilds(coverage_env: Path, tampered: str) -> None:
     invoker = _Invoker(coverage_env)
     execution = _execution(coverage_env, invoker)
     _build(execution, coverage_env)
-    old_root = execution.authenticated_image()[0]
+    old_root, artifacts = execution.authenticated_image()
     # A generated header lies outside the staged-input snapshot; only the
     # read closure recorded from the dependency files can notice the edit.
-    (old_root / "Vtb.h").write_text("// tampered generated header\n", encoding="utf-8")
+    target = old_root / "Vtb.h" if tampered == "header" else artifacts[0]
+    target.write_text("// tampered retained file\n", encoding="utf-8")
 
     rebuilt = _build(execution, coverage_env)
 
@@ -289,3 +293,45 @@ def test_isolated_coverage_source_edit_rebuilds_and_never_launches_old_image(
     assert "IMAGE=NEW" in artifacts[0].read_text(encoding="utf-8")
     assert run.verdict == "pass", run.output
     assert len(invoker.launches) == 1 and "IMAGE=NEW" in invoker.launches[0]
+
+
+def _generation_names(project: Path) -> list[str]:
+    slot = simulation_build_slot(_handle(project), _PLAIN.name)
+    return sorted(path.name for path in (slot / "g").iterdir())
+
+
+@pytest.mark.parametrize("reusable", [True, False], ids=["reusable", "never-promoted"])
+def test_retained_build_lease_covers_the_image_copy_then_prunes(
+    coverage_env: Path, monkeypatch: pytest.MonkeyPatch, reusable: bool
+) -> None:
+    """The lease outlives ``build`` until the context ends; then only the current build stays."""
+    invoker = _Invoker(coverage_env)
+    execution = _execution(coverage_env, invoker)
+    _build(execution, coverage_env)
+    first = _generation_names(coverage_env)
+    engine._edit_keeping_mtime(coverage_env / "inc" / "defs.svh", "// DEFS v2\n")
+    if not reusable:
+        # A make variable in the environment keeps the build out of reuse.
+        monkeypatch.setenv("MAKEFLAGS", "-j2")
+
+    slot = simulation_build_slot(_handle(coverage_env), _PLAIN.name)
+    with execution.retaining_build_lease():
+        _build(execution, coverage_env)
+        _root, artifacts = execution.authenticated_image()
+        assert all(path.is_file() for path in artifacts)
+        with (
+            (slot / "lease.lock").open("a+", encoding="utf-8") as lock,
+            pytest.raises(LockContentionError),
+        ):
+            acquire_file_lock(lock)
+
+    names = _generation_names(coverage_env)
+    assert invoker.builds == 2
+    if reusable:
+        assert len(names) == 1 and names != first
+        current = _current_build_root(coverage_env, _PLAIN)
+        assert current.relative_to(slot / "g").parts[0] == names[0]
+        assert _HIT in _build(execution, coverage_env).output
+    else:
+        # The first build was reusable and kept; the unreusable second one is gone.
+        assert names == first

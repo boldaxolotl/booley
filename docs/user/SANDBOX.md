@@ -75,6 +75,7 @@ container:
 ```toml
 [sandbox]
 memory = "8g"                                  # container memory limit; unset = no limit
+# swap = "2g"                                  # swap beyond memory; default a quarter of memory
 # image = "booley-sandbox-riscv"               # Sandbox Image to use, see Custom sandbox image
 # pip_requirements = ["sim-requirements.txt"]  # Python packages to bake into the image
 # mount_host_skills = true                     # also load your own agent skills
@@ -84,6 +85,15 @@ memory = "8g"                                  # container memory limit; unset =
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
 admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
 covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
+
+`swap` is the swap the Sandbox may use beyond `memory`. Unset, it is a quarter
+of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
+allows 3 GiB of swap. `swap = "0"` gives a Sandbox no swap, and `swap` has no
+effect without `memory`. `booley doctor` warns when the host cannot back the
+setting. The debug shell uses the same limits, with 4 GB of memory when
+`memory` is unset. Without swap the Memory Budget is smaller; see
+[CONFIG.md](CONFIG.md#jobs--concurrency-jobs).
+
 Every `[sandbox]` change takes effect when you
 [apply it](#after-changing-sandbox-settings).
 
@@ -335,8 +345,8 @@ unknown key or an invalid value.
 
 After editing the file, run `booley bootstrap`. A changed `egress` also needs
 [each Project's Sandbox recreated](#after-changing-sandbox-settings); until
-then a running Sandbox keeps its previous mode and host-side Doctor
-warns about it.
+then a running Sandbox keeps its previous mode. Host-side Doctor warns about
+this Project's own Sandbox and notes other Projects' Sandboxes.
 
 To switch `egress` without editing the file, run
 `booley bootstrap --egress unproxied` (or `proxy`). It records the mode,
@@ -361,6 +371,24 @@ After changing `clis`, `auth`, or `default`,
 CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
 to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
 edits before you apply them.
+
+## Editor credential forwarding
+
+Opening the Sandbox in VS Code can forward your host Git credentials into it,
+so any process in the Sandbox, the Developer Agent included, can use them.
+`booley doctor` run inside the Sandbox warns `sandbox.git-credential-helper`
+and names each helper and the file it is in.
+
+To keep host Git credentials out of the Sandbox:
+
+1. In your host VS Code user settings, set
+   `dev.containers.gitCredentialHelperConfigLocation` to `"none"` and
+   `dev.containers.copyGitConfig` to `false`.
+2. In the Sandbox, delete the `helper` lines from each file Doctor names.
+
+If you accept the forwarding,
+[waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml)
+`sandbox.git-credential-helper`.
 
 ## Applying Sandbox changes
 

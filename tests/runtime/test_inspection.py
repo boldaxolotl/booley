@@ -34,7 +34,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 
 
 @pytest.fixture(autouse=True)
@@ -438,7 +438,7 @@ def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
 
 
 class TestStateVolumeCheck:
-    """_check_interactive_state_volumes surfaces orphans for pruning."""
+    """_check_sandbox_state_volumes surfaces orphans for pruning."""
 
     @staticmethod
     def _project(root: Path) -> readiness.ProjectAudit:
@@ -453,7 +453,7 @@ class TestStateVolumeCheck:
         )
 
     def _run(self, tmp_path, monkeypatch, vols, *, verbose=False) -> _Rec:
-        from booley.runtime import interactive_docker as idk
+        from booley.runtime import host_docker as idk
 
         monkeypatch.setattr(idk, "state_volumes", lambda: vols)
         monkeypatch.setattr(idk, "issued_image_tags", lambda: [])

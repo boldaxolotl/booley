@@ -71,6 +71,10 @@ class SimulationRecordWorkloadMismatchError(SimulationRecordIntegrityError):
         self.diagnostic = diagnostic
 
 
+_LEGACY_SUITE_HINT = (
+    "this Simulation Record predates per-Target Test fingerprints: "
+    "restore tests.toml or start a new run"
+)
 _EXPLAINED, _DERIVED = "explained", "derived"
 _AMBIGUOUS_SOURCES = "source paths ambiguous: duplicate source path"
 _AMBIGUOUS_PARAMETERS = "parameter names ambiguous: duplicate or non-string parameter name"
@@ -338,22 +342,58 @@ def _project_suite(projection: _Projection) -> None:
     if ("required_suite",) not in projection.regions:
         return
     old, new = (document["required_suite"] for document in projection.documents)
-    old_names, new_names = old["names"], new["names"]
-    added = [f"+{_label(name)}" for name in new_names if name not in old_names]
-    removed = [f"-{_label(name)}" for name in old_names if name not in new_names]
-    lines = []
+    if "target_tests" in old:
+        lines = [
+            *_suite_name_changes(old["names"], new["names"]),
+            *_target_test_changes(old, new),
+        ]
+        lines = list(dict.fromkeys(lines))
+    else:
+        lines = _legacy_suite_changes(old, new)
+    projection.explain(("required_suite",), lines)
+
+
+def _suite_name_changes(old: Sequence[str], new: Sequence[str]) -> list[str]:
+    added = [f"+{_label(name)}" for name in new if name not in old]
+    removed = [f"-{_label(name)}" for name in old if name not in new]
     if added or removed:
-        lines.append("suite changed: " + " ".join([*added, *removed]))
-    elif old_names != new_names:
-        lines.append("suite order changed")
+        return ["suite changed: " + " ".join([*added, *removed])]
+    return ["suite order changed"] if list(old) != list(new) else []
+
+
+def _target_test_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    """Name each Test and Target setting that differs in the Target's own section."""
+    before, after = old["target_tests"], new["target_tests"]
+    old_digests = {item["name"]: item["sha256"] for item in before["tests"]}
+    lines = _suite_name_changes(list(old_digests), [item["name"] for item in after["tests"]])
+    lines.extend(
+        f"suite Test changed: {_label(item['name'])}"
+        for item in after["tests"]
+        if item["name"] in old_digests and old_digests[item["name"]] != item["sha256"]
+    )
+    lines.extend(
+        f"suite setting changed: {key}"
+        for key, value in after["settings"].items()
+        if before["settings"].get(key) != value
+    )
+    return lines
+
+
+def _legacy_suite_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    lines = _suite_name_changes(old["names"], new["names"])
+    fired = False
+    added = [name for name in _registered_tests(new) if name not in _registered_tests(old)]
+    if old["default_invocation"] and added:
+        lines.append("suite changed: " + " ".join(f"+{_label(name)}" for name in added))
+        fired = True
     if any(
         old[key] != new[key]
         for key in ("source_path", "source_bytes", "source_sha256", "default_invocation")
     ):
-        lines.append(
-            f"suite changed: {_label(new['source_path'] or old['source_path'] or '<default invocation>')}"
-        )
-    projection.explain(("required_suite",), lines)
+        path = new["source_path"] or old["source_path"] or "<default invocation>"
+        lines.append(f"suite changed: {_label(path)}")
+        fired = True
+    return [*lines, _LEGACY_SUITE_HINT] if fired else lines
 
 
 def _project_variants(projection: _Projection) -> None:
@@ -545,8 +585,11 @@ def compare_manifests(
     current: SimulationRecordManifest,
 ) -> tuple[WorkloadMismatch, ...]:
     """Return all workload-identity mismatches in deterministic pointer order."""
-    left = _identity_document(expected)
-    right = _identity_document(current)
+    suite = cast("Mapping[str, Any]", expected.document["required_suite"])
+    # A record written before per-Target fingerprints compares the whole file.
+    legacy = "target_tests" not in suite
+    left = _identity_document(expected, legacy=legacy, recorded=suite)
+    right = _identity_document(current, legacy=legacy, recorded=suite)
     findings: list[WorkloadMismatch] = []
     _compare_value(left, right, "", findings)
     return tuple(findings)
@@ -569,21 +612,47 @@ def manifest_digest(manifest: SimulationRecordManifest) -> str:
     return document_digest(manifest.document)
 
 
-def _identity_document(manifest: SimulationRecordManifest) -> Mapping[str, object]:
+def _identity_document(
+    manifest: SimulationRecordManifest,
+    *,
+    legacy: bool,
+    recorded: Mapping[str, Any],
+) -> Mapping[str, object]:
     document = manifest.document
-    return {
+    identity: dict[str, object] = {
         key: document[key]
         for key in (
             "$schema",
             "target",
             "workload",
-            "required_suite",
             "build_variants",
             "planning_disclosures",
             "prerequisites",
             "work_items",
         )
     }
+    suite = cast("Mapping[str, Any]", document["required_suite"])
+    identity["required_suite"] = _suite_identity(suite, legacy=legacy, recorded=recorded)
+    return identity
+
+
+def _suite_identity(
+    suite: Mapping[str, Any], *, legacy: bool, recorded: Mapping[str, Any]
+) -> dict[str, object]:
+    """The members of ``required_suite`` that decide whether a resume is compatible."""
+    if not legacy:
+        keys = ("names", "default_invocation", "target_tests")
+        return {key: suite[key] for key in keys}
+    keys = ("names", "source_path", "source_bytes", "source_sha256", "default_invocation")
+    identity = {key: suite[key] for key in keys}
+    if recorded["default_invocation"]:
+        identity["registered_tests"] = _registered_tests(suite)
+    return identity
+
+
+def _registered_tests(suite: Mapping[str, Any]) -> list[str]:
+    """The Test names the Target's section registers, empty for a legacy record."""
+    return [item["name"] for item in suite.get("target_tests", {}).get("tests", ())]
 
 
 def _compare_value(

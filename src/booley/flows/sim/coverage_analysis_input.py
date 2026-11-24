@@ -26,6 +26,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.record import (
     SimulationProjection,
+    SimulationRecordManifestView,
     decode_simulation_projection,
     resolve_artifact_reference,
 )
@@ -179,35 +180,15 @@ def _reference_projection(
     _safe_path(expected_manifest)
     manifest = authenticated.manifest
     reference = resolved.reference.document
-    target = manifest.document["target"]
-    if not isinstance(target, Mapping):
-        raise CoverageAnalysisError("Simulation Record Target is invalid")
+    view = SimulationRecordManifestView(manifest)
     if (
-        manifest.document["simulation_record_id"] != reference["simulation_record_id"]
+        view.simulation_record_id != reference["simulation_record_id"]
         or authenticated.manifest_path != expected_manifest.absolute()
         or authenticated.manifest_sha256 != reference["simulation_manifest_sha256"]
-        or target["selector"] != resolved.loaded.coverage_record.target.selector
-        or f"{target['vlnv']}#{target['name']}" != resolved.loaded.coverage_record.target.identity
+        or view.target.selector != resolved.loaded.coverage_record.target.selector
+        or view.target.identity != resolved.loaded.coverage_record.target.identity
     ):
         raise CoverageAnalysisError("Simulation Record manifest disagrees with reference")
-
-
-STEALTH_SOURCE_LIMITATION = (
-    "Stealth Mode: Booley does not inspect sources, so analysis uses normalized "
-    "report evidence only and no Waiver Candidate is ready for human review."
-)
-
-
-def stealth_source_limitation(project_root: Path) -> str | None:
-    """Return the Stealth Mode reason sources are unavailable, or None outside it."""
-    from booley.fusesoc.core_projection import projection_enabled
-
-    try:
-        enabled = projection_enabled(project_root)
-    except ValueError:
-        # An unreadable configuration is a report-only cause coverage_sources already folds in.
-        return None
-    return STEALTH_SOURCE_LIMITATION if enabled else None
 
 
 def coverage_sources(
@@ -216,15 +197,10 @@ def coverage_sources(
     """Return the complete verified closure, or report-only on any mismatch."""
     from booley.flows.sim.coverage_json import content_digest
     from booley.flows.sim.coverage_provenance import coverage_digest
-    from booley.fusesoc.core_projection import projection_enabled
     from booley.targets.catalog import TargetCatalog
     from booley.targets.domain import FuseSocError
 
     try:
-        # FuseSoC inspection reconciles projected/isolated cores in stealth mode.
-        # Advisory source access must not prepare or change that project state.
-        if projection_enabled(project_root):
-            raise CoverageAnalysisError("Source inspection requires project reconciliation")
         catalog = TargetCatalog.build(project_root)
         handle = catalog.select(coverage_record.target.identity)
         _safe_path(handle.core_file)

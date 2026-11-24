@@ -47,6 +47,8 @@ def test_text_only_catalog_removes_model_supplied_tools_and_ambient_servers(tmp_
     assert "features.shell_tool=false" in command
     assert "agents.enabled=false" in command
     assert "features.multi_agent_v2=false" in command
+    # Host Codex 0.141-0.144 has no agents.enabled override; only this flag drops V1 subagents.
+    assert "features.multi_agent=false" in command
     assert Path(env["CODEX_HOME"]) != cache
     assert not (Path(env["CODEX_HOME"]) / "config.toml").exists()
 

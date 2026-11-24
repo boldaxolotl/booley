@@ -68,17 +68,12 @@ class SimulationOptions:
     trace: bool = False
     timeout_ms: int | None = None
     build_timeout_ms: int | None = None
-    result_verbosity: str = "compact"
 
     def __post_init__(self) -> None:
         if self.timeout_ms is not None and self.timeout_ms <= 0:
             raise InvalidSimulationRequestError("Simulation timeout must be positive")
         if self.build_timeout_ms is not None and self.build_timeout_ms <= 0:
             raise InvalidSimulationRequestError("Simulation build timeout must be positive")
-        if self.result_verbosity not in {"compact", "full"}:
-            raise InvalidSimulationRequestError(
-                "Simulation result verbosity must be 'compact' or 'full'"
-            )
 
 
 @dataclass(frozen=True)
@@ -112,6 +107,7 @@ class SimulationArtifactEvidence:
     top_scope: str = ""
     signal_count: int = 0
     total_ticks: int = 0
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

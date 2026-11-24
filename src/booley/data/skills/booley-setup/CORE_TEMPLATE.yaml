@@ -29,7 +29,7 @@ filesets:
   tb:
     files:
       - tb/tb_dut.sv: {file_type: systemVerilogSource}
-    tags: [tb]               # REQUIRED on the testbench fileset (decision 13).
+    tags: [tb]               # REQUIRED on the testbench fileset.
   # Ordinary synth-only RTL; never attach this fileset or its selection define
   # to sim/lint/fpga Targets.
   # Its read data depends, through registers only and bit-wise, on the
@@ -65,12 +65,13 @@ targets:
     toplevel: tb_dut         # a sim target's toplevel is its TB top
     parameters: [WIDTH]
 
-  # --- Cocotb Target (ADR 0034) — a sim Target with a PYTHON testbench. -------
+  # --- Cocotb Target — a sim Target with a PYTHON testbench. ------------------
   # Delete this block for an SV-testbench project; delete the `sim_dut` block above
   # for a cocotb one. The ONLY thing that marks a Target as cocotb is
   # `cocotb_module` in its flow_options. Requires the Python TB in a `tags: [tb]`
   # fileset with `file_type: user` + `copyto:` (staged into the build root), and
-  # `tests.toml` listing the @cocotb.test() FUNCTION names with NO `select`.
+  # `tests.toml` listing the cocotb test IDs (function name, or the rendered ID of
+  # each generated case) with NO `select`.
   # sim_cocotb:
   #   flow: sim
   #   flow_options:

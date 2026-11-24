@@ -44,6 +44,7 @@ from tests.harness.test_dashboard_targets import (
     world,
     write_files,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.wizard import RunWizard
@@ -57,7 +58,7 @@ FLOW_NAMES = sorted(info.name for info in discover_mcp_tools() if info.kind == "
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -377,7 +378,7 @@ FORM_SCRIPTS: dict[str, FormScript] = {
             ("choice", "--mode", "simulate"),
             ("tests", "--test", "reset,stress+soak"),
         ),
-        extra="--result-verbosity full",
+        extra="--no-kill",
         argv=(
             "--target",
             "sim_fifo",
@@ -388,12 +389,11 @@ FORM_SCRIPTS: dict[str, FormScript] = {
             "reset",
             "--test",
             "stress+soak",
-            "--result-verbosity",
-            "full",
+            "--no-kill",
         ),
         shown=(
             "--target sim_fifo --coverage --mode simulate --test reset --test stress+soak"
-            " --result-verbosity full"
+            " --no-kill"
         ),
     ),
     "synth": FormScript(
@@ -499,7 +499,7 @@ async def launch_flow_through_the_form(checkout, spawned, tmp_path, flow):
 
 
 @pytest.mark.asyncio
-async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
+async def test_flow_step_lists_every_enabled_builtin_flow_with_its_blurb(checkout):
     app = make_app(checkout, real_launcher(checkout / ".booley"))
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await start_run(app, pilot)
@@ -516,6 +516,20 @@ async def test_flow_step_lists_every_builtin_flow_with_its_blurb(checkout):
         ]
         assert all(len(line.split(" — ", 1)[1]) > 10 for line in flows)
         assert lines[3].startswith("sim — Run RTL simulation")
+        # A Flow turned off in booley.toml is not listed once the worktree is picked again.
+        for config, expected in [
+            ("[flows.fpga]\nenabled = false\n", ["lint", "mutation", "sim", "synth"]),
+            ("[flows.fpga]\nenabled = true\n", ["fpga", "lint", "mutation", "sim", "synth"]),
+        ]:
+            await pilot.press("escape")
+            write_config(checkout, config)
+            await pilot.press("enter")
+            options = wizard.query_one("#run-flows", OptionList)
+            names = [
+                str(options.get_option_at_index(i).prompt).split(" — ")[0]
+                for i in range(len(expected))
+            ]
+            assert names == expected
 
 
 # --- AC2 ---------------------------------------------------------------------
@@ -604,9 +618,11 @@ def test_check_changes_no_environment_and_writes_nothing(tmp_path, capfd):
 def test_check_reports_a_timeout_and_a_worktree_that_cannot_start_it(tmp_path, monkeypatch):
     from booley.harness.dashboard import launch
 
-    monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", 0.001)
+    timeout_s = scaled(0.001)
+    monkeypatch.setattr(launch, "CHECK_TIMEOUT_S", timeout_s)
     assert (
-        launch.check(tmp_path, "flow", "lint", ()).error == "argument check timed out after 0.001s"
+        launch.check(tmp_path, "flow", "lint", ()).error
+        == f"argument check timed out after {timeout_s}s"
     )
     message = launch.check(tmp_path / "missing", "flow", "lint", ()).error
     assert "No such file or directory" in message or "cannot find" in message.lower()
@@ -650,7 +666,7 @@ async def test_wizard_shows_why_worktrees_are_unavailable(tmp_path, monkeypatch)
 
 
 def job_view(run_id: str, started: str, state: str = "running") -> JobView:
-    status = "running" if state == "running" else "done"
+    status = "done" if state == "completed" else "running"
     record = job_records.JobRecord(run_id, "sim", started, 60, status=status)
     return JobView(Path("/jobs"), record, state)
 
@@ -862,7 +878,7 @@ class FormGate(FakeLauncher):
         self.built: list[str] = []
 
     def form(self, kind, name, worktree):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         self.built.append(name)
         if self.failures:
             raise self.failures.pop(0)
@@ -1106,7 +1122,7 @@ class GatedLauncher(FakeLauncher):
 
     def check(self, worktree, kind, name, argv):
         self.started.set()
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().check(worktree, kind, name, argv)
 
 
@@ -1119,7 +1135,7 @@ async def test_a_value_changed_while_a_check_runs_keeps_review_closed(checkout):
         await set_text(pilot, wizard, "--scope", "a.sv")
         await goto_row(pilot, wizard, "Review the command")
         await pilot.press("enter")
-        assert launcher.started.wait(timeout=60)
+        assert launcher.started.wait(timeout=hang_guard_s())
         await set_toggle(pilot, wizard, "--dry-run")  # flipped while the check runs
         launcher.release.set()
         await settle_check(app, pilot)
@@ -1178,7 +1194,8 @@ def slots(tmp_path: Path):
         entry.release()
 
 
-LONG_TIMEOUT = "Timeout: 30m 00s per work unit"
+WORK_UNIT_TIMEOUT = "Timeout: 30m 00s per work unit"
+WHOLE_RUN_TIMEOUT = "Timeout: 30m 00s for the whole run"
 ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit the Memory Budget"
 
 
@@ -1186,11 +1203,12 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
 @pytest.mark.parametrize(
     ("flow", "live", "dead", "queue", "timeout"),
     [
-        ("mutation", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 1, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 2, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("mutation", 0, 1, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
-        ("synth", 0, 0, ADMITTED_BY_MEMORY, LONG_TIMEOUT),
+        ("mutation", 0, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 1, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 2, 0, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("mutation", 0, 1, ADMITTED_BY_MEMORY, WHOLE_RUN_TIMEOUT),
+        ("synth", 0, 0, ADMITTED_BY_MEMORY, WORK_UNIT_TIMEOUT),
+        ("fpga", 0, 0, ADMITTED_BY_MEMORY, "Timeout: 2h 00m per work unit"),
         ("lint", 1, 0, ADMITTED_BY_MEMORY, None),
     ],
     ids=[
@@ -1199,6 +1217,7 @@ ADMITTED_BY_MEMORY = "Admitted by memory: waits while its estimate does not fit 
         "holder-and-waiter",
         "dead-owner-only",
         "synth-memory-timeout",
+        "fpga-memory-timeout",
         "lint-memory",
     ],
 )
@@ -1214,8 +1233,9 @@ async def test_review_shows_whether_the_job_runs_now_or_queues(
         wizard = await to_form(app, pilot, flow)
         await check_arguments(app, pilot, wizard, ARGUMENTS)
         assert shown(wizard, "#run-review").splitlines()[0] == queue
-        assert ("Timeout: 30m 00s per work unit" in shown(wizard, "#run-review")) == (
-            timeout is not None
+        review = shown(wizard, "#run-review")
+        assert [line for line in review.splitlines() if line.startswith("Timeout")] == (
+            [timeout] if timeout else []
         )
         assert shown(wizard, "#run-error") == ""
 
@@ -1244,7 +1264,7 @@ async def test_commands_without_a_slot_run_now_on_a_busy_queue(
     async with app.run_test(size=(120, 40)) as pilot:
         wizard = await to_form(app, pilot, flow)
         await check_arguments(app, pilot, wizard, text)
-        assert shown(wizard, "#run-review").splitlines()[0] == "Runs now (takes no Job slot)"
+        assert shown(wizard, "#run-review").splitlines()[0] == "Runs now (not admitted by memory)"
         assert shown(wizard, "#run-error") == ""
         await pilot.press("enter")
         await pilot.pause()
@@ -1335,7 +1355,7 @@ async def test_review_shows_a_timeout_problem_and_still_allows_submit(checkout):
 
 
 def running_job(handle: str, work_dir: Path, state: str = "running") -> JobView:
-    status = "running" if state == "running" else "done"
+    status = "done" if state == "completed" else "running"
     record = job_records.JobRecord(
         f"run-{handle}", "sim", STAMP, 60, status=status, work_dir=str(work_dir)
     )
@@ -1347,7 +1367,9 @@ async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tm
     (checkout / "notes.txt").write_bytes(b"draft\n")  # one untracked file
     current = replace(
         world(session("S3", checkout)),
-        jobs=JobSnapshot((running_job("J-SIM25", checkout), running_job("J-SYN34", checkout))),
+        jobs=JobSnapshot(
+            (running_job("J-SIM25", checkout), running_job("J-SYN34", checkout, "queued"))
+        ),
     )
     app = make_app(checkout, real_launcher(tmp_path / "booley"), current)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1356,7 +1378,7 @@ async def test_review_warns_about_sessions_running_jobs_and_changes(checkout, tm
         assert shown(wizard, "#run-review").splitlines() == [
             ADMITTED_BY_MEMORY,
             "Warning: session S3 Interactive is connected to this worktree",
-            "Warning: 2 running Jobs in this worktree (J-SIM25, J-SYN34)",
+            "Warning: 2 unfinished Jobs in this worktree (J-SIM25, J-SYN34)",
             "Warning: 1 uncommitted change in this worktree",
         ]
         await pilot.press("enter")  # warnings do not block
@@ -1399,7 +1421,11 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
             True,
             "Cannot check uncommitted changes: [project].dir is retired",
         ),
-        ({}, False, "Cannot check sessions and running Jobs: the Dashboard has not read them yet"),
+        (
+            {},
+            False,
+            "Cannot check sessions and unfinished Jobs: the Dashboard has not read them yet",
+        ),
     ],
     ids=["git-fails", "retired-layout", "snapshot-not-read"],
 )
@@ -1456,7 +1482,7 @@ class GatedWorktrees(TargetsReader):
         self.release = threading.Event()
 
     def worktrees(self):
-        assert self.release.wait(timeout=60)
+        assert self.release.wait(timeout=hang_guard_s())
         return super().worktrees()
 
 
@@ -1542,7 +1568,7 @@ async def test_a_check_that_crashes_after_the_human_moved_on_is_not_shown(checko
 
     class SlowCrash(FakeLauncher):
         def check(self, worktree, kind, name, argv):
-            assert gate.wait(timeout=60)
+            assert gate.wait(timeout=hang_guard_s())
             raise ValueError("embedded null byte")
 
     app = make_app(checkout, SlowCrash())

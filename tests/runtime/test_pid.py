@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import pid as runtime_pid
 
@@ -90,7 +91,7 @@ def test_posix_zombie_is_not_alive() -> None:
     # Kept on Popen: needs the exited-but-unreaped child to observe its zombie state.
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + hang_guard_s()
         while time.monotonic() < deadline:
             stat = Path(f"/proc/{child.pid}/stat").read_text(encoding="utf-8")
             if stat.rsplit(")", 1)[1].split()[0] == "Z":
@@ -101,7 +102,7 @@ def test_posix_zombie_is_not_alive() -> None:
 
         assert runtime_pid.is_pid_alive(child.pid) is False
     finally:
-        child.wait(timeout=5)
+        child.wait(timeout=hang_guard_s())
 
 
 def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None:

@@ -62,6 +62,12 @@ The coding-agent program an agent runs on: Claude Code (`claude`) or Codex
 **Specialist** runs on the Agent CLI its model implies.
 _Avoid_: agent app, provider (in user-facing text)
 
+**Visitor mode**:
+The billing policy under which an **Agent CLI** in a hand-written **Sandbox**
+uses the credential the person in it signs in with or exports, else the gateway
+the spec provides. A Project selects it by recording `visitor` in `[agent] auth`.
+_Avoid_: auto
+
 **Sandbox**:
 The isolated environment, one per opened project folder, where all Booley work
 executes: file access, shell, git, EDA subprocesses, MCP servers, logs, and
@@ -184,6 +190,12 @@ The Project mode, Stealth Mode in user docs, set by `[stealth] enabled = true`,
 that keeps Booley out of the RTL repository and its history. It is off unless
 enabled.
 
+**Feature Flag**:
+A maintainer-only switch, registered in `FEATURE_FLAGS` and enabled per
+**Project**, that keeps an unfinished major feature or breaking change
+invisible until a minor release deletes it.
+_Avoid_: feature toggle, experiment
+
 **Project Inventory**:
 The host-owned catalog of canonical Project paths and their **Project Grants**, including Projects whose **Booley Directory** is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
@@ -207,7 +219,7 @@ _Avoid_: workspace allowlist, project enrollment, inherited repository access; t
 **Target**:
 A named FuseSoC `.core` build target, the single source of truth for one
 design-description: filesets, typed parameters with their values, defines, and
-top module. Booley's tests (`tests.toml`) and Criteria bind to a Target, and a
+top module. Booley's tests (`tests.toml`) bind to a Target, and a
 Booley Flow selects it by name ([naming](user/TARGETS.md#target-authoring),
 [selection](user/FLOW_REFERENCE.md#choosing-targets)).
 _Avoid_: Design Configuration, build config, profile, named config
@@ -223,7 +235,7 @@ _Avoid_: python testbench config, cocotb core, cocotb suite
 Project-declared shell commands that Booley executes inside the **Sandbox**
 immediately before each simulator process, for non-RTL per-test build steps that
 FuseSoC cannot express. They run once per Test Run, or once per batch for a
-**Cocotb Target**.
+**Cocotb Target** outside a coverage run.
 _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools

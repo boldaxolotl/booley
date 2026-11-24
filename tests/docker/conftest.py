@@ -14,7 +14,4 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 @pytest.fixture(autouse=True)
 def _set_booley_dir(tmp_path, monkeypatch):
     """Prevent resolve_booley_dir() from failing in docker tests."""
-    from booley.runtime.booley_dir import reset_cache
-
-    reset_cache()
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))

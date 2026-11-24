@@ -16,8 +16,10 @@ from booley.flows.sim.adapter_transport import (
 from booley.flows.sim.backends.shared import (
     CurrentRunTraces,
     RunTermination,
+    TraceSelection,
     ambiguous_trace_reason,
 )
+from booley.flows.sim.trace_session import TraceInspection
 
 
 def _missing_trace_reason(current: CurrentRunTraces) -> str:
@@ -73,6 +75,23 @@ def native_pending_publisher(
     return publish
 
 
+def _select_and_inspect(
+    current: CurrentRunTraces, raw_vcd: Path | None
+) -> tuple[TraceSelection, TraceInspection | None]:
+    """Convert, select and inspect the waveform; an interrupt still releases held diagnostics."""
+    session = current.session
+    try:
+        current.finish_streams()
+        if raw_vcd is not None:
+            session.postprocess(raw_vcd)
+        selection = current.select()
+        found = selection.path
+        return selection, session.inspect(found) if found is not None else None
+    except BaseException:
+        session.report_failed_conversions(declared_trace_used=False)
+        raise
+
+
 def finalize_trace(
     current: CurrentRunTraces,
     sim_proc: subprocess.Popen[str] | None,
@@ -94,13 +113,11 @@ def finalize_trace(
     session.start_conversion_budget(convert_timeout_s)
     if publish_pending is not None:
         publish_pending(AdapterTraceResult("incident", detail=_PENDING_DETAIL))
-    current.finish_streams()
-    if raw_vcd is not None:
-        session.postprocess(raw_vcd)
-    selection = current.select()
-    found = selection.path
-    inspection = session.inspect(found) if found is not None else None
+    selection, inspection = _select_and_inspect(current, raw_vcd)
     artifact = inspection.artifact if inspection is not None else None
+    session.report_failed_conversions(
+        declared_trace_used=artifact is not None and selection.declared
+    )
     if artifact is not None:
         output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
         print(output)
@@ -110,10 +127,11 @@ def finalize_trace(
             top_scope=artifact.top_scope,
             signal_count=artifact.signal_count,
             total_ticks=artifact.total_ticks,
+            warnings=artifact.warnings,
         )
     if selection.ambiguous:
         reason = ambiguous_trace_reason(selection.ambiguous)
-    elif found is None or inspection is None:
+    elif selection.path is None or inspection is None:
         reason = _missing_trace_reason(current)
     else:
         reason = f"trace requested but the retained waveform is not queryable: {inspection.failure_reason}"

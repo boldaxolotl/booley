@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -17,14 +18,18 @@ from booley.mcp.registry import McpToolInfo
 from booley.runtime import job_records
 from booley.runtime.handles import job_handle_expired
 from tests.conftest import symlink_or_skip
+from tests.time_budget import hang_guard_s
 
 # Where the Dashboard already scans for Job records: the common Booley Directory's standalone log
 # root, with machine-owned records under ``.runtime/jobs`` and each run's output beside them.
-STANDALONE_ROOT = Path(".interactive_logs") / "standalone"
+STANDALONE_ROOT = Path("job_logs") / "standalone"
 JOBS_ROOT = STANDALONE_ROOT / ".runtime" / "jobs"
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-CHILD_TIMEOUT_S = 60
+CHILD_TIMEOUT_S = 2 * hang_guard_s()
+# Each wait on the child is the hang guard and ends before the child's own timeout, so a hang
+# fails with the child's output.
+CHILD_WAIT_S = hang_guard_s()
 
 
 class StubEndpoint:
@@ -162,11 +167,11 @@ def test_run_outside_standalone_scope_is_unrecorded(monkeypatch, project, tmp_pa
     StubEndpoint.outcome = 3
     assert shell_run(monkeypatch, target, "flow") == 3
     assert records(project) == []
-    assert not (target / ".booley" / ".interactive_logs").exists()
+    assert not (target / ".booley" / "job_logs").exists()
 
 
 def test_unwritable_record_warns_and_runs_unrecorded(monkeypatch, project, capfd):
-    (project / ".booley" / ".interactive_logs").write_bytes(b"in the way")
+    (project / ".booley" / "job_logs").write_bytes(b"in the way")
     StubEndpoint.outcome = 3
     assert shell_run(monkeypatch, project, "flow") == 3
     err = capfd.readouterr().err
@@ -186,17 +191,30 @@ def test_custom_endpoint_help_is_not_a_job(monkeypatch, project):
 
 
 CHILD = """
-import signal, sys, time
+import os, signal, sys, time
 from pathlib import Path
+from booley.flows.progress_lifecycle import (
+    ProgressLifecycle,
+    progress_document,
+    write_progress_json,
+)
 from booley.harness.standalone_job import StandaloneJob, checkout_report_root
 
 # A runner that started pytest under nohup passes SIGHUP ignored down; the job
 # keeps a signal's existing handler, so start from the default disposition.
 signal.signal(signal.SIGHUP, signal.SIG_DFL)
 
+def publish(phase):
+    write_progress_json(Path(sys.argv[3]), progress_document(
+        flow="stub", run_id=os.environ["BOOLEY_RUN_ID"], phase=phase, targets=["t1", "t2"],
+        completed_targets=["t1"], detail=dict(),
+    ))
+
 def block():
-    Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
-    time.sleep({timeout})
+    with ProgressLifecycle(publish):
+        publish("running")
+        Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
+        time.sleep({timeout})
     return 0
 
 job = StandaloneJob.prepare(
@@ -225,17 +243,26 @@ def run_child_until_signalled(project, tmp_path, signum, script=CHILD, extra_arg
             *extra_args,
         ],
         env=env,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     try:
-        deadline = time.monotonic() + CHILD_TIMEOUT_S
+        deadline = time.monotonic() + CHILD_WAIT_S
         while not marker.exists() and child.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert marker.exists(), "child never reached its run"
+        if not marker.exists():
+            child.kill()
+            out, err = child.communicate()
+            pytest.fail(f"child never reached its run (exit {child.returncode}):\n{out}\n{err}")
         child.send_signal(signum)
         # Kept on subprocess.Popen: test drives the process and signals it
-        _, stderr = child.communicate(timeout=CHILD_TIMEOUT_S)
+        try:
+            _, stderr = child.communicate(timeout=CHILD_WAIT_S)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            out, err = child.communicate()
+            pytest.fail(f"child did not exit {CHILD_WAIT_S}s after signal {signum}:\n{out}\n{err}")
         return child.returncode, stderr
     finally:
         if child.poll() is None:
@@ -296,13 +323,21 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal de
 @pytest.mark.parametrize("name", ["sigterm", "sighup", "sigkill"])
 def test_signal_leaves_terminal_record(project, tmp_path, name):
     signum = getattr(signal, name.upper())
-    returncode, _stderr = run_child_until_signalled(project, tmp_path, signum)
+    progress_path = tmp_path / "reports" / "stub" / "1" / "progress.json"
+    returncode, _stderr = run_child_until_signalled(
+        project, tmp_path, signum, extra_args=(str(progress_path),)
+    )
     assert returncode == -signum  # dies by the signal
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
     (rec,) = records(project)
     if name != "sigkill":
         assert (rec.status, rec.exit_code) == ("cancelled", 128 + signum)
         assert rec.ended_at
+        # The process dies without unwinding: the handler publishes the terminal progress.
+        assert (progress["phase"], progress["complete"]) == ("aborted", True)
+        assert progress["pending_targets"] == ["t2"]
         return
+    assert progress["phase"] == "running"  # SIGKILL is out of scope for progress
     # Nothing runs on SIGKILL: the record stays running until someone observes the dead process.
     if sys.platform != "linux":
         pytest.skip("process identity observes /proc")

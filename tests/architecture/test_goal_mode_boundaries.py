@@ -1,12 +1,11 @@
-"""Goal Mode is removed (#3511); only allowed modules import Criteria (#3506)."""
+"""Goal Mode, the Criteria package and the Result Cache are removed (#3511, #4303)."""
 
 from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 from pathlib import Path
-
-from tests.architecture.import_graph import analyze_imports
 
 GOALS_SOURCE = Path(__file__).resolve().parents[2] / "src" / "booley" / "goals"
 
@@ -16,40 +15,6 @@ def test_legacy_goal_presentation_module_is_gone() -> None:
 
 
 SOURCE_ROOT = GOALS_SOURCE.parent
-# Every module outside ``booley.criteria`` that may still import it, and the issue that
-# removes the dependency (issue #3506). "Evidence and staleness":
-# records or reads Criteria state for Interactive evidence. "Criteria catalog": renders
-# or validates the Criteria definitions.
-_ALLOWED: dict[str, str] = {
-    "booley.mcp.endpoint_validation": "Criteria catalog #3512",
-    "booley.mcp.registry": "Criteria catalog #3512",
-}
-
-
-def _is_inside(module: str, package: str) -> bool:
-    return module == package or module.startswith(f"{package}.")
-
-
-def _criteria_importers() -> frozenset[str]:
-    """Modules outside ``booley.criteria`` that import it."""
-    return frozenset(
-        dependency.source
-        for dependency in analyze_imports(SOURCE_ROOT)
-        if _is_inside(dependency.target, "booley.criteria")
-        and not _is_inside(dependency.source, "booley.criteria")
-    )
-
-
-def test_only_criteria_consumers_import_criteria() -> None:
-    """New importers and stale rows both fail."""
-    assert _criteria_importers() == frozenset(_ALLOWED)
-
-
-def test_no_specialist_module_imports_criteria() -> None:
-    """Specialists read and write no Criterion evidence (#4301)."""
-    assert {m for m in _criteria_importers() if _is_inside(m, "booley.specialists")} == set()
-
-
 REPO_ROOT = SOURCE_ROOT.parents[1]
 _REMOVED_MODULES = (
     "booley.flows.endpoint_report_criteria",
@@ -82,6 +47,18 @@ _REMOVED_MODULES = (
     "booley.runtime.job_wait",
     "booley.dev_support.criteria_reference",
 )
+# Removed with the Criteria and Result Cache packages (#4303). A string constant naming one of
+# these (``importlib.import_module``, ``monkeypatch.setattr``) is a hit too.
+_REMOVED_4303 = (
+    "booley.criteria",
+    "booley.result_cache",
+    "booley.core.source_categories",
+    "booley.runtime.git_ignore",
+    "tests.criteria",
+    "tests.result_cache",
+    "tests.criterion_endpoint_support",
+)
+_REMOVED_TEXT = re.compile(r"\bbooley\.(criteria|result_cache)\b")
 
 
 def _package_of(path: Path) -> list[str]:
@@ -108,20 +85,66 @@ def _imported_names(path: Path) -> list[str]:
     return names
 
 
-def test_goal_mode_package_is_gone_and_nothing_imports_it() -> None:
-    """Goal Mode is removed; a raw walk of every import catches names ``analyze_imports`` drops."""
+def _is_removed(name: str, modules: tuple[str, ...] = _REMOVED_MODULES + _REMOVED_4303) -> bool:
+    return any(name == gone or name.startswith(f"{gone}.") for gone in modules)
+
+
+def _string_constants(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+
+def _offenders(repo_root: Path, skip: Path | None = None) -> dict[str, list[str]]:
+    """Files under ``src/``, ``tests/`` and ``.github/`` that name a removed module."""
+    offenders: dict[str, list[str]] = {}
+    for root in ("src", "tests", ".github"):
+        for path in sorted((repo_root / root).rglob("*")):
+            if not path.is_file() or path == skip:
+                continue
+            hits: list[str] = []
+            if path.suffix == ".py":
+                hits = [n for n in _imported_names(path) if _is_removed(n)]
+                hits += [s for s in _string_constants(path) if _is_removed(s, _REMOVED_4303)]
+            elif root == ".github":
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                hits = [m.group(0) for m in _REMOVED_TEXT.finditer(text)]
+            if hits:
+                offenders[path.relative_to(repo_root).as_posix()] = sorted(set(hits))
+    return offenders
+
+
+def test_removed_modules_are_gone_and_nothing_imports_them() -> None:
+    """A raw walk of every import, string constant and CI script catches names ``analyze_imports`` drops."""
     assert importlib.util.find_spec("booley.goals") is None
     assert not GOALS_SOURCE.exists()
-    offenders: dict[str, list[str]] = {}
-    for root in ("src", "tests", ".github/scripts"):
-        for path in sorted((REPO_ROOT / root).rglob("*.py")):
-            if path == Path(__file__).resolve():
-                continue
-            hits = [
-                name
-                for name in _imported_names(path)
-                if any(name == gone or name.startswith(f"{gone}.") for gone in _REMOVED_MODULES)
-            ]
-            if hits:
-                offenders[str(path.relative_to(REPO_ROOT))] = sorted(set(hits))
-    assert offenders == {}
+    assert _offenders(REPO_ROOT, skip=Path(__file__).resolve()) == {}
+
+
+def test_criteria_and_result_cache_packages_are_gone() -> None:
+    for name in ("booley.criteria", "booley.result_cache"):
+        assert importlib.util.find_spec(name) is None
+        assert not (SOURCE_ROOT / name.split(".")[1]).exists()
+    assert not (SOURCE_ROOT / "data" / "criteria.toml").exists()
+
+
+def test_import_guard_catches_every_import_form(tmp_path: Path) -> None:
+    seeds = {
+        "src/a.py": "def f():\n    from booley.criteria.state import X\n",
+        "src/b.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.result_cache\n",
+        "tests/c.py": "import importlib\nimportlib.import_module('booley.result_cache')\n",
+        ".github/scripts/d.sh": "python - <<'PY'\nimport booley.criteria\nPY\n",
+        ".github/workflows/e.yml": 'run: python -c "import booley.result_cache"\n',
+    }
+    for rel, text in seeds.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode())
+    (tmp_path / "tests" / "ok.py").write_bytes(b"import booley.flows\n")
+    assert set(_offenders(tmp_path)) == set(seeds)

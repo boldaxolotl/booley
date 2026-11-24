@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 
 from tests import test_timeout_evidence
+from tests.time_budget import scaled
+
+_STALL_TIMEOUT_S = scaled(2)
 
 
 def test_stalled_nested_pytest_fails_with_elapsed_time_and_partial_output(
@@ -22,12 +25,14 @@ def test_stalled_nested_pytest_fails_with_elapsed_time_and_partial_output(
     )
     # Shrink the nested-pytest bound so the stall trips quickly. The unfixed module has no
     # such name, so it still runs its own fixed 30 s bound.
-    monkeypatch.setattr(test_timeout_evidence, "SUBPROCESS_TIMEOUT_S", 2, raising=False)
+    monkeypatch.setattr(
+        test_timeout_evidence, "SUBPROCESS_TIMEOUT_S", _STALL_TIMEOUT_S, raising=False
+    )
     with pytest.raises(pytest.fail.Exception) as raised:
         test_timeout_evidence._run_pytest_case(  # pyright: ignore[reportPrivateUsage]
             tmp_path, 0, "@pytest.mark.timeout(10)", "pass"
         )
     message = str(raised.value)
-    assert "timed out after 2 s" in message
+    assert f"timed out after {_STALL_TIMEOUT_S:g} s" in message
     assert "elapsed" in message
     assert "STALL-MARKER" in message

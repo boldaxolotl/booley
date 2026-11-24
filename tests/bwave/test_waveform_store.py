@@ -11,6 +11,7 @@ import pytest
 
 from booley.bwave import waveform_store as stores
 from tests.conftest import FST_HEADER_BYTES, MINIMAL_FST_BYTES
+from tests.time_budget import hang_guard_s
 
 
 @pytest.mark.parametrize(
@@ -293,6 +294,20 @@ def test_conversion_failure_preserves_attempt_diagnostics(tmp_path: Path, monkey
 def test_conversion_result_and_discovery_success_properties() -> None:
     assert stores.ConversionResult(Path("trace.fst")).success is False
     assert stores.DiscoveryResult(None).success is False
+
+
+def test_conversion_warnings_are_the_warning_lines_of_a_successful_build(tmp_path: Path) -> None:
+    store = tmp_path / "trace.fst"
+    store.write_bytes(MINIMAL_FST_BYTES)
+    stderr = "WARNING: cut\n# clock regularity: ok\nWARNING: odd\n# wrote trace.fst\n"
+    attempt = stores.ConversionAttempt(None, 0, stderr)
+    done = stores.ConversionResult(
+        store, inspection=stores.inspect_store(store, probe_reader=False), attempts=(attempt,)
+    )
+    assert done.warnings == ("WARNING: cut", "WARNING: odd")
+    failed = stores.ConversionResult(store, failure_kind="conversion_failed", attempts=(attempt,))
+    assert failed.warnings == ()
+    assert stores.ConversionResult(store).warnings == ()
 
 
 def test_existing_valid_store_is_reused(tmp_path: Path) -> None:
@@ -623,7 +638,7 @@ def test_close_input_keeps_a_path_the_writer_replaced(tmp_path: Path, fake_bwave
     fifo.unlink()
     fifo.write_text("replacement", encoding="utf-8")
 
-    result = conversion.finish(timeout_s=10)
+    result = conversion.finish(timeout_s=hang_guard_s())
 
     assert fifo.read_text(encoding="utf-8") == "replacement"
     assert result.success is False

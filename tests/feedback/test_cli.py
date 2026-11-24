@@ -17,6 +17,7 @@ from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import booley_dir as booley_dir_mod
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    run_bounded_child(["git", "init", "-q", str(source)], timeout=10, check=True)
+    run_bounded_child(["git", "init", "-q", str(source)], check=True)
     parser = argparse.ArgumentParser()
     cli.add_subparser(parser.add_subparsers(dest="command"))
 
@@ -99,7 +100,7 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    run_bounded_child(["git", "init", "-q", "-b", "main", str(source)], timeout=10, check=True)
+    run_bounded_child(["git", "init", "-q", "-b", "main", str(source)], check=True)
     run_bounded_child(
         [
             "git",
@@ -112,7 +113,6 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "add",
             "pyproject.toml",
         ],
-        timeout=10,
         check=True,
     )
     run_bounded_child(
@@ -128,13 +128,11 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "-qm",
             "fixture",
         ],
-        timeout=10,
         check=True,
     )
     linked = tmp_path / "linked"
     run_bounded_child(
         ["git", "-C", str(source), "worktree", "add", "-q", "-b", "linked", str(linked)],
-        timeout=10,
         check=True,
     )
 
@@ -488,7 +486,7 @@ def test_mutating_dispatch_reports_lock_timeout_without_success(
     findings.append(findings.Finding(title="original"), directory)
     path = findings.log_path(directory)
     before = path.read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with holding_findings_lock(directory):
         assert run(*argv) == 2
     captured = capsys.readouterr()

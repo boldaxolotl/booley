@@ -14,6 +14,7 @@ import time
 import pytest
 from tests.sidecar_image_helpers import SIDECAR_ALPINE_BASE, assert_python_version
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s
 
 from booley.docker import reaper
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -24,11 +25,14 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     remove_relay,
     validate_relay,
 )
-from booley.runtime.interactive_docker import relay_docker
+from booley.runtime.host_docker import relay_docker
+
+# Hang guard: nothing here asserts that a wait expires.
+_HANG_S = hang_guard_s()
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-    return run_bounded_child(["docker", *args], timeout=60)
+    return run_bounded_child(["docker", *args], timeout=2 * _HANG_S)
 
 
 def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
@@ -48,7 +52,7 @@ def _wait_for_tcp_listeners(
     container: str,
     ports: tuple[int, ...],
     *,
-    timeout: float = 10.0,
+    timeout: float = _HANG_S,
 ) -> None:
     checks = " && ".join(f"netstat -ltn | grep -Eq ':{port}[[:space:]]'" for port in ports)
     deadline = time.monotonic() + timeout
@@ -72,7 +76,7 @@ def test_wait_for_tcp_listeners_retries_until_both_ports_are_bound(monkeypatch) 
 
     monkeypatch.setitem(globals(), "_docker", fake_docker)
 
-    _wait_for_tcp_listeners("upstream", (32110, 32111), timeout=1)
+    _wait_for_tcp_listeners("upstream", (32110, 32111))
 
     assert len(calls) == 2
     assert all(call[:3] == ("exec", "upstream", "sh") for call in calls)
@@ -160,7 +164,8 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         )
         _assert_ok(upstream_run)
         ip = ""
-        for _ in range(30):
+        inspect_deadline = time.monotonic() + _HANG_S
+        while time.monotonic() < inspect_deadline:
             inspected = _docker(
                 "inspect",
                 upstream,

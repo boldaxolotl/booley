@@ -23,7 +23,9 @@ use bwave::cache::{
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
     trace_from_cache, wave_from_cache, ColumnCache,
 };
-use bwave::format::{parse_radix_suffix, parse_verilog_literal, TimeToken, TriggerMode};
+use bwave::format::{
+    parse_radix_suffix, parse_verilog_literal, TimeToken, TriggerMode, VerilogLiteral,
+};
 use bwave::parser::try_parse_header;
 use bwave::ExtractConfig;
 
@@ -128,7 +130,7 @@ struct GlobalOpts {
     #[arg(long, value_parser = ["post-edge", "pre-edge"], conflicts_with = "async_mode")]
     sample_mode: Option<String>,
 
-    /// Reset signal pattern for sync mode (default: auto *rst*)
+    /// Reset signal pattern for sync mode (default: auto *rst* or *reset*)
     #[arg(long)]
     reset: Option<String>,
 
@@ -279,6 +281,10 @@ struct ListArgs {
     #[arg(long)]
     tree: bool,
 
+    /// Refuse a pattern that selects bits of a vector (set by `bwave gui`)
+    #[arg(long, hide = true)]
+    no_bit_slices: bool,
+
     #[command(flatten)]
     global: GlobalOpts,
 }
@@ -311,7 +317,7 @@ struct WaveArgs {
           value_name = "PATTERN[%RADIX]")]
     signals: Vec<String>,
 
-    /// Time range START:END (required for wave queries)
+    /// Optional time range START:END; without it, --limit bounds the column count
     #[arg(short = 't', long = "time")]
     time: Option<String>,
 
@@ -566,13 +572,14 @@ fn split_patterns_and_radixes(
     (pats, rads)
 }
 
-/// Normalize a Verilog literal (or pass-through edge keyword) → canonical hex.
-fn normalize_value(val: &str) -> String {
+/// Normalize a Verilog literal (or pass-through edge keyword) → canonical hex,
+/// with the parsed literal when there is one.
+fn normalize_value(val: &str) -> (String, Option<VerilogLiteral>) {
     if TriggerMode::classify(val) != TriggerMode::Literal {
-        return val.to_string();
+        return (val.to_string(), None);
     }
     match parse_verilog_literal(val) {
-        Ok(hex) => hex,
+        Ok(lit) => (lit.hex.clone(), Some(lit)),
         Err(e) => {
             eprintln!("ERROR: {}", e);
             process::exit(2);
@@ -580,40 +587,15 @@ fn normalize_value(val: &str) -> String {
     }
 }
 
-fn normalize_stuck_value(value: &str) -> String {
+fn normalize_stuck_value(value: &str) -> (String, Option<VerilogLiteral>) {
     if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("z") {
-        return value.to_lowercase();
+        return (value.to_lowercase(), None);
     }
     if TriggerMode::classify(value) != TriggerMode::Literal {
         eprintln!("ERROR: stuck requires a constant Verilog literal, not an edge keyword");
         process::exit(2);
     }
-    let literal = value.replace('_', "");
-    if let Some((_, tail)) = literal.split_once('\'') {
-        let valid = match tail.as_bytes().split_first() {
-            Some((b'h' | b'H', digits)) => {
-                !digits.is_empty()
-                    && digits
-                        .iter()
-                        .all(|b| b.is_ascii_hexdigit() || matches!(b, b'x' | b'X' | b'z' | b'Z'))
-            }
-            Some((b'b' | b'B', digits)) => {
-                !digits.is_empty()
-                    && digits
-                        .iter()
-                        .all(|b| matches!(b, b'0' | b'1' | b'x' | b'X' | b'z' | b'Z'))
-            }
-            Some((b'd' | b'D', digits)) => {
-                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
-            }
-            _ => false,
-        };
-        if !valid {
-            eprintln!("ERROR: invalid constant Verilog literal: {value}");
-            process::exit(2);
-        }
-    }
-    normalize_value(&literal)
+    normalize_value(value)
 }
 
 /// Parse repeatable `--marker NAME TIME` pairs before touching the store.
@@ -959,6 +941,48 @@ fn load_store_or_exit(store_path: &str) -> ColumnCache {
     })
 }
 
+/// Apply `--reset PATTERN` to the store; an unusable pattern is caller input,
+/// so it exits 2 naming the pattern.
+fn select_reset_or_exit(cache: &mut ColumnCache, pattern: Option<&str>) {
+    if let Some(error) = pattern.and_then(|p| cache.select_reset(p).err()) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
+/// Apply `--clock PATTERN` to the store and print the override line on stderr
+/// (not in JSON mode); a pattern that matches no clock is caller input.
+fn select_clock_or_exit(cache: &mut ColumnCache, pattern: Option<&str>, json_format: bool) {
+    let Some(pattern) = pattern else {
+        return;
+    };
+    match cache.detect_clock_from_pattern(pattern) {
+        Ok((period, first_rise, name)) => {
+            cache.override_clock(period, first_rise, &name);
+            if !json_format {
+                eprintln!(
+                    "# clock override: {name} (period={period} ticks, first_rise={first_rise})"
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            // A --clock pattern that doesn't fit this trace is caller
+            // input, same class as a -s total miss — exit 2, not 1
+            // (1 is reserved for environment/I-O failures).
+            process::exit(2);
+        }
+    }
+}
+
+/// Add the bit-slice rows `patterns` ask for; a refused slice is caller input.
+fn add_slices_or_exit(cache: &mut ColumnCache, patterns: &[String]) {
+    if let Err(error) = cache.add_slices(patterns) {
+        eprintln!("ERROR: {error}");
+        process::exit(2);
+    }
+}
+
 /// Run a query through ColumnCache (loads the store file directly).
 fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     let mut cache = load_store_or_exit(bwave_path);
@@ -971,26 +995,9 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
         eprintln!("ERROR: {}", bwave::cache::no_signals_in_store_message());
         process::exit(2);
     }
-    if let Some(ref clk_pat) = cfg.clock_pattern {
-        match cache.detect_clock_from_pattern(clk_pat) {
-            Ok((period, first_rise, name)) => {
-                cache.override_clock(period, first_rise, &name);
-                if !cfg.json_format {
-                    eprintln!(
-                        "# clock override: {} (period={} ticks, first_rise={})",
-                        name, period, first_rise
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("ERROR: {}", e);
-                // A --clock pattern that doesn't fit this trace is caller
-                // input, same class as a -s total miss — exit 2, not 1
-                // (1 is reserved for environment/I-O failures).
-                process::exit(2);
-            }
-        }
-    }
+    select_reset_or_exit(&mut cache, cfg.reset_pattern.as_deref());
+    select_clock_or_exit(&mut cache, cfg.clock_pattern.as_deref(), cfg.json_format);
+    add_slices_or_exit(&mut cache, &cfg.signal_patterns());
     if cfg.pre_edge && cache.clock_period_ticks == 0 {
         eprintln!("ERROR: --sample-mode pre-edge requires a usable clock");
         process::exit(2);
@@ -1034,15 +1041,8 @@ fn run_overview(args: OverviewArgs) {
     reject_sample_mode("overview", &g);
     require_bwave(&args.bwave, "bwave overview");
     let mut cache = load_store_or_exit(&args.bwave);
-    if let Some(pattern) = g.clock {
-        let (period, first, name) = cache
-            .detect_clock_from_pattern(&pattern)
-            .unwrap_or_else(|e| {
-                eprintln!("ERROR: {e}");
-                process::exit(2);
-            });
-        cache.override_clock(period, first, &name);
-    }
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
+    select_clock_or_exit(&mut cache, g.clock.as_deref(), g.format == "json");
     let cfg = bwave::cache::clock_query_config(
         &cache,
         &ExtractConfig {
@@ -1052,6 +1052,7 @@ fn run_overview(args: OverviewArgs) {
             ..Default::default()
         },
     );
+    let reset = bwave::cache::reset_report(&cache, g.with_reset);
     if g.format == "json" {
         bwave::output::emit_clock_json(
             "overview",
@@ -1064,9 +1065,13 @@ fn run_overview(args: OverviewArgs) {
             bwave::output::merge_warnings(cfg.warnings, &g.wrapper_warning),
             cfg.clock_regularity,
             cfg.clock_stopped,
+            Some(reset),
         );
-    } else if let Some(verdict) = cfg.clock_regularity {
-        println!("{}", bwave::clock::verdict_text(&verdict));
+    } else {
+        if let Some(verdict) = cfg.clock_regularity {
+            println!("{}", bwave::clock::verdict_text(&verdict));
+        }
+        println!("{}", reset.text());
     }
 }
 
@@ -1081,22 +1086,17 @@ fn run_list(args: ListArgs) {
     }
     require_bwave(&args.bwave, "bwave list");
     let mut cache = load_store_or_exit(&args.bwave);
-    if let Some(ref clock) = g.clock {
-        match cache.detect_clock_from_pattern(clock) {
-            Ok((period, rise, name)) => {
-                cache.override_clock(period, rise, &name);
-                if !json_format {
-                    eprintln!(
-                        "# clock override: {} (period={} ticks, first_rise={})",
-                        name, period, rise
-                    );
-                }
-            }
-            Err(error) => {
+    select_reset_or_exit(&mut cache, g.reset.as_deref());
+    select_clock_or_exit(&mut cache, g.clock.as_deref(), json_format);
+    if args.no_bit_slices {
+        for pattern in &patterns {
+            if let Err(error) = cache.refuse_slice(pattern, "bwave gui") {
                 eprintln!("ERROR: {error}");
                 process::exit(2);
             }
         }
+    } else {
+        add_slices_or_exit(&mut cache, &patterns);
     }
     list_signals_from_cache(
         &cache,
@@ -1122,6 +1122,7 @@ fn run_signal(args: SignalArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
@@ -1152,6 +1153,7 @@ fn run_wave(args: WaveArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         marker_tokens,
@@ -1190,6 +1192,17 @@ fn run_value(args: ValueArgs) {
     query_bwave(&args.bwave, cfg);
 }
 
+/// Name the time-window flag the user typed. clap does not report which alias
+/// matched, so a `--time` process argument before any `--` means `--time`,
+/// else `-t`.
+fn time_flag(time: &Option<String>) -> Option<String> {
+    let value = time.as_ref()?;
+    let long = std::env::args()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--time" || arg.starts_with("--time="));
+    Some(format!("{} {value}", if long { "--time" } else { "-t" }))
+}
+
 struct ResolvedMatchModifiers {
     first_match: bool,
     last_match: bool,
@@ -1197,6 +1210,7 @@ struct ResolvedMatchModifiers {
     time_min: i64,
     time_max: Option<i64>,
     time_str: Option<String>,
+    window_flag: Option<String>,
 }
 
 impl MatchModifiers {
@@ -1226,13 +1240,15 @@ impl MatchModifiers {
         // --before/--after take bare i64 (cycle in sync, tick in async).
         // They are bounds rather than time tokens, so the Phase-4 grammar
         // does not apply here.
-        let (first_match, last_match, time_min, time_max, time_str) = if let Some(n) = self.before {
-            (false, true, 0, Some(n), None)
-        } else if let Some(n) = self.after {
-            (true, false, n, None, None)
-        } else {
-            (self.first, self.last, 0, None, self.time)
-        };
+        let window_flag = time_flag(&self.time);
+        let (first_match, last_match, time_min, time_max, time_str, window_flag) =
+            if let Some(n) = self.before {
+                (false, true, 0, Some(n), None, Some(format!("--before {n}")))
+            } else if let Some(n) = self.after {
+                (true, false, n, None, None, Some(format!("--after {n}")))
+            } else {
+                (self.first, self.last, 0, None, self.time, window_flag)
+            };
 
         ResolvedMatchModifiers {
             first_match,
@@ -1241,6 +1257,7 @@ impl MatchModifiers {
             time_min,
             time_max,
             time_str,
+            window_flag,
         }
     }
 }
@@ -1250,7 +1267,11 @@ fn run_find(args: FindArgs) {
     require_bwave(&args.bwave, "bwave find");
     let modifiers = args.modifiers.resolve();
 
-    let value = normalize_value(&args.value);
+    let (value, literal) = normalize_value(&args.value);
+    let value_literals = literal
+        .map(|lit| (vec![args.pattern.clone()], lit))
+        .into_iter()
+        .collect();
     let (patterns, signal_radixes) = (vec!["*".to_string()], Vec::new());
 
     let cfg = ExtractConfig {
@@ -1258,6 +1279,7 @@ fn run_find(args: FindArgs) {
         signal_radixes,
         find_pattern: Some(args.pattern),
         find_value: Some(value),
+        value_literals,
         include_stopped: args.include_stopped,
         first_match: modifiers.first_match,
         last_match: modifiers.last_match,
@@ -1269,6 +1291,7 @@ fn run_find(args: FindArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1286,12 +1309,17 @@ fn run_sample(args: SampleArgs) {
     let modifiers = args.modifiers.resolve();
 
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
-    let value = normalize_value(&args.value);
+    let (value, literal) = normalize_value(&args.value);
+    let value_literals = literal
+        .map(|lit| (vec![args.trigger.clone()], lit))
+        .into_iter()
+        .collect();
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
         explicit_selectors: !args.signals.is_empty(),
+        value_literals,
         sample_at_pattern: Some(args.trigger),
         sample_at_value: Some(value),
         include_stopped: args.include_stopped,
@@ -1305,6 +1333,7 @@ fn run_sample(args: SampleArgs) {
         with_reset: g.with_reset,
         time_min: modifiers.time_min,
         time_max: modifiers.time_max,
+        window_flag: modifiers.window_flag,
         time_str: modifiers.time_str,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1350,11 +1379,14 @@ fn run_distance(args: DistanceArgs) {
     require_bwave(&args.bwave, "bwave distance");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
-    let value = normalize_value(&args.value);
+    let mut value_literals = Vec::new();
+    let (value, literal) = normalize_value(&args.value);
+    value_literals.extend(literal.map(|lit| (vec![args.pattern.clone()], lit)));
     let distance_a = Some((args.pattern, value));
     let distance_b = args.distance_to.map(|v| {
         let pat = v[0].clone();
-        let val = normalize_value(&v[1]);
+        let (val, literal) = normalize_value(&v[1]);
+        value_literals.extend(literal.map(|lit| (vec![pat.clone()], lit)));
         (pat, val)
     });
 
@@ -1364,12 +1396,14 @@ fn run_distance(args: DistanceArgs) {
         explicit_selectors: !args.signals.is_empty(),
         distance_a,
         distance_b,
+        value_literals,
         stats_mode: args.stats,
         async_mode: g.async_mode,
         pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         virtual_defs: args.virtuals.virtual_defs,
@@ -1395,6 +1429,7 @@ fn run_stats(args: StatsArgs) {
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
+        window_flag: time_flag(&args.time),
         time_str: args.time,
         max_lines: g.limit,
         json_format: g.format == "json",
@@ -1411,18 +1446,23 @@ fn run_stuck(args: StuckArgs) {
     require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
     // Normalize constant literals; an empty filter means any stuck value.
-    let find_stuck = Some(
-        args.value
-            .as_deref()
-            .map(normalize_stuck_value)
-            .unwrap_or_default(),
-    );
+    let (find_stuck, literal) = args
+        .value
+        .as_deref()
+        .map(normalize_stuck_value)
+        .unwrap_or_default();
+    let find_stuck = Some(find_stuck);
+    let value_literals = literal
+        .map(|lit| (patterns.clone(), lit))
+        .into_iter()
+        .collect();
 
     let cfg = ExtractConfig {
         patterns,
         signal_radixes,
         explicit_selectors: !args.signals.is_empty(),
         find_stuck,
+        value_literals,
         async_mode: g.async_mode,
         pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
@@ -1455,14 +1495,10 @@ fn resolve_time_tokens_or_exit(cfg: &mut ExtractConfig, cache: &ColumnCache) {
 //   main()
 // ===================================================================
 
-/// Print the embedded JSON Schema for `--format json` envelopes.
-/// The schema is baked into the binary at build time (see schema/bwave.json).
+/// Print the JSON Schema for `--format json` envelopes, generated from the
+/// output structs (`schema/bwave.json` is its committed copy).
 fn run_schema() {
-    const SCHEMA: &str = include_str!("../schema/bwave.json");
-    print!("{}", SCHEMA);
-    if !SCHEMA.ends_with('\n') {
-        println!();
-    }
+    print!("{}", bwave::output::schema_json());
 }
 
 fn run_docs(args: DocsArgs) {

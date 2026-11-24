@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support.validate_commit_msg import (
     _has_project_config,
@@ -17,9 +17,9 @@ from booley.dev_support.validate_commit_msg import (
 )
 
 
-def _run_checked(argv: list[str], *, timeout: float = SUBPROCESS_TIMEOUT_S) -> None:
+def _run_checked(argv: list[str]) -> None:
     """Run a fixture command under the shared bound; a failure shows its stderr."""
-    result = run_bounded_child(argv, timeout=timeout)
+    result = run_bounded_child(argv)
     assert result.returncode == 0, result.stderr
 
 
@@ -383,7 +383,6 @@ def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_p
     result = run_bounded_child(
         [sys.executable, "-I", "-S", str(script), "Update ALU"],
         cwd=tmp_path,
-        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
@@ -472,9 +471,9 @@ class TestVendoredStandaloneImport:
 def test_default_staged_engineering_prose_is_allowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _run_checked(["git", "init", "-q", str(tmp_path)], timeout=10)
+    _run_checked(["git", "init", "-q", str(tmp_path)])
     (tmp_path / "generated.txt").write_text("generated docker verification agent\nautomated fix\n")
-    _run_checked(["git", "-C", str(tmp_path), "add", "generated.txt"], timeout=10)
+    _run_checked(["git", "-C", str(tmp_path), "add", "generated.txt"])
     monkeypatch.chdir(tmp_path)
     assert validate_diff(tmp_path) == []
 

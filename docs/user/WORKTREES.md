@@ -39,9 +39,11 @@ manual Git steps with the real Sandbox paths; use those, not host paths.
 
 The worktree gets its own Booley Directory (the `.booley/` folder), a
 **Snapshot**: a copy of the Booley Directory's configuration (settings,
-`cores/`, hooks, Ticket history). Build results, reports, logs, and
-evidence stay in the main Booley Directory. A path Booley does not classify is
-not copied, and the command names it.
+`cores/`, hooks, Ticket history, and the [waiver
+directory](COVERAGE.md#waiver-directory-coveragewaivers) when its `anchor` is
+`project_data_repository`). Build results, reports, logs, and evidence stay in
+the main Booley Directory. A path Booley does not classify is not copied; the
+command names it unless Git tracks or ignores everything in it.
 
 <details markdown>
 <summary>In stealth mode</summary>
@@ -112,11 +114,11 @@ own `worktrees/`) is refused even with `--force`: remove it first with
 `booley worktree rm` or `git worktree remove`. So is a worktree whose `.booley/`
 is a link or lies outside it.
 
-Evidence is the worktree's `.booley/` content that Git does not keep (the
-untracked files of a directory Git tracks in part, such as `plans/`, included):
-Common Booley State such as `reviewer-evidence/`, `handoffs/`, the Findings Log
-(`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow reports with
-their Trace Artifacts. It moves to `.booley/worktrees/.evidence/<name>-<time>/`
+Evidence is the worktree's `.booley/` content that Git does not keep (including
+untracked files inside a directory Git tracks in part):
+Common Booley State such as `reviewer-evidence/`, `plans/`, `handoffs/`, the
+Findings Log (`findings.jsonl`), `setup-evidence/`, reports, and logs, plus Flow
+reports with their Trace Artifacts. It moves to `.booley/worktrees/.evidence/<name>-<time>/`
 in the Main Booley Directory, at the same relative paths; each attempt gets its
 own new directory and nothing is overwritten. Copy out what you need from there,
 and keep that archive separate from the Project's own Findings Log; don't merge

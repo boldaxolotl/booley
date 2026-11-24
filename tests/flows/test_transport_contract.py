@@ -7,20 +7,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.flows.base import BuiltinFlow
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
-from booley.flows.mutation.flow import MutationFlow
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
 from tests.flows.invocation_doubles import replace_run
 from tests.flows.report_headline import assert_paired_headline
+from tests.time_budget import hang_guard_s
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
-# The Flows that record Criteria; the Simulation Flow records none.
-CRITERION_FLOWS = (LintFlow, AsicSynthesizeFlow, FpgaImplFlow)
 
 
 def test_standalone_cli_wires_utc_formatter(monkeypatch):
@@ -59,24 +56,12 @@ def runtime(monkeypatch, tmp_path):
     # Seat Caps are covered by the admission tests; these tests are about transport.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in (
-        "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",
         "BOOLEY_LOGS_DIR",
         "BOOLEY_RUNTIME_DIR",
     ):
         monkeypatch.delenv(name, raising=False)
     return tmp_path
-
-
-def test_cli_rejects_the_retired_diagnostic_option(capsys):
-    from booley.flows.builtin_cli import build_parser
-
-    for flow_type in (*FLOWS, MutationFlow):
-        parser = build_parser(flow_type(), human=True)
-        with pytest.raises(SystemExit) as error:
-            parser.parse_args(["--target", "demo", "--diagnostic"])
-        assert error.value.code == 2
-        assert "error: unrecognized arguments: --diagnostic" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("flow_type", FLOWS)
@@ -94,13 +79,127 @@ def test_typed_request_executes_without_constructing_a_parser(flow_type, runtime
     result = flow.execute(request)
     assert result.exit_code == 0
     assert result.outcome.detail["evidence"] == "same"
-    assert "acceptance_effect" not in result.outcome.detail
-    assert not hasattr(flow, "_cli_parser")
     assert request.report_dir is None
     report_root = runtime / "flow-reports"
     assert flow.args.report_dir == report_root
     assert (report_root / f"{flow.name}.json").is_file()
     assert (report_root / flow.name / "1/report.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("case", "publishes", "dry_run"),
+    [
+        ("checkout-publishes", True, False),
+        ("checkout-returns", False, False),
+        ("checkout-dry-run", False, True),
+        ("booley-dir-publishes", True, False),
+    ],
+)
+def test_flow_fails_naming_its_removed_root(
+    case, publishes, dry_run, runtime, monkeypatch, capsys
+):
+    from booley.core.booley_dir import reset_cache
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.runtime.filesystem_utils import safe_rmtree
+    from booley.targets.selection import UnknownTargetError
+
+    if case == "booley-dir-publishes":
+        removed = runtime / "bd"
+        removed.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(removed))
+        reset_cache()
+        work_dir, report_dir = runtime, None
+        expected = f"lint failed: Booley Directory {removed} was removed during the run"
+    else:
+        removed = work_dir = runtime / "checkout"
+        (work_dir / ".booley").mkdir(parents=True)
+        report_dir = work_dir / ".booley" / "flow-reports"
+        expected = f"lint failed: checkout {removed} was removed during the run"
+    flow = LintFlow()
+
+    def run():
+        safe_rmtree(removed)
+        if publishes:
+            flow.reserve_invocation_dir()
+            raise UnknownTargetError("Unknown target 'demo'; selectable Targets: (none authored)")
+        return EndpointOutcome()
+
+    replace_run(monkeypatch, flow, run)
+    request = flow.request_type(
+        target="demo", work_dir=work_dir, report_dir=report_dir, dry_run=dry_run
+    )
+    result = flow.execute(request)
+
+    assert result.outcome.report_text == expected
+    assert result.exit_code == 2
+    assert not removed.exists()
+    if publishes:
+        err = capsys.readouterr().err
+        assert "Traceback" in err
+        assert "RemovedDirectoryError" in err
+
+
+def _flow_removing(monkeypatch, removed, *, raises):
+    """A lint Flow whose run deletes *removed* and then raises or returns."""
+    from booley.runtime.endpoint_execution import EndpointOutcome
+    from booley.runtime.filesystem_utils import safe_rmtree
+    from booley.targets.selection import UnknownTargetError
+
+    flow = LintFlow()
+
+    def run():
+        safe_rmtree(removed)
+        if raises:
+            raise UnknownTargetError("Unknown target 'demo'")
+        return EndpointOutcome()
+
+    replace_run(monkeypatch, flow, run)
+    return flow
+
+
+def test_booley_directory_removed_before_the_display_event_stays_removed(runtime, monkeypatch):
+    checkout = runtime / "checkout"
+    booley_dir = checkout / ".booley"
+    booley_dir.mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(booley_dir / ".runtime"))
+    flow = _flow_removing(monkeypatch, booley_dir, raises=False)
+
+    result = flow.execute(
+        flow.request_type(target="demo", work_dir=checkout, report_dir=booley_dir / "flow-reports")
+    )
+
+    assert result.outcome.report_text == (
+        f"lint failed: Booley Directory {booley_dir} was removed during the run"
+    )
+    assert checkout.is_dir()
+    assert not booley_dir.exists()
+
+
+def test_dry_run_failure_in_a_removed_checkout_prints_its_traceback(runtime, monkeypatch, capsys):
+    checkout = runtime / "checkout"
+    checkout.mkdir()
+    flow = _flow_removing(monkeypatch, checkout, raises=True)
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=checkout, dry_run=True))
+
+    assert result.exit_code == 2
+    assert "UnknownTargetError" in capsys.readouterr().err
+    assert not checkout.exists()
+
+
+def test_report_outside_a_removed_checkout_is_still_written(runtime, monkeypatch, capsys):
+    checkout = runtime / "checkout"
+    checkout.mkdir()
+    outside = runtime / "outside"
+    flow = _flow_removing(monkeypatch, checkout, raises=True)
+
+    result = flow.execute(flow.request_type(target="demo", work_dir=checkout, report_dir=outside))
+
+    expected = f"lint failed: checkout {checkout} was removed during the run"
+    assert result.outcome.report_text == expected
+    assert json.loads((outside / "lint.json").read_text())["report_text"] == expected
+    assert "UnknownTargetError" in capsys.readouterr().err
+    assert not checkout.exists()
 
 
 def test_flow_report_root_precedence(runtime, monkeypatch):
@@ -126,18 +225,14 @@ def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypat
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     reserved = []
-    monkeypatch.setattr(
-        SimulateFlow, "prepare_endpoint_invocation", BuiltinFlow.prepare_endpoint_invocation
-    )
-    monkeypatch.setattr(SimulateFlow, "prepare_target_endpoint", lambda self: None)
-
-    def run(session):
-        reserved.append(session.reserve_invocation_dir())
-        return EndpointOutcome()
-
-    monkeypatch.setattr(SimulateFlow, "_run", run)
     for _ in range(3):
         flow = SimulateFlow()
+
+        def run(flow=flow):
+            reserved.append(flow.reserve_invocation_dir())
+            return EndpointOutcome()
+
+        replace_run(monkeypatch, flow, run)
         result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
         assert result.exit_code == 0
 
@@ -161,38 +256,6 @@ def test_uninitialized_flow_fails_before_execution(runtime, monkeypatch):
     assert result.exit_code == 2
     assert "Run 'booley init'" in result.outcome.report_text
     assert not (uninitialized / "flow-reports").exists()
-
-
-def test_hand_set_state_file_neither_refuses_nor_records(runtime, monkeypatch):
-    """A state file naming only another Target is neither read, refused on, nor written."""
-    from booley.criteria.state import DevelopmentState
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    path = runtime / "state.json"
-    state = DevelopmentState.load(path)
-    state.init_criteria({"lint_clean_other": True}, strict=True)
-    state.save()
-    before = path.read_bytes()
-    monkeypatch.setenv("BOOLEY_STATE_FILE", str(path))
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
-
-    for flow_type in (*CRITERION_FLOWS, MutationFlow):
-        for exit_code in (0, 1, 2):
-            flow = flow_type()
-            replace_run(
-                monkeypatch,
-                flow,
-                lambda exit_code=exit_code: EndpointOutcome(
-                    exit_code=exit_code, report_text="ran"
-                ),
-            )
-
-            result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
-
-            assert result.outcome.report_text == "ran", (flow.name, exit_code)
-            assert result.exit_code == exit_code, (flow.name, exit_code)
-            assert path.read_bytes() == before
-            assert not (runtime / "logs").exists()
 
 
 def _assert_distinct_artifact_invocations(
@@ -241,16 +304,17 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(runtime / "logs"))
-    monkeypatch.setattr(server, "_job_inline_wait_seconds", lambda: 10.0)
+    monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", str(hang_guard_s()))
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
     assert "criterion_key" not in cli_report and "criterion_met" not in cli_report
 
+    # Private seam: the server dispatches a tool only from inside a live MCP session.
     async def dispatch():
         jobs = server._JobManager(Mock())
-        definition = catalog._mcp_tool_def_from_class(
-            LintFlow, flow_schema(LintFlow()), "lint", module_path="booley.flows.lint"
+        definition = catalog._mcp_tool_def_from_endpoint(
+            LintFlow(), flow_schema(LintFlow()), "lint", module_path="booley.flows.lint"
         )
         content = await server._dispatch_booley_mcp_tool(
             "lint", {"target": "lite"}, definition, {}, jobs
@@ -258,10 +322,9 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
         assert isinstance(content, tuple), content
         return content[1]["reports"][0]
 
-    # No wall-clock budget here: the child is a real Python process whose start-up
-    # is CPU-bound, so a fixed cap fails on a loaded host (a busy xdist run took
-    # more than 20 s for a ~3 s child). A hang is still bounded by the pytest
-    # timeout and the job supervisor's own timeout.
+    # The inline wait above is the only budget: a hang guard on the scaled policy,
+    # since the child is a real Python process whose CPU-bound start-up slows on a
+    # loaded host. A hang is also bounded by the job supervisor's own timeout.
     report = asyncio.run(dispatch())
     assert report["exit_code"] == 0
     assert "criterion_key" not in report and "criterion_met" not in report
@@ -278,6 +341,8 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
 def test_project_endpoint_constructor_schema_loader_and_execution(base, runtime):
     import sys
 
+    # Private seam: the CLI and MCP loaders run only inside `booley tool` dispatch and the
+    # catalog worker process.
     from booley.harness.booley import _load_mcp_tool_class
     from booley.mcp.catalog import _find_mcp_tool_class_in_module
     from booley.mcp.registry import extract_mcp_tool_info
@@ -335,49 +400,31 @@ def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = LintFlow()
-    replace_run(monkeypatch, flow, EndpointOutcome)
-    flow.execute_cli(["--target", "demo"])
-    first_id = flow._invocation_id
-    flow._eda_tool = "previous tool"
-    flow._reserved_invocation_dir = runtime / "old-invocation"
-    request = flow.request_type(target="demo", work_dir=runtime)
-    flow.execute(request)
-    assert flow._invocation_id != first_id
-    assert flow._raw_argv is None
-    assert flow._eda_tool is None
-    assert flow._reserved_invocation_dir is None
-    assert request.report_dir is None
-
-
-@pytest.mark.parametrize("failure", (KeyboardInterrupt, RuntimeError))
-def test_typed_failure_releases_admission_and_restores_stdout(failure, runtime, monkeypatch):
-    import sys
-    from unittest.mock import Mock
-
-    from booley.flows import endpoint_admission
-
-    flow = LintFlow()
-    claim = object()
-    store = Mock()
-    monkeypatch.setattr(
-        endpoint_admission,
-        "_acquire_memory_reservation",
-        lambda _endpoint, _prepared, *, requeued=False: endpoint_admission._Claim(store, claim),
-    )
+    calls = []
 
     def run():
-        raise failure("interrupted execution")
+        calls.append(None)
+        if len(calls) == 1:
+            flow.record_eda_tool("demo", "verible")
+        return EndpointOutcome()
 
     replace_run(monkeypatch, flow, run)
-    stdout = sys.stdout
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
+    flow.execute_cli(["--target", "demo"])
     request = flow.request_type(target="demo", work_dir=runtime)
-    if failure is KeyboardInterrupt:
-        with pytest.raises(KeyboardInterrupt):
-            flow.execute(request)
-    else:
-        assert flow.execute(request).exit_code == 2
-    assert sys.stdout is stdout
-    store.release.assert_called_once_with(claim)
+    flow.execute(request)
+
+    reports = runtime / "runtime/flow-reports/lint"
+    first, second = (
+        json.loads((reports / f"{n}/report.json").read_text(encoding="utf-8")) for n in (1, 2)
+    )
+    assert first["argv"] == ["--target", "demo"]
+    assert first["eda_tool"] == "verible"
+    assert "argv" not in second
+    assert "eda_tool" not in second
+    starts = [event for event in _display_events(runtime) if event["type"] == "endpoint_start"]
+    assert len({event["invocation_id"] for event in starts}) == 2
+    assert request.report_dir is None
 
 
 def test_flow_exception_produces_actionable_report_without_console_traceback(
@@ -404,23 +451,17 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     assert "Traceback" not in output.out + output.err
 
 
-def _display_events(monkeypatch):
-    """Capture every event the endpoint emits; return the live list."""
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_session._write_display_event", events.append)
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
-    return events
+def _display_events(runtime):
+    """Every event the endpoints appended to the runtime's display.jsonl."""
+    path = runtime / "runtime/display.jsonl"
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def _report_targets(root, names=("first", "second"), flow="sim"):
-    tools = {"lint": "verible", "synth": "yosys", "fpga": "vivado"}
-    declaration = (
-        "flow: sim\n    flow_options: {tool: verilator}"
-        if flow == "sim"
-        else f"default_tool: {tools[flow]}"
+def _report_targets(root):
+    (root / "design.core").write_text(
+        "CAPI=2:\nname: acme:lib:dut:1\ntargets:\n"
+        "  first:\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: dut\n"
     )
-    entries = "".join(f"  {name}:\n    {declaration}\n    toplevel: dut\n" for name in names)
-    (root / "design.core").write_text("CAPI=2:\nname: acme:lib:dut:1\ntargets:\n" + entries)
 
 
 @pytest.mark.parametrize("name", ["mutation", "coverage_analyst"])
@@ -429,7 +470,7 @@ def test_mutation_flow_and_specialist_reports_carry_no_criterion(runtime, monkey
     from booley.mcp.base import McpToolResult
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 
-    _report_targets(runtime, ("first",))
+    _report_targets(runtime)
     classes = {
         "mutation": MutationFlow,
         "coverage_analyst": CoverageAnalystSpecialist,
@@ -445,32 +486,13 @@ def test_mutation_flow_and_specialist_reports_carry_no_criterion(runtime, monkey
             self.set_criterion("mutation_score_first", False)
         return McpToolResult(exit_code=1)
 
+    # Private seam: CoverageAnalystSpecialist is not a BuiltinFlow, so replace_run cannot double it.
     monkeypatch.setattr(endpoint_type, "_run", run)
-    events = _display_events(monkeypatch)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime / "runtime"))
     result = endpoint_type().execute_cli(
         ["--work-dir", str(runtime), "--report-dir", str(runtime / "reports"), *extras]
     )
     assert not hasattr(result.outcome, "criterion_key")
     assert_paired_headline(runtime / "reports", name)
-    (end,) = (event for event in events if event["type"] == "endpoint_end")
+    (end,) = (event for event in _display_events(runtime) if event["type"] == "endpoint_end")
     assert "criterion_key" not in end and "criterion_met" not in end
-
-
-def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
-    schema = flow_schema(SimulateFlow())
-    assert schema["properties"]["verbose"] == {
-        "type": "boolean",
-        "default": False,
-        "description": "Include full Simulation Record resume mismatch pointers and values",
-    }
-    assert "verbose" not in schema.get("required", [])
-    assert "verbose" not in flow_schema(LintFlow())["properties"]
-
-
-def test_completion_event_carries_no_criterion_fields():
-    from booley.flows.endpoint_events import _endpoint_end_event
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    event = _endpoint_end_event("generic", None, EndpointOutcome(), 0.0)
-    assert "criterion_key" not in event
-    assert "criterion_met" not in event

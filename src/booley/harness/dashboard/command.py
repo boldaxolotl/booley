@@ -22,6 +22,10 @@ from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.dashboard_tasks import attach_blocker
 
 ALREADY_OPEN = 3
+ALREADY_OPEN_REASON = (
+    "The Dashboard is already open in another window or terminal of this Sandbox. "
+    "Close it there (or press q in it), then run booley dashboard or Booley: Open Dashboard here."
+)
 ATTACH_DISABLED = 4
 _PLATFORM = sys.platform
 
@@ -86,7 +90,7 @@ def attach_policy(root: Path) -> dict[str, object]:
             raise
         already_open = False  # a Project opt-out was always reported without probing
     if already_open and not reason:
-        reason = "The Dashboard is already open in this Sandbox."
+        reason = ALREADY_OPEN_REASON
     return {"protocol": 1, "enabled": not reason, "reason": reason, "already_open": already_open}
 
 
@@ -163,7 +167,7 @@ def _bind_view(owner: socket.socket, scope: str, *, on_attach: bool) -> int | No
     if failure.errno != errno.EADDRINUSE:
         print(f"Dashboard unavailable: cannot reserve the Sandbox view: {failure}")
         return 2
-    print("Booley Dashboard is already open in this Sandbox")
+    print(ALREADY_OPEN_REASON)
     return ALREADY_OPEN if on_attach else 0
 
 

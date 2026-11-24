@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,16 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+# Standalone script run as /work/tests/docker/agent_policy_probe.py: put the repository
+# root on sys.path so the shared time-budget policy imports.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tests.time_budget import hang_guard_s
+
 from booley.runtime import dockerfile_syntax
+
+# Hang guard for every wait here: nothing asserts a command or thread expires.
+_HANG_S = hang_guard_s()
 
 # The repository manifest is the single source of the pinned CLI versions. Reading
 # it (CI mounts the checkout at /work) checks the image against the current pins.
@@ -31,7 +41,7 @@ def _run(
     *,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
-    timeout: int = 30,
+    timeout: int = _HANG_S,
 ) -> subprocess.CompletedProcess[str]:
     # Unbounded child: standalone script run inside the image, outside pytest
     result = subprocess.run(
@@ -85,7 +95,7 @@ def _assert_diagnostics() -> None:
         ["codex", "doctor", "--json"],
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=_HANG_S,
         check=False,
     )
     report = json.loads(codex.stdout)
@@ -145,7 +155,7 @@ anyio.run(main)
     bundle = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
     assert not bundle.exists(), f"SDK bundled CLI remains: {bundle}"
     assert Path("/usr/local/bin/claude").resolve().is_file()
-    _run(["python", "-c", script], timeout=20)
+    _run(["python", "-c", script], timeout=_HANG_S)
     return str(Path("/usr/local/bin/claude").resolve())
 
 
@@ -331,11 +341,11 @@ def _run_claude_case(case: str, root: Path, extra_args: list[str]) -> list[str]:
         "Read canary.txt, then search the web and fetch https://example.com.",
     ]
     try:
-        _run(command, cwd=project, env=_claude_environment(home, provider), timeout=30)
+        _run(command, cwd=project, env=_claude_environment(home, provider), timeout=_HANG_S)
     finally:
         provider.shutdown()
         provider.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout=_HANG_S)
     assert provider.requests, f"Claude {case} sent no model request"
     tools = {tool["name"] for tool in provider.requests[0].get("tools", [])}
     assert "Read" in tools, f"Claude {case} omitted Read canary: {sorted(tools)}"
@@ -386,7 +396,7 @@ def _run_codex_case(case: str, root: Path, extra_args: list[str]) -> str:
         env=env,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=_HANG_S,
         check=False,
     )
     report = json.loads(result.stdout)

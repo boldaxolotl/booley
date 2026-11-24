@@ -6,11 +6,13 @@ pub mod fst;
 pub mod output;
 pub mod parser;
 mod profile;
+pub mod reset;
 pub mod signal;
+pub mod slice;
 pub mod vcd_chunk;
 pub mod virtual_signal;
 
-use format::{Radix, TimeToken};
+use format::{Radix, TimeToken, VerilogLiteral};
 
 #[derive(Clone)]
 pub struct ExtractConfig {
@@ -25,7 +27,11 @@ pub struct ExtractConfig {
     pub clock_regularity: Option<clock::ClockVerdict>,
     pub clock_stopped: Vec<clock::StoppedRange>,
     pub clock_pattern: Option<String>,
+    /// `--reset` pattern. The CLI applies it to the store through
+    /// `ColumnCache::select_reset` before any query runs.
     pub reset_pattern: Option<String>,
+    /// The reset report of a sync query, set by the query's config resolution.
+    pub reset_report: Option<reset::ResetReport>,
     pub with_reset: bool,
     pub at_time: Option<i64>,
     pub at_time_is_cycle: bool,
@@ -38,6 +44,9 @@ pub struct ExtractConfig {
     pub sample_at_value: Option<String>,
     pub count_only: bool,
     pub find_stuck: Option<String>,
+    /// Value literals the query compares against, each with the patterns it
+    /// is compared to; used to warn when a literal cannot fit a signal.
+    pub value_literals: Vec<(Vec<String>, VerilogLiteral)>,
     pub time_min: i64,
     pub time_max: Option<i64>,
     pub max_lines: usize,
@@ -63,6 +72,9 @@ pub struct ExtractConfig {
     /// cache's timescale in `resolve_time_tokens()` to populate `time_min` /
     /// `time_max`.
     pub time_str: Option<String>,
+    /// The query window flag as typed (`-t 5:9`, `--after 100`); `None` when
+    /// the query has no window.
+    pub window_flag: Option<String>,
     /// Raw `--at` argument; e.g. `"100"` (sync), `"500ns"` (async). Parsed in
     /// `resolve_time_tokens()` to populate `at_time`.
     pub at_str: Option<String>,
@@ -84,6 +96,7 @@ impl Default for ExtractConfig {
             clock_stopped: Vec::new(),
             clock_pattern: None,
             reset_pattern: None,
+            reset_report: None,
             with_reset: false,
             at_time: None,
             at_time_is_cycle: false,
@@ -96,6 +109,7 @@ impl Default for ExtractConfig {
             sample_at_value: None,
             count_only: false,
             find_stuck: None,
+            value_literals: Vec::new(),
             time_min: 0,
             time_max: None,
             max_lines: 2000,
@@ -110,6 +124,7 @@ impl Default for ExtractConfig {
             virtual_defs: Vec::new(),
             json_format: false,
             time_str: None,
+            window_flag: None,
             at_str: None,
             diff_strs: None,
         }
@@ -117,6 +132,16 @@ impl Default for ExtractConfig {
 }
 
 impl ExtractConfig {
+    /// Every signal pattern the query names, radix suffixes removed.
+    pub fn signal_patterns(&self) -> Vec<String> {
+        let mut all = self.patterns.clone();
+        all.extend(self.find_pattern.clone());
+        all.extend(self.sample_at_pattern.clone());
+        all.extend(self.distance_a.iter().map(|d| d.0.clone()));
+        all.extend(self.distance_b.iter().map(|d| d.0.clone()));
+        all
+    }
+
     /// Parse the raw time-token strings (`time_str`, `at_str`, `diff_strs`)
     /// against the cache's timescale, counted clock grid, and reset policy.
     /// Populates `time_min`, `time_max`, `at_time`, and `diff_points` in
@@ -132,7 +157,6 @@ impl ExtractConfig {
         let policy = ExtractConfig {
             async_mode: self.async_mode,
             with_reset: self.with_reset,
-            reset_pattern: self.reset_pattern.clone(),
             ..Default::default()
         };
         let resolve = |tok: &TimeToken| cache::resolve_time_token(cache, &policy, tok);
@@ -173,7 +197,7 @@ impl ExtractConfig {
             let tok = TimeToken::parse(&s, self.async_mode)?;
             // Resolve once to a cycle in sync mode or a raw tick in async;
             // snapshot_from_cache must not apply the timescale a second time.
-            let v = resolve(&tok)?;
+            let v = resolve(&tok).map_err(|error| format!("--at {s}: {error}"))?;
             self.at_time = Some(v);
         }
 

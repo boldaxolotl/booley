@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fixtures" / "veril
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from flow_fixture import write_project
 from tests.flows.sim.prepared_group import run_prepared_group
+from tests.time_budget import hang_guard_s, scaled
 
 _EXPECTED = {
     "pass": "pass",
@@ -36,7 +38,7 @@ def invoke(command: list[str], *, timeout: int, cwd: Path) -> SubprocessResult:
     completed = subprocess.run(
         command,
         cwd=cwd,
-        timeout=min(timeout + 120, 300),
+        timeout=min(timeout + 4 * hang_guard_s(), 10 * hang_guard_s()),
         capture_output=True,
         text=True,
         check=False,
@@ -49,7 +51,7 @@ def invoke(command: list[str], *, timeout: int, cwd: Path) -> SubprocessResult:
 def check_case(root: Path, harness: str, outcome: str) -> dict:
     write_project(root, harness, outcome)
     handle = TargetCatalog.build(root).select("sim", for_flow="sim")
-    options = SimulationOptions(timeout_ms=2000)
+    options = SimulationOptions(timeout_ms=math.ceil(scaled(2) * 1000))
     # The launch writes owner-only (0700) evidence directories. The container
     # user differs from the CI runner that uploads this work dir, so remove the
     # attempt before the runner scans it (EACCES in the upload step otherwise).

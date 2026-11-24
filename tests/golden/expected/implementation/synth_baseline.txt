@@ -1,0 +1,525 @@
+== synth_lite.json ==
+{
+  "flow": "synth",
+  "target": "lite",
+  "eda_tool": null,
+  "timestamp": "<TIME>",
+  "elapsed_s": 4.0,
+  "passed": true,
+  "returncode": 0,
+  "timed_out": false,
+  "termination": "completed",
+  "infra_error": "",
+  "has_metrics": true,
+  "yosys_complete": true,
+  "timing_complete": true,
+  "structural_checks_complete": true,
+  "ppa_complete": true,
+  "peak_rss_mb": null,
+  "area_kge": 12.3,
+  "area_um2": null,
+  "area_source": "",
+  "cell_count": 110,
+  "cell_count_source": "",
+  "synth_mode": "",
+  "per_clock": {},
+  "wns_ns": 0.4,
+  "baseline": {
+    "ref": "abc1234",
+    "area_kge": 12.0,
+    "area_um2": null,
+    "area_source": "",
+    "synth_mode": "",
+    "cell_count": 100,
+    "cell_count_source": "",
+    "per_clock": {},
+    "total_warnings": 0,
+    "warning_summary": {
+      "total_warnings": 0,
+      "unique_warnings": 0,
+      "by_tool": {},
+      "by_category": {},
+      "by_disposition": {},
+      "representatives": []
+    },
+    "timing_unavailable": "baseline run produced no timing reports"
+  },
+  "delta_pct": 2.5,
+  "conditions": {
+    "has_critical": false,
+    "latches": 0,
+    "expected_latches": 0,
+    "unexpected_latches": 0,
+    "comb_loops": 0,
+    "expected_comb_loops": 0,
+    "unexpected_comb_loops": 0,
+    "multi_driven": 0,
+    "warning_summary": {
+      "total_warnings": 0,
+      "unique_warnings": 0,
+      "by_tool": {},
+      "by_category": {},
+      "by_disposition": {},
+      "representatives": []
+    }
+  },
+  "total_warnings": 0,
+  "warning_summary": {
+    "total_warnings": 0,
+    "unique_warnings": 0,
+    "by_tool": {},
+    "by_category": {},
+    "by_disposition": {},
+    "representatives": []
+  },
+  "baseline_target": "lite",
+  "candidate_target": "lite",
+  "baseline_target_identity": "::test:0#lite",
+  "candidate_target_identity": "::test:0#lite",
+  "run_evidence": null,
+  "baseline_run_evidence": {},
+  "run_id": "golden-run",
+  "artifacts": {
+    "report": "reports/synth/1/targets/lite.json"
+  },
+  "implementation": {
+    "schema_version": 1,
+    "identity": {
+      "flow": "synth",
+      "target": "lite",
+      "target_identity": "::test:0#lite",
+      "eda_tool": null,
+      "invocation_run_id": "golden-run",
+      "timestamp": "<TIME>"
+    },
+    "status": {
+      "grade": "pass",
+      "passed": true,
+      "tool_returncode": 0,
+      "timed_out": false,
+      "infra_error": null,
+      "elapsed_s": 4.0,
+      "termination": "completed",
+      "warning_reasons": [],
+      "failure_reasons": [],
+      "completion": {
+        "yosys": true,
+        "timing": true,
+        "structural_checks": true,
+        "ppa": true
+      },
+      "resources": {
+        "peak_rss_mb": null
+      },
+      "diagnostic_excerpt": null
+    },
+    "metrics": {
+      "area_um2": null,
+      "area_source": "",
+      "area_kge": 12.3,
+      "cell_count": 110,
+      "cell_count_source": "",
+      "wire_count": 0,
+      "synth_mode": "",
+      "per_clock": {},
+      "wns_ns": 0.4,
+      "whs_ns": null,
+      "reg2reg_slack_ns": null,
+      "reg2reg_fmax_mhz": null
+    },
+    "conditions": {
+      "has_critical": false,
+      "latches": 0,
+      "expected_latches": 0,
+      "unexpected_latches": 0,
+      "comb_loops": 0,
+      "expected_comb_loops": 0,
+      "unexpected_comb_loops": 0,
+      "multi_driven": 0,
+      "warning_summary": {
+        "total_warnings": 0,
+        "unique_warnings": 0,
+        "by_tool": {},
+        "by_category": {},
+        "by_disposition": {},
+        "representatives": []
+      },
+      "process_count": 0,
+      "io_bound_critical": false
+    },
+    "recipe": {
+      "fingerprint": null,
+      "snapshot": null
+    },
+    "provenance": {
+      "producer": null,
+      "invocation_run_id": "golden-run",
+      "consumer_run_id": null
+    },
+    "comparison": {
+      "requested_ref": "v1.0",
+      "resolved_ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "baseline_target": "lite",
+      "candidate_target": "lite",
+      "baseline_target_identity": "::test:0#lite",
+      "candidate_target_identity": "::test:0#lite",
+      "basis_valid": true,
+      "basis_errors": [],
+      "baseline": {
+        "status": {
+          "grade": "pass",
+          "passed": true,
+          "tool_returncode": 0,
+          "timed_out": false,
+          "infra_error": null,
+          "elapsed_s": 3.0,
+          "termination": "completed",
+          "warning_reasons": [],
+          "failure_reasons": [],
+          "completion": {
+            "yosys": true,
+            "timing": true,
+            "structural_checks": true,
+            "ppa": true
+          },
+          "resources": {
+            "peak_rss_mb": null
+          },
+          "diagnostic_excerpt": null
+        },
+        "metrics": {
+          "area_um2": null,
+          "area_source": "",
+          "area_kge": 12.0,
+          "cell_count": 100,
+          "cell_count_source": "",
+          "wire_count": 0,
+          "synth_mode": "",
+          "per_clock": {},
+          "wns_ns": 0.5,
+          "whs_ns": null,
+          "reg2reg_slack_ns": null,
+          "reg2reg_fmax_mhz": null
+        },
+        "conditions": {
+          "has_critical": false,
+          "latches": 0,
+          "expected_latches": 0,
+          "unexpected_latches": 0,
+          "comb_loops": 0,
+          "expected_comb_loops": 0,
+          "unexpected_comb_loops": 0,
+          "multi_driven": 0,
+          "warning_summary": {
+            "total_warnings": 0,
+            "unique_warnings": 0,
+            "by_tool": {},
+            "by_category": {},
+            "by_disposition": {},
+            "representatives": []
+          },
+          "process_count": 0,
+          "io_bound_critical": false
+        },
+        "recipe": {
+          "fingerprint": null,
+          "snapshot": null
+        },
+        "provenance": {
+          "producer": null,
+          "invocation_run_id": "golden-run",
+          "consumer_run_id": null
+        },
+        "cache": null,
+        "artifacts": {}
+      },
+      "deltas": {
+        "area_um2": {
+          "current": null,
+          "baseline": null,
+          "delta_pct": null,
+          "unavailable_reason": "current metric is unavailable"
+        },
+        "area_kge": {
+          "current": 12.3,
+          "baseline": 12.0,
+          "delta_pct": 2.500000000000006,
+          "unavailable_reason": null
+        },
+        "cell_count": {
+          "current": 110,
+          "baseline": 100,
+          "delta_pct": 10.0,
+          "unavailable_reason": null
+        },
+        "wire_count": {
+          "current": 0,
+          "baseline": 0,
+          "delta_pct": null,
+          "unavailable_reason": "baseline metric is zero"
+        },
+        "wns_ns": {
+          "current": 0.4,
+          "baseline": 0.5,
+          "delta_pct": -19.999999999999996,
+          "unavailable_reason": null
+        },
+        "whs_ns": {
+          "current": null,
+          "baseline": null,
+          "delta_pct": null,
+          "unavailable_reason": "current metric is unavailable"
+        },
+        "reg2reg_slack_ns": {
+          "current": null,
+          "baseline": null,
+          "delta_pct": null,
+          "unavailable_reason": "current metric is unavailable"
+        },
+        "reg2reg_fmax_mhz": {
+          "current": null,
+          "baseline": null,
+          "delta_pct": null,
+          "unavailable_reason": "current metric is unavailable"
+        }
+      }
+    },
+    "cache": null,
+    "artifacts": {
+      "report": "reports/synth/1/targets/lite.json"
+    }
+  }
+}
+== progress.json ==
+{
+  "baseline_completed_targets": [
+    "lite"
+  ],
+  "baseline_ref": "abc1234",
+  "complete": true,
+  "completed_targets": [
+    "lite"
+  ],
+  "detail": {},
+  "flow": "synth",
+  "implementation": {
+    "results": {
+      "lite": {
+        "artifacts": {
+          "report": "reports/synth/1/targets/lite.json"
+        },
+        "cache": null,
+        "comparison": {
+          "baseline": {
+            "artifacts": {},
+            "cache": null,
+            "conditions": {
+              "comb_loops": 0,
+              "expected_comb_loops": 0,
+              "expected_latches": 0,
+              "has_critical": false,
+              "io_bound_critical": false,
+              "latches": 0,
+              "multi_driven": 0,
+              "process_count": 0,
+              "unexpected_comb_loops": 0,
+              "unexpected_latches": 0,
+              "warning_summary": {
+                "by_category": {},
+                "by_disposition": {},
+                "by_tool": {},
+                "representatives": [],
+                "total_warnings": 0,
+                "unique_warnings": 0
+              }
+            },
+            "metrics": {
+              "area_kge": 12.0,
+              "area_source": "",
+              "area_um2": null,
+              "cell_count": 100,
+              "cell_count_source": "",
+              "per_clock": {},
+              "reg2reg_fmax_mhz": null,
+              "reg2reg_slack_ns": null,
+              "synth_mode": "",
+              "whs_ns": null,
+              "wire_count": 0,
+              "wns_ns": 0.5
+            },
+            "provenance": {
+              "consumer_run_id": null,
+              "invocation_run_id": "golden-run",
+              "producer": null
+            },
+            "recipe": {
+              "fingerprint": null
+            },
+            "status": {
+              "completion": {
+                "ppa": true,
+                "structural_checks": true,
+                "timing": true,
+                "yosys": true
+              },
+              "diagnostic_excerpt": null,
+              "elapsed_s": 3.0,
+              "failure_reasons": [],
+              "grade": "pass",
+              "infra_error": null,
+              "passed": true,
+              "resources": {
+                "peak_rss_mb": null
+              },
+              "termination": "completed",
+              "timed_out": false,
+              "tool_returncode": 0,
+              "warning_reasons": []
+            }
+          },
+          "baseline_target": "lite",
+          "baseline_target_identity": "::test:0#lite",
+          "basis_errors": [],
+          "basis_valid": true,
+          "candidate_target": "lite",
+          "candidate_target_identity": "::test:0#lite",
+          "deltas": {
+            "area_kge": {
+              "baseline": 12.0,
+              "current": 12.3,
+              "delta_pct": 2.500000000000006,
+              "unavailable_reason": null
+            },
+            "area_um2": {
+              "baseline": null,
+              "current": null,
+              "delta_pct": null,
+              "unavailable_reason": "current metric is unavailable"
+            },
+            "cell_count": {
+              "baseline": 100,
+              "current": 110,
+              "delta_pct": 10.0,
+              "unavailable_reason": null
+            },
+            "reg2reg_fmax_mhz": {
+              "baseline": null,
+              "current": null,
+              "delta_pct": null,
+              "unavailable_reason": "current metric is unavailable"
+            },
+            "reg2reg_slack_ns": {
+              "baseline": null,
+              "current": null,
+              "delta_pct": null,
+              "unavailable_reason": "current metric is unavailable"
+            },
+            "whs_ns": {
+              "baseline": null,
+              "current": null,
+              "delta_pct": null,
+              "unavailable_reason": "current metric is unavailable"
+            },
+            "wire_count": {
+              "baseline": 0,
+              "current": 0,
+              "delta_pct": null,
+              "unavailable_reason": "baseline metric is zero"
+            },
+            "wns_ns": {
+              "baseline": 0.5,
+              "current": 0.4,
+              "delta_pct": -19.999999999999996,
+              "unavailable_reason": null
+            }
+          },
+          "requested_ref": "v1.0",
+          "resolved_ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "conditions": {
+          "comb_loops": 0,
+          "expected_comb_loops": 0,
+          "expected_latches": 0,
+          "has_critical": false,
+          "io_bound_critical": false,
+          "latches": 0,
+          "multi_driven": 0,
+          "process_count": 0,
+          "unexpected_comb_loops": 0,
+          "unexpected_latches": 0,
+          "warning_summary": {
+            "by_category": {},
+            "by_disposition": {},
+            "by_tool": {},
+            "representatives": [],
+            "total_warnings": 0,
+            "unique_warnings": 0
+          }
+        },
+        "identity": {
+          "eda_tool": null,
+          "flow": "synth",
+          "invocation_run_id": "golden-run",
+          "target": "lite",
+          "target_identity": "::test:0#lite",
+          "timestamp": "<TIME>"
+        },
+        "metrics": {
+          "area_kge": 12.3,
+          "area_source": "",
+          "area_um2": null,
+          "cell_count": 110,
+          "cell_count_source": "",
+          "per_clock": {},
+          "reg2reg_fmax_mhz": null,
+          "reg2reg_slack_ns": null,
+          "synth_mode": "",
+          "whs_ns": null,
+          "wire_count": 0,
+          "wns_ns": 0.4
+        },
+        "provenance": {
+          "consumer_run_id": null,
+          "invocation_run_id": "golden-run",
+          "producer": null
+        },
+        "recipe": {
+          "fingerprint": null
+        },
+        "schema_version": 1,
+        "status": {
+          "completion": {
+            "ppa": true,
+            "structural_checks": true,
+            "timing": true,
+            "yosys": true
+          },
+          "elapsed_s": 4.0,
+          "failure_reasons": [],
+          "grade": "pass",
+          "infra_error": null,
+          "passed": true,
+          "resources": {
+            "peak_rss_mb": null
+          },
+          "termination": "completed",
+          "timed_out": false,
+          "tool_returncode": 0,
+          "warning_reasons": []
+        }
+      }
+    },
+    "schema_version": 1
+  },
+  "pending_targets": [],
+  "phase": "complete",
+  "run_id": "golden-run",
+  "targets": [
+    "lite"
+  ],
+  "timestamp": "<TIME>"
+}
+== RESULT ==
+RESULT: PASS
+== exit code ==
+0

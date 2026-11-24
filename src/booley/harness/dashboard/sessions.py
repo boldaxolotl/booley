@@ -67,7 +67,7 @@ class SessionFacts:
     work_dir: str
     started: str
     activity: Activity
-    #: Running-Job summaries such as ``▶ J-SIM3 sim fifo 1m 12s``.
+    #: Unfinished-Job summaries such as ``▶ J-SIM3 sim fifo 1m 12s`` or ``J-SIM4 queued sim fifo 12s``.
     jobs: tuple[str, ...] = ()
     #: Shared-worktree warning and shared-attribution notice.
     notices: tuple[str, ...] = ()
@@ -78,7 +78,7 @@ class SessionFacts:
 
 @dataclass(frozen=True)
 class StandaloneJob:
-    """A running Job that belongs to no session."""
+    """An unfinished Job that belongs to no session."""
 
     key: str
     label: str
@@ -142,7 +142,7 @@ def _short_activity(activity: Activity, now: float) -> str:
 
 
 def last_column(facts: SessionFacts, now: float) -> str:
-    """Activity, or the running Jobs of a working session, then notices."""
+    """Activity, or the unfinished Jobs of a working session, then notices."""
     activity = _short_activity(facts.activity, now)
     parts = [activity]
     jobs_replace_activity = group_of(facts) == WORKING_GROUP and facts.jobs

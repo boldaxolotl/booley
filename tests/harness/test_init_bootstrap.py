@@ -13,8 +13,24 @@ import pytest
 from booley.config.host_config import host_config_path
 from booley.harness import bootstrap, bootstrap_cli, init_cmd
 from booley.runtime import issuance_invalidation
-from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
+from booley.runtime.docker_capacity import DockerCapacityError
+from booley.runtime.image_lifecycle import (
+    Diagnostic,
+    ImageLifecycleError,
+    Intent,
+    LifecycleResult,
+    Status,
+)
+from tests.docker_cli_guard import forbid_docker_cli
+from tests.harness.init_agent_support import (
+    empty_host,
+    login,
+    project_config,
+    seed_init,
+    stub_host_images,
+)
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 
 def _args(**overrides: object) -> argparse.Namespace:
@@ -38,14 +54,11 @@ def _finding(
     return bootstrap.BootstrapFinding(resource, state, state.value)
 
 
-def test_project_init_coordinator_fits_on_a_screen() -> None:
-    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50, (
-        "Project initialization coordinator exceeds the 50-line architecture limit"
-    )
-
-
-def test_project_init_preflight_coordinator_fits_on_a_screen() -> None:
-    assert len(inspect.getsourcelines(init_cmd._run_init_unlocked)[0]) <= 50
+# private: a function's length is source structure, not public behavior.
+@pytest.mark.parametrize("coordinator", ["_run_project_init_steps", "_run_init_unlocked"])
+def test_init_coordinators_fit_on_a_screen(coordinator: str) -> None:
+    source = inspect.getsourcelines(getattr(init_cmd, coordinator))[0]
+    assert len(source) <= 50, f"{coordinator} exceeds the 50-line architecture limit"
 
 
 def _host_setup_run(
@@ -55,9 +68,11 @@ def _host_setup_run(
     invoked: list[str],
 ) -> Callable[[], int]:
     if operation == "init":
+        # private: stands for everything after the lock, which needs Docker-backed
+        # Host Bootstrap; the test only asks whether `run_init` waits for the lock.
         monkeypatch.setattr(
             init_cmd,
-            "_run_init_unlocked",
+            "_run_init_unlocked",  # private: see above
             lambda *_args: invoked.append(operation) or 0,
         )
         return lambda: init_cmd.run_init(_args(), tmp_path)
@@ -99,10 +114,10 @@ def test_host_setup_waits_for_lifecycle_lock(
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         result = executor.submit(run)
-        assert waiting.wait(2)
+        assert waiting.wait(hang_guard_s())
         assert not result.done()
         holder.release()
-        assert result.result(timeout=5) == 0
+        assert result.result(timeout=hang_guard_s()) == 0
 
     assert invoked == [operation]
     assert "host Docker lifecycle is busy" in caplog.text
@@ -124,9 +139,11 @@ def test_init_reports_unsafe_private_store_before_project_work(
     issuance_invalidation.cancel(str(project.resolve()))
     booley_config = config_root / "booley"
     booley_config.chmod(0o755)
+    # private: the guard stands for everything after the lock, which needs
+    # Docker-backed Host Bootstrap; it proves recovery refuses before that work.
     monkeypatch.setattr(
         init_cmd,
-        "_run_init_unlocked",
+        "_run_init_unlocked",  # private: see above
         lambda *_a, **_kw: pytest.fail("unsafe recovery must precede Project work"),
     )
 
@@ -136,75 +153,34 @@ def test_init_reports_unsafe_private_store_before_project_work(
     assert str(booley_config) in captured.out
     assert "0755" in captured.out
     assert f"chmod 700 {booley_config}" in captured.out
-    assert "Traceback" not in captured.out
-    assert "Traceback" not in captured.err
+    assert "Traceback" not in captured.out + captured.err
 
 
+@pytest.mark.parametrize("force", [False, True])
 def test_bootstrap_failure_precedes_every_project_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force: bool
 ) -> None:
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(
-            intent,
-            (_finding(init_cmd.BootstrapState.ERROR, "docker"),),
-        ),
-    )
-    assert init_cmd.run_init(_args(), tmp_path) == 2
+    """`--force` observes Host Bootstrap (CHECK) and never refreshes it."""
+    observed: list[tuple[Intent, dict[str, object]]] = []
+
+    def reconcile(intent: Intent, **kwargs: object) -> init_cmd.BootstrapResult:
+        observed.append((intent, kwargs))
+        error = _finding(init_cmd.BootstrapState.ERROR, "docker")
+        return init_cmd.BootstrapResult(intent, (error,))
+
+    # Host Bootstrap inspects and builds Docker-backed host resources.
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", reconcile)
+
+    assert init_cmd.run_init(_args(force=force), tmp_path) == 2
+    assert observed == [(Intent.CHECK, {"verbose": False})]
     assert not (tmp_path / ".booley").exists()
     assert not (tmp_path / ".devcontainer").exists()
-
-
-def test_init_force_observes_host_bootstrap_without_refresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed = []
-
-    def reconcile(intent, **kwargs):
-        observed.append((intent, kwargs))
-        return init_cmd.BootstrapResult(intent, ())
-
-    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", reconcile)
-    ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
-
-    assert init_cmd._reconcile_init_bootstrap(ctx, _args(force=True)) is not None
-    assert observed == [(Intent.CHECK, {"verbose": False})]
-
-
-def test_init_managed_project_uses_planned_reconciliation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    expected = LifecycleResult("booley-sandbox", "sha256:image", Status.CURRENT)
-    observed = []
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle,
-        "reconcile_planned",
-        lambda _scope, intent, **_kwargs: observed.append(intent) or expected,
-    )
-    ctx = init_cmd.InitContext(project_root=tmp_path, force=True)
-
-    assert init_cmd._step_image_lifecycle(ctx) is expected
-    assert observed == [Intent.REFRESH]
-
-
-def test_init_external_image_uses_explicit_plan_result(tmp_path, monkeypatch):
-    expected = LifecycleResult("external/image", "sha256:image", Status.EXTERNAL)
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: expected
-    )
-    ctx = init_cmd.InitContext(project_root=tmp_path)
-    assert init_cmd._step_image_lifecycle(ctx) is expected
-    assert ctx.results[-1].detail == "user-managed image"
 
 
 def test_source_checkout_refusal_precedes_bootstrap_and_project_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "pyproject.toml").write_bytes(b"[tool.booley]\nsource_checkout = true\n")
 
     def unexpected_bootstrap(*_args: object, **_kwargs: object) -> None:
         pytest.fail("source refusal must precede Host Bootstrap")
@@ -217,50 +193,38 @@ def test_source_checkout_refusal_precedes_bootstrap_and_project_write(
     assert not (tmp_path / ".devcontainer").exists()
 
 
-def test_seed_only_checks_bootstrap_and_names_repair(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("check_only", [False, True])
+def test_pending_bootstrap_stops_seed_but_not_its_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    check_only: bool,
 ) -> None:
+    login(empty_host(tmp_path, monkeypatch), "claude")
+    reached = stub_host_images(monkeypatch)
+    # Host Bootstrap inspects and builds Docker-backed host resources.
     monkeypatch.setattr(
         init_cmd,
         "reconcile_bootstrap",
         lambda intent, **_kwargs: init_cmd.BootstrapResult(
-            intent,
-            (_finding(init_cmd.BootstrapState.PENDING),),
+            intent, (_finding(init_cmd.BootstrapState.PENDING),)
         ),
     )
-    assert init_cmd.run_init(_args(seed=True), tmp_path) == 2
-    assert "booley bootstrap" in capsys.readouterr().out
+
+    code = seed_init(tmp_path, check_only=check_only)
+
+    output = capsys.readouterr().out
     assert not (tmp_path / ".booley").exists()
-
-
-def test_check_only_continues_project_planning_and_returns_pending(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: init_cmd.BootstrapResult(
-            intent,
-            (_finding(init_cmd.BootstrapState.PENDING),),
-        ),
-    )
-    selection = init_cmd.AgentSelection("claude", "subscription", True, "subscription")
-    monkeypatch.setattr(
-        init_cmd,
-        "_resolve_agent_selection",
-        lambda _ctx, _args, _path: selection,
-    )
-    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
-    planned: list[bool] = []
-
-    def project_steps(ctx, *_args, **_kwargs):
-        planned.append(True)
-        return init_cmd._print_summary(ctx)
-
-    monkeypatch.setattr(init_cmd, "_run_project_init_steps", project_steps)
-    assert init_cmd.run_init(_args(check_only=True), tmp_path) == 1
-    assert planned == [True]
-    assert not (tmp_path / ".booley").exists()
+    if not check_only:
+        assert code == 2
+        assert "booley bootstrap" in output
+        assert reached == []
+        return
+    assert reached == [tmp_path]
+    assert "would record [agent] claude/subscription" in output
+    # A pending finding is a warning row: an `err` row would turn the check into a failure.
+    row = next(line for line in output.splitlines() if "bootstrap.resource" in line)
+    assert "pending" in row and "!" in row and "✗" not in row
 
 
 @pytest.mark.parametrize("table", ["interactive", "sandbox"])
@@ -288,73 +252,75 @@ def test_retired_project_policy_fails_before_project_mutation(
     assert not (tmp_path / "rtl").exists()
 
 
-def _image_command_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text("[sandbox]\nimage = 'booley-sandbox'\n")
-    spec = tmp_path / ".devcontainer/devcontainer.json"
-    spec.parent.mkdir()
-    spec.write_text('{"image":"sha256:prior"}\n')
-    monkeypatch.setattr(
-        init_cmd,
-        "reconcile_bootstrap",
-        lambda intent, **_kw: init_cmd.BootstrapResult(intent, ()),
-    )
-    monkeypatch.setattr(
-        init_cmd,
-        "_resolve_agent_selection",
-        lambda *_args: init_cmd.AgentSelection("claude", "subscription", True, "subscription"),
-    )
-    monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
-    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
-    return spec
-
-
-def test_init_capacity_refusal_returns_two_without_image_or_spec_adoption(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("force", "outcome"),
+    [(True, "current"), (False, "external"), (True, "capacity")],
+)
+def test_init_image_step_records_each_reconciliation_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    force: bool,
+    outcome: str,
 ) -> None:
-    from booley.runtime.docker_capacity import DockerCapacityError
+    intents: list[Intent] = []
+    results = {
+        "current": LifecycleResult("booley-sandbox", "sha256:image", Status.CURRENT),
+        "external": LifecycleResult("external/image", "sha256:image", Status.EXTERNAL),
+    }
 
-    spec = _image_command_project(tmp_path, monkeypatch)
-    before = spec.read_bytes()
-    intents = []
-
-    def refuse(
+    def reconcile(
         _scope: init_cmd.ProjectImageScope, intent: Intent, **_kwargs: object
     ) -> LifecycleResult:
         intents.append(intent)
-        raise DockerCapacityError("Project overlay needs 10 GiB; only 1 GiB available")
+        if outcome == "capacity":
+            raise DockerCapacityError("Project overlay needs 10 GiB; only 1 GiB available")
+        return results[outcome]
 
-    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", refuse)
+    # The Sandbox Image chain plans, pulls and builds images through Docker.
+    monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", reconcile)
+    ctx = init_cmd.InitContext(project_root=tmp_path, force=force)
 
-    # Isolate unrelated setup resources while retaining the CLI, image step,
-    # diagnostic recording and aggregate exit-status boundaries.
-    def image_steps(ctx: init_cmd.InitContext, *_args: object, **_kwargs: object) -> int:
-        init_cmd._step_image_lifecycle(ctx)
-        return init_cmd._print_summary(ctx)
+    # private: full init reaches the image step only inside host preparation and then
+    # runs Sandbox Issuance, and `--seed` passes an explicit CHECK, so no public route
+    # chooses the intent from `--force` without Docker-backed stubs.
+    result = init_cmd._step_image_lifecycle(ctx)
+    code = init_cmd._print_summary(ctx)  # private: the closing step of the same run
 
-    monkeypatch.setattr(init_cmd, "_run_project_init_steps", image_steps)
-    assert init_cmd.run_init(_args(force=True), tmp_path) == 2
-    captured = capsys.readouterr()
-    assert "✗  image-capacity:" in captured.out
-    assert "only 1 GiB available" in captured.out
-    assert "Traceback" not in captured.out + captured.err
-    assert intents == [Intent.REFRESH]
-    assert spec.read_bytes() == before
+    output = capsys.readouterr()
+    assert intents == [Intent.REFRESH if force else Intent.ENSURE]
+    if outcome == "capacity":
+        assert result is None
+        assert code == 2
+        assert "✗  image-capacity:" in output.out
+        assert "only 1 GiB available" in output.out
+        assert "Traceback" not in output.out + output.err
+        return
+    assert result is not None
+    assert code == 0
+    if outcome == "external":
+        assert ctx.results[-1].detail == "user-managed image"
 
 
-@pytest.mark.parametrize("failure", ["stale", "unavailable"])
+@pytest.mark.parametrize(
+    ("failure", "repair"),
+    [("stale", "run booley init before seeding"), ("unavailable", "run booley bootstrap")],
+)
 def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     failure: str,
+    repair: str,
 ) -> None:
-    from booley.runtime.image_lifecycle import Diagnostic, ImageLifecycleError
-
-    spec = _image_command_project(tmp_path, monkeypatch)
-    before = spec.read_bytes()
-    intents = []
+    empty_host(tmp_path, monkeypatch)
+    forbid_docker_cli(monkeypatch)
+    project_config(tmp_path, b'[agent]\ndefault = "claude"\n')
+    spec = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec.parent.mkdir()
+    spec.write_bytes(b'{"image":"sha256:prior"}\n')
+    stub_host_images(monkeypatch)
+    intents: list[Intent] = []
 
     def observe(
         _scope: init_cmd.ProjectImageScope, intent: Intent, **_kwargs: object
@@ -369,21 +335,16 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
             diagnostics=(Diagnostic("stale", "Project wheel is stale"),),
         )
 
+    # The Sandbox Image chain plans, pulls and builds images through Docker.
     monkeypatch.setattr(init_cmd.image_lifecycle, "reconcile_planned", observe)
-    monkeypatch.setattr(
-        init_cmd,
-        "_step_interactive",
-        lambda *_args, **_kwargs: pytest.fail("refused seed must not apply a spec"),
-    )
-    assert init_cmd.run_init(_args(seed=True, force=True), tmp_path) == 2
+
+    assert seed_init(tmp_path, force=True) == 2
+
     captured = capsys.readouterr()
-    repair = (
-        "run booley bootstrap" if failure == "unavailable" else "run booley init before seeding"
-    )
     assert repair in captured.out
     assert "Traceback" not in captured.out + captured.err
     assert intents == [Intent.CHECK]
-    assert spec.read_bytes() == before
+    assert spec.read_bytes() == b'{"image":"sha256:prior"}\n'
 
 
 @pytest.mark.parametrize("both_tables", [False, True])
@@ -409,6 +370,7 @@ def test_init_renders_host_table_alias_and_preserves_priority(
         "inspect_bootstrap",
         lambda **_kw: pytest.fail("Init must use legacy reconciliation"),
     )
+    # private: the host probe runs commands; this guard proves the fixture stops before it.
     monkeypatch.setattr(
         bootstrap, "_prerequisite_findings", lambda: pytest.fail("fixture must not probe the host")
     )
@@ -434,52 +396,48 @@ def test_init_renders_host_table_alias_and_preserves_priority(
     assert path.read_text() == text
 
 
-@pytest.mark.parametrize("state", ["pending", "error"])
-def test_auth_reseed_checks_sidecars_without_full_bootstrap(tmp_path, monkeypatch, capsys, state):
-    from booley.harness import host_sidecars
-
-    full = []
-    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", lambda *a, **k: full.append(True))
-    monkeypatch.setattr(
-        host_sidecars,
-        "reconcile_sidecars",
-        lambda *a, **k: host_sidecars.SidecarResult(
-            (
-                host_sidecars.SidecarFinding(
-                    "proxy", host_sidecars.SidecarState(state), "synthetic sidecar error"
-                ),
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        init_cmd.image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=())
-    )
-    assert not init_cmd._auth_reseed_dependencies(tmp_path)
-    output = capsys.readouterr().out
-    assert not full
-    if state == "pending":
-        assert output.count("booley bootstrap") == 1
-        assert "init --seed" in output
-    else:
-        assert "synthetic sidecar error" in output
-        assert "booley bootstrap" not in output
-
-
-@pytest.mark.parametrize("host", [False, True])
-def test_auth_reseed_classifies_image_repair(tmp_path, monkeypatch, capsys, host):
+@pytest.mark.parametrize(
+    ("sidecar", "role"),
+    [("pending", None), ("error", None), (None, "RUNTIME_BASE"), (None, "PROJECT_OVERLAY")],
+)
+def test_auth_reseed_names_the_command_that_repairs_each_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sidecar: str | None,
+    role: str | None,
+) -> None:
     from booley.harness import host_sidecars, image_lifecycle
     from booley.runtime.image_lifecycle import ImageRole, PlanAction
 
-    monkeypatch.setattr(
-        host_sidecars, "reconcile_sidecars", lambda *a, **k: host_sidecars.SidecarResult(())
+    empty_host(tmp_path, monkeypatch)
+    project_config(tmp_path, b'[agent]\ndefault = "claude"\n')
+    full: list[bool] = []
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", lambda *a, **k: full.append(True))
+    state = host_sidecars.SidecarState(sidecar) if sidecar else None
+    found = (
+        (host_sidecars.SidecarFinding("proxy", state, "synthetic sidecar error"),) if state else ()
     )
-    role = ImageRole.RUNTIME_BASE if host else ImageRole.PROJECT_OVERLAY
-    step = SimpleNamespace(role=role, action=PlanAction.BUILD)
-    monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=(step,)))
-    assert not init_cmd._auth_reseed_dependencies(tmp_path)
+    steps = (SimpleNamespace(role=ImageRole[role], action=PlanAction.BUILD),) if role else ()
+    # Reconciling sidecars and planning images inspect and build Docker resources.
+    monkeypatch.setattr(
+        host_sidecars, "reconcile_sidecars", lambda *a, **k: host_sidecars.SidecarResult(found)
+    )
+    monkeypatch.setattr(image_lifecycle, "plan", lambda *a, **k: SimpleNamespace(steps=steps))
+
+    assert init_cmd.reseed_auth_spec(tmp_path) == 2
+
     output = capsys.readouterr().out
-    assert ("booley bootstrap" in output) == host
-    assert "booley init" in output
+    assert not full
+    if sidecar == "pending":
+        assert output.count("booley bootstrap") == 1
+        assert "init --seed" in output
+    elif sidecar == "error":
+        assert "synthetic sidecar error" in output
+        assert "booley bootstrap" not in output
+    else:
+        assert ("booley bootstrap" in output) == (role == "RUNTIME_BASE")
+        assert "booley init" in output
 
 
 def test_seed_accepts_absent_proxy_and_network_under_unproxied(
@@ -504,6 +462,8 @@ def test_seed_accepts_absent_proxy_and_network_under_unproxied(
     )
     ctx = init_cmd.InitContext(project_root=tmp_path)
 
+    # private: past Host Bootstrap, `run_init --seed` goes on to the Sandbox Image
+    # chain, which the borrowed `_egress_docker` fake does not serve.
     result = init_cmd._reconcile_init_bootstrap(ctx, _args(seed=True))
 
     assert result is not None, "absent proxy and network are current under unproxied"

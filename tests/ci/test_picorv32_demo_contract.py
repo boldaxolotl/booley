@@ -186,7 +186,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "a3520837bce9416c1a7209d779148a9eb12482a9"
+    assert contract.project_ref == "19af39397010e0dd74c76c7f3b5a4f4f178aef98"
     assert contract.schema == 3
     assert contract.target_metrics == {
         "lint_core": {"lint": {"errors_max": 0, "track": ["warnings"]}}
@@ -426,7 +426,6 @@ def _run_exporter(contract: Path) -> subprocess.CompletedProcess[str]:
             str(contract.resolve()),
         ],
         check=False,
-        timeout=10,
     )
 
 
@@ -879,7 +878,6 @@ def test_demo_verifier_uses_explicit_directory_for_both_stages(tmp_path, monkeyp
     run_bounded_child(
         ["bash", str(VERIFY_SCRIPT.resolve())],
         check=True,
-        timeout=10,
     )
     calls = [json.loads(line) for line in commands.read_text().splitlines()]
     assert len(calls) == 2

@@ -19,6 +19,7 @@ from booley.runtime.handles import reserve_session_handle
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
 from tests.git_support import git
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -58,7 +59,8 @@ def _versioned(root: Path) -> Path:
     booley_dir.mkdir(exist_ok=True)
     git(booley_dir, "init", "-q", "-b", "main")
     (booley_dir / "booley.toml").write_bytes(b"# main\n")
-    # Common Booley State is ignored in a real Booley Directory; `plans/` stays tracked.
+    # Common Booley State is ignored in a real Booley Directory; `plans/` is left unignored here so
+    # tests can commit a plan, as a Project did before Booley ignored it.
     (booley_dir / ".gitignore").write_bytes(
         b"/handoffs/\n/reviewer-evidence/\n/flow-reports/\n/.runtime/\n/findings.jsonl\n"
         b"/setup-evidence/\n/measurements/\n"
@@ -216,7 +218,7 @@ def test_rm_ignores_a_handle_whose_holder_has_exited(
         assert identity is not None
         assert _hold_handle(repo, identity) == "S1"
     finally:
-        holder.communicate(b"\n", timeout=30)
+        holder.communicate(b"\n", timeout=hang_guard_s())
     path = _add(repo, "s1")
 
     assert _rm(repo, "s1") == 0
@@ -509,6 +511,44 @@ def test_rm_reports_the_commit_of_a_detached_head(
     assert f"detached HEAD was {git(repo, 'rev-parse', 'HEAD')}" in capsys.readouterr().out
 
 
+_DETACHED = {"outer": "detached HEAD", "paired": "the Paired Checkout's detached HEAD"}
+
+
+@pytest.mark.parametrize(
+    ("moved", "switch", "kept"),
+    [
+        (None, (), "booley-worktree/old, booley/old"),
+        ("outer", ("--detach",), "booley-worktree/old, booley/old"),
+        ("paired", ("--detach",), "booley-worktree/old, booley/old"),
+        ("outer", ("-c", "topic"), "booley-worktree/old, topic"),
+        ("paired", ("-c", "other"), "other, booley-worktree/old, booley/old"),
+    ],
+    ids=["intact", "outer-detached", "paired-detached", "outer-switched", "paired-switched"],
+)
+def test_rm_reports_every_kept_branch_and_detached_head(
+    repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    moved: str | None,
+    switch: tuple[str, ...],
+    kept: str,
+) -> None:
+    # Bug caught: a detached Paired Checkout's commit and its surviving
+    # booley-worktree/<name> branch went unreported.
+    _versioned(repo)
+    path = _add(repo, "old", paired=True)
+    expected = ["Removed worktree old.", f"Branches kept: {kept}"]
+    if moved is not None:
+        checkout = path / ".booley" if moved == "paired" else path
+        git(checkout, "switch", "-q", *switch)
+        _commit(checkout, "moved.txt")
+        if switch == ("--detach",):
+            expected.append(f"{_DETACHED[moved]} was {git(checkout, 'rev-parse', 'HEAD')}")
+            assert _rm(repo, "old") == 1
+            assert f"1 commit(s) on {_DETACHED[moved]} not in main" in capsys.readouterr().err
+    assert _rm(repo, "old", "--force") == 0
+    assert capsys.readouterr().out == "\n".join(expected) + "\n"
+
+
 def _start_interrupted_removal(
     repo: Path, monkeypatch: pytest.MonkeyPatch, path: Path, name: str
 ) -> None:
@@ -532,20 +572,24 @@ def _start_interrupted_removal(
 
 
 def test_interrupted_outer_removal_completes_on_rerun(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.runtime.worktree_usage import stamp_worktree
 
     _versioned(repo)
     path = _add(repo, "cut", paired=True)
     other = _add(repo, "other")
+    git(path / ".booley", "switch", "-q", "--detach")
+    commit = git(path / ".booley", "rev-parse", "HEAD")
     stamp_worktree(repo / ".booley", "cut")
     _start_interrupted_removal(repo, monkeypatch, path, "cut")
     record = repo / ".booley" / "worktrees" / ".removing" / "cut.json"
     assert record.is_file()
 
+    capsys.readouterr()
     assert _rm(repo, "cut") == 0
 
+    assert f"the Paired Checkout's detached HEAD was {commit}" in capsys.readouterr().out
     assert not path.exists() and str(path) not in _registered(repo)
     assert not record.exists()
     assert not (repo / ".booley" / "worktrees" / ".last-used" / "cut").exists()

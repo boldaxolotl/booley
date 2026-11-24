@@ -385,6 +385,9 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(FlexNetRelay(config).serve_forever())
     except KeyboardInterrupt:
         return 0
+    except OSError as exc:
+        logging.error("relay could not listen: %s; check the FlexNet lmgrd and vendor ports", exc)
+        return 2
     return 0
 
 

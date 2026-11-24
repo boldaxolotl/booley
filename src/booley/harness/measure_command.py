@@ -1,11 +1,13 @@
 """``booley measure [<sha>]``: measure one commit in a clean checkout and store the run (#3953).
 
 The command composes the measurement building blocks: it exports the commit, reads the
-checkout's own ``metrics.toml``, preflights and runs one child Flow per rules table inside
+checkout's own ``metrics.toml``, runs the Project's post-setup hook there (an input the Project
+builds is not in the export), preflights and runs one child Flow per rules table inside
 the admission queue (:mod:`booley.harness.measure_children`), stores the Measurement Run in
 the Main Booley Directory, writes the Markdown report and prints the report. A commit that is
-already Measured is not measured again: its stored run is shown, unless ``--again`` is given. The run is a
-Standalone Job of its own, so the Dashboard shows it like any shell run.
+already Measured is not measured again: its stored run is shown, unless ``--again`` or
+``--target`` is given. The run is a Standalone Job of its own, so the Dashboard shows it like
+any shell run.
 
 ``--target <name>`` measures only that Target's tables. Such a run is never stored in the
 Main Booley Directory, so it never makes the commit Measured: its document, Markdown report
@@ -20,7 +22,9 @@ rule to follow next (:mod:`booley.measurement.measuring_rules`, #4133).
 Cancellation has three phases. Before any child starts, a signal raises ``KeyboardInterrupt``
 at once: every step cleans up after itself and nothing is stored. While the children run,
 and after, a signal only sets a flag: the scheduler stops the children within its grace
-period and the run is stored as cancelled, never as a Measured one.
+period and the run is stored as cancelled, never as a Measured one. After the run is stored, its
+report is best effort: a failure to build, write or print it is a ``note:`` line on stderr and the
+exit stays 130.
 """
 
 from __future__ import annotations
@@ -33,14 +37,15 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import Any, NoReturn, TypeVar
 
-from booley.harness.checkout_flow import CheckoutFlowError
+from booley.harness.checkout_flow import CheckoutFlowError, run_post_setup_hook
 from booley.harness.measure_children import (
     ChildrenOutcome,
     PreparedChild,
@@ -56,6 +61,7 @@ from booley.measurement.base import BaseError, resolve_base
 from booley.measurement.mcp_job import McpMeasureJob
 from booley.measurement.measuring_rules import exit_rule
 from booley.measurement.metrics_file import (
+    METRICS_FILE,
     MetricsFileError,
     MetricsRules,
     TableRules,
@@ -79,7 +85,12 @@ from booley.measurement.run_store import (
 from booley.measurement.run_view import run_view
 from booley.measurement.toolchain import ToolchainFingerprint, collect_toolchain_fingerprint
 from booley.measurement.verdicts import measure_exit_code
-from booley.runtime.commit_export import CommitExportError, SubmoduleDrift, export_commit
+from booley.runtime.commit_export import (
+    CommitExportError,
+    SubmoduleDrift,
+    export_commit,
+    versioned_booley_dir,
+)
 from booley.runtime.pinned_history import FileCommitError, raw_git
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -112,6 +123,8 @@ class _JobHooks:
     progress: Callable[[int, int, tuple[str, ...]], None]
     # Gets the exit status and the summary of a finished measurement; an MCP Job only.
     publish: Callable[[int, str], None] | None = None
+    # The session whose MCP Job this is; its Flow Jobs are filed under it. An MCP Job only.
+    session_key: str | None = None
 
 
 class MeasureRefusedError(Exception):
@@ -170,7 +183,9 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     """
     mcp_job = McpMeasureJob.find()
     if mcp_job is not None:
-        hooks = _JobHooks(mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result)
+        hooks = _JobHooks(
+            mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result, mcp_job.session_key
+        )
         return _guarded(project_root, request, hooks)
     job = StandaloneJob.prepare(
         project_root,
@@ -255,8 +270,22 @@ class _Preflight:
     prepared: list[tuple[TableRules, PreparedChild]]
 
 
-def _load_rules(checkout: Path) -> MetricsRules:
-    """The checkout's rules; a load error or no table at all is a refusal."""
+def _run_hook(checkout: Path, main: Path, run_id: str) -> None:
+    """Run the Project's post-setup hook in *checkout*; a failure is a refusal."""
+    try:
+        run_post_setup_hook(
+            checkout, main, slug=run_id, log=standalone_log_root(main) / run_id / "post-setup.log"
+        )
+    except ValueError as exc:  # includes CheckoutFlowError and FlowConfigError
+        raise MeasureRefusedError(str(exc)) from exc
+
+
+def _load_rules(checkout: Path, main: Path, run_id: str) -> MetricsRules:
+    """The checkout's rules; a load error or no table at all is a refusal.
+
+    The hook runs first: it may build a core or a file the rules read.
+    """
+    _run_hook(checkout, main, run_id)
     try:
         rules = load_metrics_rules(checkout)
     except MetricsFileError as exc:
@@ -280,9 +309,12 @@ def _scoped(catalog: TargetCatalog, rules: MetricsRules, target: str) -> tuple[M
 
 
 def _preflight(
-    checkout: Path, main: Path, run_id: str, rules: MetricsRules, target: str | None
+    checkout: Path, main: Path, hooks: _JobHooks, rules: MetricsRules, target: str | None
 ) -> _Preflight:
-    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child."""
+    """Preflight the tables in *checkout* (the Target's with ``--target``); a refusal starts no child.
+
+    Each child Flow Job belongs to the session of the Job in *hooks*, if any.
+    """
     try:
         catalog = TargetCatalog.build(checkout)
         scope = None
@@ -296,8 +328,9 @@ def _preflight(
             checkout=checkout,
             main_booley_dir=main,
             # Beside the Job's own log, so no child record names a path the scratch deletes.
-            report_dir=standalone_log_root(main) / run_id / "children",
+            report_dir=standalone_log_root(main) / hooks.run_id / "children",
             timeout_s=None,
+            session_key=hooks.session_key,
         )
     except (ValueError, FuseSocError) as exc:  # includes CheckoutFlowError, unpinnable inputs
         raise MeasureRefusedError(str(exc)) from exc
@@ -311,9 +344,11 @@ def _measure(
 
     commit = _resolve_commit(project_root, request)
     keyed = _key_of(project_root, commit)  # a refusal now saves the export
+    for notice in _uncommitted_notices(project_root, commit):
+        print(notice, file=sys.stderr)
     main = main_booley_dir_of(project_root)
     store = MeasurementStore(main)
-    if not request.again:
+    if not request.again and request.target is None:
         stored = _measured_run(store, keyed.key)
         if stored is not None:
             return _show(project_root, store, stored, commit, request, hooks)
@@ -362,33 +397,56 @@ def _print_report(view: dict[str, Any], request: MeasureRequest) -> None:
         print(terminal_report(view), end="")
 
 
-def _live_tree_notices(
-    project_root: Path, commit: str, drift: Sequence[SubmoduleDrift]
-) -> list[str]:
-    """What the measurement of *commit* leaves out of the live tree; only for ``HEAD``."""
+def _is_head(project_root: Path, commit: str) -> bool:
     head = raw_git(project_root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
-    if commit != head:
+    return commit == head
+
+
+def _has_tracked_changes(repository: Path, *paths: str) -> bool:
+    """Whether *repository* (limited to *paths* when given) has an uncommitted tracked change."""
+    try:
+        changes = raw_git(
+            repository,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
+            "--ignore-submodules=all",
+            *(("--", *paths) if paths else ()),
+        )
+    except FileCommitError:
+        return False  # a note must never refuse a measurement or hide a stored run
+    return bool(changes)
+
+
+def _uncommitted_notices(project_root: Path, commit: str) -> list[str]:
+    """What the measurement of *commit* leaves out of the live repositories; only for ``HEAD``."""
+    if not _is_head(project_root, commit):
         return []
     notices: list[str] = []
-    changes = raw_git(
-        project_root,
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=no",
-        "--ignore-submodules=all",
-    )
-    if changes:
+    if _has_tracked_changes(project_root):
         notices.append(
             "note: uncommitted changes in the working tree are not measured; "
             f"this measures commit {commit[:_SHORT]}"
         )
-    if drift:
+    versioned = versioned_booley_dir(project_root)
+    if versioned is not None and _has_tracked_changes(versioned):
+        named = (
+            ", metrics.toml among them," if _has_tracked_changes(versioned, METRICS_FILE) else ""
+        )
         notices.append(
-            "note: submodule working-tree differences are not measured: "
-            + ", ".join(_drift_text(entry) for entry in drift)
+            f"note: uncommitted changes in the Booley Directory's repository{named} "
+            "are not measured; this measures with its HEAD commit"
         )
     return notices
+
+
+def _print_drift(project_root: Path, commit: str, drift: Sequence[SubmoduleDrift]) -> None:
+    if drift and _is_head(project_root, commit):
+        text = ", ".join(_drift_text(entry) for entry in drift)
+        print(
+            f"note: submodule working-tree differences are not measured: {text}", file=sys.stderr
+        )
 
 
 def _drift_text(entry: SubmoduleDrift) -> str:
@@ -419,11 +477,10 @@ def _measure_commit(
             export = export_commit(project_root, commit, checkout)
         except CommitExportError as exc:
             raise MeasureRefusedError(f"the commit cannot be exported: {exc}") from exc
-        for notice in _live_tree_notices(project_root, commit, export.drift):
-            print(notice, file=sys.stderr)
+        _print_drift(project_root, commit, export.drift)
         keyed = _key_of(project_root, commit, export.paired_commit)
-        rules = _load_rules(checkout)
-        preflight = _preflight(checkout, main, run_id, rules, request.target)
+        rules = _load_rules(checkout, main, run_id)
+        preflight = _preflight(checkout, main, hooks, rules, request.target)
         rules = preflight.rules
         signals.interruptible = False  # the children run: a signal now cancels, never aborts
         try:
@@ -460,19 +517,12 @@ def _measure_commit(
         stored = MeasurementStore(kept).write(run, flow_reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    view = run_view(
-        project_root,
-        MeasurementStore(main),
-        stored,
-        commit,
-        base=request.base,
-        target=preflight.scope,
-    )
-    write_markdown_report(view)
+    build_view = _view_builder(project_root, main, stored, commit, request, preflight.scope)
     # A signal while storing leaves a complete run: the exit must agree with what is stored.
     if status is RunStatus.CANCELLED:
-        _print_report(view, request)
-        raise KeyboardInterrupt
+        _report_cancelled(stored.run_id, build_view, request)
+    view = build_view()
+    write_markdown_report(view)
     code = measure_exit_code(
         result.verdict for table in outcome.tables for result in table.run.results
     )
@@ -481,16 +531,89 @@ def _measure_commit(
     return code
 
 
+_T = TypeVar("_T")
+
+
+def _view_builder(
+    project_root: Path,
+    main: Path,
+    stored: StoredRun,
+    commit: str,
+    request: MeasureRequest,
+    target: str | None,
+) -> Callable[[], dict[str, Any]]:
+    """The call that builds the report view of the run just stored."""
+    return partial(
+        run_view,
+        project_root,
+        MeasurementStore(main),
+        stored,
+        commit,
+        base=request.base,
+        target=target,
+    )
+
+
+def _report_cancelled(
+    run_id: str, build_view: Callable[[], dict[str, Any]], request: MeasureRequest
+) -> NoReturn:
+    """Report a cancelled run that is already stored, then end as a Ctrl-C.
+
+    No failure to report may change the exit: the run is stored as cancelled.
+    """
+    view = _best_effort(f"the report of cancelled run {run_id} cannot be built", build_view)
+    if view is not None:
+        _report_view(run_id, view, request)
+    raise KeyboardInterrupt
+
+
+def _report_view(run_id: str, view: dict[str, Any], request: MeasureRequest) -> None:
+    """Write the Markdown report of a cancelled run, then print it; each failure is a note."""
+    _best_effort(
+        f"the Markdown report of cancelled run {run_id} cannot be written",
+        lambda: write_markdown_report(view),
+    )
+    _best_effort(
+        f"the report of cancelled run {run_id} cannot be printed",
+        lambda: _print_report(view, request),
+    )
+
+
+def _best_effort(what: str, step: Callable[[], _T]) -> _T | None:
+    """Return ``step()``; on a failure print ``note: <what>: <reason>`` and return ``None``."""
+    try:
+        return step()
+    except Exception as exc:  # noqa: BLE001 - the run is stored: a report failure must not replace exit 130
+        reason = " ".join(str(exc).split()) or type(exc).__name__
+        # A closed terminal must not turn the note into the failure that replaces exit 130.
+        with suppress(OSError):
+            print(f"note: {what}: {reason}", file=sys.stderr)
+        return None
+
+
 def _flow_reports(outcome: ChildrenOutcome) -> list[FlowReport]:
-    """Every regular file (never a symlink) beside each table's final ``report.json``, it first."""
+    """Each table's report artifacts from its final invocation directory, ``report.json`` first."""
     reports: list[FlowReport] = []
     for table in outcome.tables:
         if not table.reports:
             continue
         directory = table.reports[-1].parent  # the final attempt's invocation directory
-        files = sorted(
-            path for path in directory.iterdir() if path.is_file() and not path.is_symlink()
-        )
+        files = sorted(path for path in directory.iterdir() if _is_report_artifact(path))
         files.sort(key=lambda path: path.name != table.reports[-1].name)
         reports.extend(FlowReport(table.run.identity, table.run.flow, path) for path in files)
     return reports
+
+
+def _is_report_artifact(path: Path) -> bool:
+    """Whether *path* is a regular file (never a symlink) that is a Flow report, not bookkeeping.
+
+    A Flow keeps its live progress (``progress.json``) and, as hidden files, the progress lock and
+    the temporaries of an interrupted atomic write beside its reports. Any other top-level
+    bookkeeping file a Flow adds must be hidden too, or it is stored as a report.
+    """
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and path.name != "progress.json"
+        and not path.name.startswith(".")
+    )

@@ -1,5 +1,7 @@
 """Runtime-input materialization at the Simulation adapter seam."""
 
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -7,15 +9,31 @@ import pytest
 from booley.flows.sim.runtime_inputs import RuntimeInputError, materialize_runtime_inputs
 
 
-def test_materialized_input_exists_only_during_the_run(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
+@pytest.fixture
+def roots(tmp_path: Path) -> tuple[Path, Path]:
+    """The simulation build and run directories, both existing."""
+    build, run = tmp_path / "build", tmp_path / "run"
+    build.mkdir()
+    run.mkdir()
+    return build, run
+
+
+@pytest.fixture
+def firmware(roots: tuple[Path, Path]) -> tuple[Path, Path]:
+    """*roots* with ``firmware.hex`` (``01``) in the build directory."""
+    (roots[0] / "firmware.hex").write_text("01\n", encoding="utf-8")
+    return roots
+
+
+def test_materialized_input_exists_only_during_the_run(roots: tuple[Path, Path]) -> None:
+    build, run = roots
     source = build / "vectors" / "input.hex"
     source.parent.mkdir(parents=True)
     source.write_text("01\n", encoding="utf-8")
-    run.mkdir()
 
-    with materialize_runtime_inputs(build, run, ("vectors/input.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("vectors/input.hex",), booley_dir=run.parent / ".booley"
+    ):
         staged = run / "vectors" / "input.hex"
         assert staged.is_symlink()
         assert staged.read_text(encoding="utf-8") == "01\n"
@@ -24,9 +42,8 @@ def test_materialized_input_exists_only_during_the_run(tmp_path: Path) -> None:
     assert source.read_text(encoding="utf-8") == "01\n"
 
 
-def test_nested_input_does_not_expose_undeclared_build_files(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
+def test_nested_input_does_not_expose_undeclared_build_files(roots: tuple[Path, Path]) -> None:
+    build, run = roots
     vectors = build / "vectors"
     vectors.mkdir(parents=True)
     (vectors / "declared.hex").write_text("01\n", encoding="utf-8")
@@ -34,9 +51,10 @@ def test_nested_input_does_not_expose_undeclared_build_files(tmp_path: Path) -> 
     stale_overlay = build / ".booley-runtime-inputs" / "vectors"
     stale_overlay.mkdir(parents=True)
     (stale_overlay / "stale.hex").write_text("stale\n", encoding="utf-8")
-    run.mkdir()
 
-    with materialize_runtime_inputs(build, run, ("vectors/declared.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("vectors/declared.hex",), booley_dir=run.parent / ".booley"
+    ):
         assert (run / "vectors" / "declared.hex").read_text(encoding="utf-8") == "01\n"
         assert not (run / "vectors" / "private.hex").exists()
         assert not (run / "vectors" / "stale.hex").exists()
@@ -44,28 +62,22 @@ def test_nested_input_does_not_expose_undeclared_build_files(tmp_path: Path) -> 
     assert not (run / "vectors").exists()
 
 
-def test_matching_project_input_is_preserved(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
-    (build / "firmware.hex").write_text("01\n", encoding="utf-8")
+def test_matching_project_input_is_preserved(firmware: tuple[Path, Path]) -> None:
+    build, run = firmware
     existing = run / "firmware.hex"
     existing.write_text("01\n", encoding="utf-8")
 
-    with materialize_runtime_inputs(build, run, ("firmware.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+    ):
         assert existing.is_symlink() is False
 
     assert existing.read_text(encoding="utf-8") == "01\n"
 
 
-def test_stale_materialized_symlink_is_adopted_and_cleaned(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
+def test_stale_materialized_symlink_is_adopted_and_cleaned(firmware: tuple[Path, Path]) -> None:
+    build, run = firmware
     source = build / "firmware.hex"
-    source.write_text("01\n", encoding="utf-8")
     overlay = build / ".booley-runtime-inputs"
     overlay.mkdir()
     staged_source = overlay / "firmware.hex"
@@ -73,36 +85,31 @@ def test_stale_materialized_symlink_is_adopted_and_cleaned(tmp_path: Path) -> No
     stale = run / "firmware.hex"
     stale.symlink_to(staged_source)
 
-    with materialize_runtime_inputs(build, run, ("firmware.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+    ):
         assert stale.read_text(encoding="utf-8") == "01\n"
 
     assert not stale.exists()
 
 
-def test_matching_project_symlink_is_preserved(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
+def test_matching_project_symlink_is_preserved(firmware: tuple[Path, Path]) -> None:
+    build, run = firmware
     source = build / "firmware.hex"
-    source.write_text("01\n", encoding="utf-8")
     existing = run / "firmware.hex"
     existing.symlink_to(source)
 
-    with materialize_runtime_inputs(build, run, ("firmware.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+    ):
         assert existing.read_text(encoding="utf-8") == "01\n"
 
     assert existing.is_symlink()
     assert existing.resolve() == source
 
 
-def test_similarly_named_project_symlink_is_not_owned(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
-    source = build / "firmware.hex"
-    source.write_text("01\n", encoding="utf-8")
+def test_similarly_named_project_symlink_is_not_owned(firmware: tuple[Path, Path]) -> None:
+    build, run = firmware
     project_overlay = run / ".booley-runtime-inputs"
     project_overlay.mkdir()
     project_input = project_overlay / "firmware.hex"
@@ -110,27 +117,29 @@ def test_similarly_named_project_symlink_is_not_owned(tmp_path: Path) -> None:
     existing = run / "firmware.hex"
     existing.symlink_to(project_input)
 
-    with materialize_runtime_inputs(build, run, ("firmware.hex",)):
+    with materialize_runtime_inputs(
+        build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+    ):
         assert existing.resolve() == project_input
 
     assert existing.is_symlink()
     assert existing.resolve() == project_input
 
 
-def test_intermediate_project_symlink_cannot_redirect_staging(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    outside = tmp_path / "outside"
+def test_intermediate_project_symlink_cannot_redirect_staging(roots: tuple[Path, Path]) -> None:
+    build, run = roots
+    outside = build.parent / "outside"
     source = build / "vectors" / "input.hex"
     source.parent.mkdir(parents=True)
     source.write_text("01\n", encoding="utf-8")
-    run.mkdir()
     outside.mkdir()
     (run / "vectors").symlink_to(outside, target_is_directory=True)
 
     with (
         pytest.raises(RuntimeInputError, match="conflicts with an existing path"),
-        materialize_runtime_inputs(build, run, ("vectors/input.hex",)),
+        materialize_runtime_inputs(
+            build, run, ("vectors/input.hex",), booley_dir=run.parent / ".booley"
+        ),
     ):
         pass
 
@@ -138,13 +147,9 @@ def test_intermediate_project_symlink_cannot_redirect_staging(tmp_path: Path) ->
 
 
 def test_cleanup_failure_is_typed_and_overlay_cleanup_still_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    firmware: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
-    (build / "firmware.hex").write_text("01\n", encoding="utf-8")
+    build, run = firmware
     staged = run / "firmware.hex"
     original_unlink = Path.unlink
 
@@ -156,25 +161,26 @@ def test_cleanup_failure_is_typed_and_overlay_cleanup_still_runs(
     monkeypatch.setattr(Path, "unlink", fail_staged_unlink)
     with (
         pytest.raises(RuntimeInputError, match="could not clean simulation runtime inputs"),
-        materialize_runtime_inputs(build, run, ("firmware.hex",)),
+        materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
     ):
         assert staged.is_symlink()
 
     assert not (build / ".booley-runtime-inputs").exists()
 
 
-def test_conflicting_project_input_is_not_overwritten(tmp_path: Path) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
+def test_conflicting_project_input_is_not_overwritten(roots: tuple[Path, Path]) -> None:
+    build, run = roots
     (build / "firmware.hex").write_text("target\n", encoding="utf-8")
     existing = run / "firmware.hex"
     existing.write_text("project\n", encoding="utf-8")
 
     with (
         pytest.raises(RuntimeInputError, match="conflicts with an existing path"),
-        materialize_runtime_inputs(build, run, ("firmware.hex",)),
+        materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
     ):
         pass
 
@@ -200,23 +206,90 @@ def test_missing_runtime_input_directory_is_rejected(
 
     with (
         pytest.raises(RuntimeInputError, match=message),
-        materialize_runtime_inputs(build, run, ("firmware.hex",)),
+        materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
     ):
         pass
 
 
 @pytest.mark.parametrize("relative", ("../outside.hex", "/outside.hex"))
-def test_runtime_input_cannot_escape_its_roots(tmp_path: Path, relative: str) -> None:
-    build = tmp_path / "build"
-    run = tmp_path / "run"
-    build.mkdir()
-    run.mkdir()
+def test_runtime_input_cannot_escape_its_roots(roots: tuple[Path, Path], relative: str) -> None:
+    build, run = roots
 
     with (
         pytest.raises(
             RuntimeInputError,
             match=r"invalid build input path|build input path escapes its root",
         ),
-        materialize_runtime_inputs(build, run, (relative,)),
+        materialize_runtime_inputs(build, run, (relative,), booley_dir=run.parent / ".booley"),
     ):
         pass
+
+
+def _die_staging(build: Path, run: Path) -> None:
+    """Stage ``firmware.hex`` in a forked worker that dies without unwinding."""
+    from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
+
+    def worker() -> None:
+        with materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ):
+            os._exit(_KILLED)
+
+    _run_killed(worker, run.parent / "trace.txt")
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="the kill worker forks")
+@pytest.mark.parametrize("case", ["dangling", "replaced"])
+def test_killed_link_leftover_is_removed_or_named(firmware: tuple[Path, Path], case: str) -> None:
+    """A dead run's link goes even when its target is gone; a replaced one stays, named."""
+    build, run = firmware
+    _die_staging(build, run)
+    staged = run / "firmware.hex"
+    assert staged.is_symlink()
+    next_build = build.parent / "next-build"
+    next_build.mkdir()
+    (next_build / "firmware.hex").write_text("01\n", encoding="utf-8")
+    if case == "dangling":
+        shutil.rmtree(build / ".booley-runtime-inputs")
+        assert not staged.exists()
+        with materialize_runtime_inputs(
+            next_build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ):
+            assert staged.read_text(encoding="utf-8") == "01\n"
+        assert list(run.iterdir()) == []
+        assert not list((run.parent / ".booley/.runtime/staged-runtime-inputs").glob("*.json"))
+        return
+    staged.unlink()
+    staged.write_text("01\n", encoding="utf-8")
+    with (
+        pytest.raises(RuntimeInputError, match="a cancelled Booley run left it there"),
+        materialize_runtime_inputs(
+            next_build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
+    ):
+        pytest.fail("a changed leftover must fail the run")
+    assert staged.read_text(encoding="utf-8") == "01\n"
+
+
+def test_a_failed_confirmation_unwinds_the_link_it_follows(
+    firmware: tuple[Path, Path], monkeypatch
+) -> None:
+    from booley.flows.sim.staged_input_ledger import StagedInputLedger
+
+    build, run = firmware
+
+    def failing(_self: StagedInputLedger, _relative: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(StagedInputLedger, "created", failing)
+    with (
+        pytest.raises(RuntimeInputError, match="disk full"),
+        materialize_runtime_inputs(
+            build, run, ("firmware.hex",), booley_dir=run.parent / ".booley"
+        ),
+    ):
+        pytest.fail("a failed confirmation must not expose the input")
+
+    assert list(run.iterdir()) == []

@@ -41,16 +41,21 @@ pytestmark = [
     pytest.mark.skipif(os.name != "posix", reason="requires POSIX FIFO and process groups"),
 ]
 SCOPE = "rtl/dut.sv"
-# Local, not ``tests.subprocess_budget``: a child process re-executes this file
-# with ``runpy`` where the ``tests`` package is not importable. Same 30 s budget.
-_GIT_TIMEOUT_S = 30
 SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
+
+
+def _hang_guard_s() -> int:
+    # Imported here, not at module level: a child process re-executes this file with
+    # ``runpy`` where the ``tests`` package is not importable; only the parent calls this.
+    from tests.time_budget import hang_guard_s
+
+    return hang_guard_s()
 
 
 def _git(root: Path, *args: str) -> bytes:
     # Kept on subprocess.check_output: needs binary output; _snapshot compares Git's bytes exactly.
     return subprocess.check_output(
-        ["git", "-C", str(root), *args], stderr=subprocess.PIPE, timeout=_GIT_TIMEOUT_S
+        ["git", "-C", str(root), *args], stderr=subprocess.PIPE, timeout=_hang_guard_s()
     )
 
 
@@ -90,8 +95,10 @@ def _snapshot(worktree: Path) -> tuple[bytes, bytes, bytes]:
     )
 
 
-def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
+def _child_sweep(worktree: str, fifo: str, stage: str, barrier_s: int) -> None:
     """Run the real sweep, replacing only external compiler/simulator work."""
+    # Private seam: this runs in a child that re-executes this file with `runpy`, where the
+    # `tests` package is not importable, so it cannot use the campaign fakes.
     root = Path(worktree)
     source = root / SCOPE
     specs = [MutationSpec(1, "operator", SCOPE, 1, "a + b", "a - b")]
@@ -104,7 +111,7 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
         # The pipe proves mutation materialization has completed before interruption.
         with Path(fifo).open("wb", buffering=0) as ready:
             ready.write(b"ready")
-        if not threading.Event().wait(30):
+        if not threading.Event().wait(barrier_s):
             raise TimeoutError("parent did not interrupt the ready sweep")
 
     def elaborate(_target, _work_dir, build_dir, mutation):
@@ -140,7 +147,8 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
             barrier()
         return [MutationTestRun("suite", process=subprocess.CompletedProcess([], 0))]
 
-    endpoint._run_elab = elaborate
+    # The build seam, not _run_elab: the claim and the OOM rerun around it stay real.
+    endpoint._build_elab = elaborate
     endpoint._run_target_test_suite = run_suite
     plan = MutationRunPlan(
         scope_files=[SCOPE],
@@ -174,7 +182,7 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
 def _command(worktree: Path, fifo: Path, stage: str) -> list[str]:
     script = (
         f"import runpy; module = runpy.run_path({str(Path(__file__).resolve())!r}); "
-        f"module['_child_sweep']({str(worktree)!r}, {str(fifo)!r}, {stage!r})"
+        f"module['_child_sweep']({str(worktree)!r}, {str(fifo)!r}, {stage!r}, {_hang_guard_s()})"
     )
     return [sys.executable, "-c", script]
 
@@ -191,7 +199,9 @@ def _readiness_pipe(tmp_path: Path):
 
 
 def _await_ready(descriptor: int) -> None:
-    assert select.select([descriptor], [], [], 20)[0], "sweep never reached its barrier"
+    assert select.select([descriptor], [], [], _hang_guard_s())[0], (
+        "sweep never reached its barrier"
+    )
     assert os.read(descriptor, 5) == b"ready"
 
 
@@ -221,14 +231,14 @@ def test_sigkill_sweep_preserves_dirty_scope(dirty_worktree, tmp_path, stage):
             assert _snapshot(dirty_worktree) == before
             child.send_signal(signal.SIGKILL)
             # Kept on Popen: needs signal/process-group control of a child the test drives.
-            child.communicate(timeout=10)
+            child.communicate(timeout=_hang_guard_s())
             assert child.returncode == -signal.SIGKILL
             assert _snapshot(dirty_worktree) == before
         finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
             # Kept on Popen: needs signal/process-group control of a child the test drives.
-            child.communicate(timeout=10)
+            child.communicate(timeout=_hang_guard_s())
 
 
 @pytest.mark.asyncio
@@ -255,7 +265,7 @@ async def test_public_job_cancel_preserves_dirty_scope(
     jobs = JobLifecycle()
     with _readiness_pipe(tmp_path) as (fifo, descriptor):
         run_id = jobs.submit(
-            "mutation", _command(dirty_worktree, fifo, stage), 30, context=context
+            "mutation", _command(dirty_worktree, fifo, stage), _hang_guard_s(), context=context
         )
         try:
             await asyncio.to_thread(_await_ready, descriptor)
@@ -271,8 +281,10 @@ async def test_public_job_cancel_preserves_dirty_scope(
             assert not is_pid_alive(record.pid)
             assert _snapshot(dirty_worktree) == before
         finally:
+            # Private seam: `JobLifecycle` has no public way to await its tasks, and the test
+            # must leave nothing running.
             tasks = list(jobs._tasks.values())
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 15)
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), _hang_guard_s())

@@ -44,6 +44,7 @@ from tests.harness.test_dashboard_targets import (
     world,
     write_files,
 )
+from tests.time_budget import hang_guard_s
 
 if TYPE_CHECKING:
     from booley.harness.dashboard.app import DashboardApp
@@ -73,7 +74,7 @@ LIST_FOOTER = "↑↓ move · ⏎ run · ←→ Sessions / Jobs / Targets · esc
 @pytest.fixture(autouse=True)
 def _quiet_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Generous first read and no timer reads: the tests order every read themselves."""
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
     monkeypatch.setattr(dashboard_app, "REFRESH_SECONDS", 3600)
 
 
@@ -128,7 +129,7 @@ async def launch_from_detail(app: DashboardApp, pilot, selector: str) -> RunWiza
 
 
 @pytest.mark.asyncio
-async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
+async def test_target_detail_lists_exactly_the_enabled_flows_that_drive_it(checkout):
     # A Simulation Target also offers the Mutation Flow, which runs one Simulation Target.
     app = make_app(checkout, FakeLauncher())
     async with app.run_test(size=(130, 40)) as pilot:
@@ -149,6 +150,24 @@ async def test_target_detail_lists_exactly_the_flows_that_drive_it(checkout):
         assert flow_ids(app) == []
         assert not app.query_one("#target-flows").display
         assert FLOWS_LABEL not in detail_text(app)
+        await pilot.press("escape")
+        # Flows turned off in booley.toml are left out; Mutation needs an enabled Simulation Flow.
+        config = worktree_a(checkout) / ".booley" / "booley.toml"
+        for text, expected in [
+            (
+                "[project]\n[flows.fpga]\nenabled = false\n[flows.sim]\nenabled = false\n",
+                {"fpga_fifo": [], "sim_fifo": [], "dual_target": ["lint"]},
+            ),
+            ("[project]\n[flows.mutation]\nenabled = false\n", {"sim_fifo": ["sim"]}),
+            ("[project]\n[flows.fpga]\nenabled = true\n", {"fpga_fifo": ["fpga"]}),
+        ]:
+            config.write_bytes(text.encode())
+            for selector, flows in expected.items():
+                await open_detail(app, pilot, selector)
+                assert flow_ids(app) == flows
+                assert app.query_one("#target-flows").display is bool(flows)
+                assert (FLOWS_LABEL in detail_text(app)) is bool(flows)
+                await pilot.press("escape")
 
 
 # --- AC2 ---------------------------------------------------------------------

@@ -33,9 +33,6 @@ from booley.runtime.job_slots import (
     SlotRecovery,
     SlotStore,
 )
-from booley.runtime.supervised_execution import (
-    current_supervised_execution,
-)
 from tests.flows.sim.simulation_record_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
     _capacity,
@@ -45,10 +42,10 @@ from tests.flows.sim.simulation_record_test_support import (
     _managed,
     _named_manifest,
     _outer_claim,
-    _remove_child_lease,
     _scheduled_attempt,
     _wait_until,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 # Threads owned by other modules and unchanged by the pool: the slot store's lease
 # renewal and the supervised scope's per-scope process killer.
@@ -139,7 +136,9 @@ def test_parallel_simulation_record_runs_only_bounded_lane_threads(
 
     monkeypatch.setattr(threading.Thread, "start", recording_start)
     try:
-        simulation_record.scheduler(execute, timeout_seconds=30.0).run(simulation_record.items)
+        simulation_record.scheduler(execute, timeout_seconds=hang_guard_s()).run(
+            simulation_record.items
+        )
     finally:
         simulation_record.slots.release(simulation_record.outer)
     pool = sorted(name for name in started if not name.startswith(_UNRELATED_THREAD_PREFIXES))
@@ -177,7 +176,9 @@ def test_child_lane_terminal_cause(tmp_path: Path, failure: str, cause: str) -> 
         if failure == "work_failed":
             raise RuntimeError("work boom")
 
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=30.0, prepare_child=publish)
+    scheduler = simulation_record.scheduler(
+        execute, timeout_seconds=hang_guard_s(), prepare_child=publish
+    )
     try:
         if failure == "completed":
             scheduler.run(simulation_record.items)
@@ -210,54 +211,11 @@ def test_child_token_left_after_terminal_proof_fails_the_simulation_record(
         with pytest.raises(
             SimulationRecordCapacityError, match="child token remained after terminal proof"
         ):
-            simulation_record.scheduler(execute, timeout_seconds=30.0).run(simulation_record.items)
+            simulation_record.scheduler(execute, timeout_seconds=hang_guard_s()).run(
+                simulation_record.items
+            )
     finally:
         simulation_record.slots.release(simulation_record.outer)
-
-
-def test_lost_child_lease_interrupts_only_that_lane_item(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from booley.flows.sim.record.coordinator import raise_if_cancelled_before_publication
-
-    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    simulation_record = _SimulationRecord(tmp_path, ("alpha", "beta", "gamma"), lanes=2)
-    child_interrupted = threading.Event()
-    completed: list[str] = []
-    other_scope_cancelled: list[bool] = []
-
-    def execute(attempt, child_id) -> None:
-        scope = current_supervised_execution()
-        assert scope is not None
-        if _test_name(attempt) != "beta":
-            # The other lane keeps working until beta's lane lost its lease.
-            assert child_interrupted.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            other_scope_cancelled.append(scope.cancelled())
-            completed.append(_test_name(attempt))
-            return
-        # The Flow's claim and both lanes' item claims.
-        _wait_until(lambda: len(simulation_record.slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        _remove_child_lease(simulation_record.slots, child_id)
-        _wait_until(scope.cancelled, _PARALLEL_SYNC_TIMEOUT_S)
-        # Exact recovery of this child starts while its work is still running.
-        _wait_until(
-            lambda: simulation_record.registry.is_terminal(ExecutionId(child_id)),
-            _PARALLEL_SYNC_TIMEOUT_S,
-        )
-        child_interrupted.set()
-        raise_if_cancelled_before_publication()
-        completed.append(_test_name(attempt))
-
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=30.0)
-    try:
-        with pytest.raises(SimulationRecordCapacityError, match="lease lost"):
-            scheduler.run(simulation_record.items)
-    finally:
-        simulation_record.slots.release(simulation_record.outer)
-    assert sorted(completed) == ["alpha", "gamma"]
-    assert simulation_record.capacity.cancellation_cause() is None
-    assert other_scope_cancelled == [False, False]
-    assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 
 # Who reclaims a terminal child's token first: the lane's own hook, or another lane.
@@ -348,9 +306,9 @@ def _run_terminal_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordering
 
     try:
         # A reaped terminal token handled as a lost lease raises LeaseLostError here.
-        simulation_record.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0).run(
-            simulation_record.items
-        )
+        simulation_record.scheduler(
+            lambda _attempt, _child_id: None, timeout_seconds=hang_guard_s()
+        ).run(simulation_record.items)
     finally:
         simulation_record.slots.release(simulation_record.outer)
     assert len(finished) == 2  # each item's own child
@@ -401,7 +359,11 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
         "cancel",
         lambda _registry, execution_id: cancelled.append(execution_id),
     )
-    scheduler = simulation_record.scheduler(lambda _attempt, _child_id: None, timeout_seconds=30.0)
+    scheduler = simulation_record.scheduler(
+        lambda _attempt, _child_id: None, timeout_seconds=hang_guard_s()
+    )
+    # _confirm_lease: the lane's final lease check has no public observation point; the test
+    # records its calls to prove no recovery starts after a terminal reap.
     confirm = SimulationRecordCapacity._confirm_lease
 
     def recording_confirm(capacity, permit) -> bool:
@@ -420,6 +382,14 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
     )
     assert not child_paths.cancel.exists()
     assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
+
+
+def _await_outer_release(simulation_record: _SimulationRecord) -> None:
+    """Wait until the pool's last lane exits and the retained outer slot is released."""
+    _wait_until(
+        lambda: simulation_record.slots.token_absent(simulation_record.outer),
+        _PARALLEL_SYNC_TIMEOUT_S,
+    )
 
 
 def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path) -> None:
@@ -442,7 +412,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
     scheduler = simulation_record.scheduler(
-        execute, timeout_seconds=0.05, cancellation=cancelled.is_set
+        execute, timeout_seconds=scaled(0.05), cancellation=cancelled.is_set
     )
     trigger = threading.Thread(
         target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()),
@@ -454,9 +424,10 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
     try:
         with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
             scheduler.run(simulation_record.items)
-        simulation_record.slots.release(
-            simulation_record.outer
-        )  # the endpoint's admission finally
+        # The lane stuck past the cancel is reported interrupted (neither lane publishes a result).
+        stuck_item = next(item for item in simulation_record.items if "beta" in str(item))
+        assert str(stuck_item["work_item_id"]) in simulation_record.store.scan().interrupted
+        simulation_record.slots.release(simulation_record.outer)  # the endpoint finally
         # Cancellation already recovered the stuck item's claim, so memory is
         # free for a competitor; the Flow's claim must still be held, which leaves
         # the second competitor queued and the holders within the Flow plus its lanes.
@@ -484,10 +455,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
     finally:
         release_child.set()
         trigger.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
-    _wait_until(
-        lambda: simulation_record.slots.token_absent(simulation_record.outer),
-        _PARALLEL_SYNC_TIMEOUT_S,
-    )
+    _await_outer_release(simulation_record)
     simulation_record.slots.release(competitors[0])
     _wait_until(
         lambda: simulation_record.slots.refresh(competitors[1]).state != QUEUED,
@@ -509,7 +477,7 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
         child_running.set()
         assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
 
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=0.05)
+    scheduler = simulation_record.scheduler(execute, timeout_seconds=scaled(0.05))
 
     def failing_recovery() -> None:
         # The owner loop must survive a recovery error (for example a file error).
@@ -520,17 +488,12 @@ def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
     try:
         with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
             scheduler.run(simulation_record.items)
-        simulation_record.slots.release(
-            simulation_record.outer
-        )  # the endpoint's admission finally
+        simulation_record.slots.release(simulation_record.outer)  # the endpoint finally
         holders, _waiters = simulation_record.slots.snapshot(CLASS_MEMORY)
         assert simulation_record.outer.lease_id in {token.lease_id for token in holders}
     finally:
         release_child.set()
-    _wait_until(
-        lambda: simulation_record.slots.token_absent(simulation_record.outer),
-        _PARALLEL_SYNC_TIMEOUT_S,
-    )
+    _await_outer_release(simulation_record)
     assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
 
 

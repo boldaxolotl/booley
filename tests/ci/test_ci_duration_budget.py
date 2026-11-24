@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/ci_duration_budget.py"
 SPEC = importlib.util.spec_from_file_location("ci_duration_budget", SCRIPT)
@@ -138,3 +139,24 @@ def test_cli_thresholds_are_inclusive(
 ) -> None:
     assert _run_cli(monkeypatch, tmp_path, elapsed=elapsed, warn=warn, budget=budget)[0] == code
     assert verdict in capsys.readouterr().out
+
+
+def test_bwave_smoke_budget_passes_the_slow_runner_run() -> None:
+    """Run 43927091139 (#4537): a 2.3x slower runner took 848 s with no test failing."""
+    workflow = yaml.safe_load(
+        (SCRIPT.parents[1] / "workflows/test.yml").read_text(encoding="utf-8")
+    )
+    (step,) = [
+        step
+        for step in workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Enforce duration budget"
+    ]
+    warn = step["env"]["STANDARD_WARN_SECONDS"]
+    budget = step["env"]["STANDARD_BUDGET_SECONDS"]
+
+    result = ci_duration_budget.evaluate(
+        "bwave-smoke", started_at=1, now=1 + 848, budget=budget, warn=warn
+    )
+
+    assert result.passed
+    assert warn < budget

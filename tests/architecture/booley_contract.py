@@ -63,8 +63,6 @@ to a PR that moves a boundary.
   that removes it; remove it with the fix.
 - Cycles: when a change splits the approved group, shrink `APPROVED_LEGACY_SCCS` in the same
   change. Never approve a new cycle across packages; fix the imports.
-- Importing `booley.criteria` from a new module: add the module and its reason
-  to `_ALLOWED` in `test_goal_mode_boundaries.py`.
 """
 
 from __future__ import annotations
@@ -85,7 +83,6 @@ _D1_REASON = (
     "environment/configuration analysis and Target policy must not know Harness, MCP, "
     "or Specialist mechanisms"
 )
-_D2_REASON = "Criteria is acceptance policy; endpoint discovery is an agent-facing mechanism"
 _D3_REASON = (
     "a Specialist returns evidence without depending on its Harness or MCP composition mechanism"
 )
@@ -112,9 +109,6 @@ _D12_REASON = (
     "back on catalog orchestration or presentation"
 )
 _D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implementations"
-_D16_REASON = (
-    "Criteria evaluates shared evidence without depending on Flow production or execution"
-)
 _D21_REASON = "Review renders artifacts from resolved evidence without Harness orchestration"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
@@ -286,7 +280,7 @@ DIRECTION_RULES = (
     #   `test_source_dependency_contract.py`: add it there first and watch it fail. The tests
     #   import a new owner through a helper (`importlib.import_module`) so the file collects
     #   before the owner exists. Single-fact helpers (`audit.host_environment`,
-    #   `runtime.interactive_docker`, `audit.output_excerpt`) and the value module
+    #   `runtime.host_docker`, `audit.output_excerpt`) and the value module
     #   `audit.diagnostic_results` stay outside D26.
     # - Doctor builds the request, calls the owner, and renders each report with
     #   `_Reporter.diagnostics` at the check's position. A moved check keeps its message, fix
@@ -359,12 +353,6 @@ DIRECTION_RULES = (
         "Deterministic Flow execution and its shared services do not depend on MCP exposure.",
     ),
     DirectionRule(
-        "D16",
-        (prefix("booley.criteria"),),
-        (prefix("booley.flows"),),
-        _D16_REASON,
-    ),
-    DirectionRule(
         "D1",
         tuple(
             prefix(name)
@@ -372,12 +360,6 @@ DIRECTION_RULES = (
         ),
         tuple(prefix(name) for name in ("booley.harness", "booley.mcp", "booley.specialists")),
         _D1_REASON,
-    ),
-    DirectionRule(
-        "D2",
-        (prefix("booley.criteria"),),
-        tuple(prefix(name) for name in ("booley.harness", "booley.mcp", "booley.specialists")),
-        _D2_REASON,
     ),
     DirectionRule(
         "D3",

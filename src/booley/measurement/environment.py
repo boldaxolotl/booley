@@ -1,9 +1,10 @@
 """The scrubbed environment of a Flow that runs in an exported checkout.
 
 A measurement must not depend on the shell that asked for it. The child gets an
-allow-list of what the Sandbox itself issues; everything else the caller carries
-(Python search paths, loader overrides, Git and Project selection,
-session routing, slot inheritance, credentials) is dropped by construction.
+allow-list of what the Sandbox itself issues and the caller's checked ``PRJ_LIB_DIR``;
+everything else the caller carries (Python search paths, loader overrides, Git and
+Project selection, session routing, slot inheritance, credentials) is dropped by
+construction.
 
 The checkout has no Git repository, so ``git`` is refused: the run's ``PATH``
 starts with a directory holding a ``git`` that prints which command was refused
@@ -26,6 +27,8 @@ from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 # Spelled out: importing ``runtime.session_issuance`` for one name is far too heavy.
 SANDBOX_IMAGE_ID_ENV = "BOOLEY_SANDBOX_IMAGE_ID"
+# Read by the ASIC Synthesis Flow's Liberty and OpenROAD physical-file lookups.
+PDK_ROOT_ENV = "PRJ_LIB_DIR"
 
 # Variables copied from the caller when present.
 _ALLOWED_NAMES = frozenset(
@@ -85,7 +88,9 @@ def measurement_environment(
     main_booley_dir: Path,
     home: Path,
     tmp: Path,
+    runtime: Path,
     git_refusal: Path,
+    pdk_root: Path | None,
 ) -> dict[str, str]:
     """Return the child environment: allow-listed *source* entries plus the run's own.
 
@@ -93,7 +98,11 @@ def measurement_environment(
     while the checkout's inputs resolve to its own Booley Directory. *home* and
     *tmp* are directories the caller created for this run, and
     ``PYTHONPYCACHEPREFIX`` keeps the bytecode of a Project Flow out of the checkout.
+    *runtime* is the run's own ``BOOLEY_RUNTIME_DIR``, so its scratch (a Mutation campaign's
+    builds) is never shared with another child or a live run.
     *git_refusal* is the directory :func:`write_git_refusal` filled; it leads ``PATH``.
+    *pdk_root* is the caller's already resolved and checked ``PRJ_LIB_DIR``, or ``None``;
+    a ``PRJ_LIB_DIR`` in *source* is never copied.
     """
     environment = {
         name: value
@@ -104,6 +113,7 @@ def measurement_environment(
         {
             "BOOLEY_DIR": str(main_booley_dir),
             "HOME": str(home),
+            "BOOLEY_RUNTIME_DIR": str(runtime),
             "TMPDIR": str(tmp),
             "TMP": str(tmp),
             "TEMP": str(tmp),
@@ -113,4 +123,6 @@ def measurement_environment(
             "PATH": os.pathsep.join([str(git_refusal), source.get("PATH") or os.defpath]),
         }
     )
+    if pdk_root is not None:
+        environment[PDK_ROOT_ENV] = str(pdk_root)
     return environment

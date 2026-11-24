@@ -19,11 +19,14 @@ from booley.flows.endpoint_events import (
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
+    HOST_OOM_KILL_NOTE,
+    OOM_KILL_NOTE,
     OOM_REQUEUE_NOTE,
     EndpointOutcome,
     normalize_completion_error,
 )
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 if TYPE_CHECKING:
@@ -229,7 +232,7 @@ def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool 
 def _next_invocation_dir(endpoint: EndpointState, report_dir: Path) -> Path:
     """Atomically reserve the next numbered ``{endpoint_name}/{N}`` directory."""
     endpoint_dir = report_dir / endpoint.name
-    endpoint_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(endpoint_dir)
     while True:
         # `.pruned-<N>` directories keep their number reserved.
         existing = (
@@ -258,7 +261,7 @@ def reserve_invocation_dir(endpoint: EndpointState) -> Path | None:
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
-    report_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(report_dir)
     if endpoint._reserved_invocation_dir is None:
         endpoint._reserved_invocation_dir = endpoint._next_invocation_dir(report_dir)
     return endpoint._reserved_invocation_dir
@@ -273,7 +276,7 @@ def write_report(endpoint: EndpointState, result: EndpointOutcome) -> Path | Non
     report_dir = endpoint.args.report_dir
     if report_dir is None:
         return None
-    report_dir.mkdir(parents=True, exist_ok=True)
+    make_directories(report_dir)
     if not endpoint._skip_report_detail_refresh:
         endpoint.refresh_report_detail(result)
     report = _report_document(endpoint, result)
@@ -482,20 +485,57 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
     if not result.report_text:
         return
     witness = endpoint._stdout_witness
-    already_shown = witness is not None and witness.saw(result.report_text)
-    if already_shown:
+    # The host line leads the result; the Flow's own verdict, printed while it ran, follows it.
+    host_line, text = "", result.report_text
+    if text.startswith(HOST_OOM_KILL_NOTE):
+        host_line, _, text = text.partition("\n")
+    if witness is not None and witness.saw(text):
+        if host_line:
+            print(host_line, file=sys.stderr, flush=True)
         return
     # A note appended after the report the witness already saw is all that is new.
-    for opening in ("\nCompletion failure (", f"\n{OOM_REQUEUE_NOTE}"):
-        original, separator, rest = result.report_text.partition(opening)
+    for opening in (
+        "\nCompletion failure (",
+        f"\n{OOM_REQUEUE_NOTE}",
+        f"\n{OOM_KILL_NOTE}",
+    ):
+        original, separator, rest = text.partition(opening)
         if separator and witness is not None and witness.saw(original):
-            print(f"{opening[1:]}{rest}", file=sys.stderr, flush=True)
+            print(
+                "\n".join(filter(None, (host_line, f"{opening[1:]}{rest}"))),
+                file=sys.stderr,
+                flush=True,
+            )
             return
     if result.exit_code != EXIT_SUCCESS:
         print(result.report_text, file=sys.stderr, flush=True)
         return
     if endpoint.endpoint_kind == "flow" or endpoint.announce_success_report:
         print(result.report_text, flush=True)
+
+
+def removed_root(endpoint: EndpointState) -> str | None:
+    """Name the checkout or Booley Directory that vanished since the run started."""
+    if endpoint._run_roots is None:
+        return None
+    checkout, booley_dir = endpoint._run_roots
+    if not checkout.is_dir():
+        return f"checkout {checkout}"
+    if booley_dir is not None and not booley_dir.is_dir():
+        return f"Booley Directory {booley_dir}"
+    return None
+
+
+def report_root_removed(endpoint: EndpointState) -> bool:
+    """Whether the report directory lies under a checkout or Booley Directory that vanished."""
+    report_dir = endpoint.args.report_dir
+    if report_dir is None or endpoint._run_roots is None:
+        return False
+    report_dir = Path(report_dir).absolute()
+    return any(
+        root is not None and not root.is_dir() and report_dir.is_relative_to(root)
+        for root in endpoint._run_roots
+    )
 
 
 def _finish_main(
@@ -505,15 +545,14 @@ def _finish_main(
     display_label: str | None,
     started: float | None,
     *,
-    records_published: bool,
     dry_run: bool,
-    non_persisting_dry_run: bool,
+    persist_report: bool,
 ) -> int:
     """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
     duration = (time.monotonic() - started) if started is not None else 0.0
     try:
-        if not non_persisting_dry_run:
-            _finish_publication(endpoint, result, records_published)
+        if persist_report:
+            _publish_report_with_recovery(endpoint, result)
     finally:
         try:
             try:
@@ -549,30 +588,13 @@ def _finish_main(
     return result.exit_code
 
 
-def _finish_publication(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    records_published: bool,
-) -> None:
-    _publish_report_with_recovery(endpoint, result, refresh_detail=records_published)
-
-
-def _publish_report_with_recovery(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    *,
-    refresh_detail: bool = True,
-) -> None:
-    previous = endpoint._skip_report_detail_refresh
-    endpoint._skip_report_detail_refresh = not refresh_detail
+def _publish_report_with_recovery(endpoint: EndpointState, result: EndpointOutcome) -> None:
     try:
         _publish_report(endpoint, result)
     except Exception as exc:
         logger.debug("Endpoint report publication failed", exc_info=True)
         normalize_completion_error(result, exc, "publish report.json")
         _recover_report_publication(endpoint, result)
-    finally:
-        endpoint._skip_report_detail_refresh = previous
 
 
 def _recover_report_publication(endpoint: EndpointState, result: EndpointOutcome) -> None:

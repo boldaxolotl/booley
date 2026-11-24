@@ -16,11 +16,12 @@ file is high leverage: do not auto-write, pad, or invent facts.
   the project config. Normally, do not write a real file at the Project Root.
 - Exception: when plan row 16 selects the hybrid port/integration footprint,
   write and track a content-identical regular root `AGENTS.md` so a fresh clone
-  remains self-describing while `.booley/` stays local. Init and Doctor
-  preserve this matching tracked copy and refuse to overwrite a stale one.
+  remains self-describing while `.booley/` stays local. `booley init` preserves
+  this matching tracked copy and refuses to overwrite a stale one.
 - The Project Root carries only generated `AGENTS.md` and `CLAUDE.md` links to
-  the canonical file. Plain `booley doctor` creates or repairs them after the
-  canonical file is written.
+  the canonical file. `booley init` creates or repairs them after the canonical
+  file is written; Doctor only reports `guidance.links-unhealthy` and changes
+  no file.
 
 **Content**
 
@@ -111,13 +112,15 @@ approval question in either case beyond the plan-gap stop above.
 1. Write the canonical file to `<booley_dir>/AGENTS.md` (resolve
    `<booley_dir>` from `.booley/`; do not hardcode). For the explicit
    hybrid footprint, also write the same bytes to tracked root `AGENTS.md`.
-2. Run plain `booley doctor`; it creates or repairs the root `AGENTS.md` and
-   `CLAUDE.md` links and adds them to `.git/info/exclude`. If Doctor cannot run,
-   create the two root symlinks to the canonical file by hand and add
-   `/AGENTS.md` and `/CLAUDE.md` to the RTL repo's `.git/info/exclude`.
-   If the delegated environment makes the Project Root read-only, do not loop on
-   failed `ln` commands: preserve the canonical file, record the two links as
-   pending, and have the host run `booley init --seed` or plain Doctor after
+2. Run `booley init` (on the host, or in place in a hand-written Sandbox); it
+   creates or repairs the root `AGENTS.md` and `CLAUDE.md` links and adds them
+   to `.git/info/exclude`. Doctor then reports whether the links are current.
+   If `booley init` cannot run, create the two root symlinks to the canonical
+   file by hand and add `/AGENTS.md` and `/CLAUDE.md` to the RTL repo's
+   `.git/info/exclude`. In a Booley-issued Sandbox, which refuses
+   `booley init`, or when the delegated environment makes the Project Root
+   read-only, do not loop on failed `ln` commands: preserve the canonical file,
+   record the two links as pending, and have the host run `booley init` after
    the delegated step. A sandbox permission boundary is not evidence that the
    canonical guidance is invalid.
 

@@ -40,6 +40,7 @@ from booley.measurement.rules_diff import (
     RulesDiff,
     header_amber,
     paired_protected_edits,
+    rules_base_tree,
     rules_diff,
 )
 from booley.measurement.run_document import RunStatus, Verdict
@@ -186,11 +187,19 @@ def _history_block(store: MeasurementStore, run: StoredRun) -> dict[str, Any]:
     }
 
 
+def _enforced_count(results: list[dict[str, Any]], verdict: Verdict) -> int:
+    return sum(result["verdict"] == verdict and result["bound"] is not None for result in results)
+
+
 def _counts_block(document: Mapping[str, Any]) -> dict[str, int]:
     results = _results(document)
     tally = Counter(result["verdict"] for result in results)
     counts = {verdict.value: tally[verdict] for verdict in Verdict}
     counts["enforced"] = sum(result["bound"] is not None for result in results)
+    counts["enforced_error"] = _enforced_count(results, Verdict.ERROR)
+    counts["tracked_error"] = counts["error"] - counts["enforced_error"]
+    counts["enforced_not_evaluated"] = _enforced_count(results, Verdict.NOT_EVALUATED)
+    counts["tracked_not_evaluated"] = counts["not_evaluated"] - counts["enforced_not_evaluated"]
     return counts
 
 
@@ -233,9 +242,13 @@ def _evidence(run: StoredRun) -> list[dict[str, Any]]:
 
 
 def _base_run_block(
-    repository: Path, store: MeasurementStore, document: Mapping[str, Any], base: Base
+    repository: Path,
+    store: MeasurementStore,
+    document: Mapping[str, Any],
+    base: Base,
+    rules_tree: str | None,
 ) -> dict[str, Any]:
-    block = asdict(base_run_view(repository, store, document, base))
+    block = asdict(base_run_view(repository, store, document, base, rules_tree))
     del block["base"]  # the Base is the view's ``base`` block
     return block
 
@@ -274,7 +287,9 @@ def _view(
         },
         "rules_diff": _rules_diff_block(diff, resolved),
         "amber": list(header_amber(diff)),
-        "base_run": _base_run_block(repository, store, document, resolved),
+        "base_run": _base_run_block(
+            repository, store, document, resolved, rules_base_tree(repository, keyed, diff)
+        ),
         "excerpts": _excerpts(document),
         "target": target,
         "history": None if target is not None else _history_block(store, run),

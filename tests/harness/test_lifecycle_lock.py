@@ -12,6 +12,7 @@ import pytest
 from booley.runtime import lifecycle_lock
 from booley.runtime.file_lock import LockContentionError, LockTimeoutError
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 
 def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
@@ -76,10 +77,10 @@ def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, capl
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         acquired = executor.submit(acquire)
-        assert waiting.wait(2)
+        assert waiting.wait(hang_guard_s())
         assert not acquired.done()
         holder.release()
-        acquired.result(timeout=5)
+        acquired.result(timeout=hang_guard_s())
 
     expected_owner = (
         "another Booley command" if os.name == "nt" else "pid=41 operation=booley init"

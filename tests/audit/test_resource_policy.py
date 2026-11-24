@@ -33,6 +33,49 @@ def test_configured_sandbox_memory_accepts_current_and_legacy_shapes() -> None:
     assert resource_policy.configured_sandbox_memory({"sandbox": "invalid"}) == ""
 
 
+_MEMINFO = "MemTotal:       16384000 kB\nMemFree: 1 kB\nSwapTotal:       2097152 kB\n"
+
+
+def test_parse_meminfo_reads_memory_and_swap_in_bytes() -> None:
+    host = resource_policy.parse_meminfo(_MEMINFO)
+    assert host == resource_policy.HostMemory(16384000 * 1024, 2 * _GIB)
+    with pytest.raises(ValueError, match="SwapTotal"):
+        resource_policy.parse_meminfo("MemTotal: 1 kB\n")
+    with pytest.raises(ValueError, match="MemTotal"):
+        resource_policy.parse_meminfo("SwapTotal: 1 kB\n")
+
+
+def test_configured_sandbox_swap_reads_the_section() -> None:
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": " 2g "}}) == "2g"
+    assert resource_policy.configured_sandbox_swap({"sandbox": {"swap": 3}}) == ""
+    assert resource_policy.configured_sandbox_swap({"sandbox": "invalid"}) == ""
+
+
+_SWAP_ROWS = [
+    ("12g", "", 16 * _GIB, "15g"),
+    ("12g", "", 1 * _GIB, "13g"),
+    ("12g", "", 0, "12g"),
+    ("12g", "lots", 16 * _GIB, "15g"),
+    ("12g", "0", 16 * _GIB, "12g"),
+    ("12g", "2g", 0, "14g"),
+    ("1000m", "", 16 * _GIB, "1250m"),
+    ("1000k", "", 16 * _GIB, "1250k"),
+    ("1001", "", 16 * _GIB, "1251"),
+    ("", "2g", 16 * _GIB, ""),
+    ("lots", "2g", 16 * _GIB, ""),
+]
+
+
+def test_memory_swap_limit() -> None:
+    """The default swap is a quarter of memory, capped at the host's swap."""
+    for memory, swap, host_swap, expected in _SWAP_ROWS:
+        assert resource_policy.memory_swap_limit(memory, swap, host_swap) == expected, (
+            memory,
+            swap,
+            host_swap,
+        )
+
+
 def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeypatch) -> None:
     invalid = tmp_path / "memory.max"
     invalid.write_text("invalid", encoding="utf-8")
@@ -44,6 +87,32 @@ def test_cgroup_limit_handles_v2_and_v1_unlimited_values(tmp_path: Path, monkeyp
 
     invalid.write_text(str(9 * _GIB), encoding="utf-8")
     assert resource_policy.cgroup_memory_limit_bytes() == 9 * _GIB
+
+
+def test_cgroup_swap_limit_reads_v2_then_v1(tmp_path: Path, monkeypatch) -> None:
+    v2 = tmp_path / "memory.swap.max"
+    v1 = tmp_path / "memory.memsw.limit_in_bytes"
+    monkeypatch.setattr(resource_policy, "CGROUP_SWAP_LIMIT_PATHS", (v2, v1))
+
+    # Neither file: a host without swap accounting.
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) is None
+
+    # v1 states memory plus swap, so the memory limit comes off; never below 0.
+    v1.write_text(str(10 * _GIB), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 2 * _GIB
+    assert resource_policy.cgroup_swap_limit_bytes(12 * _GIB) == 0
+    v1.write_text(str(1 << 62), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+
+    # v2 wins and states the swap itself; an unparseable file falls through to v1.
+    v2.write_text("invalid", encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+    v2.write_text(str(4 * _GIB), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 4 * _GIB
+    v2.write_text("max", encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
+    v2.write_text(str(1 << 61), encoding="utf-8")
+    assert resource_policy.cgroup_swap_limit_bytes(8 * _GIB) == 1 << 60
 
 
 def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:

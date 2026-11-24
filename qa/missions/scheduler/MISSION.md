@@ -91,8 +91,8 @@ Try:
   `synth_ecc_top`, `lint_caliptra` and `sim_ecc` a few seconds apart. Sum the
   estimates against the budget; exactly the Jobs that do not fit wait. Each
   waiter reports memory needed, memory free of the budget, its position, and
-  the largest holders by run, Flow, Target and MiB. The CLI repeats a `[slot]`
-  line about every 30 seconds.
+  the largest holders by run, Flow, Target and MiB. The CLI repeats a
+  `[admission]` line about every 30 seconds.
 - `small-budget` below `sim_caliptra`'s estimate: it runs alone with the
   "exceeds the Memory Budget" warning in its result.
 - A long queue: submit more blocked Jobs than the old queue limit of 8; every
@@ -151,11 +151,15 @@ Try:
 - The kernel kills a compiler of the Job admitted last. Its output says it
   was requeued after an out-of-memory kill; it waits to run alone, then
   builds. Its result says it is from the second attempt. The other Job is
-  untouched. History records `oom_kill`, which raises the estimate.
+  untouched, unless a process of the older Job uses more than half the limit
+  more than the victim (the ranking's bound, ADR 0087: read each process's
+  memory at the kill). History records `oom_kill`, which raises the estimate.
 - Exactly controlled: `mem_hog --mb` above the container limit is killed
   twice and fails with an out-of-memory reason; it is not requeued again.
 - Compare with `docs/user/CONFIG.md` "Jobs and concurrency".
-Look for: the older Job killed first, the agent or MCP server killed, a second
+Look for: the older Job killed first while its processes used less than half
+the limit more than the newest Job's, the agent or MCP server killed while it
+used less than a quarter of the limit more than a Job process, a second
 requeue, a compiler kill reported as a compile error, a result that hides the
 first attempt, a kill not recorded in history.
 
@@ -256,7 +260,8 @@ staged Project and its resources in `resources.md`: `booley session down`, then
 
 ## Known traps
 - There is no `booley jobs` command and `booley_status` shows no queue: read
-  the CLI's `[slot]` lines, `booley_poll`, the Dashboard and the claim files.
+  the CLI's `[admission]` lines, `booley_poll`, the Dashboard and the claim
+  files.
 - "Free" in the queue text is the budget minus reservations, not free host
   memory; it is 0 while a Job runs alone.
 - Each claim keeps the budget it was created with; a `booley.toml` change only

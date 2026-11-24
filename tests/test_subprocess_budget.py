@@ -8,15 +8,20 @@ import sys
 import pytest
 
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import scaled
+
+_SHORT_TIMEOUT_S = scaled(1)
 
 
 @pytest.mark.timeout(90)
 def test_run_bounded_child_timeout_notes_when_nothing_was_captured() -> None:
     with pytest.raises(pytest.fail.Exception) as raised:
-        run_bounded_child([sys.executable, "-c", "import time; time.sleep(60)"], timeout=1)
+        run_bounded_child(
+            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=_SHORT_TIMEOUT_S
+        )
 
     message = str(raised.value)
-    assert "timed out after 1 s" in message
+    assert f"timed out after {_SHORT_TIMEOUT_S:g} s" in message
     assert message.count("(none captured)") == 2
 
 
@@ -29,7 +34,7 @@ def test_run_bounded_child_timeout_keeps_partial_output() -> None:
         "time.sleep(60)\n"
     )
     with pytest.raises(pytest.fail.Exception) as raised:
-        run_bounded_child([sys.executable, "-c", script], timeout=10)
+        run_bounded_child([sys.executable, "-c", script], timeout=scaled(10))
 
     message = str(raised.value)
     assert "OUT-PARTIAL" in message

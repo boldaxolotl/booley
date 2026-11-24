@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -35,7 +36,7 @@ ADR_0082_SAMPLES = {
     "runtime/sessions/s1.json": "common",
     "runtime/session_activity/a": "common",
     "runtime/dashboard-task.lock": "common",
-    ".interactive_logs/a.log": "common",
+    "job_logs/a.log": "common",
     "runtime/doctor_stamp.json": "common",
     "runtime/doctor_deep_stamp.json": "common",
     "runtime/upgrade_review.json": "common",
@@ -97,6 +98,8 @@ WRITTEN_PATH_SAMPLES = {
     "runtime/doctor/x": "common",
     "runtime/developer_probe.json": "common",
     "runtime/synth_probe.json": "common",
+    "runtime/chat-main.lock": "common",
+    ".runtime/sandbox-mounts.json": "common",
     "tmp/doctor/x": "checkout",
     "runtime/doctor/core-resolve/x": "checkout",
     "runtime/resources/x": "common",
@@ -197,6 +200,7 @@ SOURCE_TIED_PATTERNS = {
     ".runtime/prompts/",
     ".runtime/bwave/",
     "tmp/fusesoc-isolated-cores/",
+    "tmp/core-projection-publication/",
 }
 
 
@@ -264,3 +268,58 @@ def test_snapshot_main_reports_an_unreadable_source(
 
     assert status == 1
     assert "cannot list the Booley Directory for the Snapshot" in capsys.readouterr().err
+
+
+def test_snapshot_main_names_every_unclassified_path_without_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime import worktree_snapshot
+
+    source = tmp_path / "data"
+    (source / "eval_tmp").mkdir(parents=True)
+    (source / "eval_tmp" / "x").write_text("x\n", encoding="utf-8")
+    no_tools = tmp_path / "no-tools"
+    no_tools.mkdir()
+    monkeypatch.setenv("PATH", str(no_tools))
+
+    status = worktree_snapshot.main([str(source), str(tmp_path / "list")])
+
+    assert status == 0
+    assert "Snapshot skipped eval_tmp" in capsys.readouterr().err
+
+
+def test_a_configured_directory_never_reclassifies_booley_state(tmp_path: Path) -> None:
+    from booley.core.booley_dir_parts import (
+        BOOLEY_DIR_PATHS,
+        BooleyDirClass,
+        iter_booley_dir,
+        with_versioned_directory,
+    )
+
+    for relative in ("waivers/approved/a.toml", "waivers/other/x"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+
+    rows = with_versioned_directory("waivers/approved")
+
+    assert dict(iter_booley_dir(tmp_path, rows=rows)) == {
+        "waivers/approved": BooleyDirClass.VERSIONED,
+        "waivers/other": None,
+    }
+    for name in ("worktrees", "tmp", "cores/waivers"):
+        assert with_versioned_directory(name) is BOOLEY_DIR_PATHS
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_snapshot_main_names_every_unclassified_path_outside_a_repository(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from booley.runtime import worktree_snapshot
+
+    source = tmp_path / "data"
+    (source / "eval_tmp").mkdir(parents=True)
+    (source / "eval_tmp" / "x").write_text("x\n", encoding="utf-8")
+
+    assert worktree_snapshot.main([str(source), str(tmp_path / "list")]) == 0
+    assert "Snapshot skipped eval_tmp" in capsys.readouterr().err

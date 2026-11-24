@@ -704,20 +704,20 @@ def test_init_tracked_task_notice_is_one_informational_line(
         "add the task yourself or set [sandbox].dashboard = false"
     )
     plan = SimpleNamespace(dashboard_tasks=tasks.TaskPlan(notices=(notice,)), pending_details=())
-    monkeypatch.setattr(init_cmd, "_interactive_precondition_failed", lambda *a, **kw: False)
+    monkeypatch.setattr(init_cmd, "_sandbox_precondition_failed", lambda *a, **kw: False)
     monkeypatch.setattr(
         init_cmd,
-        "_interactive_spec_sources",
+        "_sandbox_spec_sources",
         lambda *a, **kw: SimpleNamespace(build=lambda: None, mask_paths=()),
     )
-    monkeypatch.setattr(init_cmd, "_inspect_interactive_plan", lambda *a: plan)
+    monkeypatch.setattr(init_cmd, "_inspect_sandbox_plan", lambda *a: plan)
     monkeypatch.setattr(
         init_cmd,
-        "_apply_interactive_plan",
+        "_apply_sandbox_plan",
         lambda *a: pytest.fail("informational plan should not need changes"),
     )
     ctx = InitContext(project_root=tmp_path, check_only=check_only)
-    init_cmd._step_interactive(ctx)
+    init_cmd._step_sandbox(ctx)
     output = capsys.readouterr().out
     assert output.count(notice) == 1
     assert "  !  " not in output

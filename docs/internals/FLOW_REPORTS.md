@@ -6,9 +6,9 @@ of those files must know. The JSON is self-describing: read a report to see its
 fields. User docs ([FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) and the
 per-Flow pages) say how to run each Flow and read its verdict.
 
-The reports are evidence that Criteria, resume, and the Coverage
-Analyst read later, often in another process. So every run gets its own
-numbered directory, and files point at each other by relative path plus size and
+The reports are evidence that resume and the Coverage Analyst
+read later, often in another process. So every run gets its own numbered
+directory, and files point at each other by relative path plus size and
 SHA-256.
 
 ## Where reports go
@@ -19,7 +19,7 @@ Booley picks the report root in this order:
 2. `$BOOLEY_RUNTIME_DIR/flow-reports`, when that variable is set. Every MCP
    endpoint subprocess sets it: a Developer Agent call uses the server's
    session runtime
-   (`.interactive_logs/<session>/.runtime` in the Booley Directory).
+   (`job_logs/<session>/.runtime` in the Booley Directory).
 3. Otherwise, `flow-reports/` in the Booley Directory of the checkout.
 
 Each run reserves the next number `N` under `<report-root>/<flow>/`. Every Flow
@@ -49,7 +49,7 @@ same report, with `mcp_tool` in place of `flow`. Its `$schema` is
 `booley.simulation-report/v3` for `sim`, `booley.flow-report/v1` for the other
 Flows, and `booley.specialist-report/v1` for Specialists.
 
-- `passed` means exit `0`, whatever the Criteria say.
+- `passed` means exit `0`.
 - `resources` (`cpu_user_s`, `cpu_sys_s`, `peak_rss_mb`) is a process-lifetime
   snapshot. Repeated calls inside one process include earlier work, and a
   resumed run counts only the resuming process. When the platform cannot
@@ -222,6 +222,12 @@ the next run overwrites; read the numbered copies of the STA reports
 Actionable warnings (dispositions `advisory` and `structural`) set
 `implementation.status.grade` to `warn` but keep `passed: true`. Located
 frontend warnings are counted too and never set `warn`.
+
+A loop or multi-driven warning from an earlier pass that the completed
+structural checks no longer find carries a `rationale` and is `advisory`:
+optimization removed the structure, which is not a review of the RTL.
+A loop warning is `informational` instead while the run's count of them is
+within `[flows.synth].expected_comb_loops`; multi-driven has no allowance.
 
 ## `fpga`
 

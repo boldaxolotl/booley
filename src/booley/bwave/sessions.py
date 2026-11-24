@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -54,6 +55,9 @@ from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.core.host_shell import quote_arg
+from booley.runtime.atomic_files import keep_unreadable
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
@@ -133,6 +137,28 @@ def _load_sessions(store: SessionStore | None = None) -> dict:
         return {}
 
 
+def _sessions_for_update(store: SessionStore) -> dict:
+    """Load the sessions a registration extends; an unreadable store is kept aside.
+
+    The caller holds the store lock. ``OSError`` other than a missing file
+    propagates, so nothing is written over a store that could not be read.
+    """
+    try:
+        data = json.loads(store.path.read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    kept = keep_unreadable(store.path)
+    print(
+        f"[bwave] WARNING: session file {store.path} was unreadable; kept it as {kept}",
+        file=sys.stderr,
+    )
+    return {}
+
+
 def _save_sessions(data: dict, store: SessionStore | None = None) -> bool:
     """Publish the sessions file atomically (creates the directory if needed).
 
@@ -147,7 +173,7 @@ def _save_sessions(data: dict, store: SessionStore | None = None) -> bool:
     import time as _time
 
     session_file = (store or current_session_store()).path
-    session_file.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(session_file.parent)
     pending = session_file.with_name(f"{session_file.name}.{os.getpid()}.tmp")
     try:
         for attempt in range(3):
@@ -183,7 +209,7 @@ def register_trace(
     """
     store = store or current_session_store()
     session_file = store.path
-    session_file.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(session_file.parent)
     lock_path = session_file.with_name(f"{session_file.name}.lock")
     with lock_path.open("a+") as lock:
         wait_for_file_lock(lock, timeout_s=_LOCK_TIMEOUT_S)
@@ -195,7 +221,7 @@ def register_trace(
 
 def _register_trace_locked(trace: Path, alias: str | None, store: SessionStore) -> str:
     """Load-modify-save one registration; the caller holds the store lock."""
-    sessions = _load_sessions(store)
+    sessions = _sessions_for_update(store)
     alias = alias or _DEFAULT_ALIAS
     entry = {
         "trace": store.record(trace),
@@ -314,14 +340,15 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
     went wrong sends them at a command that just failed.
     """
     out = trace.with_suffix(".fst")
+    trace_arg, out_arg = quote_arg(str(trace)), quote_arg(str(out))
     if not build:
         _exit_usage(
             f"ERROR: {trace.name} is a raw VCD; the query engine needs a built "
             f".fst store, so registering it would bind an unqueryable alias.\n"
             f"Build one first, then register it:\n"
-            f"  bwave build {trace} -o {out}\n"
-            f"  bwave register {out} --as ALIAS\n"
-            f"Or let register do both: bwave register {trace} --as ALIAS --build" + diagnostics
+            f"  bwave build {trace_arg} -o {out_arg}\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
+            f"Or let register do both: bwave register {trace_arg} --as ALIAS --build" + diagnostics
         )
     if out.exists():
         # --build writes unscoped (scope=None), so silently overwriting would
@@ -332,9 +359,9 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             f"ERROR: refusing to overwrite the existing {out} with --build "
             f"(it may have been built with a different --scope).\n"
             f"Register the store that is already there:\n"
-            f"  bwave register {out} --as ALIAS\n"
+            f"  bwave register {out_arg} --as ALIAS\n"
             f"Or rebuild it deliberately, then register:\n"
-            f"  bwave build {trace} -o {out}"
+            f"  bwave build {trace_arg} -o {out_arg}"
         )
     print(f"[bwave] building {out.name} from {trace.name} (--build) ...", file=sys.stderr)
     result = convert_vcd(trace, out, existing_store=ExistingStorePolicy.REFUSE)
@@ -345,7 +372,8 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
         sys.exit(
             f"ERROR: could not build a queryable store from {trace}.\n"
-            f"Run `bwave build {trace} -o {out}` directly to see the failure." + diagnostics
+            f"Run `bwave build {trace_arg} -o {out_arg}` directly to see the failure."
+            + diagnostics
         )
     return out
 
@@ -377,10 +405,7 @@ def cmd_register(args: argparse.Namespace) -> None:
     elif target.is_dir():
         trace = bwave.find_trace(target)
         if not trace:
-            msg = f"ERROR: No trace file found in {target}"
-            msg += _headeronly_store_note(target)
-            msg += bwave._trace_diagnostics(target)
-            sys.exit(msg)
+            sys.exit(bwave._no_trace_found_message(target, _headeronly_store_note(target)))
         # Only read if the search lands on a raw VCD (below) — that means the
         # directory's own VCD→FST conversion failed, and the manifest says why.
         # A header-only .fst find_trace skipped is part of that story too:
@@ -443,17 +468,41 @@ def cmd_register(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Subcommand: markers
 # ---------------------------------------------------------------------------
+# The native time-token grammar (`TimeToken::parse` in crates/bwave/src/format.rs):
+# an integer with an optional sign (Rust's i64 parse accepts '+') and an optional
+# case-sensitive unit suffix. ASCII digits only, hence [0-9] and not \d.
+_TIME_TOKEN = re.compile(r"[+-]?[0-9]+(?:c|t|ns|us|ms|ps)?")
+
+
+def is_time_token(name: str) -> bool:
+    """True when *name* is a time token the native binary reads as a time."""
+    return _TIME_TOKEN.fullmatch(name) is not None
+
+
 def _validate_marker_name(name: str) -> bool:
     """Marker names must contain at least one non-digit character, no
-    whitespace, no leading dash (else they'd parse as a CLI flag downstream),
-    and must not collide with a known subcommand name."""
+    whitespace or ':' (it separates the ends of a -t range), no leading dash
+    (else they'd parse as a CLI flag downstream), must not be a time token, and
+    must not collide with a known subcommand name."""
     from booley.bwave import cli as bwave  # lazy: CLI subcommand tables live in bwave
 
-    if not name or name.isdigit():
+    if not name or name.isdigit() or is_time_token(name) or ":" in name:
         return False
     if name.startswith("-") or any(c.isspace() for c in name):
         return False
     return name not in bwave._V02_SUBCOMMANDS and name not in bwave._KNOWN_COMMANDS
+
+
+def _marker_name_hint(name: str) -> str:
+    """Suggest a valid name for a refused one."""
+    if name.isdigit():
+        # Pure-digit name was the common mistake: suggest a labelled form.
+        return f" (try 't{name}', 'cyc_{name}', or any non-digit prefix)"
+    if is_time_token(name):
+        return f" ('{name}' is a time token; try 'at_{name}' or a name such as 'irq_start')"
+    if ":" in name:
+        return f" (':' separates the ends of a -t range; try '{name.replace(':', '_')}')"
+    return ""
 
 
 # Sanity ceiling for a marker cycle — anything past this is almost certainly
@@ -467,6 +516,36 @@ def _get_markers(sessions: dict, alias: str) -> dict:
     return sessions.get(alias, {}).get("markers", {})
 
 
+class MarkerLookup:
+    """Resolve typed names against an alias's stored Markers.
+
+    A stored Marker whose name is a time token never replaces the time the user
+    typed: `cycle` returns None for it and warns once per name.
+    """
+
+    def __init__(self, alias: str, markers: dict[str, int]):
+        self._alias = alias
+        self._markers = markers
+        self._warned: set[str] = set()
+
+    def cycle(self, token: str) -> int | None:
+        """The stored cycle for *token*, or None when it names no usable Marker."""
+        if token not in self._markers:
+            return None
+        if is_time_token(token):
+            if token not in self._warned:
+                self._warned.add(token)
+                delete = f"bwave markers {quote_arg('@' + self._alias)} delete {quote_arg(token)}"
+                print(
+                    f"WARNING: marker '{token}' on @{self._alias} does not apply: "
+                    f"'{token}' is a time token and keeps its time meaning. "
+                    f"Delete the marker: {delete}",
+                    file=sys.stderr,
+                )
+            return None
+        return self._markers[token]
+
+
 def _marker_set(sessions: dict, alias: str, extra: list[str], store: SessionStore) -> None:
     if len(extra) < 3:
         sys.exit(
@@ -474,14 +553,11 @@ def _marker_set(sessions: dict, alias: str, extra: list[str], store: SessionStor
         )
     name = extra[1]
     if not _validate_marker_name(name):
-        hint = ""
-        if name.isdigit():
-            # Pure-digit name was the common mistake — suggest a labelled form.
-            hint = f" (try 't{name}', 'cyc_{name}', or any non-digit prefix)"
         sys.exit(
             f"ERROR: invalid marker name '{name}'. Names must contain a "
-            "non-digit char, have no whitespace, not start with '-', and "
-            "not collide with a bwave subcommand (e.g. 'wave', 'find', ...)." + hint
+            "non-digit char, have no whitespace or ':', not start with '-', not be "
+            "a time token such as '5c' or '10ns', and not collide with a bwave "
+            "subcommand (e.g. 'wave', 'find', ...)." + _marker_name_hint(name)
         )
     try:
         cycle = int(extra[2])

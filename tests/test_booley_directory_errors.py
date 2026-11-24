@@ -9,6 +9,7 @@ import pytest
 
 from booley.audit.diagnostic_results import Findings
 from booley.core.booley_dir import checkout_booley_dir_relative_to, reset_cache
+from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.authority import AuthorityError, _canonical_project
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows import baseline_worktree as baseline
@@ -20,13 +21,7 @@ from booley.runtime import project_worktree_pairing
 from tests.diagnostic_helpers import _Rec
 from tests.flows.test_baseline_worktree import _init_repo, _paired_checkout_without_upstream
 from tests.test_guidance_links import _make_project
-
-
-@pytest.fixture(autouse=True)
-def _isolate_project_cache():
-    reset_cache()
-    yield
-    reset_cache()
+from tests.time_budget import hang_guard_s
 
 
 def test_checkout_cannot_be_its_own_booley_directory(tmp_path, monkeypatch):
@@ -60,7 +55,9 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
     head = baseline.git_full_sha("HEAD", tmp_path)
-    before = baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout
+    before = baseline._git(
+        tmp_path, "worktree", "list", "--porcelain", timeout=hang_guard_s()
+    ).stdout
     with (
         pytest.raises(baseline.BaselineWorktreeError, match="Paired Checkout is unavailable"),
         baseline.baseline_worktree(
@@ -69,7 +66,10 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
     ):
         pytest.fail("missing paired inputs were accepted")
     assert baseline.git_full_sha("HEAD", tmp_path) == head
-    assert baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout == before
+    assert (
+        baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=hang_guard_s()).stdout
+        == before
+    )
 
 
 def test_absent_pairing_policy_refuses_existing_paired_inputs(tmp_path, monkeypatch):
@@ -116,13 +116,14 @@ def test_missing_booley_directory_prevents_agent_selection_write(tmp_path, capsy
 
 
 def test_inventory_failure_retains_actionable_retry(tmp_path, monkeypatch, capsys):
-    ctx = InitContext(project_root=tmp_path)
+    root = tmp_path / "it's a root"
+    ctx = InitContext(project_root=root)
     monkeypatch.setattr(
         init_cmd, "remember_project", Mock(side_effect=inventory.ProjectInventoryError("denied"))
     )
     init_cmd._step_project_inventory(ctx)
     assert ctx.results[-1].status == "err"
-    assert "booley projects discover" in ctx.results[-1].detail
+    assert f"booley projects discover {quote_arg(str(root))}" in ctx.results[-1].detail
     assert "could not remember Project Root" in capsys.readouterr().out
 
 

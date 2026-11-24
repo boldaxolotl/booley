@@ -10,7 +10,12 @@ from typing import Any
 
 import pytest
 
-from booley.flows.sim.adapter_contract import PreparedSimulationWork
+from booley.flows.sim.adapter_contract import (
+    PreparedSimulationWork,
+    SimulationWorkError,
+    decode_simulation_work,
+    encode_simulation_work,
+)
 from booley.flows.sim.execution.composition import prepare_adapter_invocation
 from booley.flows.test_runs import build_test_run
 
@@ -26,8 +31,6 @@ def _work(adapter: str = "verilator", **fields: Any) -> PreparedSimulationWork:
 
 
 def test_every_adapter_launch_is_one_work_document() -> None:
-    from booley.flows.sim.adapter_contract import encode_simulation_work
-
     for adapter, module in (
         ("verilator", "booley.flows.sim.backends.verilator"),
         ("icarus", "booley.flows.sim.backends.icarus"),
@@ -42,8 +45,6 @@ def test_every_adapter_launch_is_one_work_document() -> None:
 
 
 def test_work_document_round_trips_every_field() -> None:
-    from booley.flows.sim.adapter_contract import decode_simulation_work, encode_simulation_work
-
     plain = build_test_run("test_a")
     varied = build_test_run(
         "test_b",
@@ -66,6 +67,7 @@ def test_work_document_round_trips_every_field() -> None:
         "trace_scope": "tb",
         "trace_args": ("--trace={file}",),
         "trace_files": ("dump.vcd",),
+        "booley_dir": "project/.booley",
         "trace_convert_timeout_s": 90,
         "runtime_inputs": ("firmware.hex",),
         "pass_sentinels": ("PASS",),
@@ -73,7 +75,6 @@ def test_work_document_round_trips_every_field() -> None:
         "top": "tb",
         "cocotb_module": "tests.counter",
         "tests": ("test_a", "test_b"),
-        "result_verbosity": "full",
         "sim_time_grace_s": float("inf"),  # project config may say inf
         "adapter_result_path": "result.json",
         "attempt_token": "token",
@@ -94,8 +95,6 @@ def _armor(text: str) -> str:
 
 
 def _document(**overrides: Any) -> str:
-    from booley.flows.sim.adapter_contract import encode_simulation_work
-
     document = json.loads(base64.urlsafe_b64decode(encode_simulation_work(_work()) + "=="))
     for name, value in overrides.items():
         if value is None:
@@ -106,8 +105,6 @@ def _document(**overrides: Any) -> str:
 
 
 def test_work_document_rejects_wrong_schema_and_field_set() -> None:
-    from booley.flows.sim.adapter_contract import SimulationWorkError, decode_simulation_work
-
     rejected = {
         "schema 2 is not supported": _document(schema=2),
         "unknown fields: surprise": _document(surprise=1),

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-_CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
-_HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
+_CPP_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx")
+_HDL_SUFFIXES = (".v", ".vh", ".sv", ".svh")
 
 
 class ReviewContractError(ValueError):
@@ -65,6 +65,14 @@ def normalize_scope_path(path: str) -> str:
     return str(PurePosixPath(value))
 
 
+def accepted_scope_kinds(category: str) -> str:
+    """Return the file kinds ``--scope`` accepts for *category*, for messages and help."""
+    hdl = ", ".join(_HDL_SUFFIXES)
+    if category != "tb":
+        return hdl
+    return f"{hdl}, .py and C/C++ ({', '.join(_CPP_SUFFIXES)})"
+
+
 def resolve_review_scope(
     scope: list[str], *, category: str, allow_support: bool = False
 ) -> ReviewScopeContract:
@@ -90,13 +98,8 @@ def resolve_review_scope(
         raise ReviewContractError(
             f"Unsupported {category.upper()} source kind in --scope: "
             + ", ".join(sorted(unsupported))
-            + ". Interactive review accepts .v, .vh, .sv, .svh"
-            + (
-                ", .py and C/C++ (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb"
-                if category == "tb"
-                else ""
-            )
-            + "; see REVIEWER.md (host doc, not shipped)."
+            + f". Interactive review accepts {accepted_scope_kinds(category)} "
+            + f"for category={category}."
         )
     return ReviewScopeContract(
         frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))

@@ -16,9 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.fusesoc import selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
-    _resolve_target,
     core_schema_errors,
     read_core,
 )
@@ -39,6 +38,14 @@ from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.subprocess_budget import run_bounded_child
+
+
+def _resolve(root, selector, build_root, *, doctor_private=False):
+    with pytest.MonkeyPatch.context() as patch:
+        if doctor_private:
+            patch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        handle = TargetCatalog.build(root).select(selector)
+    return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
 
 
 @pytest.fixture(autouse=True)
@@ -281,7 +288,7 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = _resolve_target("sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve(tmp_path, "sim_my_ip", tmp_path / "build")
     staged_rtl = resolved.build_root / "my_ip.sv"
     assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
 
@@ -302,9 +309,7 @@ def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    resolved = _resolve_target(
-        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build"
-    )
+    resolved = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build", doctor_private=True)
 
     assert resolved.vlnv == "::my_ip_booley_doctor_selftest:0"
     assert resolved.eda_tool == "verilator"
@@ -717,7 +722,7 @@ def _track_scaffold(root: Path) -> None:
             "scaffold",
         ],
     ):
-        run_bounded_child(["git", *args], cwd=root, check=True, timeout=10)
+        run_bounded_child(["git", *args], cwd=root, check=True)
 
 
 def _seed_doctor_init_state(root: Path) -> None:
@@ -725,14 +730,14 @@ def _seed_doctor_init_state(root: Path) -> None:
     from booley.harness.setup.guidance_links import ensure_guidance_links
     from booley.runtime import devcontainer as dc
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-    from tests.harness.test_doctor import _seed_interactive
+    from tests.harness.test_doctor import _seed_sandbox_files
 
     booley_dir = root / ".booley"
     (booley_dir / "FUSESOC_IGNORE").touch()
     (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
     (booley_dir / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
     ensure_guidance_links(root, booley_dir)
-    _seed_interactive(root)
+    _seed_sandbox_files(root)
     dc.write_devcontainer(
         root, build_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
     )
@@ -742,7 +747,7 @@ def _seed_doctor_init_state(root: Path) -> None:
         ("worktree.useRelativePaths", "true"),
         ("core.autocrlf", "false"),
     ):
-        run_bounded_child(["git", "config", key, value], cwd=root, check=True, timeout=10)
+        run_bounded_child(["git", "config", key, value], cwd=root, check=True)
     config = booley_dir / "booley.toml"
     config.write_text(
         config.read_text() + '\n[agent]\ndefault = "claude"\nauth = "subscription"\n'
@@ -782,9 +787,7 @@ def _healthy_host_doctor(root: Path, monkeypatch) -> None:
         return host_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=False), root, read_only=True, record_clean=False
-    )
+    result = doctor.run_doctor_result(argparse.Namespace(deep=False), root, record_clean=False)
     assert not [
         (f.check_id, f.subject, f.message)
         for f in result.findings
@@ -930,7 +933,7 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     assert (tmp_path / "constraints/my_ip.xdc").is_file()
     assert core_schema_errors(tmp_path / "my_ip.core") == []
     assert "synth_my_ip" in {h.name for h in TargetCatalog.build(tmp_path).list()}
-    resolved = _resolve_target("synth_my_ip", project_root=tmp_path, build_root=tmp_path / "build")
+    resolved = _resolve(tmp_path, "synth_my_ip", tmp_path / "build")
     assert resolved.eda_tool == "yosys"
     _track_scaffold(tmp_path)
     cfg = tmp_path / ".booley"
@@ -1014,7 +1017,7 @@ def test_scaffold_logical_request_reaches_synthesis_report(tmp_path, monkeypatch
             stdout=(
                 "Chip area for top module 'my_ip': 1000.0\nNumber of cells: 10\n"
                 "STA_WORST_SLACK_NS: 0.500000\nOPENROAD_DESIGN_AREA_UM2: 1000.0\n"
-                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1\n"
+                "STA_PERCLOCK: name=clk period_ns=10.0 wns_ns=0.5 whs_ns=0.1 setup_same_clock=1\n"
             ),
             stderr="",
         ),
@@ -1054,7 +1057,6 @@ def _git(root: Path, *args: str) -> str:
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
         cwd=root,
         check=True,
-        timeout=10,
     )
     return result.stdout
 
@@ -1116,10 +1118,8 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     )
 
     for target in ("sim_my_ip", "lint_my_ip"):
-        _resolve_target(target, project_root=tmp_path, build_root=tmp_path / "build" / target)
-    bad = _resolve_target(
-        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build" / "bad"
-    )
+        _resolve(tmp_path, target, tmp_path / "build" / target)
+    bad = _resolve(tmp_path, "lint_selftest_bad", tmp_path / "build" / "bad", doctor_private=True)
     assert bad.vlnv == "::my_ip_booley_doctor_selftest:0"
     assert bad.rtl_source_files[0].absolute(bad.build_root).is_file()
 
@@ -1127,9 +1127,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     assert doctor._selftest_plan(project, "sim", warnings.append) is not None
     assert doctor._selftest_plan(project, "lint", warnings.append) is not None
     assert warnings == []
-    sim = _resolve_target(
-        "sim_my_ip", project_root=tmp_path, build_root=tmp_path / "build" / "sim2"
-    )
+    sim = _resolve(tmp_path, "sim_my_ip", tmp_path / "build" / "sim2")
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", sim.build_root) == 1
 
     reporter = doctor._Reporter.create()
@@ -1144,9 +1142,7 @@ def test_stealth_scaffold_targets_resolve_and_audit_clean(
     )
     findings = list(reporter.result(0).findings)
     _assert_target_names_conform(findings)
-    findings += readiness.check_stealth_cores(
-        project, mode=readiness.ReadinessMode.RECONCILE
-    ).findings
+    findings += readiness.check_stealth_cores(project).findings
     assert not [
         (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
     ]

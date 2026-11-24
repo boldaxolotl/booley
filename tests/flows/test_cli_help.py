@@ -55,6 +55,7 @@ PAIRS = (
 HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standalone"}
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 @pytest.mark.parametrize("flow_type", FLOWS)
 @pytest.mark.parametrize("cli", [False, True])
 def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
@@ -96,6 +97,7 @@ def test_complete_grouped_help(flow_type: type[BuiltinFlow], cli: bool) -> None:
         assert all("Defaults are tuned" in g.description for g in named[-2:])
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 @pytest.mark.parametrize("width", [46, 100])
 def test_pair_rendering(width: int) -> None:
     flow = next(cls() for cls in FLOWS if cls.name == "synth")
@@ -133,7 +135,7 @@ def test_pair_parsing_and_typed_normalization(
     assert getattr(request, name.replace("-", "_")) is expected
 
 
-def test_projection_isolation() -> None:
+def test_projection_isolation(capsys: pytest.CaptureFixture[str]) -> None:
     for flow_type in FLOWS:
         for human_first in (False, True):
             flow = flow_type()
@@ -150,11 +152,14 @@ def test_projection_isolation() -> None:
             assert parsers[0].format_help() == parsers[2].format_help()
             assert parsers[1].format_help() == parsers[3].format_help()
             transport = build_cli_parser(flow, CliInvocation(transport=True))
-            assert "--work-dir" in transport._option_string_actions
-            assert "--project" not in transport._option_string_actions
+            assert transport.parse_args(["--target", "example", "--work-dir", "w"]).work_dir
+            with pytest.raises(SystemExit):
+                transport.parse_args(["--target", "example", "--project", "w"])
+            assert "unrecognized arguments: --project" in capsys.readouterr().err
             assert transport.parse_args(["--target", "example", "-q"])._console_quiet
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_resume_and_required_target_guidance() -> None:
     for cls in FLOWS:
         parser = build_parser(cls(), human=True)
@@ -182,6 +187,7 @@ MUTATION_TARGET_RULE = "Required: omission is a parse error."
 DEFAULT_MARKERS = ("When omitted", "Default:", "(default ")
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_target_help_states_each_rule_once() -> None:
     """Every Built-in Flow's human `--target` help says the omission rule once."""
     for cls in FLOWS:
@@ -201,8 +207,11 @@ def test_target_help_states_each_rule_once() -> None:
         rendered = " ".join(parsers[0].format_help().split())
         rule = MUTATION_TARGET_RULE if flow.name == "mutation" else TARGET_OMISSION
         assert rendered.count(rule) == 1, flow.name
+        metavar = "TARGET" if flow.name == "mutation" else "TARGET[,TARGET...]"
+        assert f"--target {metavar} " in rendered, flow.name
 
 
+# Private seam: argparse has no public accessor for one option's help text and group.
 def test_human_help_states_each_default_once() -> None:
     """Each human option's omission/default text appears once, not in its description too."""
     for cls in FLOWS:
@@ -236,7 +245,6 @@ def test_module_help_outside_project(tmp_path: Path) -> None:
         [sys.executable, "-m", "booley.flows.synth", "--help"],
         cwd=tmp_path,
         env=env,
-        timeout=20,
     )
     assert result.returncode == 0, result.stderr
     assert "Common:" in result.stdout and "Expert: OpenROAD:" in result.stdout

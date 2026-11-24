@@ -44,9 +44,9 @@ def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
     guard refuses, so without these stubs a refusal is replaced by a Docker error.
     Patching the test's own ``monkeypatch`` lets a test override a stub later.
     """
-    monkeypatch.setattr("booley.runtime.interactive_docker._run_docker", _docker_without_images)
-    monkeypatch.setattr("booley.runtime.interactive_docker.tag_image", lambda *_args: None)
-    monkeypatch.setattr("booley.runtime.interactive_docker.remove_image_tag", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", _docker_without_images)
+    monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *_args: None)
+    monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", lambda _image: None)
 
 
 def plain_builder(

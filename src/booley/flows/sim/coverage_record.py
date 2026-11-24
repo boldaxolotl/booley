@@ -35,6 +35,7 @@ from booley.flows.sim.coverage_json import (
     coverage_mapping_document,
     freeze_coverage_mapping,
 )
+from booley.flows.sim.coverage_metrics import SCORED_METRICS
 from booley.flows.test_runs import build_test_run, declared_inputs_fingerprint
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
@@ -44,7 +45,6 @@ SimulationVerdict: TypeAlias = Literal["pass", "fail", "elab_error", "timeout", 
 CoverageRunCollectionState: TypeAlias = Literal["included", "collector_error"]
 
 DOCUMENT_SCHEMA = "booley.coverage-record-document/v1"
-_SCORED_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 _COLLECTION_STATUSES = frozenset({"complete", "collector_error", "incomplete", "incompatible"})
 SOURCE_ROLLUP_METRICS = ("line", "branch", "expression", "toggle")
 _METRIC_SEMANTICS = {
@@ -739,7 +739,7 @@ def _validate_evaluation_shape(
     if isinstance(thresholds, Mapping):
         for metric, threshold in thresholds.items():
             pointer = f"/evaluation/thresholds/{_pointer_token(metric)}"
-            if metric not in _SCORED_METRICS:
+            if metric not in SCORED_METRICS:
                 findings.append(
                     _error(
                         "COV_FIELD_TYPE",
@@ -1050,7 +1050,7 @@ def _validate_point_disposition(
                 "Point disposition must be eligible, waived, or unscored.",
             )
         )
-    if metric not in _SCORED_METRICS and kind != "unscored":
+    if metric not in SCORED_METRICS and kind != "unscored":
         findings.append(
             _error(
                 "COV_REPORTED_ONLY_POINT_SCORED",

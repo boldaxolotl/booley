@@ -20,10 +20,11 @@ import pytest
 
 from booley.flows.synth.backends.openroad.ppa import openroad_profile
 from booley.flows.synth.backends.yosys.ppa import yosys_profile
+from tests.time_budget import scaled
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "synth_profile_characterization"
 _PROFILES = ("compact", "balanced", "max_frequency")
-_RUN_TIMEOUT_S = 900
+_RUN_TIMEOUT_S = scaled(900)
 
 
 def _evidence() -> dict[str, Any]:

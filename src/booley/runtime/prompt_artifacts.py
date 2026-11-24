@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.models import AgentArtifactPaths
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,12 @@ def write_prompt_artifacts(
 
     try:
         if paths.prompt_json is not None:
-            paths.prompt_json.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(paths.prompt_json.parent)
             paths.prompt_json.write_text(
                 json.dumps(record, indent=2, default=str) + "\n", encoding="utf-8"
             )
         if paths.prompt_markdown is not None:
-            paths.prompt_markdown.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(paths.prompt_markdown.parent)
             paths.prompt_markdown.write_text(_format_markdown(record), encoding="utf-8")
     except OSError:
         logger.warning("Failed to write prompt artifacts for %s", paths.prompt_json)

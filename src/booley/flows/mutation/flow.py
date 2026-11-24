@@ -24,6 +24,7 @@ Exit codes:
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -33,21 +34,26 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import BoundaryError
 from booley.flows import artifacts as _artifacts
-from booley.flows.base import BuiltinFlow, SubprocessResult
+from booley.flows import tool_runs
+from booley.flows.base import BuiltinFlow
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.eda_failures import new_attempt_token
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.job_estimates import JobRequest, sim_job_request
+from booley.flows.job_resources import ResourceLabel, judged_commands
 from booley.flows.memory_admission import MemoryAdmissionPlan, measure_coordinator_claim
+from booley.flows.metric_declarations import COUNTED_ITEM_CHARS
 from booley.flows.mutation import workspace
 from booley.flows.mutation.build_sources import (
     materialize_build_mutation,
@@ -63,6 +69,7 @@ from booley.flows.mutation.generator import (
     parser_version,
 )
 from booley.flows.mutation.memory_claims import CampaignClaims, MutationInvocation
+from booley.flows.mutation.metrics import mutation_metrics_detail
 from booley.flows.mutation.operators import (
     MutantGeneratorError,
     SourceParseError,
@@ -117,11 +124,11 @@ from booley.flows.sim.runtime_inputs import (
     materialize_runtime_inputs,
 )
 from booley.flows.simulator_family import matching_eda_tool, normalize_eda_tool
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
     all_campaign_results_match,
-    describe_target_campaign,
     resolve_target_campaign,
 )
 from booley.flows.target_parameters import sv_byte_string_literal, vlogparam_specs
@@ -131,6 +138,7 @@ from booley.flows.target_test_suite import (
     TargetTestSuite,
     require_runnable_target_test_suite,
 )
+from booley.flows.tool_runs import oom_kill_of, setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -139,10 +147,11 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.python_artifacts import python_artifact_root, relocate_python_artifacts
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import TargetInspection
+from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.selection import TargetSectionConflictError
 
 
@@ -157,6 +166,9 @@ logger = logging.getLogger(__name__)
 # The clock that times each test run; tests replace it, never ``time.monotonic``.
 _monotonic = time.monotonic
 
+# Every tool the Mutation Flow starts is measured and recorded under its name.
+run_tool = functools.partial(tool_runs.run_tool, flow="mutation")
+
 #: Source suffixes the generator and the variant applier accept.
 _MUTATION_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 #: ``file_type`` prefixes of Verilog and SystemVerilog sources.
@@ -170,6 +182,9 @@ _SIMULATOR_DEFINES = {
 }
 #: Tags (besides the testbench role) that take a Target input out of the default scope.
 _UNMUTATED_FILE_TAGS = frozenset({"vendored", "generated"})
+
+# The least of a survived Mutant's source text kept on each side of its listed line.
+_MIN_SNIPPET_CHARS = 20
 
 #: Said only when the Target's own RTL was the scope, where choosing files can fix the run.
 _PASS_SCOPE_HINT = "pass --scope to choose the files to mutate"
@@ -296,6 +311,7 @@ def _mutant_work(
         build_dir=pinned.rel,
         run_cwd=resolve_run_cwd(work_dir),
         trace_files=tuple(resolve_trace_files(work_dir)),
+        booley_dir=str(resolve_checkout_booley_dir(work_dir)),
         timeout_s=timeout,
         plusargs=tuple(plusargs),
         runtime_inputs=pinned.runtime_inputs,
@@ -383,6 +399,8 @@ class MutationTestRun:
     #: The signal that killed the run when nobody in Booley sent it (the out-of-memory
     #: killer's SIGKILL); such a run says nothing about the Mutant. ``""`` for none.
     killed_by: str = ""
+    #: Why the out-of-memory kill that ended the final run is not retried; ``""`` for none.
+    oom_kill: str = ""
 
 
 @dataclass(frozen=True)
@@ -508,6 +526,23 @@ EQUIVALENT_MUTANT_NOTE = (
     "Some surviving Mutants may be equivalent (they change no observable behavior), "
     "which is why the default threshold is 80 % of the count, not all of it."
 )
+
+
+#: After the per-file elaboration line: why two Mutants may test one behavior.
+_DUPLICATE_RISK_NOTE = (
+    "[mutation_test] Parameter values were unknown to the generator, so Mutants may "
+    "duplicate each other; duplicates are removed only on Verilator Targets"
+)
+
+
+def _elaboration_fallback_lines(identity: Mapping[str, Any]) -> list[str]:
+    """The report lines saying the Mutants were generated per file, and what that risks."""
+    if not (reason := identity.get("elaboration_fallback")):
+        return []
+    return [
+        f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}",
+        _DUPLICATE_RISK_NOTE,
+    ]
 
 
 def generate_specs_markdown(specs: list[MutationSpec]) -> str:
@@ -724,7 +759,7 @@ class MutationRunPlan:
         """The ``--count auto`` fields shared by the report detail and the manifest.
 
         Empty for an explicit count. ``scored`` is the number of Mutants actually
-        scored, so a generator or equivalence shortfall alone can set ``budget_capped``.
+        scored, so a generator, equivalence, or duplicate shortfall alone can set ``budget_capped``.
         """
         if not self.auto_mode:
             return {}
@@ -770,8 +805,19 @@ class RunResultInputs:
     equivalent_dropped: list[str] = field(default_factory=list)
     #: IDs of the candidates whose build failed and were replaced, in drop order.
     invalid_dropped: list[str] = field(default_factory=list)
+    #: ``{"id", "duplicates"}`` of each candidate dropped for building the C++ of the kept
+    #: Mutant ``duplicates``, in drop order.
+    duplicate_dropped: list[dict[str, str]] = field(default_factory=list)
     #: Each test run's baseline duration and Mutant time limit, for the run artifacts.
     time_limits: Mapping[str, MutantTimeLimit] = field(default_factory=dict)
+
+    def dropped_detail(self) -> dict[str, Any]:
+        """The result detail's lists of dropped candidates."""
+        return {
+            "equivalent_dropped": self.equivalent_dropped,
+            "invalid_dropped": self.invalid_dropped,
+            "duplicate_dropped": self.duplicate_dropped,
+        }
 
 
 @dataclass(frozen=True)
@@ -805,10 +851,19 @@ class Baseline:
     #: simulated with Verilator, where no Mutant is compared.
     generated_cpp: Mapping[str, str] | None = None
     verilator_version: str | None = None
+    #: Project path of each source name a baseline-built Mutant's run output prints.
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 #: Why ``_run_one_variant`` dropped a candidate instead of scoring it.
 _Dropped = Literal["equivalent", "build_failure"]
+
+
+@dataclass(frozen=True)
+class _Duplicate:
+    """A candidate dropped because its generated C++ equals a kept Mutant's."""
+
+    of: str  # the kept Mutant's ID
 
 
 @dataclass(frozen=True)
@@ -819,6 +874,7 @@ class VariantSweep:
     results: list[MutationResult]
     equivalent_dropped: list[str]  # IDs of the Mutants whose build equals the baseline's
     invalid_dropped: list[str]  # IDs of the Mutants that did not build
+    duplicate_dropped: list[dict[str, str]]  # each Mutant whose build equals a kept Mutant's
     elapsed: float
     inconclusive: str  # why a Mutant's outcome cannot be trusted; empty when all can
 
@@ -826,6 +882,16 @@ class VariantSweep:
 # ---------------------------------------------------------------------------
 # Flow implementation
 # ---------------------------------------------------------------------------
+
+
+def _staged_runtime_inputs(work_dir: Path, pinned: _PinnedBuild) -> AbstractContextManager[None]:
+    """Expose the pinned build's runtime inputs in the run directory, recorded for recovery."""
+    return materialize_runtime_inputs(
+        work_dir / pinned.rel,
+        work_dir / resolve_run_cwd(work_dir),
+        pinned.runtime_inputs,
+        booley_dir=resolve_checkout_booley_dir(work_dir),
+    )
 
 
 class MutationFlow(BuiltinFlow[MutationRequest]):
@@ -842,6 +908,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     code_modifying: bool = False
 
     target_required: bool = True
+    target_metavar: str = "TARGET"
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
         "MCP accepts one Target selector string.",
@@ -866,7 +933,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     # reserve their own memory (see ``memory_claims``).
     JOB_CLASS: ClassVar[str | None] = job_slots.CLASS_MEMORY
     default_timeout: ClassVar[int] = 1800
-    satisfies: ClassVar[list[str]] = ["mutation_score"]
+    timeout_covers_whole_run: ClassVar[bool] = True
 
     def _memory_admission_plan(
         self, project: Path | None, requests: Sequence[JobRequest] | None
@@ -877,18 +944,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     _scope_defaulted: bool = False
     #: What admits each build and simulation; unmanaged (no claims) outside a managed run.
     _claims: CampaignClaims = CampaignClaims()
-
-    # ------------------------------------------------------------------
-    # Command-backed Flow hooks — _run() drives the campaign directly.
-    # ------------------------------------------------------------------
-
-    def _build_command(self) -> list[str]:
-        """Not used — MutationFlow overrides _run()."""
-        return []
-
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
-        """Not used — MutationFlow overrides _run()."""
-        return EndpointOutcome()
+    #: The Target handle and resolved Target of the baseline build this run prepared.
+    _baseline_sources: tuple[TargetHandle, fusesoc_registry.ResolvedTarget] | None = None
 
     # ------------------------------------------------------------------
     # Scope / DUT helpers
@@ -896,10 +953,12 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     def _scope_files(self) -> list[str]:
         """The scope's canonical paths, each once, at its first position."""
+        scope = self.args.scope
+        assert scope is not None, "_apply_campaign_defaults sets the scope first"
         return list(
             dict.fromkeys(
                 fusesoc_registry.canonical_project_path(self.args.work_dir, raw)
-                for value in self.args.scope.split(",")
+                for value in scope.split(",")
                 if (raw := value.strip())
             )
         )
@@ -934,6 +993,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         scope = self.args.scope
         if scope is None:
             default_scope = self._default_scope()
+            if isinstance(default_scope, EndpointOutcome):
+                return default_scope
             if not default_scope:
                 message = (
                     f"Target {self.args.target!r} has no mutable RTL "
@@ -951,19 +1012,23 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             self.args.count = 10
         return None
 
-    def _default_scope(self) -> list[str]:
+    def _default_scope(self) -> list[str] | EndpointOutcome:
         """The Project's own mutable RTL in the Target's closure, in Target order.
 
         "Own RTL" spans the ``depend`` closure, not only the root core's
         filesets: in a layered Project the root fileset owns the harness while
         the DUT arrives through a dependency (see :meth:`_dut_files`).  Testbench,
         vendored and generated files, include headers, inputs outside the Project
-        and non-Verilog inputs are not mutable.  A Target that cannot be
-        inspected has no scope; the run's own validation reports why.
+        and non-Verilog inputs are not mutable.  A list, or a Target that
+        cannot be selected or inspected, is refused with its own error.
         """
-        inspection = self._inspect_target()
-        if inspection is None:
-            return []
+        if list_error := self._target_list_error(self.args.target):
+            return list_error
+        try:
+            catalog = TargetCatalog.build(self.args.work_dir)
+            inspection = catalog.inspect(catalog.select(self.args.target, for_flow="sim"))
+        except fusesoc_registry.FuseSocError as exc:
+            return _error_outcome("target", f"mutation: {exc}", report_text=f"mutation: {exc}")
         inputs = inspection.inputs
         unmutable = fusesoc_registry.files_tagged(self.args.work_dir, _UNMUTATED_FILE_TAGS)
         scope: dict[str, None] = {}  # ordered set
@@ -1117,6 +1182,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             auto_mode = True
         else:
             count = self.args.count
+            assert isinstance(count, int), "the parser and campaign defaults leave an int"
             source_size_budget = None
             formula_count = count
             budget_cap = count
@@ -1139,7 +1205,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Run the campaign with *claims* admitting each build and simulation."""
         self._claims = claims
         try:
-            return self._run()
+            # One append when the campaign ends, so no history write sits inside a timed run.
+            with judged_commands():
+                return self._run()
         except (job_slots.ClaimAbortedError, job_slots.ClaimLostError) as exc:
             return _error_outcome(
                 "cancelled",
@@ -1168,7 +1236,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
             return validation_error
         try:
-            tb_top = tb_top_for_target(target, work_dir, resolved=None)
+            tb_top = tb_top_for_target(target, work_dir)
         except (OSError, fusesoc_registry.FuseSocError) as exc:
             message = f"could not derive Target toplevel: {exc}"
             return _error_outcome("target", message, report_text=f"mutation: {message}")
@@ -1179,10 +1247,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             scope_files,
             work_dir,
         )
-        explicit_min_detected = self.args.min_detected is not None
-        min_detected = (
-            self.args.min_detected if explicit_min_detected else default_min_detected(count)
-        )
+        min_detected = self.args.min_detected
+        explicit_min_detected = min_detected is not None
+        if min_detected is None:
+            min_detected = default_min_detected(count)
         if count_error := self._validate_count(count, min_detected, self.args.seed):
             return count_error
         plan = MutationRunPlan(
@@ -1284,15 +1352,22 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return _error_outcome("options", message, report_text=message)
 
+    @staticmethod
+    def _target_list_error(target: str) -> EndpointOutcome | None:
+        """Refuse a ``--target`` that does not name exactly one Target."""
+        if len([part for part in target.split(",") if part.strip()]) != 1:
+            message = "--target must select exactly one Target"
+            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        return None
+
     def _validate_run_inputs(
         self,
         target: str,
         work_dir: Path,
         scope_files: list[str],
     ) -> EndpointOutcome | None:
-        if len([part for part in target.split(",") if part.strip()]) != 1:
-            message = "--target must select exactly one Target"
-            return _error_outcome("options", message, report_text=f"mutation: {message}")
+        if list_error := self._target_list_error(target):
+            return list_error
         if scope_error := self._validate_scope_against_target(scope_files):
             return scope_error
         try:
@@ -1344,6 +1419,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             evidence=self._variant_evidence(variants),
             equivalent_dropped=sweep.equivalent_dropped,
             invalid_dropped=sweep.invalid_dropped,
+            duplicate_dropped=sweep.duplicate_dropped,
             time_limits=baseline.time_limits,
         )
         if sweep.inconclusive:
@@ -1452,12 +1528,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             )
             identity.update(self._elaboration_identity(design, selection.fallback))
             if not selection.mutants:
-                return self._generation_failure(
+                outcome = self._generation_failure(
                     plan,
                     "generation",
                     "no Mutation Operator site in the scope files",
                     _no_site_hint(plan),
                 )
+                outcome.detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
+                return outcome
             specs = [
                 _spec_of(index, mutant) for index, mutant in enumerate(selection.mutants, start=1)
             ]
@@ -1523,24 +1601,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if (run_cwd_error := self._baseline_run_cwd_error(plan)) is not None:
             return run_cwd_error
         build_path = workspace.baseline_build_dir()
-        shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
-        elab = self._run_elab(plan.target, plan.work_dir, build_path)
-        elab_output = (elab.stdout or "") + (elab.stderr or "")
+        self._baseline_sources = None
+        elab, oom_kill = self._run_elab(plan.target, plan.work_dir, build_path)
         if elab.returncode != 0:
-            return _error_outcome(
-                "elaboration",
-                "pristine source did not elaborate",
-                report_text="mutation baseline did not elaborate from pristine source\n"
-                + tail(elab_output, 50),
-                detail=_failure_detail(
-                    phase="baseline_elaboration",
-                    reason="pristine source did not elaborate",
-                    specs=[],
-                    work_dir=plan.work_dir,
-                    log_tail=tail(elab_output, 50),
-                ),
-            )
+            return self._baseline_build_error(plan, elab, oom_kill)
 
         cpp, version = self._baseline_verilator_build(plan.work_dir, build_path)
         runs = self._run_target_test_suite(
@@ -1551,12 +1615,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         output = self._suite_output(runs)
         self._persist_baseline_log(output)
+        paths = self._baseline_project_paths()
+        output = paths.project_text(output)
         inconclusive = self._suite_inconclusive_reason(runs)
         if inconclusive:
             return _error_outcome(
                 "baseline",
                 "; ".join(self._baseline_problems(runs)),
-                report_text=f"mutation baseline was inconclusive: {inconclusive}\n"
+                report_text=f"mutation baseline was inconclusive: {paths.project_text(inconclusive)}\n"
                 + tail(output, 50),
             )
         if not self._baseline_suite_passed(runs):
@@ -1569,7 +1635,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             run.test_name: MutantTimeLimit(run.duration_s, _mutant_timeout(run.duration_s))
             for run in runs
         }
-        return Baseline(time_limits, cpp, version)
+        return Baseline(time_limits, cpp, version, paths)
 
     @staticmethod
     def _baseline_run_cwd_error(plan: MutationRunPlan) -> EndpointOutcome | None:
@@ -1625,13 +1691,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             min_detected=plan.min_detected,
             requested=plan.count,
         )
-        detail["equivalent_dropped"] = inputs.equivalent_dropped
-        detail["invalid_dropped"] = inputs.invalid_dropped
+        detail.update(inputs.dropped_detail())
         detail.update(plan.auto_count_fields(inputs.count))
         self._attach_campaign_artifacts(plan, inputs, detail)
         report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
         if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
             report_text = f"{replaced_line}\n{report_text}"
+        report_text = "\n".join([report_text, *_elaboration_fallback_lines(inputs.identity)])
         artifact_lines = self._artifact_display_lines(detail)
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
@@ -1651,6 +1717,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         detail["equivalent_dropped"] = sweep.equivalent_dropped
         detail["invalid_dropped"] = sweep.invalid_dropped
+        detail["metrics"] = mutation_metrics_detail(plan.target, 0, ())
         hint = (
             f"none of the Mutants of {', '.join(plan.scope_files)} changes what Target "
             f"'{plan.target}' builds; scope files whose modules '{plan.tb_top}' elaborates"
@@ -1691,13 +1758,26 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         work_dir: Path,
         build_path: Path,
         mutation: tuple[MutationVariantPlan, int] | None = None,
-    ) -> subprocess.CompletedProcess:
-        """Build pristine source or one replacement in private exported copies.
+    ) -> tuple[subprocess.CompletedProcess, str]:
+        """Build pristine source or one replacement in a fresh *build_path*; why a kill is final too.
 
         The build holds a Memory Reservation sized from the Target's history.
+        An OOM kill at the Sandbox's limit builds once more, alone, from scratch.
         """
-        with self._claims.hold(lambda: self._build_job_request(target, work_dir), build=True):
-            return self._build_elab(target, work_dir, build_path, mutation)
+
+        def build(alone: bool) -> subprocess.CompletedProcess:
+            shutil.rmtree(build_path, ignore_errors=True)
+            make_directories(build_path)
+            with self._claims.hold(
+                lambda: self._build_job_request(target, work_dir),
+                build=True,
+                target=target,
+                alone=alone,
+            ):
+                return self._build_elab(target, work_dir, build_path, mutation)
+
+        name = f"{target} build" if mutation is None else f"{target} Mutant {mutation[1]} build"
+        return self._claims.run_retrying_oom(build, oom_kill_of, name=name)
 
     @staticmethod
     def _build_job_request(target: str, work_dir: Path) -> JobRequest | None:
@@ -1708,6 +1788,48 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return None
         return JobRequest("sim", handle.selector, test_runs=())
 
+    def _baseline_project_paths(self) -> ProjectSourcePaths:
+        """Project path of each build-tree source name the baseline's build prints.
+
+        Built after the baseline's build, not before it: it reads every core of
+        the Target's closure.
+        """
+        if self._baseline_sources is None:
+            return ProjectSourcePaths()
+        return ProjectSourcePaths.for_target(*self._baseline_sources)
+
+    def _baseline_build_error(
+        self, plan: MutationRunPlan, elab: subprocess.CompletedProcess, oom_kill: str
+    ) -> EndpointOutcome:
+        """The error that ends the run when the pristine source's build failed or was OOM-killed.
+
+        The tail names each source by Project path; the raw output is kept in a log.
+        """
+        output = (elab.stdout or "") + (elab.stderr or "")
+        log = self._persist_capped_log(
+            workspace.baseline_build_log_path(), output, "baseline build"
+        )
+        log_tail = tail(self._baseline_project_paths().project_text(output), 50)
+        if oom_kill:
+            # A killed build says nothing about the source.
+            reason = f"pristine source build was {oom_kill}"
+            headline = f"mutation baseline: {reason}"
+        else:
+            reason = "pristine source did not elaborate"
+            headline = "mutation baseline did not elaborate from pristine source"
+        detail = _failure_detail(
+            phase="baseline_elaboration",
+            reason=reason,
+            specs=[],
+            work_dir=plan.work_dir,
+            log_tail=log_tail,
+        )
+        if log:
+            _artifacts.merge_artifacts(detail, {"baseline_build_log": log})
+        return _error_outcome(
+            "elaboration", reason, report_text=f"{headline}\n{log_tail}", detail=detail
+        )
+
     def _build_elab(
         self,
         target: str,
@@ -1716,7 +1838,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         mutation: tuple[MutationVariantPlan, int] | None,
     ) -> subprocess.CompletedProcess:
         try:
-            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
+            handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1726,6 +1848,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 stdout="",
                 stderr=f"FuseSoC target resolution failed: {exc}",
             )
+        if mutation is None:
+            self._baseline_sources = (handle, prepared.resolved)
         configured_tool = prepared.eda_tool
         self.record_eda_tool(target, configured_tool)
         _record_build_markers(build_path, prepared, work_dir)
@@ -1737,18 +1861,16 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             (build_path / _VERILATOR_VERSION_MARKER).write_text(
                 verilator_version(build_environment), encoding="utf-8"
             )
-        return subprocess.run(
+        return run_tool(
             list(prepared.make_argv),
+            label=ResourceLabel(prepared.target, "sim_build"),
             cwd=work_dir,
             env=relocate_python_artifacts(
                 build_environment,
                 python_artifact_root(build_environment, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-build:{build_path.resolve()}",
             ),
-            capture_output=True,
-            text=True,
             timeout=900,
-            check=False,
         )
 
     @staticmethod
@@ -1762,7 +1884,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         catalog = TargetCatalog.build(work_dir)
         handle = catalog.select(target, for_flow="sim")
         mirror_root: Path | None = None
-        private_library: dict[str, fusesoc_registry.CoreLibraryPlan] = {}
+        core_library: fusesoc_registry.CoreLibraryPlan | None = None
         if mutation is not None:
             validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
             # The shared isolated registry names every source absolutely, so a
@@ -1770,16 +1892,17 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             # (The pristine baseline gets its mirror from the simulation build.)
             mirror_plan = fusesoc_registry.build_library_plan(handle.project_root, build_path)
             if mirror_plan is not None:
-                private_library["core_library"] = mirror_plan
+                core_library = mirror_plan
                 mirror_root = build_path / "core-mirror"
         prepared = prepare_simulation_build(
             handle,
             build_root=build_path,
             lane_kind="unreserved",
-            **private_library,
+            core_library=core_library,
             # The Target's env table is a build input of the Simulation Flow;
             # a mutant must build and run under the same one.
             environment=_target_environment(work_dir, handle.identity),
+            setup_runner=setup_runner("mutation", handle.selector, "sim_prepare"),
         )
         if mutation is not None:
             materialize_build_mutation(
@@ -1940,13 +2063,6 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         except (NoRunnableTestsError, TargetSectionConflictError) as exc:
             raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
-    def _campaign_for_target(self, target: str) -> TargetCampaign:
-        """Return the resolved campaign or a suite-only compatibility view."""
-        campaign = getattr(self, "_target_campaign", None)
-        if campaign is not None and campaign.target == target:
-            return campaign
-        return describe_target_campaign(target, **self._registered_tests(target))
-
     def _default_test_plan(
         self, target: str, work_dir: Path, adapter: str
     ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
@@ -2078,6 +2194,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         build_path: Path,
         tb_top: str,
         *,
+        label: ResourceLabel,
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
@@ -2105,12 +2222,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         marker = build_path / _EDALIZE_EDA_TOOL_MARKER
         if marker.is_file():
             self.record_eda_tool(target, marker.read_text(encoding="utf-8").strip())
-        with materialize_runtime_inputs(
-            work_dir / pinned.rel, work_dir / resolve_run_cwd(work_dir), pinned.runtime_inputs
-        ):
+        with _staged_runtime_inputs(work_dir, pinned):
             try:
-                proc = subprocess.run(
+                proc = run_tool(
                     cmd,
+                    label=label,
                     cwd=work_dir,
                     env=relocate_python_artifacts(
                         {
@@ -2123,10 +2239,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                         python_artifact_root(os.environ, build_path / "python-artifacts"),
                         pytest_scope=f"mutation-run:{build_path.resolve()}",
                     ),
-                    capture_output=True,
-                    text=True,
                     timeout=timeout + _MUTANT_HARD_KILL_MARGIN_S,
-                    check=False,
+                    timed_out=has_simulation_timeout,
                 )
             except subprocess.TimeoutExpired:
                 _discard_adapter_results(identity)
@@ -2147,17 +2261,18 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         ``timeouts`` maps a test's display name to its wall-clock limit in
         seconds; the baseline passes none and gets the cap for every test.
         """
-        campaign = self._campaign_for_target(target)
+        campaign = self._target_campaign
         batched = self.cocotb_target(target, work_dir) is not None
         batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
-        def _launch(unit: CampaignUnit) -> MutationTestRun:
+        def _launch(unit: CampaignUnit, label: ResourceLabel) -> MutationTestRun:
             try:
                 proc, killed_by = self._run_sim_pinned(
                     target,
                     work_dir,
                     build_path,
                     tb_top,
+                    label=label,
                     timeout=(timeouts or {}).get(unit.display_name, _MUTANT_TIMEOUT_CAP_S),
                     test_name=unit.test_name,
                     cocotb_tests=unit.selected_tests,
@@ -2190,17 +2305,34 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 )
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
-            def request() -> JobRequest | None:
-                return self._unit_job_request(target, work_dir, build_path, unit, batched)
+            request = self._unit_job_request(target, work_dir, build_path, unit, batched)
+            return self._run_claimed_unit(target, unit, request, _launch)
 
+        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
+
+    def _run_claimed_unit(
+        self,
+        target: str,
+        unit: CampaignUnit,
+        request: JobRequest | None,
+        launch: Callable[[CampaignUnit, ResourceLabel], MutationTestRun],
+    ) -> MutationTestRun:
+        """Run one campaign unit on its own claim, once more alone after a kill at the Sandbox's limit."""
+
+        def attempt(alone: bool) -> MutationTestRun:
             # The wait for memory comes first, so it never counts in a duration or time limit.
-            with self._claims.hold(request, build=False):
+            with self._claims.hold(
+                lambda: request, build=False, target=target, tests=unit.tests, alone=alone
+            ):
                 started = _monotonic()
-                run = _launch(unit)
+                run = launch(unit, _sim_run_label(target, request))
                 run.duration_s = _monotonic() - started
                 return run
 
-        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
+        run, oom_kill = self._claims.run_retrying_oom(
+            attempt, lambda run: oom_kill_of(run.process), name=f"{target} {unit.display_name}"
+        )
+        return replace(run, oom_kill=oom_kill)
 
     def _unit_job_request(
         self, target: str, work_dir: Path, build_path: Path, unit: CampaignUnit, batched: bool
@@ -2247,14 +2379,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if early is not None:
             return early
+        assert run.process is not None
         parsed = parse_results_line(run.output)
         if parsed is not None:
-            return MutationFlow._classify_cocotb_run(run, parsed)
+            return MutationFlow._classify_cocotb_run(run.test_name, run.process.returncode, parsed)
         if run.requires_cocotb_results:
             return VariantSuiteVerdict(
                 inconclusive_reason=f"{run.test_name}: cocotb result line is missing or malformed"
             )
-        assert run.process is not None
         return VariantSuiteVerdict(
             detected=run.process.returncode != 0,
             first_killing_test=run.test_name if run.process.returncode != 0 else "",
@@ -2294,17 +2426,18 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner produced no process result"
             )
-        killed = f"killed by signal {run.killed_by}" if run.killed_by else ""
+        killed = run.oom_kill or (f"killed by signal {run.killed_by}" if run.killed_by else "")
         if reason := killed or _infra_failure_reason(run.process):
             return VariantSuiteVerdict(inconclusive_reason=prefix + reason)
         return None
 
     @staticmethod
     def _classify_cocotb_run(
-        run: MutationTestRun,
+        test_name: str,
+        returncode: int,
         parsed: CocotbResults,
     ) -> VariantSuiteVerdict:
-        prefix = f"{run.test_name}: "
+        prefix = f"{test_name}: "
         if parsed.state != STATE_OK:
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + f"cocotb result state is {parsed.state}"
@@ -2322,7 +2455,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         if failed:
             return VariantSuiteVerdict(detected=True, first_killing_test=failed)
-        if run.process.returncode != 0:
+        if returncode != 0:
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + "runner exited non-zero without a failing test"
             )
@@ -2410,7 +2543,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         from booley.flows.run_log import cap_log_bytes
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_directories(path.parent)
             path.write_bytes(
                 cap_log_bytes(
                     output.encode("utf-8", errors="replace"),
@@ -2445,10 +2578,11 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Build and run candidates in pick order until ``plan.count`` Mutants are kept.
 
         Each candidate takes the next free number and build directory.  One whose build
-        equals the baseline's, or that does not build at all, is dropped and its number goes
-        to the next candidate; both drop kinds share the one pick order.  Reaching
-        ``plan.count`` candidates that did not build, or running out of candidates, leaves
-        fewer Mutants than requested.  Equivalent drops do not count toward that cap.
+        equals the baseline's or a kept Mutant's, or that does not build at all, is dropped and
+        its number goes to the next candidate; all drop kinds share the one pick order.
+        Reaching ``plan.count`` candidates that did not build, or running out of candidates,
+        leaves fewer Mutants than requested.  Equivalent and duplicate drops do not count
+        toward that cap.
         """
         start = time.monotonic()
         self._reset_mutant_logs()
@@ -2456,6 +2590,8 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         results: list[MutationResult] = []
         equivalent_dropped: list[str] = []
         invalid_dropped: list[str] = []
+        duplicate_dropped: list[dict[str, str]] = []
+        kept_cpp: list[tuple[Mapping[str, str], str]] = []
         inconclusive: list[str] = []
         # Progress counts to the Mutants that can run: a generator shortfall has
         # fewer candidates than the requested count.
@@ -2466,7 +2602,10 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             spec = _spec_of(len(specs) + 1, mutant)
             self.emit_progress(f"build and test Mutant {spec.index}/{planned}")
             variants = generated.variants.with_proposals([spec])
-            result = self._run_one_variant(plan, spec, variants, baseline)
+            result = self._run_one_variant(plan, spec, variants, baseline, kept_cpp)
+            if isinstance(result, _Duplicate):
+                duplicate_dropped.append({"id": spec.mutant_id, "duplicates": result.of})
+                continue
             if isinstance(result, str):
                 dropped = equivalent_dropped if result == "equivalent" else invalid_dropped
                 dropped.append(spec.mutant_id)
@@ -2477,7 +2616,13 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 inconclusive.append(f"mutation #{spec.index}: {result.inconclusive_reason}")
         elapsed = time.monotonic() - start
         return VariantSweep(
-            specs, results, equivalent_dropped, invalid_dropped, elapsed, "; ".join(inconclusive)
+            specs,
+            results,
+            equivalent_dropped,
+            invalid_dropped,
+            duplicate_dropped,
+            elapsed,
+            "; ".join(inconclusive),
         )
 
     def _run_one_variant(
@@ -2486,23 +2631,36 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         spec: MutationSpec,
         variants: MutationVariantPlan,
         baseline: Baseline,
-    ) -> MutationResult | _Dropped:
+        kept_cpp: list[tuple[Mapping[str, str], str]],
+    ) -> MutationResult | _Dropped | _Duplicate:
         """Build and test one Mutant, or say why the candidate is dropped.
 
-        ``"equivalent"``: the Mutant builds the baseline's C++.  ``"build_failure"``: the
-        Mutant does not build.  Either way its build directory is removed and it leaves no
-        log, since the next candidate reuses the number.
+        ``"equivalent"``: the Mutant builds the baseline's C++.  A ``_Duplicate``: it builds
+        the C++ of a Mutant already kept.  ``"build_failure"``: it does not build.  Each
+        drop removes the build directory and leaves no log, since the next candidate reuses
+        the number.
         """
         build_path = workspace.variant_build_dir(spec.index)
-        shutil.rmtree(build_path, ignore_errors=True)
-        build_path.mkdir(parents=True, exist_ok=True)
-        elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
+        elab, oom_kill = self._run_elab(
+            plan.target, plan.work_dir, build_path, (variants, spec.index)
+        )
+        if oom_kill:
+            # A killed build says nothing about whether the Mutant builds.
+            shutil.rmtree(build_path, ignore_errors=True)
+            output = (elab.stdout or "") + (elab.stderr or "")
+            return MutationResult(
+                index=spec.index,
+                inconclusive_reason=f"build: {oom_kill}",
+                sim_output_snippet=f"sim outcome inconclusive: build: {oom_kill}",
+                log_path=self._persist_mutant_log(spec.index, output),
+            )
         if elab.returncode != 0:
             shutil.rmtree(build_path, ignore_errors=True)
             return "build_failure"
-        if self._builds_the_baseline(plan.work_dir, build_path, baseline):
+        mutant_id = spec.mutant_id
+        if drop := self._compare_build(plan.work_dir, build_path, baseline, mutant_id, kept_cpp):
             shutil.rmtree(build_path, ignore_errors=True)
-            return "equivalent"
+            return drop
         runs = self._run_target_test_suite(
             plan.target,
             plan.work_dir,
@@ -2512,7 +2670,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
-        snippet = self._variant_snippet(verdict, combined)
+        snippet = self._variant_snippet(verdict, combined, baseline.project_paths)
         return MutationResult(
             index=spec.index,
             inconclusive_reason=verdict.inconclusive_reason,
@@ -2524,31 +2682,50 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
 
     @staticmethod
-    def _variant_snippet(verdict: VariantSuiteVerdict, combined: str) -> str:
+    def _variant_snippet(
+        verdict: VariantSuiteVerdict, combined: str, paths: ProjectSourcePaths
+    ) -> str:
         """The report snippet of a scored Mutant: its detecting run's failure, else the tail."""
         if verdict.inconclusive_reason:
-            return f"sim outcome inconclusive: {verdict.inconclusive_reason}"
+            return f"sim outcome inconclusive: {paths.project_text(verdict.inconclusive_reason)}"
         if verdict.detecting_run is not None:
             run = verdict.detecting_run
             return detection_snippet(
                 run.test_name,
-                run.output,
+                paths.project_text(run.output),
                 timed_out=verdict.timed_out,
                 killing_test=verdict.first_killing_test,
             )
-        return tail_snippet(combined)
+        return tail_snippet(paths.project_text(combined))
 
     @staticmethod
-    def _builds_the_baseline(work_dir: Path, build_path: Path, baseline: Baseline) -> bool:
-        """True if the Mutant's generated C++ equals the baseline's, so no test can tell them apart.
+    def _compare_build(
+        work_dir: Path,
+        build_path: Path,
+        baseline: Baseline,
+        mutant_id: str,
+        kept_cpp: list[tuple[Mapping[str, str], str]],
+    ) -> Literal["equivalent"] | _Duplicate | None:
+        """Say whether the Mutant's generated C++ makes it untestable apart from another build.
 
-        Never true without a baseline to compare with (a Target not simulated with
-        Verilator) or when the Mutant's build has no recognizable Verilator layout.
+        ``"equivalent"`` when it equals the baseline's, a ``_Duplicate`` when it equals a kept
+        Mutant's; otherwise the Mutant is recorded in ``kept_cpp`` and the answer is ``None``.
+        Always ``None`` without a baseline to compare with (a Target not simulated with
+        Verilator) or when the build has no recognizable Verilator layout.
         """
         if baseline.generated_cpp is None:
-            return False
+            return None
         generated = work_dir / (build_path / _EDALIZE_BINDIR_MARKER).read_text(encoding="utf-8")
-        return generated_cpp(generated, build_path, work_dir) == baseline.generated_cpp
+        digests = generated_cpp(generated, build_path, work_dir)
+        if digests is None:
+            return None
+        if digests == baseline.generated_cpp:
+            return "equivalent"
+        for kept_digests, kept_id in kept_cpp:
+            if digests == kept_digests:
+                return _Duplicate(kept_id)
+        kept_cpp.append((digests, mutant_id))
+        return None
 
     @staticmethod
     def _scope_residue(baseline: Mapping[str, str], work_dir: Path) -> list[str]:
@@ -2601,22 +2778,20 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         auto_mode, source_size_budget = plan.auto_mode, plan.source_size_budget
         summary, count = inputs.summary, inputs.count
 
-        passed = summary.detected_count >= min_detected
-
         detail = _mutation_detail(summary, min_detected, plan.count)
         detail.update(
             {
                 "target": target,
-                "tests": list(self._campaign_for_target(target).suite.display_names),
+                "tests": list(self._target_campaign.suite.display_names),
                 "seed": plan.seed,
                 "identity": inputs.identity,
                 "detected_timeout": summary.detected_timeout_count,
+                "metrics": _summary_metrics(target, summary),
             }
         )
         if inputs.shortfall:
             detail["shortfall"] = inputs.shortfall
-        detail["equivalent_dropped"] = inputs.equivalent_dropped
-        detail["invalid_dropped"] = inputs.invalid_dropped
+        detail.update(inputs.dropped_detail())
         detail.update(plan.auto_count_fields(count))
         if auto_mode:
             detail["source_size_budget"] = source_size_budget
@@ -2645,7 +2820,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
 
         return EndpointOutcome(
-            exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
+            exit_code=EXIT_SUCCESS if summary.detected_count >= min_detected else EXIT_FAILURE,
             detail=detail,
             report_text=report_text,
             display_lines=[display, *artifact_lines],
@@ -2757,7 +2932,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_file(source: Path, destination: Path) -> Path | None:
         if not source.is_file():
             return None
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        make_directories(destination.parent)
         shutil.copy2(source, destination)
         return destination
 
@@ -2765,6 +2940,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _copy_campaign_dir(source: Path, destination: Path) -> Path | None:
         if not source.is_dir():
             return None
+        make_directories(destination.parent)
         shutil.copytree(source, destination)
         return destination
 
@@ -2896,10 +3072,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         gate = "PASS" if passed else "FAIL"
         source = _threshold_source(plan, inputs.count)
         lines: list[str] = [self._identity_header(plan, inputs)]
-        if reason := inputs.identity.get("elaboration_fallback"):
-            lines.append(
-                f"[mutation_test] Target elaboration failed, Mutants generated per file: {reason}"
-            )
+        lines += _elaboration_fallback_lines(inputs.identity)
         if inputs.shortfall:
             lines.append(f"[mutation_test] {inputs.shortfall}")
         if replaced_line := _replaced_builds_line(len(inputs.invalid_dropped)):
@@ -3078,6 +3251,32 @@ def _spec_of(index: int, mutant: Mutant) -> MutationSpec:
     )
 
 
+def _summary_metrics(target: str, summary: MutationSummary) -> dict[str, dict[str, object]]:
+    """The report's ``detail.metrics`` of a scored run: its valid Mutants, detected or not."""
+    survivors = [_survivor_line(spec) for spec in summary.surviving_specs()]
+    return mutation_metrics_detail(target, summary.detected_count, survivors)
+
+
+def _survivor_line(spec: MutationSpec) -> str:
+    """One survived Mutant as ``ID category file:line: 'original' -> 'mutated'``.
+
+    Each snippet is shortened to share what the line may hold, so a long source line keeps
+    both sides of the change instead of losing the mutated one to the line's cut.
+    """
+    prefix = f"{spec.mutant_id} " if spec.mutant_id else ""
+    head = f"{prefix}{spec.category} {spec.file}:{spec.line}: "
+    room = max((COUNTED_ITEM_CHARS - len(head) - len("'' -> ''")) // 2, _MIN_SNIPPET_CHARS)
+    orig = _snippet(spec.original_code, room)
+    mut = _snippet(spec.mutated_code, room)
+    return f"{head}{orig!r} -> {mut!r}"
+
+
+def _snippet(code: str, room: int) -> str:
+    """*code* on one line, cut with ``...`` to at most *room* characters shown."""
+    text = " ".join(code.split())
+    return text if len(text) <= room else text[: room - 3] + "..."
+
+
 def _mutation_detail(
     summary: MutationSummary,
     min_detected: int,
@@ -3101,7 +3300,7 @@ def _mutation_detail(
 def _shortfall_message(scored: int, requested: int) -> str | None:
     """The note when ``scored`` Mutants fall short of ``requested``, else None.
 
-    One text for every cause (a generator shortfall or an equivalent drop), and it
+    One text for every cause (a generator shortfall or an equivalent or duplicate drop), and it
     claims nothing about how many candidates exist.
     """
     if scored >= requested:
@@ -3118,6 +3317,13 @@ def _mutant_timeout(baseline_s: float) -> int:
     """
     scaled = math.ceil(_MUTANT_TIMEOUT_FACTOR * baseline_s)
     return min(_MUTANT_TIMEOUT_CAP_S, max(_MUTANT_TIMEOUT_FLOOR_S, scaled))
+
+
+def _sim_run_label(target: str, request: JobRequest | None) -> ResourceLabel:
+    """The history key of one unit's simulation: its claim's Target and Test Run name."""
+    if request is None:
+        return ResourceLabel(target, "sim_run")
+    return ResourceLabel(request.target, "sim_run", request.test_runs)
 
 
 def _timeout_output(exc: subprocess.TimeoutExpired) -> str:

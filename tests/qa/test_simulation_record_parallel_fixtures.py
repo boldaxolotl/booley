@@ -14,8 +14,8 @@ from booley.flows.sim.record.codec import MANIFEST_SCHEMA
 ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-record"
 # Documents captured unchanged from one Taxi QA run; ``timeline.json`` is the operator's
-# measurement of that run with its SlotStore samples thinned.
-CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_simulation_record/parallel"
+# measurement of that run, its retained output copies stored under ``outputs/<attempt id>``.
+CAPTURED = ROOT / "tests/qa/fixtures/taxi_simulation_record/parallel"
 UART = ROOT / "qa/missions/uart/fixtures/simulation-record"
 SIMULATION_RECORD_ID = "9904b376-4087-4d49-a9be-55c4b8e27da8"
 OUTER = "539e1228e49a48de8b6f967edbe31ce1"
@@ -81,7 +81,7 @@ def _write_simulation_record(simulation_record: Path) -> None:
         simulation_record / "manifest.json",
         {
             "$schema": MANIFEST_SCHEMA,
-            "campaign_id": SIMULATION_RECORD_ID,
+            "simulation_record_id": SIMULATION_RECORD_ID,
             "fingerprints": {"workload_sha256": WORKLOAD},
             "origin": {"execution_id": OUTER, "invocation_id": 12},
             "work_items": [
@@ -97,7 +97,7 @@ def _write_simulation_record(simulation_record: Path) -> None:
     )
     manifest_sha256 = _digest((simulation_record / "manifest.json").read_bytes().rstrip(b"\n"))
     common = {
-        "campaign_id": SIMULATION_RECORD_ID,
+        "simulation_record_id": SIMULATION_RECORD_ID,
         "manifest_sha256": manifest_sha256,
         "workload_sha256": WORKLOAD,
     }
@@ -106,7 +106,7 @@ def _write_simulation_record(simulation_record: Path) -> None:
     _write_json(
         simulation_record / "summary.json",
         {
-            "$schema": "booley.simulation-campaign-summary/v1",
+            "$schema": "booley.simulation-record-summary/v1",
             **common,
             "aggregate_grade": "fail",
             "complete": True,
@@ -126,7 +126,7 @@ def _write_attempt(simulation_record: Path, index: int, common: dict[str, str]) 
     _write_json(
         directory / "attempt.json",
         {
-            "$schema": "booley.simulation-attempt/v1",
+            "$schema": "booley.simulation-attempt/v2",
             **identity,
             "attempt_ordinal": 1,
             "child_execution_id": CHILDREN[index],
@@ -146,7 +146,7 @@ def _write_attempt(simulation_record: Path, index: int, common: dict[str, str]) 
 
 def _result(index: int, identity: dict[str, str], log: bytes) -> dict[str, object]:
     return {
-        "$schema": "booley.simulation-result/v2",
+        "$schema": "booley.simulation-result/v5",
         **identity,
         "attempt_ordinal": 1,
         "evidence": [
@@ -210,7 +210,7 @@ def _interval(root: Path, index: int) -> dict[str, object]:
 
 @pytest.fixture
 def evidence(tmp_path: Path) -> tuple[Path, Path]:
-    simulation_record = tmp_path / "campaign"
+    simulation_record = tmp_path / "record"
     timeline = tmp_path / "timeline.json"
     _write_simulation_record(simulation_record)
     _write_timeline(timeline)
@@ -235,11 +235,11 @@ def test_taxi_parallel_validator_accepts_published_simulation_record_shape(
 
 
 def test_taxi_attempt_isolation_accepts_captured_run(validator) -> None:
-    validator.validate_attempt_isolation(CAPTURED / "timeline.json", CAPTURED / "campaign")
+    validator.validate_attempt_isolation(CAPTURED / "timeline.json", CAPTURED / "record")
 
 
 def test_taxi_continuation_accepts_captured_run(validator) -> None:
-    simulation_record = CAPTURED / "campaign"
+    simulation_record = CAPTURED / "record"
     validator.validate_continue_after_failure(
         simulation_record / "manifest.json",
         simulation_record / "summary.json",
@@ -336,7 +336,7 @@ def _remove_attempt_records(simulation_record: Path) -> None:
     [
         (_misname_attempt_directory, "does not name its Simulation Attempt"),
         (_duplicate_attempt, "Simulation Attempt identity repeats"),
-        (_remove_attempt_records, "Campaign has no Simulation Attempts"),
+        (_remove_attempt_records, "Simulation Record has no Simulation Attempts"),
     ],
 )
 def test_taxi_attempt_isolation_rejects_broken_attempt_layout(

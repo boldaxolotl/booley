@@ -14,13 +14,15 @@ from types import SimpleNamespace
 
 import pytest
 from tests.lifecycle_lock_support import observe_lifecycle_contention
+from tests.time_budget import hang_guard_s
 
 from booley.audit.diagnostic_results import Findings, Severity
+from booley.core.host_shell import quote_arg
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.licensing import flexnet_docker
 from booley.harness import eda_grants, host_diagnostics
-from booley.runtime import interactive_docker as idk
+from booley.runtime import host_docker as idk
 from booley.runtime import (
     issuance_invalidation,
     session_issuance,
@@ -167,7 +169,7 @@ def test_misnamed_journal_repair_names_the_cleanup_it_still_owes(tmp_path: Path)
         for args in list_calls:
             assert "docker " + " ".join(args) + ")" in message
         assert str(journal) in message
-        assert f"booley init --seed --project {different_identity}" in message
+        assert f"booley init --seed --project {quote_arg(different_identity)}" in message
         assert message.index(container_rm) < message.index(f"remove {journal}")
         assert message.index(network_rm) < message.index(f"remove {journal}")
         assert "keep the file and retry" in message
@@ -209,7 +211,7 @@ def _make_invalidation_store_unsafe(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
-@pytest.mark.parametrize("operation", ["up", "status", "validate"])
+@pytest.mark.parametrize("operation", ["up", "up_without_recovery", "status", "validate"])
 def test_public_session_runtime_translates_unsafe_invalidation_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -287,7 +289,7 @@ def test_leftover_refresh_journal_blocks_no_command(
     assert session_runtime.validate(project) == "digest"
     assert not issuance_invalidation.shared_recovery_blocks_command(read_only=True)
     report = Findings()
-    host_diagnostics._inspect_session_stores(report)
+    host_diagnostics._inspect_session_stores(project, report)
     assert not [f for f in report.report().findings if f.severity is Severity.FAIL]
     assert leftover.read_bytes() == b"not a journal"
 
@@ -391,7 +393,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     def mutation(_identity: str):
         def commit() -> str:
             commit_entered.set()
-            if not release_commit.wait(2):
+            if not release_commit.wait(2 * hang_guard_s()):
                 raise RuntimeError("test grant gate timed out")
             events.append("grant-commit")
             return "grant"
@@ -401,7 +403,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
     monkeypatch.setattr(session_issuance, "invalidate_project", lambda _identity: None)
 
     grant = _start_grant_mutation(project, mutation, monkeypatch, grant_done, errors)
-    assert commit_entered.wait(2)
+    assert commit_entered.wait(hang_guard_s())
 
     runtime_waiting = observe_lifecycle_contention(monkeypatch)
     operation = _waiting_runtime_command(project, monkeypatch, runtime_command, events)
@@ -410,13 +412,13 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
         args=(operation, errors, runtime_done),
     )
     runtime.start()
-    assert runtime_waiting.wait(2)
+    assert runtime_waiting.wait(hang_guard_s())
     assert events == []
     assert not runtime_done.is_set()
 
     release_commit.set()
-    grant.join(2)
-    runtime.join(2)
+    grant.join(hang_guard_s())
+    runtime.join(hang_guard_s())
     assert grant_done.is_set()
     assert runtime_done.is_set()
     assert errors == []

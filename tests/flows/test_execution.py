@@ -21,14 +21,18 @@ def test_malformed_config_preserves_legacy_enabled_default(tmp_path):
     assert flow_enabled("sim", root) is True
 
 
-@pytest.mark.parametrize("config", [None, [], {"flows": []}])
-def test_non_mapping_config_preserves_enabled_default(config):
+@pytest.mark.parametrize(
+    "config",
+    [
+        None,
+        [],
+        {"flows": []},
+        *({"flows": {"sim": {"enabled": value}}} for value in (None, 0, "false", {})),
+    ],
+    ids=["none", "list", "flows-list", "enabled-none", "enabled-0", "enabled-str", "enabled-map"],
+)
+def test_only_an_explicit_boolean_false_disables_a_flow(config):
     assert flow_enabled_from_config("sim", config) is True
-
-
-@pytest.mark.parametrize("value", [None, 0, "false", {}])
-def test_only_explicit_boolean_false_disables_flow(value):
-    assert flow_enabled_from_config("sim", {"flows": {"sim": {"enabled": value}}}) is True
 
 
 def test_enabled_false_read_from_flow_section(tmp_path):
@@ -36,18 +40,18 @@ def test_enabled_false_read_from_flow_section(tmp_path):
     assert flow_enabled("sim", root) is False
 
 
-@pytest.mark.parametrize("backend", ["docker", "host"])
-def test_retired_backend_is_a_hard_migration_error(backend):
+@pytest.mark.parametrize(
+    ("backend", "message"),
+    [
+        ("docker", r"all Flows run inside the Sandbox"),
+        ("host", r"all Flows run inside the Sandbox"),
+        ("none", r"enabled = false"),
+    ],
+)
+def test_retired_backend_is_a_hard_migration_error(backend, message):
     config = {"flows": {"sim": {"backend": backend}}}
 
-    with pytest.raises(FlowConfigError, match=r"all Flows run inside the Sandbox"):
-        flow_enabled_from_config("sim", config)
-
-
-def test_retired_none_backend_points_to_enabled_false():
-    config = {"flows": {"sim": {"backend": "none"}}}
-
-    with pytest.raises(FlowConfigError, match=r"enabled = false"):
+    with pytest.raises(FlowConfigError, match=message):
         flow_enabled_from_config("sim", config)
 
 
@@ -71,22 +75,23 @@ def test_linked_worktree_without_local_config_uses_main_project_config(tmp_path)
 
 
 @pytest.mark.parametrize("requested", ["sim", "lint"])
-def test_every_flow_rejects_retired_standalone_frontend(requested):
-    config = {"flows": {"sim": {"standalone_frontend": "verilator"}}}
+@pytest.mark.parametrize(
+    ("section", "pattern"),
+    [
+        ("sim", r"standalone_frontend is retired.*each Target's simulator"),
+        ("elab", r"flows\.elab.*sim --mode elab-only.*delete standalone_frontend"),
+        ("elaborate", r"flows\.elaborate.*sim --mode elab-only.*delete standalone_frontend"),
+    ],
+)
+def test_every_flow_rejects_retired_standalone_frontend_tables(requested, section, pattern):
+    config = {"flows": {section: {"standalone_frontend": "iverilog"}}}
 
-    with pytest.raises(
-        FlowConfigError, match=r"standalone_frontend is retired.*each Target's simulator"
-    ):
+    with pytest.raises(FlowConfigError, match=pattern):
         flow_enabled_from_config(requested, config)
 
 
-@pytest.mark.parametrize("retired", ["elab", "elaborate"])
-@pytest.mark.parametrize("requested", ["sim", "lint"])
-def test_every_flow_rejects_retired_elaboration_tables(retired, requested):
-    config = {"flows": {retired: {"standalone_frontend": "iverilog"}}}
-
-    with pytest.raises(
-        FlowConfigError,
-        match=rf"flows\.{retired}.*sim --mode elab-only.*delete standalone_frontend",
-    ):
-        flow_enabled_from_config(requested, config)
+def test_retired_flow_key_error_names_the_document_it_read(tmp_path):
+    root = _project(tmp_path, '[flows.lint]\nbackend = "x"\n')
+    with pytest.raises(FlowConfigError, match="retired") as raised:
+        flow_enabled("lint", root)
+    assert raised.value.path == root / ".booley" / "booley.toml"

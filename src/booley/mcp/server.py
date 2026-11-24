@@ -5,7 +5,7 @@ Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
   inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
-  Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
+  the Sandbox: the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
   to a URL instead of owning a child process — so a devcontainer stop→start
   no longer strands the client with a dead stdio pipe it never re-spawns.
@@ -30,6 +30,7 @@ import shlex
 import socket
 import sys
 import time
+import tomllib
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -59,8 +60,9 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
+from booley.config.feature_flags import FeatureConfigError, enabled_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
-from booley.core.booley_layout import INTERACTIVE_LOGS_DIR_NAME, BooleyLayoutError
+from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
     _endpoint_end_event,
@@ -109,7 +111,7 @@ from booley.mcp.session_peer import PeerBoundary
 from booley.mcp.session_registry import Attribution
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
-from booley.runtime import pid, runtime_context
+from booley.runtime import loopback_http, pid, runtime_context
 from booley.runtime.booley_dir import (
     own_booley_dir_repo_path,
     resolve_booley_dir,
@@ -119,11 +121,12 @@ from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
+    DEVELOPER_AGENT_ENV,
     HTTP_ENDPOINT_PATH,
     HTTP_PORT_ENV,
     http_port,
@@ -154,18 +157,11 @@ logging.basicConfig(
     format="[mcp] %(levelname)s %(message)s",
 )
 
-# ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
-# detached background jobs (submit → poll) instead of holding the call open.
-# Everything else stays synchronous — it finishes inside the inline wait.
-# The Specialists (reviewer / coverage_analyst) and the mutation Flow joined
-# 2026-07-06 for the same reason: each runs a long loop with a
-# 20-30 min default_timeout, so an interactive call reliably outran the ~60s
-# client cap and came back as a bare timeout — no run_id, no poll, recoverable
-# only via booley_report. The Specialists are lightweight on memory (Read/Grep/Glob +
-# API calls), so single-flight admission is stricter than they need, but the
-# poll affordance is exactly what was missing. The mutation Flow builds and
-# simulates; it keeps its memory admission on purpose.
-_ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
+# ADR 0027 / ADR 0087: a Job that memory admission admits can wait in the queue
+# for as long as other Jobs hold the memory, so its MCP call runs as a detached
+# background Job (submit -> poll) and hands back a run_id once the inline wait
+# ends. The catalog derives each definition's ``memory_admitted`` from the
+# endpoint class; every other endpoint runs inline.
 
 # How long a submit (and each poll) blocks inline before handing back a run_id.
 # Must sit safely under the generic MCP client's ~60-90s call cap so the caller
@@ -186,20 +182,32 @@ _ASYNC_JOB_MCP_TOOLS = job_ownership.ASYNC_JOB_ENDPOINTS
 # CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS lifts that past this wait (issue #2627).
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
 
-# Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
+# In-Sandbox MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
 # after sitting idle. Set BOOLEY_MCP_IDLE_TIMEOUT_SECONDS=0 to disable.
-_DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
-_DEFAULT_INTERACTIVE_MAX_AGE_SECONDS = 12 * 60 * 60
+_DEFAULT_MCP_IDLE_TIMEOUT_SECONDS = 2 * 60 * 60
+_DEFAULT_MCP_MAX_AGE_SECONDS = 12 * 60 * 60
 _MCP_WATCHDOG_POLL_SECONDS = 30.0
 
-# HTTP transport (Interactive Mode, ADR 0023). Loopback only — the URL is
+# HTTP transport (the Sandbox, ADR 0023). Loopback only — the URL is
 # reachable from agent apps inside the same container, never from the host.
 _HTTP_HOST = "127.0.0.1"
 
 
 def _exposure() -> catalog.Exposure:
-    return catalog.Exposure.from_mapping(os.environ)
+    try:
+        features = enabled_features()
+    except (BooleyLayoutError, OSError, ValueError):
+        # Unreadable configuration keeps every gate closed; the catalog refresh and
+        # startup report the problem, and poll and cancel stay usable meanwhile.
+        features = frozenset()
+    return replace(catalog.Exposure.from_mapping(os.environ), features=features)
+
+
+def _validate_features() -> None:
+    """Refuse to start on an invalid ``[features]`` table, like an invalid ``[specialists]``."""
+    with contextlib.suppress(BooleyLayoutError, OSError, tomllib.TOMLDecodeError):
+        enabled_features()
 
 
 def _env_timeout_seconds(name: str, default: float | None) -> float | None:
@@ -257,7 +265,7 @@ class _McpLifetime:
         transport exists to fix. Container-level idle reaping (ADR 0018 WS2)
         remains the resource backstop.
         """
-        if os.environ.get("BOOLEY_MCP_MODE") != "interactive":
+        if os.environ.get(DEVELOPER_AGENT_ENV) != "1":
             # Client-owned server lifetime: no self-exit, but MCP activity feeds
             # the Sandbox reaper heartbeat so active work does not read as idle
             # (ADR 0028 Decision 11).
@@ -267,11 +275,11 @@ class _McpLifetime:
         return cls(
             _env_timeout_seconds(
                 "BOOLEY_MCP_IDLE_TIMEOUT_SECONDS",
-                _DEFAULT_INTERACTIVE_IDLE_TIMEOUT_SECONDS,
+                _DEFAULT_MCP_IDLE_TIMEOUT_SECONDS,
             ),
             _env_timeout_seconds(
                 "BOOLEY_MCP_MAX_AGE_SECONDS",
-                _DEFAULT_INTERACTIVE_MAX_AGE_SECONDS,
+                _DEFAULT_MCP_MAX_AGE_SECONDS,
             ),
             heartbeat_path=_MCP_HEARTBEAT_PATH,
         )
@@ -442,7 +450,7 @@ def _resolve_transcript_dir(
     elif logs_dir:
         runtime_dir = logs_runtime_dir(logs_dir)
     else:
-        # Interactive Mode sets neither env var. Writing transcripts to an
+        # The Sandbox sets neither env var. Writing transcripts to an
         # ephemeral OS tempdir made a failed specialist impossible to
         # post-mortem — the raw agent output vanished with the session and was
         # never where `booley cheat` advertises (QA_REPORT C1: an ~$0.85
@@ -519,7 +527,7 @@ def _params_to_argv(
     return argv
 
 
-# Watchdog sampling interval while a child may be queued for its class slot.
+# Watchdog sampling interval while a child may be queued for memory admission.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
 
@@ -669,7 +677,7 @@ def _build_mcp_tool_index(
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
-    """Return the concise user-facing Interactive Mode status card."""
+    """Return the concise user-facing Sandbox status card."""
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
@@ -749,6 +757,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     """
     import json as _json
 
+    from booley.flows.synth.recipe import synth_target_tools
     from booley.fusesoc import fusesoc_registry
     from booley.targets import target_surface
 
@@ -767,7 +776,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     except (fusesoc_registry.FuseSocError, ValueError) as exc:
         return [TextContent(type="text", text=f"ERROR: {exc}")]
 
-    payload = target_surface.surface_payload(surface, project_root)
+    payload = target_surface.surface_payload(surface, project_root, synth_tools=synth_target_tools)
     return [TextContent(type="text", text=_json.dumps(payload, indent=2))]
 
 
@@ -966,15 +975,17 @@ def _format_job_attached(name: str, run_id: str) -> str:
 def _format_job_running(name: str, run_id: str) -> str:
     """Message returned when a heavy endpoint detaches past the inline wait."""
     phase = _job_phase(run_id)
-    waiting = (
-        "is waiting for its concurrency slot"
+    retry = (
+        "the retry has not started" if OOM_REQUEUE_REASON in phase else "the run has not started"
+    )
+    status = (
+        f"is queued and has not started yet (run_id={run_id}). This is NOT the result — {retry}."
         if phase.startswith("QUEUED")
-        else "is taking longer than the inline wait"
+        else f"is taking longer than the inline wait and is now running in the background "
+        f"(run_id={run_id}). This is NOT the result — the run has not finished."
     )
     return (
-        f"{phase}: '{name}' {waiting} and is now "
-        f"running in the background (run_id={run_id}). This is NOT the result "
-        f"— the run has not finished. With several Jobs running, call "
+        f"{phase}: '{name}' {status} With several Jobs running, call "
         f"'{catalog.POLL_MCP_TOOL_NAME}' with no run_id to get whichever of your Jobs "
         f"finishes first; pass run_id={run_id} only to wait for this Job alone. Keep "
         f"polling until you have its EXIT_CODE. Pass/fail criteria are recorded only "
@@ -983,7 +994,7 @@ def _format_job_running(name: str, run_id: str) -> str:
 
 
 def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
-    """Message for a poll whose job is still running (or queued for a slot).
+    """Message for a poll whose job is still running (or queued).
 
     *owned*: the polling agent started the Job, so an argument-free poll covers it.
     """
@@ -1496,10 +1507,11 @@ async def _dispatch_booley_mcp_tool(
 ) -> McpToolContent:
     """Run a Booley Flow subprocess and return an MCP result.
 
-    Heavy, long-running endpoints (``_ASYNC_JOB_MCP_TOOLS``) go through the submit/poll
-    job model (ADR 0027): they can outlive the MCP client's call cap, so holding
-    the call open orphans the subprocess and BLOCKs the next call. Everything
-    else stays synchronous and returns its full result inline.
+    Memory-admitted endpoints (``memory_admitted`` in the definition) go through
+    the submit/poll job model (ADR 0027): admission can queue them past the MCP
+    client's call cap, so holding the call open orphans the subprocess and BLOCKs
+    the next call. Everything else stays synchronous and returns its full result
+    inline.
     """
     work_dir_error = _validate_work_dir(arguments.get("work_dir")) or _unroutable_endpoint_error(
         arguments, request_context
@@ -1520,7 +1532,7 @@ async def _dispatch_booley_mcp_tool(
         return _error_result(f"ERROR: invalid Flow timeout: {exc}")
     logger.info("Dispatching %s (timeout=%ds): %s", name, mcp_tool_timeout, " ".join(cmd))
 
-    if name in _ASYNC_JOB_MCP_TOOLS:
+    if mcp_tool_def.get("memory_admitted"):
         return await _dispatch_async_job(
             name, cmd, mcp_tool_timeout, jobs, context=context, caller=caller
         )
@@ -1894,7 +1906,12 @@ async def _dispatch_application_tool(
         else job_ownership.caller_for(server_identity, request_context)
     )
     special_result = await _dispatch_special_mcp_tool(
-        name, arguments, jobs, status_mcp_tool_names, caller=caller
+        name,
+        arguments,
+        jobs,
+        status_mcp_tool_names,
+        request_context=request_context,
+        caller=caller,
     )
     if special_result is not None:
         return special_result
@@ -2041,17 +2058,33 @@ def _build_mcp_catalog(
 
 
 def build_mcp_probe_payload() -> dict[str, Any]:
-    """Build the real Interactive Mode catalog and return Doctor's payload."""
-    _maybe_configure_interactive_logs_dir()
+    """Build the real Sandbox catalog and return Doctor's payload, creating nothing.
+
+    The log location is resolved and checked, not made.
+    """
     _load_agent_settings_from_toml()
     application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
+    logs_dir = os.environ.get("BOOLEY_LOGS_DIR") or str(_job_logs_dir() or "")
     return {
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
         "logs_dir_ok": _logs_dir_in_own_booley_dir(logs_dir),
+        "logs_dir_writable": _logs_dir_writable(logs_dir),
     }
+
+
+def _logs_dir_writable(logs_dir: str) -> bool:
+    """Whether *logs_dir* could be created and written, checked without creating it."""
+    from booley.flows.endpoint_cli import ReportDirError, require_usable_report_dir
+
+    if not logs_dir:
+        return False
+    try:
+        require_usable_report_dir(logs_dir)
+    except ReportDirError:
+        return False
+    return True
 
 
 def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
@@ -2065,11 +2098,11 @@ def _logs_dir_in_own_booley_dir(logs_dir: str) -> bool:
         booley_dir = own_booley_dir_repo_path(Path.cwd()).as_posix()
     except BooleyLayoutError:
         return False
-    return f"/{booley_dir}/{INTERACTIVE_LOGS_DIR_NAME}/" in logs_dir.replace("\\", "/")
+    return f"/{booley_dir}/{JOB_LOGS_DIR_NAME}/" in logs_dir.replace("\\", "/")
 
 
 def _sdk_tool_result(
-    payload: McpToolContent | McpInputRequired,
+    payload: McpToolPayload | McpInputRequired,
 ) -> CallToolResult | InputRequiredResult:
     """Project transport-neutral results at the SDK boundary."""
     if isinstance(payload, McpInputRequired):
@@ -2088,8 +2121,8 @@ def _sdk_tool_result(
         )
     return CallToolResult(
         content=[TextContent(type="text", text=block.text) for block in payload.content],
-        structuredContent=payload.structured_content,
-        isError=payload.is_error,
+        structured_content=payload.structured_content,
+        is_error=payload.is_error,
     )
 
 
@@ -2338,13 +2371,13 @@ def _sdk_tool(tool: McpToolDefinition) -> McpSdkTool:
     return McpSdkTool(
         name=tool.name,
         description=tool.description,
-        inputSchema=tool.input_schema,
-        outputSchema=tool.output_schema,
+        input_schema=tool.input_schema,
+        output_schema=tool.output_schema,
     )
 
 
 def _interactive_session_id() -> str:
-    """Stable per-tab identifier for the Interactive Mode logs directory.
+    """Stable per-tab identifier for the Sandbox logs directory.
 
     The container hostname is Docker's short container ID by default — so
     this also identifies which tab the logs belong to.  Falls back to the
@@ -2360,47 +2393,54 @@ def _interactive_session_id() -> str:
     return f"pid{os.getpid()}"
 
 
-def _maybe_configure_interactive_logs_dir() -> None:
-    """In Interactive Mode, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
+def _job_logs_dir() -> Path | None:
+    """The Sandbox's per-session logs directory under the Main Booley Directory, unmade.
+
+    The Sandbox is detected by a Project resolving from the server's environment
+    and CWD; ``None`` means there is no Project or no usable Booley Directory.
+    """
+    try:
+        selected = resolve_booley_dir()
+        booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        return None
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Job logs directory unavailable: %s", exc)
+        return None
+    if not booley_dir.is_dir():
+        return None
+    session_id = _interactive_session_id()
+    if selected.resolve() != resolve_common_booley_dir().resolve():
+        # Host servers of different checkouts share a hostname: keep their Job
+        # records, reports and Specialist sessions apart in the shared directory.
+        session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
+    return booley_dir / JOB_LOGS_DIR_NAME / session_id
+
+
+def _maybe_configure_job_logs_dir() -> None:
+    """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.
 
-    Interactive Mode is detected by:
-      - ``BOOLEY_LOGS_DIR`` not already set;
-      - a Project resolving from the server's environment and CWD.
-
-    Logs accumulate at ``<Main Booley Directory>/.interactive_logs/<session-id>/``
+    Logs accumulate at ``<Main Booley Directory>/job_logs/<session-id>/``
     (gitignored — see the template emitted by ``booley init``), whichever
     checkout the server runs in, so the Dashboard and handle pruning, which
     read the Main Booley Directory, see this session's Job records.
     """
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
-    try:
-        selected = resolve_booley_dir()
-        booley_dir = canonical_project_alias_path(resolve_common_booley_dir())
-    except (FileNotFoundError, SourceCheckoutProjectError):
+    logs_dir = _job_logs_dir()
+    if logs_dir is None:
         return
-    except (OSError, ValueError, RuntimeError) as exc:
-        logger.warning("Interactive logs directory unavailable: %s", exc)
-        return
-    if not booley_dir.is_dir():
-        return
-    session_id = _interactive_session_id()
-    if selected.resolve() != resolve_common_booley_dir().resolve():
-        # Host servers of different checkouts share a hostname: keep their Job
-        # records, reports and Specialist sessions apart in the shared directory.
-        session_id += "-" + hashlib.sha256(str(selected.resolve()).encode()).hexdigest()[:8]
-    logs_dir = booley_dir / INTERACTIVE_LOGS_DIR_NAME / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
-        "Interactive Mode: BOOLEY_LOGS_DIR=%s (session %s)",
+        "MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)",
         logs_dir,
-        session_id,
+        logs_dir.name,
     )
 
 
@@ -2430,7 +2470,7 @@ def _load_agent_settings_from_toml() -> None:
 
 
 async def _main() -> None:
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
     server, _ = _build_server(lifetime)
@@ -2472,14 +2512,12 @@ async def _main() -> None:
 def _run_http(port: int) -> None:
     """Serve the MCP tools over protected streamable HTTP on loopback.
 
-    Interactive Mode transport (ADR 0023): started by the devcontainer's
+    The Sandbox transport (ADR 0023): started by the devcontainer's
     ``postStartCommand`` (via ``incontainer_register.ensure_http_server``), so
     a container stop→start transparently brings the endpoint back — the agent
     apps hold only a URL, not a child process.
     """
-    import uvicorn
-
-    _maybe_configure_interactive_logs_dir()
+    _maybe_configure_job_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(
@@ -2489,8 +2527,13 @@ def _run_http(port: int) -> None:
     handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
     app = SessionMaintenanceApp(app, lifetime.sessions)
-    logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
-    uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
+    try:
+        sock = loopback_http.listen(_HTTP_HOST, port)
+    except loopback_http.PortUnavailableError as exc:
+        print(f"ERROR: {exc}; choose another port with --port or {HTTP_PORT_ENV}", file=sys.stderr)
+        raise SystemExit(2) from None
+    logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, sock.getsockname()[1])
+    loopback_http.serve(app, sock)
 
 
 def _streamable_http_app(server: Server):
@@ -2543,7 +2586,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "http"),
         default=os.environ.get("BOOLEY_MCP_TRANSPORT", "stdio"),
-        help="stdio: client-spawned child; http: standalone loopback server (Interactive Mode)",
+        help="stdio: client-spawned child; http: standalone loopback server inside the Sandbox",
     )
     parser.add_argument(
         "--port",
@@ -2553,11 +2596,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     try:
+        _validate_features()
         if args.transport == "http":
             _run_http(args.port if args.port is not None else http_port())
         else:
             asyncio.run(_main())
-    except EndpointConfigError as exc:
+    except (EndpointConfigError, FeatureConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 

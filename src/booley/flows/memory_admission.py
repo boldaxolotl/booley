@@ -25,6 +25,7 @@ from booley.flows.job_estimates import (
     JobEstimate,
     JobRequest,
     ResourceEstimator,
+    memory_margin,
     phase_occurrences,
     specialist_memory_mb,
 )
@@ -39,10 +40,10 @@ JOB_THREADS_ENV = "BOOLEY_INTERNAL_JOB_THREADS"
 
 _BYTES_PER_MIB = 1024 * 1024
 
-#: What a Specialist with no history of its own reserves, in MiB: the largest peak
-#: measured in #4067 (PR #4084, three runs each: reviewer 344 / 344 / 346 MiB,
-#: coverage_analyst 351 / 359 / 362 MiB) times the estimate margin.
-DEFAULT_SPECIALIST_RESERVATION_MB = 362.0 * ESTIMATE_MARGIN
+#: The largest peak measured in #4067 (PR #4084, three runs each: reviewer
+#: 344 / 344 / 346 MiB, coverage_analyst 351 / 359 / 362 MiB), in MiB. A Specialist
+#: with no history of its own reserves it times the estimate margin.
+_DEFAULT_SPECIALIST_PEAK_MB = 362.0
 
 _job_threads: ContextVar[int | None] = ContextVar("booley_job_threads", default=None)
 
@@ -74,13 +75,15 @@ def plan_memory_claim(
     records: Sequence[dict[str, Any]],
     budget_mb: float | None,
     budget_error: str | None,
+    margin: float = ESTIMATE_MARGIN,
 ) -> MemoryAdmissionPlan:
-    """Size one Job's claim (pure policy).
+    """Size one Job's claim (pure policy), its memory estimates at *margin*.
 
     A Job runs alone when the Memory Budget is unavailable, when its footprint
     is unknown (no requests, or no recorded peak for any of its phases), when
-    some phase has no estimate, or when its estimate exceeds the budget; only
-    the unavailable budget and the over-budget Job carry a warning.
+    some phase has no estimate, or when its estimate exceeds the budget. A
+    warning goes with the unavailable budget, the over-budget Job, and a Job
+    with a size-dependent phase its Target has never measured.
     """
     if budget_mb is None:
         return MemoryAdmissionPlan(
@@ -89,7 +92,7 @@ def plan_memory_claim(
         )
     if not requests:
         return MemoryAdmissionPlan(MemoryClaim(budget_mb=budget_mb, run_alone=True))
-    estimate = ResourceEstimator(records).estimate(requests)
+    estimate = ResourceEstimator(records, memory_margin=margin).estimate(requests)
     claim, warning = _claim_for_estimate(estimate, budget_mb)
     if claim.run_alone:
         return MemoryAdmissionPlan(claim, warning)
@@ -98,20 +101,36 @@ def plan_memory_claim(
 
 
 def _claim_for_estimate(estimate: JobEstimate, budget_mb: float) -> tuple[MemoryClaim, str | None]:
-    """The claim a sized Job makes under *budget_mb*, and its warning (over budget only)."""
+    """The claim a sized Job makes under *budget_mb*, and its warning.
+
+    The warning names an over-budget estimate and any size-dependent phase with
+    no measurement yet, one per line.
+    """
     wall_s = estimate.own_wall_s
-    alone = MemoryClaim(budget_mb=budget_mb, run_alone=True, wall_s=wall_s)
+    unmeasured = ", ".join(
+        dict.fromkeys(f"{key.phase} on Target {key.target}" for key in estimate.unmeasured)
+    )
+    alone = MemoryClaim(
+        budget_mb=budget_mb, run_alone=True, wall_s=wall_s, unmeasured=unmeasured or None
+    )
+    note = (
+        f"No memory measurement yet for {unmeasured}; this Job ran alone, "
+        "and later runs are sized from its measurement."
+        if unmeasured
+        else None
+    )
     reservation = estimate.reservation_mb
     if reservation is None:
-        return alone, None
+        return alone, note
     fit = estimate.fit(budget_mb)
     if fit is Fit.OVER_BUDGET:
-        return alone, (
+        over = (
             f"Memory estimate {reservation:.0f} MiB exceeds the Memory Budget "
             f"of {budget_mb:.0f} MiB; this Job ran alone."
         )
+        return alone, over if note is None else f"{over}\n{note}"
     if fit is Fit.RUN_ALONE or reservation <= 0:
-        return alone, None
+        return alone, note
     return MemoryClaim(budget_mb=budget_mb, reservation_mb=reservation, wall_s=wall_s), None
 
 
@@ -122,6 +141,7 @@ def plan_work_item_claim(
     records: Sequence[dict[str, Any]],
     budget_mb: float | None,
     budget_error: str | None,
+    margin: float = ESTIMATE_MARGIN,
 ) -> tuple[MemoryClaim, str | None]:
     """Size one Simulation Record work item's claim like a Job's, and its warning.
 
@@ -130,16 +150,20 @@ def plan_work_item_claim(
     the item's to reserve. An item never holds a licensed seat.
     """
     if request is None or budget_mb is None:
-        plan = plan_memory_claim(None, records, budget_mb, budget_error)
+        plan = plan_memory_claim(None, records, budget_mb, budget_error, margin)
         return plan.claim, plan.warning
     keys = dict.fromkeys(
         key for key in phase_occurrences(request) if build or key.phase != "sim_build"
     )
-    return _claim_for_estimate(ResourceEstimator(records).estimate_keys(keys), budget_mb)
+    estimate = ResourceEstimator(records, memory_margin=margin).estimate_keys(keys)
+    return _claim_for_estimate(estimate, budget_mb)
 
 
 def plan_specialist_claim(
-    name: str, records: Sequence[dict[str, Any]], budget_mb: float | None
+    name: str,
+    records: Sequence[dict[str, Any]],
+    budget_mb: float | None,
+    margin: float = ESTIMATE_MARGIN,
 ) -> MemoryAdmissionPlan:
     """Size one Specialist's companion claim (pure policy).
 
@@ -148,16 +172,13 @@ def plan_specialist_claim(
     a readable budget caps the reservation at half. With no readable budget it
     reserves the default, judged against a budget equal to the default.
     """
+    default = _DEFAULT_SPECIALIST_PEAK_MB * margin
     if budget_mb is None:
-        reservation = DEFAULT_SPECIALIST_RESERVATION_MB
+        reservation = default
         claim_budget = reservation
     else:
-        estimate = specialist_memory_mb(records, name)
-        reservation = (
-            estimate
-            if estimate is not None and estimate <= budget_mb
-            else DEFAULT_SPECIALIST_RESERVATION_MB
-        )
+        estimate = specialist_memory_mb(records, name, margin=margin)
+        reservation = estimate if estimate is not None and estimate <= budget_mb else default
         reservation = min(reservation, budget_mb / 2)
         claim_budget = budget_mb
     return MemoryAdmissionPlan(
@@ -195,8 +216,11 @@ def _shrinkable_phases(
 
 def _read_history_and_budget(
     booley_dir: Path | None,
-) -> tuple[list[dict[str, Any]], float | None, str | None]:
-    """The Resource History records, the Memory Budget in MiB, and why it is unavailable.
+) -> tuple[list[dict[str, Any]], float | None, str | None, float]:
+    """The Resource History records, the Memory Budget in MiB, why it is unavailable, and the margin.
+
+    The margin is the memory estimate margin: smaller with a swap allowance,
+    :data:`ESTIMATE_MARGIN` when the budget is unavailable.
 
     An unreadable or foreign history reads as empty (every Job unknown), as
     ``append_records`` treats it; an uncomputable budget is ``None`` with its
@@ -211,11 +235,14 @@ def _read_history_and_budget(
             logger.warning("Resource History unreadable; sizing Jobs as unknown: %s", exc)
     budget_mb: float | None = None
     budget_error: str | None = None
+    margin = ESTIMATE_MARGIN
     try:
-        budget_mb = compute_memory_budget().bytes / _BYTES_PER_MIB
+        budget = compute_memory_budget()
+        budget_mb = budget.bytes / _BYTES_PER_MIB
+        margin = memory_margin(budget.swap_bytes)
     except (OSError, ValueError) as exc:
         budget_error = str(exc)
-    return records, budget_mb, budget_error
+    return records, budget_mb, budget_error, margin
 
 
 def measure_memory_claim(
@@ -228,13 +255,13 @@ def measure_memory_claim(
 
 def measure_specialist_claim(booley_dir: Path | None, name: str) -> MemoryAdmissionPlan:
     """Read the Resource History and the Memory Budget, then size Specialist *name*'s claim."""
-    records, budget_mb, _budget_error = _read_history_and_budget(booley_dir)
-    return plan_specialist_claim(name, records, budget_mb)
+    records, budget_mb, _budget_error, margin = _read_history_and_budget(booley_dir)
+    return plan_specialist_claim(name, records, budget_mb, margin)
 
 
 def measure_coordinator_claim() -> MemoryAdmissionPlan:
     """Read the Memory Budget, then make the mutation coordinator's claim."""
-    _records, budget_mb, _budget_error = _read_history_and_budget(None)
+    _records, budget_mb, _budget_error, _margin = _read_history_and_budget(None)
     return plan_coordinator_claim(budget_mb)
 
 
@@ -250,9 +277,14 @@ class MemorySizing:
 
     def plan_work_item(self, request: JobRequest | None, *, build: bool) -> MemoryClaim:
         """Size one item from the history as it is now (earlier items add to it)."""
-        records, budget_mb, budget_error = _read_history_and_budget(self.booley_dir)
+        records, budget_mb, budget_error, margin = _read_history_and_budget(self.booley_dir)
         claim, warning = plan_work_item_claim(
-            request, build=build, records=records, budget_mb=budget_mb, budget_error=budget_error
+            request,
+            build=build,
+            records=records,
+            budget_mb=budget_mb,
+            budget_error=budget_error,
+            margin=margin,
         )
         if warning is not None and warning not in self.warnings:
             self.warnings.append(warning)
@@ -273,9 +305,9 @@ def job_threads_at_start(
     use no EDA threads and must not shrink a Flow Job's share.
 
     A Simulation Record work item that took its own claim passes its Flow's token as
-    *own_flow*: the Flow's reservation is zero by then (an item takes a claim
-    only after the Flow dropped to zero), so it holds no share of the cores and
-    is left out. Every other caller passes nothing and counts every holder.
+    *own_flow*: the Flow's reservation is zero by then (the item's claim takes
+    over the Flow's reservation and drops it to zero), so it holds no share of
+    the cores and is left out. Every other caller passes nothing and counts every holder.
     """
     holders, _waiters = store.snapshot(CLASS_MEMORY)
     if own_flow is not None:

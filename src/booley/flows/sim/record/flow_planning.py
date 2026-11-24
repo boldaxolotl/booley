@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+from booley.config.project_config import load_test_configuration, lookup_target_section
+from booley.config.tests_toml_rules import parse_test_variants
 from booley.core.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.flows.sim.config import (
@@ -99,7 +101,12 @@ def plan_ordinary_hdl_simulation_record(
         handle, inspection, sources, trace, coverage=False
     )
     target = _target_document(handle, root, revision, role)
-    suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
+    suite = _required_suite(
+        root,
+        required_suite,
+        handle.identity,
+        catalog_backed=required_suite_catalog_backed,
+    )
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(
         run_groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
@@ -153,7 +160,12 @@ def plan_coarse_simulation_record(
         no_waivers=no_waivers,
     )
     target = _target_document(handle, root, revision, "candidate")
-    suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
+    suite = _required_suite(
+        root,
+        required_suite,
+        handle.identity,
+        catalog_backed=required_suite_catalog_backed,
+    )
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(runs, target, variant, configured_cwd, run_kind, kind=kind)
     manifest = _manifest_document(
@@ -408,6 +420,7 @@ def _eda_identity(kind: str | None) -> str:
 def _required_suite(
     root: Path,
     names: Sequence[str],
+    identity: str,
     *,
     catalog_backed: bool | None = None,
 ) -> dict[str, object]:
@@ -431,6 +444,50 @@ def _required_suite(
         "source_path": relative,
         "source_bytes": len(raw),
         "source_sha256": content_digest(raw),
+        "target_tests": _target_tests(root, identity),
+    }
+
+
+def _target_tests(root: Path, identity: str) -> dict[str, object]:
+    """Fingerprint the Target's own ``tests.toml`` section, as the Flow applies it.
+
+    Comments, formatting, other Targets and unused shared lists never reach it.
+    """
+    try:
+        section = lookup_target_section(load_test_configuration(root), identity) or {}
+        skipped = set(section.get("skip") or ())
+        variants = section.get("variants") or {}
+        tests = [
+            {
+                "name": name,
+                "sha256": document_digest(
+                    {
+                        "skipped": name in skipped,
+                        "variants": _test_variants_document(name, variants.get(name)),
+                    }
+                ),
+            }
+            for name in section.get("tests") or ()
+        ]
+    except (OSError, ValueError) as exc:
+        raise SimulationRecordIntegrityError(
+            f"cannot read the Target's Tests from tests.toml: {exc}"
+        ) from exc
+    settings = {key: section.get(key) for key in ("select", "env", "seed", "default_seed")}
+    return {"tests": tests, "settings": settings}
+
+
+def _test_variants_document(test: str, raw: object) -> dict[str, object] | None:
+    """One Test's Variants in canonical form: sorted by name, arguments in order."""
+    if raw is None:
+        return None
+    table = parse_test_variants(test, raw)
+    return {
+        "default": table.default,
+        "variants": [
+            {"name": item.name, "args": list(item.args), "env": dict(item.env)}
+            for item in sorted(table.variants, key=lambda item: item.name)
+        ],
     }
 
 

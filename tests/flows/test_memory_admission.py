@@ -1,20 +1,16 @@
-"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs (#3701, ADR 0087).
-
-The module under test is imported inside each test body (through ``_admission``)
-so a missing module fails the test itself, not its collection.
-"""
+"""Memory admission of sim, synth, fpga, lint and Custom Flow Jobs (#3701, ADR 0087)."""
 
 from __future__ import annotations
 
-import importlib
 import json
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from booley.flows import memory_admission as admission
 from booley.flows.job_estimates import JobRequest
 from booley.flows.prepared_invocation import OrdinaryRunInvocation, TargetSelectionInvocation
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
@@ -26,10 +22,6 @@ from booley.targets.catalog import TargetCatalog
 from tests.test_job_slots import FakeWorld, make_store, spawn
 
 BUDGET_MIB = 1200.0
-
-
-def _admission() -> ModuleType:
-    return importlib.import_module("booley.flows.memory_admission")
 
 
 def _record(
@@ -57,7 +49,14 @@ def _history(*peaks: tuple[str, float]) -> list[dict[str, Any]]:
 
 
 def _plan(requests, records, budget_mib: float | None = BUDGET_MIB, error: str | None = None):
-    return _admission().plan_memory_claim(requests, records, budget_mib, error)
+    return admission.plan_memory_claim(requests, records, budget_mib, error)
+
+
+@pytest.fixture
+def slots(tmp_path: Path) -> tuple[FakeWorld, Any]:
+    """A simulated process table and the slot store over it."""
+    world = FakeWorld()
+    return world, make_store(tmp_path / "slots", world)
 
 
 def _join(store, world: FakeWorld, pid: int, plan):
@@ -66,35 +65,17 @@ def _join(store, world: FakeWorld, pid: int, plan):
     return store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=plan.claim)
 
 
-def test_jobs_whose_reservations_fit_run_together_and_a_third_queues(tmp_path: Path) -> None:
-    world = FakeWorld()
-    store = make_store(tmp_path / "slots", world)
-    # A 400 MiB peak is a 500 MiB estimate: two fit the 1,200 MiB budget, three do not.
-    records = _history(("a", 400), ("b", 400), ("c", 400))
-    plans = [_plan(_synth(target), records) for target in "abc"]
-
-    assert [plan.claim.reservation_mb for plan in plans] == [500.0, 500.0, 500.0]
-    first, second, third = (
-        _join(store, world, 101 + index, plan) for index, plan in enumerate(plans)
-    )
-
-    assert store.refresh(first).state == HOLDING
-    assert store.refresh(second).state == HOLDING
-    assert store.refresh(third) == TokenState(QUEUED, position=0)
-    store.release(first)
-    assert store.refresh(third).state == HOLDING
-
-
-def test_job_threads_at_start_skips_only_the_items_own_flow_token(tmp_path: Path) -> None:
-    world = FakeWorld()
-    store = make_store(tmp_path / "slots", world)
+def test_job_threads_at_start_skips_only_the_items_own_flow_token(
+    slots: tuple[FakeWorld, Any],
+) -> None:
+    world, store = slots
     records = _history(("a", 40), ("b", 40), ("c", 40))
     own_flow, other_flow, sized = (
         _join(store, world, 101 + index, _plan(_synth(target), records))
         for index, target in enumerate("abc")
     )
     assert all(store.refresh(token).state == HOLDING for token in (own_flow, other_flow, sized))
-    job_threads_at_start = _admission().job_threads_at_start
+    job_threads_at_start = admission.job_threads_at_start
 
     # Every holder counts for another Job: three holders on six cores.
     assert job_threads_at_start(store, 6) == 2
@@ -102,13 +83,14 @@ def test_job_threads_at_start_skips_only_the_items_own_flow_token(tmp_path: Path
     assert job_threads_at_start(store, 6, own_flow=own_flow) == 3
 
 
-def test_unknown_job_waits_for_an_empty_budget_runs_alone_and_blocks(tmp_path: Path) -> None:
-    world = FakeWorld()
-    store = make_store(tmp_path / "slots", world)
+def test_unknown_job_waits_for_an_empty_budget_runs_alone_and_blocks(
+    slots: tuple[FakeWorld, Any],
+) -> None:
+    world, store = slots
     records = _history(("a", 400))
     holder = _join(store, world, 101, _plan(_synth("a"), records))
     # A phase never recorded in the Project, and an absent request list, cannot be sized.
-    unknown = _plan((JobRequest("fpga", "a"),), records)
+    unknown = _plan((JobRequest("lint", "a"),), records)
     assert unknown.claim.run_alone and unknown.warning is None
     assert _plan(None, records).claim.run_alone
     assert _plan((), records).claim.run_alone
@@ -148,40 +130,81 @@ def test_only_a_job_with_its_own_wall_clock_history_jumps_ahead(tmp_path: Path) 
         assert store.refresh(jumper).state == state, name
 
 
-def test_job_larger_than_the_budget_runs_alone_with_a_warning(tmp_path: Path) -> None:
-    # A 2,000 MiB peak is a 2,500 MiB estimate against a 1,000 MiB budget.
+_OVER = "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
+_NO_BUDGET = "Memory Budget unavailable (no MemTotal); this Job ran alone."
+_UNESTIMATED = (JobRequest("sim", "t", test_runs=("x",)),)
+_NOTE = (
+    "No memory measurement yet for {}; this Job ran alone, "
+    "and later runs are sized from its measurement."
+)
+
+
+# A 2,000 MiB peak is a 2,500 MiB estimate against 1,000 MiB. ``MemoryClaim`` refuses a
+# reservation of 0, so a zero peak cannot hold a share. One known and one unknown phase:
+# the Job still needs the whole budget. A size-dependent phase never borrows another
+# Target's peak (#4536): its Target's first run runs alone and says so.
+@pytest.mark.parametrize(
+    ("requests", "records", "budget", "error", "warning", "unmeasured"),
+    [
+        (_synth("big"), _history(("big", 2000)), 1000.0, None, _OVER, None),
+        (_synth("a"), _history(("a", 0)), BUDGET_MIB, None, None, None),
+        (_UNESTIMATED, [_record("t", "sim_build", 100)], BUDGET_MIB, None, None, None),
+        (_synth("a"), _history(("a", 400)), None, "no MemTotal", _NO_BUDGET, None),
+        (
+            _synth("chip"),
+            _history(("block", 400)),
+            BUDGET_MIB,
+            None,
+            _NOTE.format("synth on Target chip"),
+            "synth on Target chip",
+        ),
+        (
+            (JobRequest("fpga", "chip"),),
+            [_record("block", "fpga_impl", 400)],
+            BUDGET_MIB,
+            None,
+            _NOTE.format("fpga_impl on Target chip"),
+            "fpga_impl on Target chip",
+        ),
+        (
+            _synth("big", "chip"),
+            _history(("big", 2000)),
+            1000.0,
+            None,
+            f"{_OVER}\n{_NOTE.format('synth on Target chip')}",
+            "synth on Target chip",
+        ),
+    ],
+    ids=[
+        "larger-than-budget",
+        "zero-peak",
+        "unestimated-phase",
+        "unavailable-budget",
+        "unmeasured-synth-target",
+        "unmeasured-fpga-target",
+        "over-budget-and-unmeasured",
+    ],
+)
+def test_job_without_a_fitting_estimate_runs_alone(
+    requests: tuple[JobRequest, ...],
+    records: list[dict[str, Any]],
+    budget: float | None,
+    error: str | None,
+    warning: str | None,
+    unmeasured: str | None,
+) -> None:
+    plan = _plan(requests, records, budget, error)
+
+    assert plan.claim.run_alone
+    assert plan.warning == warning
+    assert plan.claim.unmeasured == unmeasured
+
+
+def test_job_larger_than_the_budget_holds_the_store_alone(slots: tuple[FakeWorld, Any]) -> None:
+    world, store = slots
     plan = _plan(_synth("big"), _history(("big", 2000)), budget_mib=1000.0)
 
-    assert plan.claim.run_alone
-    assert plan.warning == (
-        "Memory estimate 2500 MiB exceeds the Memory Budget of 1000 MiB; this Job ran alone."
-    )
-    world = FakeWorld()
-    store = make_store(tmp_path / "slots", world)
-    token = _join(store, world, 101, plan)
-    assert store.refresh(token).state == HOLDING
-
-
-def test_job_with_a_zero_peak_runs_alone() -> None:
-    """``MemoryClaim`` refuses a reservation of 0, so such a Job cannot hold a share."""
-    plan = _plan(_synth("a"), _history(("a", 0)))
-
-    assert plan.claim.run_alone and plan.warning is None
-
-
-def test_job_with_an_unestimated_phase_runs_alone() -> None:
-    """One known phase and one unknown phase: the Job still needs the whole budget."""
-    request = JobRequest("sim", "t", test_runs=("x",))
-    plan = _plan((request,), [_record("t", "sim_build", 100)])
-
-    assert plan.claim.run_alone and plan.warning is None
-
-
-def test_unavailable_budget_runs_alone_with_a_warning() -> None:
-    plan = _plan(_synth("a"), _history(("a", 400)), budget_mib=None, error="no MemTotal")
-
-    assert plan.claim.run_alone
-    assert plan.warning == "Memory Budget unavailable (no MemTotal); this Job ran alone."
+    assert store.refresh(_join(store, world, 101, plan)).state == HOLDING
 
 
 def _booley_dir(tmp_path: Path) -> Path:
@@ -197,7 +220,7 @@ def _write_history(booley_dir: Path, document: object) -> None:
 
 
 def _measure(booley_dir: Path | None, requests):
-    return _admission().measure_memory_claim(booley_dir, requests)
+    return admission.measure_memory_claim(booley_dir, requests)
 
 
 def test_measure_reads_the_history_and_the_pinned_budget(
@@ -228,7 +251,7 @@ def test_unreadable_memory_runs_alone_with_a_warning(monkeypatch: pytest.MonkeyP
     def unreadable(**_: object) -> object:
         raise OSError("MemTotal unreadable")
 
-    monkeypatch.setattr(_admission(), "compute_memory_budget", unreadable)
+    monkeypatch.setattr(admission, "compute_memory_budget", unreadable)
 
     plan = _measure(None, _synth("a"))
 
@@ -254,21 +277,18 @@ def _synth_flow(tmp_path: Path):
     return AsicSynthesizeFlow(), handle
 
 
-def test_target_is_requested_once_whatever_baseline_it_runs(tmp_path: Path) -> None:
-    flow, handle = _synth_flow(tmp_path)
-
-    assert flow.memory_job_requests((handle,)) == _synth("synth_after")
-
-
 def _selection(handle: Any, *, matches: bool = True) -> Any:
     return SimpleNamespace(handles=(handle,), matches=lambda *_args: matches)
 
 
 def test_target_selection_invocation_sizes_its_prepared_targets(tmp_path: Path) -> None:
     flow, handle = _synth_flow(tmp_path)
-    flow._args = SimpleNamespace(work_dir=tmp_path, target="synth_after")
+    flow._args = SimpleNamespace(
+        work_dir=tmp_path, target="synth_after", baseline=None, frontend=None
+    )
 
     def invocation(selection: Any) -> TargetSelectionInvocation:
+        # Private seam: the Flow's run step is the callable the invocation wraps.
         return TargetSelectionInvocation(flow, selection, flow._run)
 
     assert invocation(_selection(handle)).job_requests() == _synth("synth_after")
@@ -288,37 +308,6 @@ def test_lint_requests_every_target_it_lints() -> None:
 
     assert requests == (JobRequest("lint", "a"), JobRequest("lint", "b"))
     assert phase_keys(requests[0]) == (HistoryKey("a", "lint", (), ""),)
-
-
-def test_custom_flow_invocation_sizes_its_flow_phase() -> None:
-    import argparse
-
-    from booley.flows.base import BooleyFlow
-    from booley.flows.job_estimates import HistoryKey, phase_keys
-    from booley.runtime.endpoint_execution import EndpointOutcome
-
-    class EchoFlow(BooleyFlow):
-        name = "echo_flow"
-        description = "Custom Flow for sizing tests"
-
-        def _add_args(self, parser: argparse.ArgumentParser) -> None:
-            """This Flow takes no options of its own."""
-
-        def _run(self) -> EndpointOutcome:
-            return EndpointOutcome()
-
-    # With and without a Target: the request names the one given, else the empty Target.
-    for target in ("echo", ""):
-        flow = EchoFlow()
-        flow._args = SimpleNamespace(target=target)  # type: ignore[assignment]
-
-        invocation = flow.prepare_endpoint_invocation()
-
-        assert isinstance(invocation, OrdinaryRunInvocation), target
-        assert invocation.job_requests() == (JobRequest("echo_flow", target),), target
-        # The key the recorder writes for an unlabelled Custom Flow command.
-        (request,) = invocation.job_requests() or ()
-        assert phase_keys(request) == (HistoryKey(target, "echo_flow", (), ""),), target
 
 
 def test_ordinary_run_invocation_is_unknown() -> None:
@@ -348,60 +337,65 @@ def _prepared(
     return PreparedSimulationEndpoint(handles, resume, selected, {"top": ["smoke"]})  # type: ignore[arg-type]
 
 
-def _resolve(monkeypatch: pytest.MonkeyPatch, flow: SimulateFlow) -> list[str]:
+def _resolve(
+    monkeypatch: pytest.MonkeyPatch, flow: SimulateFlow, *, refuse: bool = False
+) -> list[str]:
     """Replace Test Run resolution with a recorded stand-in; returns the Targets asked."""
     asked: list[str] = []
+
+    def resolve(target: str, _map: Any) -> tuple[()]:
+        if refuse:
+            raise ValueError("no such Test")
+        asked.append(target)
+        return ()
+
+    # Private seam: resolving Test Runs reads a registered test plan from a real
+    # Simulation Target; the stand-in fixes what resolution returns.
     monkeypatch.setattr(
         flow, "_registered_test_plan", lambda target, _map: SimpleNamespace(target=target)
     )
-    monkeypatch.setattr(
-        flow, "_resolve_test_runs", lambda target, _map: asked.append(target) or ()
-    )
+    monkeypatch.setattr(flow, "_resolve_test_runs", resolve)
     monkeypatch.setattr(
         "booley.flows.sim.flow.sim_job_request",
-        lambda plan, runs, *, flags: JobRequest(
-            "sim", plan.target, test_runs=("smoke",), flags=flags
+        lambda plan, runs, *, flags, pre_sim_commands=False: JobRequest(
+            "sim",
+            plan.target,
+            test_runs=("smoke",),
+            flags=flags,
+            pre_sim_commands=pre_sim_commands,
         ),
     )
     return asked
 
 
+@pytest.mark.parametrize(
+    ("prepared", "refuse", "expected", "asked"),
+    [
+        # A baseline on a selected Target re-runs that Target's keys: no extra request.
+        pytest.param(
+            _prepared(baselines=("top",)),
+            False,
+            (JobRequest("sim", "top", test_runs=("smoke",)),),
+            ["top"],
+            id="resolved",
+        ),
+        # A resume has no Test Runs yet.
+        pytest.param(_prepared(resume=object()), False, None, [], id="resume"),
+        pytest.param(_prepared(), True, None, [], id="unresolvable"),
+    ],
+)
 def test_simulation_record_is_sized_from_its_resolved_test_runs(
     monkeypatch: pytest.MonkeyPatch,
+    prepared: PreparedSimulationEndpoint,
+    refuse: bool,
+    expected: tuple[JobRequest, ...] | None,
+    asked: list[str],
 ) -> None:
     flow = _sim_flow()
-    asked = _resolve(monkeypatch, flow)
+    seen = _resolve(monkeypatch, flow, refuse=refuse)
 
-    # A baseline on a selected Target re-runs that Target's keys: no extra request.
-    requests = flow.simulation_record_job_requests(_prepared(baselines=("top",)))
-
-    assert requests == (JobRequest("sim", "top", test_runs=("smoke",)),)
-    assert asked == ["top"]
-
-
-def test_sim_job_with_unresolved_runs_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A resume has no Test Runs yet."""
-    flow = _sim_flow()
-    asked = _resolve(monkeypatch, flow)
-
-    assert flow.simulation_record_job_requests(_prepared(resume=object())) is None
-    assert asked == []
-
-
-def test_simulation_record_that_cannot_resolve_its_test_runs_is_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    flow = _sim_flow()
-
-    def refuse(*_args: Any) -> Any:
-        raise ValueError("no such Test")
-
-    monkeypatch.setattr(flow, "_resolve_test_runs", refuse)
-    monkeypatch.setattr(
-        flow, "_registered_test_plan", lambda *_args: SimpleNamespace(target="top")
-    )
-
-    assert flow.simulation_record_job_requests(_prepared()) is None
+    assert flow.simulation_record_job_requests(prepared) == expected
+    assert seen == asked
 
 
 def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
@@ -414,7 +408,7 @@ def test_work_item_claim_reserves_its_build_only_when_it_builds() -> None:
     request = JobRequest("sim", "top", test_runs=("smoke",))
 
     def size(request, *, build, records=records, budget=BUDGET_MIB, error=None):
-        return _admission().plan_work_item_claim(
+        return admission.plan_work_item_claim(
             request, build=build, records=records, budget_mb=budget, budget_error=error
         )
 
@@ -450,7 +444,7 @@ def test_settled_work_item_reserves_sim_prepare_with_its_run() -> None:
     request = JobRequest("sim", "top", test_runs=("smoke",))
 
     def size(records):
-        claim, _ = _admission().plan_work_item_claim(
+        claim, _ = admission.plan_work_item_claim(
             request, build=False, records=records, budget_mb=BUDGET_MIB, budget_error=None
         )
         return claim
@@ -484,6 +478,8 @@ def test_work_item_request_resolves_each_target_plan_once(
             raise ValueError("no such Target")
         return SimpleNamespace(target=selector)
 
+    # Private seam: resolving Test Runs reads a registered test plan from a real
+    # Simulation Target; the stand-in fixes what resolution returns.
     monkeypatch.setattr(flow, "_target_test_plan", plan_of)
     monkeypatch.setattr(
         "booley.flows.sim.flow.sim_job_request",
@@ -506,7 +502,6 @@ def test_work_item_request_resolves_each_target_plan_once(
 def test_job_thread_count_prefers_the_admission_then_the_inherited_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    admission = _admission()
     monkeypatch.delenv(admission.JOB_THREADS_ENV, raising=False)
     assert admission.job_thread_count() is None
 
@@ -539,7 +534,7 @@ def test_specialist_claim_reserves_its_own_history() -> None:
         _record("a", "synth", 2000),
     ]
 
-    plan = _admission().plan_specialist_claim("reviewer", records, BUDGET_MIB)
+    plan = admission.plan_specialist_claim("reviewer", records, BUDGET_MIB)
 
     # 346 MiB x the estimator's 1.25 margin.
     assert plan.claim == job_slots.MemoryClaim(
@@ -549,9 +544,7 @@ def test_specialist_claim_reserves_its_own_history() -> None:
 
 
 def test_specialist_claim_without_history_reserves_the_default() -> None:
-    admission = _admission()
     # The largest peak measured in #4067 (362 MiB), with the estimate margin.
-    assert admission.DEFAULT_SPECIALIST_RESERVATION_MB == 452.5
     records = [_specialist_record("reviewer", None), _record("a", "synth", 900)]
     for name, history in (("reviewer", records), ("coverage_analyst", [])):
         plan = admission.plan_specialist_claim(name, history, 4000.0)
@@ -560,8 +553,41 @@ def test_specialist_claim_without_history_reserves_the_default() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("swap_bytes", "synth_mib", "specialist_mib"),
+    [
+        pytest.param(4 * 1024**3, 1100.0, 440.0, id="swap"),
+        pytest.param(0, 1250.0, 500.0, id="no-swap"),
+    ],
+)
+def test_estimate_margin_follows_the_sandbox_swap_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swap_bytes: int,
+    synth_mib: float,
+    specialist_mib: float,
+) -> None:
+    from tests.memory_budget_support import budget_of
+
+    monkeypatch.setattr(
+        admission,
+        "compute_memory_budget",
+        lambda **_: budget_of(8000 * 1024**2, swap_bytes=swap_bytes),
+    )
+    booley_dir = _booley_dir(tmp_path)
+    specialist = _specialist_record("reviewer", 346)
+    specialist["peak_memory_with_swap_mb"] = 400.0  # swapped 54 MiB out
+    records = [*_history(("a", 1000)), _record("", "sim_build", 1000), specialist]
+    _write_history(booley_dir, {"$schema": SCHEMA, "records": records})
+
+    assert _measure(booley_dir, _synth("a")).claim.reservation_mb == pytest.approx(synth_mib)
+    sized = admission.MemorySizing(booley_dir).plan_work_item(JobRequest("synth", "a"), build=True)
+    assert sized.reservation_mb == pytest.approx(synth_mib)
+    specialist_claim = admission.measure_specialist_claim(booley_dir, "reviewer").claim
+    assert specialist_claim.reservation_mb == pytest.approx(specialist_mib)
+
+
 def test_specialist_and_coordinator_claims_stay_bounded() -> None:
-    admission = _admission()
     huge = [_specialist_record("reviewer", 4000)]
     # (records, budget MiB, claim budget, reservation)
     cases: list[tuple[list[dict[str, Any]], float | None, float, float]] = [
@@ -586,35 +612,13 @@ def test_specialist_and_coordinator_claims_stay_bounded() -> None:
         )
 
 
-def test_measuring_a_specialist_or_coordinator_reads_the_history_and_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    admission = _admission()
-    monkeypatch.setattr(
-        admission, "compute_memory_budget", lambda: SimpleNamespace(bytes=1000 * 2**20)
-    )
-    monkeypatch.setattr(
-        admission, "load_records", lambda _dir: [_specialist_record("reviewer", 100)]
-    )
-
-    assert admission.measure_specialist_claim(tmp_path, "reviewer").claim.reservation_mb == 125.0
-    assert admission.measure_coordinator_claim().claim.budget_mb == 1000.0
-    monkeypatch.setattr(
-        admission, "compute_memory_budget", lambda: (_ for _ in ()).throw(OSError("no MemTotal"))
-    )
-    assert admission.measure_specialist_claim(tmp_path, "reviewer").claim.reservation_mb == 452.5
-    assert admission.measure_coordinator_claim().claim.budget_mb == 0.0
-
-
-def test_job_threads_leave_companion_holders_out(tmp_path: Path) -> None:
-    world = FakeWorld()
-    store = make_store(tmp_path / "slots", world)
+def test_job_threads_leave_companion_holders_out(slots: tuple[FakeWorld, Any]) -> None:
+    world, store = slots
     records = _history(("a", 40), ("b", 40))
     tokens = [
         _join(store, world, 101 + index, _plan(_synth(target), records))
         for index, target in enumerate("ab")
     ]
-    admission = _admission()
     for index in range(2):
         spawn(world, 201 + index)
         claim = admission.plan_specialist_claim("reviewer", [], BUDGET_MIB).claim

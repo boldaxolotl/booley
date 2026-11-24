@@ -15,7 +15,7 @@ current attempt's evidence.
 
 - The Simulation Record owns policy: the immutable plan, manifest, durable
   serial scheduling and resume. `SimulateFlow` owns Target and test selection,
-  Cycle Count prerequisites, Criteria, reports and the exit code. Neither
+  Cycle Count prerequisites, reports and the exit code. Neither
   depends on leaf-adapter details.
 - Adapter composition is the only place that selects a simulator. Leaf
   adapters run only their own simulator (launch, verdict normalization, trace
@@ -64,7 +64,8 @@ current attempt's evidence.
 - On the durable path, Pre-Sim Commands fire once per Simulation Attempt,
   after bundle authentication and runtime-input staging and before launch. The
   explicit legacy per-test access mode uses a private build per work item and
-  fires before compilation. Cocotb fires once per batch.
+  fires before compilation. Cocotb fires once per batch, or once per Test
+  Run in a coverage run.
 - Elaboration Check does not use this seam; it shares only build preparation
   and classification with full Simulation.
 

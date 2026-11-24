@@ -356,7 +356,7 @@ Specialists) unless you pass `--report-dir`, and return the usual exit codes.
 ### Where its output goes
 
 A Developer Agent's MCP server writes its logs under
-`.interactive_logs/<session-id>/` in the Main Booley Directory. Use the paths
+`job_logs/<session-id>/` in the Main Booley Directory. Use the paths
 the result returns rather than
 guessing.
 
@@ -364,60 +364,15 @@ If a custom endpoint does not appear, check its syntax and literal metadata,
 check that its `[flows.<name>]` or `[specialists.<name>]` table does not
 disable it, run `booley doctor`, and request a fresh tool list.
 
-## Criteria
-
-A [Criterion](../GLOSSARY.md#execution-and-evidence) is the internal
-condition-plus-evidence form. A custom endpoint records none.
-
-### The Criterion catalog
-
-| Location | Holds |
-|---|---|
-| `data/criteria.toml` in the Booley package | Base Criteria for the built-in endpoints |
-| `criteria.toml` in the Booley Directory | Project Criteria |
-
-A Project file may not redefine a base Criterion; validation fails on a
-collision. The catalog maps each base Criterion to the one built-in endpoint
-that claims it; two built-in endpoints claiming the same Criterion raise
-`CriterionEndpointCatalogError`, while identical repeated claims are accepted.
-
-```toml
-[drc_clean]
-description     = "Project DRC rules pass"
-workflow_region = "pre_sim"
-per_target      = true
-category        = "rtl"
-
-[protocol_compliant]
-description     = "RTL complies with the reviewed protocol"
-workflow_region = "post_sim"
-per_target      = false
-category        = "none"
-```
-
-| Field | Values | Meaning |
-|---|---|---|
-| `description` | string | What the Criterion checks |
-| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | When it applies: `pre_sim` (before simulation), `core_loop` (the edit-and-test loop), `post_sim` (after simulation); it only orders advice and never blocks a run |
-| `per_target` | `true`, `false` | Whether it expands to one key per Target |
-| `category` | `rtl`, `tb`, `none` | Which source changes the Criterion depends on |
-
-Booley still reads
-the key `phase` in place of `workflow_region`, with a warning; rename it.
-
-To add a Project Criterion, pick a name that is not in the base catalog, add its
-four fields to the Project `criteria.toml`, run `booley doctor`, and check the
-live catalog with `booley cheat`.
-
 ## Validation and diagnostics
 
 Shared validation in `booley.mcp.endpoint_validation` checks custom endpoint
-metadata and the Project `criteria.toml`; `booley doctor` runs it alongside its
-Project checks. None of these replaces running the endpoint on a real case.
+metadata; `booley doctor` runs it alongside its Project checks. None of these
+replaces running the endpoint on a real case.
 
 To validate a new endpoint:
 
-1. Run `booley doctor` and fix every endpoint and Criterion finding.
+1. Run `booley doctor` and fix every endpoint finding.
 2. Request a fresh tool list and confirm the endpoint is listed.
 3. Run it through the Developer Agent on a known-good and a known-bad case.
 4. Run a Flow with `booley flow` or a Specialist with `booley specialist` and

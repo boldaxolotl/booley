@@ -26,6 +26,7 @@ from tests.execution_test_support import (
     wait_for,
 )
 from tests.subprocess_budget import run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
@@ -63,7 +64,7 @@ def _start_supervisor_with_test_heartbeat(
     heartbeat_path: Path,
     command: list[str],
     *,
-    grace_seconds: float = 0.25,
+    grace_seconds: float = scaled(0.25),
 ) -> subprocess.Popen[str]:
     bootstrap = (
         "from pathlib import Path\n"
@@ -91,7 +92,7 @@ def _start_supervisor_with_test_heartbeat(
             "--grace-seconds",
             str(grace_seconds),
             "--attachment-timeout-seconds",
-            "5",
+            str(2 * hang_guard_s()),
             "--",
             *command,
         ],
@@ -121,7 +122,7 @@ def _run_command(tmp_path: Path, command: list[str], *, path: str | None = None)
             *command,
         ],
         env=env,
-        timeout=10,
+        timeout=2 * hang_guard_s(),
     )
     return result, read_json(paths.record)
 
@@ -287,7 +288,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
         )
         assert cancel.returncode == 0, cancel.stderr
 
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         wait_for(
             lambda: descendant_pid is not None and not _non_zombie_alive(descendant_pid),
             failure="detached descendant did not stop",
@@ -300,7 +301,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
         if supervisor.poll() is None:
             supervisor.kill()
         # Kept on Popen: reaps the supervisor the test drives itself.
-        supervisor.communicate(timeout=5)
+        supervisor.communicate(timeout=hang_guard_s())
         if descendant_pid is not None and _non_zombie_alive(descendant_pid):
             os.killpg(descendant_pid, signal.SIGKILL)
 
@@ -323,7 +324,7 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
             lambda: len(_heartbeat_generations(heartbeat_path)) >= 2,
             failure="supervisor did not refresh its reaper heartbeat",
         )
-        assert supervisor.wait(timeout=5) == 7
+        assert supervisor.wait(timeout=hang_guard_s()) == 7
         payload = read_json(paths.record)
         assert payload["state"] == "terminal"
         assert payload["exit_code"] == 7
@@ -331,7 +332,7 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Path) -> None:
@@ -367,7 +368,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
         wait_for(child_ready.exists, failure="child did not finish startup")
         before_cancel = len(_heartbeat_generations(heartbeat_path))
         request_cancellation(paths, signum=signal.SIGINT)
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         after_cancel = len(_heartbeat_generations(heartbeat_path))
         assert after_cancel > before_cancel
         payload = read_json(paths.record)
@@ -376,7 +377,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
@@ -397,7 +398,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "--grace-seconds",
             "0.1",
             "--attachment-timeout-seconds",
-            "0.1",
+            str(scaled(0.1)),
             "--",
             "sleep",
             "120",
@@ -405,7 +406,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
         env=runtime_env(booley_dir),
     )
     try:
-        assert supervisor.wait(timeout=5) == 130
+        assert supervisor.wait(timeout=hang_guard_s()) == 130
         payload = json.loads(paths.record.read_text(encoding="utf-8"))
         assert payload["state"] == "terminal"
         assert payload["terminal_cause"] == "attachment_expired"
@@ -413,7 +414,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
     finally:
         if supervisor.poll() is None:
             supervisor.kill()
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=hang_guard_s())
 
 
 def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
@@ -489,7 +490,7 @@ if middle == 0:
     os._exit(0)
 grandchild = int(os.read(read_fd, 32))
 os.waitpid(middle, 0)
-deadline = time.monotonic() + 3
+deadline = time.monotonic() + {deadline_s}
 while os.path.exists(f"/proc/{{grandchild}}"):
     if time.monotonic() > deadline:
         sys.exit(9)
@@ -499,7 +500,7 @@ while os.path.exists(f"/proc/{{grandchild}}"):
 
 def test_running_command_sees_orphaned_grandchild_reaped(tmp_path: Path) -> None:
     """An adopted orphan is reaped while the command runs, not only after it ends."""
-    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0.2)
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0.2, deadline_s=hang_guard_s())
 
     result, payload = _run_command(tmp_path, [sys.executable, "-c", script])
 
@@ -510,7 +511,7 @@ def test_running_command_sees_orphaned_grandchild_reaped(tmp_path: Path) -> None
 
 def test_signal_exit_status_survives_orphan_reaping(tmp_path: Path) -> None:
     """In-loop reaping of orphans never collects the direct child behind Popen."""
-    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0) + (
+    script = _ORPHAN_THEN_WAIT_PREFIX.format(orphan_lifetime=0, deadline_s=hang_guard_s()) + (
         "import signal\nos.kill(os.getpid(), signal.SIGTERM)\n"
     )
 
@@ -530,7 +531,7 @@ def test_orphan_reaping_leaves_uncollected_direct_child(tmp_path: Path) -> None:
         "def state():\n"
         "    stat = open(f'/proc/{proc.pid}/stat').read()\n"
         "    return stat.rsplit(')', 1)[1].split()[0]\n"
-        "deadline = time.monotonic() + 5\n"
+        f"deadline = time.monotonic() + {hang_guard_s()}\n"
         "while state() != 'Z' and time.monotonic() < deadline:\n"
         "    time.sleep(0.01)\n"
         "class Racing:\n"
@@ -544,7 +545,9 @@ def test_orphan_reaping_leaves_uncollected_direct_child(tmp_path: Path) -> None:
     )
 
     result = run_bounded_child(
-        [sys.executable, "-c", bootstrap], env=runtime_env(tmp_path), timeout=15
+        [sys.executable, "-c", bootstrap],
+        env=runtime_env(tmp_path),
+        timeout=2 * hang_guard_s(),
     )
 
     assert result.returncode == 0, result.stderr
@@ -585,7 +588,7 @@ def test_orphan_exiting_after_direct_child_is_reaped_by_end(tmp_path: Path) -> N
         "        return False\n"
         "    return stat.rsplit(')', 1)[1].split()[0] == 'Z'\n"
         "def wait_until_stop(child, *args):\n"
-        "    deadline = time.monotonic() + 5\n"
+        f"    deadline = time.monotonic() + {hang_guard_s()}\n"
         "    while time.monotonic() < deadline:\n"
         "        if grandchild_file.exists() and grandchild_file.read_text():\n"
         "            grandchild = int(grandchild_file.read_text())\n"
@@ -614,7 +617,7 @@ def test_orphan_exiting_after_direct_child_is_reaped_by_end(tmp_path: Path) -> N
             command_script,
         ],
         env=runtime_env(booley_dir),
-        timeout=15,
+        timeout=2 * hang_guard_s(),
     )
 
     payload = read_json(paths.record)
@@ -648,7 +651,7 @@ def test_register_on_a_terminal_record_keeps_it_and_kills_the_process(tmp_path: 
         SupervisedProcessSet(execution_id, tmp_path, lambda: False).register(child)
 
         assert read_json(paths.record) == terminal
-        assert child.wait(timeout=10) != 0
+        assert child.wait(timeout=hang_guard_s()) != 0
     finally:
         child.kill()
         child.wait()

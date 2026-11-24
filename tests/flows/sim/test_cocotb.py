@@ -13,16 +13,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.backends import cocotb_results as cr
-from booley.flows.sim.execution import engine as execution_engine
 from booley.flows.sim.result import format_summary
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.simulation_record_boundary import (
     SimulationRecordSimRun,
     run_simulation_record_sim,
@@ -147,7 +145,9 @@ _ALL_PASS = {name: "pass" for name, _status, _text in _PASSING}
 _ALL_FAIL = dict.fromkeys(_ALL_PASS, "fail")
 _ALL_INCONCLUSIVE = dict.fromkeys(_ALL_PASS, "inconclusive")
 _SVA_LINE = "ERROR: rtl/counter.sv:18: counter reached error trap\n"
+_NO_MATCH_XML = Path(__file__).parents[2] / "fixtures/cocotb_results/2.1.0/results-no-match.xml"
 _ZERO_MATCH_IDS = ["test_reset/ifg=12", "test_reset/ifg=0"]
+# The cocotb 2.0.1 shape: tests the filter excluded are listed as skipped.
 _ZERO_MATCH_RESULTS = cr.CocotbResults(
     state=cr.STATE_OK,
     tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in _ZERO_MATCH_IDS),
@@ -230,7 +230,24 @@ _ZERO_MATCH_RESULTS = cr.CocotbResults(
             EXIT_FAILURE,
             {"test_reset": "inconclusive"},
             ("INCONCLUSIVE", *_ZERO_MATCH_IDS),
-            id="zero-match",
+            id="zero-match-cocotb-2.0.1",
+        ),
+        pytest.param(
+            # The cocotb 2.1 shape: a filter matching nothing writes no testcase.
+            cr.format_results_line(
+                cr.results_payload(
+                    cr.compact_results(cr.parse_results_xml(_NO_MATCH_XML), ["test_reset"])
+                )
+            )
+            + "\n"
+            + format_summary(False, 0, inconclusive=True)
+            + "\n",
+            1,
+            {"test": ("test_reset",)},
+            EXIT_FAILURE,
+            {"test_reset": "inconclusive"},
+            ("INCONCLUSIVE", 'no matching test ID "test_reset"', "rendered ID"),
+            id="zero-match-cocotb-2.1",
         ),
         pytest.param(
             # An extra XML test is logged, never verdict-bearing: selected set only.
@@ -351,15 +368,11 @@ def test_cocotb_named_cycles_within_batch(tmp_path: Path, monkeypatch: pytest.Mo
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("verbosity", ["compact", "full"])
-def test_cocotb_batch_launch_document(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verbosity: str
-) -> None:
+def test_cocotb_batch_launch_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """One launch for the whole set, its document naming the adapter, module and grace."""
-    request = {} if verbosity == "compact" else {"result_verbosity": "full"}
     # F-25: the frozen-clock watchdog knob crosses into the sandbox.
     with patch("booley.flows.sim.execution.engine.resolve_sim_time_grace_s", return_value=42.0):
-        run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING), **request)
+        run = _run_cocotb(tmp_path, monkeypatch, _cocotb_output(_PASSING))
 
     assert run.result.exit_code == EXIT_SUCCESS, run.result.outcome.report_text
     (launch,) = run.launches  # one build + one sim process for 3 tests
@@ -367,7 +380,6 @@ def test_cocotb_batch_launch_document(
     assert work.adapter == "cocotb"
     assert work.tests == tuple(_TESTS["ccfg"])
     assert work.cocotb_module == "test_counter"
-    assert work.result_verbosity == verbosity
     assert work.adapter_result_path
     assert work.sim_time_grace_s == 42.0
 
@@ -481,24 +493,6 @@ def test_cocotb_build_failure_blocks_every_test(
 
 
 class TestCocotbDryRun:
-    def test_dry_run_emits_one_batched_command(self, tmp_path: Path) -> None:
-        """The engine preview is one command whose document carries every Test."""
-        from tests.flows.sim.test_execution_engine import _handle, _inspection
-
-        engine = execution_engine
-        build = patch.object(engine.TargetCatalog, "build", return_value=_inspection(cocotb=True))
-        setup = patch.object(engine.fusesoc_registry, "setup_command_for_handle", return_value=[])
-        execution = engine.SimulationExecution(
-            invoke=MagicMock(), options=engine.SimulationOptions()
-        )
-        with build, setup:
-            preview = execution.preview(_handle(tmp_path), engine.NamedTests(("a", "b", "c")))
-
-        (command,) = preview.commands
-        work = launched_work(command[2])
-        assert (work.adapter, work.cocotb_module) == ("cocotb", "test_demo")
-        assert work.tests == ("a", "b", "c")
-
     def test_dry_run_batches_the_selected_cocotb_tests_into_one_work_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

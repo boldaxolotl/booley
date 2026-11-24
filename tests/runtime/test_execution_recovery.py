@@ -20,6 +20,7 @@ from tests.execution_test_support import (
     wait_for,
     wait_for_value,
 )
+from tests.time_budget import hang_guard_s
 
 from booley.runtime import execution_recovery
 from booley.runtime.booley_dir import reset_cache
@@ -47,8 +48,8 @@ from booley.runtime.pid import (
 )
 from booley.runtime.supervised_execution import SupervisedProcessSet
 
-_PROCESS_TIMEOUT_SECONDS = 5.0
-_RECOVERY_TIMEOUT_SECONDS = 12.0
+_PROCESS_TIMEOUT_SECONDS = hang_guard_s()
+_RECOVERY_TIMEOUT_SECONDS = hang_guard_s()
 
 
 def _marked_execution_identities(execution_id: ExecutionId) -> set[ProcessIdentity]:

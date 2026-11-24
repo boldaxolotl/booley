@@ -18,8 +18,13 @@ const LIFECYCLE_PREFIX = 'Codespaces: ';
 // automatic open straight after it can find the Dashboard still counted as seen.
 // Look once more when it will have gone unseen (`UNSEEN_AFTER`, view_probe.py: 15 s).
 const RECHECK_MS = 16000;
-const ALREADY_OPEN_REASON = 'The Dashboard is already open in this Sandbox.';
+const ALREADY_OPEN_REASON = 'The Dashboard is already open in another window or terminal of this Sandbox. '
+    + 'Close it there (or press q in it), then run booley dashboard or Booley: Open Dashboard here.';
 const SKIP_NOTICES_KEY = 'autoOpenSkipNotices';
+// A terminal that shows itself as it opens becomes the terminal in front within
+// the same exchange with the window, far inside this bound; a person does not
+// select a new tab that fast.
+const OPENING_MS = 3000;
 
 // A Codespaces lifecycle-command terminal: Codespaces may send its command as
 // text, which VS Code also counts as interaction, so it never means the user
@@ -68,13 +73,34 @@ class AttachController {
         // The automatic open in flight, so the command never races it into a second terminal.
         this.opening = undefined;
         this.recheck = undefined;
+        // The terminal in front as last reported, and the lifecycle terminal that just opened with when.
+        this.front = vscode.window.activeTerminal;
+        this.opened = undefined;
         context.subscriptions.push(this.output, this,
             vscode.commands.registerCommand(OPEN_COMMAND, () => this.openByCommand()),
             vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.open(); }),
             vscode.workspace.onDidChangeConfiguration(event => {
                 if (event.affectsConfiguration(PROTOCOL)) { void this.open(); }
             }),
+            vscode.window.onDidOpenTerminal(terminal => {
+                if (isLifecycleTerminal(terminal)) { this.opened = { terminal, at: Date.now() }; }
+            }),
+            vscode.window.onDidChangeActiveTerminal(next => this.fronted(next)),
             vscode.window.onDidCloseTerminal(closed => this.closed(closed)));
+    }
+
+    // A Codespaces lifecycle terminal that takes the front from the Dashboard as
+    // it opens (a reconnect re-runs postAttachCommand) gives it back. Only then:
+    // the first time that terminal takes the front ends its opening, so one the
+    // user selects later, or any other terminal that was in front before it,
+    // stays in front.
+    fronted(next) {
+        const before = this.front;
+        const opened = this.opened;
+        this.front = next;
+        if (!next || next !== opened?.terminal) { return; }
+        this.opened = undefined;
+        if (Date.now() - opened.at <= OPENING_MS && before && before === this.shownDashboard()) { before.show(true); }
     }
 
     // The Sandbox Project root this window may show the Dashboard for, or the
@@ -168,11 +194,10 @@ class AttachController {
                 if (result.already_open && !rechecking) { this.recheckLater(root); }
                 return;
             }
-            // Sample before creating ours: a terminal that has received input since
-            // this window loaded (for example a shell the user typed in) is in use.
-            // A terminal nobody has used yet, such as the Codespace shell that
-            // starts with the Trust click, does not hold the Dashboard back, so it
-            // can end up behind the Dashboard. A Codespaces lifecycle-command
+            // Sample before creating ours: the terminal in front that has received
+            // input since this window loaded (for example a shell the user typed in)
+            // is in use. Any other terminal does not hold the Dashboard back, so
+            // it can end up behind the Dashboard. A Codespaces lifecycle-command
             // terminal is never in use, even though VS Code may flag it interacted.
             const busy = this.terminalInUse();
             const terminal = this.createDashboardTerminal(root, ['dashboard', '--on-attach']);
@@ -261,14 +286,18 @@ class AttachController {
         void Promise.resolve(vscode.window.showInformationMessage(reason)).then(() => {}, () => {});
     }
 
-    // Whether a terminal the user has used is open. In a Codespace, log every
-    // terminal considered so a live check can see which one decided.
+    // Whether the terminal in front is one the user has used. VS Code's flag
+    // also covers input nobody typed, so only the terminal the Dashboard would
+    // take the front from counts. In a Codespace, log every terminal considered
+    // so a live check can see which one decided.
     terminalInUse() {
         const terminals = vscode.window.terminals;
-        const counted = terminals.map(t => !isLifecycleTerminal(t) && t.state.isInteractedWith);
+        const front = vscode.window.activeTerminal;
+        const counted = terminals.map(t => t === front && !isLifecycleTerminal(t) && t.state.isInteractedWith);
         if (vscode.env.remoteName === 'codespaces' && terminals.length > 0) {
             const seen = terminals.map((t, i) => `'${t.name}' (created as ` +
                 `'${t.creationOptions.name ?? ''}', interacted: ${t.state.isInteractedWith}, ` +
+                `in front: ${t === front}, ` +
                 `${counted[i] ? 'in use' : 'not in use'})`);
             this.output.appendLine(`Dashboard terminal check: ${seen.join('; ')}.`);
         }
@@ -295,7 +324,7 @@ class AttachController {
         }
         if ([0, 3, 4].includes(closed.exitStatus?.code)) {
             if (closed.exitStatus.code === 3) {
-                this.output.appendLine('The Dashboard is already open in this Sandbox.');
+                this.output.appendLine(ALREADY_OPEN_REASON);
             }
             if (closed.exitStatus.code === 4) {
                 this.output.appendLine('Dashboard attach was disabled before startup; check Project policy.');

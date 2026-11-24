@@ -1,7 +1,7 @@
 """Mechanisms for registering and starting Booley inside a container.
 
 ADR 0018/0023: the MCP server lives inside the dev container and serves
-Interactive Mode over **streamable HTTP on loopback**. This module, run from
+the Sandbox over **streamable HTTP on loopback**. This module, run from
 the devcontainer ``postCreateCommand``/``postStartCommand`` as ``python -m
 booley.harness.incontainer_register``, does two things on every container start:
 
@@ -45,17 +45,18 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import (
+    DEVELOPER_AGENT_ENV,
     GATEWAY_PROVIDER_ID,
     HTTP_ENDPOINT_PATH,
     _codex_editor,
     gateway_provider_toml,
     http_port,
 )
+from booley.runtime.runtime_context import in_hand_written_sandbox
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -98,6 +99,16 @@ class HttpServerInspectionRequest:
     log_path: Path = Path(_SERVER_LOG_PATH)
 
 
+def _not_serving_fix() -> str:
+    """Name how to get the server started: a hand-written spec must run the registration itself."""
+    if in_hand_written_sandbox():
+        return (
+            "make this Sandbox's devcontainer spec run `python -m booley.harness.incontainer_register` "
+            "in postStartCommand, then rebuild or reopen the Sandbox"
+        )
+    return "run `booley init --seed` on the host, then rebuild or reopen the Sandbox"
+
+
 def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticReport:
     """Report whether this Sandbox's HTTP MCP server accepts connections.
 
@@ -122,7 +133,7 @@ def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticRepor
         return findings.report()
     findings.fail(
         f"Sandbox MCP server not serving on 127.0.0.1:{port}",
-        "run `booley init --seed` on the host, then rebuild or reopen the Sandbox",
+        _not_serving_fix(),
     )
     for line in _server_log_tail(request.log_path):
         findings.detail(line, verbose_only=False)
@@ -149,11 +160,10 @@ def _server_log_tail(path: Path) -> list[str]:
 
 def ensure_http_server(
     *,
-    mode: Literal["interactive"],
     timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS,
     log_path: str = _SERVER_LOG_PATH,
 ) -> str:
-    """Start the HTTP MCP server unless one is already serving. Returns status.
+    """Start the Developer Agent's HTTP MCP server unless one is already serving.
 
     The server is detached (own session, no stdio inheritance) so it outlives
     this registrar and the ``postStartCommand`` shell; it then runs for the
@@ -165,7 +175,7 @@ def ensure_http_server(
     if _port_is_serving(port):
         return "running"
     child_env = os.environ.copy()
-    child_env["BOOLEY_MCP_MODE"] = mode
+    child_env[DEVELOPER_AGENT_ENV] = "1"
     for variable in (
         "BOOLEY_NESTED_AGENT",
         "BOOLEY_NESTED_MCP_TOOLS",
@@ -691,7 +701,7 @@ def _apply_codex_credential(token: str | None, home: Path | None = None) -> str:
 # "session not launched in bypassPermissions mode"). Left alone, an
 # in-container session therefore tops out at "auto" and charges a prompt for
 # every write inside a cap-dropped, no-new-privileges, egress-proxied
-# container — the opposite of why Interactive Mode runs in a container at all
+# container — the opposite of why the Sandbox runs in a container at all
 # (ADR 0028), and out of step with Booley's own headless agent sessions, which
 # already run ``permission_mode="bypassPermissions"``.
 #
@@ -815,10 +825,10 @@ def apply_stored_credential(app: str, home: Path | None = None) -> str:
     ``"written"``/``"current"``/``"cleared"``/``"none"`` — see the per-app
     helpers. Unknown apps are a no-op.
     """
-    from booley.config.agent import sandbox_cli_policy
+    from booley.config.agent import sandbox_cli_policy, unrecorded_cli_policy
     from booley.config.gateway import GATEWAY_AUTH
 
-    policy = sandbox_cli_policy(app) or auth_token.VISITOR_AUTH
+    policy = sandbox_cli_policy(app) or unrecorded_cli_policy(app, Path.cwd())
     if policy == GATEWAY_AUTH:  # already inside the container by definition
         # The gateway login is the provider written by _apply_codex_gateway;
         # there is no auth.json. Leave any Booley-managed credential copies
@@ -871,9 +881,11 @@ def trust_keys(paths: Sequence[Path]) -> tuple[str, ...]:
 
 def _claude_credential_present(home: Path | None) -> bool:
     """Whether Claude would find a login credential, by the registrar's own inputs."""
-    from booley.config.agent import sandbox_cli_policy
+    from booley.config.agent import sandbox_cli_policy, unrecorded_cli_policy
 
-    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or auth_token.VISITOR_AUTH
+    policy = sandbox_cli_policy(auth_token.APP_CLAUDE) or unrecorded_cli_policy(
+        auth_token.APP_CLAUDE, Path.cwd()
+    )
     credential = auth_token.effective_credential(
         auth_token.APP_CLAUDE, policy, home=home or _agent_home()
     )
@@ -1084,7 +1096,7 @@ def _apply_codex_gateway(home: Path | None = None) -> str:
     from booley.config.gateway import GATEWAY_AUTH
 
     if sandbox_cli_policy("codex") != GATEWAY_AUTH:
-        return _drop_codex_gateway(home) if agent_app.auto_choice() else "off"
+        return drop_codex_gateway(home) if agent_app.auto_choice() else "off"
     path = codex_config_path(home)
     inputs = _gateway_inputs(path)
     if inputs is None:
@@ -1140,7 +1152,7 @@ def hide_gateway_from_claude(home: Path | None = None) -> str:
     return "hidden"
 
 
-def _drop_codex_gateway(home: Path | None) -> str:
+def drop_codex_gateway(home: Path | None = None) -> str:
     """Remove Booley's gateway selection from the user's Codex config.
 
     For ``BOOLEY_AGENT_APP=auto`` only: a start that stopped using the gateway

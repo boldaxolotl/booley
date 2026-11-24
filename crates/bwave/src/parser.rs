@@ -5,7 +5,7 @@ use std::fmt;
 use std::io::{self, BufRead};
 use std::ops::ControlFlow;
 
-use memchr::memchr2;
+use memchr::{memchr2, memmem};
 use rustc_hash::FxHashSet;
 
 use crate::signal::SignalMeta;
@@ -25,6 +25,88 @@ pub struct VcdHeader {
     pub timescale_str: String,
     /// Absolute input byte offset immediately after `$enddefinitions $end`.
     pub body_offset: u64,
+    /// Line-start offset of a final header line that has no trailing newline
+    /// (the input ends inside the header, so no body follows).
+    pub unterminated_final_line: Option<u64>,
+}
+
+/// Value-change lines of one kind a VCD body pass skipped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkippedLines {
+    pub count: u64,
+    /// Smallest line-start offset among the skipped lines.
+    pub first_offset: Option<u64>,
+}
+
+impl SkippedLines {
+    pub(crate) fn record(&mut self, offset: u64) {
+        self.count += 1;
+        self.first_offset = Some(self.first_offset.map_or(offset, |old| old.min(offset)));
+    }
+
+    pub(crate) fn merge(&mut self, other: &SkippedLines) {
+        self.count += other.count;
+        self.first_offset = match (self.first_offset, other.first_offset) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+}
+
+/// Value-change lines a VCD body pass could not use (#5058).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkippedValueChanges {
+    pub malformed: SkippedLines,
+    pub undeclared: SkippedLines,
+    /// Line-start offset of a final line with no trailing newline.
+    pub unterminated_final_line: Option<u64>,
+}
+
+impl SkippedValueChanges {
+    pub(crate) fn skip_malformed(&mut self, offset: u64) {
+        self.malformed.record(offset);
+    }
+
+    /// An identifier that is empty or only spaces and tabs is malformed;
+    /// any other identifier the header does not declare is undeclared.
+    pub(crate) fn skip_unresolved(&mut self, id: &[u8], offset: u64) {
+        if id.iter().all(|byte| matches!(byte, b' ' | b'\t')) {
+            self.malformed.record(offset);
+        } else {
+            self.undeclared.record(offset);
+        }
+    }
+
+    pub(crate) fn merge(&mut self, other: &SkippedValueChanges) {
+        self.malformed.merge(&other.malformed);
+        self.undeclared.merge(&other.undeclared);
+        if other.unterminated_final_line.is_some() {
+            self.unterminated_final_line = other.unterminated_final_line;
+        }
+    }
+
+    /// Print one stderr line per kind that occurred.
+    pub(crate) fn warn(&self) {
+        if let Some(first) = self.malformed.first_offset {
+            eprintln!(
+                "WARNING: {} malformed value-change line(s) skipped (first at byte {first})",
+                self.malformed.count
+            );
+        }
+        if let Some(first) = self.undeclared.first_offset {
+            eprintln!(
+                "WARNING: {} value change(s) for an identifier the header does not declare \
+                 skipped (first at byte {first})",
+                self.undeclared.count
+            );
+        }
+        if let Some(offset) = self.unterminated_final_line {
+            eprintln!(
+                "WARNING: input does not end with a newline; the final line (byte {offset}) \
+                 may be a truncated record"
+            );
+        }
+    }
 }
 
 /// Why a VCD timestamp token could not be decoded.
@@ -153,6 +235,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
     // Accumulate multi-line tokens (VCD allows tokens to span lines)
     let mut token_buf = String::new();
     let mut byte_offset = 0u64;
+    let mut unterminated_final_line: Option<u64> = None;
 
     loop {
         line_buf.clear();
@@ -168,6 +251,8 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
             Ok(bytes_read) => bytes_read,
         };
         byte_offset += bytes_read as u64;
+        unterminated_final_line =
+            (!line_buf.ends_with('\n')).then(|| byte_offset - bytes_read as u64);
         let line = line_buf.trim_end_matches(|c| c == '\n' || c == '\r');
 
         // Accumulate tokens -- VCD allows multi-line $var, $timescale, etc.
@@ -181,7 +266,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
 
             // Process complete tokens (containing standalone $end)
             // Must match $end as a complete token -- not inside $enddefinitions
-            while let Some(end_pos) = find_standalone_end(&token_buf) {
+            while let Some(end_pos) = find_standalone_end(token_buf.as_bytes()) {
                 let token = token_buf[..end_pos].trim().to_string();
                 token_buf = token_buf[end_pos + 4..].to_string();
 
@@ -194,6 +279,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
                         timescale_exponent,
                         timescale_str,
                         body_offset: byte_offset,
+                        unterminated_final_line,
                     });
                 } else if token.starts_with("$scope") {
                     // $scope module <name>
@@ -256,6 +342,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
         timescale_exponent,
         timescale_str,
         body_offset: byte_offset,
+        unterminated_final_line,
     })
 }
 
@@ -314,32 +401,32 @@ fn parse_timescale(s: &str) -> f64 {
 }
 
 /// Find the position of a standalone `$end` token in the buffer.
-/// Must NOT match inside `$enddefinitions`. `$end` must be followed by
-/// whitespace, end-of-string, or preceded by whitespace.
-fn find_standalone_end(s: &str) -> Option<usize> {
+/// Must NOT match inside `$enddefinitions`: after `$end` comes the end of
+/// the text, a space, a tab, CR, LF or `$`.
+pub(crate) fn find_standalone_end(s: &[u8]) -> Option<usize> {
     let mut start = 0;
-    while let Some(pos) = s[start..].find("$end") {
+    while let Some(pos) = memmem::find(&s[start..], b"$end") {
         let abs_pos = start + pos;
-        // Check that this $end is not part of a longer $-keyword
-        // (e.g. $enddefinitions). After "$end" (4 chars), the next char
-        // must be whitespace, EOF, or '$'.
         let after = abs_pos + 4;
-        let is_standalone = if after >= s.len() {
-            true
-        } else {
-            let next_byte = s.as_bytes()[after];
-            next_byte == b' '
-                || next_byte == b'\t'
-                || next_byte == b'\n'
-                || next_byte == b'\r'
-                || next_byte == b'$'
-        };
+        let is_standalone = s
+            .get(after)
+            .is_none_or(|next| matches!(next, b' ' | b'\t' | b'\n' | b'\r' | b'$'));
         if is_standalone {
             return Some(abs_pos);
         }
-        start = abs_pos + 4;
+        start = after;
     }
     None
+}
+
+/// Whether a body line leaves a multi-line `$comment` block open. `in_comment`
+/// is the state before the line: a block opens at a line starting with
+/// `$comment` and closes at the next line holding a standalone `$end`.
+pub(crate) fn body_comment_continues(line: &[u8], in_comment: bool) -> bool {
+    if !in_comment && !line.starts_with(b"$comment") {
+        return false;
+    }
+    find_standalone_end(line).is_none()
 }
 
 fn split_timescale(s: &str) -> (&str, &str) {
@@ -360,6 +447,11 @@ fn split_timescale(s: &str) -> (&str, &str) {
 /// `base_offset` is the absolute byte offset where this reader starts
 /// (post-header position), reported to `on_time_update`.
 ///
+/// `watched_ids` must hold every identifier the header declares: a value
+/// change for any other identifier is counted as undeclared. Value-change
+/// lines the pass cannot use are counted, warned about on stderr before
+/// returning, and returned as the tally (#5058).
+///
 /// Callback ordering matches vcdvcd: all value changes at timestamp T
 /// are dispatched first, then on_timestamp(T) fires. This means
 /// on_timestamp sees the fully settled state at time T.
@@ -368,13 +460,15 @@ pub fn parse_streaming_with_offsets(
     watched_ids: &FxHashSet<String>,
     handler: &mut impl VcdHandler,
     base_offset: u64,
-) {
+) -> SkippedValueChanges {
     let mut line_buf = String::new();
     let mut in_dumpvars = false;
     let mut in_dumpoff = false;
+    let mut in_comment = false;
     let mut current_time: Option<u64> = None;
     let mut malformed_time_count: u64 = 0;
     let mut rel_bytes: u64 = 0;
+    let mut skipped = SkippedValueChanges::default();
 
     loop {
         line_buf.clear();
@@ -390,6 +484,9 @@ pub fn parse_streaming_with_offsets(
         }
         let line_offset = base_offset + rel_bytes;
         rel_bytes += n as u64;
+        if !line_buf.ends_with('\n') {
+            skipped.unterminated_final_line = Some(line_offset);
+        }
         let line = line_buf.trim_end_matches(|c| c == '\n' || c == '\r');
 
         if line.is_empty() {
@@ -403,7 +500,8 @@ pub fn parse_streaming_with_offsets(
                 // (all value changes at previous time are now settled)
                 if let Some(prev_time) = current_time {
                     if handler.on_timestamp(prev_time).is_break() {
-                        return;
+                        skipped.warn();
+                        return skipped;
                     }
                 }
                 in_dumpvars = false;
@@ -420,31 +518,31 @@ pub fn parse_streaming_with_offsets(
                     }
                 }
             }
-            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' if !in_dumpoff => {
+            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' => {
                 // Scalar value change: <value><id>
                 let id = &line[1..];
-                if watched_ids.contains(id) || in_dumpvars {
+                let watched = watched_ids.contains(id);
+                if !in_comment && !watched {
+                    skipped.skip_unresolved(id.as_bytes(), line_offset);
+                }
+                if !in_dumpoff && (watched || in_dumpvars) {
                     handler.on_scalar(id, first);
                 }
             }
-            b'b' | b'B' if !in_dumpoff => {
-                // Vector value change: b<bits> <id> (space or tab separator)
+            b'b' | b'B' | b'r' | b'R' => {
+                // Vector or real value change: <value> <id> (space or tab separator)
                 if let Some(sep_pos) = memchr2(b' ', b'\t', line.as_bytes()) {
                     let bits = &line[1..sep_pos];
                     let id = line[sep_pos + 1..].trim_start();
-                    if watched_ids.contains(id) || in_dumpvars {
+                    let watched = watched_ids.contains(id);
+                    if !in_comment && !watched {
+                        skipped.skip_unresolved(id.as_bytes(), line_offset);
+                    }
+                    if !in_dumpoff && (watched || in_dumpvars) {
                         handler.on_vector(id, bits);
                     }
-                }
-            }
-            b'r' | b'R' if !in_dumpoff => {
-                // Real value change: r<value> <id> (space or tab separator)
-                if let Some(sep_pos) = memchr2(b' ', b'\t', line.as_bytes()) {
-                    let bits = &line[1..sep_pos];
-                    let id = line[sep_pos + 1..].trim_start();
-                    if watched_ids.contains(id) || in_dumpvars {
-                        handler.on_vector(id, bits);
-                    }
+                } else if !in_comment {
+                    skipped.skip_malformed(line_offset);
                 }
             }
             b'$' => {
@@ -470,6 +568,7 @@ pub fn parse_streaming_with_offsets(
             }
             _ => {} // skip unknown lines
         }
+        in_comment = body_comment_continues(line.as_bytes(), in_comment);
     }
 
     // Fire final on_timestamp for the last timestamp in the file
@@ -486,6 +585,8 @@ pub fn parse_streaming_with_offsets(
             malformed_time_count
         );
     }
+    skipped.warn();
+    skipped
 }
 
 /// Convenience wrapper: parse_streaming with base_offset = 0.
@@ -493,8 +594,8 @@ pub fn parse_streaming(
     reader: &mut impl BufRead,
     watched_ids: &FxHashSet<String>,
     handler: &mut impl VcdHandler,
-) {
-    parse_streaming_with_offsets(reader, watched_ids, handler, 0);
+) -> SkippedValueChanges {
+    parse_streaming_with_offsets(reader, watched_ids, handler, 0)
 }
 
 #[cfg(test)]
@@ -1083,6 +1184,41 @@ $end\n\
             watched_events.len() >= 2,
             "watched signal should have events before and after dumpon"
         );
+    }
+
+    #[test]
+    fn test_streaming_reader_counts_unusable_value_changes() {
+        let vcd = "$timescale 1ns $end\n$scope module tb $end\n\
+$var wire 1 ! clk $end\n$var wire 8 # data $end\n$var wire 1 % out $end\n\
+$upscope $end\n$scope module other $end\n$var wire 1 & o $end\n$upscope $end\n\
+$enddefinitions $end\n\
+#0\n0!\nb00000000 #\n0&\n\
+#10\n1!\n1?\nb0101\n1\nr1.5\n\
+$comment\n1?\n1%\n#10\nsee $enddefinitions\nb0101\n$end\n\
+#20\n0!\n$dumpoff\n1?\nb1 \nb11   \n$end\n$dumpon\n\
+#30\n1!\nb0010001";
+        let mut reader = io::Cursor::new(vcd.as_bytes());
+        let header = parse_header(&mut reader);
+        assert_eq!(header.body_offset, 207);
+        assert_eq!(header.unterminated_final_line, None);
+        let watched: FxHashSet<String> = header.signals.iter().map(|s| s.id.clone()).collect();
+        let mut handler = RecordingHandler::new();
+        let skipped = parse_streaming_with_offsets(&mut reader, &watched, &mut handler, 207);
+        assert_eq!(
+            skipped,
+            SkippedValueChanges {
+                malformed: SkippedLines {
+                    count: 6,
+                    first_offset: Some(238)
+                },
+                undeclared: SkippedLines {
+                    count: 2,
+                    first_offset: Some(235)
+                },
+                unterminated_final_line: Some(351),
+            }
+        );
+        assert!(handler.scalars.contains(&("%".to_string(), b'1')));
     }
 }
 

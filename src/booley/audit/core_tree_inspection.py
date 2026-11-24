@@ -82,11 +82,12 @@ def inspect_core_security(request: CoreSecurityInspectionRequest) -> DiagnosticR
                 f"{line} (advisory: doctor audits the union of writable "
                 "category dirs, without a change-specific scope — the binding "
                 "check runs at commit time)",
+                violation.fix,
                 check_id="core.security-scope-advisory",
                 subject=f"{violation.core_file.name}:{violation.target or '-'}",
             )
         else:
-            findings.fail(line, "ADR 0022 decision 21")
+            findings.fail(line, violation.fix)
     if not violations and refs:
         findings.pass_(
             ".core security validation passed (no fpga hooks / expr-params / in-scope scripts)"
@@ -256,7 +257,7 @@ def _check_schema(
 ) -> None:
     """Flag CAPI2 schema violations in any discovered ``.core``.
 
-    Booley's tolerant ``yaml.safe_load`` accepts a scalar — or a bare ``depend:``
+    Booley's tolerant ``read_core`` accepts a scalar — or a bare ``depend:``
     that parses to ``None`` — where FuseSoC's schema demands an array, and an
     unknown property (a ``booley:`` mapping beside ``flow_options``); cheap
     enumeration then greenlights a ``.core`` the deep resolve later rejects.

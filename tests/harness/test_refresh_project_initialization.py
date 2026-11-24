@@ -125,27 +125,26 @@ def test_refresh_fails_with_container_outcome_when_a_step_errs(initialized: Path
     assert "run `booley init` on the host" in message
 
 
-def test_refresh_converts_an_escaped_filesystem_error(
-    initialized: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (OSError("disk full"), r"kept: already current\), .* failed: disk full"),
+        (
+            LifecycleLockError("host Docker lifecycle is busy"),
+            r"kept: already current\), .* failed: host Docker",
+        ),
+    ],
+    ids=["filesystem", "lifecycle-lock"],
+)
+def test_refresh_converts_a_project_initialization_failure(
+    initialized: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception, message: str
 ) -> None:
-    def disk_full(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
-        raise OSError("disk full")
+    def fail(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
+        raise failure
 
-    monkeypatch.setattr(init_cmd, "reinitialize_project", disk_full)
+    monkeypatch.setattr(init_cmd, "reinitialize_project", fail)
 
-    with pytest.raises(SessionError, match=r"kept: already current\), .* failed: disk full"):
-        _refresh(initialized)
-
-
-def test_refresh_converts_a_lifecycle_lock_timeout(
-    initialized: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def lock_timeout(_root: Path, _facts: init_cmd.ProjectFacts) -> None:
-        raise LifecycleLockError("host Docker lifecycle is busy")
-
-    monkeypatch.setattr(init_cmd, "reinitialize_project", lock_timeout)
-
-    with pytest.raises(SessionError, match=r"kept: already current\), .* failed: host Docker"):
+    with pytest.raises(SessionError, match=message):
         _refresh(initialized)
 
 

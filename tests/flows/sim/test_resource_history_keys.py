@@ -12,16 +12,23 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from booley.flows import job_resources
+from booley.flows.sim.build import SimulationBuildPreparationError
+from booley.flows.sim.build_session import SimulationBuildSession, SimulationBuildSlotError
+from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.engine import SimulationExecution
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SelectedCoverageRun, SimulationCommandRequest
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.runtime import resource_history
+from tests.canned_process_support import measured_flow
+from tests.flows.sim.test_verilator_build_reuse_engine import _select
 from tests.flows.sim.test_verilator_build_reuse_record import (  # noqa: F401 -- fixture
     flow_project,
 )
@@ -31,6 +38,7 @@ from tests.flows.sim.test_verilator_coverage_execution import (
     _execution_fixture,
     _run_request,
 )
+from tests.time_budget import hang_guard_s
 
 # The imported fake-Verilator Project is POSIX-only, like its home module.
 pytestmark = pytest.mark.skipif(
@@ -57,7 +65,7 @@ def _run(project: Path, reports: Path, selector: str) -> None:
             work_dir=project,
             report_dir=reports,
             test=(selector,),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -95,85 +103,78 @@ def test_sim_history_keys_name_variants_not_seeds(
     assert builds, "the changed source forces at least one measured build"
     assert {r["source_bytes"] for r in runs[:3] + builds[:1]} == {initial_bytes}
     assert runs[-1]["source_bytes"] == initial_bytes + len(appended)
+    # One setup per run, counted as one run each (#4538).
+    assert len([r for r in records if r["key"]["phase"] == "sim_prepare"]) == 4
+    report = resource_history.render_report(resource_history.summarize(records))
+    assert any(line.startswith("sim sim_prepare: 4 runs") for line in report.splitlines())
 
 
-def test_sim_request_maps_to_recorded_keys(
+@pytest.mark.parametrize("elab_only", [False, True], ids=["sim-run", "elab-only"])
+def test_request_maps_to_recorded_keys(
     flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    elab_only: bool,
 ) -> None:
-    """The estimator lists the keys a real ``SimulateFlow`` run writes, in run order."""
-    from booley.flows.job_estimates import phase_keys, sim_job_request
+    """The estimator lists the keys a real ``SimulateFlow`` run writes, in run order.
+
+    FuseSoC setup is measured as ``sim_prepare`` too, keyed by no Test Run; an
+    elaboration-only run records that setup and its build (#3787).
+    """
+    from booley.flows.job_estimates import JobRequest, phase_keys, sim_job_request
     from booley.flows.target_test_plan_loading import load_checkout_target_test_plan
 
     booley_dir = flow_project / ".booley"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-    (booley_dir / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
     selectors = ("first+slow@1", "first+fast")
+    selection: dict[str, Any] = {"mode": SimulationMode.ELAB_ONLY}
+    if not elab_only:
+        (booley_dir / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
+        selection = {"test": selectors}
 
     result = SimulateFlow().execute(
         SimRequest(
             target="sim",
             work_dir=flow_project,
             report_dir=tmp_path / "reports",
-            test=selectors,
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
+            **selection,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
 
+    records = resource_history.load_records(booley_dir)
     recorded: list[resource_history.HistoryKey] = []
-    for record in resource_history.load_records(booley_dir):
+    for record in records:
         key = resource_history.history_key(record)
         if key not in recorded:
             recorded.append(key)
-    # FuseSoC setup is measured as ``sim_prepare`` too (#3787), keyed by no Test Run.
+    if elab_only:
+        assert list(phase_keys(JobRequest("sim", "sim", test_runs=()))) == recorded
+        assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
+        return
     assert [key.phase for key in recorded] == ["sim_prepare", "sim_build", "sim_run", "sim_run"]
+    # Two simulator groups of one Job count as one run of every key (#4538).
+    assert {s["runs"] for s in resource_history.summarize(records)} == {1}
     plan = load_checkout_target_test_plan(flow_project, "sim")
     request = sim_job_request(plan, plan.resolve(selectors))
     assert list(phase_keys(request)) == recorded
     assert [key.test_run for key in recorded] == ["", "", "first+slow", "first"]
 
 
-def test_elab_only_request_maps_to_recorded_keys(
-    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An elaboration-only run records the FuseSoC setup and build its request lists (#3787)."""
-    from booley.flows.job_estimates import JobRequest, phase_keys
-
-    booley_dir = flow_project / ".booley"
-    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-
-    result = SimulateFlow().execute(
-        SimRequest(
-            target="sim",
-            work_dir=flow_project,
-            report_dir=tmp_path / "reports",
-            mode=SimulationMode.ELAB_ONLY,
-            timeout_ms=30_000,
-        )
-    )
-    assert result.exit_code == 0, result.outcome.report_text
-
-    recorded: list[resource_history.HistoryKey] = []
-    for record in resource_history.load_records(booley_dir):
-        key = resource_history.history_key(record)
-        if key not in recorded:
-            recorded.append(key)
-    assert list(phase_keys(JobRequest("sim", "sim", test_runs=()))) == recorded
-    assert [key.phase for key in recorded] == ["sim_prepare", "sim_build"]
+def _fusesoc_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
+    """Put a ``fusesoc`` first on PATH whose script is *body*."""
+    stub_dir = tmp_path / "oom-bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "fusesoc"
+    stub.write_bytes(b"#!/bin/sh\n" + body)
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(stub_dir), os.environ["PATH"])))
 
 
 def _fusesoc_killed_by_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Put a ``fusesoc`` first on PATH that dies by SIGKILL, as the OOM killer would."""
-    stub_dir = tmp_path / "oom-bin"
-    stub_dir.mkdir()
-    stub = stub_dir / "fusesoc"
-    stub.write_bytes(b"#!/bin/sh\nkill -9 $$\n")
-    stub.chmod(0o755)
-    monkeypatch.setenv("PATH", os.pathsep.join((str(stub_dir), os.environ["PATH"])))
+    _fusesoc_stub(tmp_path, monkeypatch, b"kill -9 $$\n")
 
 
 def test_oom_killed_fusesoc_setup_requeues_the_job(
@@ -187,6 +188,9 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     inside the attempt scope that arms a requeue (``tests/runtime`` covers the
     requeue itself: an own OOM kill plus a failed result).
     """
+    # Private seam: ``SimulateFlow.execute`` prepares the Target twice, so the public run
+    # records two ``sim_prepare`` kills; the single-attempt stop on the first OOM kill is only
+    # observable by driving the engine with the Flow's own measured boundary.
     from booley.flows.sim.build import SimulationBuildPreparationError
     from booley.flows.sim.execution.contract import SimulationOptions
     from booley.flows.sim.execution.engine import SimulationExecution
@@ -199,14 +203,14 @@ def test_oom_killed_fusesoc_setup_requeues_the_job(
     _fusesoc_killed_by_sigkill(tmp_path, monkeypatch)
     # The container's OOM counter rises over every command, so each kill is blamed.
     counter = itertools.count()
-    monkeypatch.setattr(job_resources, "cgroup_oom_kill_count", lambda: next(counter))
-    flow = SimulateFlow()
-    # What ``execute`` binds before preparing: the Flow reads its flags for the history key.
-    flow._args = SimRequest(
-        target="sim", work_dir=flow_project, report_dir=tmp_path / "reports", timeout_ms=30_000
+    monkeypatch.setattr(
+        job_resources,
+        "cgroup_memory_events",
+        lambda: job_resources.MemoryEvents(*[next(counter)] * 2),
     )
+    flow = measured_flow(flow_project)
     execution = SimulationExecution(
-        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=30_000)
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
     )
 
     with (
@@ -285,3 +289,91 @@ def test_cocotb_requests_batch_runs_except_under_coverage(tmp_path: Path) -> Non
 
     assert sim_run_names(()) == ["alpha,beta"]
     assert sim_run_names(("coverage",)) == ["alpha", "beta"]
+
+
+def test_setup_without_edam_records_a_failure(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A FuseSoC setup that exits zero but writes no EDAM is recorded as failed (#4964)."""
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    _fusesoc_stub(tmp_path, monkeypatch, b"exit 0\n")
+    flow = measured_flow(flow_project)
+    execution = SimulationExecution(
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+    )
+
+    # The planning pass records the setup; a repeat that exits zero adds nothing.
+    with (
+        pytest.raises(SimulationBuildPreparationError),
+        execution.ordinary_group(_select(flow_project), ("first",), planning=True),
+    ):
+        raise AssertionError("the Target has no EDAM, so preparation must fail")
+
+    records = resource_history.load_records(booley_dir)
+    assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
+        ("sim_prepare", "exit_nonzero", 0)
+    ]
+
+
+def test_rejected_repeat_setup_is_recorded_beside_the_planning_setup(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeated setup that exits zero but is refused is not dropped as an unchanged repeat (#4964)."""
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    flow = measured_flow(flow_project)
+    execution = SimulationExecution(
+        invoke=flow._execute_boundary, options=SimulationOptions(timeout_ms=hang_guard_s() * 1000)
+    )
+    with execution.ordinary_group(_select(flow_project), ("first",), planning=True):
+        pass
+    _fusesoc_stub(tmp_path, monkeypatch, b"exit 0\n")
+
+    with (
+        pytest.raises(SimulationBuildPreparationError),
+        execution.ordinary_group(_select(flow_project), ("first",)),
+    ):
+        raise AssertionError("the Target has no EDAM, so preparation must fail")
+
+    records = resource_history.load_records(booley_dir)
+    assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
+        ("sim_prepare", "exit_zero", 0),
+        ("sim_prepare", "exit_nonzero", 0),
+    ]
+
+
+def test_elab_only_build_whose_image_is_rejected_records_a_failure(
+    flow_project: Path,  # noqa: F811 -- shared fixture keeps its required name
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An elaboration-only build that exits zero but whose image is refused is recorded failed (#4964)."""
+    booley_dir = flow_project / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise SimulationBuildSlotError("build produced no image")
+
+    monkeypatch.setattr(SimulationBuildSession, "authorize_fresh_image", refuse)
+
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=tmp_path / "reports",
+            mode=SimulationMode.ELAB_ONLY,
+            timeout_ms=hang_guard_s() * 1000,
+        )
+    )
+
+    assert result.exit_code != 0
+    records = resource_history.load_records(booley_dir)
+    assert [(r["key"]["phase"], r["outcome"], r["returncode"]) for r in records] == [
+        ("sim_prepare", "exit_zero", 0),
+        ("sim_build", "exit_nonzero", 0),
+    ]

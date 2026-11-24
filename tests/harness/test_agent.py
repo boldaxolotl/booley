@@ -632,22 +632,10 @@ class TestWriteTranscriptTurn:
 # ===========================================================================
 
 
-class _AsyncIter:
-    """Helper: wraps a list of messages into an async iterator for mocking query()."""
-
-    def __init__(self, items):
-        self._items = items
-        self._idx = 0
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        if self._idx >= len(self._items):
-            raise StopAsyncIteration
-        item = self._items[self._idx]
-        self._idx += 1
-        return item
+async def _async_stream(items):
+    """Helper: wraps a list of messages into an async generator for mocking query()."""
+    for item in items:
+        yield item
 
 
 class TestCallAgent:
@@ -676,7 +664,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.05
         result_msg.usage = {"input_tokens": 1000, "output_tokens": 500}
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([result_msg])
 
         result = await call_agent(
             AgentCallParams(
@@ -709,7 +697,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.01
         result_msg.usage = None
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([msg1, msg2, result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([msg1, msg2, result_msg])
 
         result = await call_agent(
             AgentCallParams(
@@ -739,7 +727,7 @@ class TestCallAgent:
             result_msg.structured_output = None
             result_msg.total_cost_usd = 0.01
             result_msg.usage = {"input_tokens": 100, "output_tokens": 50}
-            return _AsyncIter([result_msg])
+            return _async_stream([result_msg])
 
         mock_query.side_effect = fake_query
 
@@ -765,7 +753,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.01
         result_msg.usage = {"input_tokens": 100, "output_tokens": 50}
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([result_msg])
 
         result = await call_agent(
             AgentCallParams(
@@ -788,7 +776,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.01
         result_msg.usage = {"input_tokens": 100, "output_tokens": 50}
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([result_msg])
 
         result = await call_agent(
             AgentCallParams(
@@ -812,7 +800,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.01
         result_msg.usage = {"input_tokens": 100, "output_tokens": 50}
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([result_msg])
 
         result = await call_agent(
             AgentCallParams(
@@ -849,7 +837,7 @@ class TestCallAgent:
         result_msg.total_cost_usd = 0.01
         result_msg.usage = None
 
-        mock_query.side_effect = lambda **kw: _AsyncIter([msg, result_msg])
+        mock_query.side_effect = lambda **kw: _async_stream([msg, result_msg])
 
         transcript = tmp_path / "transcripts" / "test.jsonl"
         _result = await call_agent(
@@ -1042,7 +1030,7 @@ class TestCallAgent:
         result.structured_output = None
         result.total_cost_usd = 0.01
         result.usage = None
-        mock_query.side_effect = lambda **_kwargs: _AsyncIter(
+        mock_query.side_effect = lambda **_kwargs: _async_stream(
             [self._assistant_with_usage(), result]
         )
 

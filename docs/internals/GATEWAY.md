@@ -61,7 +61,7 @@ and the gateway-valued `model_provider` and `model`.
 
 - The effort list is `CODEX_EFFORT_LEVELS` in `src/booley/config/gateway.py`,
   copied from Codex's `ReasoningEffort` enum
-  (`codex-rs/protocol/src/openai_models.rs` at tag `rust-v0.167.1`, the
-  release pinned in `src/booley/data/docker/agent-clis-package.json`). Codex
+  (`codex-rs/protocol/src/openai_models.rs` at the release pinned in
+  `src/booley/data/docker/agent-clis-package.json`; recheck it on a bump). Codex
   also accepts free-form efforts; Booley does not, because the value goes
   into a `-c model_reasoning_effort="..."` override.

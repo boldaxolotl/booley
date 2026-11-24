@@ -6,11 +6,12 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from booley.flows.base import SubprocessResult
 
 FailureKind = Literal["missing_eda_tool", "missing_required_file", "missing_output"]
+_FAILURE_KINDS: tuple[FailureKind, ...] = get_args(FailureKind)
 FailureOwner = Literal["design", "infrastructure"]
 
 _STAGES = frozenset({"lint", "simulation", "sv2v", "yosys", "openroad", "vivado"})
@@ -29,8 +30,9 @@ _NOISE_LINE_RE = re.compile(r"^(?:BOOLEY_STAGE:|make:|make\[\d+\]:)")
 _NON_ERROR_SEVERITY_RE = re.compile(
     r"^\[?(?:info|warning|critical warning|note)(?=[:\[\]\s])", re.IGNORECASE
 )
+# ``%?``: Verilator spells its errors ``%Error:``, ``%Error-<RULE>:`` and ``%Fatal:``.
 _DIAGNOSTIC_RE = re.compile(
-    r"(?i)(?:^|:\s|\]\s|\[)(?:error|fatal)\b"
+    r"(?i)(?:^%?|:\s|\]\s|\[)(?:error|fatal)\b"
     r"|\bunrecognized (?:option|argument)\b"
     r"|\bunknown (?:command|option|argument)\b"
     r"|\bunsupported (?:command|option)\b"
@@ -173,7 +175,9 @@ def _authenticated_marker(
     stage = marker["stage"]
     if stage not in _STAGES or (expected_stage is not None and stage != expected_stage):
         return None
-    return marker["kind"], stage, marker["subject"]
+    kind = marker["kind"]
+    assert kind in _FAILURE_KINDS, "_MARKER_RE admits only these kinds"
+    return kind, stage, marker["subject"]
 
 
 def _marker_failure(kind: FailureKind, stage: str, subject: str, text: str) -> EdaFailure:

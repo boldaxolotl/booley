@@ -19,6 +19,8 @@ from booley.config.gateway import GATEWAY_TOKEN_ENV
 logger = logging.getLogger(__name__)
 
 HTTP_PORT_ENV = "BOOLEY_MCP_HTTP_PORT"
+# Marks the Developer Agent's MCP server: its tools and self-exiting lifetime.
+DEVELOPER_AGENT_ENV = "BOOLEY_MCP_DEVELOPER_AGENT"
 DEFAULT_HTTP_PORT = 8814
 HTTP_ENDPOINT_PATH = "/mcp"
 

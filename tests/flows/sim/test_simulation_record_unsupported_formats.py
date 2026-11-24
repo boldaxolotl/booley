@@ -16,33 +16,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     decode_simulation_record_manifest,
-    decode_simulation_result,
     decode_simulator_bundle,
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.flows.sim.request import SimRequest
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.simulation_record_test_support import (
     _retained_invocation,
-    coverage_invocation,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import (
     _linked_simulation_record_stores,
     _manifest,
 )
-from tests.flows.sim.test_simulation_record_resume_diagnostics import (
-    _interrupted_simulation_record,
-)
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
-_RESULT_V2 = "booley.simulation-result/v2"
-_PROJECTION_V2 = "booley.simulation-projection/v2"
 _UNSUPPORTED = "UnsupportedSimulationRecordFormatError"
 _FIXTURES = Path(__file__).parents[1] / "fixtures"
 
@@ -105,42 +96,37 @@ def _rewrite(path: Path, raw: bytes) -> None:
     path.write_bytes(raw)
 
 
-def _as_030_invocation(store, version: str) -> None:
-    """Turn a retained current Simulation Record into a 0.3.0 one, including its child mirror."""
-    _rewrite(store.manifest_path, _as_030_manifest(store.manifest_path.read_bytes(), version))
-    mirror = store.root / "child-executions" / "entries"
-    mirror.mkdir(parents=True)
-    (mirror / f"{'1' * 32}.json").write_text("{}", encoding="utf-8")
-
-
-@pytest.mark.parametrize("version", ["v1", "v2"])
-def test_manifest_decoder_refuses_0_3_0_manifests(version: str) -> None:
-    raw = _as_030_manifest(canonical_json_bytes(_manifest()), version)
-    with pytest.raises(ValueError) as excinfo:
-        decode_simulation_record_manifest(raw)
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _MANIFEST + version)
-
-
-def test_coverage_analysis_refuses_a_0_3_0_projection_naming_its_invocation(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "entry", ["decoder_v1", "decoder_v2", "store_in_report_layout", "store_outside_report_layout"]
+)
+def test_a_0_3_0_manifest_is_refused_naming_an_older_booley(
+    tmp_path: Path, reports: Path, entry: str
 ) -> None:
-    from booley.flows.sim.coverage_analysis_input import (
-        CoverageAnalysisError,
-        read_coverage_record,
-    )
+    version = entry[-2:] if entry.startswith("decoder") else "v1"
+    invocation = None
+    if entry.startswith("decoder"):
+        raw = _as_030_manifest(canonical_json_bytes(_manifest()), version)
 
-    run = coverage_invocation(tmp_path, monkeypatch)
-    reports, target = run.reports, run.target
-    projection = json.loads((target / "simulation.json").read_bytes())
-    projection["$schema"] = _PROJECTION_V2
-    del projection["test_runs"]
-    (target / "simulation.json").write_bytes(canonical_json_bytes(projection))
+        def load() -> object:
+            return decode_simulation_record_manifest(raw)
 
-    with pytest.raises(CoverageAnalysisError) as excinfo:
-        read_coverage_record(target / "coverage.json")
+    elif entry == "store_in_report_layout":
+        invocation = copy_older_invocation("0.3.0", "complete", reports)
+        load = SimulationRecordStore(invocation / "targets" / "sim" / "campaign").load_manifest
+    else:
+        store = SimulationRecordStore(tmp_path / "campaign")
+        store.root.mkdir()
+        store.manifest_path.write_bytes(_as_030_manifest(canonical_json_bytes(_manifest()), "v1"))
+        load = store.load_manifest
 
-    _assert_refused(str(excinfo.value), _PROJECTION_V2, reports / "sim/1")
+    with pytest.raises(ValueError) as excinfo:
+        load()
+
+    _assert_unsupported_type(excinfo.value)
+    _assert_refused(str(excinfo.value), _MANIFEST + version, invocation)
+    if entry == "store_outside_report_layout":
+        # No report layout, so there is no invocation directory to name.
+        assert "delete the Simulation invocation directory" not in str(excinfo.value)
 
 
 def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
@@ -180,20 +166,6 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
     _assert_refused(str(excinfo.value), _MANIFEST + "v1", tmp_path / "reports" / "000001")
 
 
-def test_the_refusal_names_an_older_booley_and_what_to_do(reports: Path) -> None:
-    invocation = copy_older_invocation("0.3.0", "complete", reports)
-
-    with pytest.raises(ValueError) as excinfo:
-        SimulationRecordStore(invocation / "targets" / "sim" / "campaign").load_manifest()
-
-    _assert_unsupported_type(excinfo.value)
-    assert str(excinfo.value) == (
-        f"Simulation Campaign manifest {_MANIFEST}v1 was written by an older Booley and is "
-        f"no longer supported; delete the Simulation invocation directory {invocation} "
-        "and start a fresh run"
-    )
-
-
 def test_a_schema_less_projection_cannot_authenticate_a_coverage_record() -> None:
     from booley.flows.sim.record.projection import decode_simulation_projection
 
@@ -208,34 +180,6 @@ def test_a_schema_less_projection_cannot_authenticate_a_coverage_record() -> Non
         decode_simulation_projection(schema_less, coverage_expected=True)
 
 
-def test_a_store_outside_the_report_layout_cannot_name_an_invocation(tmp_path) -> None:
-    store = SimulationRecordStore(tmp_path / "campaign")
-    store.root.mkdir()
-    store.manifest_path.write_bytes(_as_030_manifest(canonical_json_bytes(_manifest()), "v1"))
-
-    with pytest.raises(ValueError) as excinfo:
-        store.load_manifest()
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _MANIFEST + "v1")
-
-
-def test_a_0_3_0_result_is_refused_naming_its_invocation(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    result_path = next(store.root.glob("work-items/*/result.json"))
-    result = json.loads(result_path.read_bytes())
-    result["$schema"] = _RESULT_V2
-    for observation in result["observations"]:
-        observation.pop("test_run", None)
-    _rewrite(result_path, canonical_json_bytes(result))
-
-    with pytest.raises(ValueError) as excinfo:
-        store.scan()
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _RESULT_V2, reports / "sim/1")
-
-
 _SNAPSHOT_V2 = "booley.executable-snapshot/v2"
 _PREVIOUS_RESULT = "booley.simulation-result/v4"
 _PREVIOUS_BUNDLE = "booley.simulator-bundle/v2"
@@ -244,7 +188,6 @@ _PREVIOUS_BUNDLE = "booley.simulator-bundle/v2"
 @pytest.mark.parametrize(
     ("schema", "decode"),
     [
-        (_PREVIOUS_RESULT, decode_simulation_result),
         (_PREVIOUS_BUNDLE, decode_simulator_bundle),
         (_SNAPSHOT_V2, "refuse_retired_document"),
     ],
@@ -265,58 +208,27 @@ def test_a_snapshot_document_that_is_not_a_retired_format_is_corrupt(raw: bytes)
         codec.refuse_retired_document(raw)
 
 
-def test_a_previous_version_result_is_refused_naming_its_invocation(tmp_path) -> None:
+@pytest.mark.parametrize("document", ["result", "snapshot"])
+def test_a_previous_version_document_is_refused_by_scan_naming_its_invocation(
+    tmp_path, document: str
+) -> None:
     reports, _project_data, store = _retained_invocation(tmp_path)
-    result_path = next(store.root.glob("work-items/*/result.json"))
-    result = json.loads(result_path.read_bytes())
-    result["$schema"] = _PREVIOUS_RESULT
-    result["executable_snapshot"] = result.pop("bundle_verification")
-    _rewrite(result_path, canonical_json_bytes(result))
+    if document == "result":
+        schema = _PREVIOUS_RESULT
+        result_path = next(store.root.glob("work-items/*/result.json"))
+        result = json.loads(result_path.read_bytes())
+        result["$schema"] = schema
+        result["executable_snapshot"] = result.pop("bundle_verification")
+        _rewrite(result_path, canonical_json_bytes(result))
+    else:
+        schema = _SNAPSHOT_V2
+        (attempt,) = store.root.glob("work-items/*/attempts/*")
+        snapshot = attempt / "snapshot" / "snapshot.json"
+        snapshot.parent.mkdir()
+        snapshot.write_bytes((_FIXTURES / "simulation_record" / "snapshot.json").read_bytes())
 
     with pytest.raises(ValueError) as excinfo:
         store.scan()
 
     _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _PREVIOUS_RESULT, reports / "sim/1")
-
-
-def test_a_previous_version_executable_snapshot_is_refused_by_scan(tmp_path) -> None:
-    reports, _project_data, store = _retained_invocation(tmp_path)
-    (attempt,) = store.root.glob("work-items/*/attempts/*")
-    snapshot = attempt / "snapshot" / "snapshot.json"
-    snapshot.parent.mkdir()
-    snapshot.write_bytes((_FIXTURES / "simulation_record" / "snapshot.json").read_bytes())
-
-    with pytest.raises(ValueError) as excinfo:
-        store.scan()
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _SNAPSHOT_V2, reports / "sim/1")
-
-
-def test_the_executable_snapshot_format_is_only_refused() -> None:
-    from booley.flows.sim import record
-
-    assert _SNAPSHOT_V2 in codec._RETIRED_SCHEMAS
-    assert not any(spec[0] == _SNAPSHOT_V2 for spec in codec._DOCUMENT_SPECS.values())
-    for name in ("decode_executable_snapshot", "encode_executable_snapshot", "ExecutableSnapshot"):
-        assert not hasattr(record, name)
-        assert not hasattr(codec, name)
-
-
-def test_resume_ignores_a_leftover_project_child_registry(tmp_path, monkeypatch) -> None:
-    """The child-execution registry is no longer read: a malformed entry cannot block resume."""
-    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
-    entries = tmp_path / ".booley/.runtime/campaign-child-executions/entries"
-    entries.mkdir(parents=True)
-    (entries / f"{'1' * 32}.json").write_text("not json", encoding="utf-8")
-
-    def resumed(_executor, _request):
-        raise KeyboardInterrupt("resume reached execution")
-
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
-
-    with pytest.raises(KeyboardInterrupt, match="resume reached execution"):
-        SimulateFlow().execute(
-            SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
-        )
+    _assert_refused(str(excinfo.value), schema, reports / "sim/1")

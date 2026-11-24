@@ -6,8 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -54,6 +53,7 @@ class _SessionBoundaryExecution(SimulationExecution):
         super().__init__(invoke=self._invoke_process, options=SimulationOptions())
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
+        # Private: the fake build must allocate a generation in the execution's own session; no public build hook exists.
         assert self._build_session is not None
         work_root = self._build_session.new_generation()
         build_root = work_root / "build"
@@ -110,18 +110,6 @@ class _SessionBoundaryExecution(SimulationExecution):
         return SubprocessResult(returncode=0, stdout="adapter completed\n")
 
 
-def _handle(root: Path) -> TargetHandle:
-    return cast(
-        TargetHandle,
-        SimpleNamespace(
-            project_root=root.resolve(),
-            selector="sim",
-            identity="acme:lib:demo:1#sim",
-            vlnv="acme:lib:demo:1",
-        ),
-    )
-
-
 class _AdapterAbortExecution(_SessionBoundaryExecution):
     termination = "fatal_init"
     failure_kind = "missing_input"
@@ -154,6 +142,20 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
         selected = identity.selected_tests
         detail = self.detail
         self.cocotb_path = identity.result_path.parent / "cocotb_results.json"
+
+        def lead(name: str) -> bool:
+            """Whether ``name`` is the first test and the case lets it finish on its own."""
+            return name == selected[0] and bool(
+                self.first_pass or self.first_fail or self.first_timeout
+            )
+
+        def own_detail(name: str) -> str:
+            if not lead(name):
+                return detail
+            if self.first_pass:
+                return ""
+            return "simulation timed out" if self.first_timeout else "earlier design failure"
+
         self.cocotb_path.write_text(
             json.dumps(
                 {
@@ -163,14 +165,14 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                         {
                             "name": name,
                             "module": "test_counter",
-                            "status": "pass"
-                            if self.first_pass and name == selected[0]
-                            else "fail",
-                            "failure": ""
-                            if self.first_pass and name == selected[0]
-                            else "earlier design failure"
-                            if self.first_fail and name == selected[0]
-                            else f"{detail} (rc=7)",
+                            "status": "pass" if lead(name) and self.first_pass else "fail",
+                            "failure": (
+                                ""
+                                if lead(name) and self.first_pass
+                                else "earlier design failure"
+                                if lead(name) and self.first_fail
+                                else f"{detail} (rc=7)"
+                            ),
                             "elapsed_s": 0.01,
                         }
                         for name in selected
@@ -196,27 +198,15 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
                     AdapterTestResult(
                         name,
                         "timeout"
-                        if self.first_timeout and name == selected[0]
+                        if lead(name) and self.first_timeout
                         else "pass"
-                        if self.first_pass and name == selected[0]
+                        if lead(name) and self.first_pass
                         else "timeout"
                         if self.termination == "timeout"
                         else "fail",
-                        detail=""
-                        if self.first_pass and name == selected[0]
-                        else "simulation timed out"
-                        if self.first_timeout and name == selected[0]
-                        else "earlier design failure"
-                        if self.first_fail and name == selected[0]
-                        else detail,
-                        termination="completed"
-                        if (self.first_pass or self.first_fail or self.first_timeout)
-                        and name == selected[0]
-                        else self.termination,
-                        failure_kind=""
-                        if (self.first_pass or self.first_fail or self.first_timeout)
-                        and name == selected[0]
-                        else self.failure_kind,
+                        detail=own_detail(name),
+                        termination="completed" if lead(name) else self.termination,
+                        failure_kind="" if lead(name) else self.failure_kind,
                     )
                     for name in selected
                 ),
@@ -234,33 +224,6 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
             tuple(test.name for test in outcome.tests),
         )
         return replace(outcome, artifacts=(*outcome.artifacts, artifact))
-
-
-def test_adapter_termination_reaches_normalized_simulation_record_result(tmp_path: Path) -> None:
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
-        execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
-    )
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    outcome = SimulationRecord(executor).run(
-        NewSimulationRecordRunRequest(
-            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-        )
-    )
-
-    assert outcome.complete is True
-    store = SimulationRecordStore(invocation / "targets/sim/record")
-    result = store.scan().items[0].result
-    assert result is not None
-    observation = result.document["observations"][0]
-    assert result.document["state"] == "aborted"
-    assert observation["execution"] == "aborted"
-    assert observation["failure_class"] == "design"
-    assert observation["functional"] == "fail"
-    assert observation["detail"] == {"reason": "$readmemh: Cannot open memory.hex (rc=7)"}
 
 
 class _NativeAdapterExecution(_AdapterAbortExecution):
@@ -337,11 +300,11 @@ def _cocotb_execution(**fields: Any) -> _AdapterAbortExecution:
     return execution
 
 
-def _native_plan(tmp_path: Path) -> Any:
+def _native_plan(tmp_path: Path, seed: int | None = None) -> Any:
     """Plan a native Target that names no Test (the default selection)."""
     handle, inspection, preview = _facts(tmp_path, cocotb=False, preview_names=())
     _write_native_core(tmp_path)
-    run_groups = ((build_test_run(None),),)
+    run_groups = ((build_test_run(None, seed=seed),),)
     preview = replace(preview, groups=((),), run_groups=run_groups, commands=(("run",),))
     return plan_ordinary_hdl_simulation_record(
         handle=handle,
@@ -383,6 +346,15 @@ def _cocotb_plan(tmp_path: Path) -> Any:
 @pytest.mark.parametrize(
     ("make_plan", "execution", "state", "executions", "grade", "hint"),
     [
+        pytest.param(
+            _cocotb_plan,
+            _cocotb_execution(),
+            "aborted",
+            ["aborted", "aborted"],
+            "fail",
+            False,
+            id="adapter-fatal-init-names-missing-input",
+        ),
         pytest.param(
             _cocotb_plan,
             _cocotb_execution(termination="timeout", failure_kind="timeout"),
@@ -453,69 +425,46 @@ def test_result_state_follows_observations(
     assert result.document["grade"] == grade
     assert all(item["failure_class"] == "design" for item in observations)
     assert ("--timeout-ms" in observations[0]["detail"]["reason"]) is hint
-
-
-def test_timeout_next_to_infrastructure_abort_publishes_aborted_error(tmp_path: Path) -> None:
-    """A timed-out test plus an infrastructure-aborted one is a Target-level failure.
-
-    This is both the "mixed" and the "Target-level infrastructure failure with a
-    timed-out test" shape: the engine sets the Target failure from the
-    infrastructure-aborted test, so the result goes through the Target-level
-    observation path. Booley's own cocotb adapter folds this shape; the case is
-    characterization of the codec's abort-dominates rule.
-    """
-    execution = _cocotb_execution(
-        termination="disk_budget", failure_kind="infrastructure", first_timeout=True
-    )
-    result = _run_simulation_record_result(tmp_path, _cocotb_plan(tmp_path), execution)
-    first, second = result.document["observations"]
-    assert result.document["state"] == "aborted"
-    assert result.document["grade"] == "error"
-    assert (first["execution"], first["failure_class"], first["functional"]) == (
-        "aborted",
-        "design",
-        "fail",
-    )
-    assert first["assertions"] == "not_observed"
-    assert first["cycle_count"] is None
-    assert (second["execution"], second["failure_class"]) == ("aborted", "infrastructure")
-    assert second["detail"]["termination"] == "disk_budget"
+    if state == "aborted" and not execution.first_timeout:
+        # The adapter's abort detail reaches the observation unchanged.
+        assert observations[0]["functional"] == "fail"
+        assert observations[0]["detail"] == {"reason": "$readmemh: Cannot open memory.hex (rc=7)"}
 
 
 @pytest.mark.parametrize(
     "termination", ["disk_budget", "sim_time_stall", "trace_stall", "fatal_init"]
 )
-@pytest.mark.parametrize("first_pass", [False, True, "fail"])
+@pytest.mark.parametrize("first_pass", [False, True, "fail", "timeout"])
 def test_infrastructure_guard_publishes_terminal_simulation_record(
     tmp_path: Path, termination: str, first_pass: bool | str
 ) -> None:
-    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
-    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
-    execution.termination = termination
-    execution.failure_kind = "infrastructure"
-    execution.first_pass = first_pass is True
-    execution.first_fail = first_pass == "fail"
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,
-        execution_factory=lambda _options: execution,
+    """An infrastructure abort dominates the result, whatever the first test did.
+
+    ``"timeout"``: a timed-out test next to an infrastructure-aborted one is a
+    Target-level failure; the codec's abort-dominates rule publishes it as
+    ``aborted`` with grade ``error`` (Booley's cocotb adapter folds this shape).
+    """
+    execution = _cocotb_execution(
+        termination=termination,
+        failure_kind="infrastructure",
+        first_pass=first_pass is True,
+        first_fail=first_pass == "fail",
+        first_timeout=first_pass == "timeout",
     )
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    outcome = SimulationRecord(executor).run(
-        NewSimulationRecordRunRequest(
-            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-        )
-    )
-    assert outcome.complete
-    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
-    assert result is not None
-    assert decode_simulation_result(encode_simulation_result(result)) == result
+    result = _run_simulation_record_result(tmp_path, _cocotb_plan(tmp_path), execution)
     assert result.document["state"] == "aborted"
     assert result.document["grade"] == "error"
     for index, observation in enumerate(result.document["observations"]):
         if first_pass and index == 0:
-            assert observation["execution"] == "completed"
-            assert observation["functional"] == ("fail" if first_pass == "fail" else "pass")
+            if first_pass == "timeout":
+                assert observation["execution"] == "aborted"
+                assert observation["failure_class"] == "design"
+                assert observation["functional"] == "fail"
+                assert observation["assertions"] == "not_observed"
+                assert observation["cycle_count"] is None
+            else:
+                assert observation["execution"] == "completed"
+                assert observation["functional"] == ("fail" if first_pass == "fail" else "pass")
             continue
         assert observation["execution"] == "aborted"
         assert observation["failure_class"] == "infrastructure"
@@ -524,17 +473,22 @@ def test_infrastructure_guard_publishes_terminal_simulation_record(
         assert observation["detail"]["termination"] == termination
 
 
-class _NoVerdictExecution(_AdapterAbortExecution):
-    def _completed_group(self, *args, **kwargs):
-        outcome = super()._completed_group(*args, **kwargs)
-        return replace(
-            outcome,
-            tests=(),
-            infrastructure_failure=SimulationInfrastructureFailure(
-                "adapter_protocol", "simulator returned no verdict", detail="界" * 4000
-            ),
-            artifacts=(),
-        )
+def _without_verdict(base: type[Any], detail: str = "") -> Any:
+    """A launch whose adapter protocol broke: infrastructure failure, no Test outcome."""
+
+    class NoVerdict(base):
+        def _completed_group(self, *args, **kwargs):
+            outcome = super()._completed_group(*args, **kwargs)
+            return replace(
+                outcome,
+                tests=(),
+                infrastructure_failure=SimulationInfrastructureFailure(
+                    "adapter_protocol", "simulator returned no verdict", detail=detail
+                ),
+                artifacts=(),
+            )
+
+    return NoVerdict
 
 
 @pytest.mark.parametrize("count", [2, 1000])
@@ -543,65 +497,22 @@ def test_infrastructure_without_tests_retains_selected_identities(
 ) -> None:
     names = ("count", "reset") if count == 2 else tuple(f"test_{index}" for index in range(count))
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=names)
-    execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
+    result = _run_simulation_record_result(
+        tmp_path,
+        plan,
+        _without_verdict(_AdapterAbortExecution, "界" * 4000)(eda_tool="verilator", cocotb=True),
     )
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    outcome = SimulationRecord(executor).run(
-        NewSimulationRecordRunRequest(
-            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-        )
-    )
-    assert outcome.complete
-    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
-    assert result is not None
     assert result.document["grade"] == "error"
     assert [item["test"] for item in result.document["observations"]] == list(names)
     assert all(item["functional"] == "not_observed" for item in result.document["observations"])
-
-
-class _NativeNoVerdictExecution(_NativeAdapterExecution):
-    """A native launch whose adapter protocol broke: infrastructure failure, no Test outcome."""
-
-    def _completed_group(self, *args, **kwargs):
-        outcome = super()._completed_group(*args, **kwargs)
-        return replace(
-            outcome,
-            tests=(),
-            infrastructure_failure=SimulationInfrastructureFailure(
-                "adapter_protocol", "simulator returned no verdict"
-            ),
-            artifacts=(),
-        )
 
 
 def test_infrastructure_failure_of_the_unnamed_invocation_is_one_observation_of_it(
     tmp_path: Path,
 ) -> None:
     """A native Target without Tests has no names to retain: the run itself is the observation."""
-    handle, inspection, preview = _facts(tmp_path, cocotb=False, preview_names=())
-    (tmp_path / "dut.core").write_text(
-        "CAPI=2:\nname: acme:lib:dut:1\nfilesets:\n  tb:\n    files: [tb.sv]\n"
-        "    file_type: systemVerilogSource\ntargets:\n  sim:\n    flow: sim\n"
-        "    filesets: [tb]\n    flow_options: {tool: verilator}\n    toplevel: tb\n",
-        encoding="utf-8",
-    )
-    unnamed = (build_test_run(None, seed=9),)
-    preview = replace(preview, groups=((),), run_groups=(unnamed,), commands=(("run",),))
-    plan = plan_ordinary_hdl_simulation_record(
-        handle=handle,
-        inspection=inspection,
-        preview=preview,
-        groups=((),),
-        required_suite=(),
-        revision="abc123",
-        invocation_id=7,
-        execution_id="7" * 32,
-        trace=False,
-    )
-    execution = _NativeNoVerdictExecution(eda_tool="verilator", cocotb=False)
+    plan = _native_plan(tmp_path, seed=9)
+    execution = _without_verdict(_NativeAdapterExecution)(eda_tool="verilator", cocotb=False)
     result = _run_simulation_record_result(tmp_path, plan, execution)
 
     assert result.document["grade"] == "error"
@@ -633,22 +544,8 @@ def test_cleanup_failure_preserves_completed_tests_and_guard(tmp_path, monkeypat
 
 def test_unfiltered_guard_without_discovered_tests_is_scannable(tmp_path) -> None:
     plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True, names=())
-    execution = _AdapterAbortExecution(eda_tool="verilator", cocotb=True)
-    execution.termination = "sim_time_stall"
-    execution.failure_kind = "infrastructure"
-    executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
-    )
-    invocation = tmp_path / "reports/1"
-    invocation.mkdir(parents=True)
-    outcome = SimulationRecord(executor).run(
-        NewSimulationRecordRunRequest(
-            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
-        )
-    )
-    assert outcome.complete
-    result = SimulationRecordStore(invocation / "targets/sim/record").scan().items[0].result
-    assert result is not None
+    execution = _cocotb_execution(termination="sim_time_stall", failure_kind="infrastructure")
+    result = _run_simulation_record_result(tmp_path, plan, execution)
     assert result.document["grade"] == "error"
     assert result.document["observations"][0]["test"] is None
     assert result.document["observations"][0]["detail"]["termination"] == "sim_time_stall"
@@ -727,6 +624,7 @@ def test_backend_timeout_on_simulation_record_path_preserves_detail_and_adds_hin
     flow = SimulateFlow()
     # Planning and execution share the fake build, so the planned source
     # disclosure matches what execution later prepares.
+    # Private: the flow builds its execution internally; this is the only seam for the fake build.
     monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
     result = flow.execute_cli(argv)
 

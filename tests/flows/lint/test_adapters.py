@@ -62,6 +62,8 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
         "is_specialist": False,
         "default_timeout": 60,
     }
+    # No public function builds the MCP application without starting the stdio
+    # server, so this reaches the same in-process application `main()` serves.
     application = mcp_server._build_mcp_application(
         [definition],
         [],

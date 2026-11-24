@@ -16,7 +16,7 @@ from booley.config.project_config import (
 )
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
-from booley.flows.job_resources import resolved_source_bytes
+from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -39,6 +39,7 @@ from booley.flows.sim.live_progress import (
     publish_checkpoint,
 )
 from booley.flows.sim.record_reports import target_report_directory
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -47,7 +48,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     normalize_completion_error,
 )
-from booley.runtime.filesystem_utils import replace_file
+from booley.runtime.filesystem_utils import make_directories, replace_file
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -117,11 +118,12 @@ class ElabOnlyTargetResult:
         default_factory=lambda: BuildOutcome(False, None, "infrastructure")
     )
     log_path: str = ""
+    project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Replace *path* atomically so a poll never observes partial JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    make_directories(path.parent)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     replace_file(tmp, path)
@@ -147,7 +149,7 @@ class ElabOnlyMixin:
         def _with_live_progress(self, run: Callable[[], EndpointOutcome]) -> EndpointOutcome: ...
         def _flow_enabled(self) -> bool: ...
         def _resolve_requested_targets(self) -> list[str] | EndpointOutcome: ...
-        def _validate_interactive_args(self, targets: list[str]) -> EndpointOutcome | None: ...
+        def _validate_call_args(self, targets: list[str]) -> EndpointOutcome | None: ...
         def _effective_build_timeout_ms(self) -> int: ...
         def _effective_timeout_ms(self) -> int: ...
         def _standalone_requested(self) -> bool: ...
@@ -157,7 +159,9 @@ class ElabOnlyMixin:
         ) -> _StandaloneOutcome: ...
         def reserve_invocation_dir(self) -> Path | None: ...
         def _record_eda_tool(self, target: str, eda_tool: str | None) -> None: ...
-        def _open_run_log(self, target: str, log_dir: Path) -> None: ...
+        def _open_run_log(
+            self, target: str, log_dir: Path, *, temporary: bool = False
+        ) -> None: ...
         def _execute_boundary(
             self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
         ) -> SubprocessResult: ...
@@ -284,7 +288,7 @@ class ElabOnlyMixin:
             if binary is not None:
                 return result.target, MissingExecutableError(
                     binary,
-                    context=result.outcome.output,
+                    context=result.project_paths.project_text(result.outcome.output),
                 )
         return None
 
@@ -295,13 +299,14 @@ class ElabOnlyMixin:
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
                 detail={"mode": self._mode.value},
+                refused=True,
             )
         targets_or_error = self._resolve_requested_targets()
         if isinstance(targets_or_error, EndpointOutcome):
             targets_or_error.detail["mode"] = self._mode.value
             return targets_or_error
         targets = targets_or_error
-        target_error = self._validate_interactive_args(targets)
+        target_error = self._validate_call_args(targets)
         if target_error is not None:
             target_error.detail["mode"] = self._mode.value
             return target_error
@@ -545,9 +550,10 @@ class ElabOnlyMixin:
         try:
             compile_surface = resolve_target_compile_surface(handle)
             sources_before = project_compile_surface(compile_surface)
-            with SimulationBuildSession(handle) as session:
+            wait_s = max(1, self._effective_build_timeout_ms() // 1000)
+            with SimulationBuildSession(handle, wait_s=wait_s) as session:
                 candidate = session.new_generation()
-                self._open_run_log(target, candidate)
+                self._open_run_log(target, candidate, temporary=True)
                 prepared = self._prepare_elab_only_target(
                     target, started, handle=handle, build_root=candidate
                 )
@@ -559,9 +565,11 @@ class ElabOnlyMixin:
                     )
                 self._register_prepared_build(target, prepared)
                 inputs = session.capture_inputs(prepared)
-                result = self._execute_elab_only_build(target, prepared)
-                if result.outcome.passed:
-                    session.authorize_fresh_image(prepared, inputs)
+                with judged_commands_failing_on_error() as commands:
+                    result = self._execute_elab_only_build(target, prepared)
+                    if result.outcome.passed:
+                        session.authorize_fresh_image(prepared, inputs)
+                    commands.judge(result.outcome.passed)
                 return result
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
@@ -606,7 +614,7 @@ class ElabOnlyMixin:
         prepared: PreparedSimulationBuild,
     ) -> None:
         """Register prepared Target state used by reports and optional sweeps."""
-        self._open_run_log(target, Path(prepared.build_root))
+        self._open_run_log(target, Path(prepared.build_root), temporary=True)
         self._record_eda_tool(target, prepared.eda_tool)
 
     def _execute_elab_only_build(
@@ -621,8 +629,10 @@ class ElabOnlyMixin:
             "-c",
             simulation_build_script(prepared, token),
         ]
-        from booley.flows.terminal_progress import announce_unit
+        from booley.flows.terminal_progress import announce_unit, observe_source_names
 
+        paths = ProjectSourcePaths.for_target(self._target_handle(target), prepared.resolved)
+        observe_source_names(paths)
         observe_stage(
             target,
             "building",
@@ -642,6 +652,7 @@ class ElabOnlyMixin:
             compile_command=shlex.join(command),
             fileset={name: list(paths) for name, paths in prepared.fileset.items()},
             outcome=outcome,
+            project_paths=paths,
         )
         result.log_path = self._persist_elab_only_log(target, outcome.output)
         return result
@@ -655,7 +666,7 @@ class ElabOnlyMixin:
             token = new_attempt_token()[:12]
             log_dir = work_root_for(self.args.work_dir, "sim", target) / f"elab-only-{token}"
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            make_directories(log_dir)
             path = write_run_log(log_dir, output, max_bytes=None)
         except OSError:
             logger.debug("could not persist elab-only log for %s", target, exc_info=True)
@@ -711,7 +722,7 @@ class ElabOnlyMixin:
             "timestamp": utc_now_rfc3339(),
             **self._elab_only_detail(result),
         }
-        report_dir.mkdir(parents=True, exist_ok=True)
+        make_directories(report_dir)
         invocation_dir = self.reserve_invocation_dir()
         assert invocation_dir is not None
         path = target_report_directory(invocation_dir, result.target) / "simulation.json"

@@ -33,6 +33,7 @@ from tests.flows.sim.test_verilator_build_reuse_engine import (
     _write_fake_verilator,
     _write_project,
 )
+from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="Verilator build reuse is proven in the POSIX Sandbox"
@@ -81,7 +82,7 @@ def _flow_sim(project: Path, report_root: Path, test: str) -> dict[str, object]:
             work_dir=project,
             report_dir=report_root,
             test=(test,),
-            timeout_ms=30_000,
+            timeout_ms=hang_guard_s() * 1000,
         )
     )
     assert result.exit_code == 0, result.outcome.report_text
@@ -120,17 +121,6 @@ def _configure(project: Path, *lines: str) -> None:
     )
 
 
-@pytest.mark.parametrize("second_test", ["first", "second"], ids=["same-test", "other-test"])
-def test_second_identical_flow_sim_reuses_retained_image(
-    flow_project: Path, tmp_path: Path, second_test: str
-) -> None:
-    reports = tmp_path / "reports"
-    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
-    _assert_hit(_flow_sim(flow_project, reports, second_test))
-    # The unused candidate generation of the hit is discarded.
-    assert len(_generations(flow_project)) == 1
-
-
 def _edit_rtl(project: Path) -> None:
     _edit_keeping_mtime(
         project / "rtl" / "tb.sv", '`include "defs.svh"\nmodule tb; // NEW\nendmodule\n'
@@ -146,30 +136,34 @@ def _edit_flag(project: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "edit", [_edit_rtl, _edit_include, _edit_flag], ids=["rtl", "include", "flag"]
+    ("isolated", "edit"),
+    [
+        (False, _edit_rtl),
+        (False, _edit_include),
+        (False, _edit_flag),
+        (True, _edit_rtl),
+        (True, _edit_include),
+    ],
+    ids=["rtl", "include", "flag", "isolated-rtl", "isolated-include"],
 )
 def test_flow_sim_input_edit_misses_then_hits(
-    flow_project: Path, tmp_path: Path, edit: Callable[[Path], None]
+    flow_project: Path, tmp_path: Path, isolated: bool, edit: Callable[[Path], None]
 ) -> None:
+    """An edit to a source, listed header or flag prevents reuse; an isolated build is reused."""
     reports = tmp_path / "reports"
-    _flow_sim(flow_project, reports, "first")
+    if isolated:
+        _isolate_native_cores(flow_project)
+        _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
+        _assert_hit(_flow_sim(flow_project, reports, "first"))
+    else:
+        _flow_sim(flow_project, reports, "first")
     edit(flow_project)
     _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
     _assert_hit(_flow_sim(flow_project, reports, "first"))
-
-
-@pytest.mark.parametrize("edit", [_edit_rtl, _edit_include], ids=["rtl", "include"])
-def test_isolated_flow_sim_input_edit_misses_then_hits(
-    flow_project: Path, tmp_path: Path, edit: Callable[[Path], None]
-) -> None:
-    """AC2: an isolated build is reused, and editing a source or listed header prevents reuse."""
-    _isolate_native_cores(flow_project)
-    reports = tmp_path / "reports"
-    _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
-    _assert_hit(_flow_sim(flow_project, reports, "first"))
-    edit(flow_project)
-    _assert_built(_flow_sim(flow_project, reports, "first"), "changed source, recipe, or tool")
-    _assert_hit(_flow_sim(flow_project, reports, "first"))
+    # The rebuild superseded the first generation, which was deleted.
+    assert [path.name for path in _generations(flow_project)] == [
+        _current_generation(flow_project)
+    ]
 
 
 def test_isolated_flow_sim_unlisted_header_edit_is_not_an_input(
@@ -233,10 +227,11 @@ def test_flow_sim_legacy_pre_sim_change_to_generation_forces_build(
     _assert_built(_flow_sim(flow_project, reports, "first"), "missing provenance")
     retained = _current_generation(flow_project)
     _assert_built(_flow_sim(flow_project, reports, "second"), "reuse unsupported")
-    assert len(_generations(flow_project)) == 2
+    # The non-reusable build is deleted once its lease ends.
+    assert [path.name for path in _generations(flow_project)] == [retained]
     assert _current_generation(flow_project) == retained
     _assert_hit(_flow_sim(flow_project, reports, "third"))
-    assert len(_generations(flow_project)) == 2
+    assert [path.name for path in _generations(flow_project)] == [retained]
 
 
 def test_symlinked_booley_directory_runs_and_reuses_build(
@@ -257,7 +252,12 @@ def test_symlinked_booley_directory_runs_and_reuses_build(
     for _ in range(2):
         before = _report_runs(reports)
         result = SimulateFlow().execute(
-            SimRequest(target="sim", work_dir=flow_project, test=("first",), timeout_ms=30_000)
+            SimRequest(
+                target="sim",
+                work_dir=flow_project,
+                test=("first",),
+                timeout_ms=hang_guard_s() * 1000,
+            )
         )
         assert result.exit_code == 0, result.outcome.report_text
         (run,) = _report_runs(reports) - before

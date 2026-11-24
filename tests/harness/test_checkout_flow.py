@@ -31,6 +31,7 @@ from booley.runtime.commit_export import export_commit
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.resource_history import load_records
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.time_budget import hang_guard_s, scaled
 
 if TYPE_CHECKING:
     from booley.harness.checkout_flow import CheckoutFlowRequest, CheckoutFlowResult
@@ -42,7 +43,10 @@ linux_only = pytest.mark.skipif(
 )
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
-TIMEOUT_S = 30
+TIMEOUT_S = hang_guard_s()
+# A run that must time out, and a preflight that must overrun its bound (real clock).
+WAIT_DEADLINE_S = scaled(2)
+PREFLIGHT_DEADLINE_S = scaled(20)
 FLOW = "checkout_stub"
 
 # The stub Flow's behavior follows ``--target``: ``pass`` runs one real command,
@@ -68,6 +72,8 @@ class CheckoutStub(BooleyFlow):
 
     def _add_args(self, parser):
         parser.add_argument("--coverage", action="store_true")
+        parser.add_argument("--count", type=int)
+        parser.add_argument("--seed", type=int)
 
     def _run(self):
         seen = {{
@@ -76,6 +82,8 @@ class CheckoutStub(BooleyFlow):
             "tmp_is_dir": os.path.isdir(os.environ["TMPDIR"]),
             "work_dir": str(self.args.work_dir),
             "coverage": self.args.coverage,
+            "count": self.args.count,
+            "seed": self.args.seed,
         }}
         (CTL / "seen.json").write_text(json.dumps(seen), encoding="utf-8")
         (CTL / "started").write_text("1", encoding="utf-8")
@@ -84,6 +92,11 @@ class CheckoutStub(BooleyFlow):
             order.write(target + "\\n")
         if target == "fail":
             return EndpointOutcome(exit_code=1)
+        if target == "liberty":
+            # The ASIC Synthesis Flow's own Liberty discovery, as a ``synth`` run reaches it.
+            from booley.flows.synth.backends.yosys.discovery import resolve_liberty
+
+            (CTL / "liberty").write_text(str(resolve_liberty()), encoding="utf-8")
         if target == "crash":
             raise RuntimeError("stub crashed")
         if target == "abort":
@@ -100,7 +113,7 @@ class CheckoutStub(BooleyFlow):
             work = Path(self.args.work_dir)
             handle = TargetCatalog.build(work).select("probe")
             evidence = run_pre_sim_commands(
-                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s=30
+                handle, test_names=("t",), build_root=work / "b", eda_tool="icarus", timeout_s={hang_s}, resource_flags=()
             )
             (CTL / "presim.json").write_text(
                 json.dumps(
@@ -125,7 +138,7 @@ class CheckoutStub(BooleyFlow):
             signal.signal(signal.SIGINT, signal.SIG_IGN)  # only a kill ends this Flow
             (CTL / "ignoring").write_text("1", encoding="utf-8")
         if target.startswith("wait") or target in ("stubborn", "linger"):
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + {outer_s}
             while not (CTL / "release").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
         else:
@@ -230,7 +243,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         config: str = "",
     ) -> World:
         # PYTHONPATH stays: the suite sets it so that child interpreters import this checkout.
-        for name in ("BOOLEY_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
+        for name in ("BOOLEY_DIR", "PRJ_LIB_DIR", *CALLER_ENV.keys() - {"PYTHONPATH"}):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -243,7 +256,11 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
         tools.mkdir(parents=True)
         settings = "[jobs]\nmax_tickets = SLOTS\n" + config.replace("{live}", str(live))
         (live / ".booley" / "booley.toml").write_bytes(settings.replace("SLOTS", "4").encode())
-        (tools / f"{FLOW}.py").write_bytes(STUB_FLOW.format(ctl=str(ctl)).encode())
+        (tools / f"{FLOW}.py").write_bytes(
+            STUB_FLOW.format(
+                ctl=str(ctl), hang_s=hang_guard_s(), outer_s=2 * hang_guard_s()
+            ).encode()
+        )
         for relative, text in (files or {}).items():
             path = live / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -389,7 +406,12 @@ def test_failed_crashed_or_timed_out_flow_returns_an_excerpt_that_errors_every_v
     cases = [
         ("crash", {}, CheckoutFlowStatus.FAILED, "RuntimeError: stub crashed"),
         ("abort", {}, CheckoutFlowStatus.FAILED, "stub aborted"),
-        ("wait", {"timeout_s": 2}, CheckoutFlowStatus.TIMED_OUT, "the run timed out after 2 s"),
+        (
+            "wait",
+            {"timeout_s": WAIT_DEADLINE_S},
+            CheckoutFlowStatus.TIMED_OUT,
+            f"the run timed out after {WAIT_DEADLINE_S:g} s",
+        ),
     ]
     for target, changes, status, expected in cases:
         result = run_checkout_flow(world.request(target, **changes))
@@ -714,6 +736,16 @@ def test_checkout_flow_keeps_shared_state_in_main(world: World) -> None:
 
 
 @linux_only
+def test_checkout_flow_job_keeps_the_session_of_its_request(world: World) -> None:
+    """#5310: a measuring session's Flow Job stays its Job after the Flow rewrote the record."""
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    result = run_checkout_flow(world.request("pass", session_key="codex:t1"))
+
+    assert record_of(world, result).session_key == "codex:t1"
+
+
+@linux_only
 def test_checkout_flow_environment_is_scrubbed(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -721,6 +753,7 @@ def test_checkout_flow_environment_is_scrubbed(
 
     for name, value in (CALLER_ENV | KEPT_ENV).items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PRJ_LIB_DIR", "")  # an empty value is as good as unset
     before = set(world.checkout.parent.iterdir())
 
     result = run_checkout_flow(world.request("pass"))
@@ -729,6 +762,7 @@ def test_checkout_flow_environment_is_scrubbed(
     env = seen["env"]
     assert isinstance(env, dict)
     assert not (CALLER_ENV.keys() - {"BOOLEY_RUN_ID"}) & env.keys()
+    assert "PRJ_LIB_DIR" not in env
     assert env["BOOLEY_RUN_ID"] == result.run_id  # its own run, not the caller's
     assert (env["PYTHONSAFEPATH"], env["PYTHONNOUSERSITE"]) == ("1", "1")
     assert env["BOOLEY_DIR"] == str(world.main)
@@ -738,8 +772,24 @@ def test_checkout_flow_environment_is_scrubbed(
     assert seen["home_is_dir"] and seen["tmp_is_dir"]
     scratch = Path(env["HOME"]).parent
     assert scratch.parent == world.checkout.parent and scratch not in before
+    # The run's own runtime tree: no other child or live run shares its scratch (AC3).
+    assert Path(env["BOOLEY_RUNTIME_DIR"]).parent == scratch
     assert not scratch.exists()
     assert set(world.checkout.parent.iterdir()) == before
+
+
+@linux_only
+def test_flow_settings_reach_the_child_as_its_options(world: World) -> None:
+    """AC3: each setting of the request is one ``--<name> <value>`` option of the Flow child."""
+    from booley.harness.checkout_flow import _flow_arguments, run_checkout_flow
+
+    request = world.request("pass", settings={"count": 4, "seed": 3})
+
+    assert _flow_arguments(request) == ["--target", "pass", "--count", "4", "--seed", "3"]
+    run_checkout_flow(request)
+
+    seen = world.seen()
+    assert (seen["count"], seen["seed"]) == (4, 3)
 
 
 def assert_no_record_names(main: Path, checkout: Path) -> None:
@@ -770,7 +820,7 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
         target, timeout_s = {
             "passed": ("pass", TIMEOUT_S),
             "failed": ("fail", TIMEOUT_S),
-            "timed_out": ("wait", 2),
+            "timed_out": ("wait", WAIT_DEADLINE_S),
         }[outcome]
         result = run_checkout_flow(world.request(target, timeout_s=timeout_s))
 
@@ -791,13 +841,14 @@ def test_deleted_checkout_is_named_by_no_job_record(world: World, outcome: str) 
 
 
 # Runs the entry point in its own process so the test can interrupt it like a Ctrl-C.
-CALLER = """
+CALLER = f"""
 import json, sys
 from pathlib import Path
 from booley.harness.checkout_flow import CheckoutFlowRequest, run_checkout_flow
 
 checkout, main, reports = (Path(arg) for arg in sys.argv[1:4])
-run_checkout_flow(CheckoutFlowRequest(checkout, main, reports, "checkout_stub", "wait", 60))
+request = CheckoutFlowRequest(checkout, main, reports, "checkout_stub", "wait", {hang_guard_s()})
+run_checkout_flow(request)
 """
 
 
@@ -902,7 +953,7 @@ def test_flow_that_ignores_the_stop_is_killed_after_the_grace(
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import run_checkout_flow
 
-    monkeypatch.setattr(checkout_flow, "STOP_GRACE_S", 1)
+    monkeypatch.setattr(checkout_flow, "STOP_GRACE_S", scaled(1))
 
     def interrupt_once_ignoring() -> None:
         poll((world.ctl / "ignoring").exists, "the Flow to ignore SIGINT")
@@ -1280,6 +1331,58 @@ def test_checkout_flow_refuses_a_path_into_the_booley_dir_variable(
 
 
 @linux_only
+@pytest.mark.parametrize("spelling", ["absolute", "relative"])
+def test_checkout_flow_passes_the_callers_pdk_root(
+    world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spelling: str
+) -> None:
+    from booley.harness.checkout_flow import run_checkout_flow
+
+    real = tmp_path / "pdk-real"
+    library = real / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"library (x) {}\n")
+    (tmp_path / "pdk").symlink_to(real)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk") if spelling == "absolute" else "pdk")
+
+    run_checkout_flow(world.request("liberty"))
+
+    env = world.seen()["env"]
+    assert isinstance(env, dict)
+    assert env["PRJ_LIB_DIR"] == str(real.resolve())
+    expected = real.resolve() / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+    assert (world.ctl / "liberty").read_text(encoding="utf-8") == str(expected)
+
+
+@linux_only
+@pytest.mark.parametrize("case", ["live-tree", "main-booley-dir", "booley-dir-env", "symlink"])
+def test_checkout_flow_refuses_a_pdk_root_in_a_live_root(
+    world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
+) -> None:
+    from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
+
+    env_dir = tmp_path / "env-bd"
+    env_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
+    (tmp_path / "link").symlink_to(world.live)
+    named, label, root = {
+        "live-tree": (world.live / "pdk", "live working tree", world.live),
+        "main-booley-dir": (world.main / "pdk", "Main Booley Directory", world.main),
+        "booley-dir-env": (env_dir / "pdk", "BOOLEY_DIR", env_dir.resolve()),
+        "symlink": (tmp_path / "link" / "pdk", "live working tree", world.live),
+    }[case]
+    monkeypatch.setenv("PRJ_LIB_DIR", str(named))
+
+    with pytest.raises(CheckoutFlowError) as refused:
+        run_checkout_flow(world.request("liberty"))
+
+    expected = f"PRJ_LIB_DIR names {world.live / 'pdk' if case == 'symlink' else named.resolve()}"
+    assert expected in str(refused.value)
+    assert f"inside the {label} {root}" in str(refused.value)
+    assert_refused_before_any_run(world)
+
+
+@linux_only
 def test_checkout_flow_takes_a_work_directory_with_a_git_marker_as_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1465,6 +1568,7 @@ def test_preflight_resolution_runs_in_the_measurement_environment(
     assert "CALLER_ONLY_VARIABLE" not in seen["env"]
     flow_env = world.seen()["env"]
     assert isinstance(flow_env, dict)
+    assert "PRJ_LIB_DIR" not in flow_env
     scratch = Path(flow_env["HOME"]).parent
     assert Path(seen["env"]["HOME"]).parent == scratch  # the run's own HOME, as the Flow saw
     assert scratch.parent == world.checkout.parent and scratch.name.startswith(".checkout.env-")
@@ -1506,9 +1610,11 @@ def test_checkout_flow_refuses_when_the_preflight_cannot_resolve(
     use_fusesoc(monkeypatch)
     world = make_world(files={"probe.core": PROBE_CORE.format(files="missing.v")})
 
-    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe"):
+    with pytest.raises(CheckoutFlowError, match=r"could not resolve Target probe") as refused:
         run_checkout_flow(world.request("probe"))
 
+    assert "missing.v" in str(refused.value)
+    assert "only through the post-setup hook" in str(refused.value)
     assert_refused_before_any_run(world)
 
 
@@ -1526,13 +1632,15 @@ def test_checkout_flow_refuses_when_the_preflight_does_not_finish(
         files={
             "probe.core": GENERATOR_CORE,
             # Outlives the bound and the poll below: only a group kill ends it in time.
-            "gen.py": GENERATOR.format(ctl="{ctl}", wait=120),
+            "gen.py": GENERATOR.format(ctl="{ctl}", wait=6 * PREFLIGHT_DEADLINE_S),
             "top.v": "module top; endmodule\n",
         }
     )
 
-    with pytest.raises(CheckoutFlowError, match=r"did not finish within 20 s"):
-        run_checkout_flow(world.request("probe", timeout_s=20))
+    with pytest.raises(
+        CheckoutFlowError, match=rf"did not finish within {PREFLIGHT_DEADLINE_S:g} s"
+    ):
+        run_checkout_flow(world.request("probe", timeout_s=PREFLIGHT_DEADLINE_S))
 
     assert_refused_before_any_run(world)
     assert (world.ctl / "generator.pid").exists(), "the generator never started within the bound"
@@ -1670,7 +1778,9 @@ def test_a_callers_interrupt_ends_the_preflight_child(tmp_path: Path) -> None:
     threading.Timer(1.0, _thread.interrupt_main).start()
 
     with pytest.raises(KeyboardInterrupt):
-        _run_preflight_child(command, tmp_path, dict(os.environ), 30.0, tmp_path / "log", "t")
+        _run_preflight_child(
+            command, tmp_path, dict(os.environ), hang_guard_s(), tmp_path / "log", "t"
+        )
 
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid_file.read_text()), 0)

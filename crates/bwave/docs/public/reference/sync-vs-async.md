@@ -14,16 +14,35 @@ selected clock:
 - Each later cycle is one period further on, whether or not the clock rose
   there. Cycle distances stay proportional to elapsed time, even across a
   clock stop.
+- Cycle 0 is not a grid point. It reads strictly before the reset
+  deassertion tick and before cycle 1's read, in both sample modes. Cycle 0
+  is omitted when no such tick exists: the start tick is tick 0 (no reset
+  was found, `--with-reset` is set, or reset deasserts at tick 0), or a
+  pre-edge read of cycle 1 already sits on tick 0. `wave` then
+  starts at cycle 1, and `value --at 0` returns `x` with a null
+  `sample_tick`. Cycle 0 is not an edge, so `rising`, `falling` and
+  `change` skip it and `find` reports only level matches there.
 
 ### Clock selection
 
-B-Wave considers one-bit signals whose name contains `clk`, ordered by scope
-depth and then name, and picks the first with a measurable period.
-`--clock PATTERN` picks the first one-bit match in the same order.
+B-Wave picks the clock like this:
+
+1. Candidates are one-bit signals whose hierarchical name, up to the first
+   `[`, contains `clk` in any case.
+2. They are ordered by scope depth, then name.
+3. The first with two rising edges (0 to 1) wins.
+
+`--clock PATTERN` picks the first one-bit match in the same order. No match
+exits with code 2. A match with fewer than two rising edges gives an
+`unavailable` verdict. `overview`, `list` and every query print
+`# clock override: NAME (period=P ticks, first_rise=T)` on stderr, except in
+JSON mode. List the candidates with `bwave list trace.fst -s "*clk*"`.
 
 Without a usable clock, sync falls back to ticks: `value.at_unit` and
-`find.unit` are `tick`, and `stats.total_cycles` is null. See
-`troubleshooting/clock-detection`.
+`find.unit` are `tick`, and `stats.total_cycles` is null. Every sync query
+then prints one `# WARNING: no usable clock: ...` line (in JSON, the same
+text without the prefix in `warnings`) that names `--clock PATTERN` or
+`--async`.
 
 ### Clock regularity
 
@@ -31,10 +50,14 @@ The grid is only right while the clock keeps its period. `build`, `overview`,
 and `stats` print the check:
 
 ```text
-# clock: tb.clk
+# clock: tb.clk (auto-detected; --clock PATTERN to override)
 # clock regularity: pass (stopped_stretches)
 # clock stopped: 1 stretches, 3 cycles, longest 3:5
 ```
+
+The first line ends `(auto-detected; --clock PATTERN to override)`, or
+`(--clock)` when `--clock` chose the clock, and is `# clock: <not detected>`
+when there is no candidate.
 
 | Status | Meaning |
 |---|---|
@@ -42,10 +65,37 @@ and `stats` print the check:
 | `warning` | An edge is off the grid, or the clock goes X/Z after its first rise. Cycle numbers are unreliable. |
 | `unavailable` | Fewer than two rising edges, or no clock candidate. |
 
-The verdict is advisory and never changes a query's mode. Every sync query
-warns on `warning` and `unavailable`; JSON carries the verdict in
-`clock_regularity` and `warnings`. On a warning, use `--async` with tick or
-time bounds.
+| Reason | Meaning |
+|---|---|
+| `regular` | Every rising edge fits the grid. |
+| `stopped_stretches` | Some interior grid points have no rising edge. |
+| `off_grid_edge` | Frequency change, phase change, or jitter. |
+| `non_integer_period` | The period is fractional and the simulator rounded it to ticks. |
+| `unknown_clock` | The clock goes X/Z after its first rising edge. |
+| `insufficient_edges` | Fewer than two rising edges, so no period. |
+| `multiple_clock_periods` | Candidate clocks have different periods. |
+
+`non_integer_period` is inferred, not proven, and is only considered when an
+edge is off the grid. It needs at least seven rising edges, gaps of exactly
+two adjacent lengths each seen at least twice, a total span that is not a
+whole multiple of the gap count, and every rise within one tick of the
+straight line from the first rise to the last. Tick rounding fits this;
+some jitter patterns do too.
+
+The verdict is advisory and never changes a query's mode. Which findings
+warn in queries:
+
+- `off_grid_edge`, `non_integer_period` and `unknown_clock` warn on every
+  sync query, and on async queries that use cycle tokens.
+- `insufficient_edges` gives the one no-clock warning on sync queries.
+- `multiple_clock_periods` never warns in queries. It shows in the `build`,
+  `overview` and `stats` header and in JSON `clock_regularity`.
+
+JSON carries the verdict in `clock_regularity` and the warnings in
+`warnings`. On `off_grid_edge`, `non_integer_period` or `unknown_clock`,
+use `--async` with tick or time bounds. On `insufficient_edges`, select
+another clock with `--clock` or use `--async`. On `multiple_clock_periods`,
+select the intended domain with `--clock PATTERN`.
 
 ### Clock stops
 
@@ -93,9 +143,6 @@ Pre-edge details:
   read as `sample_tick`.
 - An edge at tick 0 has nothing before it: values are unknown and
   `sample_tick` is null.
-- Cycle 0 is a snapshot taken before the reset-dependent start tick, not a
-  grid edge. The first pre-edge read can precede reset deassertion by one
-  tick.
 - Pre-edge needs a usable clock. `--sample-mode` is rejected with `--async`
   and by `list`, `overview`, and `stuck`.
 
@@ -103,10 +150,44 @@ Pre-edge details:
 
 By default sync mode skips output until the reset
 deasserts, so your first cycle is "real" simulation
-rather than initialisation. See
-`troubleshooting/reset-skipping` for the deassertion
-rules and how to override with `--with-reset` or
-`--reset PATTERN`.
+rather than initialisation.
+
+- **Detection**: the shallowest 1-bit signal (then
+  alphabetically first) whose last name part contains
+  `rst` or `reset`, such as `tb.rst_n` or `tb.dut.reset`.
+  `--reset PATTERN` picks a 1-bit signal by glob
+  instead.
+- **Polarity**: from the name. `rstn`, `rst_n`, `rst_ni`,
+  `reset_b` and `rst_l` are active-low, also with a suffix such as
+  `rst_n_sync`; `rst`, `reset`, `rst_gen`, `rst_in` and `reset_en`
+  are active-high.
+- **Deassertion**: the end of the reset's first
+  assertion, its first inactive value after it asserted.
+  A reset that starts at X or Z counts as asserted until
+  then. One that starts inactive and pulses deasserts
+  where that first pulse ends, and later pulses do not
+  move it. One that never asserts or never deasserts
+  skips nothing.
+- **Header**: every sync query prints one line on stderr
+  and `overview` prints it on stdout. Async output has
+  none.
+
+  ```
+  # reset: tb.rst_n (active-low by name, auto) deasserts @ 25ns; 2 cycles skipped (--with-reset to include)
+  ```
+
+  Without a reset it reads
+  `# reset: none detected; no cycles skipped`; a reset
+  that never asserts reads
+  `# reset: tb.rst (active-high by name, auto) never asserts; no cycles skipped`.
+- **JSON**: `--format json` adds a `reset` object with the
+  same facts; `deassert_tick` is null when the reset
+  never asserts or never deasserts.
+- **`--with-reset`** keeps the reset phase; when one
+  would have been skipped, the header then says so and
+  `skipped_cycles` is 0.
+- **Bad `--reset`**: a glob that does not compile or
+  matches no 1-bit signal exits 2 naming the pattern.
 
 ## Async mode (`--async`)
 
@@ -148,33 +229,15 @@ window or you'll hit `--limit` in milliseconds.
 
 ## Switching between modes
 
-A single store supports both modes. There is no rebuild
-required. `bwave signal sim.fst -s "*" -t 0:100` and
-`bwave signal sim.fst -s "*" -t 0t:1000t --async`
-inspect the same data.
+A single store supports both modes, with no rebuild. The store holds the
+full asynchronous transition stream, and sync mode is a view computed from
+it at query time, so the two modes always agree:
+`bwave signal sim.fst -s "*" -t 0:100` and
+`bwave signal sim.fst -s "*" -t 0t:1000t --async` inspect the same data.
 
-The store holds the full asynchronous transition stream
-— it is a plain, lossless FST file. Sync mode is a
-sampling view computed over that stream at query time:
-per-cycle post-edge values are derived from the same
-transitions async mode reports. So the two modes always
-agree, and switching between them never requires a
-rebuild.
-
-Time arguments switch meaning:
-
-| Flag       | Sync     | Async                |
-|------------|----------|----------------------|
-| `-t 100:200` | cycles 100-200 | rejected — suffix required: `-t 100t:200t`, `-t 1us:2us` |
-| `--at 100`   | cycle 100      | rejected — use `--at 100t` |
-| `<T1> <T2>`  | cycles         | ticks, suffix required (`100t`, `100ns`) |
-| `--before N` | cycle N        | tick N (bare bound)  |
-
-Bare integers mean cycles in sync mode; async mode
-rejects them outright and requires a unit suffix
-(`100t` for ticks, `100ns` for physical time, `100c` to
-convert cycles). See `reference/time-tokens` for the
-full grammar.
+Time arguments change meaning with the mode: bare integers are cycles in
+sync mode, and async mode rejects them and requires a unit suffix (`100t`,
+`100ns`, or `100c` to convert cycles). See `reference/time-tokens`.
 
 ## Quick decision guide
 
@@ -186,4 +249,4 @@ full grammar.
   probably staring at post-edge values from the cycle
   *after* the one you think you set up.
 - If sync output is empty or wrong, run `bwave overview` and check the clock
-  and its verdict. See `troubleshooting/clock-detection`.
+  and its verdict (Clock regularity, above).

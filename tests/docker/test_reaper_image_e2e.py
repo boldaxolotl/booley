@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -19,6 +20,12 @@ from tests.sidecar_image_helpers import (
     docker,
     isolated_docker_daemon,
 )
+from tests.time_budget import hang_guard_s, scaled
+
+# Observation window in which the unreachable-daemon reaper paces its passes.
+_UNREACHABLE_WINDOW_S = scaled(4.5)
+# Pass interval the reaper container is started with.
+_UNREACHABLE_INTERVAL_S = 2
 
 
 def _exists(client: DockerClient, kind: str, name: str) -> bool:
@@ -123,7 +130,7 @@ def _wait_for_cleanup(client: DockerClient, topology: _Topology) -> None:
         ("network", topology.private),
         ("network", topology.outbound),
     )
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + hang_guard_s()
     while time.monotonic() < deadline:
         if not any(_exists(client, kind, name) for kind, name in owned):
             return
@@ -132,7 +139,7 @@ def _wait_for_cleanup(client: DockerClient, topology: _Topology) -> None:
 
 
 def _wait_for_log(client: DockerClient, container: str, expected: str) -> str:
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + hang_guard_s()
     captured = ""
     while time.monotonic() < deadline:
         logs = client.run("logs", container)
@@ -221,17 +228,17 @@ def test_candidate_waits_between_passes_when_daemon_is_unreachable() -> None:
                 "--name",
                 unavailable,
                 "-e",
-                "BOOLEY_REAP_INTERVAL_SECONDS=2",
+                f"BOOLEY_REAP_INTERVAL_SECONDS={_UNREACHABLE_INTERVAL_S}",
                 image,
             )
         )
-        time.sleep(4.5)
+        time.sleep(_UNREACHABLE_WINDOW_S)
         running = docker("inspect", unavailable, "--format", "{{.State.Running}}")
         assert_ok(running)
         assert running.stdout.strip() == "true"
         failed_logs = docker("logs", unavailable)
         assert_ok(failed_logs)
         failures = (failed_logs.stdout + failed_logs.stderr).count("docker ps failed")
-        assert 2 <= failures <= 4
+        assert 2 <= failures <= math.floor(_UNREACHABLE_WINDOW_S / _UNREACHABLE_INTERVAL_S) + 2
     finally:
         docker("rm", "-f", unavailable)

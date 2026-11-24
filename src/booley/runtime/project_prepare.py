@@ -8,12 +8,14 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime import platform_paths
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.project_repositories import paired_project_repository
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ def _hook_command(hook: Path) -> list[str]:
 
 
 def _hook_environment(
+    base: Mapping[str, str],
     checkout: Path,
     booley_dir: Path,
     root: Path,
@@ -68,7 +71,7 @@ def _hook_environment(
     sim_flow_enabled: bool,
 ) -> dict[str, str]:
     return {
-        **os.environ,
+        **base,
         "BOOLEY_WORKTREE": str(checkout),
         "BOOLEY_DIR": str(booley_dir),
         "BOOLEY_PROJECT_ROOT": str(root),
@@ -99,11 +102,14 @@ def _run_logged(
 ) -> int | None:
     """Run *command* with its output in *log*, echoed live to stderr; ``None`` on timeout.
 
-    The hook writes straight into the log file (no pipe), in the caller's
-    process group so a terminal Ctrl-C reaches it. The parent waits for the
-    process itself, never for end of output, so a background child that keeps
-    the log open cannot stall a finished hook. A timeout or interrupt kills the
-    direct child, as ``subprocess.run(timeout=)`` does.
+    The hook writes straight into the log file (no pipe), in a process group
+    of its own. The parent waits for the hook process itself, never for end of
+    output, so a background child that keeps the log open cannot stall a
+    finished hook, and is left running. A timeout, or any exception while
+    waiting such as Ctrl-C (which reaches Booley, not the hook), stops the hook
+    and every process it started through ``kill_process_tree`` (a graceful
+    stop, then a forced one after its grace period) before returning or
+    re-raising.
     """
     log.parent.mkdir(parents=True, exist_ok=True)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -117,19 +123,18 @@ def _run_logged(
             stdin=subprocess.DEVNULL,
             stdout=sink,
             stderr=subprocess.STDOUT,
+            **new_group_kwargs(),
         )
         try:
             while process.poll() is None:
                 if time.monotonic() >= deadline:
-                    process.kill()
-                    process.wait()
+                    platform_paths.kill_process_tree(process)
                     offset = _echo_new_log_bytes(log, offset, decoder)
                     return None
                 offset = _echo_new_log_bytes(log, offset, decoder)
                 _wait_tick()
         except BaseException:
-            process.kill()
-            process.wait()
+            platform_paths.kill_process_tree(process)
             raise
     _echo_new_log_bytes(log, offset, decoder)
     return process.returncode
@@ -160,6 +165,7 @@ def prepare_project(
     sim_flow_enabled: bool,
     timeout_s: int = 900,
     log: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> PreparationResult:
     """Run the authored post-setup hook without staging or committing output.
 
@@ -168,7 +174,8 @@ def prepare_project(
     stages files, or creates commits.
 
     With *log*, the hook's combined output is written there and echoed live to
-    stderr instead of being captured for the debug log.
+    stderr instead of being captured for the debug log. *environment* is the
+    base the hook's variables are layered on (``os.environ`` when ``None``).
     """
     root = Path(project_root).resolve()
     checkout = Path(worktree).resolve()
@@ -178,12 +185,20 @@ def prepare_project(
         logger.debug("No post-setup hook in %s", booley_dir / "hooks")
         return PreparationResult(ok=True)
 
-    env = _hook_environment(checkout, booley_dir, root, slug, ticket_path, sim_flow_enabled)
+    env = _hook_environment(
+        os.environ if environment is None else environment,
+        checkout,
+        booley_dir,
+        root,
+        slug,
+        ticket_path,
+        sim_flow_enabled,
+    )
     if log is not None:
         return _prepare_logged(hook, checkout, env, timeout_s, log)
     try:
         result = platform_paths.run_captured_bounded(
-            _hook_command(hook), cwd=checkout, env=env, timeout=timeout_s, errors="strict"
+            _hook_command(hook), cwd=checkout, env=env, timeout=timeout_s, errors="replace"
         )
     except subprocess.TimeoutExpired:
         return PreparationResult(False, hook, f"post-setup hook timed out ({timeout_s}s)")

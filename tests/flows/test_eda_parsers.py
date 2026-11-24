@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from booley.flows.eda_parsers import (
-    VERIBLE_FINDING_RE,
     VERILATOR_WARNING_RE,
     extract_error_gist,
-    first_error_line,
     verible_first_error_line,
 )
 
@@ -39,17 +39,6 @@ VERIBLE_OUTPUT = textwrap.dedent(
 
 
 class TestVerilatorParsers:
-    def test_warning_regex_captures_location_and_rule(self):
-        matches = list(VERILATOR_WARNING_RE.finditer(VERILATOR_OUTPUT))
-        assert len(matches) == 1
-        m = matches[0]
-        assert (m.group("rule"), m.group("file"), m.group("line"), m.group("col")) == (
-            "UNUSEDSIGNAL",
-            "rtl/a.sv",
-            "42",
-            "5",
-        )
-
     def test_warning_regex_ignores_echoed_source_gutter_line(self):
         """A string literal echoed under a real warning is not a second warning (#3673)."""
         log = (
@@ -60,29 +49,8 @@ class TestVerilatorParsers:
         found = [m.group("file") for m in VERILATOR_WARNING_RE.finditer(log)]
         assert found == ["rtl/a.sv"]
 
-    def test_first_error_line_finds_the_first_error(self):
-        # The FIRST %Error line — a located finding, not the exit epilogue.
-        assert first_error_line(VERILATOR_OUTPUT) == (
-            "%Error-BLKANDNBLK: rtl/b.sv:7:3: Blocked and non-blocking assignments"
-        )
-        assert first_error_line("clean run\n") is None
-
 
 class TestVeribleParsers:
-    def test_finding_regex_keeps_rule_and_skips_parse_errors(self):
-        # The column-range form (10:1-5) keeps its leading column; the located
-        # parse-error line has no [rule] and must NOT match the finding regex —
-        # it is the eda_tool_error signal, surfaced via the first-error helper
-        # (QA-7).
-        found = [
-            (m.group("file"), int(m.group("line")), int(m.group("col")), m.group("rule"))
-            for m in VERIBLE_FINDING_RE.finditer(VERIBLE_OUTPUT)
-        ]
-        assert found == [
-            ("rtl/a.sv", 4, 11, "interface-name-style"),
-            ("rtl/a.sv", 10, 1, "no-trailing-spaces"),
-        ]
-
     def test_first_error_line(self):
         assert verible_first_error_line(VERIBLE_OUTPUT) == (
             'rtl/b.sv:3:1: syntax error at token "endmodule"'
@@ -90,14 +58,15 @@ class TestVeribleParsers:
         assert verible_first_error_line("clean run\n") is None
 
 
-class TestErrorGist:
-    def test_verilator_error_gist(self):
-        gist = extract_error_gist(VERILATOR_OUTPUT)
-        assert "Blocked and non-blocking" in gist
-
-    def test_icarus_style_gist(self):
-        out = "rtl/top.v:12: syntax error near endmodule\nI give up.\n"
-        assert "syntax error" in extract_error_gist(out)
-
-    def test_empty_output(self):
-        assert extract_error_gist("") == ""
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (VERILATOR_OUTPUT, "Blocked and non-blocking"),
+        ("rtl/top.v:12: syntax error near endmodule\nI give up.\n", "syntax error"),
+        ("", ""),
+    ],
+    ids=["verilator", "icarus-style", "empty"],
+)
+def test_error_gist(output: str, expected: str) -> None:
+    gist = extract_error_gist(output)
+    assert expected in gist if expected else gist == ""

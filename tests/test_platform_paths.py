@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import ntpath
 import os
 import signal
@@ -10,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -18,8 +20,10 @@ from tests.pipe_holding_tree import (
     describe_heartbeat_tree,
     heartbeat_tree,
     parent_argv,
+    stall_wait_on,
     wait_until_heartbeat_stops,
 )
+from tests.time_budget import hang_guard_s, scaled
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime import platform_paths
@@ -220,13 +224,13 @@ def test_run_captured_bounded_kills_the_tree_when_interrupted():
         pytest.raises(KeyboardInterrupt),
     ):
         platform_paths.run_captured_bounded(
-            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=30
+            [sys.executable, "-c", "import time; time.sleep(60)"], timeout=hang_guard_s()
         )
 
     (proc,) = started
     try:
         # kill_process_tree already ran; the child is dead or about to be reaped.
-        assert proc.wait(timeout=15) is not None
+        assert proc.wait(timeout=hang_guard_s()) is not None
     finally:
         proc.kill()
         for pipe in (proc.stdout, proc.stderr):
@@ -240,7 +244,7 @@ def test_run_captured_bounded_runs_in_cwd_with_env(tmp_path: Path):
 
     result = platform_paths.run_captured_bounded(
         [sys.executable, "-c", script],
-        timeout=30,
+        timeout=hang_guard_s(),
         cwd=tmp_path,
         env={**os.environ, "BOOLEY_BOUNDED_MARKER": marker},
     )
@@ -274,21 +278,24 @@ _EMIT_INVALID_UTF8 = [sys.executable, "-c", "import sys; sys.stdout.buffer.write
 
 
 def test_run_captured_bounded_replaces_undecodable_bytes_by_default():
-    assert "�" in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=30).stdout
+    assert (
+        "�"
+        in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=hang_guard_s()).stdout
+    )
 
 
 def test_run_captured_bounded_decodes_strictly_on_request():
     """``errors`` selects the decoding mode; strict never turns a timeout into a decode error."""
     emit = _EMIT_INVALID_UTF8
     with pytest.raises(UnicodeDecodeError):
-        platform_paths.run_captured_bounded(emit, timeout=30, errors="strict")
+        platform_paths.run_captured_bounded(emit, timeout=hang_guard_s(), errors="strict")
     truncated = [
         sys.executable,
         "-c",
         "import sys, time; sys.stdout.buffer.write(b'\\xc3'); sys.stdout.flush(); time.sleep(30)",
     ]
     with pytest.raises(subprocess.TimeoutExpired):
-        platform_paths.run_captured_bounded(truncated, timeout=2, errors="strict")
+        platform_paths.run_captured_bounded(truncated, timeout=scaled(2), errors="strict")
 
 
 # ---------------------------------------------------------------------------
@@ -306,15 +313,19 @@ _ECHO_STDIN_WITH_TAIL = [
 def test_run_captured_bounded_feeds_input_and_streams(tmp_path: Path):
     # Bytes mode keeps the raw output; text mode decodes and translates newlines.
     raw = platform_paths.run_captured_bounded(
-        _ECHO_STDIN_WITH_TAIL, timeout=30, input=b"in", text=False
+        _ECHO_STDIN_WITH_TAIL, timeout=hang_guard_s(), input=b"in", text=False
     )
     assert raw.stdout == b"in\r\n\xff"
-    text = platform_paths.run_captured_bounded(_ECHO_STDIN_WITH_TAIL, timeout=30, input=b"in")
+    text = platform_paths.run_captured_bounded(
+        _ECHO_STDIN_WITH_TAIL, timeout=hang_guard_s(), input=b"in"
+    )
     assert text.stdout == "in\n\ufffd"
 
     # Input far larger than a pipe buffer is written in full while the child reads.
     count = [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"]
-    big = platform_paths.run_captured_bounded(count, timeout=30, input=b"x" * (1 << 20))
+    big = platform_paths.run_captured_bounded(
+        count, timeout=hang_guard_s(), input=b"x" * (1 << 20)
+    )
     assert big.stdout.strip() == str(1 << 20)
 
     # A stdin stream is read by the child; a stdout stream receives its output.
@@ -329,13 +340,20 @@ def test_run_captured_bounded_feeds_input_and_streams(tmp_path: Path):
                 "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read());"
                 " sys.stderr.write('warn')",
             ],
-            timeout=30,
+            timeout=hang_guard_s(),
             stdin=stdin_stream,
             stdout=stdout_stream,
         )
     assert sink.read_bytes() == b"streamed"
     assert streamed.stdout is None
     assert streamed.stderr == "warn"
+
+
+#: A child that exits at once.
+_EXIT_AT_ONCE = [sys.executable, "-c", "pass"]
+
+#: Deadline given to ``run_captured_bounded`` for a hung child tree.
+_HUNG_TREE_DEADLINE_S = scaled(2)
 
 
 def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutExpired:
@@ -345,20 +363,24 @@ def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutEx
         started = time.monotonic()
         expired: subprocess.TimeoutExpired | None = None
         try:
-            completed = platform_paths.run_captured_bounded(argv, timeout=2, **mode)
+            completed = platform_paths.run_captured_bounded(
+                argv, timeout=_HUNG_TREE_DEADLINE_S, **mode
+            )
         except subprocess.TimeoutExpired as raised:
             expired = raised
         # The elapsed time is taken at the helper's return; the tree is observed
         # only when a check fails, up to 1 s later.
         elapsed = time.monotonic() - started
-        summary = f"run_captured_bounded returned after {elapsed:.2f} s against a 2 s deadline"
+        summary = f"run_captured_bounded returned after {elapsed:.2f} s against a {_HUNG_TREE_DEADLINE_S:g} s deadline"
         if expired is None:
             pytest.fail(
                 f"{summary} with exit status {completed.returncode} instead of TimeoutExpired;"
                 f" shortly after, the tree {describe_heartbeat_tree(paths)}"
             )
-        # timeout + the helper's 32 s Windows margin, below the tree's 40 s self-exit
-        assert elapsed < 38, f"{summary}; shortly after, the tree {describe_heartbeat_tree(paths)}"
+        # timeout + the helper's 32 s Windows margin, below the scaled tree life
+        assert elapsed < scaled(38), (
+            f"{summary}; shortly after, the tree {describe_heartbeat_tree(paths)}"
+        )
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             f"the descendant was left running; {summary}"
         )
@@ -386,3 +408,38 @@ def test_run_captured_bounded_stops_a_hung_tree_writing_an_output_stream(tmp_pat
 def test_run_captured_bounded_stops_a_hung_tree_capturing_bytes(tmp_path: Path):
     expired = _assert_hung_tree_is_stopped(tmp_path, text=False)
     assert expired.stderr is None or isinstance(expired.stderr, bytes)
+
+
+def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A wait stuck until the tree closes its pipes still times out at the deadline (#4323)."""
+    # Exercise the Windows deadline policy on every host, with native process
+    # group operations still selected by the real host platform.
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    with heartbeat_tree(tmp_path) as paths:
+        argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
+        stall_wait_on(monkeypatch)
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            platform_paths.run_captured_bounded(argv, timeout=_HUNG_TREE_DEADLINE_S, text=False)
+        assert time.monotonic() - started < scaled(38)
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
+    assert not [t for t in threading.enumerate() if t.name == "bounded-capture-deadline"]
+
+
+def test_deadline_kill_spares_a_child_that_already_exited():
+    """A child that exited before the deadline is not reported as timed out (#4323)."""
+    proc = subprocess.Popen(_EXIT_AT_ONCE)
+    proc.wait(timeout=hang_guard_s())
+    killer = platform_paths._DeadlineKiller(proc, 0)
+    killer.start()
+    killer._thread.join(hang_guard_s())  # the deadline has passed before the wait returns
+
+    assert killer.stop() is False
+
+
+def test_run_captured_bounded_accepts_an_infinite_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    result = platform_paths.run_captured_bounded(_EXIT_AT_ONCE, timeout=math.inf)
+    assert result.returncode == 0

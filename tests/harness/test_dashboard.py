@@ -20,6 +20,7 @@ from booley.harness.dashboard.topbar import TopBar
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime import health
 from booley.runtime.job_records import JobRecord
+from tests.time_budget import hang_guard_s, scaled
 
 STAMP = "2026-10-08T10:00:00Z"
 
@@ -32,7 +33,7 @@ def _generous_first_read_budget(monkeypatch):
     and keyboard tests act on rows that are not there yet. Tests of the
     budget itself patch it again.
     """
-    monkeypatch.setattr(dashboard_app, "READ_BUDGET", 60.0)
+    monkeypatch.setattr(dashboard_app, "READ_BUDGET", hang_guard_s())
 
 
 @pytest.mark.asyncio
@@ -842,10 +843,10 @@ async def test_slow_refresh_eventually_renders_completed_read_without_restarting
 
     def reader():
         calls.append(1)
-        assert release.wait(2)
+        assert release.wait(hang_guard_s())
         return expected
 
-    monkeypatch.setattr(app_module, "READ_BUDGET", 0.001, raising=False)
+    monkeypatch.setattr(app_module, "READ_BUDGET", scaled(0.001), raising=False)
     app = DashboardApp(reader)
     monkeypatch.setattr(app, "query_one", lambda *_: SimpleNamespace(update=messages.append))
     monkeypatch.setattr(app, "render_snapshot", lambda: rendered.append(app.snapshot))
@@ -853,7 +854,7 @@ async def test_slow_refresh_eventually_renders_completed_read_without_restarting
         await app.refresh_snapshot()
         assert "read still in progress" in str(messages[-1])
         release.set()
-        await asyncio.wait_for(app._read_task, 2)
+        await asyncio.wait_for(app._read_task, hang_guard_s())
         await app.refresh_snapshot()
     finally:
         release.set()

@@ -93,7 +93,7 @@ Common controls: repeat `--target` or use comma-separated values; `--target a --
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. A Developer Agent's MCP tool call passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. A Developer Agent's MCP tool call passes the same suite as a `test` array. Resume one exact durable Simulation Record with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Record, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; the complete XML and JSON results are always retained
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -130,7 +130,7 @@ Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below (written as it passes them, `name="value"`; the CLI spells each as a flag, `--name value`). Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--max-turns` and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. A CLI run is a Standalone Job: it shows in the Dashboard and copies its output to `.interactive_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. Common options are `-C/--project PATH`, `--report-dir`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. A CLI run is a Standalone Job: it shows in the Dashboard and copies its output to `job_logs/standalone/<run_id>/job.log` in the Project's common Booley Directory (the main checkout's `.booley` from a linked worktree).
 
 | Specialist | Purpose | Modifies code |
 |------------|---------|:-------------:|
@@ -164,6 +164,8 @@ Ask your Developer Agent to call the `reviewer` Specialist with `category="<cate
 Also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `spec_text="<text>"` (CLI: `--spec-text`; not with `spec`), or `steer=["<context>"]` for context. A completed review exits 0; pass `fail_on="critical|major|minor"` (CLI: `--fail-on`) to exit 1 when an open finding is at or above that severity. `dry_run=true` previews the call. Each new review replaces the previous findings.
 
 **Changes only:** add `base="<commit>"` (CLI: `--base <commit>`) to review only the `scope` files changed since the merge-base of that commit and HEAD, uncommitted changes included. Unchanged `scope` files that use them are context, the diff and commit messages are given to the Reviewer, and no change in scope exits 0 without a review. Pass every file of the category as the `scope` to give the Reviewer the files that use the changed ones. Findings already present before the change are listed separately as pre-existing and are never open.
+
+**Re-check:** after fixing findings, pass `recheck="<evidence file>"` (CLI: `--recheck <evidence file>`), the `Reviewer evidence:` path of the earlier review or re-check, instead of running a new review. Run one full review, then re-check until its findings are fixed; run another full review only on purpose. Each open finding becomes `fixed`, `still open`, or `can't tell`, and no new finding is reported. `fixed` needs current code that shows it. Category, focus, and scope come from the file, so `scope`, `base`, `category`, `focus`, `spec`, `spec_text`, and `steer` are refused. With `fail_on`, only `still open` and `can't tell` findings count. To leave a finding as it is, pass `waive=[["<finding-id>", "<reason>"]]` (CLI: `--waive <finding-id> "<reason>"`) with `recheck`; the Reviewer accepts or refuses each proposal, and an accepted `waived` finding never counts for `fail_on`.
 <!-- END GENERATED: specialists -->
 
 Booley validates exact replacements and compiles each in isolation. It emits a
@@ -176,12 +178,14 @@ variants, and the first public test that killed each detected mutant.
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: drivable Booley Flows, EDA tool, toplevel, and `✓` Doctor selection |
+| `booley targets` | List every `.core` Target: drivable Booley Flows, the EDA tools it runs (e.g. `sv2v+yosys+openroad` for a physical synth Target, `yosys` for a logical one with the `slang` frontend), toplevel, and `✓` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
-| `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
+| `booley targets <name>` | Detail: synth mode and frontend (synth Targets), parameters, file counts, SDC/XDC (the last three run `fusesoc`, container-side) |
 
-`--json` composes with all of the above; Developer Agents get the same listing via the `booley_targets` MCP tool.
+`--json` composes with all of the above and reports each Target's `synth_mode`,
+`frontend`, and `eda_tools`. Developer Agents get the same listing via the
+`booley_targets` MCP tool.
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 
@@ -215,7 +219,6 @@ do not need these files.
 
 | File | Information | Affects |
 |------|-------------|---------|
-| `criteria.toml` | Criteria defined for custom tools | Their producer Flows/Specialists |
 | `mcp_tools/*.py` | Custom Flow, Specialist, or MCP definitions | The defined in-Sandbox endpoints |
 
 ### Skills

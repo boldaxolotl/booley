@@ -36,7 +36,6 @@ from booley.config.host_config import (
 from booley.config.jobs import RETIRED_JOBS_KEYS
 from booley.config.retired import refuse_retired_config
 from booley.core import booley_layout
-from booley.criteria.templates import load_project_criteria
 from booley.flows.sim.config import parse_run_cwd_template
 from booley.flows.synth.backends.yosys import core as yosys_core
 from booley.flows.synth.ppa_config import append_ppa_args
@@ -45,7 +44,7 @@ from booley.flows.synth.timing import SynthMode
 from booley.fusesoc.fusesoc_registry import core_schema_errors
 from booley.harness import doctor
 from booley.mcp.endpoint_config import parse_endpoint_config
-from booley.mcp.endpoint_validation import validate_custom_endpoints_and_criteria
+from booley.mcp.endpoint_validation import validate_custom_endpoints
 from booley.mcp.live_catalog import custom_directory
 from booley.runtime import booley_dir as booley_dir_module
 from booley.targets.flow_names import LEGACY_TO_CANONICAL, RETIRED_SPECIALIST_TO_FLOW
@@ -210,20 +209,15 @@ def _legacy_pipeline_toml(env: Env) -> str:
     return _logged(lambda: agent_config.load_agent_settings(env.tmp, booley_dir=directory))
 
 
-def _criteria_phase(env: Env) -> str:
-    path = _booley_dir(env, '[gate]\ndescription = "x"\nphase = "pre_sim"\n', "criteria.toml")
-    return _logged(lambda: load_project_criteria(path / "criteria.toml"))
-
-
 def _endpoint_sandbox_attr(env: Env) -> str:
     mcp_tools = _booley_dir(env, "") / "mcp_tools"
     mcp_tools.mkdir()
     (mcp_tools / "custom.py").write_bytes(
         b"class Custom(McpTool):\n    name = 'custom_check'\n"
-        b"    description = 'Check the design'\n    satisfies = ['lint_clean']\n"
+        b"    description = 'Check the design'\n"
         b"    sandbox = 'host'\n"
     )
-    return _logged(lambda: validate_custom_endpoints_and_criteria(env.tmp))
+    return _logged(lambda: validate_custom_endpoints(env.tmp))
 
 
 def _mcp_tools_directory(env: Env) -> str:
@@ -307,7 +301,7 @@ _SANDBOX_PARSE = f"{_AGENT}::_parse_sandbox_config"
 _RETIRED_MODELS = f"{_AGENT}::_retired_models_error"
 _UNKNOWN_MODELS = f"{_AGENT}::unknown_models_key_message"
 _RETIRED_OPTION = f"{_RECIPE}::retired_option_message"
-_YOSYS_TIMING = f"{_YOSYS}::_load_and_validate_timing_config"
+_YOSYS_TIMING = f"{_YOSYS}::load_timing_config"
 _RETIRED_CONFIG = "src/booley/config/retired.py::refuse_retired_config"
 
 # A new member of one of these production mappings gets a case with no edit to the cases
@@ -657,13 +651,6 @@ CASES: list[Refusal] = [
         _layout_retired_dir,
     ),
     Refusal(
-        "criteria-phase",
-        ("src/booley/criteria/templates.py::_parse_criteria_toml",),
-        "'phase'",
-        "workflow_region",
-        _criteria_phase,
-    ),
-    Refusal(
         "endpoint-tools",
         ("src/booley/mcp/endpoint_config.py::parse_endpoint_config",),
         "[mcp_tools]",
@@ -712,6 +699,13 @@ NOT_A_KEY: dict[str, str] = {
         "conflicting values, not a retired key"
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
+    "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
+    "src/booley/flows/mutation/flow.py::<module>": (
+        "a report note that duplicate Mutants are removed, not configuration"
+    ),
+    "src/booley/runtime/filesystem_utils.py::RemovedDirectoryError.__init__": (
+        "refuses to recreate a removed checkout, not configuration"
+    ),
     "src/booley/flows/cli_selection.py::warn_alias": "a deprecated CLI option alias",
     "src/booley/flows/sim/cli.py::SimArguments.normalize": "deprecated CLI flags",
     "src/booley/flows/synth/warnings.py::<module>": "a pattern for OpenROAD's own warning text",
@@ -726,16 +720,13 @@ NOT_A_KEY: dict[str, str] = {
         "leftover Goal record files, not configuration"
     ),
     "src/booley/harness/host_sidecars.py::_remove_egress": "reports a removed Docker resource",
-    "src/booley/harness/init_cmd.py::_interactive_precondition_failed": (
+    "src/booley/harness/init_cmd.py::_sandbox_precondition_failed": (
         "a repository precondition, not a retired key"
     ),
     "src/booley/harness/setup/scaffold.py::_cocotb_testbench": (
         "scaffold text about a renamed cocotb file, not configuration"
     ),
     "src/booley/harness/worktree_rm.py::_move_evidence": "a failure report",
-    "src/booley/result_cache/clean_commit.py::_select_participants": (
-        "a Git-ignored file, not configuration"
-    ),
 }
 
 

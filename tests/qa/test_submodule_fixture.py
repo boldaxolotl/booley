@@ -20,7 +20,6 @@ def test_companion_freezes_two_distinct_recursive_histories(tmp_path):
     data = root / "companion/deps/data"
     baseline = run_bounded_child(
         ["git", "-C", str(data), "show", manifest["data"]["A"] + ":rtl/data.sv"],
-        timeout=10,
         check=True,
     )
     assert "16'h1357" in baseline.stdout

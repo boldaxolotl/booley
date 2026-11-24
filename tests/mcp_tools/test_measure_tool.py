@@ -13,6 +13,7 @@ import json
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from booley.harness.measure_children import ChildrenOutcome
 from booley.mcp import catalog, endpoint_process
 from booley.mcp import server as mcp_server
+from booley.mcp.application import McpRequestContext
 from booley.mcp.server import _JobManager
 from booley.measurement.metrics_file import TableRules
 from booley.runtime import job_records as jobrec
@@ -41,6 +43,7 @@ from tests.mcp_tools.test_owned_job_poll import (  # noqa: F401  (the autouse fi
     _poll,
     _write,
 )
+from tests.time_budget import hang_guard_s
 
 RUN_ID = "measure-20260101T000000Z-1"
 
@@ -56,10 +59,10 @@ def measure_tool():
 
 def test_the_tool_is_offered_to_the_developer_agent_only() -> None:
     name = measure_tool().MEASURE_TOOL_NAME
-    developer = catalog.Exposure.from_mapping({"BOOLEY_MCP_MODE": "interactive"})
+    developer = catalog.Exposure.from_mapping({"BOOLEY_MCP_DEVELOPER_AGENT": "1"})
     nested = catalog.Exposure.from_mapping(
         {
-            "BOOLEY_MCP_MODE": "interactive",
+            "BOOLEY_MCP_DEVELOPER_AGENT": "1",
             "BOOLEY_NESTED_AGENT": "1",
             "BOOLEY_NESTED_MCP_TOOLS": "",
         }
@@ -77,9 +80,9 @@ def test_measure_returns_its_run_id_at_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tool = measure_tool()
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
-    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 30.0)  # must not apply
+    monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)  # must not apply
     started, release = asyncio.Event(), asyncio.Event()
     submitted: list[tuple[list[str], int, dict[str, Any]]] = []
 
@@ -106,9 +109,9 @@ def test_measure_returns_its_run_id_at_once(
             mcp_server._dispatch_special_mcp_tool(
                 tool.MEASURE_TOOL_NAME, arguments, jobs, [], None, _caller()
             ),
-            timeout=10,
+            timeout=hang_guard_s(),
         )
-        await asyncio.wait_for(started.wait(), timeout=10)
+        await asyncio.wait_for(started.wait(), timeout=hang_guard_s())
         returned_before_the_process_ended = not release.is_set()
         release.set()
         await asyncio.gather(*jobs._tasks.values())
@@ -148,7 +151,7 @@ def test_a_second_measure_never_attaches_to_a_live_one(
 ) -> None:
     """HEAD moves while a measurement runs, so the same argv can name another commit."""
     tool = measure_tool()
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
     release = asyncio.Event()
     spawned: list[list[str]] = []
@@ -179,6 +182,62 @@ def test_a_second_measure_never_attaches_to_a_live_one(
 
     assert _run_id_from(first) != _run_id_from(second)
     assert "attached" not in second.lower() and len(spawned) == 2
+
+
+def test_the_measure_job_belongs_to_the_calling_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#5310: the Dashboard files the Job under the session that called, not as Standalone."""
+    monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
+    monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
+
+    async def process(cmd, *, timeout, on_spawn=None, **kwargs):
+        return 0, "", "", False
+
+    monkeypatch.setattr(mcp_server, "_run_subprocess", process)
+    name = measure_tool().MEASURE_TOOL_NAME
+    attribution = SimpleNamespace(key="codex:t1", kind="thread", worktree_key="")
+
+    async def scenario() -> str:
+        jobs = _JobManager(_FakeLifetime())
+        result = await mcp_server._dispatch_application_tool(
+            name,
+            {"work_dir": str(tmp_path)},
+            {"name": name},
+            jobs=jobs,
+            status_mcp_tool_names=[],
+            mcp_tool_call_counts={},
+            request_context=McpRequestContext(attribution=attribution),
+        )
+        await asyncio.gather(*jobs._tasks.values())
+        return _run_id_from(_all_text(result))
+
+    record = jobrec.read_record(asyncio.run(scenario()), session_jobs_dir())
+    assert record is not None and record.session_key == "codex:t1"
+
+
+def test_the_measurement_flow_jobs_carry_the_session_of_its_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#5310: each Flow Job of the measurement is the measuring session's Job too."""
+    from booley.harness import measure_children
+
+    project = committed_project(tmp_path, TWO_LINT_TABLES)
+    mcp_job_environment(monkeypatch, session_key="codex:t1")
+    script_progress(monkeypatch, lambda: None, [0, 0])
+    requests: list[Any] = []
+
+    def prepare(request: Any) -> SimpleNamespace:
+        requests.append(request)
+        return SimpleNamespace(discard=lambda: None)
+
+    # A real child preflight refuses outside the Sandbox, so it is replaced; the requests
+    # it receives are built by the real measurement, which is what this test checks.
+    monkeypatch.setattr(f"{COMMAND}.prepare_children", measure_children.prepare_children)
+    monkeypatch.setattr(measure_children, "prepare_checkout_flow", prepare)
+
+    assert _measure(monkeypatch, project) == 0
+    assert [request.session_key for request in requests] == ["codex:t1", "codex:t1"]
 
 
 def test_an_unsupplied_option_adds_nothing_to_the_command() -> None:
@@ -250,7 +309,7 @@ def test_a_poll_shows_flows_finished_of_total_and_the_running_flow(
     assert "RUNNING" in by_run_id or "still in progress" in by_run_id
     assert "Still running" in argument_free
     # The process is the Job: it wrote no Standalone record of its own.
-    assert not (project / ".booley" / ".interactive_logs" / "standalone" / ".runtime").exists()
+    assert not (project / ".booley" / "job_logs" / "standalone" / ".runtime").exists()
 
 
 def test_the_final_result_carries_verdict_failing_rows_paths_and_exit_code(

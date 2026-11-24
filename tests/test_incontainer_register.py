@@ -98,7 +98,7 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     monkeypatch.setattr(
         reg,
         "ensure_http_server",
-        lambda *, mode: events.append(f"server:{mode}") or "started",
+        lambda: events.append("server") or "started",
     )
     monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
     monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
@@ -110,7 +110,7 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     assert (
         "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
     )
-    assert events == ["server:interactive", "observe", "health"]
+    assert events == ["server", "observe", "health"]
 
 
 @pytest.mark.parametrize(
@@ -131,9 +131,7 @@ def test_main_repairs_worktree_pointers_before_the_server(monkeypatch, capsys, r
         lambda root: events.append(f"repair:{root}") or result,
     )
     monkeypatch.setattr(entry, "_hook_start_directory", lambda: Path("start"))
-    monkeypatch.setattr(
-        reg, "ensure_http_server", lambda *, mode: events.append("server") or "started"
-    )
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: events.append("server") or "started")
     monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
@@ -216,15 +214,13 @@ class TestClaude:
 class TestEnsureHttpServer:
     def test_already_running(self, monkeypatch):
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: True)
-        assert reg.ensure_http_server(mode="interactive") == "running"
+        assert reg.ensure_http_server() == "running"
 
-    def test_explicit_interactive_mode_controls_spawned_server_surface(
-        self, tmp_path, monkeypatch
-    ):
+    def test_spawned_server_is_the_developer_agents_surface(self, tmp_path, monkeypatch):
 
         states = iter([False, True])
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: next(states))
-        monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
+        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
         monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "submit_run_report")
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "submit_run_report")
@@ -242,14 +238,13 @@ class TestEnsureHttpServer:
 
         assert (
             reg.ensure_http_server(
-                mode="interactive",
                 log_path=str(tmp_path / "server.log"),
             )
             == "started"
         )
 
         child_env = spawned["env"]
-        assert child_env["BOOLEY_MCP_MODE"] == "interactive"
+        assert child_env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
         assert "BOOLEY_NESTED_AGENT" not in child_env
         assert "BOOLEY_NESTED_MCP_TOOLS" not in child_env
         assert "BOOLEY_MCP_TOOLS" not in child_env
@@ -279,7 +274,7 @@ class TestEnsureHttpServer:
 
         monkeypatch.setattr(reg.subprocess, "Popen", fake_popen)
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "started"
+        assert reg.ensure_http_server(log_path=str(log)) == "started"
         assert spawned["cmd"][-2:] == ["--transport", "http"]
         # Detached: must not die with the postStartCommand shell.
         assert spawned["kwargs"]["start_new_session"] is True
@@ -299,7 +294,7 @@ class TestEnsureHttpServer:
             lambda cmd, **kw: DeadProc(),
         )
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "failed"
+        assert reg.ensure_http_server(log_path=str(log)) == "failed"
 
     def test_spawn_oserror_is_failed_not_raised(self, tmp_path, monkeypatch):
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: False)
@@ -309,7 +304,7 @@ class TestEnsureHttpServer:
 
         monkeypatch.setattr(reg.subprocess, "Popen", boom)
         log = tmp_path / "server.log"
-        assert reg.ensure_http_server(mode="interactive", log_path=str(log)) == "failed"
+        assert reg.ensure_http_server(log_path=str(log)) == "failed"
 
 
 # ===========================================================================
@@ -773,11 +768,11 @@ class TestRegister:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
         # Registration must not depend on the real server spawn in tests.
-        requested_modes = []
+        requested: list[str] = []
         monkeypatch.setattr(
             reg,
             "ensure_http_server",
-            lambda *, mode: requested_modes.append(mode) or "running",
+            lambda: requested.append("server") or "running",
         )
         monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
         monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
@@ -785,7 +780,7 @@ class TestRegister:
         monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
         entry.main()
         assert reg.claude_config_path(tmp_path).exists()
-        assert requested_modes == ["interactive"]
+        assert requested == ["server"]
 
     @pytest.mark.parametrize("app", ["none", "", "gemini"])
     def test_main_skips_server_without_app(self, tmp_path, monkeypatch, app):
@@ -1363,7 +1358,7 @@ def test_main_registers_trust_for_hook_cwd(first_run, tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley"))
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
 
@@ -1587,7 +1582,7 @@ def test_main_reports_refused_registration_but_still_runs_the_hook(
     monkeypatch.setenv("HOME", str(first_run.home))
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
     reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
     doctor_runs = []
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
@@ -1648,7 +1643,7 @@ def _gateway_start(first_run, tmp_path, monkeypatch, *, app, record, gateway_val
     else:
         monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda *, mode: "running")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
 

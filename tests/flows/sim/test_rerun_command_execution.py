@@ -302,7 +302,7 @@ def test_executing_the_batch_rerun_command_of_failed_discovered_tests_reruns_the
     lines = first.report_text.splitlines()
     header = (
         "  Rerun the whole batch with the same seed "
-        "(register its test functions as Tests in tests.toml to rerun one alone):"
+        "(register its test IDs as Tests in tests.toml to rerun one alone):"
     )
     assert header in lines, first.report_text
     batch = lines[lines.index(header) + 1 :]

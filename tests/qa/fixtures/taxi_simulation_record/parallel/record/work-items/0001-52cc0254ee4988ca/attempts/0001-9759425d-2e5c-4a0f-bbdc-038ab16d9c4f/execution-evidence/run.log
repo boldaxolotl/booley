@@ -1,0 +1,19 @@
+[BOOLEY RUN_LOG] run=sim-20261118T020936Z-1-04092b68 flow=sim target=sim_campaign_verilator started=2026-11-18T02:09:40Z
+no build process ran: verified Simulation build reuse
+
+
+============================================================
+[Verilator simulation: campaign_tb]
+============================================================
+CWD: /work/.booley-qa/campaign/6cfc045e-6797-453b-a99b-f6c66803f2ad/0001-52cc0254ee4988ca/0001-9759425d-2e5c-4a0f-bbdc-038ab16d9c4f
+CMD: /work/.booley/flow-reports/sim/35/targets/sim_campaign_verilator/record/build-variants/0138b4730f6f989f2fefaf503e4f2fc8f4e72ca15956a5d4dba73679def25f5e/attempts/0001-73a85d83-b351-47ff-8da7-900af1b27484/Vcampaign_tb +test=slow-first +verilator+seed+1
+
+QA_VERILATOR_CAMPAIGN_TEST=slow-first
+[SIM_RESULT] PASSED
+- src/booley_qa_taxi_simulation_campaign_1/campaign_tb.sv:22: Verilog $finish
+BOOLEY_SIM_CPU_SECONDS: user=0.001262 system=0.005049
+[SIM_SUMMARY] {"passed":true,"sva_errors":0}
+
+Verilator sim PASSED (rc=0)
+
+

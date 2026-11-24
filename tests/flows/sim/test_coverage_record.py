@@ -10,6 +10,7 @@ from booley.flows.sim.coverage_record import (
     CoverageFinding,
     CoverageRecordValidationError,
     DurableTargetIdentity,
+    _decode_run,
     encode_coverage_record,
 )
 from tests.flows.sim.coverage_record_test_support import decode_document
@@ -175,6 +176,7 @@ def _valid_outcomes() -> dict[str, object]:
 def _valid_document() -> dict[str, object]:
     return {
         "$schema": "booley.coverage-record-document/v1",
+        # A current-schema record whose id has the "campaign:" prefix written before #5143.
         "coverage_record_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
         **_valid_provenance(),
         "tests": _valid_tests(),
@@ -185,12 +187,21 @@ def _valid_document() -> dict[str, object]:
     }
 
 
+_TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+
+
+def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
+    with pytest.raises(CoverageRecordValidationError) as caught:
+        decode_document(document, _TARGET)
+    return [(finding.code, finding.pointer) for finding in caught.value.findings]
+
+
 def test_known_literal_decodes_to_immutable_coverage_record_and_encodes_canonically() -> None:
     document = _valid_document()
 
     coverage_record = decode_document(
         copy.deepcopy(document),
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
 
     assert coverage_record.coverage_record_id == "campaign:sim_counter:2026-09-01T10:30:00Z"
@@ -199,6 +210,10 @@ def test_known_literal_decodes_to_immutable_coverage_record_and_encodes_canonica
     assert coverage_record.points[0].hits_by_run["run:reset"] == 2
     assert coverage_record.rollups[0].covered_points == 1
     assert encode_coverage_record(coverage_record) == document
+    with pytest.raises(TypeError):
+        coverage_record.points[0].hits_by_run["run:reset"] = 4
+    with pytest.raises(TypeError):
+        coverage_record.points[0].identity.subject["basic_block"] = 3
 
 
 def test_evaluated_coverage_record_preserves_exact_metric_evidence() -> None:
@@ -230,9 +245,7 @@ def test_evaluated_coverage_record_preserves_exact_metric_evidence() -> None:
         "diagnostics": [],
     }
 
-    coverage_record = decode_document(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    coverage_record = decode_document(document, _TARGET)
 
     assert encode_coverage_record(coverage_record) == document
 
@@ -254,15 +267,7 @@ def test_gated_coverage_record_requires_approved_waiver_set_digest() -> None:
         ],
     }
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity(document["target"]["identity"]),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_FIELD_REQUIRED", "/evaluation/approved_waiver_set_digest")
-    ]
+    assert _codes(document) == [("COV_FIELD_REQUIRED", "/evaluation/approved_waiver_set_digest")]
 
 
 def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() -> None:
@@ -330,7 +335,7 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
 
     coverage_record = decode_document(
         document,
-        DurableTargetIdentity(document["target"]["identity"]),
+        _TARGET,
     )
 
     assert [item["metric"] for item in coverage_record.evaluation["metrics"]] == ["line", "branch"]
@@ -347,7 +352,7 @@ def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> Non
     with pytest.raises(CoverageRecordValidationError) as caught:
         decode_document(
             document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+            _TARGET,
         )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
@@ -392,22 +397,6 @@ def test_invalid_coverage_record_message_is_bounded_and_control_safe() -> None:
     assert error.findings[0].pointer == pointer
 
 
-def test_decoder_rejects_duplicate_most_specific_point_identity() -> None:
-    document = _valid_document()
-    document["points"].append(copy.deepcopy(document["points"][0]))
-    document["rollups"][0].update({"total_points": 2, "eligible_points": 2, "covered_points": 2})
-
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_POINT_ID_DUPLICATE", "/points/1/id")
-    ]
-
-
 def test_invalid_coverage_record_message_names_all_point_defects_in_stable_order() -> None:
     document = _valid_document()
     duplicate = copy.deepcopy(document["points"][0])
@@ -426,7 +415,7 @@ def test_invalid_coverage_record_message_names_all_point_defects_in_stable_order
     with pytest.raises(CoverageRecordValidationError) as caught:
         decode_document(
             document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+            _TARGET,
         )
 
     error = caught.value
@@ -468,7 +457,7 @@ def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> 
 
     coverage_record = decode_document(
         document,
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
 
     assert coverage_record.collector.capabilities[-1].status == "reported"
@@ -492,24 +481,12 @@ def test_incompatible_native_format_round_trips_without_normalized_evidence() ->
 
     coverage_record = decode_document(
         document,
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
 
     assert coverage_record.points == ()
     assert coverage_record.normalization["status"] == "incompatible"
     assert encode_coverage_record(coverage_record) == document
-
-
-def test_decoded_coverage_record_is_deeply_immutable() -> None:
-    coverage_record = decode_document(
-        _valid_document(),
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-    )
-
-    with pytest.raises(TypeError):
-        coverage_record.points[0].hits_by_run["run:reset"] = 4
-    with pytest.raises(TypeError):
-        coverage_record.points[0].identity.subject["basic_block"] = 3
 
 
 def test_decoder_aggregates_structural_findings_before_model_construction() -> None:
@@ -521,13 +498,7 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
     document["artifacts"][0]["bytes"] = True
     document["points"][0]["identity"]["location"] = []
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_FIELD_REQUIRED", "/coverage_record_id"),
         ("COV_FIELD_TYPE", "/invocation"),
         ("COV_FIELD_TYPE", "/collector/capabilities/0/status"),
@@ -542,13 +513,7 @@ def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() ->
     del document["coverage_record_id"]
     document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_FIELD_REQUIRED", "/coverage_record_id"),
         ("COV_TARGET_MISMATCH", "/target/identity"),
     ]
@@ -558,15 +523,7 @@ def test_decoder_rejects_unparseable_invocation_timestamp() -> None:
     document = _valid_document()
     document["invocation"]["started_at"] = "yesterday"
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_TIMESTAMP_INVALID", "/invocation/started_at")
-    ]
+    assert _codes(document) == [("COV_TIMESTAMP_INVALID", "/invocation/started_at")]
 
 
 def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
@@ -575,7 +532,7 @@ def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
 
     coverage_record = decode_document(
         document,
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
 
     encoded = encode_coverage_record(coverage_record)
@@ -595,13 +552,7 @@ def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
         }
     )
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_CAPABILITY_STATUS_INVALID", "/collector/capabilities/0/status"),
         ("COV_POINT_CAPABILITY_MISSING", "/points/0/identity/metric"),
         ("COV_WAIVER_REFERENCE_INCOMPLETE", "/points/0/disposition"),
@@ -632,15 +583,7 @@ def test_reported_only_point_must_be_unscored() -> None:
     document["collector"]["capabilities"] = [{"record_class": "fsm", "status": "reported"}]
     document["rollups"] = []
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_REPORTED_ONLY_POINT_SCORED", "/points/0/disposition")
-    ]
+    assert _codes(document) == [("COV_REPORTED_ONLY_POINT_SCORED", "/points/0/disposition")]
 
 
 def test_decoder_validates_coverage_record_state_sections_before_semantic_checks() -> None:
@@ -650,13 +593,7 @@ def test_decoder_validates_coverage_record_state_sections_before_semantic_checks
     document["collection"]["merge"] = []
     document["evaluation"]["status"] = 1
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_FIELD_TYPE", "/build/coverage"),
         ("COV_FIELD_REQUIRED", "/collection/status"),
         ("COV_FIELD_TYPE", "/collection/merge"),
@@ -671,13 +608,7 @@ def test_decoder_validates_diagnostic_shapes_at_the_coverage_record_boundary() -
         {"code": False, "pointer": "/evaluation", "message": "invalid code"}
     ]
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_FIELD_TYPE", "/collection/diagnostics/0"),
         ("COV_FIELD_TYPE", "/evaluation/diagnostics/0/code"),
     ]
@@ -702,15 +633,7 @@ def test_a_scored_verdict_without_a_matching_suite_is_refused_before_its_require
         "diagnostics": [],
     }
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_EVALUATION_MISMATCH", "/evaluation")
-    ]
+    assert _codes(document) == [("COV_EVALUATION_MISMATCH", "/evaluation")]
 
 
 def test_only_rtl_source_closure_points_can_be_scored() -> None:
@@ -718,15 +641,7 @@ def test_only_rtl_source_closure_points_can_be_scored() -> None:
     document["points"][0]["identity"]["location"]["source"] = "tb/counter_tb.sv"
     document["points"][0]["id"] = _TESTBENCH_POINT_ID
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
-        ("COV_SCORED_POINT_OUTSIDE_RTL", "/points/0/disposition")
-    ]
+    assert _codes(document) == [("COV_SCORED_POINT_OUTSIDE_RTL", "/points/0/disposition")]
 
 
 def test_encoder_canonicalizes_nested_json_object_key_order() -> None:
@@ -740,11 +655,11 @@ def test_encoder_canonicalizes_nested_json_object_key_order() -> None:
 
     first_coverage_record = decode_document(
         first,
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
     second_coverage_record = decode_document(
         second,
-        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        _TARGET,
     )
 
     assert json.dumps(encode_coverage_record(first_coverage_record)) == json.dumps(
@@ -760,13 +675,7 @@ def test_decoder_rejects_duplicate_run_artifact_and_capability_identities() -> N
         copy.deepcopy(document["collector"]["capabilities"][0])
     )
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_RUN_ID_DUPLICATE", "/tests/runs/1/id"),
         ("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run"),
         ("COV_ARTIFACT_ID_DUPLICATE", "/artifacts/2/id"),
@@ -785,13 +694,7 @@ def test_decoder_rejects_unknown_run_states() -> None:
     }
     document["rollups"] = []
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(
-            document,
-            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
-        )
-
-    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+    assert _codes(document) == [
         ("COV_SIMULATION_VERDICT_INVALID", "/tests/runs/0/simulation_verdict"),
         ("COV_RUN_COLLECTION_STATE_INVALID", "/tests/runs/0/collection"),
     ]
@@ -803,9 +706,7 @@ def test_noncomplete_coverage_record_retains_points_without_rollups() -> None:
     document["normalization"]["status"] = "partial"
     document["rollups"] = []
 
-    coverage_record = decode_document(
-        document, DurableTargetIdentity(document["target"]["identity"])
-    )
+    coverage_record = decode_document(document, _TARGET)
 
     assert coverage_record.points
     assert coverage_record.rollups == ()
@@ -816,15 +717,7 @@ def test_coverage_record_rejects_unknown_collection_status() -> None:
     document["collection"]["status"] = "future"
     document["rollups"] = []
 
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(document, DurableTargetIdentity(document["target"]["identity"]))
-
-    assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in {
-        (finding.code, finding.pointer) for finding in caught.value.findings
-    }
-
-
-_TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+    assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in _codes(document)
 
 
 def _name_run(run: dict[str, object], variant: str | None, seed: int | None) -> None:
@@ -849,12 +742,6 @@ def _with_second_run(
     return document
 
 
-def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
-    with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(document, _TARGET)
-    return [(finding.code, finding.pointer) for finding in caught.value.findings]
-
-
 def test_one_test_may_have_several_distinct_test_runs() -> None:
     document = _valid_document()
     _name_run(document["tests"]["runs"][0], "short", 1)
@@ -876,25 +763,32 @@ def test_two_runs_of_one_test_run_are_refused() -> None:
     assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
 
 
-def test_a_test_run_must_be_a_run_of_its_test() -> None:
-    for name in ("wrap@1", "resets", "reset.x"):
-        document = _valid_document()
-        document["tests"]["runs"][0]["test_run"] = name
-
-        assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
-
-
 @pytest.mark.parametrize(
     "name",
-    ["reset@x3", "reset@0", "reset@01", "reset+a+b", "reset@", "reset+default", "", 7, None],
+    [
+        "reset@x3",
+        "reset@0",
+        "reset@01",
+        "reset+a+b",
+        "reset@",
+        "reset+default",
+        "",
+        "wrap@1",
+        "resets",
+        "reset.x",
+        7,
+        None,
+    ],
 )
 def test_a_recorded_test_run_obeys_the_test_run_grammar(name: object) -> None:
     """Strict on decode: the name is parsed, never accepted as any string."""
     document = _valid_document()
     document["tests"]["runs"][0]["test_run"] = name
 
-    code = "COV_TEST_RUN_TEST_MISMATCH" if isinstance(name, str) else "COV_FIELD_TYPE"
-    assert (code, "/tests/runs/0/test_run") in _codes(document)
+    if isinstance(name, str):
+        assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
+    else:
+        assert ("COV_FIELD_TYPE", "/tests/runs/0/test_run") in _codes(document)
 
 
 @pytest.mark.parametrize(
@@ -953,22 +847,9 @@ def test_a_recorded_fingerprint_is_a_canonical_sha256_digest(fingerprint: object
     assert expected in _codes(document)
 
 
-def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
-    from booley.flows.sim.coverage_record import (
-        NO_DECLARED_INPUTS_FINGERPRINT,
-        _decode_run,
-    )
-
-    base = {"id": "run:1", "test": "reset", "simulation_verdict": "pass", "collection": "included"}
-    named = {
-        **base,
-        "test_run": "reset+soak@7",
-        "variant": "soak",
-        "seed": 7,
-        "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
-    }
-    assert (_decode_run(named).variant, _decode_run(named).seed) == ("soak", 7)
-    for bad in (
+@pytest.mark.parametrize(
+    "bad",
+    [
         {"test_run": 7},
         {"test_run": ""},
         {"fingerprint": ""},
@@ -976,9 +857,23 @@ def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
         {"variant": ""},
         {"seed": "7"},
         {"seed": True},
-    ):
-        with pytest.raises(ValueError):
-            _decode_run({**named, **bad})
+    ],
+)
+def test_decoding_never_coerces_or_defaults_a_recorded_identity(bad: dict[str, object]) -> None:
+    # The public decoder refuses these records in validation first; only the model decoder
+    # itself can show it never coerces or defaults.
+    named = {
+        "id": "run:1",
+        "test": "reset",
+        "simulation_verdict": "pass",
+        "collection": "included",
+        "test_run": "reset+soak@7",
+        "variant": "soak",
+        "seed": 7,
+        "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
+    }
+    with pytest.raises(ValueError):
+        _decode_run({**named, **bad})
 
 
 @pytest.mark.parametrize("change", ["percent", "extra-row", "incomplete-collection"])

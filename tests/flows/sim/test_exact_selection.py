@@ -12,7 +12,6 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.mcp.flow_adapter import flow_schema
-from booley.runtime.endpoint_execution import EXIT_ERROR
 
 
 def test_repeatable_test_is_exact_and_preserves_order() -> None:
@@ -94,9 +93,16 @@ def test_no_waivers_requires_coverage_and_is_recorded_on_request() -> None:
         SimRequest(target="sim", coverage=True, no_waivers="yes")
 
 
-def test_cli_skip_is_not_an_option() -> None:
-    with pytest.raises(SystemExit):
-        parse_request(SimulateFlow(), ["--target", "sim", "--skip", "a"])
+@pytest.mark.parametrize(
+    "argv",
+    [["--skip", "a"], ["--result-verbosity", "full"]],
+    ids=["skip", "result-verbosity"],
+)
+def test_absent_cli_options_are_rejected(argv, capsys) -> None:
+    with pytest.raises(SystemExit) as raised:
+        parse_request(SimulateFlow(), ["--target", "sim", *argv])
+    assert raised.value.code == 2
+    assert f"unrecognized arguments: {' '.join(argv)}" in capsys.readouterr().err
 
 
 def test_duplicate_test_names_share_one_message(tmp_path, capsys) -> None:
@@ -183,28 +189,9 @@ def test_mcp_schema_rejects_explicit_empty_test_selection() -> None:
     assert errors[0].validator == "minItems"
 
 
-def test_named_selection_requires_catalog_and_is_exact(tmp_path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(["--target", "sim", "--work-dir", str(tmp_path), "--test", "smoke"])
-    no_catalog = flow._validate_test_selector(["sim"], {})
-    assert no_catalog is not None
-    assert no_catalog.exit_code == EXIT_ERROR
-    assert "registered test catalog" in no_catalog.report_text
-    assert flow._validate_test_selector(["sim"], {"sim": ["smoke_long"]}) is not None
-    assert flow._validate_test_selector(["sim"], {"sim": ["smoke"]}) is None
-
-
 def test_help_distinguishes_coverage_and_plain_selection_order() -> None:
     help_text = " ".join(build_parser(SimulateFlow()).format_help().split())
     assert "coverage: deterministic sorted order; plain: input order" in help_text
-
-
-def test_plain_selection_preserves_input_order(tmp_path) -> None:
-    flow = SimulateFlow()
-    flow.parse_args(
-        ["--target", "sim", "--work-dir", str(tmp_path), "--test", "gap", "--test", "full"]
-    )
-    assert flow._resolve_tests_to_run("sim", {"sim": ["full", "gap"]}) == ["gap", "full"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

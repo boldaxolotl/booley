@@ -329,7 +329,7 @@ def test_harness_converge_uses_host_init_engine(
     monkeypatch.setattr(harness_refresh.image_lifecycle, "reconcile_planned", reconcile)
     monkeypatch.setattr(init_cmd, "_report_project_requirements", lambda *_a, **_k: None)
     spec_calls = Mock(side_effect=AssertionError("no spec work before images converge"))
-    monkeypatch.setattr(init_cmd, "_current_interactive_spec_sources", spec_calls)
+    monkeypatch.setattr(init_cmd, "_current_sandbox_spec_sources", spec_calls)
     monkeypatch.setattr(harness_refresh.issuance, "preview", spec_calls)
 
     image = harness_refresh._RuntimeImages().converge(tmp_path, verbose=True)
@@ -445,8 +445,8 @@ def test_start_failure_keeps_reissued_spec_for_session_up(
         patch.object(sr.idk, "inspect_image_metadata", return_value=None),
         patch.object(sr.idk, "image_id", return_value=None),
         patch.object(sr.idk, "container_running", return_value=False),
-        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
-        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_running_sandbox_states", return_value=[]),
+        patch.object(sr, "_strict_all_sandbox_states", return_value=[]),
     ):
         assert sr.up(project) == sr.session_container_name(project)
     assert any(call.args[0][:2] == ["docker", "run"] for call in docker.call_args_list)

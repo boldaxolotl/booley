@@ -20,6 +20,8 @@ from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 _TESTS_DIR = Path(__file__).parent
 _SOURCE_DIR = _TESTS_DIR.parent / "src"
+# The plugin imports ``tests.time_budget``, so a nested session needs the repository root too.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _LEAKING_MODULE = """
     import threading
@@ -53,7 +55,9 @@ def _run_inner(
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
     }
-    environment["PYTHONPATH"] = os.pathsep.join([str(_TESTS_DIR), str(_SOURCE_DIR)])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(_TESTS_DIR), str(_SOURCE_DIR), str(_REPO_ROOT)]
+    )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     arguments = [
         "-p", "xdist.plugin",

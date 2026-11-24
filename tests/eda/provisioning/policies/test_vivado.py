@@ -8,7 +8,7 @@ import shlex
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.eda.provisioning.policies import vivado
 
@@ -118,13 +118,18 @@ def wrapper_install(tmp_path: Path) -> tuple[Path, Path, Path]:
     return wrapper, root, libraries
 
 
-def _run_wrapper(wrapper: Path, inherited: str | None = "/caller/libs", *args: str):
+def _run_wrapper(
+    wrapper: Path,
+    inherited: str | None = "/caller/libs",
+    *args: str,
+    timeout: float = SUBPROCESS_TIMEOUT_S,
+):
     environment = os.environ.copy()
     environment.pop("LD_LIBRARY_PATH", None)
     environment["LD_PRELOAD"] = "/caller/preload"
     if inherited is not None:
         environment["LD_LIBRARY_PATH"] = inherited
-    return run_bounded_child([str(wrapper), *args], env=environment, timeout=10)
+    return run_bounded_child([str(wrapper), *args], env=environment, timeout=timeout)
 
 
 def test_wrapper_adds_highest_bundled_ubuntu_library(
