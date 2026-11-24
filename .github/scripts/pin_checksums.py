@@ -5,8 +5,8 @@ Renovate bumps a pinned version but cannot know the sha256 the image build
 verifies, the source tag and commit a VSIX notice cites, or the npm version
 bundled with Node. For every upgraded pin this script downloads exactly the
 artifact the build downloads for the new version and rewrites those paired
-values in ``Dockerfile.base``, ``Dockerfile.riscv``, the ``Tests`` workflow and
-the picorv32 demo contract. Version-only copies are left to Renovate's depName
+values in ``Dockerfile.base``, ``Dockerfile.riscv``, the ``Tests`` workflow, the
+picorv32 demo contract and the agent CLI manifest (the T3 Code sha256). Version-only copies are left to Renovate's depName
 rules; OpenROAD values are manual by decision.
 
     python3 .github/scripts/pin_checksums.py [DATA_FILE] [--root CHECKOUT]
@@ -113,13 +113,17 @@ Value = ArgValue | LineValue
 class Download:
     """One artifact: its URL, and the places its digest and URL are copied to.
 
-    ``url`` is the build's download string with ``${ARG}`` references, which
-    must occur once in the pin's version file, or a value holding the literal URL.
+    ``url`` is the build's download string with ``${NAME}`` references, which
+    must occur once in ``url_file`` (default: the pin's version file), or a value
+    holding the literal URL. A reference reads its value from ``variables`` or,
+    failing that, from ``ARG NAME`` of ``url_file``.
     """
 
     url: str | Value
     sha: tuple[Value, ...]
     url_copies: tuple[Value, ...] = ()
+    url_file: str = ""
+    variables: tuple[tuple[str, Value], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,7 @@ class Pin:
 
 
 _BASE = "src/booley/data/docker/Dockerfile.base"
+_MANIFEST = "src/booley/data/docker/agent-clis-package.json"
 _RISCV = "src/booley/data/docker/Dockerfile.riscv"
 _WORKFLOW = ".github/workflows/test.yml"
 _DEMO = ".github/contracts/picorv32-demo.toml"
@@ -157,6 +162,7 @@ _ACTIONLINT_URL = (
 )
 _XPACK = "xpack-dev-tools/riscv-none-elf-gcc-xpack"
 _XPACK_FILE = "xpack-riscv-none-elf-gcc-${XPACK_GCC_VERSION}-linux-x64.tar.gz"
+_T3_VERSION = LineValue(_MANIFEST, r'^    "version": "(.*)",$')
 
 
 def _release(
@@ -251,6 +257,20 @@ PINS: dict[str, Pin] = {
     "ms-vscode/live-server": _vsix(
         "LIVE_PREVIEW", "ms-vscode/live-server", "microsoft/vscode-livepreview", "v{version}"
     ),
+    "pingdotgg/t3code": Pin(
+        "release",
+        _T3_VERSION,
+        (
+            Download(
+                "https://github.com/pingdotgg/t3code/releases/download/v${T3CODE_VERSION}"
+                "/t3-${T3CODE_VERSION}-linux-x64.tar.gz",
+                (LineValue(_MANIFEST, r'^    "sha256": "(.*)"$'),),
+                url_file=_BASE,
+                variables=(("T3CODE_VERSION", _T3_VERSION),),
+            ),
+        ),
+        _GITHUB,
+    ),
     "node": Pin(
         "node",
         ArgValue(_BASE, "NODE_VERSION"),
@@ -297,14 +317,17 @@ class Tree:
         text = self.text(value.file)
         self._texts[value.file] = text[:start] + new + text[end:]
 
-    def url(self, download: Download, file: str) -> str:
-        """Return the URL the build downloads; a template must be in ``file`` exactly once."""
+    def url(self, download: Download, default_file: str) -> str:
+        """Return the URL the build downloads; a template must be in its file exactly once."""
         if not isinstance(download.url, str):
             return self.read(download.url)
+        file = download.url_file or default_file
         if self.text(file).count(download.url) != 1:
             raise PinError(f"{file}: the download {download.url} is not there exactly once")
+        variables = dict(download.variables)
         return _ARG_REFERENCE.sub(
-            lambda match: self.read(ArgValue(file, match.group(1))), download.url
+            lambda match: self.read(variables.get(match[1], ArgValue(file, match[1]))),
+            download.url,
         )
 
     def _span(self, value: Value) -> tuple[int, int]:

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "organization": "Booley",
+  "limits": {
+    "maxRuntimeMode": "auto",
+    "connect": false,
+    "telemetry": false,
+    "updates": { "mode": "off" },
+    "providers": { "allowedDrivers": ["claudeAgent", "codex"] }
+  }
+}
