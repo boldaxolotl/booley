@@ -114,7 +114,3 @@ def extract_json(text: str) -> dict[str, Any] | None:
 
     logger.warning("Could not extract JSON from agent output")
     return None
-
-
-# Backward-compatible alias
-_extract_json = extract_json

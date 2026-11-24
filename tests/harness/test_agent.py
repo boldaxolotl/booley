@@ -726,7 +726,7 @@ class TestCallAgent:
         with (
             patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"),
             patch("booley.runtime._codex_backend._codex_spawn", spawn),
-            patch("booley.runtime._codex_backend.anyio.sleep", new_callable=AsyncMock),
+            patch("booley.runtime._codex_backend.anyio.sleep", new_callable=AsyncMock) as sleep,
         ):
             result = await call_agent(
                 AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, label="reviewer")
@@ -734,6 +734,7 @@ class TestCallAgent:
 
         assert result.output == "done"
         assert spawn.await_count == 2
+        sleep.assert_awaited_once()
         assert capsys.readouterr().err.count("Booley is starting the reviewer Specialist") == 1
 
     @pytest.mark.asyncio
