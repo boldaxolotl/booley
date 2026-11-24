@@ -13,7 +13,7 @@ import re
 import shutil
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,7 +26,7 @@ import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.core.build_paths import work_root_for
-from booley.evidence.timing import make_clock_timing, worst_clock
+from booley.evidence.timing import make_clock_timing
 from booley.flows import artifacts
 from booley.flows.base import SubprocessResult
 from booley.flows.edam import work_root_lease
@@ -34,23 +34,13 @@ from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.backends import configure
 from booley.flows.synth.backends import pipeline as syn_make
+from booley.flows.synth.backends.yosys.parsing import parse_stat
 from booley.flows.synth.flow import (
     AsicSynthesizeFlow,
     SynthMetrics,
     _aggregate_detail,
     _build_report_dict,
-    _detect_critical_conditions,
     _is_io_bound_critical,
-    _parse_area,
-    _parse_per_clock_sta,
-    _parse_physical_area,
-    _parse_process_count,
-    _parse_reg2reg_fmax,
-    _parse_reg2reg_slack,
-    _parse_synth_output,
-    _parse_wire_count,
-    _parse_worst_slack,
-    _worst_critical_path_ps,
     synth_target_report_slug,
 )
 from booley.flows.synth.mode import SynthMode
@@ -122,56 +112,6 @@ class TestEdaFailureClassification:
         assert result is not None
         assert result.kind == "infrastructure"
         assert subject in result.reason
-
-
-class TestBoundaryCompatibility:
-    def test_legacy_inline_metrics_remain_complete(self, tmp_path: Path) -> None:
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        metrics = _parse_synth_output("Chip area for module 'dut': 1000.0", 0.1)
-        outcome = SimpleNamespace(
-            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-            forced_failure=None,
-            yosys_complete=False,
-            infrastructure_failure=None,
-        )
-        flow._apply_boundary_completion(
-            metrics,
-            outcome,
-            SubprocessResult(
-                returncode=0,
-                stdout="Chip area for module 'dut': 1000.0",
-                stderr="",
-            ),
-            "Chip area for module 'dut': 1000.0",
-        )
-        assert metrics.yosys_complete is True
-        assert metrics.structural_checks_complete is True
-
-    @pytest.mark.parametrize(
-        ("process", "expected"),
-        (
-            (SubprocessResult(returncode=-1, timed_out=True), "timeout"),
-            (SubprocessResult(returncode=2, oom_kill_delta=1, oom_killed=True), "oom"),
-            (SubprocessResult(returncode=137), "resource_killed"),
-        ),
-    )
-    def test_terminal_reason_survives_infrastructure_classification(
-        self, tmp_path: Path, process: SubprocessResult, expected: str
-    ) -> None:
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-        metrics = SynthMetrics()
-        outcome = SimpleNamespace(
-            diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-            forced_failure=None,
-            yosys_complete=False,
-            attempt_token="0123456789abcdef0123456789abcdef",
-        )
-
-        flow._apply_boundary_completion(metrics, outcome, process, process.stderr)
-
-        assert metrics.termination == expected
 
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
@@ -286,50 +226,6 @@ def test_timing_snapshot_failure_cleans_partial_evidence(tmp_path: Path) -> None
 
     assert "timing" not in published
     assert not (tmp_path / "reports/synth/1/artifacts/synth_demo/timing").exists()
-
-
-def test_clockless_sdc_marker_is_classified_as_configuration_error(tmp_path: Path) -> None:
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    metrics = SynthMetrics(synth_mode=SynthMode.PHYSICAL)
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=True,
-    )
-    process = SubprocessResult(returncode=2, stdout="", stderr="", duration_s=0.1)
-
-    flow._apply_boundary_completion(
-        metrics,
-        outcome,
-        process,
-        "BOOLEY_INPUT_ERROR: synth Target 'lite' SDC files [constraints/a.sdc] created no clocks",
-    )
-
-    assert metrics.returncode == 2
-    assert metrics.termination == "infrastructure_error"
-    assert "created no clocks" in metrics.infra_error
-
-
-def test_exit_zero_echoed_input_error_token_is_not_an_infra_error(tmp_path: Path) -> None:
-    """An RTL comment echoed into an exit-0 log must not read as an input error (#3673)."""
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    metrics = SynthMetrics(synth_mode=SynthMode.PHYSICAL)
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=True,
-    )
-    process = SubprocessResult(returncode=0, stdout="", stderr="", duration_s=0.1)
-
-    flow._apply_boundary_completion(
-        metrics, outcome, process, "    5 | // BOOLEY_INPUT_ERROR: echoed comment\n      | ^\n"
-    )
-
-    assert metrics.returncode == 0
-    assert metrics.termination == "completed"
-    assert metrics.infra_error == ""
 
 
 @pytest.fixture(autouse=True)
@@ -1863,52 +1759,7 @@ def test_empty_selection_is_an_error(tmp_path: Path) -> None:
     assert flow._run().exit_code == EXIT_ERROR
 
 
-# ===========================================================================
-# Area parsing
-# ===========================================================================
-
-
-class TestParseArea:
-    """Test _parse_area with various stat output formats."""
-
-    def test_top_module_line(self):
-        output = "Chip area for top module '\\design_top': 52480.00\n"
-        area, cells = _parse_area(output)
-        assert area == 52480.0
-        assert cells is None
-
-    def test_cell_count(self):
-        output = "Number of cells: 12345\nChip area for top module '\\m': 1000.0\n"
-        area, cells = _parse_area(output)
-        assert area == 1000.0
-        assert cells == 12345
-
-    def test_fallback_to_last_chip_area(self):
-        output = "Chip area for module '\\sub': 100.0\nChip area for module '\\top': 500.0\n"
-        area, _cells = _parse_area(output)
-        assert area == 500.0
-
-    def test_no_match(self):
-        area, cells = _parse_area("random output with no stats")
-        assert area is None
-        assert cells is None
-
-    def test_empty_string(self):
-        area, cells = _parse_area("")
-        assert area is None
-        assert cells is None
-
-    def test_integer_area(self):
-        output = "Chip area for top module '\\x': 12345\n"
-        area, _ = _parse_area(output)
-        assert area == 12345.0
-
-
-# ===========================================================================
-# Per-clock STA parsing (critical-path / Fmax are per-clock now)
-# ===========================================================================
-
-
+# `_perclock_marker` also renders the STA marker for `TestSingleConfigRun`.
 def _perclock_marker(name: str, period_ns, wns_ns, whs_ns, same_clock: bool = True) -> str:
     """Render one canonical STA_PERCLOCK marker line for tests.
 
@@ -1925,458 +1776,615 @@ def _perclock_marker(name: str, period_ns, wns_ns, whs_ns, same_clock: bool = Tr
     )
 
 
-class TestParsePerClockSta:
-    def test_derives_critical_path_and_fmax(self):
-        # period 2.0 ns, wns +0.75 ns -> crit path (2.0-0.75)*1000 = 1250 ps,
-        # Fmax 1e6/1250 = 800 MHz.
-        output = _perclock_marker("clk", 2.0, 0.75, 0.1)
-        per_clock = _parse_per_clock_sta(output)
-        assert set(per_clock) == {"clk"}
-        ct = per_clock["clk"]
-        assert ct.clock == "clk"
-        assert ct.period_ns == pytest.approx(2.0)
-        assert ct.wns_ns == pytest.approx(0.75)
-        assert ct.whs_ns == pytest.approx(0.1)
-        assert ct.critical_path_ps == pytest.approx(1250.0)
-        assert ct.fmax_mhz == pytest.approx(800.0)
-
-    def test_na_slack_leaves_derived_none(self):
-        # No setup path for the clock -> wns NA -> critical path/Fmax undefined.
-        output = _perclock_marker("clk", 2.0, None, None)
-        ct = _parse_per_clock_sta(output)["clk"]
-        assert ct.wns_ns is None
-        assert ct.whs_ns is None
-        assert ct.critical_path_ps is None
-        assert ct.fmax_mhz is None
-
-    def test_multi_clock_yields_one_entry_each(self):
-        output = _perclock_marker("clk_a", 2.0, 0.75, 0.1) + _perclock_marker(
-            "clk_b", 4.0, 1.0, 0.2
-        )
-        per_clock = _parse_per_clock_sta(output)
-        assert set(per_clock) == {"clk_a", "clk_b"}
-        # clk_b: (4.0-1.0)*1000 = 3000 ps -> 1e6/3000 = 333.33 MHz.
-        assert per_clock["clk_b"].critical_path_ps == pytest.approx(3000.0)
-        assert per_clock["clk_b"].fmax_mhz == pytest.approx(333.333, rel=1e-4)
-
-    def test_cross_clock_worst_path_has_no_fmax(self):
-        output = (
-            "STA_PERCLOCK: name=rx_clk period_ns=6.400000 wns_ns=5.000000 whs_ns=0.1"
-            " setup_same_clock=1\n"
-            "STA_PERCLOCK: name=ptp_sample_clk period_ns=8.000000 wns_ns=1.429488 whs_ns=0.2"
-            " setup_same_clock=0\n"
-        )
-        per_clock = _parse_per_clock_sta(output)
-        crossing = per_clock["ptp_sample_clk"]
-        assert crossing.wns_ns == pytest.approx(1.429488)
-        assert crossing.whs_ns == pytest.approx(0.2)
-        assert crossing.critical_path_ps is None
-        assert crossing.fmax_mhz is None
-        assert per_clock["rx_clk"].critical_path_ps == pytest.approx(1400.0)
-        assert per_clock["rx_clk"].fmax_mhz == pytest.approx(714.286, rel=1e-4)
-        assert worst_clock(per_clock) is per_clock["rx_clk"]
-
-    def test_no_marker_yields_empty(self):
-        assert _parse_per_clock_sta("no timing info here") == {}
-
-
 # ===========================================================================
-# Worst STA slack (timing VIOLATED detection)
+# Yosys stat grammar and tool output (public parser and the Flow's own run)
 # ===========================================================================
 
-
-class TestParseWorstSlack:
-    def test_positive_slack_met(self):
-        assert _parse_worst_slack("STA_WORST_SLACK_NS: 0.250000\n") == 0.25
-
-    def test_negative_slack_violated(self):
-        assert _parse_worst_slack("STA_WORST_SLACK_NS: -1.375000\n") == -1.375
-
-    def test_multiple_takes_most_pessimistic(self):
-        output = "STA_WORST_SLACK_NS: 0.500000\nSTA_WORST_SLACK_NS: -0.200000\n"
-        assert _parse_worst_slack(output) == -0.2
-
-    def test_absent(self):
-        assert _parse_worst_slack("STA_CRITICAL_PATH_PS: 1250.0\n") is None
-
-    def test_populated_in_synth_metrics(self):
-        output = (
-            "Number of cells: 100\n"
-            "Chip area for top module '\\top': 500.0\n"
-            "STA_CRITICAL_PATH_PS: 1250.0\n"
-            "STA_WORST_SLACK_NS: -0.750000\n"
-        )
-        metrics = _parse_synth_output(output, elapsed_s=1.0)
-        assert metrics.wns_ns == -0.75
+_TOKEN = "0123456789abcdef0123456789abcdef"
+_CLEAN_CHECK = "Found and reported 0 problems.\n"
 
 
-class TestParseReg2Reg:
-    def test_slack_and_fmax_parsed(self):
-        output = "STA_REG2REG_SLACK_NS: -0.400000\nSTA_REG2REG_FMAX_MHZ: 476.190\n"
-        assert _parse_reg2reg_slack(output) == -0.4
-        assert _parse_reg2reg_fmax(output) == 476.19
-
-    def test_absent(self):
-        # Overall path present but no reg2reg markers (combinational design).
-        output = "STA_WORST_SLACK_NS: -1.0\nSTA_FMAX_MHZ: 200.0\n"
-        assert _parse_reg2reg_slack(output) is None
-        assert _parse_reg2reg_fmax(output) is None
-
-    def test_populated_in_synth_metrics(self):
-        output = (
-            "Number of cells: 100\n"
-            "Chip area for top module '\\top': 500.0\n"
-            "STA_WORST_SLACK_NS: -2.000000\n"  # overall (I/O) path dominates
-            "STA_REG2REG_SLACK_NS: -0.250000\n"  # true internal path
-            "STA_REG2REG_FMAX_MHZ: 800.000\n"
-        )
-        metrics = _parse_synth_output(output, elapsed_s=1.0)
-        assert metrics.wns_ns == -2.0
-        assert metrics.reg2reg_slack_ns == -0.25
-        assert metrics.reg2reg_fmax_mhz == 800.0
+def _yosys_outputs(stat: str) -> dict[str, str]:
+    """The files a finished Yosys stage leaves: the stat twice, clean checks, the netlists."""
+    return {
+        "stat_dut.txt": stat,
+        "yosys.log": stat,
+        "premap_check_dut.txt": _CLEAN_CHECK,
+        "check_dut.txt": _CLEAN_CHECK,
+        "synth_dut.v": "module dut; endmodule\n",
+        "sv2v_converted.v": "module dut; endmodule\n",
+    }
 
 
-# ===========================================================================
-# Mode-specific canonical area
-# ===========================================================================
+def _synthesize(
+    synth_cli: SynthCli,
+    files: dict[str, str] | None = None,
+    *,
+    mode: str = "logical",
+    toml: str = "",
+    stale: Collection[str] = (),
+    plan: dict[str, Any] | None = None,
+    **process: Any,
+) -> tuple[EndpointOutcome, dict[str, Any]]:
+    """Run the Flow once; the fake command leaves *files* under the build dir.
+
+    Names in *stale* get an mtime older than the dispatch. *process* shapes the fake
+    command's result. A *plan* dict runs under a configured plan with an attempt token
+    and those spec fields.
+    """
+    synth_cli.config(f'synth_mode = "{mode}"\n{toml}')
+    build = synth_cli.project / _SYNTH_ROOT / "synth"
+    process.setdefault("returncode", 0)
+    process.setdefault("stdout", "")
+    process.setdefault("stderr", "")
+
+    def tool_output(_argv: list[str]) -> SubprocessResult:
+        fresh = time.time() + 1
+        for name, text in (files or {}).items():
+            path = build / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(text.encode("utf-8"))
+            stamp = 0 if name in stale else fresh
+            os.utime(path, (stamp, stamp))
+        return SubprocessResult(**process)
+
+    synth_cli.tool_output = tool_output
+    if plan is None:
+        return synth_cli.run(), synth_cli.report()
+    stub = _stub_plan(synth_cli.project, "lite", mode=mode)
+    full = dataclasses.replace(
+        stub, attempt_token=_TOKEN, spec=dataclasses.replace(stub.spec, **plan)
+    )
+    # The attempt token is set only by the configure half, which renders real scripts
+    # for EDA tools no test host has.
+    with patch.object(AsicSynthesizeFlow, "_configure_synth", return_value=full):
+        return synth_cli.run(), synth_cli.report()
 
 
-class TestModeSpecificArea:
-    def test_marker(self):
-        output = "OPENROAD_DESIGN_AREA_UM2: 1234.500\n"
-        assert _parse_physical_area(output) == 1234.5
-
-    def test_absent_when_logical_path(self):
-        assert _parse_physical_area("Chip area for top module '\\top': 500.0\n") is None
-
-    def test_physical_uses_openroad_area(self):
-        output = (
-            "Number of cells: 100\n"
-            "Chip area for top module '\\top': 500.0\n"
-            "STA_CRITICAL_PATH_PS: 1250.0\n"
-            "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
-            "Number of wires: 42\n"
-            "OPENROAD_INSTANCE_COUNT: 112\n"
-        )
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
-        assert metrics.area_um2 == 640.25
-        assert metrics.area_source == "openroad_post_optimization"
-        assert metrics.cells == 112
-        assert metrics.cell_count_source == "openroad_post_optimization"
-        assert metrics.wire_count == 42
-
-    def test_logical_uses_yosys_area(self):
-        output = (
-            "Number of cells: 100\n"
-            "Chip area for top module '\\top': 500.0\n"
-            "Number of wires: 42\n"
-            "OPENROAD_INSTANCE_COUNT: 112\n"
-        )
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
-        assert metrics.area_um2 == 500.0
-        assert metrics.area_source == "yosys_mapped"
-        assert metrics.cells == 100
-        assert metrics.cell_count_source == "yosys_mapped"
-        assert metrics.wire_count == 42
-
-    def test_physical_without_openroad_count_keeps_labelled_yosys_count(self):
-        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
-        assert metrics.cells == 100
-        assert metrics.cell_count_source == "yosys_mapped"
+def _report_view(outcome: EndpointOutcome, report: dict[str, Any]) -> dict[str, Any]:
+    """The top-level report with its metrics, conditions, grade and exit code on one level."""
+    implementation = report["implementation"]
+    return {
+        **report,
+        **implementation["metrics"],
+        **implementation["conditions"],
+        "grade": implementation["status"]["grade"],
+        "failure_reasons": implementation["status"]["failure_reasons"],
+        "exit_code": outcome.exit_code,
+    }
 
 
-# ===========================================================================
-# Logical-mode ABC frequency estimate
-# ===========================================================================
+def _stat_view(text: str) -> dict[str, Any]:
+    stat = parse_stat(text)
+    return {
+        "area": stat.area_um2,
+        "cells": stat.cells,
+        "wires": stat.wires,
+        "processes": stat.processes,
+        # None: no usable stat section, so the Flow counts `$dlatch` mentions instead.
+        "latches": sum(stat.latch_types.values()) if stat.section is not None else None,
+        "latch_types": stat.latch_types,
+    }
 
 
-class TestLogicalEstimatedFmax:
-    def test_uses_slowest_positive_mapped_partition(self):
-        output = "YOSYS_ABC_LOGIC_DELAY_PS: 125.000\nYOSYS_ABC_LOGIC_DELAY_PS: 400.000\n"
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
-        assert metrics.estimated_fmax_mhz == pytest.approx(2500.0)
+_CAPTURED_YOSYS_068_STAT = (
+    "3. Printing statistics.\n\n=== latch ===\n\n"
+    "        +----------Local Count, excluding submodules.\n        | \n"
+    "        5 wires\n        5 wire bits\n        5 public wires\n"
+    "        5 public wire bits\n        4 ports\n        4 port bits\n"
+    "        2 cells\n        1   $_DFF_P_\n        1   $_DLATCH_P_\n"
+)
+_CAPTURED_LIBERTY_STAT = (
+    "4. Printing statistics.\n\n=== latch ===\n\n"
+    "        +----------Local Count, excluding submodules.\n"
+    "        |        +-Local Area, excluding submodules.\n        |        | \n"
+    "        5        - wires\n        5        - wire bits\n"
+    "        5        - public wires\n        5        - public wire bits\n"
+    "        4        - ports\n        4        - port bits\n        2        2 cells\n"
+    "        1        2   $_DFF_P_\n        1        -   $_DLATCH_P_\n\n"
+    "   Area for cell type $_DLATCH_P_ is unknown!\n\n"
+    "   Chip area for module '\\latch': 2.000000\n"
+    "     of which used for sequential elements: 0.000000 (0.00%)\n"
+)
+_CAPTURED_HIERARCHY_STAT = (
+    "3. Printing statistics.\n\n=== top ===\n\n"
+    "        +----------Local Count, excluding submodules.\n        | \n"
+    "        3 wires\n        4 wire bits\n        3 public wires\n"
+    "        4 public wire bits\n        3 ports\n        4 port bits\n"
+    "        2 submodules\n        2   child\n\n=== child ===\n\n"
+    "        +----------Local Count, excluding submodules.\n        | \n"
+    "        3 wires\n        3 wire bits\n        3 public wires\n"
+    "        3 public wire bits\n        3 ports\n        3 port bits\n"
+    "        1 cells\n        1   $_DLATCH_P_\n\n=== design hierarchy ===\n\n"
+    "        +----------Count including submodules.\n        | \n"
+    "        2 top\n        1 child\n\n"
+    "        +----------Count including submodules.\n        | \n"
+    "        9 wires\n       10 wire bits\n        9 public wires\n"
+    "       10 public wire bits\n        9 ports\n       10 port bits\n"
+    "        - memories\n        - memory bits\n        - processes\n"
+    "        2 cells\n        2   $_DLATCH_P_\n        2 submodules\n        2   child\n"
+)
+_STAT_STAGE = "Printing statistics.\n"
 
-    def test_zero_or_missing_delay_has_no_estimate(self):
-        output = "YOSYS_ABC_LOGIC_DELAY_PS: 0.000\n"
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
-        assert metrics.estimated_fmax_mhz is None
 
-    def test_physical_mode_does_not_publish_abc_estimate(self):
-        output = "YOSYS_ABC_LOGIC_DELAY_PS: 250.000\nOPENROAD_DESIGN_AREA_UM2: 15.0\n"
-        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
-        assert metrics.estimated_fmax_mhz is None
-
-
-# ===========================================================================
-# Critical condition detection
-# ===========================================================================
-
-
-class TestCriticalConditions:
-    def test_latches(self):
-        output = "Warning: found $dlatch in cell A\nWarning: found $dlatch in cell B\n"
-        latches, loops, multi = _detect_critical_conditions(output)
-        assert latches == 2
-        assert loops == 0
-        assert multi == 0
-
-    def test_comb_loop(self):
-        output = "ERROR: Combinational loop detected\n"
-        _latches, loops, _multi = _detect_critical_conditions(output)
-        assert loops == 1
-
-    def test_multi_driven(self):
-        output = "Warning: multi-driven net \\sig\n"
-        _, _, multi = _detect_critical_conditions(output)
-        assert multi == 1
-
-    def test_all_conditions(self):
-        output = "$dlatch\nCombinational loop\nmulti-driven\n"
-        latches, loops, multi = _detect_critical_conditions(output)
-        assert latches == 1
-        assert loops == 1
-        assert multi == 1
-
-    def test_clean_output(self):
-        latches, loops, multi = _detect_critical_conditions("synthesis completed OK")
-        assert latches == 0
-        assert loops == 0
-        assert multi == 0
-
-    def test_stat_tally_is_preferred_over_occurrence_counting(self):
-        """F-19: the raw occurrence count folded in log noise.
-
-        A `$dlatch` named in a techmap trace is not an extra inferred latch;
-        counting it inflates the number that decides a FAIL.
-        """
-        output = (
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "Chip area for top module '\\x': 12345\n", {"area": 12345.0}, id="integer-area"
+        ),
+        pytest.param(
+            "Number of cells: 12345\nChip area for top module '\\m': 1000.0\n",
+            {"area": 1000.0, "cells": 12345},
+            id="cell-count",
+        ),
+        pytest.param("", {"area": None, "cells": None, "wires": 0, "processes": 0}, id="empty"),
+        # #1078: a complete but malformed token leaves the area unknown.
+        pytest.param("Chip area for top module dut: e+-\n", {"area": None}, id="token-e+-"),
+        pytest.param("Number of wires:   450\n", {"wires": 450}, id="wires"),
+        pytest.param("no wire info", {"wires": 0}, id="no-wires"),
+        pytest.param("Number of processes:      3\n", {"processes": 3}, id="processes"),
+        pytest.param("synthesis completed", {"processes": 0}, id="no-processes"),
+        pytest.param(
+            "3. Printing statistics.\n=== child ===\n  1 cells\n  1 $_DLATCH_P_\n"
+            "=== design hierarchy ===\n  9 wires\n  - processes\n  2 cells\n  2 $_DLATCH_P_\n",
+            {"latches": 2, "wires": 9, "processes": 0},
+            id="hierarchy-inventory-is-aggregate-only",
+        ),
+        pytest.param(
+            "1. Printing statistics.\n=== dut ===\n  Number of cells: 8\n"
+            "  $_DLATCH_P_ 8\n  Chip area for top module dut: 10\n"
+            "2. Printing statistics.\n=== dut ===\n  5 - wires\n  0 - processes\n"
+            "  2 - cells\n  2 1e1 NAND2\n  Chip area for top module dut: 2e1\n"
+            "3. Printing statistics.\n=== dut ===\n",
+            {"latches": 0, "area": 20.0, "cells": 2, "wires": 5, "processes": 0},
+            id="latest-modern-zero-overrides-legacy-and-truncated-tail",
+        ),
+        pytest.param(
+            "Printing statistics.\n  9 cells\n  2 - $adlatch\n  3 - $_DLATCHSR_PPP_\n"
+            "  2 - $_SR_PP_\n  2 - DLH_X1\n",
+            {"latches": 5},
+            id="variants-exclude-sr-and-mapped-names",
+        ),
+        pytest.param(
+            _CAPTURED_YOSYS_068_STAT,
+            {"area": None, "cells": 2, "wires": 5, "latches": 1, "processes": 0},
+            id="captured-logical",
+        ),
+        pytest.param(
+            _CAPTURED_LIBERTY_STAT,
+            {"area": 2.0, "cells": 2, "wires": 5, "latches": 1, "processes": 0},
+            id="captured-liberty",
+        ),
+        pytest.param(
+            _CAPTURED_HIERARCHY_STAT,
+            {"area": None, "cells": 2, "wires": 9, "latches": 2, "processes": 0},
+            id="captured-hierarchy",
+        ),
+        pytest.param(
+            "    \\DLH_X1 _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
+            "    \\DLL_X1 _DLATCH_N_ (.D( D), .GN( E), .Q( Q));\n"
+            "Printing statistics.\n=== top ===\n  2 cells\n  2 child\n"
+            "=== child ===\n  1 cells\n  1 2.66 DLH_X1\n"
+            "=== design hierarchy ===\n  2 cells\n  2 5.32 DLH_X1\n"
+            "End of script.\n--- openroad.log ---\n  99 2.66 DLL_X1\n",
+            {"latches": 2},
+            id="mapped-latches-count-hierarchy-once-and-ignore-unused-mapping",
+        ),
+        pytest.param(
+            "Printing statistics.\n=== top ===\n  2 cells\n  1 DLH_X1\n  1 latch_buffer\n",
+            {"latches": 0},
+            id="latch-like-library-names-without-mapping",
+        ),
+        pytest.param(
+            "Printing statistics.\n=== top ===\n  Number of cells: 2\n"
+            "  Chip area for top module top: 20\n"
+            "=== child ===\n  Number of cells: 1\n  $_DLATCH_P_ 1\n"
+            "  Chip area for module child: 5\n",
+            {"area": 20.0, "cells": 1},
+            id="top-area-survives-module-inventory-selection",
+        ),
+        pytest.param(
+            "Printing statistics.\n  8 cells\n  8 $_DLATCH_P_\nEnd of script.\n"
+            "--- stat_dut.txt ---\n=== dut ===\n  2 2e1 cells\n  5 - wires\n"
+            "  10 - wire bits\n  99 - public wires\n  99 - memory bits\n"
+            "  2 - processes\n  2 2e1 NAND2\n"
+            "--- openroad.log ---\n  99 $_DLATCH_P_\n",
+            {"cells": 2, "wires": 5, "processes": 2, "latch_types": {}},
+            id="standalone-final-stat-overrides-earlier-stage-and-lookalikes",
+        ),
+        pytest.param(
+            "Warning: found $dlatch in cell A\n  9 $_DFF_P_\nPrinting statistics.\n=== dut ===\n",
+            {"latches": None},
+            id="unusable-stat-headers-ignore-pre-stat-tally-decoy",
+        ),
+        # F-19: a `$dlatch` named in a techmap trace is not an extra inferred latch.
+        pytest.param(
             "Executing TECHMAP pass: mapping $dlatch cells\n"
             "Warning: found $dlatch in cell A\n"
             "Number of cells:                 42\n"
             "  $dlatch                          1\n"
-            "  NAND2_X1                        41\n"
-        )
-        latches, _loops, _multi = _detect_critical_conditions(output)
-        assert latches == 1
-
-    def test_falls_back_to_occurrences_without_a_stat_tally(self):
-        """A run that died before `stat` still reports; over-counting is safe."""
-        output = "Warning: found $dlatch in cell A\nWarning: found $dlatch in cell B\n"
-        latches, _loops, _multi = _detect_critical_conditions(output)
-        assert latches == 2
-
-
-class TestIntentionalLatches:
-    """F-19: a standard-cell ICG is a deliberate `always_latch`.
-
-    lowRISC's generic `prim_clock_gating` contains exactly one, so failing on
-    any latch made a correct design unsynthesizable through Booley. Declaring
-    the count keeps the gate meaningful without lying about the design.
-    """
-
-    def _metrics(self, latches: int, expected: int) -> SynthMetrics:
-        return SynthMetrics(
-            area_um2=500.0,
-            cells=100,
-            latches=latches,
-            expected_latches=expected,
-        )
-
-    def test_undeclared_latch_is_still_critical(self):
-        m = self._metrics(latches=1, expected=0)
-        assert m.unexpected_latches == 1
-        assert m.has_critical is True
-        assert m.passed is False
-
-    def test_declared_latch_does_not_fail_the_run(self):
-        m = self._metrics(latches=1, expected=1)
-        assert m.unexpected_latches == 0
-        assert m.has_critical is False
-        assert m.passed is True
-
-    def test_one_more_than_declared_still_fails(self):
-        """The gate must stay meaningful — this is an allowance, not a mute."""
-        m = self._metrics(latches=2, expected=1)
-        assert m.unexpected_latches == 1
-        assert m.has_critical is True
-        assert m.passed is False
-
-    def test_raw_count_is_never_hidden(self):
-        """Reporting always states what was actually inferred."""
-        m = self._metrics(latches=1, expected=1)
-        assert m.latches == 1
-
-    def test_fewer_latches_than_declared_is_not_negative(self):
-        m = self._metrics(latches=0, expected=2)
-        assert m.unexpected_latches == 0
-        assert m.has_critical is False
-
-    def test_count_latches_prefers_stat_tally(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = "Printing statistics.\n     $_DLATCH_P_    3\nblah $dlatch blah\n"
-        assert _count_latches(out) == 3
-
-    def test_count_latches_accepts_count_first_stat_tally(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = "Printing statistics.\n        1   $_DLATCH_P_\n"
-        assert _count_latches(out) == 1
-
-    def test_count_latches_does_not_sum_repeated_stat_blocks(self):
-        from booley.flows.synth.flow import _count_latches
-
-        stat = "Printing statistics.\n        1   $_DLATCH_P_\n"
-        out = stat + "Executing Verilog backend.\n" + stat + "--- stat_top.txt ---\n" + stat
-        assert _count_latches(out) == 1
-
-    def test_count_latches_accumulates_variants_in_final_stat_block(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = "Printing statistics.\n        2   $_DLATCH_P_\n     $_DLATCH_N_    3\n"
-        assert _count_latches(out) == 5
-
-    def test_count_latches_final_clean_stat_overrides_earlier_mentions(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = (
+            "  NAND2_X1                        41\n",
+            {"latches": 1},
+            id="stat-tally-over-occurrences",
+        ),
+        pytest.param(
+            _STAT_STAGE + "     $_DLATCH_P_    3\nblah $dlatch blah\n",
+            {"latches": 3},
+            id="prefers-stat-tally",
+        ),
+        pytest.param(
+            _STAT_STAGE + "        1   $_DLATCH_P_\n", {"latches": 1}, id="count-first-tally"
+        ),
+        pytest.param(
+            (_STAT_STAGE + "        1   $_DLATCH_P_\n")
+            + "Executing Verilog backend.\n"
+            + (_STAT_STAGE + "        1   $_DLATCH_P_\n")
+            + "--- stat_top.txt ---\n"
+            + (_STAT_STAGE + "        1   $_DLATCH_P_\n"),
+            {"latches": 1},
+            id="repeated-stat-blocks-are-not-summed",
+        ),
+        pytest.param(
+            _STAT_STAGE + "        2   $_DLATCH_P_\n     $_DLATCH_N_    3\n",
+            {"latches": 5},
+            id="variants-accumulate-in-the-final-block",
+        ),
+        pytest.param(
             "Warning: found $dlatch in cell A\n"
-            "Printing statistics.\n"
-            "        1   $_DLATCH_P_\n"
-            "Executing Verilog backend.\n"
-            "Printing statistics.\n"
-            "        4   $_DFF_PP0_\n"
+            + _STAT_STAGE
+            + "        1   $_DLATCH_P_\n"
+            + "Executing Verilog backend.\n"
+            + _STAT_STAGE
+            + "        4   $_DFF_PP0_\n",
+            {"latches": 0},
+            id="final-clean-stat-overrides-earlier-mentions",
+        ),
+        pytest.param(
+            "13. Printing statistics.\n        1 cells\n        1   $_DLATCH_P_\n"
+            "\nWarnings: 1 unique messages, 1 total\nEnd of script.\n"
+            "ERROR: diagnostic excerpt follows:\n        9   $_DLATCH_N_\n",
+            {"latches": 1},
+            id="tally-shaped-appended-diagnostic-is-ignored",
+        ),
+        pytest.param(
+            "Warning: found $dlatch in cell A\n13. Printing statistics.\n",
+            {"latches": None},
+            id="incomplete-stat-marker",
+        ),
+        # F-29: `$driver$...($dlatch)` helper cells that opt folds away leave no latch row.
+        pytest.param(
+            "Setting constant 0-bit at position 0 on $driver$x.fifo_ff[1] ($dlatch)\n" * 20
+            + _STAT_STAGE
+            + "     $_DFF_PP0_   4160\n",
+            {"latches": 0},
+            id="stat-ran-with-no-latch-row",
+        ),
+        pytest.param("proc $dlatch here\nanother $dlatch\n", {"latches": None}, id="no-stat"),
+    ],
+)
+def test_final_stat_inventory(text: str, expected: dict[str, Any]) -> None:
+    view = _stat_view(text)
+    assert {key: view[key] for key in expected} == expected
+
+
+@pytest.mark.parametrize("area", ["", "- ", "12 ", "12.5 ", "1.2e+2 "])
+@pytest.mark.parametrize("cell_first", [False, True])
+def test_modern_stat_latch_columns(area: str, cell_first: bool) -> None:
+    row = f"$_DLATCH_P_ 8 {area}" if cell_first else f"8 {area}$_DLATCH_P_"
+    view = _stat_view(f"13. Printing statistics.\n=== dut ===\n  16 {area}cells\n  {row}\n")
+    assert (view["latches"], view["cells"]) == (8, 16)
+
+
+@pytest.mark.parametrize("cell", ["DLH_X1", "DLL_X1", "custom_latch"])
+@pytest.mark.parametrize("row", ["  {cell} 2", "  2 {cell}", "  2 5.32 {cell}"])
+def test_mapped_latches_use_dfflibmap_types_and_final_inventory(cell: str, row: str) -> None:
+    text = (
+        f"    \\{cell} _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
+        "    \\DFF_X1 _DFF_P_ (.CK( C), .D( D), .Q( Q));\n"
+        "Printing statistics.\n=== top ===\n  3 cells\n  3 $_DLATCH_P_\n"
+        "End of script.\n--- stat_top.txt ---\n"
+        "Printing statistics.\n=== top ===\n  4 10.0 cells\n"
+        f"{row.format(cell=cell)}\n  1 2.66 $_DLATCH_N_\n  1 4.52 DFF_X1\n"
+    )
+    assert parse_stat(text).latch_types == {cell: 2, "$_DLATCH_N_": 1}
+
+
+@pytest.mark.parametrize(
+    "cell", ["$dlatchsr", "$_DLATCH_NN0_", "$_DLATCH_NP1_", "$_DLATCH_PN0_", "$_DLATCH_PP1_"]
+)
+@pytest.mark.parametrize("cell_first", [False, True])
+def test_reset_and_set_reset_latch_inventory(cell: str, cell_first: bool) -> None:
+    row = f"{cell} 3 -" if cell_first else f"3 - {cell}"
+    assert _stat_view(f"Printing statistics.\n  3 - cells\n  {row}\n")["latches"] == 3
+
+
+_LOGICAL_TIMING = (
+    "Chip area for top module '\\design_top': 52480.00\n"
+    "Number of cells: 12345\n"
+    "Number of wires: 42\n"
+    # period 2.0 ns, wns +0.75 ns -> crit path (2.0-0.75)*1000 = 1250 ps, Fmax 800 MHz.
+    "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000"
+    " setup_same_clock=1\n"
+    # A cross-clock worst path has a slack but no critical path or Fmax.
+    "STA_PERCLOCK: name=x period_ns=8.000000 wns_ns=1.429488 whs_ns=0.200000"
+    " setup_same_clock=0\n"
+    "STA_WORST_SLACK_NS: 0.500000\n"
+    "STA_WORST_SLACK_NS: -0.200000\n"
+    "STA_REG2REG_SLACK_NS: -0.400000\n"
+    "STA_REG2REG_FMAX_MHZ: 476.190\n"
+    "YOSYS_ABC_LOGIC_DELAY_PS: 125.000\n"
+    "YOSYS_ABC_LOGIC_DELAY_PS: 400.000\n"
+    "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+    "OPENROAD_INSTANCE_COUNT: 112\n"
+)
+_PHYSICAL_TIMING = (
+    "Number of cells: 100\n"
+    "Chip area for top module '\\top': 500.0\n"
+    "Number of wires: 42\n"
+    "YOSYS_ABC_LOGIC_DELAY_PS: 250.000\n"
+    "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
+    "OPENROAD_INSTANCE_COUNT: 112\n"
+    "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.100000"
+    " setup_same_clock=1\n"
+    "STA_PERCLOCK: name=slow period_ns=4.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("mode", "stdout", "expected", "clocks"),
+    [
+        pytest.param(
+            "logical",
+            _LOGICAL_TIMING,
+            {
+                "area_um2": 52480.0,
+                "area_kge": pytest.approx(65.7644),
+                "area_source": "yosys_mapped",
+                "cell_count": 12345,
+                "cell_count_source": "yosys_mapped",
+                "wire_count": 42,
+                "wns_ns": -0.2,
+                "reg2reg_slack_ns": -0.4,
+                "reg2reg_fmax_mhz": 476.19,
+                "estimated_fmax_mhz": pytest.approx(2500.0),
+                "yosys_complete": True,
+                "structural_checks_complete": True,
+                "passed": True,
+            },
+            {
+                "clk": {"wns_ns": 0.75, "whs_ns": 0.1, "critical_path_ps": 1250.0},
+                "x": {"wns_ns": 1.429488, "whs_ns": 0.2, "critical_path_ps": None},
+            },
+            id="logical",
+        ),
+        pytest.param(
+            "logical",
+            "Chip area for top module '\\t': 100.0\nYOSYS_ABC_LOGIC_DELAY_PS: 0.000\n",
+            {
+                "area_um2": 100.0,
+                "wns_ns": None,
+                "reg2reg_fmax_mhz": None,
+                "estimated_fmax_mhz": None,
+            },
+            {},
+            id="logical-no-timing",
+        ),
+        pytest.param(
+            "physical",
+            _PHYSICAL_TIMING,
+            {
+                "area_um2": 640.25,
+                "area_source": "openroad_post_optimization",
+                "cell_count": 112,
+                "cell_count_source": "openroad_post_optimization",
+                "wire_count": 42,
+                "estimated_fmax_mhz": None,
+            },
+            {
+                "clk": {"wns_ns": 2.0, "critical_path_ps": 2000.0},
+                "slow": {"wns_ns": None, "whs_ns": None, "critical_path_ps": None},
+            },
+            id="physical",
+        ),
+        pytest.param(
+            "physical",
+            "Number of cells: 100\nChip area for top module '\\top': 500.0\n",
+            {"cell_count": 100, "cell_count_source": "yosys_mapped"},
+            {},
+            id="physical-no-instance-count",
+        ),
+    ],
+)
+def test_tool_output_reaches_the_report(
+    synth_cli: SynthCli, mode: str, stdout: str, expected: dict[str, Any], clocks: dict[str, Any]
+) -> None:
+    outcome, report = _synthesize(synth_cli, mode=mode, stdout=stdout)
+    view = _report_view(outcome, report)
+    # An absent value is omitted from the report; the table spells it None.
+    assert {key: view.get(key) for key in expected} == expected
+    per_clock = view["per_clock"]
+    assert per_clock.keys() == clocks.keys()
+    for clock, values in clocks.items():
+        assert {key: per_clock[clock][key] for key in values} == pytest.approx(values)
+
+
+_INLINE_AREA = "Chip area for module 'dut': 100.0\n"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        pytest.param(
+            _INLINE_AREA + "Warning: found $dlatch in cell A\nWarning: found $dlatch in cell B\n",
+            {
+                "latches": 2,
+                "failure_reasons": [
+                    "2 latches (actual=2, expected=0, excess=2; types: unavailable)"
+                ],
+            },
+            id="dlatch-mentions",
+        ),
+        pytest.param(
+            "Executing TECHMAP pass: mapping $dlatch cells\n"
+            "Warning: found $dlatch in cell A\n"
+            "Number of cells:                 42\n"
+            "  $dlatch                          1\n"
+            "  NAND2_X1                        41\n" + _INLINE_AREA,
+            {"latches": 1},
+            id="stat-tally",
+        ),
+        pytest.param(
+            _INLINE_AREA + "ERROR: Combinational loop detected\nWarning: multi-driven net \\sig\n",
+            {"comb_loops": 1, "multi_driven": 1, "has_critical": True},
+            id="loop-and-multi-driven",
+        ),
+        pytest.param(
+            "Number of processes: 3\nNumber of cells: 10\n" + _INLINE_AREA,
+            {
+                "process_count": 3,
+                "has_critical": True,
+                "failure_reasons": ["critical structural conditions"],
+            },
+            id="processes",
+        ),
+        # F-29: `$driver$...($dlatch)` helper cells fold away; stat then prints no latch row.
+        pytest.param(
+            "Setting constant 0-bit at position 0 on $driver$x.fifo_ff[1] ($dlatch)\n"
+            * 20
+            + "Printing statistics.\n  4160 cells\n  4160 $_DFF_PP0_\n"
+            "Chip area for top module dut: 100.0\n",
+            {"latches": 0, "passed": True},
+            id="stat-without-latches",
+        ),
+        pytest.param(
+            _INLINE_AREA + "synthesis completed OK\n",
+            {
+                "latches": 0,
+                "comb_loops": 0,
+                "multi_driven": 0,
+                "has_critical": False,
+                "passed": True,
+            },
+            id="clean",
+        ),
+    ],
+)
+def test_inline_structural_output_decides_the_verdict(
+    synth_cli: SynthCli, stdout: str, expected: dict[str, Any]
+) -> None:
+    outcome, report = _synthesize(synth_cli, stdout=stdout)
+    view = _report_view(outcome, report)
+    assert {key: view[key] for key in expected} == expected
+
+
+_LOADER_LINE = "{exe}: error while loading shared libraries: libx.so: missing"
+_PHYSICAL_FILES = {
+    "openroad_dut.v": "module dut; endmodule\n",
+    "reports/timing/overall.rpt": "timing report\n",
+    "reports/timing/overall.csv.rpt": "",
+}
+
+
+@pytest.mark.parametrize("returncode", [0, 127])
+@pytest.mark.parametrize(
+    ("executable", "marker", "mode"),
+    [("sv2v", "sv2v", "logical"), ("yosys", "yosys", "logical"), ("openroad", "sta", "physical")],
+)
+def test_authenticated_synth_loader_is_infrastructure(
+    synth_cli: SynthCli, executable: str, marker: str, mode: str, returncode: int
+) -> None:
+    stat = "Printing statistics.\n=== dut ===\n  2 cells\n  Chip area for top module dut: 3.0\n"
+    files = {**_yosys_outputs(stat), **(_PHYSICAL_FILES if mode == "physical" else {})}
+    _outcome, report = _synthesize(
+        synth_cli,
+        files if returncode == 0 else None,
+        mode=mode,
+        plan={},
+        returncode=returncode,
+        stdout=f"BOOLEY_STAGE: {marker}\n",
+        stderr=_LOADER_LINE.format(exe=executable),
+    )
+    assert report["returncode"] == 2
+    assert report["termination"] == "infrastructure_error"
+    assert f"{executable} startup failed" in report["infra_error"]
+    assert "libx.so" in report["infra_error"]
+    assert report["timing_complete"] is False
+    assert report["passed"] is False
+    if returncode:
+        assert report["yosys_complete"] is False
+
+
+_ECHOED_INPUT_ERROR = "    5 | // BOOLEY_INPUT_ERROR: echoed comment\n      | ^\n"
+
+
+@pytest.mark.parametrize(
+    ("mode", "plan", "process", "expected", "infra_has", "infra_lacks"),
+    [
+        pytest.param(
+            "physical",
+            None,
+            {
+                "returncode": 2,
+                "stdout": "BOOLEY_INPUT_ERROR: synth Target 'lite' SDC files"
+                " [constraints/a.sdc] created no clocks",
+            },
+            {"returncode": 2, "termination": "infrastructure_error"},
+            ["created no clocks"],
+            [],
+            id="clockless-sdc",
+        ),
+        # #3673: an RTL comment echoed into an exit-0 log is not an input error.
+        pytest.param(
+            "logical",
+            None,
+            {"stdout": _INLINE_AREA + _ECHOED_INPUT_ERROR},
+            {"returncode": 0, "passed": True},
+            [],
+            [],
+            id="echoed-input-error",
+        ),
+        pytest.param(
+            "logical",
+            {},
+            {"stdout": "Chip area for module 'dut': 1000.0"},
+            {"yosys_complete": False, "structural_checks_complete": False},
+            [],
+            [],
+            id="inline-decoy",
+        ),
+    ]
+    + [
+        # #1075: a loader failure of a tool the Yosys stage does not run is not its startup.
+        pytest.param(
+            "logical",
+            {},
+            {
+                "returncode": 1,
+                "stdout": "BOOLEY_STAGE: yosys\n",
+                "stderr": _LOADER_LINE.format(exe=executable),
+            },
+            {"termination": "infrastructure_error"},
+            [],
+            ["missing tool:", "startup failed"],
+            id=f"unrelated-loader-{executable}",
         )
-        assert _count_latches(out) == 0
-
-    def test_count_latches_ignores_tally_shaped_appended_diagnostic(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = (
-            "13. Printing statistics.\n"
-            "        1 cells\n"
-            "        1   $_DLATCH_P_\n"
-            "\nWarnings: 1 unique messages, 1 total\n"
-            "End of script.\n"
-            "ERROR: diagnostic excerpt follows:\n"
-            "        9   $_DLATCH_N_\n"
-        )
-        assert _count_latches(out) == 1
-
-    def test_count_latches_falls_back_after_incomplete_stat_marker(self):
-        from booley.flows.synth.flow import _count_latches
-
-        out = "Warning: found $dlatch in cell A\n13. Printing statistics.\n"
-        assert _count_latches(out) == 1
-
-    def test_count_latches_stat_ran_with_no_dlatch_row_is_zero(self):
-        """F-29 regression: transient $dlatch log chatter on a clean netlist.
-
-        yosys-slang emits `$driver$…($dlatch)` helper cells that opt folds
-        away; `stat` then prints no $_DLATCH row (it omits zero-instance cell
-        types). The occurrence fallback counted 1680 such mentions and failed
-        a latch-free ravenoc synthesis as CRITICAL.
-        """
-        from booley.flows.synth.flow import _count_latches
-
-        chatter = "Setting constant 0-bit at position 0 on $driver$x.fifo_ff[1] ($dlatch)\n"
-        out = chatter * 1680 + "Printing statistics.\n     $_DFF_PP0_   4160\n"
-        assert _count_latches(out) == 0
-
-    def test_count_latches_falls_back_when_no_stat_section(self):
-        """A run that died before stat: over-counting stays the safe direction."""
-        from booley.flows.synth.flow import _count_latches
-
-        assert _count_latches("proc $dlatch here\nanother $dlatch\n") == 2
-
-
-# ===========================================================================
-# Full output parsing
-# ===========================================================================
-
-
-class TestParseSynthOutput:
-    def test_complete_output(self):
-        output = (
-            "Chip area for top module '\\t': 52480.0\n"
-            "Number of cells: 12345\n"
-            + _perclock_marker("clk", 2.0, 0.75, 0.1)
-            + "STA_REPORT: /tmp/reports/timing/overall.rpt\n"
-        )
-        m = _parse_synth_output(output, 4.2)
-        assert m.area_um2 == 52480.0
-        assert m.area_kge == pytest.approx(65.7644)
-        assert m.cells == 12345
-        # Critical path / Fmax are per-clock now (one entry per create_clock).
-        assert set(m.per_clock) == {"clk"}
-        assert m.per_clock["clk"].critical_path_ps == pytest.approx(1250.0)
-        assert m.per_clock["clk"].fmax_mhz == pytest.approx(800.0)
-        assert m.elapsed_s == 4.2
-        assert not m.has_critical
-
-    def test_sta_report_markers_do_not_become_pointers(self):
-        """The STA markers are no longer scraped into a per-file map.
-
-        Their reports live in the timing dir the ``artifacts.dirs`` block
-        names, so the reader lists that dir instead of trusting a pointer whose
-        filename is hardcoded in Python (``overall.rpt`` vs ``pre_repair.rpt``
-        vs ``reg2reg.rpt`` depend on the engine and on whether repair ran).
-        """
-        m = _parse_synth_output(
-            "Number of cells: 10\n"
-            "STA_REPORT: /tmp/reports/timing/overall.rpt\n"
-            "STA_REG2REG_REPORT: /tmp/reports/timing/reg2reg.rpt\n",
-            1.0,
-        )
-        assert not hasattr(m, "reports")
-        assert m.cells == 10  # the numbers still parse
-
-    def test_multi_clock_output(self):
-        # Two create_clock domains -> two per_clock entries, each with its own
-        # derived critical path / Fmax.
-        output = (
-            "Chip area for top module '\\t': 52480.0\n"
-            "Number of cells: 12345\n"
-            + _perclock_marker("clk_core", 2.0, 0.75, 0.1)
-            + _perclock_marker("clk_io", 5.0, -1.0, 0.2)
-        )
-        m = _parse_synth_output(output, 1.0)
-        assert set(m.per_clock) == {"clk_core", "clk_io"}
-        assert m.per_clock["clk_core"].critical_path_ps == pytest.approx(1250.0)
-        assert m.per_clock["clk_core"].fmax_mhz == pytest.approx(800.0)
-        # clk_io violated: (5.0 - (-1.0))*1000 = 6000 ps -> 1e6/6000 = 166.67 MHz.
-        assert m.per_clock["clk_io"].critical_path_ps == pytest.approx(6000.0)
-        assert m.per_clock["clk_io"].fmax_mhz == pytest.approx(166.667, rel=1e-4)
-
-    def test_with_latches(self):
-        output = "$dlatch cell\nChip area for top module '\\t': 100.0\n"
-        m = _parse_synth_output(output, 1.0)
-        assert m.latches == 1
-        assert m.has_critical is True
-
-
-# ===========================================================================
-# SynthMetrics
-# ===========================================================================
-
-
-class TestSynthMetrics:
-    def test_has_critical_false(self):
-        m = SynthMetrics()
-        assert not m.has_critical
-
-    def test_has_critical_latches(self):
-        m = SynthMetrics(latches=1)
-        assert m.has_critical
-
-    def test_has_critical_comb_loops(self):
-        m = SynthMetrics(comb_loops=1)
-        assert m.has_critical
-
-    def test_has_critical_multi_driven(self):
-        m = SynthMetrics(multi_driven=2)
-        assert m.has_critical
+        for executable in ("vivado", "vvp", "verible-verilog-lint", "openroad")
+    ],
+)
+def test_boundary_output_classifies_the_run(
+    synth_cli: SynthCli,
+    mode: str,
+    plan: dict[str, Any] | None,
+    process: dict[str, Any],
+    expected: dict[str, Any],
+    infra_has: list[str],
+    infra_lacks: list[str],
+) -> None:
+    _outcome, report = _synthesize(synth_cli, mode=mode, plan=plan, **process)
+    assert {key: report[key] for key in expected} == expected
+    assert all(text in report["infra_error"] for text in infra_has)
+    assert not any(text in report["infra_error"] for text in infra_lacks)
 
 
 # ===========================================================================
@@ -3121,491 +3129,259 @@ def test_timed_out_synthesis_returns_no_values_and_names_the_timeout_on_every_ro
 
 
 # ===========================================================================
-# Sandbox execution
+# Stage files (results come from files under the build dir, stale-gated by dispatch time)
 # ===========================================================================
 
+_FINAL_LOOP_WARNING = "Warning: found logic loop in module dut:\n    wire \\feedback\n"
+_UNKNOWN_AREA_STAT = (
+    "13. Printing statistics.\n"
+    "\n=== dut ===\n"
+    "\n        1 cells\n"
+    "        1   $_DLATCH_P_\n"
+    "\n   Area for cell type $_DLATCH_P_ is unknown!\n"
+)
+_YOSYS_AREA = "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n"
+_STAT_AREA = "Number of cells: 100\nChip area for top module dut: 6400.0\n"
+_STA_CLOCK = (
+    "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns={wns} whs_ns={whs} setup_same_clock=1\n"
+)
 
-# ===========================================================================
-# Boundary command + file-based interpretation (ADR 0037 §8)
-# ===========================================================================
 
-# Boundary Command Contract parameter regex (ADR 0037 §5). Mirrored here so
-# the built-in synth argv is proven safe without coupling this test to the
-# executor implementation.
-
-
-def _write_final_structural_failure(build_dir: Path, returncode: int) -> None:
-    """Write completed structural evidence, optionally followed by a tool crash."""
-    build_dir.mkdir(parents=True, exist_ok=True)
-    loop_warning = "Warning: found logic loop in module dut:\n    wire \\feedback\n"
-    (build_dir / "yosys.log").write_text(
-        loop_warning + "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-        encoding="utf-8",
-    )
-    (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
-    # The loop survives optimisation, so the pre-mapping check owns it; the
-    # final check, run after mapping, sees only the multi-driven net.
-    (build_dir / "premap_check_dut.txt").write_text(
-        loop_warning + "Found and reported 1 problems.\n", encoding="utf-8"
-    )
-    (build_dir / "check_dut.txt").write_text(
-        "Warning: multiple conflicting drivers for dut.sig:\n"
+def _final_structural_failure(returncode: int) -> dict[str, str]:
+    """Completed structural evidence, followed by a tool crash when *returncode* is set."""
+    yosys_log = _FINAL_LOOP_WARNING + _YOSYS_AREA
+    if returncode:
+        yosys_log += "ERROR: unknown tool exception after final outputs\n"
+    return {
+        "yosys.log": yosys_log,
+        "stat_dut.txt": "Number of cells: 100\n",
+        # The loop survives optimisation, so the pre-mapping check owns it; the
+        # final check, run after mapping, sees only the multi-driven net.
+        "premap_check_dut.txt": _FINAL_LOOP_WARNING + "Found and reported 1 problems.\n",
+        "check_dut.txt": "Warning: multiple conflicting drivers for dut.sig:\n"
         "    port Q[0] of cell $procdff$1 ($dff)\n"
         "Found and reported 1 problems.\n",
-        encoding="utf-8",
+        "synth_dut.v": "module dut; endmodule\n",
+    }
+
+
+def _report_log(synth_cli: SynthCli, report: dict[str, Any]) -> str:
+    return (synth_cli.project / report["artifacts"]["log"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    (
+        "mode",
+        "files",
+        "stale",
+        "returncode",
+        "text_has",
+        "text_lacks",
+        "log_has",
+        "expected",
+    ),
+    [
+        pytest.param(
+            "logical",
+            _yosys_outputs(_UNKNOWN_AREA_STAT),
+            (),
+            0,
+            ["synthesis log reports an error despite exit 0"],
+            [],
+            ["Area for cell type $_DLATCH_P_ is unknown!"],
+            {
+                "exit_code": EXIT_FAILURE,
+                "passed": False,
+                "returncode": 1,
+                "termination": "design_failure",
+                "ppa_complete": False,
+                "area_um2": None,
+                "latches": 1,
+                "unexpected_latches": 1,
+                "has_critical": True,
+            },
+            id="unknown-area",
+        ),
+        pytest.param(
+            "logical",
+            {
+                **_yosys_outputs(_STAT_AREA),
+                "yosys.log": _YOSYS_AREA + "ABC: Warning: The network has multiple outputs.\n",
+            },
+            (),
+            0,
+            ["RESULT: WARN", "1 EDA warning"],
+            [],
+            [],
+            {"exit_code": EXIT_SUCCESS, "passed": True, "total_warnings": 1, "grade": "warn"},
+            id="advisory-warning",
+        ),
+        # A leftover log predating the dispatch is never a fresh result.
+        pytest.param(
+            "logical",
+            {"yosys.log": _YOSYS_AREA.replace("6400.0", "52480.0").replace("100", "12345")},
+            ("yosys.log",),
+            0,
+            ["no metrics"],
+            ["12,345"],
+            [],
+            {"exit_code": EXIT_FAILURE, "failure_reasons": ["no metrics"]},
+            id="stale-log",
+        ),
+        # yosys and ABC can print ERROR: lines yet exit 0.
+        pytest.param(
+            "logical",
+            {"yosys.log": _YOSYS_AREA + "ERROR: ABC gave up on this netlist\n"},
+            (),
+            0,
+            ["RESULT: ERROR"],
+            [],
+            ["despite exit 0"],
+            {"exit_code": EXIT_ERROR},
+            id="error-despite-exit-0",
+        ),
+        # A clock label without numeric setup/hold evidence cannot complete PPA.
+        pytest.param(
+            "physical",
+            {
+                "yosys.log": _YOSYS_AREA,
+                "openroad.log": _STA_CLOCK.format(wns="NA", whs="NA")
+                + "Design area 7000 u^2 50% utilization.\n",
+            },
+            (),
+            0,
+            ["PARTIAL"],
+            [],
+            [],
+            {"exit_code": EXIT_FAILURE, "timing_complete": False, "ppa_complete": False},
+            id="all-na-clock",
+        ),
+    ],
+)
+def test_stage_files_decide_the_verdict(
+    synth_cli: SynthCli,
+    mode: str,
+    files: dict[str, str],
+    stale: tuple[str, ...],
+    returncode: int,
+    text_has: list[str],
+    text_lacks: list[str],
+    log_has: list[str],
+    expected: dict[str, Any],
+) -> None:
+    outcome, report = _synthesize(synth_cli, files, mode=mode, stale=stale, returncode=returncode)
+    view = _report_view(outcome, report)
+    assert {key: view[key] for key in expected} == expected
+    assert all(text in outcome.report_text for text in text_has)
+    assert not any(text in outcome.report_text for text in text_lacks)
+    run_log = _report_log(synth_cli, report)
+    assert all(text in run_log for text in log_has)
+
+
+@pytest.mark.parametrize("returncode", [0, 2])
+def test_final_check_structural_findings_fail_and_reach_every_report_surface(
+    synth_cli: SynthCli, returncode: int
+) -> None:
+    outcome, report = _synthesize(
+        synth_cli, _final_structural_failure(returncode), returncode=returncode
     )
-    (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
+
+    assert outcome.exit_code == (EXIT_ERROR if returncode else EXIT_FAILURE)
+    assert "1 comb loop" in outcome.report_text
+    assert "1 multi-driven" in outcome.report_text
+    target = outcome.detail["lite"]
+    assert target["total_warnings"] == 2
+    assert target["warning_summary"]["by_disposition"] == {"structural": 2}
+    assert target["comb_loops"] == 1
+    assert target["multi_driven"] == 1
+    assert report["termination"] == ("infrastructure_error" if returncode else "design_failure")
+    assert report["returncode"] == (2 if returncode else 1)
     if returncode:
-        with (build_dir / "yosys.log").open("a") as log:
-            log.write("ERROR: unknown tool exception after final outputs\n")
-    fresh = time.time() + 1
-    for artifact in build_dir.iterdir():
-        os.utime(artifact, (fresh, fresh))
+        assert "unknown tool exception" in report["infra_error"]
+        assert "RESULT: ERROR" in outcome.report_text
+    assert report["total_warnings"] == 2
+    assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
 
 
-class TestFileBasedInterpretation:
-    """Results come from files under the build dir, stale-gated by dispatch time."""
+def _constraint_check_block(scenario: str) -> str:
+    """The block run_openroad.tcl prints: every captured check_setup line
+    carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
+    if scenario == "unchecked":
+        return ""
+    check_lines: list[str] = []
+    if scenario == "clock_only":
+        inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
+        endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
+        check_lines = [
+            "Warning: There are 12 input ports missing set_input_delay.",
+            *(f"  {name}" for name in inputs),
+            "Warning: There is 1 output port missing set_output_delay.",
+            "  y",
+            "Warning: There are 14 unconstrained endpoints.",
+            *(f"  {name}" for name in endpoints),
+        ]
+    return "".join(f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"])
 
-    @staticmethod
-    def _build_dir(tmp_path: Path) -> Path:
-        return tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "synth"
 
-    def test_metrics_parsed_from_fresh_stage_files(self, flow_and_state, tmp_path: Path):
-        """A make run that leaves its results as FILES (empty stdout) still
-        yields full metrics — the interpret half reads the stage logs."""
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            # Written "during the run": mtime >= dispatched_unix.
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 12345\nChip area for top module dut: 52480.0\n", encoding="utf-8"
-            )
-            (build_dir / "premap_check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(
-                returncode=0, stdout="BOOLEY_STAGE: yosys\n", stderr="", duration_s=1.0
-            )
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        assert "12,345 cells" in result.report_text
-
-    def test_unknown_area_failure_preserves_latch_conditions(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-        stat_output = (
-            "13. Printing statistics.\n"
-            "\n=== dut ===\n"
-            "\n        1 cells\n"
-            "        1   $_DLATCH_P_\n"
-            "\n   Area for cell type $_DLATCH_P_ is unknown!\n"
-        )
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(stat_output, encoding="utf-8")
-            (build_dir / "stat_dut.txt").write_text(stat_output, encoding="utf-8")
-            (build_dir / "premap_check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert "synthesis log reports an error despite exit 0" in result.report_text
-        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        run_log = tmp_path / report["artifacts"]["log"]
-        assert "Area for cell type $_DLATCH_P_ is unknown!" in run_log.read_text()
-        assert report["passed"] is False
-        assert report["returncode"] == 1
-        assert report["termination"] == "design_failure"
-        assert report["ppa_complete"] is False
-        assert report["area_um2"] is None
-        conditions = report["implementation"]["conditions"]
-        assert conditions["latches"] == 1
-        assert conditions["unexpected_latches"] == 1
-        assert conditions["has_critical"] is True
-
-    @pytest.mark.parametrize("returncode", [0, 2])
-    def test_final_check_structural_findings_fail_and_reach_every_report_surface(
-        self, flow_and_state, tmp_path: Path, returncode
-    ):
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            _write_final_structural_failure(build_dir, returncode)
-            return SubprocessResult(returncode=returncode, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == (EXIT_ERROR if returncode else EXIT_FAILURE)
-        assert "1 comb loop" in result.report_text
-        assert "1 multi-driven" in result.report_text
-        target = result.detail["lite"]
-        assert target["total_warnings"] == 2
-        assert target["warning_summary"]["by_disposition"] == {"structural": 2}
-        assert target["comb_loops"] == 1
-        assert target["multi_driven"] == 1
-        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["termination"] == (
-            "infrastructure_error" if returncode else "design_failure"
-        )
-        assert report["returncode"] == (2 if returncode else 1)
-        if returncode:
-            assert "unknown tool exception" in report["infra_error"]
-            assert "RESULT: ERROR" in result.report_text
-        assert report["total_warnings"] == 2
-        assert report["implementation"]["conditions"]["warning_summary"]["total_warnings"] == 2
-
-    def test_earlier_loop_warns_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Warning: found logic loop in module dut:\n"
-                "    cell $add$rtl.sv:7$1\n"
-                "    wire \\feedback\n"
-                "Chip area for top module '\\dut': 6400.0\n"
-                "Number of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
-            )
-            (build_dir / "premap_check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        assert "RESULT: WARN" in result.report_text
-        assert "CRITICAL" not in result.report_text
-        for evidence in (
-            "$add$rtl.sv:7$1",
-            "\\feedback",
-            "completed structural checks find no combinational loops",
-        ):
-            assert evidence in result.report_text
-        target = result.detail["lite"]
-        assert target["comb_loops"] == 0
-        assert target["passed"] is True
-        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["returncode"] == 0
-        assert report["passed"] is True
-        assert report["structural_checks_complete"] is True
-        assert report["implementation"]["status"]["grade"] == "warn"
-        assert report["implementation"]["conditions"]["has_critical"] is False
-
-    def test_advisory_warning_yields_warn_grade_without_failing(
-        self, flow_and_state, tmp_path: Path
-    ):
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\n"
-                "Number of cells: 100\n"
-                "ABC: Warning: The network has multiple outputs.\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text(
-                "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
-            )
-            (build_dir / "premap_check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        assert "RESULT: WARN" in result.report_text
-        assert "1 EDA warning" in result.report_text
-        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["passed"] is True
-        assert report["total_warnings"] == 1
-        assert report["implementation"]["status"]["grade"] == "warn"
-
-    def test_missing_final_check_cannot_be_a_clean_file_based_pass(
-        self, flow_and_state, tmp_path: Path
-    ):
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert result.detail["lite"]["structural_checks_complete"] is False
-
-    def test_stale_artifacts_are_not_parsed(self, flow_and_state, tmp_path: Path):
-        """A leftover log predating the dispatch must never read as a fresh
-        result (ADR 0037 contract clause d)."""
-        import time as _time
-
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-        build_dir.mkdir(parents=True, exist_ok=True)
-        leftover = build_dir / "yosys.log"
-        leftover.write_text(
-            "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
-            encoding="utf-8",
-        )
-        stale = _time.time() - 3600
-        os.utime(leftover, (stale, stale))
-
-        with patch.object(
-            flow,
-            "_execute",
-            return_value=SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0),
-        ):
-            result = flow._run()
-
-        # The stale numbers were ignored: no metrics -> structural failure.
-        assert "12,345" not in result.report_text
-        assert result.exit_code == EXIT_FAILURE
-        assert "no metrics" in result.report_text
-        status = result.detail["implementation"]["results"]["lite"]["status"]
-        assert status["failure_reasons"] == ["no metrics"]
-
-    def test_error_in_log_despite_exit_0_fails(self, flow_and_state, tmp_path: Path):
-        """False-pass guard parity: yosys/ABC can emit ERROR: lines yet exit 0;
-        the interpret half's log scan downgrades the run to a failure."""
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\n"
-                "Number of cells: 100\n"
-                "ERROR: ABC gave up on this netlist\n",
-                encoding="utf-8",
-            )
-            fresh = time.time() + 1
-            os.utime(build_dir / "yosys.log", (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with patch.object(flow, "_execute", side_effect=mock_execute):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "RESULT: ERROR" in result.report_text
-        # The scan verdict lands in the persisted full output (the report line
-        # itself carries the bounded rc-based summary, as on the legacy path).
-        run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
-        assert "despite exit 0" in run_log.read_text(encoding="utf-8")
-
-    @staticmethod
-    def _constraint_check_block(scenario: str) -> str:
-        """The block run_openroad.tcl prints: every captured check_setup line
-        carries the prefix so OpenSTA's "Warning:" text is not an EDA warning."""
-        if scenario == "unchecked":
-            return ""
-        check_lines: list[str] = []
-        if scenario == "clock_only":
-            inputs = [f"in{i}" for i in range(10)] + ["data[3]", "end"]
-            endpoints = [f"out{i}" for i in range(13)] + ["r1/D"]
-            check_lines = [
-                "Warning: There are 12 input ports missing set_input_delay.",
-                *(f"  {name}" for name in inputs),
-                "Warning: There is 1 output port missing set_output_delay.",
-                "  y",
-                "Warning: There are 14 unconstrained endpoints.",
-                *(f"  {name}" for name in endpoints),
-            ]
-        return "".join(
-            f"STA_CONSTRAINT_CHECK: {line}\n" for line in ["begin", *check_lines, "end"]
-        )
-
-    @pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
-    def test_timing_markers_rederived_from_openroad_log(
-        self, flow_and_state, tmp_path: Path, scenario: str
-    ):
-        """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time, and
-        the constraint check block becomes a NOTE that never moves the verdict."""
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
-
-        check_block = self._constraint_check_block(scenario)
-
-        def fake_configure(target, cmd):
-            return _stub_plan(tmp_path, target, mode="physical")
-
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "openroad.log").write_text(
-                "STA_WORST_SLACK_NS: 2.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1"
-                " setup_same_clock=1\n"
-                "Design area 7000 u^2 50% utilization.\n" + check_block,
-                encoding="utf-8",
-            )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
-            (build_dir / "premap_check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            (build_dir / "check_dut.txt").write_text(
-                "Found and reported 0 problems.\n", encoding="utf-8"
-            )
-            fresh = time.time() + 1
-            for artifact in build_dir.iterdir():
-                os.utime(artifact, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
-
-        with (
-            patch.object(flow, "_configure_synth", side_effect=fake_configure),
-            patch.object(flow, "_execute", side_effect=mock_execute),
-        ):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_SUCCESS
-        # period 4 ns, wns 2 ns -> crit path 2000 ps -> Fmax 500 MHz, derived
-        # at interpret time from the log file (not from process stdout).
-        assert "2,000 ps" in result.report_text
-        assert "500 MHz" in result.report_text
-        assert "+2.000 ns" in result.report_text
-        # The check never changes the verdict or exit code (the raw OpenSTA
-        # "Warning:" form would have turned this PASS into WARN).
-        assert "RESULT: PASS" in result.report_text
-        self._assert_constraint_outcome(result, tmp_path, scenario)
-
-    @staticmethod
-    def _assert_constraint_outcome(result, tmp_path: Path, scenario: str) -> None:
-        report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text(encoding="utf-8"))
-        if scenario == "unchecked":
-            # No block means no check ran (logical mode, or OpenROAD died first):
-            # no key and no NOTE, not zero counts.
-            assert "unconstrained" not in report
-            assert "unconstrained" not in result.detail["lite"]
-            assert "constrained paths" not in result.report_text
-            return
-        detail = report["unconstrained"]
-        assert result.detail["lite"]["unconstrained"] == detail
-        if scenario == "constrained":
-            assert "timing covers only constrained paths" not in result.report_text
-            assert detail == {
-                key: {"count": 0, "sample": []}
-                for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
-            }
-            return
-        note = next(
-            line for line in result.report_text.splitlines() if "constrained paths" in line
-        )
-        assert "NOTE" in note
-        assert "14 unconstrained endpoints" in note
-        assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
-        assert "1 output without set_output_delay (y)" in note
-        assert detail["inputs_without_delay"] == {
-            "count": 12,
-            "sample": [f"in{i}" for i in range(10)],
+def _assert_constraint_outcome(
+    synth_cli: SynthCli, outcome: EndpointOutcome, report: dict[str, Any], scenario: str
+) -> None:
+    if scenario == "unchecked":
+        # No block means no check ran (logical mode, or OpenROAD died first):
+        # no key and no NOTE, not zero counts.
+        assert "unconstrained" not in report
+        assert "unconstrained" not in outcome.detail["lite"]
+        assert "constrained paths" not in outcome.report_text
+        return
+    detail = report["unconstrained"]
+    assert outcome.detail["lite"]["unconstrained"] == detail
+    if scenario == "constrained":
+        assert "timing covers only constrained paths" not in outcome.report_text
+        assert detail == {
+            key: {"count": 0, "sample": []}
+            for key in ("endpoints", "inputs_without_delay", "outputs_without_delay")
         }
-        assert detail["endpoints"]["count"] == 14
-        assert len(detail["endpoints"]["sample"]) == 10
-        assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
-        # The bounded sample drops names the run log keeps.
-        run_log = (tmp_path / report["artifacts"]["log"]).read_text(encoding="utf-8")
-        assert "data[3]" in run_log
-        assert "r1/D" in run_log
+        return
+    note = next(line for line in outcome.report_text.splitlines() if "constrained paths" in line)
+    assert "NOTE" in note
+    assert "14 unconstrained endpoints" in note
+    assert "12 inputs without set_input_delay (in0, in1, in2, +9 more)" in note
+    assert "1 output without set_output_delay (y)" in note
+    assert detail["inputs_without_delay"] == {"count": 12, "sample": [f"in{i}" for i in range(10)]}
+    assert detail["endpoints"]["count"] == 14
+    assert len(detail["endpoints"]["sample"]) == 10
+    assert detail["outputs_without_delay"] == {"count": 1, "sample": ["y"]}
+    # The bounded sample drops names the run log keeps.
+    run_log = _report_log(synth_cli, report)
+    assert "data[3]" in run_log
+    assert "r1/D" in run_log
 
-    def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
-        """A clock label without numeric setup/hold evidence cannot complete PPA."""
-        flow, _ = flow_and_state
-        build_dir = self._build_dir(tmp_path)
 
-        def mock_execute(cmd, **_kwargs):
-            build_dir.mkdir(parents=True, exist_ok=True)
-            (build_dir / "yosys.log").write_text(
-                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
-                encoding="utf-8",
-            )
-            (build_dir / "openroad.log").write_text(
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA setup_same_clock=1\n"
-                "Design area 7000 u^2 50% utilization.\n",
-                encoding="utf-8",
-            )
-            fresh = time.time() + 1
-            for stage_log in (build_dir / "yosys.log", build_dir / "openroad.log"):
-                os.utime(stage_log, (fresh, fresh))
-            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+@pytest.mark.parametrize("scenario", ["clock_only", "constrained", "unchecked"])
+def test_timing_markers_rederived_from_openroad_log(synth_cli: SynthCli, scenario: str) -> None:
+    """The Python-derived Fmax/critical-path markers (legacy in-process
+    prints) are reconstructed from the STA log file at interpret time, and
+    the constraint check block becomes a NOTE that never moves the verdict."""
+    files = {
+        **_yosys_outputs(_STAT_AREA),
+        "yosys.log": _YOSYS_AREA,
+        "openroad.log": "STA_WORST_SLACK_NS: 2.000000\n"
+        + _STA_CLOCK.format(wns="2.000000", whs="0.1")
+        + "Design area 7000 u^2 50% utilization.\n"
+        + _constraint_check_block(scenario),
+    }
+    outcome, report = _synthesize(synth_cli, files, mode="physical")
 
-        with (
-            patch.object(
-                flow,
-                "_configure_synth",
-                side_effect=lambda target, cmd: _stub_plan(tmp_path, target, mode="physical"),
-            ),
-            patch.object(flow, "_execute", side_effect=mock_execute),
-        ):
-            result = flow._run()
-
-        assert result.exit_code == EXIT_FAILURE
-        assert "PARTIAL" in result.report_text
-        assert result.detail["lite"]["timing_complete"] is False
-        assert result.detail["lite"]["ppa_complete"] is False
+    assert outcome.exit_code == EXIT_SUCCESS
+    # period 4 ns, wns 2 ns -> crit path 2000 ps -> Fmax 500 MHz, derived
+    # at interpret time from the log file (not from process stdout).
+    assert "2,000 ps" in outcome.report_text
+    assert "500 MHz" in outcome.report_text
+    assert "+2.000 ns" in outcome.report_text
+    # The check never changes the verdict or exit code (the raw OpenSTA
+    # "Warning:" form would have turned this PASS into WARN).
+    assert "RESULT: PASS" in outcome.report_text
+    _assert_constraint_outcome(synth_cli, outcome, report, scenario)
 
 
 # ===========================================================================
@@ -4136,95 +3912,6 @@ class TestTimingOutputFormat:
         assert "RESULT: PASS" in result.report_text
         assert result.detail["lite"]["synth_mode"] == "logical"
         assert result.detail["lite"]["area_source"] == "yosys_mapped"
-
-
-# ===========================================================================
-# Wire/process count parsing
-# ===========================================================================
-
-
-class TestParseWireCount:
-    def test_basic(self):
-        assert _parse_wire_count("Number of wires:   450\n") == 450
-
-    def test_no_match(self):
-        assert _parse_wire_count("no wire info") == 0
-
-    def test_empty(self):
-        assert _parse_wire_count("") == 0
-
-
-class TestParseProcessCount:
-    def test_basic(self):
-        assert _parse_process_count("Number of processes:      3\n") == 3
-
-    def test_no_match(self):
-        assert _parse_process_count("synthesis completed") == 0
-
-
-# ===========================================================================
-# Per-clock fmax derivation + worst-clock scalars
-# ===========================================================================
-
-
-class TestFmaxDerivation:
-    def test_normal_derivation(self):
-        # period 2.0 ns, wns 1.0 ns -> crit path 1000 ps -> Fmax 1000 MHz.
-        m = _parse_synth_output(
-            "Chip area for top module '\\t': 6400.0\n" + _perclock_marker("clk", 2.0, 1.0, 0.1),
-            1.0,
-        )
-        assert m.per_clock["clk"].fmax_mhz == pytest.approx(1000.0)
-
-    def test_no_timing_path_leaves_per_clock_empty(self):
-        # No STA_PERCLOCK marker -> no clock timing at all.
-        parsed = _parse_synth_output(
-            "Chip area for top module '\\t': 100.0\n",
-            1.0,
-        )
-        assert parsed.per_clock == {}
-        assert _worst_critical_path_ps(parsed) is None
-
-    def test_none_critical_path(self):
-        parsed = _parse_synth_output("no timing info", 1.0)
-        assert parsed.per_clock == {}
-
-
-class TestWorstClockScalars:
-    """_worst_critical_path_ps picks the timing-worst clock."""
-
-    def test_picks_lowest_fmax_clock(self):
-        m = SynthMetrics(
-            per_clock={
-                "fast": make_clock_timing("fast", 1.0, 0.5, 0.1),  # 500 ps, 2000 MHz
-                "slow": make_clock_timing("slow", 4.0, 0.0, 0.1),  # 4000 ps, 250 MHz
-            }
-        )
-        # Worst = 'slow': largest critical path / lowest Fmax.
-        assert _worst_critical_path_ps(m) == pytest.approx(4000.0)
-
-    def test_empty_per_clock_is_none(self):
-        m = SynthMetrics()
-        assert _worst_critical_path_ps(m) is None
-
-    def test_single_clock_is_that_clock(self):
-        m = SynthMetrics(per_clock={"clk": make_clock_timing("clk", 2.0, 0.75, 0.1)})
-        assert _worst_critical_path_ps(m) == pytest.approx(1250.0)
-
-
-# ===========================================================================
-# Process count triggers has_critical
-# ===========================================================================
-
-
-class TestProcessCountCritical:
-    def test_process_count_fails_implicit(self):
-        m = SynthMetrics(process_count=1)
-        assert m.has_critical is True
-
-    def test_zero_processes_clean(self):
-        m = SynthMetrics(process_count=0)
-        assert not m.has_critical
 
 
 # ===========================================================================
@@ -4827,128 +4514,19 @@ class TestIncompleteResourceResults:
             assert (snapshot["phase"], snapshot["pending_targets"]) == ("aborted", ["asic_b"])
 
 
-@pytest.mark.parametrize("executable", ["sv2v", "yosys", "openroad"])
-@pytest.mark.parametrize("returncode", [0, 127])
-def test_authenticated_synth_loader_is_infrastructure(tmp_path, executable, returncode):
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    metrics = SynthMetrics()
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=False,
-        attempt_token="0123456789abcdef0123456789abcdef",
-        stage=executable,
-    )
-    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
-    flow._apply_boundary_completion(
-        metrics, outcome, SubprocessResult(returncode=returncode, stderr=diagnostic), diagnostic
-    )
-    assert metrics.returncode == 2
-    assert "libx.so" in metrics.infra_error
-    assert not metrics.yosys_complete
-    assert not metrics.timing_complete
-
-
-def test_authenticated_synth_cannot_use_inline_metric_decoy(tmp_path):
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    text = "Chip area for module 'dut': 1000.0"
-    metrics = _parse_synth_output(text, 0.1)
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=False,
-        attempt_token="0123456789abcdef0123456789abcdef",
-    )
-    flow._apply_boundary_completion(
-        metrics, outcome, SubprocessResult(returncode=0, stdout=text), text
-    )
-    assert not metrics.yosys_complete
-    assert not metrics.structural_checks_complete
-
-
-@pytest.mark.parametrize("executable", ["vivado", "vvp", "verible-verilog-lint", "openroad"])
-def test_authenticated_yosys_stage_rejects_unrelated_loader(tmp_path, executable):
-    flow = AsicSynthesizeFlow()
-    flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
-    metrics = SynthMetrics()
-    outcome = SimpleNamespace(
-        diagnostics=SimpleNamespace(warnings=[], structural=SimpleNamespace(complete=False)),
-        forced_failure=None,
-        yosys_complete=False,
-        attempt_token="0123456789abcdef0123456789abcdef",
-        stage="yosys",
-    )
-    diagnostic = f"{executable}: error while loading shared libraries: libx.so: missing"
-    flow._apply_boundary_completion(
-        metrics, outcome, SubprocessResult(returncode=1, stderr=diagnostic), diagnostic
-    )
-    assert metrics.termination == "infrastructure_error"
-    assert "missing tool:" not in metrics.infra_error
-
-
-@pytest.mark.parametrize("area", ["", "- ", "12 ", "12.5 ", "1.2e+2 "])
-@pytest.mark.parametrize("cell_first", [False, True])
-def test_modern_stat_latch_columns(area, cell_first):
-    from booley.flows.synth.flow import _count_latches
-
-    row = f"$_DLATCH_P_ 8 {area}" if cell_first else f"8 {area}$_DLATCH_P_"
-    text = f"13. Printing statistics.\n=== dut ===\n  16 {area}cells\n  {row}\n"
-    assert _count_latches(text) == 8
-    assert _parse_area(text)[1] == 16
-
-
-def test_stat_hierarchy_inventory_is_aggregate_only():
-    from booley.flows.synth.flow import _count_latches
-
-    text = (
-        "3. Printing statistics.\n=== child ===\n  1 cells\n  1 $_DLATCH_P_\n"
-        "=== design hierarchy ===\n  9 wires\n  - processes\n  2 cells\n  2 $_DLATCH_P_\n"
-    )
-    assert _count_latches(text) == 2
-    assert _parse_wire_count(text) == 9
-    assert _parse_process_count(text) == 0
-
-
-@pytest.mark.parametrize("token", ["1.2.3", "NaN", "inf", "1e999", "e+-", "-"])
-def test_stat_area_rejects_complete_invalid_numeric_tokens(token):
-    assert _parse_area(f"Chip area for top module dut: {token}\n")[0] is None
-
-
-def test_stat_latest_modern_zero_overrides_legacy_and_truncated_tail():
-    from booley.flows.synth.flow import _count_latches
-
-    text = (
-        "1. Printing statistics.\n=== dut ===\n  Number of cells: 8\n"
-        "  $_DLATCH_P_ 8\n  Chip area for top module dut: 10\n"
-        "2. Printing statistics.\n=== dut ===\n  5 - wires\n  0 - processes\n"
-        "  2 - cells\n  2 1e1 NAND2\n  Chip area for top module dut: 2e1\n"
-        "3. Printing statistics.\n=== dut ===\n"
-    )
-    assert _count_latches(text) == 0
-    assert _parse_area(text) == (20.0, 2)
-    assert _parse_wire_count(text) == 5
-    assert _parse_process_count(text) == 0
-
-
-def test_stat_latch_variants_exclude_sr_and_mapped_names():
-    from booley.flows.synth.flow import _count_latches
-
-    text = "Printing statistics.\n  9 cells\n  2 - $adlatch\n  3 - $_DLATCHSR_PPP_\n  2 - $_SR_PP_\n  2 - DLH_X1\n"
-    assert _count_latches(text) == 5
-
-
+@pytest.mark.parametrize("cell", ["$_DLATCH_P_", "$_DLATCH_PN0_"])
 @pytest.mark.parametrize("mode", ["logical", "physical"])
 @pytest.mark.parametrize("frontend", ["sv2v", "slang"])
-def test_public_flow_modern_latch_design_failure(flow_and_state, tmp_path, mode, frontend):
+def test_public_flow_modern_latch_design_failure(synth_cli: SynthCli, mode, frontend, cell):
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "mode": mode,
             "frontend": frontend,
-            "openroad": _LATCH_ORD if mode == "physical" else "",
+            "cell": cell,
+            "openroad": f"[ERROR ORD-2013] instance latch LEF master {cell} not found."
+            if mode == "physical"
+            else "",
             "process": {"returncode": 2 if mode == "physical" else 0},
         },
     )
@@ -4958,7 +4536,7 @@ def test_public_flow_modern_latch_design_failure(flow_and_state, tmp_path, mode,
     assert report["implementation"]["conditions"]["latches"] == 8
     assert report["implementation"]["conditions"]["unexpected_latches"] == 8
     assert report["implementation"]["conditions"]["has_critical"] is True
-    assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
+    assert cell in report["implementation"]["status"]["diagnostic_excerpt"]
     assert "8 latches" in result.report_text
     assert report["yosys_complete"] is True
     if mode == "physical":
@@ -4966,198 +4544,60 @@ def test_public_flow_modern_latch_design_failure(flow_and_state, tmp_path, mode,
         assert report["ppa_complete"] is False
 
 
-@pytest.mark.parametrize(
-    ("text", "cells", "wires", "latches", "area"),
-    [
-        # Captured Yosys 0.68+ (38e001a6f) logical final stat, verbatim rows.
-        (
-            "3. Printing statistics.\n\n=== latch ===\n\n        +----------Local Count, excluding submodules.\n        | \n        5 wires\n        5 wire bits\n        5 public wires\n        5 public wire bits\n        4 ports\n        4 port bits\n        2 cells\n        1   $_DFF_P_\n        1   $_DLATCH_P_\n",
-            2,
-            5,
-            1,
-            None,
-        ),
-        # Same real run, stat -liberty with unknown latch area.
-        (
-            "4. Printing statistics.\n\n=== latch ===\n\n        +----------Local Count, excluding submodules.\n        |        +-Local Area, excluding submodules.\n        |        | \n        5        - wires\n        5        - wire bits\n        5        - public wires\n        5        - public wire bits\n        4        - ports\n        4        - port bits\n        2        2 cells\n        1        2   $_DFF_P_\n        1        -   $_DLATCH_P_\n\n   Area for cell type $_DLATCH_P_ is unknown!\n\n   Chip area for module '\\latch': 2.000000\n     of which used for sequential elements: 0.000000 (0.00%)\n",
-            2,
-            5,
-            1,
-            2.0,
-        ),
-        # Actual two-instance child hierarchy, local inventory then aggregate.
-        (
-            "3. Printing statistics.\n\n=== top ===\n\n        +----------Local Count, excluding submodules.\n        | \n        3 wires\n        4 wire bits\n        3 public wires\n        4 public wire bits\n        3 ports\n        4 port bits\n        2 submodules\n        2   child\n\n=== child ===\n\n        +----------Local Count, excluding submodules.\n        | \n        3 wires\n        3 wire bits\n        3 public wires\n        3 public wire bits\n        3 ports\n        3 port bits\n        1 cells\n        1   $_DLATCH_P_\n\n=== design hierarchy ===\n\n        +----------Count including submodules.\n        | \n        2 top\n        1 child\n\n        +----------Count including submodules.\n        | \n        9 wires\n       10 wire bits\n        9 public wires\n       10 public wire bits\n        9 ports\n       10 port bits\n        - memories\n        - memory bits\n        - processes\n        2 cells\n        2   $_DLATCH_P_\n        2 submodules\n        2   child\n",
-            2,
-            9,
-            2,
-            None,
-        ),
-    ],
-    ids=["captured-logical", "captured-liberty", "captured-hierarchy"],
-)
-def test_captured_real_yosys_stat_grammar(text, cells, wires, latches, area):
-    from booley.flows.synth.flow import _count_latches
-
-    assert _parse_area(text) == (area, cells)
-    assert _parse_wire_count(text) == wires
-    assert _parse_process_count(text) == 0
-    assert _count_latches(text) == latches
-
-
-@pytest.mark.parametrize("cell", ["DLH_X1", "DLL_X1", "custom_latch"])
-@pytest.mark.parametrize("row", ["  {cell} 2", "  2 {cell}", "  2 5.32 {cell}"])
-def test_mapped_latches_use_dfflibmap_types_and_final_inventory(cell, row):
-    from booley.flows.synth.backends.yosys.parsing import parse_stat
-
-    text = (
-        f"    \\{cell} _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
-        "    \\DFF_X1 _DFF_P_ (.CK( C), .D( D), .Q( Q));\n"
-        "Printing statistics.\n=== top ===\n  3 cells\n  3 $_DLATCH_P_\n"
-        "End of script.\n--- stat_top.txt ---\n"
-        "Printing statistics.\n=== top ===\n  4 10.0 cells\n"
-        f"{row.format(cell=cell)}\n  1 2.66 $_DLATCH_N_\n  1 4.52 DFF_X1\n"
-    )
-    metrics = _parse_synth_output(text, 0.1)
-    assert metrics.latches == 3
-    assert parse_stat(text).latch_types == {cell: 2, "$_DLATCH_N_": 1}
-    assert metrics.unexpected_latches == 3
-    assert metrics.has_critical
-    metrics.expected_latches = 3
-    assert metrics.unexpected_latches == 0
-    assert not metrics.has_critical
-
-
-def test_mapped_latches_count_hierarchy_once_and_ignore_unused_mapping():
-    from booley.flows.synth.flow import _count_latches
-
-    text = (
-        "    \\DLH_X1 _DLATCH_P_ (.D( D), .G( E), .Q( Q));\n"
-        "    \\DLL_X1 _DLATCH_N_ (.D( D), .GN( E), .Q( Q));\n"
-        "Printing statistics.\n=== top ===\n  2 cells\n  2 child\n"
-        "=== child ===\n  1 cells\n  1 2.66 DLH_X1\n"
-        "=== design hierarchy ===\n  2 cells\n  2 5.32 DLH_X1\n"
-        "End of script.\n--- openroad.log ---\n  99 2.66 DLL_X1\n"
-    )
-    assert _count_latches(text) == 2
-
-
-def test_latch_like_library_names_are_not_classified_without_mapping():
-    from booley.flows.synth.flow import _count_latches
-
-    text = "Printing statistics.\n=== top ===\n  2 cells\n  1 DLH_X1\n  1 latch_buffer\n"
-    assert _count_latches(text) == 0
-
-
-def test_stat_top_area_preference_survives_module_inventory_selection():
-    text = (
-        "Printing statistics.\n=== top ===\n  Number of cells: 2\n"
-        "  Chip area for top module top: 20\n"
-        "=== child ===\n  Number of cells: 1\n  $_DLATCH_P_ 1\n"
-        "  Chip area for module child: 5\n"
-    )
-    assert _parse_area(text) == (20.0, 1)
-
-
-def test_standalone_final_stat_overrides_terminated_earlier_stage_and_summary_lookalikes():
-    from booley.flows.synth.backends.yosys.parsing import parse_stat
-
-    text = (
-        "Printing statistics.\n  8 cells\n  8 $_DLATCH_P_\nEnd of script.\n"
-        "--- stat_dut.txt ---\n=== dut ===\n  2 2e1 cells\n  5 - wires\n"
-        "  10 - wire bits\n  99 - public wires\n  99 - memory bits\n"
-        "  2 - processes\n  2 2e1 NAND2\n"
-        "--- openroad.log ---\n  99 $_DLATCH_P_\n"
-    )
-    stat = parse_stat(text)
-    assert stat.cells == 2
-    assert stat.wires == 5
-    assert stat.processes == 2
-    assert not stat.latch_types
-
-
 _LATCH_ORD = "[ERROR ORD-2013] instance latch LEF master $_DLATCH_P_ not found."
-_LATCH_TOKEN = "0123456789abcdef0123456789abcdef"
 
 
-def _write_latch_artifacts(build, stat, openroad_log, stale_openroad):
-    build.mkdir(parents=True, exist_ok=True)
-    for name, text in {
-        "stat_dut.txt": stat,
-        "yosys.log": stat,
-        "premap_check_dut.txt": "Found and reported 0 problems.\n",
-        "check_dut.txt": "Found and reported 0 problems.\n",
-        "synth_dut.v": "module dut; endmodule\n",
-        "sv2v_converted.v": "module dut; endmodule\n",
-        **({"openroad.log": openroad_log} if openroad_log else {}),
-    }.items():
-        path = build / name
-        path.write_text(text)
-        timestamp = 0 if stale_openroad and name == "openroad.log" else 100
-        os.utime(path, (timestamp, timestamp))
-
-
-def _run_latch_case(flow_and_state, tmp_path, case):
-    flow, _state = flow_and_state
-    mode = case.get("mode", "logical")
-    project = tmp_path / ".booley"
-    project.mkdir(exist_ok=True)
-    expected = case.get("expected", 0)
-    (project / "booley.toml").write_text(
-        f'[flows.synth]\nmode = "{mode}"\nexpected_latches = {expected}\n'
-        + case.get("extra_toml", "")
-    )
-    stub = _stub_plan(tmp_path, "lite", mode=mode)
-    plan = dataclasses.replace(
-        stub,
-        attempt_token=_LATCH_TOKEN,
-        spec=dataclasses.replace(stub.spec, frontend=case.get("frontend", "sv2v")),
-    )
+def _run_latch_case(
+    synth_cli: SynthCli, case: dict[str, Any]
+) -> tuple[EndpointOutcome, dict[str, Any]]:
+    """Run a Target whose Yosys stat holds 8 of ``case["cell"]``; the other keys shape the run."""
     cell = case.get("cell", "$_DLATCH_P_")
-    stat = f"Printing statistics.\n=== dut ===\n  16 36.176 cells\n  8 - {cell}\n  Chip area for top module dut: 36.176\n"
+    stat = (
+        "Printing statistics.\n=== dut ===\n"
+        f"  16 36.176 cells\n  8 - {cell}\n  Chip area for top module dut: 36.176\n"
+    )
     if case.get("unknown_area"):
         stat += f"Area for cell type {cell} is unknown!\n"
     stat += case.get("yosys_decoy", "")
-
-    def execute(*_args, **_kwargs):
-        _write_latch_artifacts(
-            plan.build_dir, stat, case.get("openroad", ""), case.get("stale", False)
-        )
-        for name, text in case.get("artifacts", {}).items():
-            path = plan.build_dir / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-            os.utime(path, (100, 100))
-        if case.get("missing_check"):
-            (plan.build_dir / "check_dut.txt").unlink()
-        if case.get("stale_check"):
-            os.utime(plan.build_dir / "check_dut.txt", (0, 0))
-        if case.get("missing_premap"):
-            (plan.build_dir / "premap_check_dut.txt").unlink()
-        if case.get("stale_premap"):
-            os.utime(plan.build_dir / "premap_check_dut.txt", (0, 0))
-        if case.get("missing_netlist"):
-            (plan.build_dir / "synth_dut.v").unlink()
-        return SubprocessResult(dispatched_unix=99, **case.get("process", {"returncode": 0}))
-
-    with (
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
+    files = _yosys_outputs(stat)
+    if case.get("openroad"):
+        files["openroad.log"] = case["openroad"]
+    files.update(case.get("artifacts", {}))
+    for flag, name in (
+        ("missing_check", "check_dut.txt"),
+        ("missing_premap", "premap_check_dut.txt"),
+        ("missing_netlist", "synth_dut.v"),
     ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-    return result, report
+        if case.get(flag):
+            del files[name]
+    stale = {
+        name
+        for flag, name in (
+            ("stale", "openroad.log"),
+            ("stale_check", "check_dut.txt"),
+            ("stale_premap", "premap_check_dut.txt"),
+        )
+        if case.get(flag)
+    }
+    return _synthesize(
+        synth_cli,
+        files,
+        mode=case.get("mode", "logical"),
+        toml=f"expected_latches = {case.get('expected', 0)}\n" + case.get("extra_toml", ""),
+        stale=stale,
+        plan={"frontend": case.get("frontend", "sv2v")},
+        **case.get("process", {}),
+    )
 
 
 @pytest.mark.parametrize("expected", [0, 1])
-def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expected):
+def test_captured_mapped_latch_physical_report(synth_cli: SynthCli, expected):
     # Mapping rows and final stat captured from the one-latch physical probe
     # using bundled Yosys 0.70+ (28ba3cb92) and pinned Nangate45 Liberty.
     captured = (Path(__file__).parent / "fixtures/mapped_latch_yosys_0_70.txt").read_text()
     yosys, stat = captured.split("--- stat_latch_probe.txt ---\n")
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "mode": "physical",
             "expected": expected,
@@ -5193,16 +4633,16 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
 
 
 @pytest.mark.parametrize("expected", [8, 9])
-def test_public_latch_allowance_clean_logical_pass(flow_and_state, tmp_path, expected):
-    result, report = _run_latch_case(flow_and_state, tmp_path, {"expected": expected})
+def test_public_latch_allowance_clean_logical_pass(synth_cli: SynthCli, expected):
+    result, report = _run_latch_case(synth_cli, {"expected": expected})
     assert result.exit_code == EXIT_SUCCESS
     assert report["implementation"]["conditions"]["latches"] == 8
     assert report["implementation"]["conditions"]["unexpected_latches"] == 0
     assert report["implementation"]["conditions"]["has_critical"] is False
 
 
-def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_path):
-    result, report = _run_latch_case(flow_and_state, tmp_path, {"expected": 7})
+def test_public_latch_allowance_excess_is_design_failure(synth_cli: SynthCli):
+    result, report = _run_latch_case(synth_cli, {"expected": 7})
     assert result.exit_code == EXIT_FAILURE
     assert report["termination"] == "design_failure"
     assert report["implementation"]["conditions"]["unexpected_latches"] == 1
@@ -5220,10 +4660,8 @@ def test_public_latch_allowance_excess_is_design_failure(flow_and_state, tmp_pat
     ]
 
 
-def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_path):
-    result, report = _run_latch_case(
-        flow_and_state, tmp_path, {"expected": 8, "unknown_area": True}
-    )
+def test_expected_latch_unknown_area_still_fails_mapping(synth_cli: SynthCli):
+    result, report = _run_latch_case(synth_cli, {"expected": 8, "unknown_area": True})
     assert result.exit_code == EXIT_FAILURE
     assert report["termination"] == "design_failure"
     assert report["implementation"]["conditions"]["has_critical"] is False
@@ -5233,10 +4671,9 @@ def test_expected_latch_unknown_area_still_fails_mapping(flow_and_state, tmp_pat
     assert "Area for cell type $_DLATCH_P_ is unknown!" in excerpt
 
 
-def test_expected_physical_unmapped_latch_is_noncritical_design_failure(flow_and_state, tmp_path):
+def test_expected_physical_unmapped_latch_is_noncritical_design_failure(synth_cli: SynthCli):
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {"mode": "physical", "expected": 8, "openroad": _LATCH_ORD, "process": {"returncode": 2}},
     )
     assert result.exit_code == EXIT_FAILURE
@@ -5273,15 +4710,15 @@ def _no_path_physical_case(expected: int, **extra) -> dict:
 
 
 def test_no_path_latch_failure_reports_no_slack_and_names_design_check(
-    flow_and_state, tmp_path, caplog
+    synth_cli: SynthCli, caplog
 ):
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
-        result, report = _run_latch_case(flow_and_state, tmp_path, _no_path_physical_case(0))
+        result, report = _run_latch_case(synth_cli, _no_path_physical_case(0))
     assert report["termination"] == "design_failure"
     assert result.detail["lite"]["wns_ns"] is None
     assert "wns_ns" not in report
     assert report["per_clock"]["clk"]["wns_ns"] is None
-    run_log = (tmp_path / report["artifacts"]["log"]).read_text()
+    run_log = (synth_cli.project / report["artifacts"]["log"]).read_text()
     assert "STA_WORST_SLACK_NS" not in run_log
     assert "STA_FMAX_MHZ" not in run_log
     assert "+4.000" not in result.report_text
@@ -5290,9 +4727,9 @@ def test_no_path_latch_failure_reports_no_slack_and_names_design_check(
     assert not any("rc=" in m for m in messages)
 
 
-def test_no_path_completed_run_has_no_timing_evidence(flow_and_state, tmp_path):
+def test_no_path_completed_run_has_no_timing_evidence(synth_cli: SynthCli):
     """Accepted rule (#2804 Q1): no STA path means no numeric timing evidence."""
-    result, report = _run_latch_case(flow_and_state, tmp_path, _no_path_physical_case(8))
+    result, report = _run_latch_case(synth_cli, _no_path_physical_case(8))
     assert result.detail["lite"]["wns_ns"] is None
     assert report["timing_complete"] is False
     assert report["ppa_complete"] is False
@@ -5308,12 +4745,10 @@ def test_no_path_completed_run_has_no_timing_evidence(flow_and_state, tmp_path):
     ],
 )
 def test_tool_failure_log_keeps_exit_code_and_timeout_state(
-    flow_and_state, tmp_path, caplog, process, expected
+    synth_cli: SynthCli, caplog, process, expected
 ):
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
-        _run_latch_case(
-            flow_and_state, tmp_path, {"mode": "physical", "expected": 8, "process": process}
-        )
+        _run_latch_case(synth_cli, {"mode": "physical", "expected": 8, "process": process})
     messages = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
     assert any(expected in m for m in messages)
     assert not any("design check failed" in m for m in messages)
@@ -5340,14 +4775,13 @@ def test_tool_failure_log_keeps_exit_code_and_timeout_state(
     ids=["exit-zero-header", "banner-before-error", "echoed-error-before-unknown-area"],
 )
 def test_design_failure_reason_is_the_tool_error_line(
-    flow_and_state, tmp_path, caplog, diagnostic, log, process
+    synth_cli: SynthCli, caplog, diagnostic, log, process
 ):
     """The reason is the tool error line: not the exit-0 header, nor (issue #4897) Yosys's
     banner or an echoed source line."""
     with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
         result, report = _run_latch_case(
-            flow_and_state,
-            tmp_path,
+            synth_cli,
             {
                 "cell": "$_DFF_P_",
                 "artifacts": {"yosys.log": log},
@@ -5372,11 +4806,10 @@ def test_design_failure_reason_is_the_tool_error_line(
     ],
 )
 def test_unrelated_openroad_failure_preserves_tool_status_and_latch_evidence(
-    flow_and_state, tmp_path, openroad
+    synth_cli: SynthCli, openroad
 ):
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {"mode": "physical", "openroad": openroad, "process": {"returncode": 2}},
     )
     assert result.exit_code == EXIT_ERROR
@@ -5390,13 +4823,10 @@ def test_unrelated_openroad_failure_preserves_tool_status_and_latch_evidence(
     )
 
 
-def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
-    flow_and_state, tmp_path
-):
+def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(synth_cli: SynthCli):
     diagnostic = "[ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found."
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "mode": "physical",
             "cell": "$_DFF_P_",
@@ -5414,12 +4844,9 @@ def test_nonlatch_generic_master_failure_does_not_manufacture_latch_evidence(
 
 
 @pytest.mark.parametrize("stale", [False, True])
-def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
-    flow_and_state, tmp_path, stale
-):
+def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(synth_cli: SynthCli, stale):
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "mode": "physical",
             "openroad": _LATCH_ORD if stale else "[ERROR STA-9999] unrelated.",
@@ -5457,7 +4884,7 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
             {
                 "process": {
                     "returncode": 2,
-                    "stdout": f"BOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=openroad subject=openroad",
+                    "stdout": f"BOOLEY_EDA_FAILURE token={_TOKEN} kind=missing_eda_tool stage=openroad subject=openroad",
                 }
             },
             "infrastructure_error",
@@ -5471,10 +4898,10 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(
     ],
 )
 def test_latch_and_fresh_ord_do_not_override_stronger_execution_failure(
-    flow_and_state, tmp_path, case, termination, reasons
+    synth_cli: SynthCli, case, termination, reasons
 ):
     result, report = _run_latch_case(
-        flow_and_state, tmp_path, {"mode": "physical", "openroad": _LATCH_ORD, **case}
+        synth_cli, {"mode": "physical", "openroad": _LATCH_ORD, **case}
     )
     assert report["termination"] == termination
     assert report["implementation"]["status"]["failure_reasons"] == reasons
@@ -5503,19 +4930,22 @@ def _fake_latch_eda_bin(tmp_path):
     return fake_bin
 
 
-def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, mode):
-    flow = flow_and_state[0]
+def _run_generated_latch_case(
+    synth_cli: SynthCli, monkeypatch: pytest.MonkeyPatch, frontend: str, mode: str
+) -> tuple[EndpointOutcome, dict[str, Any]]:
+    tmp_path = synth_cli.project
     liberty = tmp_path / "cells.lib"
     liberty.write_text("library(cells) {}")
     sdc = tmp_path / "timing.sdc"
     sdc.write_text("create_clock -name clk -period 4 [get_ports clk]\n")
     source = tmp_path / "dut.sv"
     source.write_text("module dut(input clk); endmodule\n")
-    monkeypatch.setattr(
-        syn_make.openroad_timing,
-        "openroad_pdk_paths",
-        lambda: syn_make.openroad_timing.OpenRoadPdk(liberty, liberty, liberty),
-    )
+    # The generated make recipe probes the Nangate45 physical files under $PRJ_LIB_DIR.
+    pdk = tmp_path / "pdk" / "nangate45"
+    pdk.mkdir(parents=True)
+    for name in ("Nangate45_tech.lef", "Nangate45_stdcell.lef", "Nangate45.rc"):
+        (pdk / name).write_text("")
+    monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
     fake_bin = _fake_latch_eda_bin(tmp_path)
 
     def configure(target, _cmd):
@@ -5529,7 +4959,7 @@ def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, m
         )
         return syn_make.configure_synthesis(spec, stub.build_dir)
 
-    def execute(cmd, **_kwargs):
+    def run_make(cmd: list[str]) -> SubprocessResult:
         process = run_bounded_child(
             cmd,
             cwd=tmp_path,
@@ -5540,24 +4970,21 @@ def _run_generated_latch_case(flow_and_state, tmp_path, monkeypatch, frontend, m
             returncode=process.returncode, stdout=process.stdout, stderr=process.stderr
         )
 
-    with (
-        patch.object(flow, "_configure_synth", side_effect=configure),
-        patch.object(flow, "_execute", side_effect=execute),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-    return result, report
+    synth_cli.config(f'synth_mode = "{mode}"\n')
+    synth_cli.tool_output = run_make
+    # The real configure half needs sources and a Liberty file the stub Target does not stage.
+    with patch.object(AsicSynthesizeFlow, "_configure_synth", side_effect=configure):
+        outcome = synth_cli.run()
+    return outcome, synth_cli.report()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
 @pytest.mark.parametrize("frontend", ["sv2v", "slang"])
 @pytest.mark.parametrize("mode", ["logical", "physical"])
 def test_public_generated_make_latch_failure(
-    flow_and_state, tmp_path, monkeypatch, frontend, mode
+    synth_cli: SynthCli, monkeypatch: pytest.MonkeyPatch, frontend, mode
 ):
-    result, report = _run_generated_latch_case(
-        flow_and_state, tmp_path, monkeypatch, frontend, mode
-    )
+    result, report = _run_generated_latch_case(synth_cli, monkeypatch, frontend, mode)
     assert result.exit_code == EXIT_FAILURE
     assert report["returncode"] == 1
     assert report["termination"] == "design_failure"
@@ -5571,80 +4998,19 @@ def test_public_generated_make_latch_failure(
     assert "$_DLATCH_P_" in report["implementation"]["status"]["diagnostic_excerpt"]
 
 
-@pytest.mark.parametrize(
-    "cell", ["$dlatchsr", "$_DLATCH_NN0_", "$_DLATCH_NP1_", "$_DLATCH_PN0_", "$_DLATCH_PP1_"]
-)
-@pytest.mark.parametrize("cell_first", [False, True])
-def test_reset_and_set_reset_latch_inventory(cell, cell_first):
-    from booley.flows.synth.flow import _count_latches
-
-    row = f"{cell} 3 -" if cell_first else f"3 - {cell}"
-    text = f"Printing statistics.\n  3 - cells\n  {row}\n"
-    assert _count_latches(text) == 3
-
-
-@pytest.mark.parametrize("mode", ["logical", "physical"])
-def test_reset_latch_public_design_failure(flow_and_state, tmp_path, mode):
-    cell = "$_DLATCH_PN0_"
-    result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
-        {
-            "mode": mode,
-            "cell": cell,
-            "openroad": f"[ERROR ORD-2013] instance latch LEF master {cell} not found."
-            if mode == "physical"
-            else "",
-            "process": {"returncode": 2 if mode == "physical" else 0},
-        },
-    )
-    assert result.exit_code == EXIT_FAILURE
-    assert report["termination"] == "design_failure"
-    assert report["implementation"]["conditions"]["latches"] == 8
-    assert report["implementation"]["conditions"]["has_critical"] is True
-    assert cell in report["implementation"]["status"]["diagnostic_excerpt"]
-    assert "8 latches" in result.report_text
-
-
-def test_unusable_stat_headers_ignore_pre_stat_tally_decoy():
-    from booley.flows.synth.flow import _count_latches
-
-    text = "Warning: found $dlatch in cell A\n  9 $_DFF_P_\nPrinting statistics.\n=== dut ===\n"
-    assert _count_latches(text) == 1
-
-
-def test_nonlatch_generic_failure_with_expected_latches_names_actual_failure(
-    flow_and_state, tmp_path
-):
+def test_nonlatch_generic_failure_with_expected_latches_names_actual_failure(synth_cli: SynthCli):
     diagnostic = "[ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found."
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {"mode": "physical", "expected": 8, "openroad": diagnostic, "process": {"returncode": 2}},
     )
     assert report["implementation"]["conditions"]["has_critical"] is False
     assert "unmapped generic cell" in result.report_text
     assert "actual=8, expected=8, excess=0" in result.report_text
-
-
-@pytest.mark.parametrize(
-    "formatter",
-    [
-        AsicSynthesizeFlow._format_status_suffix,
-        lambda metrics: AsicSynthesizeFlow._format_failure_summary("dut", metrics),
-    ],
-)
-def test_generic_failure_summary_separates_expected_latches(formatter):
-    metrics = SynthMetrics(
-        latches=8,
-        expected_latches=8,
-        returncode=1,
-        termination="design_failure",
-        failure_output="unmapped generic cell: [ERROR ORD-2013] instance flop LEF master $_DFF_P_ not found.",
-    )
-    summary = formatter(metrics)
-    assert "unmapped generic cell" in summary
-    assert "actual=8, expected=8, excess=0" in summary
+    # The status cell and the RESULT line both separate the expected latches from the failure.
+    reason = "unmapped generic cell; 8 latches (actual=8, expected=8, excess=0"
+    assert f"FAIL ({reason}" in result.report_text
+    assert f"RESULT: FAIL (lite: {reason}" in result.report_text
 
 
 @pytest.mark.parametrize(
@@ -5666,27 +5032,15 @@ def test_generic_failure_summary_separates_expected_latches(formatter):
     ],
 )
 def test_1095_public_frontend_failure(
-    flow_and_state, tmp_path, tool, diagnostic, expected_exit, termination
+    synth_cli: SynthCli, tool, diagnostic, expected_exit, termination
 ):
-    flow, _ = flow_and_state
-    stub = _stub_plan(tmp_path, "lite", mode="logical")
-    plan = dataclasses.replace(stub, attempt_token=_LATCH_TOKEN)
-
-    def execute(*_args, **_kwargs):
-        plan.build_dir.mkdir(parents=True, exist_ok=True)
-        path = plan.build_dir / f"{tool}.log"
-        path.write_text(diagnostic + "\n")
-        os.utime(path, (100, 100))
-        return SubprocessResult(
-            returncode=2, stdout=f"BOOLEY_STAGE: {tool}\nmake: *** Error 1", dispatched_unix=99
-        )
-
-    with (
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    result, report = _synthesize(
+        synth_cli,
+        {f"{tool}.log": diagnostic + "\n"},
+        plan={},
+        returncode=2,
+        stdout=f"BOOLEY_STAGE: {tool}\nmake: *** Error 1",
+    )
     assert result.exit_code == expected_exit
     assert report["termination"] == termination
     assert diagnostic in result.report_text
@@ -5707,59 +5061,26 @@ def test_1095_public_frontend_failure(
         assert f"RESULT: FAIL (lite: {diagnostic})" in result.report_text
 
 
-def test_1095_public_missing_sv2v_names_remediation(flow_and_state, tmp_path):
-    flow, _ = flow_and_state
-    plan = dataclasses.replace(
-        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
+def test_2808_missing_sv2v_reason_skips_make_and_hides_marker(
+    synth_cli: SynthCli, caplog: pytest.LogCaptureFixture
+):
+    """Issue #2808: a missing sv2v reports its remediation, not a make line or marker."""
+    marker = f"BOOLEY_EDA_FAILURE token={_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v"
+    stdout = (
+        "make: Entering directory '/work/b'\n"
+        "BOOLEY_STAGE: sv2v\n"
+        f"{marker}\n"
+        "make: *** [Makefile:12: sv2v] Error 127\n"
+        "make: Leaving directory '/work/b'\n"
     )
-    process = SubprocessResult(
-        returncode=2,
-        stdout=f"BOOLEY_STAGE: sv2v\nBOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v\n",
-    )
-    with (
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", return_value=process),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    with caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"):
+        result, report = _synthesize(synth_cli, plan={}, returncode=2, stdout=stdout)
     assert result.exit_code == EXIT_ERROR
     assert report["implementation"]["status"]["grade"] == "error"
     assert report["termination"] == "infrastructure_error"
+    assert report["infra_error"].startswith("missing tool: sv2v")
     assert "RESULT: ERROR — lite: missing tool: sv2v. Rebuild" in result.report_text
     assert report["infra_error"] in result.report_text
-
-
-def test_2808_missing_sv2v_reason_skips_make_and_hides_marker(
-    flow_and_state, tmp_path, caplog: pytest.LogCaptureFixture
-):
-    """Issue #2808: a missing sv2v reports its remediation, not a make line or marker."""
-    flow, _ = flow_and_state
-    plan = dataclasses.replace(
-        _stub_plan(tmp_path, "lite", mode="logical"), attempt_token=_LATCH_TOKEN
-    )
-    marker = (
-        f"BOOLEY_EDA_FAILURE token={_LATCH_TOKEN} kind=missing_eda_tool stage=sv2v subject=sv2v"
-    )
-    process = SubprocessResult(
-        returncode=2,
-        stdout=(
-            "make: Entering directory '/work/b'\n"
-            "BOOLEY_STAGE: sv2v\n"
-            f"{marker}\n"
-            "make: *** [Makefile:12: sv2v] Error 127\n"
-            "make: Leaving directory '/work/b'\n"
-        ),
-    )
-    with (
-        caplog.at_level(logging.ERROR, logger="booley.flows.synth.flow"),
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", return_value=process),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-    assert result.exit_code == EXIT_ERROR
-    assert report["termination"] == "infrastructure_error"
-    assert report["infra_error"].startswith("missing tool: sv2v")
     failed = [r.getMessage() for r in caplog.records if "boundary run failed" in r.getMessage()]
     assert len(failed) == 1
     assert "missing tool: sv2v" in failed[0]
@@ -5770,39 +5091,27 @@ def test_2808_missing_sv2v_reason_skips_make_and_hides_marker(
 
 
 @pytest.mark.parametrize("tool", ["sv2v", "openroad"])
-def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path, tool):
+def test_1095_first_diagnostic_survives_long_stage_tail(synth_cli: SynthCli, tool):
     diagnostic = (
         "sv2v: unrecognized option --bogus"
         if tool == "sv2v"
         else "[ERROR STA-9999] unknown timing failure"
     )
     marker = "sv2v" if tool == "sv2v" else "sta"
-    flow, _ = flow_and_state
-    plan = dataclasses.replace(
-        _stub_plan(tmp_path, "lite", mode="logical" if tool == "sv2v" else "physical"),
-        attempt_token=_LATCH_TOKEN,
+    log = (
+        "Errors: 0\nReading error_model.v\nunknown cells: 0\n"
+        + diagnostic
+        + "\n"
+        + "\n".join(f"context {i}" for i in range(40))
     )
-
-    def execute(*_args, **_kwargs):
-        plan.build_dir.mkdir(parents=True, exist_ok=True)
-        path = plan.build_dir / f"{tool}.log"
-        path.write_text(
-            "Errors: 0\nReading error_model.v\nunknown cells: 0\n"
-            + diagnostic
-            + "\n"
-            + "\n".join(f"context {i}" for i in range(40))
-        )
-        os.utime(path, (100, 100))
-        return SubprocessResult(
-            returncode=2, stdout=f"BOOLEY_STAGE: {marker}\nmake: *** Error 1", dispatched_unix=99
-        )
-
-    with (
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
+    result, report = _synthesize(
+        synth_cli,
+        {f"{tool}.log": log},
+        mode="logical" if tool == "sv2v" else "physical",
+        plan={},
+        returncode=2,
+        stdout=f"BOOLEY_STAGE: {marker}\nmake: *** Error 1",
+    )
     assert result.exit_code == EXIT_ERROR
     assert diagnostic in report["infra_error"]
     assert diagnostic in result.report_text
@@ -5813,26 +5122,18 @@ def test_1095_first_diagnostic_survives_long_stage_tail(flow_and_state, tmp_path
 
 
 @pytest.mark.parametrize("returncode", [0, 2])
-def test_1095_public_parameter_mismatch_is_design(flow_and_state, tmp_path, returncode):
-    flow, _ = flow_and_state
-    stub = _stub_plan(tmp_path, "lite", mode="logical")
-    plan = dataclasses.replace(
-        stub, spec=dataclasses.replace(stub.spec, defines=("ENABLE_ZBB=1",))
+def test_1095_public_parameter_mismatch_is_design(synth_cli: SynthCli, returncode):
+    files = {
+        **_yosys_outputs("Number of cells: 2\n"),
+        "effective_params_dut.il": "module \\dut\n  parameter \\ENABLE_ZBB 1'0\nend\n",
+    }
+    result, report = _synthesize(
+        synth_cli,
+        files,
+        plan={"defines": ("ENABLE_ZBB=1",)},
+        returncode=returncode,
+        stdout="BOOLEY_STAGE: yosys\n",
     )
-
-    def execute(*_args, **_kwargs):
-        _write_latch_artifacts(plan.build_dir, "Number of cells: 2\n", "", False)
-        (plan.build_dir / "effective_params_dut.il").write_text(
-            "module \\dut\n  parameter \\ENABLE_ZBB 1'0\nend\n"
-        )
-        return SubprocessResult(returncode=returncode, stdout="BOOLEY_STAGE: yosys\n")
-
-    with (
-        patch.object(flow, "_configure_synth", return_value=plan),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
-    ):
-        result = flow._run()
-    report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
     assert result.exit_code == EXIT_FAILURE
     assert report["termination"] == "design_failure"
     assert report["implementation"]["status"]["grade"] == "fail"
@@ -5942,7 +5243,7 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
         ("premap_check", "stale"),
     ],
 )
-def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degraded, final):
+def test_earlier_loop_physical_native_boundary(synth_cli: SynthCli, degraded, final):
     """Either structural check missing, stale, or unterminated gives the same outcome."""
     loop = (
         "Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
@@ -5961,8 +5262,7 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
         )
     prefix = "check" if degraded == "final_check" else "premap"
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "mode": "physical",
             "cell": "NAND2",
@@ -5988,6 +5288,10 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
     if clean:
         assert report["implementation"]["status"]["grade"] == "warn"
         assert "RESULT: WARN" in result.report_text
+        assert report["implementation"]["conditions"]["has_critical"] is False
+        assert "CRITICAL" not in result.report_text
+        for evidence in ("$add$rtl.sv:7$1", "\\feedback"):
+            assert evidence in result.report_text
 
 
 @pytest.mark.parametrize(
@@ -5999,14 +5303,13 @@ def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, degrade
     ids=["comb_loop", "transient_loop"],
 )
 def test_captured_comb_loop_cases_reach_verdict(
-    flow_and_state, tmp_path, fixture, exit_code, comb_loops
+    synth_cli: SynthCli, fixture, exit_code, comb_loops
 ):
     # Real Yosys 0.70+ output for a loop that survives optimisation (the run
     # fails) and for a loop that optimisation removes (#1417; the run warns).
     captured = load_capture(fixture)
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {"cell": "NAND2", "artifacts": captured},
     )
 
@@ -6019,6 +5322,13 @@ def test_captured_comb_loop_cases_reach_verdict(
         assert report["passed"] is False
         assert "CRITICAL" in result.report_text
         assert "1 comb loop" in result.report_text
+        # Without the allowance knob a single loop fails, reported against expected 0.
+        assert conditions["expected_comb_loops"] == 0
+        assert conditions["unexpected_comb_loops"] == 1
+        assert "actual=1, expected=0, excess=1" in result.report_text
+        assert report["implementation"]["status"]["failure_reasons"] == [
+            "1 comb loops (actual=1, expected=0, excess=1)"
+        ]
     else:
         assert report["passed"] is True
         assert report["implementation"]["status"]["grade"] == "warn"
@@ -6029,13 +5339,12 @@ def test_captured_comb_loop_cases_reach_verdict(
     ("declared", "grade", "label"), [(8, "pass", "NOTE"), (7, "warn", "WARNING")]
 )
 def test_declared_removed_loops_pass_and_one_more_warns(
-    flow_and_state, tmp_path, declared, grade, label
+    synth_cli: SynthCli, declared, grade, label
 ):
     # The captured transient loop (#1417) is 8 earlier-pass warnings. Declaring
     # all 8 with expected_comb_loops ends PASS with notes; 7 still warns (#4866).
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "cell": "NAND2",
             "extra_toml": f"expected_comb_loops = {declared}\n",
@@ -6506,12 +5815,10 @@ def _loop_check_artifacts(loops: int) -> dict[str, str]:
     return {"premap_check_dut.txt": check, "check_dut.txt": check}
 
 
-def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tmp_path):
+def test_declared_comb_loop_allowance_passes_and_excess_fails(synth_cli: SynthCli):
     """``expected_comb_loops = N`` passes N loops; N + 1 fails naming the excess."""
-    _flow, _ = flow_and_state
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "cell": "NAND2",
             "extra_toml": "expected_comb_loops = 2\n",
@@ -6529,8 +5836,7 @@ def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tm
     assert report["implementation"]["status"]["grade"] == "warn"
 
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {
             "cell": "NAND2",
             "extra_toml": "expected_comb_loops = 1\n",
@@ -6555,30 +5861,11 @@ def test_declared_comb_loop_allowance_passes_and_excess_fails(flow_and_state, tm
         "check_dut.txt": _loop_check_artifacts(0)["check_dut.txt"],
     }
     result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
+        synth_cli,
         {"cell": "NAND2", "extra_toml": "expected_comb_loops = 1\n", "artifacts": artifacts},
     )
     assert result.exit_code == EXIT_FAILURE
     assert "actual=2, expected=1, excess=1" in result.report_text
-
-
-def test_unset_comb_loop_allowance_fails_any_loop(flow_and_state, tmp_path):
-    """Without the knob a single loop still fails, reported against expected 0."""
-    result, report = _run_latch_case(
-        flow_and_state,
-        tmp_path,
-        {"cell": "NAND2", "artifacts": load_capture("comb_loop_yosys_0_70.txt")},
-    )
-    assert result.exit_code == EXIT_FAILURE
-    conditions = report["implementation"]["conditions"]
-    assert conditions["comb_loops"] == 1
-    assert conditions["expected_comb_loops"] == 0
-    assert conditions["unexpected_comb_loops"] == 1
-    assert "actual=1, expected=0, excess=1" in result.report_text
-    assert report["implementation"]["status"]["failure_reasons"] == [
-        "1 comb loops (actual=1, expected=0, excess=1)"
-    ]
 
 
 @pytest.mark.parametrize("case", ["plain", "baseline"])

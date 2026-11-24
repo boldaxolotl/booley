@@ -155,15 +155,6 @@ def test_huge_warning_groups_use_full_message_digest() -> None:
     assert representatives[0]["message_sha256"] != representatives[1]["message_sha256"]
 
 
-def test_missing_final_check_is_incomplete_not_clean() -> None:
-    diagnostics = parse_synth_diagnostics({"yosys": "Warnings: 0 unique messages.\n"})
-
-    assert diagnostics.structural.complete is False
-    assert diagnostics.structural.comb_loops == 0
-    assert diagnostics.structural.multi_driven == 0
-    assert diagnostics.warnings.total_warnings == 0
-
-
 _EARLIER_LOOP = (
     "Warning: found logic loop in module top:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
 )
@@ -270,6 +261,7 @@ def test_earlier_loop_without_both_completed_checks_stays_structural(premap, fin
         sources["final_check"] = final
     diagnostics = parse_synth_diagnostics(sources)
     assert not diagnostics.structural.complete
+    assert diagnostics.structural.comb_loops == 0
     assert diagnostics.warnings.structural_warnings == 1
     assert diagnostics.warnings.representatives[0].rationale is None
 
