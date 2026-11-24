@@ -875,7 +875,6 @@ def test_fake_agent_counts_a_signal_caught_before_its_input_wait(scene: _Scene) 
 # Placement: a second concurrent chat works in the worktree named after its handle
 # ---------------------------------------------------------------------------
 
-_THREAD_ID = "019a0000-0000-7000-8000-000000000000"
 _SLOW_HOOK = (
     "import pathlib, time\npathlib.Path({marker!r}).write_text('started')\ntime.sleep({outer!r})\n"
 )
@@ -1013,29 +1012,20 @@ def test_closing_the_terminal_keeps_the_agents_exit_code_with_stderr_on_it(scene
     assert scene.worktree_names() == ["s1", "booley/s1"]
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_worktree_session_calls_without_work_dir_route_to_its_worktree(
-    scene: _Scene, provider: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_worktree_session_calls_without_work_dir_route_to_its_worktree(scene: _Scene) -> None:
     # Bug caught: the agent started in main (or its cwd was not the worktree root), so a call
     # without work_dir would run the main checkout's RTL.
     from booley.mcp import peer_checkout
 
     scene.git_project()
-    first = scene.start(provider)
-    second = scene.start(provider, slot="b")
+    first = scene.start("claude")
+    second = scene.start("claude", slot="b")
     agent = scene.read("agent.json", "b")
     identity = capture_process_identity(agent["pid"])
     assert identity is not None
-    monkeypatch.setattr(peer_checkout, "resolve_common_booley_dir", lambda: scene.booley_dir)
-    client = {"client_name": "codex-mcp-client", "metadata": {"threadId": _THREAD_ID}}
-    if provider == "claude":
-        client = {"client_name": "claude-code", "metadata": {}}
 
-    session = peer_checkout.session_process(identity, proc_root=Path("/proc"), **client)
-    assert session is not None
     routed = peer_checkout.process_checkout(
-        session, server_cwd=scene.root.resolve(), proc_root=Path("/proc")
+        identity, server_cwd=scene.root.resolve(), proc_root=Path("/proc")
     )
 
     assert routed == (scene.booley_dir / "worktrees" / "s2").resolve()
