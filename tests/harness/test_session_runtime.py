@@ -12,6 +12,7 @@ import ntpath
 import os
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -1962,6 +1963,8 @@ class TestT3CodeRelay:
         from booley.harness import doctor
 
         isolate_session_cli(monkeypatch, tmp_path)
+        # Doctor, its due check and upgrade advice need a real image and host state that the
+        # Docker fake lacks, and they are not what these tests observe.
         monkeypatch.setattr(health, "due_reason", lambda _root: None)
         monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _root: None)
         monkeypatch.setattr(
@@ -1977,6 +1980,7 @@ class TestT3CodeRelay:
 
         def up(root: Path) -> tuple[int, str]:
             out, err = run("up", root)
+            assert "localhost" not in out
             match = re.search(r"T3 Code relay: 127\.0\.0\.1:(\d+)", out)
             assert match, f"no T3 Code relay address in: {out}"
             return int(match[1]), err
@@ -1985,9 +1989,11 @@ class TestT3CodeRelay:
         for root in roots:
             run("down", root)
 
-    @pytest.mark.skipif(
+    linux_only = pytest.mark.skipif(
         sys.platform != "linux", reason="a script runs as docker; 127.0.0.2 is Linux loopback"
     )
+
+    @linux_only
     def test_session_up_relays_host_loopback_into_the_sandbox_until_down(
         self,
         workspace: Path,
@@ -2000,7 +2006,7 @@ class TestT3CodeRelay:
 
         with echo_listener() as echo:
             sandbox_exec_on_path(
-                monkeypatch, tmp_path / "bin", echo, sr.session_container_name(workspace)
+                monkeypatch, tmp_path / "bin", echo.port, sr.session_container_name(workspace)
             )
             port, _ = relay_cli.up(workspace)
             with connect("127.0.0.1", port) as client:
@@ -2017,15 +2023,62 @@ class TestT3CodeRelay:
         with pytest.raises(OSError):
             connect("127.0.0.1", port)
 
+    @linux_only
+    def test_a_client_reset_ends_the_connection_into_the_sandbox(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with echo_listener() as echo:
+            sandbox_exec_on_path(
+                monkeypatch, tmp_path / "bin", echo.port, sr.session_container_name(workspace)
+            )
+            port, _ = relay_cli.up(workspace)
+            with socket.create_connection(("127.0.0.1", port), timeout=hang_guard_s()) as client:
+                client.sendall(b"ping")
+                assert client.recv(64) == b"ping"
+                # Closing with a zero linger time sends a reset, not a graceful close.
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+            assert echo.closed.wait(hang_guard_s())
+
+    def test_the_relay_never_imports_from_its_working_directory(
+        self, workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        shadow, marker = tmp_path / "shadow", tmp_path / "ran"
+        shadow.mkdir()
+        (shadow / "booley.py").write_bytes(f"open({str(marker)!r}, 'w').close()\n".encode())
+        monkeypatch.chdir(shadow)
+        try:
+            t3_relay.start(workspace, "one")
+        finally:
+            t3_relay.stop(workspace)
+
+        assert not marker.exists()
+
     def test_start_reuses_a_running_relay_and_replaces_one_for_another_container(
         self, workspace: Path
     ) -> None:
         from booley.runtime import t3_relay
 
+        def record() -> dict[str, object]:
+            document = t3_relay.relay_store().read(str(workspace.resolve()))
+            assert document is not None
+            return document
+
         first = t3_relay.start(workspace, "one")
         try:
+            one = record()
             assert t3_relay.start(workspace, "one") == first
+            assert record() == one
+            # The old relay holds the port until it ends, so the same port is a new relay.
             assert t3_relay.start(workspace, "two") == first
+            assert record()["container"] == "two"
+            assert record()["process"] != one["process"]
         finally:
             assert t3_relay.stop(workspace)
 
@@ -2034,6 +2087,7 @@ class TestT3CodeRelay:
         [
             ({"port": 80}, "port 80 is outside"),
             ({"process": {"pid": 1}}, "not a process identity"),
+            ({"schema_version": 2}, "schema_version must be 1"),
         ],
     )
     def test_session_up_refuses_an_invalid_relay_record(
@@ -2048,7 +2102,13 @@ class TestT3CodeRelay:
         from booley.runtime import t3_relay
 
         root = str(workspace.resolve())
-        record = {"project_root": root, "port": 3780, "container": "c", "process": None}
+        record = {
+            "schema_version": 1,
+            "project_root": root,
+            "port": 3780,
+            "container": "c",
+            "process": None,
+        }
         t3_relay.relay_store().write(root, json.dumps({**record, **changes}))
 
         assert run_cli(monkeypatch, ["-C", root, "session", "up"]) == 2
@@ -2085,6 +2145,71 @@ class TestT3CodeRelay:
         assert moved not in {first, second}
         assert f"127.0.0.1:{first} is held" in warning
         assert "must pair again" in warning
+
+    def record_port(self, root: Path, port: int) -> None:
+        """Record *port* for the Project at *root*, as an earlier `session up` and `down` did."""
+        from booley.runtime import t3_relay
+
+        document = {
+            "schema_version": 1,
+            "project_root": str(root.resolve()),
+            "port": port,
+            "container": "c",
+            "process": None,
+        }
+        t3_relay.relay_store().write(str(root.resolve()), json.dumps(document))
+
+    def test_a_held_recorded_port_moves_to_the_next_port_up_not_the_first_free_one(
+        self, workspace: Path, relay_cli: SimpleNamespace
+    ) -> None:
+        self.record_port(workspace, 3790)
+        assert relay_cli.up(workspace) == (3790, "")
+        relay_cli.down(workspace)
+
+        with socket.socket() as holder:
+            with suppress(OSError):  # already held by another process is as good
+                holder.bind(("127.0.0.1", 3790))
+                holder.listen()
+            moved, warning = relay_cli.up(workspace)
+
+        assert moved > 3790
+        assert "127.0.0.1:3790 is held" in warning
+
+    def test_a_free_recorded_port_stays_when_another_project_recorded_it_too(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        _issue_project(up_docker, other, monkeypatch)
+        self.record_port(other, 3790)
+        self.record_port(workspace, 3790)
+
+        assert relay_cli.up(workspace) == (3790, "")
+
+    def test_session_up_fails_when_the_range_has_no_free_port(
+        self,
+        workspace: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        with socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen()
+            port = holder.getsockname()[1]
+            # The real range is 100 ports on a shared host: a one-port range stands in for it.
+            monkeypatch.setattr(t3_relay, "PORTS", range(port, port + 1))
+
+            assert run_cli(monkeypatch, ["-C", str(workspace), "session", "up"]) == 2
+
+        assert f"no free port in 127.0.0.1:{port}-{port}" in capsys.readouterr().err
 
 
 class TestDownAndStatus:

@@ -31,6 +31,7 @@ from booley.runtime.process_group import (
 
 PORTS = range(3780, 3880)
 _START_TIMEOUT_S = 30.0
+_EXIT_NO_PORT = 3
 _CHUNK = 65536
 
 # Runs in the Sandbox: one TCP connection to T3 Code, spliced onto stdin and stdout.
@@ -92,6 +93,8 @@ def _parse(path: Path, document: dict[str, object]) -> _Record:
         identity = None if raw is None else ProcessIdentity.from_payload(raw)
         if raw is not None and identity is None:
             raise BoundaryError("process is not a process identity")
+        if document.get("schema_version") != 1:
+            raise BoundaryError("schema_version must be 1")
         if port not in PORTS:
             raise BoundaryError(f"port {port} is outside {PORTS.start}-{PORTS[-1]}")
     except BoundaryError as exc:
@@ -109,6 +112,7 @@ def _read(store: ProjectStore, root: str) -> _Record | None:
 def _write(store: ProjectStore, root: str, record: _Record) -> None:
     process = None if record.identity is None else record.identity.to_payload()
     document = {
+        "schema_version": 1,
         "project_root": root,
         "port": record.port,
         "container": record.container,
@@ -126,6 +130,8 @@ def _candidates(recorded: int | None, others: set[int]) -> list[str]:
     ports = list(PORTS)
     if recorded is not None:
         ports = ports[ports.index(recorded) :] + ports[: ports.index(recorded)]
+    # The Project's own recorded port leads even when another Project recorded it too.
+    others = others - {recorded}
     ordered = [p for p in ports if p not in others] + [p for p in ports if p in others]
     return [str(port) for port in ordered]
 
@@ -183,7 +189,8 @@ def _spawn(container: str, candidates: list[str]) -> tuple[int, ProcessIdentity]
     kwargs = new_group_kwargs()
     if sys.platform == "win32":  # pragma: no cover - the Windows console detaches only there
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
-    command = [sys.executable, "-m", "booley.runtime.t3_relay", container, str(T3_PORT)]
+    # `-P` keeps the working directory, a Project that the Sandbox can write to, off sys.path.
+    command = [sys.executable, "-P", "-m", "booley.runtime.t3_relay", container, str(T3_PORT)]
     # stderr goes nowhere: the relay carries T3 Code's HTTP traffic, pairing tokens included.
     process = subprocess.Popen(
         [*command, *candidates],
@@ -201,29 +208,41 @@ def _spawn(container: str, candidates: list[str]) -> tuple[int, ProcessIdentity]
     reader = threading.Thread(target=lambda: lines.append(stdout.readline()), daemon=True)
     reader.start()
     reader.join(_START_TIMEOUT_S)
-    identity = (
-        None
-        if reader.is_alive() or not lines[0].strip()
-        else capture_process_identity(process.pid)
-    )
+    timed_out = reader.is_alive()
+    port_line = "" if timed_out else lines[0].strip()
+    identity = capture_process_identity(process.pid) if port_line else None
     if identity is None:
-        if process.poll() is None:
+        # An exit without a port line is already under way: wait for its status below.
+        if (timed_out or port_line) and process.poll() is None:
             _terminate(process.pid)
-        first, last = PORTS[0], PORTS[-1]
-        raise T3RelayError(
-            f"the T3 Code relay did not bind a port in 127.0.0.1:{first}-{last}; stop a "
-            "process holding one, then run `booley session up` again"
-        )
+        reader.join()
+        stdout.close()
+        raise T3RelayError(_start_failure(process.wait()))
     stdout.close()
     return int(lines[0]), identity
 
 
+def _start_failure(exit_status: int) -> str:
+    first, last = PORTS[0], PORTS[-1]
+    reason = (
+        f"no free port in 127.0.0.1:{first}-{last}; stop a process holding one"
+        if exit_status == _EXIT_NO_PORT
+        else f"it exited with status {exit_status}"
+    )
+    return f"the T3 Code relay did not start: {reason}, then run `booley session up` again"
+
+
 async def _pump_in(reader: asyncio.StreamReader, sink: asyncio.subprocess.Process) -> None:
     assert sink.stdin is not None
-    while data := await reader.read(_CHUNK):
-        sink.stdin.write(data)
-        await sink.stdin.drain()
-    sink.stdin.close()  # half-close: the splice shuts the write side towards T3 Code
+    try:
+        while data := await reader.read(_CHUNK):
+            sink.stdin.write(data)
+            await sink.stdin.drain()
+    except OSError:  # the client reset the connection, or the exec ended: end the exec
+        with contextlib.suppress(ProcessLookupError):
+            sink.kill()
+    finally:
+        sink.stdin.close()  # half-close: the splice shuts the write side towards T3 Code
 
 
 async def _handle(
@@ -265,7 +284,7 @@ async def _serve(container: str, target: int, candidates: list[int]) -> int:
         sys.stdout.flush()
         async with server:
             await server.serve_forever()
-    return 1
+    return _EXIT_NO_PORT
 
 
 def main(argv: list[str]) -> int:

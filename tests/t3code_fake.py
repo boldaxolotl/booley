@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from booley.runtime import incontainer_setup, mcp_config
+from tests.time_budget import hang_guard_s
 
 TOKEN = "pairing-token-0123"
 ADDED = (0, "Added project 1 (p) at /p.")
@@ -80,22 +81,34 @@ def serve_t3_code(
     return fake
 
 
+@dataclass(frozen=True)
+class EchoListener:
+    """The port of an echo server, and the event that its one connection has ended."""
+
+    port: int
+    closed: threading.Event
+
+
 @contextlib.contextmanager
-def echo_listener() -> Iterator[int]:
+def echo_listener() -> Iterator[EchoListener]:
     """Serve one echo connection on a free loopback port, standing in for `t3 serve`."""
+    closed = threading.Event()
     with socket.create_server(("127.0.0.1", 0)) as server:
-        server.settimeout(30)
+        server.settimeout(hang_guard_s())
 
         def echo() -> None:
-            with contextlib.suppress(OSError):
+            try:
                 connection, _ = server.accept()
-                with connection:
-                    while data := connection.recv(1024):
-                        connection.sendall(data)
+            except OSError:
+                return
+            with connection, contextlib.suppress(OSError):
+                while data := connection.recv(1024):
+                    connection.sendall(data)
+            closed.set()
 
         thread = threading.Thread(target=echo, daemon=True)
         thread.start()
         try:
-            yield server.getsockname()[1]
+            yield EchoListener(server.getsockname()[1], closed)
         finally:
-            thread.join(30)
+            thread.join(hang_guard_s())

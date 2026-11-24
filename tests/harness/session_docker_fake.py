@@ -22,6 +22,7 @@ from booley.harness import incontainer_register
 from booley.runtime import (
     booley_dir,
     host_docker,
+    incontainer_setup,
     runtime_attachment,
     session_admission,
     session_runtime,
@@ -340,7 +341,7 @@ def sandbox_exec_on_path(
         f"""#!{sys.executable}
 import os, sys
 args = sys.argv[1:]
-if args[:3] != ["exec", "-i", {container!r}] or args[3] != "python3":
+if args[:3] != ["exec", "-i", {container!r}] or args[3] != "python3" or args[-1] != "{incontainer_setup.T3_PORT}":
     sys.exit(1)
 os.execv({sys.executable!r}, [{sys.executable!r}, *args[4:-1], "{target_port}"])
 """.encode()
