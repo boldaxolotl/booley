@@ -527,28 +527,33 @@ def _core_tree_project(root: Path) -> Path:
         encoding="utf-8",
         newline="\n",
     )
-    # Schema-valid, so FuseSoC keeps it: an `expression` parameter is a hard
-    # security FAIL and the generator script a Scope-dependent advisory.
+    # An `expression` parameter is a hard
+    # security FAIL and a generator script a Scope-dependent advisory; `hw/` is a nonstandard
+    # directory only the `.core` fileset names, so a Scope hardcoded to `rtl/`, `tb/` misses it.
     (root / "sec.core").write_text(
         "CAPI=2:\n"
         "name: ::sec:0\n"
         "filesets:\n"
         "  rtl: {files: [rtl/dut.sv: {file_type: systemVerilogSource}]}\n"
         "  tb: {files: [tb/tb.sv: {file_type: systemVerilogSource}], tags: [tb]}\n"
+        "  hw: {files: [hw/top.sv: {file_type: systemVerilogSource}]}\n"
         "parameters:\n"
         "  width: {datatype: expression, paramtype: vlogparam}\n"
         "generators:\n"
         "  gen: {command: rtl/gen.py}\n"
+        "  hw_gen: {command: hw/gen.py}\n"
         "  fw_gen: {command: fw/gen.py}\n"
         "targets:\n"
         "  sim_sec:\n"
         "    flow: sim\n"
         "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
-        "    filesets: [rtl, tb]\n"
+        "    filesets: [rtl, tb, hw]\n"
         "    toplevel: tb\n",
         encoding="utf-8",
         newline="\n",
     )
+    (root / "hw").mkdir()
+    (root / "hw" / "gen.py").write_text("print('generated')\n", encoding="utf-8", newline="\n")
     (root / "rtl" / "gen.py").write_text("print('generated')\n", encoding="utf-8", newline="\n")
     # No `.core` fileset names `fw/`, so it is outside the write Scope and its generator is
     # no advisory: a hardcoded `fw/*` in Doctor's Scope would add one (#4052).
@@ -611,6 +616,8 @@ FuseSoC .core checks
   ✗  .core security [expr_param] sec.core: parameter 'width' declares datatype 'expression', which is not a CAPI2 literal (bool/file/int/real/str). An HDL expression cannot be a faithful -G vlogparam and Booley ships no evaluator.
      → give parameter 'width' a literal datatype (bool, file, int, real or str) and the literal value as its default
   ~  .core security [in_scope_script] sec.core: generator 'gen' references 'rtl/gen.py', which is inside the agent's write Scope and therefore mutable. generator and hook scripts must sit outside the agent's write Scope, so they are not files the agent edits as part of its work. (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)  core.security-scope-advisory:sec.core:-
+     → reason: Accepted for this fixture
+  ~  .core security [in_scope_script] sec.core: generator 'hw_gen' references 'hw/gen.py', which is inside the agent's write Scope and therefore mutable. generator and hook scripts must sit outside the agent's write Scope, so they are not files the agent edits as part of its work. (advisory: doctor audits the union of writable category dirs, without a change-specific scope — the binding check runs at commit time)  core.security-scope-advisory:sec.core:-
      → reason: Accepted for this fixture
   ·  tests.toml not present (each sim Target runs its testbench's default test)
 """
@@ -741,7 +748,9 @@ def test_core_repository_hygiene_section_output_is_pinned(
 def test_core_audit_stops_when_targets_cannot_be_enumerated(tmp_path, monkeypatch, case):
     """With no enumerated Target the audit reports a FAIL and runs no Target check.
 
-    That is a Project with no ``.core`` at all, and a Target listing that raises.
+    That is a Project with no ``.core`` at all, and a Target listing that raises. Private:
+    `_run_core_audit` is called directly so both cases share one stop assertion on its
+    recorder; the no-core case alone could run through ``run_doctor_result``.
     """
     booley_dir = _write_project(tmp_path)
     project = doctor.ProjectAudit(
@@ -867,8 +876,7 @@ _RUNTIME_ROWS = {
 def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scenario):
     """The Flow runtime rows keep their text, position and exit code.
 
-    The literal rows were captured from Doctor's own probes before they moved to
-    their owners. Each scenario sits between the Flow's ``executes in the Sandbox``
+    Each scenario sits between the Flow's ``executes in the Sandbox``
     row and its dry-run row, and the exit code follows the severity.
     """
     flow, exit_code, rows = _RUNTIME_ROWS[scenario]

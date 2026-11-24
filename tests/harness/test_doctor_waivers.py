@@ -109,7 +109,7 @@ def test_invalid_file_fails_loud(tmp_path, body, fragment):
         load_doctor_waivers(tmp_path, today=date(2026, 8, 4))
 
 
-def test_reporter_dedupes_by_check_subject_and_key():
+def test_reporter_dedupes_by_check_subject_and_key(capsys):
     # Private: no fixture Doctor run emits two same-key warnings without replacing Booley's own
     # image checks, and the reporter is the unit that owns the deduplication.
     reporter = doctor._Reporter.create()
@@ -125,6 +125,10 @@ def test_reporter_dedupes_by_check_subject_and_key():
 
     reporter.diagnostics(DiagnosticReport((first, duplicate, other)))
 
+    output = capsys.readouterr().out
+    assert "first wording" in output
+    assert "other subject" in output
+    assert "new wording" not in output
     result = reporter.result(0)
     assert result.counts["warn"] == 2
     assert result.findings == (
