@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from booley.core.models import AgentCallParams, AgentResult
+from booley.harness import developer_probe
+from booley.runtime import agent
 from tests.git_command_fake import REAL_RUN
 from tests.harness.test_doctor import _patch_environment
 
@@ -35,3 +41,55 @@ def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> No
         return host_run(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+
+
+def answer_doctor_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Callable[[list[str], dict[str, str]], subprocess.CompletedProcess[str] | None],
+) -> list[tuple[list[str], dict[str, str]]]:
+    """Answer Doctor's commands with ``answer(argv, env)``; ``None`` passes one on.
+
+    Layers over the fake already installed (``serve_healthy_doctor_host`` or
+    ``_patch_environment``), so a test answers only the commands it is about.
+    Returns every ``(argv, env)`` seen.
+    """
+    seen: list[tuple[list[str], dict[str, str]]] = []
+    other_commands = subprocess.run
+
+    def run(command, **kwargs):
+        argv = [str(part) for part in command]
+        env = dict(kwargs.get("env") or {})
+        seen.append((argv, env))
+        answered = answer(argv, env)
+        return answered if answered is not None else other_commands(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return seen
+
+
+def answer_agent_calls(
+    monkeypatch: pytest.MonkeyPatch, answer: Callable[[AgentCallParams], AgentResult]
+) -> list[AgentCallParams]:
+    """Answer each agent call Doctor's probes make with ``answer(params)``.
+
+    ``answer`` returns an ``AgentResult`` or raises what the backend would raise.
+    Child-process accounting reads a rising peak so the memory probe measures.
+    Returns every call's params.
+    """
+    calls: list[AgentCallParams] = []
+
+    async def call_agent(params: AgentCallParams) -> AgentResult:
+        calls.append(params)
+        return answer(params)
+
+    peak = itertools.count(1024, 1024)
+    monkeypatch.setattr(agent, "call_agent", call_agent)
+    # ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
+    monkeypatch.setattr(
+        developer_probe,
+        "resource",
+        SimpleNamespace(
+            RUSAGE_CHILDREN=0, getrusage=lambda _who: SimpleNamespace(ru_maxrss=next(peak))
+        ),
+    )
+    return calls
