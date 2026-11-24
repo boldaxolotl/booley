@@ -57,11 +57,13 @@ from tests.harness.session_docker_fake import (
     headless_session_entry,
     isolate_session_cli,
     run_cli,
+    run_registrar_on_post_start,
     serve_sandbox_docker,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
+from tests.t3code_fake import TOKEN, serve_t3_code
 from tests.time_budget import hang_guard_s, scaled
 
 
@@ -1207,6 +1209,41 @@ class TestUp:
             ["docker", "exec", name, "bash", "-lc", spec[hook]] for hook in hooks
         ]
         assert "superseded" not in caplog.text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the registrar runs in the Linux Sandbox")
+    def test_post_start_starts_t3_code_once_and_registers_the_project(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        t3 = serve_t3_code(monkeypatch)
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+        up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(
+            workspace, running=False
+        )
+
+        sr.up(workspace)
+        sr.up(workspace)
+
+        base = str(workspace / ".booley" / ".runtime" / "t3")
+        serve = ["t3", "serve", "--host", "127.0.0.1", "--port", "3773", "--base-dir", base]
+        assert t3.served == [[*serve, str(workspace)]]
+        assert t3.added == [["t3", "project", "add", "--base-dir", base, str(workspace)]]
+        assert [("t3:started" in run, "t3:running" in run) for run in runs] == [
+            (True, False),
+            (False, True),
+        ]
+        logs = [
+            caplog.text,
+            *runs,
+            *(f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file()),
+        ]
+        logs += [Path(sink).read_text() for sink in t3.sinks]
+        assert t3.sinks
+        assert TOKEN not in "".join(logs)
 
     def test_existing_container_with_runtime_drift_is_never_started(
         self, workspace: Path, up_docker: SandboxDocker

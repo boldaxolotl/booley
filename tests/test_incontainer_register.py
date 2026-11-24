@@ -24,6 +24,7 @@ from booley.runtime import mount_history, worktree_mount_repair
 from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProblem
 from tests.codex_config_support import count_parses, tomlkit_copy
 from tests.conftest import require_symlinks
+from tests.t3code_fake import serve_t3_code
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +33,12 @@ def _no_worktree_repair(monkeypatch):
     monkeypatch.setattr(
         worktree_mount_repair, "repair_mount_registrations", lambda _root: MountRepair()
     )
+
+
+@pytest.fixture(autouse=True)
+def _t3_code_answers(monkeypatch):
+    """No test here starts the real `t3`: T3 Code already answers."""
+    serve_t3_code(monkeypatch, running=True)
 
 
 def _stub_codex_effects(monkeypatch):
@@ -108,9 +115,46 @@ def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
     entry.main()
 
     assert (
-        "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
+        "server:started t3:running upgrade:current health:started claude:current"
+        in capsys.readouterr().err
     )
     assert events == ["server", "observe", "health"]
+
+
+@pytest.mark.parametrize(
+    ("replies", "adds", "status"),
+    [
+        pytest.param([(0, "Added")], 1, "started", id="registered"),
+        pytest.param([(1, "ProjectAlreadyExistsError")], 1, "started", id="already-registered"),
+        pytest.param([(78, "not ready"), (0, "Added")], 2, "started", id="server-not-ready"),
+        pytest.param([(1, "boom")], 1, "unregistered", id="refused"),
+        pytest.param([OSError("boom")], 1, "unregistered", id="run-error"),
+    ],
+)
+def test_ensure_t3_server_registers_the_project(
+    tmp_path, monkeypatch, capsys, replies, adds, status
+):
+    t3 = serve_t3_code(monkeypatch, add_replies=replies)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+
+    assert reg.ensure_t3_server(tmp_path) == status
+    assert len(t3.added) == adds
+    assert "boom" not in capsys.readouterr().err
+
+
+def test_a_t3_code_failure_never_stops_registration(tmp_path, monkeypatch, capsys):
+    serve_t3_code(monkeypatch).spawn_error = OSError("no t3")
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
+    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
+    monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+
+    entry.main()
+
+    assert re.search(r"t3:failed .* claude:current", capsys.readouterr().err)
 
 
 @pytest.mark.parametrize(

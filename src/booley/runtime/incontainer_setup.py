@@ -20,6 +20,8 @@ booley.harness.incontainer_register``, does two things on every container start:
 4. **Pins the agent's no-prompt permission mode** because the hardened
    container is the security boundary. These settings live only in the
    per-project container home, never in the host's agent configuration.
+5. **Starts T3 Code and registers the Project with it** (``ensure_t3_server``)
+   when an Agent CLI is allowed, on the same terms as the MCP server.
 
 Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
@@ -45,9 +47,11 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.runtime import auth_token
+from booley.runtime.booley_dir import runtime_dir
 from booley.runtime.mcp_config import (
     DEVELOPER_AGENT_ENV,
     GATEWAY_PROVIDER_ID,
@@ -66,6 +70,11 @@ _SERVER_CMD = [sys.executable, "-m", "booley.mcp.server", "--transport", "http"]
 _SERVER_LOG_PATH = "/tmp/booley_mcp_http.log"
 _SERVER_START_TIMEOUT_SECONDS = 20.0
 _SERVER_LOG_TAIL_LINES = 8
+
+# T3 Code's own default port; the Sandbox's loopback is its own, so nothing collides.
+T3_PORT = 3773
+_T3_START_TIMEOUT_SECONDS = 30.0
+_T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
 
 
 def http_url() -> str:
@@ -184,30 +193,126 @@ def ensure_http_server(
         child_env.pop(variable, None)
     try:
         with Path(log_path).open("ab") as log:
-            proc = subprocess.Popen(
+            return _start_detached(
                 _SERVER_CMD,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
+                label="booley mcp http server",
+                port=port,
+                log_path=log_path,
                 stdout=log,
                 stderr=log,
-                start_new_session=True,
+                env=child_env,
+                timeout_seconds=timeout_seconds,
             )
     except OSError as exc:
         print(f"booley mcp http server spawn failed: {exc}", file=sys.stderr)
         return "failed"
+
+
+def _start_detached(
+    cmd: Sequence[str],
+    *,
+    label: str,
+    port: int,
+    log_path: str,
+    stdout: int | IO[bytes],
+    stderr: int | IO[bytes],
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Spawn *cmd* detached and wait until *port* serves: ``"started"`` or ``"failed"``.
+
+    The child gets its own session and no stdin, so it outlives this process.
+    A spawn failure raises ``OSError`` to the caller, which owns the log file.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if _port_is_serving(port):
             return "started"
         if proc.poll() is not None:  # died during startup; see the log
-            print(
-                f"booley mcp http server exited with {proc.returncode} (see {log_path})",
-                file=sys.stderr,
-            )
+            print(f"{label} exited with {proc.returncode} (see {log_path})", file=sys.stderr)
             return "failed"
         time.sleep(0.2)
-    print(f"booley mcp http server not serving after {timeout_seconds:.0f}s", file=sys.stderr)
+    print(f"{label} not serving after {timeout_seconds:.0f}s", file=sys.stderr)
     return "failed"
+
+
+def ensure_t3_server(project_root: Path) -> str:
+    """Start T3 Code on loopback unless it answers, then register the Project with it.
+
+    Returns ``"running"`` (already up: nothing is started or registered),
+    ``"started"``, ``"unregistered"`` (serving, but the Project is not
+    registered), or ``"failed"``. Never raises, so MCP registration still runs.
+    """
+    if _port_is_serving(T3_PORT):
+        return "running"
+    try:
+        runtime = runtime_dir(project_root)
+        base = runtime / "t3"
+        # stdout carries T3 Code's startup pairing token, so it goes to no log.
+        with (runtime / "t3-serve.log").open("ab") as log:
+            started = _start_detached(
+                [
+                    "t3",
+                    "serve",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(T3_PORT),
+                    "--base-dir",
+                    str(base),
+                    str(project_root),
+                ],
+                label="T3 Code server",
+                port=T3_PORT,
+                log_path=str(runtime / "t3-serve.log"),
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                cwd=project_root,
+                timeout_seconds=_T3_START_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001 - Booley Directory resolution raises several error types
+        print(f"T3 Code not started: {exc}", file=sys.stderr)
+        return "failed"
+    if started != "started":
+        return started
+    return "started" if _register_t3_project(base, project_root) else "unregistered"
+
+
+def _register_t3_project(base: Path, project_root: Path) -> bool:
+    """Run ``t3 project add``; already registered counts. Never echoes T3's output."""
+    cmd = ["t3", "project", "add", "--base-dir", str(base), str(project_root)]
+    deadline = time.monotonic() + _T3_START_TIMEOUT_SECONDS
+    while True:
+        try:
+            result = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=_T3_START_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"T3 Code project registration failed: {type(exc).__name__}", file=sys.stderr)
+            return False
+        if result.returncode == 0 or "ProjectAlreadyExistsError" in result.stdout:
+            return True
+        if result.returncode != _T3_SERVER_NOT_READY or time.monotonic() >= deadline:
+            print(
+                f"T3 Code project registration failed (exit {result.returncode})", file=sys.stderr
+            )
+            return False
+        time.sleep(0.2)
 
 
 # ---------------------------------------------------------------------------
