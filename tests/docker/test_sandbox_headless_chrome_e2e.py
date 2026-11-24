@@ -34,13 +34,16 @@ def test_sandbox_user_renders_a_local_page_headless() -> None:
     if docker is None:
         pytest.skip("docker not available")
     flags = ["none" if arg == EGRESS_NETWORK else arg for arg in _FIXED_RUN_ARGS]
-    name = next_ci_container_name()
-    command = [docker, "run", "--rm", *(["--name", name] if name else []), *flags, _IMAGE]
-    probe = run_bounded_child([*command, "test", "-x", _CHROME])
+
+    def command() -> list[str]:
+        name = next_ci_container_name()
+        return [docker, "run", "--rm", *(["--name", name] if name else []), *flags, _IMAGE]
+
+    probe = run_bounded_child([*command(), "test", "-x", _CHROME])
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} is missing or predates headless Chrome; rebuild it")
 
-    run = run_bounded_child([*command, "bash", "-c", _SCRIPT])
+    run = run_bounded_child([*command(), "bash", "-c", _SCRIPT])
 
     assert run.returncode == 0, run.stderr
     assert '<p id="m">rendered</p>' in run.stdout
