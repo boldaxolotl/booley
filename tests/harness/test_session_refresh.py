@@ -7,6 +7,7 @@ primitives, so a rerun after a failed step sees the state the failure left behin
 from __future__ import annotations
 
 import copy
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -632,6 +633,9 @@ def test_vscode_appearing_during_start_is_reported_untouched(
     assert host.docker.calls == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the fake's docker.cmd is not found by the bare name `docker`"
+)
 def test_harness_refresh_reinitializes_project_after_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
