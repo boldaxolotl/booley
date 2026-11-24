@@ -35,6 +35,18 @@ def test_shipped_managed_policies_disable_agent_cli_self_update() -> None:
     assert codex.get("check_for_update_on_startup") is False
 
 
+def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() -> None:
+    policy = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))
+
+    assert policy["limits"] == {
+        "maxRuntimeMode": "auto",
+        "connect": False,
+        "telemetry": False,
+        "updates": {"mode": "off"},
+        "providers": {"allowedDrivers": ["claudeAgent", "codex"]},
+    }
+
+
 def test_sandbox_image_installs_both_managed_policies() -> None:
     dockerfile = (_docker_data() / "Dockerfile.base").read_text(encoding="utf-8")
     dockerignore = (_docker_data().parents[3] / ".dockerignore").read_text(encoding="utf-8")

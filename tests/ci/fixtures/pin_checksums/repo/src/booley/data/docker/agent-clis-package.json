@@ -1,0 +1,8 @@
+{
+  "name": "booley-agent-clis",
+  "private": true,
+  "t3code": {
+    "version": "0.1.10",
+    "sha256": "b3fbda4acb4d0dff7e62b5a88e6027e7efd90ab7a7945af552855dfb46f4ea8b"
+  }
+}

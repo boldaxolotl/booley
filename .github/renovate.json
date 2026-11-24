@@ -59,6 +59,7 @@
       "src/booley/data/docker/Dockerfile.riscv",
       ".github/workflows/test.yml",
       ".github/contracts/picorv32-demo.toml",
+      "src/booley/data/docker/agent-clis-package.json",
       "src/booley/data/docker/agent-clis-package-lock.json",
       ".github/ci/constraints.txt"
     ]
@@ -112,6 +113,15 @@
       "datasourceTemplate": "github-tags",
       "depNameTemplate": "The-OpenROAD-Project/OpenROAD",
       "versioningTemplate": "regex:^(?<major>\\d{2})Q(?<minor>[1-4])$"
+    },
+    {
+      "description": "T3 Code release pin in the agent CLI manifest; pin_checksums.py rewrites its sha256 after a bump. Nightly tags are SemVer pre-releases, so a stable pin is never moved to one.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^src/booley/data/docker/agent-clis-package\\.json$/"],
+      "matchStrings": ["\"t3code\": \\{\\s*\"version\": \"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "pingdotgg/t3code",
+      "extractVersionTemplate": "^v(?<version>.+)$"
     },
     {
       "description": "cargo-fuzz installed by the deep tests.",
