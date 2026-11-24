@@ -3,41 +3,43 @@
 import pytest
 
 from booley.core.host_shell import quote_arg
-from booley.harness import doctor
-from booley.runtime import handles, runtime_context, session_runtime
+from booley.runtime import handles, session_runtime
 from booley.runtime.sandbox_apply import Attachment
+from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor
+from tests.harness.test_doctor import _patch_environment, _write_project
 
 THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
 
 
+def _host_with_map(tmp_path, monkeypatch, *, size, jobs=False):
+    """Set up the host fixtures for a Project whose handle map is *size* bytes."""
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    store = handles.HandleStore(booley_dir, jobs=jobs)
+    store.root.mkdir(parents=True)
+    with store.path.open("wb") as stream:
+        stream.truncate(size)
+
+
 @pytest.mark.parametrize(
     ("jobs", "excess"),
-    [
-        pytest.param(False, 0, id="session-at-threshold"),
-        pytest.param(False, 1, id="session-above"),
-        pytest.param(True, 0, id="job-at-threshold"),
-        pytest.param(True, 1, id="job-above"),
-    ],
+    [(False, 0), (False, 1), (True, 0), (True, 1)],
+    ids=["session-at-threshold", "session-above", "job-at-threshold", "job-above"],
 )
 @pytest.mark.usefixtures("fake_sandbox_attachment")
 def test_handle_map_size_warns_only_above_three_quarters_of_cap(
     tmp_path, monkeypatch, jobs, excess
 ):
-    store = handles.HandleStore(tmp_path, jobs=jobs)
-    store.root.mkdir(parents=True)
-    with store.path.open("wb") as stream:
-        stream.truncate(THRESHOLD + excess)
-    reporter = doctor._Reporter.create()
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    doctor._check_handle_map_size(tmp_path, tmp_path, reporter.warn_)
-    findings = reporter.findings
+    _host_with_map(tmp_path, monkeypatch, size=THRESHOLD + excess, jobs=jobs)
+
+    rows = findings(run_doctor(tmp_path), "handles.map-size")
+
     if not excess:
-        assert findings == []
+        assert rows == []
         return
-    assert [f.check_id for f in findings] == ["handles.map-size"]
-    assert findings[0].subject == ("job" if jobs else "session")
-    assert "16 MiB" in findings[0].message
-    assert findings[0].fix.startswith("restart the Sandbox so its MCP server prunes")
+    assert [row.subject for row in rows] == ["job" if jobs else "session"]
+    assert "16 MiB" in rows[0].message
+    assert rows[0].fix.startswith("restart the Sandbox so its MCP server prunes")
 
 
 _VSCODE_RESTART = (
@@ -57,21 +59,15 @@ def test_handle_map_fix_names_the_restart_for_each_owner(
 ):
     if owner == "inside-hand-written":
         request.getfixturevalue("hand_written_sandbox")
-    store = handles.HandleStore(tmp_path)
-    store.root.mkdir(parents=True)
-    with store.path.open("wb") as stream:
-        stream.truncate(THRESHOLD + 1)
+    _host_with_map(tmp_path, monkeypatch, size=THRESHOLD + 1)
+    if owner.startswith("inside"):
+        enter_sandbox(monkeypatch)
     attachment = {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
-    monkeypatch.setattr(
-        runtime_context, "inside_session_runtime", lambda: owner.startswith("inside")
-    )
     fake_sandbox_attachment(attachment)
     name = quote_arg(session_runtime.session_container_name(tmp_path))
-    reporter = doctor._Reporter.create()
 
-    doctor._check_handle_map_size(tmp_path, tmp_path, reporter.warn_)
+    (finding,) = findings(run_doctor(tmp_path), "handles.map-size")
 
-    (finding,) = reporter.findings
     both = f"in VS Code, {_VSCODE_RESTART}; headless, {_UNKNOWN_HEADLESS}"
     expected = {
         "vscode": _VSCODE_RESTART,
