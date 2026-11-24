@@ -24,7 +24,8 @@ then slugs alphabetically.
 ## Kind
 
 The kind selects the section of the release entry. Sections appear in this
-order, and a section with no fragment is left out.
+order, and a section with no fragment is left out. A kind marked held must sit
+in `next-minor/`; see the next section.
 
 | Kind | Section | Use it for |
 |---|---|---|
@@ -55,9 +56,9 @@ that carries them must wait.
 runs at release preparation, before `VERSION` is bumped to the target. The
 target must be above `VERSION`, `## Unreleased` must be empty, and every
 fragment, held ones included, must be well formed; otherwise `cut` exits with
-status 2, names the cause, and changes no file. The date defaults to today in
-UTC. When no fragment is selected for the target, `cut` exits with status 3
-and changes no file. Status 2 is every failure, including a usage error.
+status 2 (as for any failure, a usage error included), names the cause, and
+changes no file. The date defaults to today in UTC. When no fragment is
+selected for the target, `cut` exits with status 3 and changes no file.
 
 `validate --target X.Y.Z` fails while a fragment that `cut` would use for that
 target remains, so after the `VERSION` bump it passes for a patch release even
@@ -65,8 +66,8 @@ with held fragments present.
 
 ## Content
 
-Write one or more Markdown bullets, exactly as they should read under
-`## Unreleased`.
+Write one or more Markdown bullets, exactly as they should read in their
+section of the release entry.
 
 ```markdown
 - Fixed `booley doctor` reporting a stale mirror after a sync.

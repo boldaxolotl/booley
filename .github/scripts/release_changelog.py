@@ -107,7 +107,7 @@ def _fragment_candidates(directory: Path) -> list[tuple[Path, bool]]:
         for path in directory.iterdir()
         if path.name != FRAGMENT_README
         and not path.name.startswith(".")
-        and path != held_directory
+        and (path != held_directory or not held_directory.is_dir())
     ]
     if held_directory.is_dir():
         found.extend(
@@ -268,8 +268,9 @@ def cut(
 
     A patch target uses the fragments outside ``next-minor/``; an ``X.Y.0`` target also
     uses the held ones. The fragment directory defaults to ``changelog.d`` next to ``root``.
-    Everything is checked before the first write, so a failure changes nothing. Returns
-    the used fragment paths; with none selected no file is touched.
+    Everything is checked before the first write, so a failed check changes nothing; a
+    filesystem error after the first write is reported with how to restore. Returns the
+    used fragment paths; with none selected no file is touched.
     """
     directory = fragments if fragments is not None else root.parent / DEFAULT_FRAGMENTS_NAME
     version = parse_stable_version(target)

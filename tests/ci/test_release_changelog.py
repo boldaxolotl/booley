@@ -363,6 +363,7 @@ _MALFORMED = [
     pytest.param("3606.fix.txt", b"- a\n", "name", id="wrong-extension"),
     pytest.param("next-minor/7.fix.md", b"- a\n\n## Heading\n", "heading", id="held-unselected"),
     pytest.param("next-minor/7.md", b"- a\n", "missing kind", id="held-missing-kind"),
+    pytest.param("next-minor", b"- a\n", "invalid name", id="held-directory-is-file"),
     pytest.param("sub", None, "regular file", id="directory"),
     pytest.param("next-minor/sub", None, "regular file", id="held-directory"),
 ]
