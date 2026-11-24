@@ -32,30 +32,22 @@ class _FakeClock:
         return self.now
 
 
-def test_token_command_output_is_cached_within_ttl(tmp_path):
+@pytest.mark.parametrize(
+    ("advance", "second_token", "runs"),
+    [(-1, _TOKEN, 1), (1, "SYNTHETIC_SECOND", 2)],
+    ids=["within-ttl-is-cached", "after-ttl-reruns"],
+)
+def test_token_command_output_is_cached_for_the_ttl(tmp_path, advance, second_token, runs):
     command, counter = write_token_command(tmp_path, [_TOKEN, "SYNTHETIC_SECOND"])
     clock = _FakeClock()
     cache = gateway_token.GatewayTokenCache(clock=clock)
 
     first = cache.get(command)
-    clock.now += gateway_token.TOKEN_TTL_S - 1
+    clock.now += gateway_token.TOKEN_TTL_S + advance
     second = cache.get(command)
 
-    assert (first, second) == (_TOKEN, _TOKEN)
-    assert count_runs(counter) == 1
-
-
-def test_token_command_reruns_after_ttl_expiry(tmp_path):
-    command, counter = write_token_command(tmp_path, [_TOKEN, "SYNTHETIC_SECOND"])
-    clock = _FakeClock()
-    cache = gateway_token.GatewayTokenCache(clock=clock)
-
-    first = cache.get(command)
-    clock.now += gateway_token.TOKEN_TTL_S + 1
-    second = cache.get(command)
-
-    assert (first, second) == (_TOKEN, "SYNTHETIC_SECOND")
-    assert count_runs(counter) == 2
+    assert (first, second) == (_TOKEN, second_token)
+    assert count_runs(counter) == runs
 
 
 def test_token_command_nonzero_exit_fails_with_stderr_verbatim(tmp_path):
@@ -73,11 +65,9 @@ def test_token_command_nonzero_exit_fails_with_stderr_verbatim(tmp_path):
     assert "SYNTHETIC_LEAKED_STDOUT" not in message
 
 
-def test_token_command_timeout_fails_with_stderr_verbatim(monkeypatch):
+def test_token_command_timeout_fails_with_stderr_verbatim():
     # The backgrounded sleep inherits the pipes: only a process-group kill closes
-    # them, so stderr is collected only when the kill worked (the short reap
-    # bound makes a missing kill show as lost stderr, not as a slow test).
-    monkeypatch.setattr(gateway_token, "_REAP_TIMEOUT_S", scaled(2))
+    # them, so stderr is collected only when the kill worked.
     timeout_s = math.ceil(scaled(3))
     command = "sh -c 'echo \"claim a token first\" >&2; echo SYNTHETIC_STDOUT; sleep 30 & wait'"
 
@@ -91,35 +81,32 @@ def test_token_command_timeout_fails_with_stderr_verbatim(monkeypatch):
     assert caught.value.__context__ is None  # TimeoutExpired would carry argv and stdout
 
 
-def test_token_command_empty_output_fails_with_stderr_verbatim(tmp_path):
-    command, _ = write_token_command(tmp_path, [""], stderr="no token is available yet\n")
+@pytest.mark.parametrize(
+    ("output", "stderr", "message", "absent"),
+    [
+        ("", "no token is available yet\n", "printed no token", None),
+        (
+            "SYNTHETIC_LINE_ONE\nSYNTHETIC_LINE_TWO",
+            "",
+            "printed an invalid token",
+            "SYNTHETIC_LINE",
+        ),
+        ("SYNTHETIC_T\u00d6KEN", "", "printed an invalid token", "SYNTHETIC_T"),
+    ],
+    ids=["empty", "multiline", "non-ascii"],
+)
+def test_token_command_unusable_output_fails_without_echoing_it(
+    tmp_path, output, stderr, message, absent
+):
+    command, _ = write_token_command(tmp_path, [output], stderr=stderr)
 
     with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
         gateway_token.run_token_command(command)
 
-    message = str(caught.value)
-    assert "BOOLEY_GATEWAY_TOKEN_COMMAND printed no token" in message
-    assert "no token is available yet" in message
-
-
-def test_token_command_multiline_output_fails_without_echoing_it(tmp_path):
-    command, _ = write_token_command(tmp_path, ["SYNTHETIC_LINE_ONE\nSYNTHETIC_LINE_TWO"])
-
-    with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
-        gateway_token.run_token_command(command)
-
-    assert "printed an invalid token" in str(caught.value)
-    assert "SYNTHETIC_LINE" not in str(caught.value)
-
-
-def test_token_command_non_ascii_output_fails_without_echoing_it(tmp_path):
-    command, _ = write_token_command(tmp_path, ["SYNTHETIC_T\u00d6KEN"])
-
-    with pytest.raises(gateway_token.GatewayTokenCommandError) as caught:
-        gateway_token.run_token_command(command)
-
-    assert "printed an invalid token" in str(caught.value)
-    assert "SYNTHETIC_T" not in str(caught.value)
+    assert f"BOOLEY_GATEWAY_TOKEN_COMMAND {message}" in str(caught.value)
+    assert stderr.strip() in str(caught.value)
+    if absent:
+        assert absent not in str(caught.value)
 
 
 def test_token_command_missing_executable_fails_naming_the_variable():
