@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import itertools
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from booley.core.models import AgentCallParams, AgentResult
-from booley.harness import developer_probe
+from booley.harness import developer_probe, host_diagnostics
 from booley.runtime import agent
 from tests.git_command_fake import REAL_RUN
 from tests.harness.test_doctor import _patch_environment
@@ -62,6 +64,21 @@ def answer_doctor_commands(
         return answered if answered is not None else other_commands(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
+
+
+def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run Doctor as on a host where no container CLI is installed.
+
+    Doctor learns the CLI from the host inspection and from a command lookup; both answer
+    "none". The host inspection otherwise keeps the fake already installed.
+    """
+    inspect_host = host_diagnostics.inspect_host
+    monkeypatch.setattr(
+        host_diagnostics,
+        "inspect_host",
+        lambda root: replace(inspect_host(root), docker_exe=None),
+    )
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
 
 
 def answer_agent_calls(
