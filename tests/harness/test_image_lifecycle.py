@@ -449,7 +449,7 @@ def _source_recipe_tree(tmp_path: Path) -> tuple[Path, Path]:
     return source_root, docker_dir
 
 
-def _pin_inputs(
+def pin_image_inputs(
     monkeypatch: pytest.MonkeyPatch,
     *,
     wheel: str | None = "wheel",
@@ -538,13 +538,13 @@ def test_incremental_plan_builds_only_wheel_overlay_for_python_change(
     root = _project(tmp_path)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
-    _pin_inputs(monkeypatch, wheel="wheel-old")
+    pin_image_inputs(monkeypatch, wheel="wheel-old")
     initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, initial.nodes)
     current = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     assert all(step.action is lifecycle.PlanAction.REUSE for step in current.steps)
 
-    _pin_inputs(monkeypatch, wheel="wheel-new")
+    pin_image_inputs(monkeypatch, wheel="wheel-new")
     refreshed = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
 
     assert [step.action for step in refreshed.steps] == [
@@ -589,7 +589,7 @@ def test_incremental_plan_propagates_standard_change_only_to_descendants(
     _wire(monkeypatch, docker)
     initial = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, initial.nodes)
-    _pin_inputs(
+    pin_image_inputs(
         monkeypatch,
         contracts=lifecycle.ImageBuildContracts(
             runtime_base=initial.nodes[0].effective_inputs,
@@ -687,7 +687,7 @@ def docker_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleName
     _set_source_installation(tmp_path, monkeypatch)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
-    _pin_inputs(monkeypatch, contracts=_BUILD_CONTRACTS)
+    pin_image_inputs(monkeypatch, contracts=_BUILD_CONTRACTS)
     env = SimpleNamespace(
         docker=docker,
         specs=[],
@@ -917,7 +917,7 @@ def test_prepare_pulls_complete_release_and_refuses_other_roles(
 def test_plan_refuses_a_source_without_wheel_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: lifecycle.ArtifactPolicy
 ) -> None:
-    _pin_inputs(monkeypatch, wheel=None)
+    pin_image_inputs(monkeypatch, wheel=None)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
         lifecycle.plan(
@@ -1159,10 +1159,10 @@ def test_release_selection_fingerprint_is_pinned_to_pre_change_chain(
         )
         return planned.nodes[0].logical_selection_fingerprint
 
-    _pin_inputs(monkeypatch, contracts=contracts)
+    pin_image_inputs(monkeypatch, contracts=contracts)
     assert fingerprint() == _PRE_CHANGE_RELEASE_FINGERPRINTS[selected]
     # The selection follows the chain's contracts.
-    _pin_inputs(monkeypatch, contracts=replace(contracts, runtime_base="another"))
+    pin_image_inputs(monkeypatch, contracts=replace(contracts, runtime_base="another"))
     assert fingerprint() != _PRE_CHANGE_RELEASE_FINGERPRINTS[selected]
 
 
@@ -1215,7 +1215,7 @@ def test_official_release_plan_observes_only_selected_complete_image(
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
-    _pin_inputs(monkeypatch, contracts=contracts)
+    pin_image_inputs(monkeypatch, contracts=contracts)
     # Private seam: the expected node is the planner's own release node; the
     # assertion below pins that the plan uses it unchanged.
     node = lifecycle._complete_release_node("booley-sandbox-riscv", contracts)
@@ -1269,7 +1269,7 @@ def test_official_release_project_requirements_use_local_overlay_only(
         '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
         encoding="utf-8",
     )
-    _pin_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
 
     planned = lifecycle.plan(
         lifecycle.ProjectImageScope(root),
@@ -1300,7 +1300,7 @@ def test_hybrid_project_selection_fingerprint_includes_release_flavor(
 ) -> None:
     root = _project(tmp_path)
     (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
-    _pin_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
     fingerprints = []
     for configured in ("booley-sandbox", "booley-sandbox-riscv"):
         (root / ".booley" / "booley.toml").write_text(
@@ -1330,7 +1330,7 @@ def test_source_project_check_detects_a_flavor_switch(
     root = _project(tmp_path, installed)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
-    _pin_inputs(monkeypatch)
+    pin_image_inputs(monkeypatch)
     _install_planned_graph(
         docker, lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker).nodes
     )
@@ -2306,6 +2306,14 @@ def test_docker_repo_digests_classify_inspect_output(docker_cli, reply, expected
             adapter.repo_digests("booley-sandbox")
 
 
+def test_docker_tag_removal_is_exact_non_forced_and_does_not_prune_parents(docker_cli) -> None:
+    docker_cli.images.update({_RELEASE: _ID, "booley-sandbox:latest": _ID})
+    # Private seam: a tag goes by name only after an ENSURE that needs a whole labelled chain.
+    lifecycle._DockerCli().remove_tag(_RELEASE)
+    assert docker_cli.removals() == [["docker", "image", "rm", "--no-prune", _RELEASE]]
+    assert docker_cli.images == {"booley-sandbox:latest": _ID}
+
+
 def _planned_kept_recipe(
     tmp_path, monkeypatch, recipe: str
 ) -> tuple[Path, FakeDocker, lifecycle.LifecyclePlan]:
@@ -2618,7 +2626,7 @@ def test_release_layout_child_retains_verified_parent_policy_and_zero_build_chec
     external_layout, monkeypatch
 ):
     root, docker = external_layout.root, external_layout.docker
-    _pin_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
     policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
     parent = lifecycle.plan(
         lifecycle.ProjectImageScope(root), docker=docker, artifact_policy=policy
@@ -2777,7 +2785,7 @@ def test_release_project_overlay_retains_wheel_identity_through_layout_convergen
     (root / ".booley/booley.toml").write_text(
         '[sandbox]\npip_requirements = ["requirements.txt"]\n'
     )
-    _pin_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
     policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_THEN_LOCAL
     parent = lifecycle.plan(
         lifecycle.ProjectImageScope(root), docker=docker, artifact_policy=policy
@@ -2805,14 +2813,14 @@ def test_prepared_parent_losing_alias_can_validate_and_commit_without_obsolete_l
     external_layout, monkeypatch
 ):
     root, docker = external_layout.root, external_layout.docker
-    _pin_inputs(monkeypatch, wheel="old-wheel")
+    pin_image_inputs(monkeypatch, wheel="old-wheel")
     original = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, original.nodes)
     old_parent_id = docker.image_id(lifecycle.project_image.project_image_name(root))
     monkeypatch.setattr(
         lifecycle.project_image, "project_data_alias_capable", lambda image: image == old_parent_id
     )
-    _pin_inputs(monkeypatch, wheel="new-wheel")
+    pin_image_inputs(monkeypatch, wheel="new-wheel")
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     assert planned.nodes[-1].role is lifecycle.ImageRole.PROJECT_DATA_LAYOUT
     prepared = lifecycle.prepare(planned, docker=docker, builder=TransactionBuilder(docker))
@@ -2828,10 +2836,10 @@ def test_plan_rebuilds_stale_managed_image_without_booley_mount_point(
 ):
     """A stale managed tag built for an older Booley has no mount point; it is rebuilt."""
     root, docker = external_layout.root, external_layout.docker
-    _pin_inputs(monkeypatch, wheel="old-wheel")
+    pin_image_inputs(monkeypatch, wheel="old-wheel")
     original = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
     _install_planned_graph(docker, original.nodes)
-    _pin_inputs(monkeypatch, wheel="new-wheel")
+    pin_image_inputs(monkeypatch, wheel="new-wheel")
     _ACTUAL_ALIAS_PROBE.cache_clear()
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", _ACTUAL_ALIAS_PROBE)
     docker_cli.answer("run", stdout="absent\n")
@@ -3006,7 +3014,7 @@ def _published_release_labels(*, version: str = "0.2.6") -> dict[str, str]:
 
 def _wire_official_release(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
     builder = _wire(monkeypatch, docker)
-    _pin_inputs(monkeypatch, wheel=_PUBLISHED_WHEEL_SOURCE, contracts=_PUBLISHED_CONTRACTS)
+    pin_image_inputs(monkeypatch, wheel=_PUBLISHED_WHEEL_SOURCE, contracts=_PUBLISHED_CONTRACTS)
     return builder
 
 

@@ -13,10 +13,10 @@ from tests.harness.test_image_lifecycle import (
     FakeDocker,
     TransactionBuilder,
     _install_planned_graph,
-    _pin_inputs,
     _project,
     _stage_registry_candidate,
     _wire,
+    pin_image_inputs,
 )
 
 RELEASE_ID = "sha256:" + "e" * 64
@@ -215,7 +215,7 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
 ):
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _id: False)
     docker = FakeDocker({})
-    _pin_inputs(monkeypatch)
+    pin_image_inputs(monkeypatch)
     policy = lifecycle.ArtifactPolicy.VERIFIED_RELEASE_ONLY
     shared = lifecycle.plan(
         lifecycle.ProjectImageScope(_project(tmp_path / "probe", logical)),

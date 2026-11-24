@@ -16,7 +16,7 @@ from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import project_image as pi
 from booley.runtime.version_attribution import VersionOrigin
 from tests.docker_image_cli_fake import serve_docker_image_cli
-from tests.harness.test_image_lifecycle import _pin_inputs
+from tests.harness.test_image_lifecycle import pin_image_inputs
 
 LEFT_OUT_REQUIREMENTS = "-e ./local\nfusesoc==2.3\ncocotb==1.5.1\nnumpy\n"
 
@@ -52,7 +52,7 @@ def test_init_check_warns_once_through_real_planning(
     )
     monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
     serve_docker_image_cli(monkeypatch)  # an empty daemon: the real adapter runs
-    _pin_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("a check-only init must not run a container")

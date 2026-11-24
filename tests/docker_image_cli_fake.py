@@ -19,13 +19,8 @@ _Reply = subprocess.CompletedProcess[str] | BaseException
 
 def image_row(repository: str, tag: str, image_id: str, eol: str = "\n") -> str:
     """One ``docker image ls --format '{{json .}}'`` row, escaped as Docker escapes it."""
-
-    def escaped(text: str) -> str:
-        return text.replace("<", "\\u003c").replace(">", "\\u003e")
-
-    return (
-        f'{{"ID":"{image_id}","Repository":"{escaped(repository)}","Tag":"{escaped(tag)}"}}{eol}'
-    )
+    row = json.dumps({"ID": image_id, "Repository": repository, "Tag": tag}, separators=(",", ":"))
+    return row.replace("<", "\\u003c").replace(">", "\\u003e") + eol
 
 
 class DockerImageCli:
@@ -34,7 +29,6 @@ class DockerImageCli:
     def __init__(self) -> None:
         #: Reference (or image ID, as Docker accepts) -> image ID.
         self.images: dict[str, str] = {}
-        #: Container ID -> the ID of the image it runs.
         self.containers: dict[str, str] = {}
         #: Containers that are not running: ``container ls`` lists them only with ``--all``.
         self.stopped: set[str] = set()
@@ -72,16 +66,14 @@ class DockerImageCli:
         return set(self.images.values()) | {row[2] for row in self.untagged_rows}
 
     def _id_of(self, reference: str) -> str | None:
-        if reference in self.images:
-            return self.images[reference]
-        return reference if reference in self._all_ids() else None
+        return self.images.get(reference) or (reference if reference in self._all_ids() else None)
 
     def _serve(self, words: list[str]) -> tuple[int, str, str]:
         verb = " ".join(words[:2]) if words[0] in ("image", "container") else words[0]
         if verb == "image inspect":
             return self._inspect(words)
         if verb == "image ls":
-            return self._list(quiet="--quiet" in words)
+            return self._list(quiet="--quiet" in words, full="--no-trunc" in words)
         if verb == "container ls":
             listed = [c for c in self.containers if "--all" in words or c not in self.stopped]
             return 0, "".join(f"{container}{self.eol}" for container in listed), ""
@@ -101,20 +93,21 @@ class DockerImageCli:
         image_id = self._id_of(reference)
         if image_id is None:
             return 1, "", f"Error: No such image: {reference}"
-        if "--format" in words:
-            return 0, image_id + "\n", ""
-        if "-f" in words:  # RepoDigests: the tests answer it explicitly
-            return 0, "[]\n", ""
+        if "--format" in words or "-f" in words:  # ``-f`` is RepoDigests: tests answer it
+            return 0, (image_id if "--format" in words else "[]") + "\n", ""
         return 0, json.dumps([{"Id": image_id}]), ""
 
-    def _list(self, *, quiet: bool) -> tuple[int, str, str]:
+    def _list(self, *, quiet: bool, full: bool) -> tuple[int, str, str]:
+        def shown(image_id: str) -> str:  # Docker shortens IDs unless asked not to
+            return image_id if full else image_id.removeprefix("sha256:")[:12]
+
         if quiet:
-            return 0, "".join(f"{image_id}{self.eol}" for image_id in sorted(self._all_ids())), ""
+            return 0, "".join(f"{shown(i)}{self.eol}" for i in sorted(self._all_ids())), ""
         rows = [
-            (*reference.rpartition(":")[::2], image_id)
+            (*reference.rpartition(":")[::2], shown(image_id))
             for reference, image_id in sorted(self.images.items())
             if not reference.startswith("sha256:")
-        ] + self.untagged_rows
+        ] + [(*row[:2], shown(row[2])) for row in self.untagged_rows]
         return 0, "".join(image_row(*row, self.eol) for row in rows), ""
 
     def _remove(self, reference: str) -> tuple[int, str, str]:
@@ -126,6 +119,8 @@ class DockerImageCli:
         if reference != image_id:
             self.images.pop(reference)
             return 0, "", ""
+        if sum(v == image_id for n, v in self.images.items() if n != image_id) > 1:
+            return 1, "", "must be forced: image is referenced in multiple repositories"
         self.images = {name: value for name, value in self.images.items() if value != image_id}
         self.untagged_rows = [row for row in self.untagged_rows if row[2] != image_id]
         return 0, "", ""
