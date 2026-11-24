@@ -2017,6 +2017,45 @@ class TestT3CodeRelay:
         with pytest.raises(OSError):
             connect("127.0.0.1", port)
 
+    def test_start_reuses_a_running_relay_and_replaces_one_for_another_container(
+        self, workspace: Path
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        first = t3_relay.start(workspace, "one")
+        try:
+            assert t3_relay.start(workspace, "one") == first
+            assert t3_relay.start(workspace, "two") == first
+        finally:
+            assert t3_relay.stop(workspace)
+
+    @pytest.mark.parametrize(
+        ("changes", "problem"),
+        [
+            ({"port": 80}, "port 80 is outside"),
+            ({"process": {"pid": 1}}, "not a process identity"),
+        ],
+    )
+    def test_session_up_refuses_an_invalid_relay_record(
+        self,
+        workspace: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        changes: dict[str, object],
+        problem: str,
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        root = str(workspace.resolve())
+        record = {"project_root": root, "port": 3780, "container": "c", "process": None}
+        t3_relay.relay_store().write(root, json.dumps({**record, **changes}))
+
+        assert run_cli(monkeypatch, ["-C", root, "session", "up"]) == 2
+
+        assert problem in capsys.readouterr().err
+        t3_relay.relay_store().path(root).unlink()
+
     def test_relay_port_is_per_project_stable_and_moves_off_a_held_port(
         self,
         workspace: Path,

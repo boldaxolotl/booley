@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import signal
 import subprocess
 import sys
 import threading
@@ -180,7 +181,7 @@ def stop(workspace: Path) -> bool:
 def _spawn(container: str, candidates: list[str]) -> tuple[int, ProcessIdentity]:
     """Start the relay process; return the port it bound and its identity."""
     kwargs = new_group_kwargs()
-    if sys.platform == "win32":
+    if sys.platform == "win32":  # pragma: no cover - the Windows console detaches only there
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
     command = [sys.executable, "-m", "booley.runtime.t3_relay", container, str(T3_PORT)]
     # stderr goes nowhere: the relay carries T3 Code's HTTP traffic, pairing tokens included.
@@ -219,13 +220,10 @@ def _spawn(container: str, candidates: list[str]) -> tuple[int, ProcessIdentity]
 
 async def _pump_in(reader: asyncio.StreamReader, sink: asyncio.subprocess.Process) -> None:
     assert sink.stdin is not None
-    try:
-        while data := await reader.read(_CHUNK):
-            sink.stdin.write(data)
-            await sink.stdin.drain()
-        sink.stdin.close()  # half-close: the splice shuts the write side towards T3 Code
-    except OSError:
-        return
+    while data := await reader.read(_CHUNK):
+        sink.stdin.write(data)
+        await sink.stdin.drain()
+    sink.stdin.close()  # half-close: the splice shuts the write side towards T3 Code
 
 
 async def _handle(
@@ -244,8 +242,6 @@ async def _handle(
         while data := await process.stdout.read(_CHUNK):
             writer.write(data)
             await writer.drain()
-    except OSError:
-        pass
     finally:
         inbound.cancel()
         writer.close()
@@ -275,6 +271,8 @@ async def _serve(container: str, target: int, candidates: list[int]) -> int:
 def main(argv: list[str]) -> int:
     """Entry of the relay process: ``<container> <target port> <candidate port>...``."""
     container, target, *ports = argv
+    # Exit through the interpreter's normal shutdown, so SIGTERM from `stop` ends the relay cleanly.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     return asyncio.run(_serve(container, int(target), [int(port) for port in ports]))
 
 
