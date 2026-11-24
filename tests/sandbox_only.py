@@ -116,7 +116,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/test_heartbeat.py",
     "tests/test_incontainer_live_preview.py",
     "tests/test_incontainer_register.py",
-    "tests/test_incontainer_vaporview.py",
     "tests/test_mcp_server.py",
     "tests/test_mcp_v2_adapter.py",
 )

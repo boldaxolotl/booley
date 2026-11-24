@@ -86,6 +86,11 @@
       "transformTemplates": [
         "{ \"releases\": extensions.{ \"version\": version, \"releaseTimestamp\": timestamp } }"
       ]
+    },
+    "chrome-for-testing": {
+      "defaultRegistryUrlTemplate": "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions.json",
+      "format": "json",
+      "transformTemplates": ["{ \"releases\": versions.{ \"version\": version } }"]
     }
   },
   "customManagers": [
@@ -223,6 +228,15 @@
       "depNameTemplate": "zachjs/sv2v"
     },
     {
+      "description": "Copy of the headless Chrome pin: the supported-tools row.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
+      "matchStrings": ["\\| Headless Chrome \\| `chrome-headless-shell` (?<currentValue>\\d+\\.\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "custom.chrome-for-testing",
+      "depNameTemplate": "chrome-headless-shell",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)\\.(?<build>\\d+)$"
+    },
+    {
       "description": "Copy of the Verible pin: the supported-tools row.",
       "customType": "regex",
       "managerFilePatterns": ["/^docs/user/SUPPORTED-EDA-TOOLS\\.md$/"],
@@ -301,16 +315,6 @@
       "depNameTemplate": "riscv-isa-sim",
       "packageNameTemplate": "https://github.com/riscv-software-src/riscv-isa-sim",
       "currentValueTemplate": "master"
-    },
-    {
-      "description": "Copy of the VaporView pin: the verified-version constant.",
-      "customType": "regex",
-      "managerFilePatterns": ["/^src/booley/runtime/vaporview\\.py$/"],
-      "matchStrings": [
-        "VERIFIED_VERSION = \\\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\\\""
-      ],
-      "datasourceTemplate": "custom.openvsx",
-      "depNameTemplate": "lramseyer/vaporview"
     },
     {
       "description": "Copies of the Verilog-HDL extension pin: the devcontainer constant and the session runtime bundle list.",
@@ -503,7 +507,6 @@
       "description": "sandbox-base: Node, the editor extensions and the Ubuntu parent image (also pinned in Dockerfile.riscv, held equal by tests/docker/test_sandbox_dockerfile.py).",
       "matchDepNames": [
         "node",
-        "lramseyer/vaporview",
         "mshr-h/veriloghdl",
         "ms-vscode/live-server",
         "docker.io/library/ubuntu"
@@ -570,13 +573,6 @@
       "matchDepNames": ["cocotb"],
       "prBodyNotes": [
         "Re-verify these places, which cite cocotb releases: the frozen results parser in `src/booley/flows/sim/backends/cocotb_results.py` and the example versions in `src/booley/harness/init_cmd.py` and `src/booley/runtime/project_image.py`."
-      ]
-    },
-    {
-      "description": "PR note: VaporView provenance and patched VSIX.",
-      "matchDepNames": ["lramseyer/vaporview"],
-      "prBodyNotes": [
-        "Re-verify these places, which depend on the VaporView release: the empty-view claim in `src/booley/bwave/cli.py` and the compatibility edits in `src/booley/runtime/vaporview_vsix.py`."
       ]
     },
     {
@@ -666,6 +662,15 @@
       "dependencyDashboardApproval": true,
       "groupName": "ci-rust-nightly",
       "schedule": ["at any time"]
+    },
+    {
+      "description": "Hold: chrome-headless-shell must equal the version the pinned T3 Code release expects (VERSION in its apps/server/src/preview/PreviewBrowser.ts), or T3 Code tries a download the egress rules block. With each T3 Code bump, set allowedVersions to that release's VERSION (a regex, because regex versioning takes no == range); Renovate then proposes exactly it (a new major version waits for Dependency Dashboard approval) and pin_checksums.py rewrites the sha256. Lift the hold only if T3 Code stops pinning a browser version: delete this rule and the hold comment above the pin in Dockerfile.base together.",
+      "matchPackageNames": ["chrome-headless-shell"],
+      "allowedVersions": "/^157\\.0\\.8103\\.78$/",
+      "groupName": "headless-chrome",
+      "prBodyNotes": [
+        "Check that T3 Code's linux64 sha256 for this version equals the `CHROME_HEADLESS_SHELL_SHA256` this PR writes."
+      ]
     }
   ]
 }

@@ -7,7 +7,6 @@ import json
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import vaporview
 from booley.runtime.dashboard_extension import VSIX_PATH
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 from tests.devcontainer_spec_support import build_spec
@@ -311,27 +310,12 @@ class TestMaskPathsValidation:
 class TestAppExtension:
     def test_claude_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
         assert "remote.extensionKind" not in vscode["settings"]
-        # The viewer bridge drives VaporView; its own WCP endpoint stays off.
-        assert not any(key.startswith("vaporview.wcp.") for key in vscode["settings"])
-        assert vscode["settings"]["vaporview.customColor5"] == "#e5484d"
-        assert vscode["settings"]["vaporview.customColor6"] == "#3b82f6"
-        assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
 
     def test_codex_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CODEX)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
         assert "remote.extensionKind" not in vscode["settings"]
 
     def test_generated_spec_omits_tcl_highlighting(self):
@@ -347,26 +331,10 @@ class TestAppExtension:
             assert "mshr-h.veriloghdl" not in extensions
 
     def test_none_installs_no_agent_extension(self):
-        # Waveform viewing isn't tied to an agent app, so "none" carries the
-        # app-agnostic extensions (VaporView, its Booley bridge host, HDL
-        # highlighting) but no agent extension.
+        # "none" carries the app-agnostic extensions (HDL highlighting, Live
+        # Preview, the Dashboard) but no agent extension.
         vscode = build_spec(dc.APP_NONE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
-
-    def test_vaporview_presentation_settings_for_every_app(self):
-        # The Waveform Viewer (ADR 0078) palette rides along regardless of agent
-        # app; the per-app extension lists above pin the VSIX entries.
-        for app in dc.SUPPORTED_APPS:
-            spec = build_spec(app)
-            vscode = spec["customizations"]["vscode"]
-            assert {
-                key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
-            } == dc._VAPORVIEW_PRESENTATION_SETTINGS
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a
@@ -376,11 +344,9 @@ class TestAppExtension:
             assert settings["remote.restoreForwardedPorts"] is False
             assert settings["livePreview.portNumber"] == dc._LIVE_PREVIEW_SEED_PORT
 
-    def test_live_preview_randomizer_runs_before_extension_patch(self):
+    def test_post_attach_runs_only_the_live_preview_port_hook(self):
         for app in dc.SUPPORTED_APPS:
-            assert build_spec(app)["postAttachCommand"] == (
-                f"{dc.live_preview_port_command()} && {dc.vaporview_patch_command()}"
-            )
+            assert build_spec(app)["postAttachCommand"] == dc.live_preview_port_command()
 
     def test_python_terminal_autoactivation_disabled_for_every_app(self):
         # The runtime already has its Python stack system-wide.  Do not let a
@@ -391,14 +357,6 @@ class TestAppExtension:
             settings = spec["customizations"]["vscode"]["settings"]
             assert settings["python-envs.terminal.autoActivationType"] == "off"
             assert settings["python.terminal.activateEnvironment"] is False
-
-    def test_spec_wires_vaporview_autostart_postattach(self):
-        # Every app (incl. "none") gets the patch hook on attach — attach is
-        # the first lifecycle point where the extension exists on disk.
-        for app in dc.SUPPORTED_APPS:
-            spec = build_spec(app)
-            assert spec["postAttachCommand"] == dc.post_attach_command()
-            assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
 
 
 class TestAuthMount:

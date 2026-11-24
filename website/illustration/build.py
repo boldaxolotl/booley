@@ -196,7 +196,7 @@ SCREENSHOTS = (
 SCREENSHOT_SIZE = (3322, 1881)
 SCREENSHOT_ALT = (
     "Screenshot of the real VS Code window the illustration is drawn from: two Claude Code"
-    " sessions on the left, the Booley Dashboard top right, and the VaporView waveform of"
+    " sessions on the left, the Booley Dashboard top right, and a waveform of"
     " the failing backpressure test bottom right."
 )
 

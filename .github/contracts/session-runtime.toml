@@ -50,6 +50,7 @@ required_commands = [
   "verible-verilog-preprocessor",
   "verible-verilog-project",
   "verible-verilog-syntax",
+  "chrome-headless-shell",
 ]
 required_paths = [
   "/etc/claude-code/managed-settings.json",
@@ -158,6 +159,7 @@ stripped_elf = [
   "/usr/local/lib/ivl/vvp.tgt",
   "/usr/local/bin/yosys",
   "/usr/local/bin/yosys-abc",
+  "/opt/chrome-headless-shell/chrome-headless-shell",
 ]
 hard_link_groups = [
   [

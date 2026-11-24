@@ -21,7 +21,8 @@ default ``executionMode: "update"``; ``.github/renovate.json`` uses
 braces HTML-escape).
 
 Pins are known by depName: a GitHub repository (release assets), an Open VSX
-extension (``<namespace>/<name>``, VSIX files) or ``node``. Only the canonical
+extension (``<namespace>/<name>``, VSIX files), ``node`` or
+``chrome-headless-shell`` (a download whose upstream publishes no digest). Only the canonical
 upgrade, whose ``packageFile`` holds the pin's version, is acted on: literal
 copies of the pin arrive as further upgrades of the same name and are skipped, as
 are unknown names. The files must already carry the new version (Renovate applied
@@ -42,8 +43,9 @@ to ``api.github.com`` only (60 unauthenticated requests per hour per IP).
 Trust on first download: a recomputed sha256 trusts whatever upstream serves at
 that moment. The cross-checks (GitHub release digest, Open VSX ``.sha256``, Node
 ``SHASUMS256.txt``) only catch upstream metadata disagreeing with its own
-artifact, and only where upstream publishes one (sv2v and the RISC-V documents
-publish none). Renovate's ``minimumReleaseAge`` and human review of every pin PR
+artifact, and only where upstream publishes one (sv2v, the RISC-V documents and
+Chrome for Testing publish none). Renovate's ``minimumReleaseAge`` (not for Chrome
+for Testing, whose version list has no timestamps) and human review of every pin PR
 are the only other buffers.
 
 Needs Python 3.11 and ``git`` (importing ``src/booley`` runs ``booley/__init__``).
@@ -141,7 +143,7 @@ class Vsix:
 class Pin:
     """Everything the script knows about one pinned download."""
 
-    kind: Literal["release", "openvsx", "node"]
+    kind: Literal["release", "openvsx", "node", "download"]
     version: Value
     downloads: tuple[Download, ...]
     hosts: frozenset[str]
@@ -248,9 +250,6 @@ PINS: dict[str, Pin] = {
         ),
         _GITHUB,
     ),
-    "lramseyer/vaporview": _vsix(
-        "VAPORVIEW", "lramseyer/vaporview", "Lramseyer/vaporview", "{version}-rel"
-    ),
     "mshr-h/veriloghdl": _vsix(
         "VERILOGHDL", "mshr-h/veriloghdl", "mshr-h/vscode-verilog-hdl-support", "v{version}"
     ),
@@ -282,6 +281,18 @@ PINS: dict[str, Pin] = {
         ),
         frozenset({"nodejs.org"}),
         npm=ArgValue(_BASE, "NPM_VERSION"),
+    ),
+    "chrome-headless-shell": Pin(
+        "download",
+        ArgValue(_BASE, "CHROME_HEADLESS_SHELL_VERSION"),
+        (
+            Download(
+                "https://storage.googleapis.com/chrome-for-testing-public/"
+                "${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip",
+                (ArgValue(_BASE, "CHROME_HEADLESS_SHELL_SHA256"),),
+            ),
+        ),
+        frozenset({"storage.googleapis.com"}),
     ),
 }
 
@@ -485,7 +496,19 @@ def _check_node(
     return [(pin.npm, require_str_value(npm[0], field="npm"))]
 
 
-_CHECKS = {"release": _check_release, "openvsx": _check_openvsx, "node": _check_node}
+def _check_unpublished(
+    pin: Pin, tree: Tree, url: str, digest: str, upstream: Upstream
+) -> list[PendingValue]:
+    """Cross-check nothing: upstream publishes no digest, so the sha256 is trusted on first download."""
+    return []
+
+
+_CHECKS = {
+    "release": _check_release,
+    "openvsx": _check_openvsx,
+    "node": _check_node,
+    "download": _check_unpublished,
+}
 
 
 def _apply(pin: Pin, new_value: str, tree: Tree, upstream: Upstream) -> None:

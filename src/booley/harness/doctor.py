@@ -121,6 +121,7 @@ from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table, width_budget
 from booley.runtime import (
     auth_token,
+    bundled_extensions,
     core_repository_hygiene,
     core_resolution,
     doctor_stamp,
@@ -131,7 +132,6 @@ from booley.runtime import (
     project_repositories,
     runtime_context,
     session_runtime,
-    vaporview,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import (
@@ -1676,7 +1676,7 @@ def _check_worktree_core_shadow_guard(
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
-    ``booley init`` and ``worktree_create.sh`` drop the marker that suppresses
+    ``booley init`` and ``booley worktree new`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """
@@ -3009,8 +3009,8 @@ def _run_mcp_checks(
     )
     _run_agent_credential_checks(project, reporter)
     reporter.diagnostics(
-        vaporview.inspect_viewer_bridge(
-            vaporview.ViewerBridgeRequest(project.project_root, docker_exe)
+        bundled_extensions.inspect_bundled_extensions(
+            bundled_extensions.BundledExtensionsRequest(project.project_root, docker_exe)
         )
     )
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))

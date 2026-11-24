@@ -122,19 +122,16 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
 def main(argv: list[str] | None = None) -> int:
     """Print the checkout's Booley Directory relative to its root, for the worktree script.
 
-    ``<root> --ambient`` applies :func:`worktree_booley_dir` (the checkout being
-    branched from); ``<root>`` alone reads only that checkout's own configuration
-    (the new worktree, whose ambient selection is irrelevant).
+    ``<root> --ambient`` applies :func:`worktree_booley_dir` to the checkout being
+    branched from.
     """
     arguments = list(sys.argv[1:] if argv is None else argv)
-    ambient = "--ambient" in arguments
     roots = [a for a in arguments if a != "--ambient"]
-    if len(roots) != 1:
-        print("usage: worktree_paths <root> [--ambient]", file=sys.stderr)
+    if len(roots) != 1 or "--ambient" not in arguments:
+        print("usage: worktree_paths <root> --ambient", file=sys.stderr)
         return 2
-    root = Path(roots[0])
     try:
-        relative = worktree_booley_dir(root) if ambient else own_booley_dir_relative(root)
+        relative = worktree_booley_dir(Path(roots[0]))
     except (ValueError, BooleyLayoutError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

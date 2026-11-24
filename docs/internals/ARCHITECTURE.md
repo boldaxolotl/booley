@@ -17,8 +17,8 @@ the agents' claims: it wraps EDA toolchains as **Booley Flows** with
 structured inputs and machine-checkable results, and exposes those Flows and
 LLM-backed **Specialists** to the Developer Agent through MCP.
 
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
 
 The diagram reads from the outside in, and so does this page:
 
@@ -250,6 +250,13 @@ frees one only when the processes that used it are provably gone; otherwise a
 Job whose root process died could free its memory while its EDA tools still
 run, and the next Job would start on top of them.
 
+A `booley session` terminal command is supervised the same way: when it ends,
+every process it started ends with it, so none keeps running on memory that
+looks free. A detached Standalone Job started from it is the one exception: it
+keeps running, and its reservation is held and recovered by its own process, as
+[ADR 0095](../adr/0095-release-detached-job-workers-from-terminal-attachment-cleanup.md)
+describes.
+
 ## Booley Flows
 
 A **Booley Flow** deterministically turns a structured request into EDA tool
@@ -309,9 +316,8 @@ A trace is too large for an LLM to read, so B-Wave answers structured
 questions about signals, events, values, and time ranges in an FST store;
 `bwave register --build` converts a VCD into one.
 
-B-Wave doesn't render waveforms. When the user needs to see one, `bwave gui`
-opens the relevant signals and time window in VaporView inside VS Code, through
-a Booley extension bridge. Query and viewing commands are in
+B-Wave doesn't render waveforms, and Booley has no waveform viewer for now (see
+the [ROADMAP](ROADMAP.md)). Query commands are in
 [USAGE.md](../user/USAGE.md#viewing-waveforms).
 
 ### Why FST is the trace contract
@@ -321,8 +327,7 @@ queryable. A VCD is an unindexed text log: finding a signal's value at time T
 means parsing from the top, which for a multi-gigabyte trace is a batch job,
 not a query. FST is indexed and compact, which makes `bwave`'s time-range
 reads, trigger sampling, and data tracing fast enough for an agent to iterate
-on. GTKWave, Surfer, and VaporView all read it, so `bwave gui` needs no export
-step.
+on. GTKWave and Surfer read it, so a viewer needs no export step.
 
 - **A Verilator Target that declares `--trace-fst` stays native.** It already
   has a matching C++ harness and trace options; Booley only points the output

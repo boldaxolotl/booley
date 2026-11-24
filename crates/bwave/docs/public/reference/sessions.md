@@ -15,8 +15,8 @@ bwave list                 # no alias: the default session
 ```
 
 The wrapper only resolves an alias in that first position. `gui` and
-`markers` are wrapper commands and take the alias after their name:
-`bwave gui @dut`, `bwave markers @dut set err_start 1234`.
+`markers` are wrapper commands and take the alias after their name, for
+example `bwave markers @dut set err_start 1234`.
 
 ## Where sessions come from
 
