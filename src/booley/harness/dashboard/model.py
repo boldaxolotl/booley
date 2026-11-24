@@ -166,9 +166,12 @@ def worktree_occupants(snapshot: DashboardSnapshot, worktree: Path) -> Occupants
     sessions = tuple(
         label for path, label in session_checkouts(snapshot) if path.resolve() == here
     )
+    # Oldest first: the Job records are listed in the file system's order, which varies by host.
     unfinished = tuple(
         job.handle or job.record.run_id
-        for job in snapshot.jobs.jobs
+        for job in sorted(
+            snapshot.jobs.jobs, key=lambda row: (row.record.started_at, row.record.run_id)
+        )
         if job.state not in FINISHED_JOB_STATES
         and job.record.work_dir
         and Path(job.record.work_dir).resolve() == here

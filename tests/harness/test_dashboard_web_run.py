@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 from booley.config.feature_flags import enabled_features
 from booley.harness import booley as tlr
 from booley.harness.dashboard import launch, model, run_form
+from booley.harness.dashboard.jobs import JobReader, JobSnapshot
 from booley.harness.standalone_job import standalone_jobs_dir
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import job_records
@@ -428,6 +429,18 @@ def test_check_returns_the_review_screen_lines(
     assert shown == expected
     assert reply["command"] == quoted.json()["command"]
     assert reply["refusal"] == ""
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unfinished_jobs_are_named_oldest_first_whatever_the_listing_order(world, reverse):
+    _queued_world(world)
+    jobs = JobReader(world.booley, proc_root=world.proc).read().jobs
+    listed = tuple(sorted(jobs, key=lambda job: job.record.run_id, reverse=reverse))
+    snapshot = model.DashboardSnapshot((), JobSnapshot(listed), observed_at=1.0)
+
+    occupants = model.worktree_occupants(snapshot, world.wt)
+
+    assert occupants.unfinished_jobs == ("run-r", "run-q")
 
 
 @pytest.mark.parametrize(
