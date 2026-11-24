@@ -49,22 +49,6 @@ def generation_parent(tmp_path: Path) -> Path:
     return path
 
 
-def test_stage_bad_overlay_replaces_only_mirrored_build_files(tmp_path: Path) -> None:
-    booley_dir = tmp_path / ".booley"
-    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim")
-    overlay_file = overlay / "firmware" / "firmware.hex"
-    overlay_file.parent.mkdir(parents=True)
-    overlay_file.write_text("bad\n", encoding="utf-8")
-    build_root = tmp_path / "build"
-    staged = build_root / "firmware" / "firmware.hex"
-    staged.parent.mkdir(parents=True)
-    staged.write_text("good\n", encoding="utf-8")
-
-    assert selftest_overlay.has_bad_overlay(booley_dir, "sim")
-    assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root) == 1
-    assert staged.read_text(encoding="utf-8") == "bad\n"
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="GNU Make regression requires POSIX")
 def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> None:
     booley_dir = tmp_path / ".booley"
@@ -81,7 +65,9 @@ def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> No
     os.utime(staged, (200, 200))
     os.utime(artifact, (300, 300))
 
+    assert selftest_overlay.has_bad_overlay(booley_dir, "sim")
     assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root) == 1
+    assert staged.read_text(encoding="utf-8") == "invalid HDL\n"
     assert staged.stat().st_mtime_ns > artifact.stat().st_mtime_ns
     # Kept on subprocess.run: needs stdin data (makefile on `-f -`), which the bounded helper does not take.
     result = subprocess.run(

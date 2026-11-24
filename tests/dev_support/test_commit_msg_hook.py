@@ -358,11 +358,8 @@ def test_accepted_message_is_never_written(tmp_path: Path, raw: str | bytes) -> 
 
 def test_stealth_disabled_leaves_message_unchanged(tmp_path: Path, project: Path) -> None:
     _write_config(project, BANNED_ONLY.replace("true", "false"))
-    original = "fix(core): repair edge case\n\nGenerated with assistant-identity llm\n"
-    rc, err, after = _run_hook(tmp_path, original)
-    assert rc == 0
-    assert after == original.encode()
-    assert err == ""
+    raw = "Generated with assistant-identity llm\n"
+    assert _run_hook(tmp_path, raw) == (0, "", raw.encode())
 
 
 def test_standalone_hook_leaves_source_checkout_message_unchanged(tmp_path: Path) -> None:

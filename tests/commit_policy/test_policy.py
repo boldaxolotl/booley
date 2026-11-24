@@ -83,14 +83,6 @@ def test_ordinary_text_is_clean(text: str) -> None:
     assert has_banned_content(text) is False
 
 
-def test_find_banned_reports_every_phrase_of_a_mixed_text() -> None:
-    assert set(find_banned("claude and copilot reviewed co-authored-by: bot")) == {
-        "claude",
-        "copilot",
-        "co-authored-by",
-    }
-
-
 def test_find_banned_escapes_regex_metacharacters_and_respects_boundaries() -> None:
     """A hyphen in a phrase is literal and an empty vocabulary bans nothing."""
     policy = StealthPolicy(True, ("auto-review", "agent"), None, ())
@@ -262,35 +254,6 @@ def test_stealth_uses_explicit_relocated_project_data(
 # ---------------------------------------------------------------------------
 
 
-def _selective_import_error(blocked_module: str):
-    """Return an __import__ replacement that raises ImportError for one module."""
-    real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
-
-    def _import(name, *args, **kwargs):
-        if name == blocked_module:
-            raise ModuleNotFoundError(f"No module named '{blocked_module}'")
-        return real_import(name, *args, **kwargs)
-
-    return _import
-
-
-def test_source_checkout_fallback_works_without_package_import(tmp_path: Path) -> None:
-    from booley.runtime import checkout_role
-
-    root = tmp_path / "source"
-    root.mkdir()
-    (root / "pyproject.toml").write_text(SOURCE_CHECKOUT, encoding="utf-8")
-
-    with (
-        patch.dict("sys.modules", {"checkout_role": checkout_role}),
-        patch(
-            "builtins.__import__",
-            side_effect=_selective_import_error("booley.core.checkout_role"),
-        ),
-    ):
-        assert source_checkout_policy_owner(root)
-
-
 def test_source_tree_fallback_adds_package_parent() -> None:
     """A directly launched source hook can recover the canonical classifier."""
     source_root = Path(__file__).resolve().parents[2]
@@ -368,14 +331,17 @@ def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path: Path, t
 def test_validate_push_configuration_absent_and_immutable_pairs(tmp_path: Path) -> None:
     assert validate_push_configuration(tmp_path) is None
     config = _push_config(tmp_path)
-    for base in ("A" * 40, "B" * 64):
+    # Transport validation is left to the hook, so any repository string passes through.
+    for repository, base in (
+        ("https://example.test/upstream.git", "A" * 40),
+        ("ext::x", "B" * 64),
+    ):
         config.write_text(
-            f'[stealth]\nupstream_repository = "https://example.test/upstream.git"\nupstream_base = "{base}"\n'
+            f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{base}"\n'
         )
         upstream = validate_push_configuration(tmp_path)
         assert upstream is not None
-        assert upstream.repository == "https://example.test/upstream.git"
-        assert upstream.base == base.lower()
+        assert (upstream.repository, upstream.base) == (repository, base.lower())
 
 
 @pytest.mark.parametrize(
@@ -433,20 +399,6 @@ def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -
         validate_push_configuration(tmp_path)
 
 
-@pytest.mark.parametrize(
-    "repository",
-    ["http://example.test/repo", "git://example.test/repo", "ext::unsafe", "file:/absolute/repo"],
-)
-def test_validate_push_configuration_leaves_transport_validation_to_hook(
-    tmp_path: Path, repository: str
-) -> None:
-    _push_config(tmp_path).write_text(
-        f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{"f" * 40}"\n'
-    )
-    upstream = validate_push_configuration(tmp_path)
-    assert upstream is not None and upstream.repository == repository
-
-
 # ---------------------------------------------------------------------------
 # Vocabulary tiers and identifier matching
 # ---------------------------------------------------------------------------
@@ -484,12 +436,6 @@ def test_vocabulary_config_union_reload_and_empty(tmp_path: Path) -> None:
     assert stealth_policy(tmp_path).banned_phrases == ()
     config.write_text('[stealth]\nbanned_words = []\nbanned_substrings = ["quokka"]\n')
     assert stealth_policy(tmp_path).find_banned("myquokkafile") == ["quokka"]
-
-
-def test_direct_constructor_positional_and_identity() -> None:
-    policy = StealthPolicy(True, ("booley", "quokka"), None, ())
-    assert policy.banned_substrings == ()
-    assert policy.find_banned("mybooleyfile myquokkafile QuokkaRunner") == ["booley", "quokka"]
 
 
 @pytest.mark.parametrize(

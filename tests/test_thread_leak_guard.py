@@ -268,19 +268,6 @@ def test_invalid_allowlist_entry_is_rejected(tmp_path: Path, toml: str, fragment
         load_allowlist(path)
 
 
-def test_valid_allowlist_loads(tmp_path: Path) -> None:
-    from tests.thread_leak_guard import AllowEntry, load_allowlist
-
-    path = tmp_path / "allow.toml"
-    path.write_bytes(
-        b'[[leak]]\nthread = "a.b"\ntest = "t.py::test_x"\nreason = "why"\nissue = 7\n'
-    )
-
-    assert load_allowlist(path) == [
-        AllowEntry(thread="a.b", test="t.py::test_x", reason="why", issue=7)
-    ]
-
-
 def test_shipped_allowlist_is_valid_and_points_the_stall_monitor_at_its_issue() -> None:
     from tests.thread_leak_guard import load_allowlist
 

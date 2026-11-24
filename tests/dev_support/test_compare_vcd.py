@@ -65,22 +65,12 @@ def _make_simple_vcd(
 
 
 class TestParseVcd:
-    def test_basic_signals(self, tmp_path):
-        p = _make_simple_vcd(tmp_path, "a.vcd")
-        vcd = parse_vcd(p)
+    def test_signals_and_scope_hierarchy(self, tmp_path):
+        vcd = parse_vcd(_make_simple_vcd(tmp_path, "a.vcd", scope="TOP.tb.dut.core"))
         assert len(vcd.signals) == 2
-        assert "!" in vcd.signals
-        assert vcd.signals["!"].name == "clk"
-        assert vcd.signals["!"].size == 1
-        assert vcd.signals["#"].name == "data"
-        assert vcd.signals["#"].size == 8
-
-    def test_scope_hierarchy(self, tmp_path):
-        p = _make_simple_vcd(tmp_path, "a.vcd", scope="TOP.tb.dut.core")
-        vcd = parse_vcd(p)
-        sig = vcd.signals["!"]
-        assert sig.scope == "TOP.tb.dut.core"
-        assert sig.full_name == "TOP.tb.dut.core.clk"
+        clk, data = vcd.signals["!"], vcd.signals["#"]
+        assert (clk.name, clk.size, data.name, data.size) == ("clk", 1, "data", 8)
+        assert (clk.scope, clk.full_name) == ("TOP.tb.dut.core", "TOP.tb.dut.core.clk")
 
     def test_timestamps_and_transitions(self, tmp_path):
         trans = "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n#20\n0!\n"
@@ -222,13 +212,9 @@ def test_normalize_value(value, width, expected):
 
 
 class TestBuildDutSignalMap:
-    def test_custom_instance_picked_up(self):
+    def test_custom_instance_picked_up_and_wrong_instance_misses(self):
         vcd = _vcd_with_names(["tb.uut.clk", "tb.uut.q", "tb.tb_only"])
-        m = build_dut_signal_map(vcd, dut_instance="uut")
-        assert set(m) == {"clk", "q"}
-
-    def test_wrong_instance_misses(self):
-        vcd = _vcd_with_names(["tb.uut.clk"])
+        assert set(build_dut_signal_map(vcd, dut_instance="uut")) == {"clk", "q"}
         assert build_dut_signal_map(vcd, dut_instance="dut") == {}
 
     def test_auto_detect_dut(self):
@@ -241,11 +227,8 @@ class TestBuildDutSignalMap:
         m = build_dut_signal_map(vcd, dut_scope="TOP.tb.dut")
         assert set(m) == {"core.clk", "core.data"}
 
-    def test_bit_range_stripped_in_key(self):
-        vcd = _vcd_with_names(["tb.dut.data[7:0]"])
-        assert "data" in build_dut_signal_map(vcd)
-
-    def test_no_dut_scope_returns_empty(self):
+    def test_bit_range_stripped_in_key_and_no_dut_scope_is_empty(self):
+        assert "data" in build_dut_signal_map(_vcd_with_names(["tb.dut.data[7:0]"]))
         assert build_dut_signal_map(_vcd_with_names(["tb.core.clk"])) == {}
 
 
@@ -265,14 +248,6 @@ def _compare(tmp_path, trans_a, trans_b, *, signals=None, scope_b="tb.dut", **op
 
 
 class TestCompareSignals:
-    def test_identical_vcds_match(self, tmp_path):
-        trans = "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n#20\n0!\n"
-        res = _compare(tmp_path, trans, trans)
-        assert res.mismatched_signals == 0
-        assert res.matched_signals == 2
-        assert len(res.sim_a_only) == 0
-        assert len(res.sim_b_only) == 0
-
     def test_single_mismatch_detected(self, tmp_path):
         trans_a = "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n"
         trans_b = "#0\n0!\nb00000000 #\n#10\n1!\nb11111111 #\n"

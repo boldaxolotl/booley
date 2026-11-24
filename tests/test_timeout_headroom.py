@@ -79,12 +79,11 @@ def test_test_in_warning_band_passes_and_is_reported(
     assert any(line.startswith(annotation) for line in output.splitlines()) is github
     if github:
         assert "%25; warning above 0.1%25)" in output
-    warnings = [
-        node
-        for node in ET.parse(junit).iter("property")
-        if node.get("name") == "timeout_headroom_warning"
-    ]
-    assert len(warnings) == 1
+    properties = [node.attrib for node in ET.parse(junit).iter("property")]
+    assert [p["name"] for p in properties].count("timeout_headroom_warning") == 1
+    # The 0.2 s sleep uses about 0.0033 of the 60 s budget (rounded to 4 places).
+    ratio = next(p for p in properties if p["name"] == "timeout_headroom_ratio")
+    assert 0.003 <= float(ratio["value"]) < 0.5
 
 
 def test_test_over_failure_limit_is_not_also_a_warning(tmp_path: Path) -> None:
@@ -105,19 +104,6 @@ def test_warning_limit_requires_a_higher_failure_limit(tmp_path: Path, options: 
 
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
     assert "--timeout-headroom-warn requires --timeout-headroom at or above it" in result.stderr
-
-
-def test_ratio_is_recorded_in_junit(tmp_path: Path) -> None:
-    junit = tmp_path / "junit.xml"
-    result = _run_case(tmp_path, ["--timeout-headroom=0.5", f"--junitxml={junit}"])
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    properties = {
-        node.get("name"): float(node.get("value", "nan"))
-        for node in ET.parse(junit).iter("property")
-    }
-    # The 0.2 s sleep uses about 0.0033 of the 60 s budget (rounded to 4 places).
-    assert 0.003 <= properties["timeout_headroom_ratio"] < 0.5
 
 
 @pytest.mark.parametrize(

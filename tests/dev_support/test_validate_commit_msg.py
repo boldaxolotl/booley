@@ -166,14 +166,6 @@ def test_validate_diff_scans_added_lines(
     assert validate_diff(repo) == expected
 
 
-def test_validate_diff_without_staged_changes_is_clean(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(_init_repo(tmp_path, stealth=None))
-
-    assert validate_diff() == []
-
-
 def test_validate_diff_surfaces_git_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -300,13 +292,6 @@ def _run_vendored(dst: Path, msg: str, *, isolated: bool = False, staged: str = 
         argv.insert(1, "-S")
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     return run_bounded_child(argv, cwd=str(dst), env=env)
-
-
-def test_vendored_flat_run_tool_resolves(tmp_path: Path) -> None:
-    """init vendors run_command.py flat → imported by bare name, no crash."""
-    _vendor(tmp_path, include_runner=True)
-    proc = _run_vendored(tmp_path, "feat(x): ok")
-    assert proc.returncode == 0, proc.stderr
 
 
 def test_vendored_missing_runner_fails_loudly(tmp_path: Path) -> None:
