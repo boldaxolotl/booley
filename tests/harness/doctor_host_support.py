@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import host_diagnostics
+from booley.core.models import AgentCallParams, AgentResult
+from booley.harness import developer_probe, host_diagnostics
+from booley.runtime import agent
 from tests.git_command_fake import REAL_RUN
 from tests.harness.test_doctor import _patch_environment
 
@@ -43,18 +47,20 @@ def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> No
 
 def answer_doctor_commands(
     monkeypatch: pytest.MonkeyPatch,
-    answer: Callable[[list[str]], subprocess.CompletedProcess[str] | None],
+    answer: Callable[[list[str], dict[str, str]], subprocess.CompletedProcess[str] | None],
 ) -> None:
-    """Give the commands *answer* replies to its reply; pass every other one on.
+    """Answer Doctor's commands with ``answer(argv, env)``; ``None`` passes one on.
 
-    "Every other one" goes to the fake already installed, such as the one
-    ``_patch_environment`` sets up. *answer* receives the command as strings.
+    Layers over the fake already installed (``serve_healthy_doctor_host`` or
+    ``_patch_environment``), so a test answers only the commands it is about.
     """
     other_commands = subprocess.run
 
     def run(command, **kwargs):
-        reply = answer([str(part) for part in command])
-        return other_commands(command, **kwargs) if reply is None else reply
+        argv = [str(part) for part in command]
+        env = dict(kwargs.get("env") or {})
+        answered = answer(argv, env)
+        return answered if answered is not None else other_commands(command, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", run)
 
@@ -72,3 +78,31 @@ def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda root: replace(inspect_host(root), docker_exe=None),
     )
     monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+
+def answer_agent_calls(
+    monkeypatch: pytest.MonkeyPatch, answer: Callable[[AgentCallParams], AgentResult]
+) -> list[AgentCallParams]:
+    """Answer each agent call Doctor's probes make with ``answer(params)``.
+
+    ``answer`` returns an ``AgentResult`` or raises what the backend would raise.
+    Child-process accounting reads a rising peak so the memory probe measures.
+    Returns every call's params.
+    """
+    calls: list[AgentCallParams] = []
+
+    async def call_agent(params: AgentCallParams) -> AgentResult:
+        calls.append(params)
+        return answer(params)
+
+    peak = itertools.count(1024, 1024)
+    monkeypatch.setattr(agent, "call_agent", call_agent)
+    # ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
+    monkeypatch.setattr(
+        developer_probe,
+        "resource",
+        SimpleNamespace(
+            RUSAGE_CHILDREN=0, getrusage=lambda _who: SimpleNamespace(ru_maxrss=next(peak))
+        ),
+    )
+    return calls

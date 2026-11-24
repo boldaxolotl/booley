@@ -806,7 +806,7 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     err = "Parse error. Ignoring file /work/unit.core:\nfilesets.tb.depend must be array\nsecond line"
 
-    def sandbox_resolves_all_but_sim_fast(argv):
+    def sandbox_resolves_all_but_sim_fast(argv, _env):
         if "CORE_RESOLVE_JSON" not in " ".join(argv):
             return None
         verdicts = [
@@ -889,7 +889,7 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
     if scenario == "binary missing":
         answer_doctor_commands(
             monkeypatch,
-            lambda argv: (
+            lambda argv, _env: (
                 subprocess.CompletedProcess(argv, 1, "", "")
                 if argv[-3:] == ["sh", "-c", "command -v verilator"]
                 else None
@@ -900,7 +900,7 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
     else:
         answer_doctor_commands(
             monkeypatch,
-            lambda argv: (
+            lambda argv, _env: (
                 subprocess.CompletedProcess(argv, 124, "", "")
                 if "BOOLEY_VIVADO_STARTUP_" in " ".join(argv)
                 else None
