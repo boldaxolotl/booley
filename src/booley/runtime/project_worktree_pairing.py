@@ -266,6 +266,16 @@ def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
         run_git(source, "config", "--unset", key)
 
 
+def prune_missing_checkouts(source: Path) -> None:
+    """Drop *source*'s registrations whose folders are gone; Git keeps locked ones.
+
+    An explicit prune ignores ``gc.worktreePruneExpire=never``, which pairing sets.
+    The checkouts' branches stay.
+    """
+    with _project_lock(source):
+        _require_git(source, "worktree", "prune")
+
+
 def detach_checkout(checkout: Path) -> None:
     """Drop a checkout's ``.git`` pointer so that an interrupted removal leaves it broken.
 

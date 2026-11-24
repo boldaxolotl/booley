@@ -63,6 +63,39 @@ with either prefix.
 
 </details>
 
+## Preparing a worktree made with Git
+
+A worktree made with `git worktree add`, or by another tool such as T3 Code,
+has no Booley Directory of its own and uses the main checkout's configuration.
+In the new worktree, run:
+
+```bash
+booley worktree prepare [PATH]
+```
+
+`PATH` is any folder in the worktree (default: the current directory). The
+worktree gets the Booley Directory that `booley worktree new` would give it:
+nothing when Git tracks it, otherwise a **Snapshot**. Git submodules are not
+filled in. The command also removes registrations of the Booley Directory's
+repository whose folders are gone, applies the same Git settings as
+`booley worktree new`, and runs the Project's `post-setup` hook, saving its
+output to `.booley/worktrees/.logs/<folder>.log` in the main Booley Directory.
+
+<details markdown>
+<summary>In stealth mode</summary>
+
+The worktree gets a **Paired Checkout** on branch `booley-worktree/<folder>`,
+where `<folder>` is the worktree's folder name, with the same warning for files
+left out.
+
+</details>
+
+Outside a Booley Project the command does nothing and exits 0. It refuses the
+main checkout, a Booley Directory outside the checkout, and a worktree with
+uncommitted changes whose line endings need converting. If a step fails,
+Booley removes what the run created and exits nonzero. Running it again in a
+prepared worktree changes nothing.
+
 ## Listing worktrees
 
 `booley worktree list` shows one row per worktree

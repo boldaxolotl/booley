@@ -109,19 +109,28 @@ def _pointers_are_relative(git_dir: Path, worktree: Path, configured: str) -> bo
     return not any(_ABSOLUTE_POINTER.match(pointer) for pointer in pointers)
 
 
+def _renormalize_needed(worktree: Path, explicit: list[str]) -> bool:
+    """Whether ``core.autocrlf`` is set to something other than false before we force it off."""
+    result = run_git(worktree, *explicit, "config", "--type=bool-or-str", "--get", "core.autocrlf")
+    return result.returncode == 0 and result.stdout.strip() != "false"
+
+
 def configure_worktree_git(project_root: Path, worktree: Path, *, booley_dir: Path) -> None:
     """Apply the per-worktree Git settings and the ``[agent.git]`` identity to *worktree*.
 
     *project_root* is the checkout the worktree was added from and *booley_dir* its
     Booley Directory, which holds the lock and the identity. The settings keep
     submodule recursion off (Python fills gitlinks after final branch selection) and
-    force LF line endings, so host and Sandbox agree. The private Git directory
+    force LF line endings, so host and Sandbox agree; ``git checkout -f`` then
+    renormalizes the files, but only when ``core.autocrlf`` was on, and never over
+    uncommitted changes. The private Git directory
     is addressed explicitly, because a shared config polluted with
     ``core.worktree=/work`` makes plain ``git -C <worktree>`` refuse to run.
 
     Raises:
-        WorktreeSetupError: a Git command or the identity fails, or a relative-path
-            policy left an absolute pointer.
+        WorktreeSetupError: a Git command or the identity fails, a relative-path
+            policy left an absolute pointer, or the files need renormalizing and
+            have uncommitted changes.
     """
     try:
         git_dir = git_directories(worktree).git_dir
@@ -130,6 +139,14 @@ def configure_worktree_git(project_root: Path, worktree: Path, *, booley_dir: Pa
     explicit = [f"--git-dir={git_dir}", f"--work-tree={worktree}"]
     relative = os.path.relpath(os.path.realpath(worktree), os.path.realpath(git_dir))
     with _parent_git_lock(booley_dir):
+        renormalize = _renormalize_needed(worktree, explicit)
+        if renormalize and _git(
+            worktree, *explicit, "status", "--porcelain", "--untracked-files=no"
+        ):
+            raise WorktreeSetupError(
+                f"{worktree} has uncommitted changes and its line endings need "
+                "renormalizing; commit them and run the command again"
+            )
         _git(project_root, "config", "extensions.worktreeConfig", "true")
         for key, value in (
             ("core.worktree", relative.replace(os.sep, "/")),
@@ -139,7 +156,8 @@ def configure_worktree_git(project_root: Path, worktree: Path, *, booley_dir: Pa
             ("core.autocrlf", "false"),
         ):
             _git(worktree, *explicit, "config", "--worktree", key, value)
-        _git(worktree, *explicit, "checkout", "-f", timeout=_CHECKOUT_TIMEOUT_S)
+        if renormalize:
+            _git(worktree, *explicit, "checkout", "-f", timeout=_CHECKOUT_TIMEOUT_S)
         if _relative_paths_policy(project_root) and not _pointers_are_relative(
             git_dir,
             worktree,
