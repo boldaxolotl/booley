@@ -48,7 +48,7 @@ _INPUT_LABELS = {
     "doctor_waivers_sha256": "doctor-waivers.toml",
     "devcontainer_json_sha256": "devcontainer.json",
     "tests.toml_sha256": "tests.toml",
-    "configs.toml_sha256": "configs.toml",
+    "configs_toml_present": "configs.toml",
     "AGENTS.md_sha256": "Booley Directory AGENTS.md",
     "root_AGENTS.md_identity": "Project Root AGENTS.md",
     "root_CLAUDE.md_identity": "Project Root CLAUDE.md",
@@ -129,8 +129,10 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
     project_root = resolve_main_checkout_root(project_root)
 
     fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(booley_dir, project_root)
-    for name in ("tests.toml", "configs.toml", "AGENTS.md"):
+    for name in ("tests.toml", "AGENTS.md"):
         fingerprint[f"{name}_sha256"] = _sha256_or_none(booley_dir / name)
+    # Booley ignores configs.toml: Doctor only warns that the file exists.
+    fingerprint["configs_toml_present"] = (booley_dir / "configs.toml").exists()
     for name in ("AGENTS.md", "CLAUDE.md"):
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
     fingerprint["core_files_sha256"] = _core_digest(project_root, booley_dir)

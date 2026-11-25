@@ -78,8 +78,7 @@ def _load_config() -> dict[str, Any]:
     defaults (``rtl_project`` name, human-in-the-loop on, no tests).
 
     ``tests.toml`` holds verification-intent (a ``(Target, plusarg)`` pair) keyed
-    by Target name — not design-description, which lives in the ``.core``
-    (ADR 0022 decisions 15/16).
+    by Target name — not design-description, which lives in the ``.core``.
     """
     global _CONFIG_CACHE
     if _CONFIG_CACHE is not None:
@@ -293,8 +292,7 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Normalize tests.toml — the per-Target test registry (decisions 15/16).
 
     Each Target section may declare an ordered ``tests = [...]`` list (or
-    reference a shared ``[test_lists]`` entry via ``test_list = "name"``, the
-    same mechanism configs.toml used) plus an optional single-token ``select``
+    reference a shared ``[test_lists]`` entry via ``test_list = "name"``) plus an optional single-token ``select``
     option template, an optional ``skip = [...]`` known-hang exclusion list, and an
     optional ``env = { NAME = "value" }`` table injected into the simulator
     process. ``[test_lists]`` is a reserved top-level table.

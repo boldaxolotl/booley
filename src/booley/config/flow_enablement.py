@@ -18,13 +18,15 @@ from booley.core.config_paths import (
 )
 from booley.targets.flow_names import config_section
 
+_RETIRED_EXECUTION_KEYS = ("venue", "backend", "host_setup_commands")
+
 
 class FlowConfigError(BooleyTomlError):
-    """Project Flow configuration contains a retired execution surface."""
+    """Project Flow configuration contains a retired key or an invalid ``enabled``."""
 
 
 def flow_enabled(flow_name: str, work_dir: Path | None) -> bool:
-    """Read ``[flows.<name>].enabled`` with the existing enabled default."""
+    """Read ``[flows.<name>].enabled`` (default true); a non-boolean value raises."""
     path, cfg = _load_config(work_dir)
     try:
         return flow_enabled_from_config(flow_name, cfg)
@@ -95,9 +97,6 @@ def _retired_flows_errors(flows: Mapping[str, Any]) -> list[str]:
             if key in section
         )
     return errors
-
-
-_RETIRED_EXECUTION_KEYS = ("venue", "backend", "host_setup_commands")
 
 
 def _retired_flow_key_error(section: str, key: str, value: object) -> str:
