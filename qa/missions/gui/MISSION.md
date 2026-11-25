@@ -37,7 +37,7 @@ mission; to check one PR's GUI change, use `booley-gui-check` instead.
   order.
 
 ## Mission-specific rules
-- **Developer Agents run only in T3 Code threads** (runbook Hard rules). Apply
+- **Developer Agents run in T3 Code threads** (runbook Hard rules). Apply
   the shared [Developer Agent child rules](../../shared/DEVELOPER-CHILD.md)
   for area 3's child.
 - **Allowed external actions.** None beyond the run skill's: the candidate

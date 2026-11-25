@@ -25,10 +25,10 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
 
 ## Hard rules
 
-- **Developer Agents run only in T3 Code threads.** Start every agent from
-  the T3 Code UI in your tab. A bare `claude` or `codex` session, on the host
-  or in the Sandbox, is not a supported workflow: don't start one, and don't
-  count what one does as evidence.
+- **Developer Agents run in T3 Code threads.** In a GUI run, start every
+  agent from the T3 Code UI in your tab: the threads are part of the GUI
+  under test. A bare `claude` or `codex` session bypasses that GUI, so it is
+  never GUI evidence.
 - **The pairing link is a secret.** It carries a one-time token. Write
   `booley session up` and `booley session pair` output only to a file created
   with `umask 077` under `<run-dir>/scratch/`, never print the link in a

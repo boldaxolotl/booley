@@ -1,7 +1,7 @@
 ### Seeded Wishbone fault
 
 Optional bait for the picorv32 mission's hunt. Its Interactive child is one
-long-lived T3 Code thread on the Project's main checkout, started as the
+long-lived session on the Project's main checkout, started as the
 [child rules](../../../shared/DEVELOPER-CHILD.md) say. It is not a separate
 Specialist or delegate.
 

@@ -21,8 +21,9 @@ directory, findings format, and cleanup bookkeeping; this file says where to loo
 - Needs: Docker ≥6 GB free plus run-dir room; Codex or Claude login; Sandbox Image with Verilator,
   Cocotb, Verible, Yosys+slang, OpenROAD.
 - Optional: Vivado on x86-64 Linux, plus a paid license and relay, for area 14.
-- Primary: Ubuntu x86-64 with Codex threads in T3 Code; rerun on Windows
-  (Docker Desktop, WSL2) or with Claude threads for coverage.
+- Primary: Ubuntu x86-64 with Codex (a T3 Code thread or the CLI in the
+  Sandbox); rerun on Windows (Docker Desktop, WSL2) or with Claude for
+  coverage.
 - Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
   Areas 8 and 14 are optional follow-up work outside this timebox (75 minutes
   total). Log them as skipped unless a follow-up is requested. Run primary areas sequentially;

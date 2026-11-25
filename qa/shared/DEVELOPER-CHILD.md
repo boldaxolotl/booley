@@ -5,14 +5,21 @@ to a Developer Agent child: a Developer Agent the operator starts in the
 Sandbox and asks for a Measured Commit. Each mission links this file from its
 rules and adds its own details per area.
 
-Every Developer Agent child, Interactive or measuring, is a T3 Code thread.
-After `booley session up` in the mission's Project, pair a browser tab of
-your own with its T3 Code as step 4 of the
-[T3 Code GUI QA runbook](t3/RUNBOOK.md) says, under that runbook's Hard
-rules, and drive the child from that tab. A bare `claude` or `codex`
-session, on the host or in the Sandbox, is not a supported workflow: never
-start one as a child, and never count its results. To stop a child, stop
-its thread's turn; a restarted child is a new thread.
+A Developer Agent child, Interactive or measuring, runs in the Sandbox in
+one of two ways. Users have only the first; QA may use either and records
+which in `log.md`:
+
+- **T3 Code thread.** After `booley session up` in the mission's Project,
+  pair a browser tab of your own with its T3 Code as step 4 of the
+  [T3 Code GUI QA runbook](t3/RUNBOOK.md) says, keeping the pairing link
+  secret as its Hard rules say, and start a thread on the child's checkout.
+- **Agent CLI in the Sandbox.** From the checkout's directory on the host,
+  run `booley session enter -- codex` (or `claude`); a linked worktree's
+  directory starts it in that worktree.
+
+Never start a child as a `claude` or `codex` process on the host itself: it
+would run outside the Sandbox. To stop a child, stop its turn or end its
+session; a restarted child is a new thread or session.
 
 - Before the request, commit the area's Target Metrics: merge the named
   `metrics.toml` fixture into the Booley Directory's `metrics.toml` (in
@@ -20,8 +27,8 @@ its thread's turn; a restarted child is a new thread.
   `git -C .booley commit`), then run `booley measure --validate`: no error.
 - Create the area's worktree from the host with
   `booley session enter -- booley worktree new <area>`, and note its path and
-  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start a Developer
-  Agent (Codex or Claude) in a T3 Code thread on that worktree, and send the
+  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start the child
+  (Codex or Claude) on that worktree in one of the two ways above, and send the
   area's prompt verbatim; it ends with "give me a Measured Commit". The
   operator never does the child's design work.
 - The child follows the measuring rules (`booley cheat --metrics`). The

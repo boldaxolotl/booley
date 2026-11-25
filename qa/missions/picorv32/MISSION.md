@@ -178,7 +178,9 @@ Grants, installations, images and Sessions untouched. Record the final pin state
 - Icarus has no `$system`, and SystemVerilog fixtures need `-g2012`. The
   fixture's `slow` test
   spins about 20 s; if it finishes too fast to interrupt, pass `+slow_steps=<n>`.
-- Don't start a host `claude` or `codex` session, not even as a usage-limit
-  probe: Developer Agents run only in T3 Code threads (child rules).
+- A host `claude` or `codex` run (for example a usage-limit probe) writes
+  per-cwd agent state outside the run dir (Claude Code: `~/.claude*/projects/<cwd-slug>/`,
+  `~/.cache/claude-cli-nodejs/<cwd-slug>/`, `~/.cache/claude-tmp/claude-<uid>/<cwd-slug>/`).
+  Add a `resources.md` row before the run and remove those paths at cleanup.
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit works only
   under `pk`.
