@@ -104,9 +104,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
    No VS Code (for example, over SSH)? See
    [Entering the Sandbox without VS Code](SANDBOX.md#entering-the-sandbox-without-vs-code).
 
-3. Start a Developer Agent, Claude or Codex, in a T3 Code thread. Or open
-   **Terminal → New Terminal**, a **container terminal**, and run `claude` or
-   `codex` there.
+3. Start a Developer Agent, Claude or Codex, in a T3 Code thread.
 
     Every Agent CLI listed in `[agent] clis` in `.booley/booley.toml` gets
     Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;

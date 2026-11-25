@@ -26,7 +26,7 @@ The diagram reads from the outside in, and so does this page:
    prepares and supervises one container per Project folder, and all Booley
    work runs inside it.
 2. [Agent sessions](#agent-sessions): VS Code attaches to the Sandbox, and
-   each Developer Agent session runs in one of its terminals; concurrent
+   each Developer Agent session runs as a T3 Code thread; concurrent
    sessions get their own worktrees.
 3. [The MCP server](#the-mcp-server): the one surface through which every
    session reaches Booley.
@@ -148,8 +148,7 @@ one trust domain.
 `booley init` issues the Project's devcontainer specification; reopening the
 folder in the container connects VS Code to the Sandbox. A Developer Agent
 session runs as a T3 Code thread, which T3 Code places in its own worktree
-([ADR 0082](../adr/0082-let-t3-code-own-worktrees.md)), or as `claude` or
-`codex` in a Sandbox terminal. See [SETUP.md](../user/SETUP.md) for the
+([ADR 0082](../adr/0082-let-t3-code-own-worktrees.md)). See [SETUP.md](../user/SETUP.md) for the
 lifecycle and [USAGE.md](../user/USAGE.md#developer-agent-sessions) for daily
 use.
 
@@ -165,8 +164,8 @@ sessions and Jobs and can start Booley Flows as Standalone Jobs.
 
 ### Why VS Code
 
-Claude Code and Codex both run in VS Code terminals, so both Agent CLIs share
-one editor and the Sandbox. The Dev Containers extension makes "open this
+Claude Code and Codex both run in the Sandbox that VS Code attaches to, so both
+Agent CLIs share one editor and the Sandbox. The Dev Containers extension makes "open this
 repository inside the Booley container" a built-in operation, so Booley didn't
 have to build it. And the editor itself matters: hardware work is not pure
 delegation, and the user reads and edits RTL between agent turns in the same

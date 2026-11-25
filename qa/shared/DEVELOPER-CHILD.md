@@ -11,8 +11,8 @@ rules and adds its own details per area.
   `git -C .booley commit`), then run `booley measure --validate`: no error.
 - Create the area's worktree from the host with
   `booley session enter -- booley worktree new <area>`, and note its path and
-  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start `codex`
-  (Claude: `claude`) in that worktree from a container terminal, and send the
+  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start a Developer
+  Agent (Codex or Claude) in a T3 Code thread on that worktree, and send the
   area's prompt verbatim; it ends with "give me a Measured Commit". The
   operator never does the child's design work.
 - The child follows the measuring rules (`booley cheat --metrics`). The

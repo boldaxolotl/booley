@@ -285,7 +285,7 @@ Try:
 
 ### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:
-- Launch: in the Sandbox, `claude` or `codex` starts in the current working
+- Launch: a Developer Agent started in a T3 Code thread works in the thread's
   directory. Make a safe edit and commit it, and check the exact local diff
   and history.
 - MCP: the Interactive Sandbox exposes the `booley_measure` schema. Disabling a

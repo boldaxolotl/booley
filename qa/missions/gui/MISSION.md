@@ -132,7 +132,7 @@ Try:
 - From a command terminal, write
   [`../picorv32/fixtures/metrics.toml`](../picorv32/fixtures/metrics.toml) into
   `.booley/metrics.toml` and commit it in the Booley Directory's repository.
-- In one terminal start `claude` (or `codex`) and send "Create a new zbb
+- In a T3 Code thread start a Developer Agent (Claude or Codex) and send "Create a new zbb
   worktree and implement the design described in .booley/specs/zbb-design.md.
   Then give me a Measured Commit." Approve a `metrics.toml` change when asked,
   and note the worktree and session handle.
@@ -249,8 +249,7 @@ Try:
 - After resume: the Dashboard reattaches by itself; finished Jobs and their
   results are still listed; an interrupted measurement is never shown Measured.
   Resume the
-  agent session (`claude --resume <id>` for Claude, `codex resume --last` for
-  Codex) and ask it to continue; measuring again needs no
+  agent's T3 Code thread and ask it to continue; measuring again needs no
   `--again`.
 Look for: Jobs reported running forever, lost results, a cancelled run shown
 Measured, a Dashboard that needs manual restarting.
