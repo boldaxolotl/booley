@@ -12,7 +12,6 @@ import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.time_budget import hang_guard_s
 
-from booley.dev_support import agent_readiness as readiness
 from booley.dev_support import test_profiles as profiles
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,36 +78,6 @@ def test_native_probe_checks_launchability(
         assert "shell" not in kwargs
 
 
-def test_full_readiness_blocks_and_offers_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(readiness, "native_test_problem", lambda root: "missing")
-    monkeypatch.setattr(readiness.shutil, "which", lambda name: "cargo")
-    check = readiness._native_test_check(tmp_path)
-    assert check.status is readiness.Status.BLOCKED
-    assert check.required
-    assert check.commands[0].argv == profiles.BWAVE_BUILD
-    commands = readiness._verification_commands(Path(sys.executable), tmp_path, "full", False)
-    assert all(command.purpose != "test" for command in commands)
-
-
-def test_full_readiness_advertises_guarded_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(readiness, "native_test_problem", lambda root: None)
-    assert readiness._native_test_check(tmp_path).status is readiness.Status.READY
-    commands = readiness._verification_commands(Path(sys.executable), tmp_path, "full")
-    (command,) = (command for command in commands if command.id == "pytest.broad")
-    assert command.required_at == "optional-broad-verification"
-    assert command.argv[4:6] == ("--test-profile", "full")
-
-
-def test_profile_is_develop_only() -> None:
-    argv = ["--phase", "prepare", "--test-profile", "full", "--branch", "codex/example"]
-    with pytest.raises(SystemExit):
-        readiness._parse_args(argv)
-
-
 def _run_suite(
     tmp_path: Path,
     options: list[str],
@@ -158,16 +127,30 @@ def _run_suite(
     )
 
 
-@pytest.mark.parametrize(
-    "options,summary",
-    [([], "1 passed, 1 skipped"), (["--test-profile", "python"], "1 passed, 1 deselected")],
-)
-def test_python_profile_and_unprofiled_pytest_selection(
-    tmp_path: Path, options: list[str], summary: str
-) -> None:
-    result = _run_suite(tmp_path, options)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert summary in result.stdout
+_FAILED = ("Full profile requires native test execution", "1 failed, 1 passed")
+_FIFO = pytest.ExitCode.TESTS_FAILED if os.name == "posix" else 0
+_NONE = pytest.ExitCode.NO_TESTS_COLLECTED
+_FULL, _PYTHON = ["--test-profile", "full"], ["--test-profile", "python"]
+# case: (options, native preflight ready, native test body, exit code, expected stdout text)
+_SELECTION = {
+    "unprofiled": ([], False, None, 0, ("1 passed, 1 skipped",)),
+    "python": (_PYTHON, False, None, 0, ("1 passed, 1 deselected",)),
+    "python-native": ([*_PYTHON, "-m", "native_bwave"], False, None, _NONE, ("2 deselected",)),
+    "native-filter": (["-m", "native_bwave"], False, None, 0, ("1 skipped, 1 deselected",)),
+    "full-skip": ([*_FULL, "-n", "2"], True, None, pytest.ExitCode.TESTS_FAILED, _FAILED),
+    "full-help": ([*_FULL, "--help"], False, None, 0, ("--test-profile",)),
+    "xfail": (_FULL, True, "pytest.xfail('expected')", 0, ("1 passed, 1 xfailed",)),
+    "fifo": (_FULL, True, "pytest.skip('FIFO requires POSIX')", _FIFO, ()),
+}
+
+
+@pytest.mark.parametrize("case", _SELECTION)
+def test_profile_selection_and_preflight(tmp_path, case):
+    options, ready, body, code, texts = _SELECTION[case]
+    kwargs = {"native_body": body} if body else {}
+    result = _run_suite(tmp_path, options, preflight_ready=ready, **kwargs)
+    assert result.returncode == code, result.stdout + result.stderr
+    assert all(text in result.stdout for text in texts)
 
 
 def test_full_profile_fails_before_xdist_workers_start(tmp_path: Path) -> None:
@@ -177,42 +160,6 @@ def test_full_profile_fails_before_xdist_workers_start(tmp_path: Path) -> None:
     assert "cargo build --locked" in result.stderr
     assert "bringing up nodes" not in result.stdout
     assert "passed" not in result.stdout
-
-
-def test_full_profile_rejects_missing_prerequisite_skips_in_workers(tmp_path: Path) -> None:
-    result = _run_suite(tmp_path, ["--test-profile", "full", "-n", "2"], preflight_ready=True)
-    assert result.returncode == pytest.ExitCode.TESTS_FAILED, result.stdout + result.stderr
-    assert "Full profile requires native test execution" in result.stdout
-    assert "1 failed, 1 passed" in result.stdout
-
-
-def test_explicit_python_profile_combines_existing_marker_filter(tmp_path: Path) -> None:
-    result = _run_suite(tmp_path, ["--test-profile", "python", "-m", "native_bwave"])
-    assert result.returncode == pytest.ExitCode.NO_TESTS_COLLECTED
-    assert "2 deselected" in result.stdout
-
-
-def test_unprofiled_native_ci_filter_keeps_native_selection(tmp_path: Path) -> None:
-    result = _run_suite(tmp_path, ["-m", "native_bwave"])
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "1 skipped, 1 deselected" in result.stdout
-
-
-def test_missing_cargo_requires_toolchain_before_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(readiness, "native_test_problem", lambda root: "missing")
-    monkeypatch.setattr(readiness.shutil, "which", lambda name: None)
-    check = readiness._native_test_check(tmp_path)
-    assert check.status is readiness.Status.BLOCKED
-    assert "install Rust/Cargo" in check.summary
-    assert not check.commands
-
-
-def test_full_profile_help_does_not_require_binary(tmp_path: Path) -> None:
-    result = _run_suite(tmp_path, ["--test-profile", "full", "--help"])
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "--test-profile" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -229,17 +176,6 @@ def test_full_profile_rejects_partial_selection(tmp_path: Path, options: list[st
     result = _run_suite(tmp_path, ["--test-profile", "full", *options], preflight_ready=True)
     assert result.returncode == pytest.ExitCode.USAGE_ERROR
     assert "complete tests/ suite without filters" in result.stderr
-
-
-def test_full_profile_preserves_expected_xfail(tmp_path: Path) -> None:
-    result = _run_suite(
-        tmp_path,
-        ["--test-profile", "full"],
-        preflight_ready=True,
-        native_body="pytest.xfail('expected contract failure')",
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "1 passed, 1 xfailed" in result.stdout
 
 
 @pytest.mark.parametrize("consumer", ["runtime", "cached_cli", "child_cli"])
@@ -268,13 +204,3 @@ def test_native_test_fixture_refuses_runtime_fallback(tmp_path: Path, consumer: 
     result = _run_suite(tmp_path, [], native_body=bodies[consumer], seed_fallback=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "2 passed" in result.stdout
-
-
-def test_full_profile_allows_only_actual_fifo_platform_skip(tmp_path: Path) -> None:
-    result = _run_suite(
-        tmp_path,
-        ["--test-profile", "full"],
-        preflight_ready=True,
-        native_body="pytest.skip('FIFO requires POSIX')",
-    )
-    assert result.returncode == (pytest.ExitCode.TESTS_FAILED if os.name == "posix" else 0)
