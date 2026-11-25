@@ -418,9 +418,7 @@ def test_git_run_keeps_its_result_contract(
         git_run(repo, ["status"])
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
-)
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX fake powershell")
 @pytest.mark.parametrize(
     ("script", "mode", "kept"),
     [
@@ -436,7 +434,7 @@ def test_windows_git_process_check_decides_the_index_lock(
     (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
     lock_path = Path(git_stdout(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
     lock_path.write_text("", encoding="utf-8")
-    fake_powershell(tmp_path / "bin", monkeypatch, script, mode)
+    fake_powershell(tmp_path, monkeypatch, script, mode)
     monkeypatch.setattr(sys, "platform", "win32")
     if kept:
         with pytest.raises(BlockingError, match="git add failed"):
@@ -456,7 +454,7 @@ def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch
 
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        fake_powershell(tmp_path / "bin", monkeypatch, f"exec {shlex.join(argv)}")
+        fake_powershell(tmp_path, monkeypatch, f"exec {shlex.join(argv)}")
         started = time.monotonic()
 
         with pytest.raises(_GitProcessCheckError):
