@@ -31,8 +31,7 @@ from booley.runtime.booley_dir import (
     own_booley_dir,
     own_booley_dir_relative,
 )
-from booley.runtime.history_commit import FileCommitError
-from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
+from booley.runtime.pinned_history import FileCommitError, raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     is_standalone_git_repository,
