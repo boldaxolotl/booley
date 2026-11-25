@@ -1200,6 +1200,7 @@ def test_route_not_reached_reports_the_failure_and_its_artifacts(
     assert "default: log:" in outcome.report_text
     flat = json.loads((tmp_path / "reports" / "fpga.json").read_text(encoding="utf-8"))
     assert flat["eda_tool"] == "vivado"
+    assert "eda_tools" not in flat
 
 
 def _seed(project: Path, files: dict[str, tuple[str, str]]) -> None:
@@ -1351,7 +1352,36 @@ def test_vivado_outcome_is_classified_from_its_evidence(
         report["infra_error"],
         report["implementation"]["status"]["completion"]["route"],
     ) == (exit_code, infra_error, route)
-    assert "stale" not in (tmp_path / report["metrics"]["log_path"]).read_text(encoding="utf-8")
+    log = (tmp_path / report["metrics"]["log_path"]).read_text(encoding="utf-8")
+    assert "stale" not in log
+    if route and not seed and "broken_report" not in answer:
+        assert "timing_summary_routed" in log  # the fresh routed report was collected
+
+
+@pytest.mark.parametrize(
+    ("answer", "exit_code"),
+    [
+        pytest.param(
+            {**_NO_ROUTE, "returncode": 0, "output": ""}, EXIT_ERROR, id="silent-startup"
+        ),
+        pytest.param(
+            {**_NO_ROUTE, "returncode": 0, "stderr": _SYNTH_SYNTAX}, EXIT_FAILURE, id="syntax"
+        ),
+    ],
+)
+def test_max_frequency_profile_classifies_pre_route_failures_as_balanced_does(
+    tmp_path: Path, vivado: dict, answer: dict, exit_code: int
+) -> None:
+    """A profile that needs post-route work must not turn a pre-route failure into an error."""
+    _write_project_config(tmp_path)
+    vivado.update(answer)
+
+    outcome, report = _run_fpga(tmp_path, "--ppa-profile", "max_frequency")
+
+    assert outcome.exit_code == exit_code
+    assert report["implementation"]["status"]["completion"]["route"] is False
+    if exit_code == EXIT_FAILURE:
+        assert not report["infra_error"]
 
 
 _FPGA_MARKER = (
@@ -1561,6 +1591,8 @@ def test_fpga_baseline_materializes_project_topologies(
     assert baselines and all(not path.exists() for path in baselines)
     report = json.loads((root / "reports" / "fpga_fpga_core.json").read_text(encoding="utf-8"))
     assert (report["baseline_target"], report["candidate_target"]) == ("fpga_core", "fpga_core")
+    assert report["baseline_target_identity"] == report["candidate_target_identity"]
+    assert report["candidate_target_identity"].endswith("#fpga_core")
     # The candidate ran back in the Project, not in the baseline worktree.
     assert (root / report["metrics"]["artifacts"]["live_dirs"]["build"]).is_dir()
 
@@ -1646,7 +1678,10 @@ def test_summary_table_aligns_targets_and_colors_only_the_console(
     assert f"{_GREEN}PASS\x1b[0m" in printed
     assert f"{_RED}FAIL\x1b[0m" in printed
     assert "\x1b" not in outcome.report_text
-    assert colors.strip_ansi(printed).startswith(outcome.report_text.split("\nRESULT:")[0])
+    # The console shows the whole report up to its RESULT line; only the record carries the
+    # memory-admission note after it.
+    assert outcome.report_text.startswith(colors.strip_ansi(printed).rstrip("\n"))
+    assert _result_line(colors.strip_ansi(printed)) == _result_line(outcome.report_text)
     flat = json.loads((tmp_path / "reports" / "fpga.json").read_text(encoding="utf-8"))
     assert flat["eda_tools"] == {"default": "vivado", long_name: "vivado"}
 
@@ -1806,8 +1841,9 @@ def test_fpga_output_matches_golden(
     def run_one(_target: str) -> FpgaMetrics:
         return copy.deepcopy(baseline if flow._execution_role == "baseline" else current)
 
-    # Private seams: the golden pins the report's shape; a real run's measured time and
-    # fingerprints change on every run, so the Target run, planning and enablement are replaced.
+    # Private seams (also `_execution_role` above and `_run()` below): the golden pins the
+    # report's shape; a real run's measured time and fingerprints change on every run, so
+    # the Target run, planning and enablement are replaced.
     with (
         patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
         patch("booley.flows.implementation_flow.baseline_worktree", fake_worktree),
