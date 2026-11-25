@@ -172,6 +172,8 @@ def test_a_timed_out_tool_leaves_none_of_its_tree_running(
 def test_an_interrupted_tool_leaves_none_of_its_tree_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # This is the stdlib's ``Popen.communicate`` (outside Booley), the one place a real
+    # Ctrl-C lands while the run waits on the tool's pipes.
     real_communicate = MeasuredPopen.communicate
     first_timeouts: list[float | None] = []
 
