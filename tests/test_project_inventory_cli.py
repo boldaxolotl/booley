@@ -162,6 +162,23 @@ def test_forget_releases_only_the_own_unused_keeper(
     assert project_inventory.project_inventory() == ()
 
 
+def test_forget_json_reports_an_absent_keeper_with_a_null_image_id(
+    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _remember(tmp_path)
+
+    assert _cli("projects", "forget", str(project), "--json") == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "schema": 1,
+        "forgotten": str(project.resolve()),
+        "keeper": {"status": "absent", "tag": keeper_image(project), "image_id": None},
+        "purge": None,
+        "leftovers": [],
+    }
+    assert docker.removals() == []
+
+
 def test_projects_human_output_lists_status_and_grants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -650,6 +667,8 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
         session_issuance.validate(project, prepared.spec, path)
     # The Session takes the withdrawn-stamp path: an editor-owned Sandbox is told to rebuild
     # from VS Code, which reissues the stamp that no longer exists.
+    # The attachment kind comes from a running container's labels, and the shared fake serves no
+    # labelled `container ls` rows, so the editor-owned answer is stubbed at the Booley seam.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
     assert session_runtime.sandbox_remedy(project) == (
@@ -667,6 +686,8 @@ def test_main_wires_the_keeper_service_into_forget_and_prune(
 ) -> None:
     """`booley.main` hands the keeper operations to `projects`; a missing one refuses (#1112)."""
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    # `main` refuses a host without a Booley install; the test host has none, and the install
+    # check reads the host's real directories, which the shared fake does not cover.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(host_install, "host_install_error", lambda _directory: None)
     project = _remember(tmp_path)
@@ -699,6 +720,7 @@ def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
     docker.images[tag] = _A
     docker.containers[_CONTAINER] = _A
     editor = SimpleNamespace(container_id=_CONTAINER, name="editor", running=True, vscode=True)
+    # Listing running Sandboxes needs labelled `container ls` rows the shared fake does not serve.
     monkeypatch.setattr(
         session_admission,
         "running_project_sandboxes",
