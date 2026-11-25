@@ -100,10 +100,6 @@ class FakeProcessWorld:
     def stop(self, pid: int) -> None:
         self.alive.discard(pid)
 
-    def reuse(self, pid: int) -> None:
-        self.generations[pid] = self.generations.get(pid, 0) + 1
-        self.alive.add(pid)
-
     def is_pid_alive(self, pid: int) -> bool:
         return pid in self.alive
 
@@ -192,14 +188,14 @@ class StepScheduler:
         self.stale_judges: dict[str, set[Actor]] = {}
         self.most_judges = 0
         self.replaced_removals = 0
-        self._generation: dict[str, int] = {}
-        self._judged: dict[tuple[Actor, str], int] = {}
+        self._gate_generation: dict[str, int] = {}
+        self._judged_at: dict[tuple[Actor, str], int] = {}
         self._trace = trace
         self._unsent: list[str] = []
         self._cv = threading.Condition()
         self._local = threading.local()
         self._by_thread: dict[threading.Thread, Worker] = {}
-        self._current: Worker | None = None
+        self._stepping: Worker | None = None
         # A thread the store started ends by ActorKilled when its actor is killed: not an error.
         self._previous_hook = threading.excepthook
         threading.excepthook = self._thread_hook
@@ -214,19 +210,22 @@ class StepScheduler:
         """Run *operation* on a new thread until it parks at its first checkpoint or ends."""
         worker = Worker(actor, label)
         worker.thread = threading.Thread(
-            target=self._run, args=(worker, operation), name=f"{actor.name}/{label}", daemon=True
+            target=self._run_worker,
+            args=(worker, operation),
+            name=f"{actor.name}/{label}",
+            daemon=True,
         )
         before = set(threading.enumerate())
         with self._cv:
             self.workers.append(worker)
-            self._current = worker
+            self._stepping = worker
         actor.operation = worker
         worker.thread.start()
         self._wait_quiet(before)
         self._after_step()
         return worker
 
-    def _run(self, worker: Worker, operation: Callable[[], Any]) -> None:
+    def _run_worker(self, worker: Worker, operation: Callable[[], Any]) -> None:
         self._local.worker = worker
         _OWNER.scheduler = self
         with self._cv:
@@ -246,10 +245,10 @@ class StepScheduler:
 
     def _worker_for_call(self) -> Worker | None:
         worker: Worker | None = getattr(self._local, "worker", None)
-        if worker is not None or self._current is None:
+        if worker is not None or self._stepping is None:
             return worker
         # A thread the store started during a granted step belongs to the stepping actor.
-        parent = self._current
+        parent = self._stepping
         worker = Worker(parent.actor, f"{parent.label}/background", origin=parent.root)
         worker.thread = threading.current_thread()
         self._local.worker = worker
@@ -274,7 +273,7 @@ class StepScheduler:
             return perform()
         self._local.depth = 1
         try:
-            return self._step(worker, kind, path, perform, shown or path.name)
+            return self._step_worker(worker, kind, path, perform, shown or path.name)
         finally:
             self._local.depth = 0
 
@@ -283,7 +282,7 @@ class StepScheduler:
 
         self.call("sleep", Path(), lambda: self.world.advance(seconds))
 
-    def _step(
+    def _step_worker(
         self, worker: Worker, kind: str, path: Path, perform: Callable[[], Any], name: str
     ) -> Any:
         actor = worker.actor
@@ -332,14 +331,14 @@ class StepScheduler:
             self.stale_judges[name].add(actor)
             self.most_judges = max(self.most_judges, len(self.stale_judges[name]))
         if kind == "read_bytes":
-            self._judged[actor, name] = self._generation.get(name, 0)
+            self._judged_at[actor, name] = self._gate_generation.get(name, 0)
         elif kind == "hardlink_to":
-            self._generation[name] = self._generation.get(name, 0) + 1
-            self._judged.pop((actor, name), None)
+            self._gate_generation[name] = self._gate_generation.get(name, 0) + 1
+            self._judged_at.pop((actor, name), None)
             self.stale_judges.pop(name, None)
         elif kind in ("unlink", "rmdir"):
-            judged = self._judged.pop((actor, name), None)
-            self.replaced_removals += judged is not None and judged != self._generation.get(
+            judged = self._judged_at.pop((actor, name), None)
+            self.replaced_removals += judged is not None and judged != self._gate_generation.get(
                 name, 0
             )
             self.stale_judges.pop(name, None)
@@ -374,15 +373,15 @@ class StepScheduler:
         if faulty:
             worker.faults += 1
         before = set(threading.enumerate())
-        self._release(worker, "fail" if faulty else "run")
+        self._release_worker(worker, "fail" if faulty else "run")
         self._wait_quiet(before)
         self._after_step()
 
-    def _release(self, worker: Worker, verdict: str) -> None:
+    def _release_worker(self, worker: Worker, verdict: str) -> None:
         with self._cv:
             worker.verdict = verdict
             worker.state = "running"
-            self._current = worker
+            self._stepping = worker
             self._cv.notify_all()
 
     def _wait_quiet(self, before: set[threading.Thread]) -> None:
@@ -397,12 +396,12 @@ class StepScheduler:
             )
 
         with self._cv:
-            finished = self._wait(quiet)
-            self._current = None
+            finished = self._wait_until(quiet)
+            self._stepping = None
             stuck = [w.label for w in self.workers if w.state == "running"]
         assert finished, f"threads did not reach a checkpoint within the deadline: {stuck}"
 
-    def _wait(self, condition: Callable[[], bool]) -> bool:
+    def _wait_until(self, condition: Callable[[], bool]) -> bool:
         """Wait, holding the lock, until *condition* holds; threads ending are noticed by polling."""
         deadline = time.monotonic() + STEP_DEADLINE_SECONDS
         while not condition():
@@ -448,7 +447,7 @@ class StepScheduler:
                 if worker.actor is actor and worker.state in ("parked", "idle"):
                     worker.verdict = "kill"
                     worker.state = "running"
-                    self._current = worker
+                    self._stepping = worker
             self._cv.notify_all()
 
     def kill_and_wait(self, actor: Actor) -> None:
@@ -513,7 +512,7 @@ class StepScheduler:
         assert worker.state == "idle", f"{worker.label} is not waiting for a command"
         worker.command = name
         before = set(threading.enumerate())
-        self._release(worker, "run")
+        self._release_worker(worker, "run")
         self._wait_quiet(before)
         self._after_step()
 
@@ -523,7 +522,7 @@ class StepScheduler:
         for actor in {w.actor for w in self.workers}:
             self.kill(actor)
         with self._cv:
-            self._wait(self._all_settled)
+            self._wait_until(self._all_settled)
         for thread in list(self._by_thread):
             thread.join(STEP_DEADLINE_SECONDS)
             assert not thread.is_alive(), f"{thread.name} did not end"
@@ -539,14 +538,14 @@ class StepLock:
     """
 
     def __init__(self, scheduler: StepScheduler) -> None:
-        self._scheduler = scheduler
-        self._lock = threading.Lock()
+        self.scheduler = scheduler
+        self._mutex = threading.Lock()
 
     def __enter__(self) -> StepLock:
         for _ in range(DRAIN_STEP_CAP):
-            if self._lock.acquire(blocking=False):
+            if self._mutex.acquire(blocking=False):
                 return self
-            self._scheduler.call("wait", Path(), lambda: None)
+            self.scheduler.call("wait", Path(), lambda: None)
         raise AssertionError("a lock was never released: the schedule deadlocked")
 
     def __exit__(
@@ -555,7 +554,7 @@ class StepLock:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self._lock.release()
+        self._mutex.release()
 
 
 def stepped_file_lock_wait(handle: IO[Any], *, timeout_s: float, **kwargs: Any) -> None:
@@ -597,7 +596,7 @@ def _stepped(name: str, kind: str) -> Callable[..., Any]:
 
     def method(self: SteppedPath, *args: Any, **kwargs: Any) -> Any:
         shown = Path(args[0]).name if kind in ("rename", "replace") else None
-        return self._scheduler.call(
+        return self.scheduler.call(
             kind, self, lambda: original(self, *args, **kwargs), shown=shown
         )
 
@@ -610,7 +609,7 @@ def _listing(name: str) -> Callable[..., Any]:
 
     def method(self: SteppedPath, *args: Any, **kwargs: Any) -> Any:
         # Sorted: one order a real directory may return, so a schedule never depends on hashing.
-        listed = self._scheduler.call(name, self, lambda: sorted(original(self, *args, **kwargs)))
+        listed = self.scheduler.call(name, self, lambda: sorted(original(self, *args, **kwargs)))
         return iter(listed)
 
     method.__name__ = name
@@ -623,12 +622,12 @@ class SteppedPath(_PATH_BASE):  # type: ignore[valid-type,misc]
     Only the outermost call is a step: ``write_text`` calling ``open`` is one.
     """
 
-    _scheduler: ClassVar[StepScheduler]
+    scheduler: ClassVar[StepScheduler]
 
     def open(self, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
         kind = "open_read" if mode.startswith("r") and "+" not in mode else "open_write"
         original = _PATH_BASE.open
-        return self._scheduler.call(kind, self, lambda: original(self, mode, *args, **kwargs))
+        return self.scheduler.call(kind, self, lambda: original(self, mode, *args, **kwargs))
 
 
 for _name in (
@@ -652,7 +651,7 @@ for _name in ("glob", "iterdir"):
 
 def stepped_root(root: Path, scheduler: StepScheduler) -> Path:
     """*root* as a path class bound to *scheduler*, so concurrent machines never share one."""
-    bound = type("MachinePath", (SteppedPath,), {"_scheduler": scheduler})
+    bound = type("MachinePath", (SteppedPath,), {"scheduler": scheduler})
     return bound(root)
 
 
@@ -682,10 +681,10 @@ class Actor:
         self.tokens: list[job_slots.SlotToken] = []
         self.releasing: dict[str, Worker] = {}
         self.operation: Worker | None = None
-        self.store = self._new_store()
+        self.store = self._build_store()
         world.start(self.pid)
 
-    def _new_store(self) -> SlotStore:
+    def _build_store(self) -> SlotStore:
         return SlotStore(
             self.root,
             is_pid_alive=self.world.is_pid_alive,
@@ -714,4 +713,4 @@ class Actor:
         self.releasing = {}
         self.operation = None
         self.world.start(self.pid)
-        self.store = self._new_store()
+        self.store = self._build_store()
