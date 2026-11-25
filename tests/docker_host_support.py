@@ -1,4 +1,4 @@
-"""A fake Docker host for tests that issue a Sandbox spec with ``[sandbox].memory`` set."""
+"""A fake of the Docker CLI boundary's host memory probe, for Sandbox specs with ``[sandbox].memory``."""
 
 from __future__ import annotations
 

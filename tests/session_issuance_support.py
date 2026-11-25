@@ -1,4 +1,7 @@
-"""Test-only helpers that issue Runtime specs through ``preview``/``issue_prepared``."""
+"""Test-only helpers that issue Runtime specs through ``preview``/``issue_prepared``.
+
+``serve_host_docker`` fakes the Docker CLI boundary.
+"""
 
 from __future__ import annotations
 

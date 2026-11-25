@@ -1,0 +1,109 @@
+# Test fakes catalog
+
+This page names the fake that owns each test boundary and the stand-in for each
+Booley seam, so a contributor or agent finds it before writing a test. Read it
+before you write a fake or patch a command; it does not explain how to write a
+good test (see [principle 14 of the coding principles](CODING_PRINCIPLES.md#14-tests-prove-behavior))
+and is not a user doc.
+
+The rule: extend the catalogued fake for a boundary instead of adding another.
+A new fake module, named with `fake` or `double`, needs a new row for a boundary
+or seam that no row covers yet. Copies of a stand-in drift apart, and away from
+the tool they imitate.
+
+A stand-in answers in place of an external boundary or a Booley seam: a program
+on the search path or a launcher, a patched name, an injected object, or a
+canned child process. A boundary is the one command, package, file or name a
+fake answers; a seam is a Booley function that a test replaces. Three classes
+of support code are not stand-ins and have no row, because they run the real
+code:
+
+- Isolation and redirects point real code at a test location or the real tool:
+  environment variables, config directories, caches, the test interpreter, the
+  built B-Wave binary, and setting a check's declared input such as
+  `BOOLEY_CONTAINER=1`.
+- Observers and ordering hooks wrap a real function, record or order its calls,
+  and call through.
+- Real collaborators, data and checks: assertion helpers, budgets, pytest
+  plugins, analyzers and their fixture data, drivers of real tools.
+
+`tests/docs/test_fake_catalog.py` fails when a module under `tests/` whose file
+name has `fake` or `double` has no row, and when a row links a module that does
+not exist. Link each module in a table row with a relative link; the test reads
+links from table rows only. The other stand-in modules are listed by behavior
+and kept honest by review.
+
+A boundary with several fakes links the issue that merges them. Each row of
+that kind was found by comparing the modules that answer the same command or
+patch the same name.
+
+## Boundaries
+
+| Boundary | Fake | Entry point | Interception | Notes |
+|---|---|---|---|---|
+| Docker CLI | [tests/fake_docker_executable.py](../../tests/fake_docker_executable.py)<br>[tests/docker_image_cli_fake.py](../../tests/docker_image_cli_fake.py)<br>[tests/harness/session_docker_fake.py](../../tests/harness/session_docker_fake.py)<br>[tests/harness/sandbox_image_docker_fake.py](../../tests/harness/sandbox_image_docker_fake.py)<br>[tests/harness/sidecar_docker_fake.py](../../tests/harness/sidecar_docker_fake.py)<br>[tests/relay_docker_fake.py](../../tests/relay_docker_fake.py)<br>[tests/session_issuance_support.py](../../tests/session_issuance_support.py)<br>[tests/docker_cli_guard.py](../../tests/docker_cli_guard.py)<br>[tests/docker_host_support.py](../../tests/docker_host_support.py)<br>[tests/path_tool_fake.py](../../tests/path_tool_fake.py)<br>[tests/command_runner_fake.py](../../tests/command_runner_fake.py) | `install_fake_docker`, `FakeDocker`<br>`serve_docker_image_cli`<br>`serve_sandbox_docker`, `route_session_commands`, `install_sandbox_exec`<br>`serve_sandbox_image_docker`<br>`serve_egress_docker`<br>`RelayDocker`<br>`serve_host_docker`, `HostDocker`, `stub_keeper`<br>`docker_cli_absent`, `docker_cli_answers`, `forbid_docker_cli`, `forbid_docker_processes`<br>`fake_docker_host`<br>`PathToolFake.install`<br>`CannedRunner` | program on the search path<br>patch `subprocess.run`<br>patch the Session runners; `docker` on the search path for `exec`<br>patch `subprocess.run`, `subprocess.Popen`<br>patch `host_sidecars._docker_adapter`<br>injected runner<br>patch `host_docker._run_docker`, `session_runtime._run`, `project_image.run_captured_bounded`<br>patch `host_docker._run_docker`, `run_captured_bounded`, `subprocess.Popen`<br>patch `project_image.probe_docker_host_memory`<br>program on the search path (`docker info` in `tests/ci/test_agent_readiness.py`)<br>injected runner (`docker info` and image probes in `tests/audit/`) | [#5515](https://github.com/boldaxolotl/booley/issues/5515) merges them |
+| Git | [tests/git_command_fake.py](../../tests/git_command_fake.py) | `GitCommandFake.install`, `answer_git_version` | patch `subprocess.run`, `platform_paths.run_captured_bounded` | The Doctor tests' base fake answers Git too: [#5666](https://github.com/boldaxolotl/booley/issues/5666) |
+| Live Git process scan | [tests/git_support.py](../../tests/git_support.py) | `no_live_git_processes` | patch `booley.runtime.git._iter_git_process_cmdlines` | `harness/git_support.py::fake_powershell` drives the scan's own tests one level down: not a duplicate |
+| `powershell` | [tests/harness/git_support.py](../../tests/harness/git_support.py) | `fake_powershell` | program on the search path | see the live Git process scan row |
+| Claude CLI | [tests/claude_cli_fake.py](../../tests/claude_cli_fake.py) | `write_claude_cli`, `replay_sdk_attempts`, `replay_sdk_stream` | program the SDK launches; patch `_claude_backend.query` |  |
+| Claude Agent SDK package, when absent | [tests/harness/conftest.py](../../tests/harness/conftest.py) | module-level `sys.modules["claude_agent_sdk"]` stub | `sys.modules` entry | installs only when the package is missing and `claude-agent-sdk` is a dependency, so it never answers in a supported environment: not a duplicate of the Claude CLI row |
+| Codex CLI | [tests/codex_cli_fake.py](../../tests/codex_cli_fake.py)<br>[tests/path_tool_fake.py](../../tests/path_tool_fake.py) | `install_fake_codex`, `replay_codex_run`<br>`PathToolFake.install` | program on the search path; patch `_inside_container`<br>program on the search path (a `codex` run in `tests/runtime/test_execution_ports.py`) | [#5660](https://github.com/boldaxolotl/booley/issues/5660) merges them |
+| Model provider API for the installed agent CLIs | [tests/docker/agent_policy_probe.py](../../tests/docker/agent_policy_probe.py) | `_Provider` | local HTTP server injected through `ANTHROPIC_BASE_URL` | in-image probe |
+| FPGA Flow's Vivado command | [tests/flows/fpga/vivado_fake.py](../../tests/flows/fpga/vivado_fake.py)<br>[tests/flows/fpga/vivado_run_fake.py](../../tests/flows/fpga/vivado_run_fake.py) | `FakeVivado.install`, `run_fpga`<br>`install` | program on the search path<br>patch `runtime_context.inside_session_runtime` | [#5598](https://github.com/boldaxolotl/booley/issues/5598) merges them |
+| Vivado release (provisioning) | [tests/vivado_release_fake.py](../../tests/vivado_release_fake.py) | `fake_vivado_release` | program in the release's `bin` | answers `vivado -version`, not the Flow's run |
+| Lint Flow's linter command | [tests/flows/lint/linter_run_fake.py](../../tests/flows/lint/linter_run_fake.py) | `install`, `isolated_verible_fusesoc` | patch `LintFlow._execute`, `fusesoc_registry.resolve_target_handle` |  |
+| `fusesoc run --setup` | [tests/fusesoc_test_support.py](../../tests/fusesoc_test_support.py) | `fusesoc_setup_runner` | injected runner | `linter_run_fake` runs the real setup and `target_test_support` calls through to the real `setup_command_for_handle`: not duplicates |
+| `iverilog` (failing build) | [tests/flows/failing_compiler.py](../../tests/flows/failing_compiler.py) | `put_failing_iverilog_on_path` | program on the search path |  |
+| Simulation adapters' simulator launch (`vvp`, `cocotb-config`, `run_supervised`) | [tests/flows/sim/backends/conftest.py](../../tests/flows/sim/backends/conftest.py) | `fake_launch`, `tool_stub`, `cocotb_config` | patch `booley.flows.sim.backends.{cocotb,icarus,verilator}.run_supervised`; programs on the search path | no `PathToolFake` answers `vvp` or `cocotb-config`: not a duplicate of the generic search-path row |
+| A Flow tool's child process | [tests/canned_process_support.py](../../tests/canned_process_support.py) | `canned_command` | a real child that replays a canned result | `harness/process_fake.py` is the in-memory process a patched `Popen` returns, a different answer: not a duplicate |
+| Commands found on the search path (generic) | [tests/path_tool_fake.py](../../tests/path_tool_fake.py) | `PathToolFake.install` | program on the search path | the Docker CLI and Codex CLI rows list its two duplicate uses |
+| Windows `cmd /c mklink /J` | [tests/mklink_fake.py](../../tests/mklink_fake.py) | `install`, `fail` | `cmd` on the search path |  |
+| Gateway token command | [tests/gateway_command_support.py](../../tests/gateway_command_support.py) | `write_token_command`, `count_runs` | launcher command string |  |
+| Commands a host probe runs | [tests/command_runner_fake.py](../../tests/command_runner_fake.py) | `CannedRunner`, `refusing_runner`, `FixedLookup` | injected runner and lookup |  |
+| Process control: the operating-system process a child wraps | [tests/harness/process_fake.py](../../tests/harness/process_fake.py) | `FakeProcess` | returned by a patched `Popen` |  |
+| Process liveness, identity and filesystem steps of Job slot stores | [tests/job_slot_steps.py](../../tests/job_slot_steps.py) | `FakeProcessWorld`, `StepScheduler`, `stepped_root`, `stepped_file_lock_wait` | injected into `SlotStore` |  |
+| Doctor's host and Sandbox commands | [tests/harness/doctor_host_support.py](../../tests/harness/doctor_host_support.py) | `serve_healthy_doctor_host`, `answer_doctor_commands`, `hide_container_cli` | patch `subprocess.run`, `host_diagnostics.inspect_host`, `shutil.which`, `developer_probe.resource` | builds on `tests/harness/test_doctor.py::_patch_environment`, a fake in a test file: [#5666](https://github.com/boldaxolotl/booley/issues/5666) |
+| MCP server process (launch) | [tests/mcp_server_launch_fake.py](../../tests/mcp_server_launch_fake.py) | `McpServerLaunchFake.installed` | patch `subprocess.Popen` | answers a different command than the MCP server's endpoint child |
+| MCP server's endpoint child | [tests/mcp_runner_fake.py](../../tests/mcp_runner_fake.py) | `install`, `application`, `call` | patch `server._run_subprocess` |  |
+| Clock of the file-lock wait | [tests/feedback/conftest.py](../../tests/feedback/conftest.py) | `lock_wait_expires` | patch `booley.core.file_lock.monotonic` | each clock row answers a different module's clock name (principle 16): not duplicates |
+| Deadline timer of the Simulation adapters | [tests/flows/sim/backends/conftest.py](../../tests/flows/sim/backends/conftest.py) | `never_firing_timer`, `instant_timer` | patch `threading.Timer` | see the file-lock clock row |
+| Clock of Job slot stores | [tests/job_slot_steps.py](../../tests/job_slot_steps.py) | `FakeProcessWorld`, `StepScheduler` | injected `now` and `sleep` | see the file-lock clock row |
+| Host platform (Windows paths, `sys.platform`, deadline policy) | [tests/host_platform_fake.py](../../tests/host_platform_fake.py) | `use_windows_paths`, `use_sys_platform`, `use_windows_deadline_policy` | patch | environment variables use `monkeypatch.setenv` |
+| Windows file-sharing violations | [tests/sharing_error_support.py](../../tests/sharing_error_support.py) | `sharing_error`, `hold_opens`, `hold_os_opens`, `hold_unlinks`, `hold_replaces`, `flaky`, `no_retry_delay` | patch `Path.open`, `os.open`, `Path.unlink`, `Path.replace`, the retry delays |  |
+| Which standard modules import | [tests/python_modules.py](../../tests/python_modules.py) | `set_importable` | `sys.modules` entries | different packages and questions than the Claude Agent SDK and `tomlkit` rows |
+| Installed `tomlkit` version | [tests/codex_config_support.py](../../tests/codex_config_support.py) | `tomlkit_copy` | returns a module copy that the test puts in `sys.modules` |  |
+| Terminal (stdin, colors) | [tests/conftest.py](../../tests/conftest.py)<br>[tests/harness/init_agent_support.py](../../tests/harness/init_agent_support.py) | `_terminal_as_under_capture`, `use_terminal_stdin`<br>`empty_host` | autouse; patch `sys.stdin`, `colors.COLORS_ENABLED`<br>patch `builtins.input` | [#5669](https://github.com/boldaxolotl/booley/issues/5669) |
+| Host memory (`/proc/meminfo`) | [tests/memory_budget_support.py](../../tests/memory_budget_support.py)<br>[tests/conftest.py](../../tests/conftest.py) | `pin_budget`, `fail_budget`, `budget_of`<br>`_memory_budget_is_measurable_everywhere`, `pin_memory_budget` | patch `memory_admission.compute_memory_budget`<br>patch `memory_admission.compute_memory_budget` | [#5663](https://github.com/boldaxolotl/booley/issues/5663) |
+| Container OOM event counters (cgroup) | [tests/oom_events_support.py](../../tests/oom_events_support.py) | `rising_oom_events` | patch `job_resources.cgroup_memory_events` |  |
+| `/proc` OOM scores and process tree | [tests/oom_priority_support.py](../../tests/oom_priority_support.py) | `FakeProc`, `inert_oom_proc`, `PROC_PATH` | patch `oom_priority.PROC` | reads `/proc`, not the cgroup counters above: not a duplicate |
+| Sandbox venue check (host or Sandbox) | [tests/conftest.py](../../tests/conftest.py)<br>[tests/flows/conftest.py](../../tests/flows/conftest.py)<br>[tests/harness/doctor_run_support.py](../../tests/harness/doctor_run_support.py)<br>[tests/flows/fpga/vivado_run_fake.py](../../tests/flows/fpga/vivado_run_fake.py)<br>[tests/harness/agent_auth_support.py](../../tests/harness/agent_auth_support.py)<br>[tests/codex_cli_fake.py](../../tests/codex_cli_fake.py)<br>[tests/owned_scratch_support.py](../../tests/owned_scratch_support.py) | `_issued_sandbox_mounts`, `hand_written_sandbox`<br>`session_runtime`<br>`enter_sandbox`<br>`install`<br>`pin_venue`<br>`install_fake_codex`<br>completed child script | patch `runtime_context._MOUNTINFO`<br>patch `runtime_context.inside_session_runtime`<br>patch `runtime_context.inside_session_runtime`<br>patch `runtime_context.inside_session_runtime`<br>patch `_inside_container`<br>patch `_inside_container`<br>patch `_inside_container` | [#5662](https://github.com/boldaxolotl/booley/issues/5662) |
+| Sandbox image contents Doctor checks | [tests/harness/doctor_run_support.py](../../tests/harness/doctor_run_support.py) | `enter_sandbox` | patch `web_isolation.policy_error`, `activity_hooks.hooks_error`, `dashboard_extension.installed_error` |  |
+| Runtime files and version probe of the diagnostics | [tests/diagnostic_helpers.py](../../tests/diagnostic_helpers.py) | private helpers | injected runner; patch `Path.is_dir`, `Path.exists`, `Path.lstat` |  |
+| Host named-pipe support (waveform streaming) | [tests/flows/sim/conftest.py](../../tests/flows/sim/conftest.py) | `declared_trace_files_convert_after_the_run` | patch `waveform_store.can_stream_waveform` |  |
+| uvicorn's serving loop | [tests/uvicorn_support.py](../../tests/uvicorn_support.py) | `capture_serving` | patch `uvicorn.Server.run` |  |
+| Native B-Wave binary (`bwave build`, `bwave list`) | [tests/conftest.py](../../tests/conftest.py) | `fake_bwave` | launcher; patch `waveform_store.native_bwave_binary` |  |
+
+## Booley port stand-ins
+
+These replace a Booley function or object (a seam) rather than an external
+program. Principle 14 asks to patch a Booley name only where it is the boundary,
+so each row here is a place to simplify, not to copy.
+
+| Seam | Stand-in | Entry point | Interception | Notes |
+|---|---|---|---|---|
+| A Flow's prepared invocation | [tests/flows/invocation_doubles.py](../../tests/flows/invocation_doubles.py) | `prepare_as`, `replace_run` | patch |  |
+| Project root discovery and config cache (`shared_infra.resolve_project_root`, `_TOML_CACHE`) | [tests/flows/conftest.py](../../tests/flows/conftest.py)<br>[tests/mcp_tools/conftest.py](../../tests/mcp_tools/conftest.py) | `_set_flow_project_root`<br>`_set_booley_dir` | patch `shared_infra.resolve_project_root`<br>patch `shared_infra.resolve_project_root` | [#5664](https://github.com/boldaxolotl/booley/issues/5664) |
+| The agent call (`booley.runtime.agent.call_agent`) | [tests/mcp_tools/reviewer_support.py](../../tests/mcp_tools/reviewer_support.py)<br>[tests/harness/doctor_host_support.py](../../tests/harness/doctor_host_support.py) | `install_agent`, `ScriptedAgent`<br>`answer_agent_calls` | patch `booley.runtime.agent.call_agent`<br>patch `agent.call_agent` | [#5665](https://github.com/boldaxolotl/booley/issues/5665) |
+| Agent workspace snapshot (`specialist.isolated_agent_workspace`) | [tests/mcp_tools/reviewer_support.py](../../tests/mcp_tools/reviewer_support.py) | `install_agent` | patch `specialist.isolated_agent_workspace` |  |
+| Leased build session (`SimulationBuildSession.capture_inputs`, `reusable_key`, `authorize_fresh_image`) | [tests/flows/sim/leased_session.py](../../tests/flows/sim/leased_session.py)<br>[tests/flows/sim/simulation_record_boundary.py](../../tests/flows/sim/simulation_record_boundary.py) | `canned_build_session`, `split_invoker`<br>`run_simulation_record_sim` | `patch.object` on the three methods<br>patch the three methods | [#5667](https://github.com/boldaxolotl/booley/issues/5667) |
+| Target selection (`TargetCatalog.build`) and the setup argv | [tests/target_test_support.py](../../tests/target_test_support.py)<br>[tests/flows/sim/simulation_record_test_support.py](../../tests/flows/sim/simulation_record_test_support.py) | `install_lenient_target_catalog`, `make_target_handle`<br>`_interrupted_simulation_record` | patch `TargetCatalog.build`<br>patch `TargetCatalog.build` | [#5668](https://github.com/boldaxolotl/booley/issues/5668) |
+| Simulation execution edge (`SimulateFlow._execute_boundary`, `SimulationExecution._prepare_build`) | [tests/flows/sim/simulation_record_boundary.py](../../tests/flows/sim/simulation_record_boundary.py) | `run_simulation_record_sim` | patch |  |
+| Simulation Record executor, execution, sizing, admission endpoint and store | [tests/flows/sim/simulation_record_test_support.py](../../tests/flows/sim/simulation_record_test_support.py) | builders in the module | patch |  |
+| Compile surface and Target identity (`resolve_target_compile_surface`, `SimulateFlow._target_identity`) | [tests/flows/sim/conftest.py](../../tests/flows/sim/conftest.py) | fixtures in the module | patch |  |
+| Host credential scan (`auth_token.credential_plan`) | [tests/devcontainer_spec_support.py](../../tests/devcontainer_spec_support.py) | `build_spec` | injected `CliSeeds` |  |
+| Host Bootstrap and the Sandbox Image chain (`init_cmd.reconcile_bootstrap`, `image_lifecycle.reconcile_planned`) | [tests/harness/init_agent_support.py](../../tests/harness/init_agent_support.py) | `stub_host_images` | patch |  |
+| Sandbox owner inventory (`session_runtime.sandbox_attachment`) | [tests/conftest.py](../../tests/conftest.py) | `fake_sandbox_attachment` | patch |  |
+| Feature Flag registry (`feature_flags.FEATURE_FLAGS`) | [tests/conftest.py](../../tests/conftest.py) | `feature_flags` | patch |  |
+| Host inspection (`host_diagnostics.inspect_host`) | [tests/harness/doctor_host_support.py](../../tests/harness/doctor_host_support.py) | `hide_container_cli` | patch |  |
+| Sandbox mount point (`sandbox_layout.BOOLEY_DIR_TARGET`) | [tests/mount_change_support.py](../../tests/mount_change_support.py) | `simulate_mount_change` | patch |  |
+| Runtime spec validator prefix (`runtime_spec._validator_prefix_anchors`) | [tests/session_issuance_support.py](../../tests/session_issuance_support.py) | `install_trusted_validator` | patch |  |

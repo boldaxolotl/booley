@@ -1,4 +1,7 @@
-"""Shared setup for the agent selection and auth tests of ``booley init``."""
+"""Shared setup for the agent selection and auth tests of ``booley init``.
+
+It fakes terminal input, Host Bootstrap and the Sandbox Image chain.
+"""
 
 from __future__ import annotations
 

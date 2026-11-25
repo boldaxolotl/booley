@@ -1,4 +1,4 @@
-"""A fake of the operating-system process a Checkout Flow child wraps."""
+"""A fake of the process-control boundary: an operating-system process a patched ``Popen`` returns."""
 
 from __future__ import annotations
 
