@@ -410,11 +410,13 @@ def test_command_table_matches_locations():
 
 def test_skills_table_lists_every_packaged_skill():
     """Every packaged skill directory has a row in the cheatsheet Skills table (#1427)."""
+    from booley.runtime.skill_links import withheld_skills
+
     _, bodies = cheatsheet.split_sections(cheatsheet_path().read_text(encoding="utf-8"))
     listed = set(re.findall(r"^\| `/([\w-]+)`", bodies["Skills"], re.MULTILINE))
     packaged = {path.name for path in skills_dir().iterdir() if (path / "SKILL.md").is_file()}
     assert packaged, "no packaged skills found; skills_dir() is wrong"
-    assert listed == packaged
+    assert listed == packaged - withheld_skills(frozenset())
 
 
 def test_init_force_row_matches_its_help():
