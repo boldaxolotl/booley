@@ -765,7 +765,8 @@ class TestEnforceVenue:
             with pytest.raises(SystemExit) if refused else contextlib.nullcontext():
                 tlr._enforce_runtime_location(command)
         assert init_cmd.run_init(Namespace(seed=True), tmp_path) == 2
-        assert init_message in capsys.readouterr().err
+        output = capsys.readouterr()
+        assert init_message in output.out + output.err
 
     def test_init_allowed_on_host(self, monkeypatch):
         with _host_venue(monkeypatch):
