@@ -34,19 +34,15 @@ from booley.core.scope_matching import (
         (["rtl/*.sv [new]"], "rtl/new.sv", True),
         (["rtl [new]"], "rtl/top.sv", True),
         (["* [new]"], "any/path", True),
+        # Literal entries compare exactly; globs fold case only where fnmatch does (Windows).
+        (["RTL"], "rtl/top.sv", False),
+        (["RTL/*.sv"], "rtl/top.sv", os.name == "nt"),
     ],
 )
 def test_literal_glob_directory_and_new_entry_matching(
     scope: list[str], path: str, matches: bool
 ) -> None:
     assert scope_matches_file(scope, path) is matches
-
-
-def test_case_matching_retains_platform_fnmatch_behavior() -> None:
-    expected = os.path.normcase("RTL") == os.path.normcase("rtl")
-    assert scope_matches_file(["RTL/*.sv"], "rtl/top.sv") is expected
-    # Literal entries use exact/prefix matching without fnmatch normalization.
-    assert not scope_matches_file(["RTL"], "rtl/top.sv")
 
 
 @pytest.mark.parametrize("scope", [[], ["* [new]"], ["*", "rtl"], ["**"]])
