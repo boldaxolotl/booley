@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -935,6 +936,14 @@ def test_workflow_trusts_only_the_exact_renovate_app_identity(
     else:
         assert result.returncode == 1
         assert "author identity" in result.stderr
+
+
+def test_loading_the_guard_module_runs_no_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.syspath_prepend(str(SCANNER.parent))
+
+    namespace = runpy.run_path(str(SCANNER))
+
+    assert callable(namespace["main"])
 
 
 def _self_test(*, pythonpath: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -2183,6 +2192,23 @@ def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str
 
     _expect_exit(result, 1)
     assert "ERROR" in result.stderr and "WARNING" not in result.stderr
+    assert SENTINEL not in result.stdout + result.stderr
+
+
+@POSIX_ONLY
+def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
+    gh = _FakeGh(tmp_path)  # answers the head-commit lookup
+    many_paths = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
+    commits = [(OUTSIDER, many_paths), (SAFE, {"maintainer.txt": TERM_TEXT})]
+    repo, base, head = _pr_scenario(tmp_path, commits)
+
+    result = _scan_with_event(
+        repo, "pre-push", _pr_event(head=head, base=base), base=base, env=gh.env
+    )
+
+    _expect_exit(result, 1)
+    assert "maintainer.txt" in result.stderr
+    assert "output limited to 100 advisory findings" in result.stderr
     assert SENTINEL not in result.stdout + result.stderr
 
 
