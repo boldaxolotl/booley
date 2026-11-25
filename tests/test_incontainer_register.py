@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import functools
 import json
 import os
 import re
@@ -10,36 +11,99 @@ import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 import tomli
 
 from booley.harness import incontainer_register as entry
-from booley.mcp import (
-    catalog,
+from booley.mcp import catalog
+from booley.runtime import (
+    auth_token,
+    booley_dir,
+    mount_history,
+    paths,
+    sandbox_layout,
+    worktree_mount_repair,
 )
+from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
-from booley.runtime import mount_history, worktree_mount_repair
 from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProblem
 from tests.codex_config_support import count_parses, tomlkit_copy
-from tests.conftest import require_symlinks
+from tests.harness.agent_auth_support import pin_venue
+from tests.mcp_server_launch_fake import McpServerLaunchFake
+
+_GATEWAY_KEYS = (
+    "BOOLEY_GATEWAY_URL",
+    "BOOLEY_GATEWAY_TOKEN",
+    "BOOLEY_GATEWAY_TOKEN_COMMAND",
+    "BOOLEY_GATEWAY_MODEL",
+    "BOOLEY_GATEWAY_EFFORT",
+)
+_START_ENV = (
+    *sorted(auth_token.CREDENTIAL_ENV_KEYS),
+    *_GATEWAY_KEYS,
+    "BOOLEY_AGENT_APP",
+    "BOOLEY_AGENT_CLIS",
+    "BOOLEY_PRIMARY_AUTH",
+    "BOOLEY_CONTAINER",
+    "BOOLEY_MCP_DEVELOPER_AGENT",
+    "CODEX_HOME",
+    "RTL_PROJECT_ROOT",
+)
 
 
 @pytest.fixture(autouse=True)
-def _no_worktree_repair(monkeypatch):
-    """`main` repairs worktree pointers of the checkout it runs in; these tests are not about that."""
-    monkeypatch.setattr(
-        worktree_mount_repair, "repair_mount_registrations", lambda _root: MountRepair()
+def first_run(tmp_path_factory, monkeypatch):
+    """Every test is a Sandbox start: a fresh home, Project and Booley Directory, no credential.
+
+    The Project is the working directory and the Booley Directory is also the Sandbox's
+    mount point, with no mount history: worktree repair runs and finds nothing to do. Its
+    name is non-ASCII and astral, so every Codex trust key it gets must be a TOML, not a
+    JSON, escape (#2258). The MCP server launch is the shared command fake; the automatic
+    Doctor is a detached worker, so a stand-in records whether the server already served.
+    """
+    for name in _START_ENV:
+        monkeypatch.delenv(name, raising=False)
+    booley_dir.reset_cache()
+    home, project, booley = (
+        tmp_path_factory.mktemp(name)
+        for name in ("home", "project", "booley-caf\u00e9-\U0001f600")
     )
+    monkeypatch.chdir(project)
+    for name, value in (("PWD", project), ("HOME", home), ("BOOLEY_DIR", booley)):
+        monkeypatch.setenv(name, str(value))
+    monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(booley))
+    # The server log's default is one fixed host path; each start gets its own.
+    log = str(home.parent / f"{home.name}-server.log")
+    start = functools.partial(reg.ensure_http_server, log_path=log)
+    monkeypatch.setattr(reg, "ensure_http_server", start)
+    doctor: list[bool] = []
+    with McpServerLaunchFake.installed(monkeypatch) as server:
+        monkeypatch.setattr(
+            entry, "launch_auto_doctor", lambda: doctor.append(server.listening) or "started"
+        )
+        keys = (str(project.resolve()), str(booley.resolve()))
+        yield SimpleNamespace(
+            home=home,
+            project=project,
+            root=keys[0],
+            booley=keys[1],
+            booley_dir=booley,
+            keys=keys,
+            server=server,
+            doctor=doctor,
+        )
+    booley_dir.reset_cache()
 
 
-def _stub_codex_effects(monkeypatch):
-    """Stub registration's side effects; return the list of calls they record."""
-    calls: list[str] = []
-    for name in ("deploy_skills", "deploy_host_skills", "apply_stored_credential"):
-        monkeypatch.setattr(reg, name, lambda *args, name=name: calls.append(name) or 0)
-    return calls
+def _main(capsys) -> tuple[int, str]:
+    """Run the registrar hook; return its exit code and what it printed to stderr."""
+    try:
+        entry.main()
+    except SystemExit as exited:
+        return exited.code, capsys.readouterr().err
+    return 0, capsys.readouterr().err
 
 
 def _seed_codex(home, content):
@@ -50,14 +114,16 @@ def _seed_codex(home, content):
     return path
 
 
+def _files(home):
+    """Every file and link under *home* (a deployed skill is a link to a directory)."""
+    return [path for path in home.rglob("*") if path.is_symlink() or not path.is_dir()]
+
+
 @pytest.mark.parametrize("existing", [None, 'model="existing"\n', "broken=["])
 @pytest.mark.parametrize("failure", ["missing", "broken-import", "too-old", "no-version"])
 def test_codex_incompatible_editor_fails_before_any_write(
     tmp_path, monkeypatch, existing, failure
 ):
-    calls = _stub_codex_effects(monkeypatch)
-    publish = Mock(wraps=reg._publish_codex_config)
-    monkeypatch.setattr(reg, "_publish_codex_config", publish)
     path = reg.codex_config_path(tmp_path)
     if existing is not None:
         _seed_codex(tmp_path, existing)
@@ -80,79 +146,90 @@ def test_codex_incompatible_editor_fails_before_any_write(
         reg.register("codex", home=tmp_path)
 
     assert "repair this file" not in str(error.value)
-    publish.assert_not_called()
-    assert calls == []
-    assert path.read_text() == existing if existing is not None else not path.exists()
+    assert _files(tmp_path) == ([] if existing is None else [path])
+    assert existing is None or path.read_text() == existing
 
 
 def test_codex_registration_accepts_a_suffixed_editor_version(tmp_path, monkeypatch):
-    _stub_codex_effects(monkeypatch)
     monkeypatch.setitem(sys.modules, "tomlkit", tomlkit_copy("0.16.0rc1"))
 
     assert reg.register("codex", home=tmp_path).startswith("codex:written")
 
 
-def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
-    events: list[str] = []
+# ===========================================================================
+# The registrar hook (main)
+# ===========================================================================
+
+
+def test_hook_starts_the_server_registers_and_then_launches_doctor(first_run, monkeypatch, capsys):
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    monkeypatch.setattr(
-        reg,
-        "ensure_http_server",
-        lambda: events.append("server") or "started",
-    )
-    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
-    monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
-    monkeypatch.setattr(entry, "observe_upgrade", lambda: events.append("observe") or "current")
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: events.append("health") or "started")
+    monkeypatch.delenv("PWD")  # without its spelling, the hook trusts its working directory
 
-    entry.main()
+    code, err = _main(capsys)
 
-    assert (
-        "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
-    )
-    assert events == ["server", "observe", "health"]
+    assert code == 0
+    assert "server:started" in err and "health:started claude:written" in err
+    # Doctor checks the server, so it launches only once the server serves.
+    assert first_run.doctor == [True]
+    projects = _claude_config(first_run.home)["projects"]
+    for key in first_run.keys:
+        assert projects[key]["hasTrustDialogAccepted"] is True
 
 
 @pytest.mark.parametrize(
-    ("result", "status"),
+    ("outcome", "status", "warning"),
     [
-        (MountRepair(), "current"),
-        (MountRepair(repaired=(Path("a"),)), "repaired"),
-        (MountRepair(pruned=(Path("a"),)), "repaired"),
-        (MountRepair(problems=(RegistrationProblem(Path("a"), Path("b"), "gone"),)), "problems"),
+        (None, "current", None),
+        ("{", "failed", "worktree pointers not repaired: malformed mount history"),
+        (MountRepair(repaired=(Path("a"),)), "repaired", None),
+        (MountRepair(pruned=(Path("a"),)), "repaired", None),
+        (
+            MountRepair(problems=(RegistrationProblem(Path("a"), Path("b"), "gone"),)),
+            "problems",
+            "worktree registration a (b): gone",
+        ),
+        (OSError("denied"), "failed", "worktree pointers not repaired: denied"),
     ],
+    ids=["no-history", "malformed-history", "repaired", "pruned", "problems", "os-error"],
 )
-def test_main_repairs_worktree_pointers_before_the_server(monkeypatch, capsys, result, status):
-    events: list[str] = []
+def test_hook_repairs_worktree_pointers_first_and_never_stops_on_them(
+    first_run, monkeypatch, capsys, outcome, status, warning
+):
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    monkeypatch.setattr(
-        worktree_mount_repair,
-        "repair_mount_registrations",
-        lambda root: events.append(f"repair:{root}") or result,
-    )
-    monkeypatch.setattr(entry, "_hook_start_directory", lambda: Path("start"))
-    monkeypatch.setattr(reg, "ensure_http_server", lambda: events.append("server") or "started")
-    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
-    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+    if isinstance(outcome, str):
+        history = first_run.booley_dir / mount_history.MOUNT_HISTORY
+        history.parent.mkdir()
+        history.write_text(outcome)
+    repairs = []
+    real_repair = worktree_mount_repair.repair_mount_registrations
 
-    entry.main()
+    def repair(root):
+        repairs.append((root, first_run.server.listening))
+        # The repair's own tests drive real worktree registrations; these rows stand in
+        # for the outcomes that need them, to test how the hook reports each one.
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome if isinstance(outcome, MountRepair) else real_repair(root)
 
-    error = capsys.readouterr().err
-    assert events == ["repair:start", "server"]
-    assert f"worktrees:{status} server:started" in error
-    assert ("warning: worktree registration a (b): gone" in error) is bool(result.problems)
+    monkeypatch.setattr(worktree_mount_repair, "repair_mount_registrations", repair)
+
+    code, err = _main(capsys)
+
+    # From the hook's own directory, before the server starts.
+    assert repairs == [(first_run.project, False)]
+    assert code == 0 and f"worktrees:{status} server:started" in err
+    assert (warning in err) if warning else "warning: worktree" not in err
 
 
-@pytest.mark.parametrize("failure", [OSError("denied"), mount_history.MountHistoryError("bad")])
-def test_a_failed_worktree_repair_never_stops_registration(monkeypatch, capsys, failure):
-    def fail(_root):
-        raise failure
+@pytest.mark.parametrize("app", ["none", "", "gemini"])
+def test_hook_without_an_agent_cli_starts_and_writes_nothing(first_run, monkeypatch, capsys, app):
+    monkeypatch.setenv("BOOLEY_AGENT_APP", app)
 
-    monkeypatch.setattr(worktree_mount_repair, "repair_mount_registrations", fail)
+    code, err = _main(capsys)
 
-    assert entry._repair_worktrees() == "failed"
-    assert "worktree pointers not repaired" in capsys.readouterr().err
+    assert code == 0 and "server:skipped" in err
+    assert first_run.server.launches == []
+    assert not list(first_run.home.iterdir())
 
 
 # ===========================================================================
@@ -160,50 +237,27 @@ def test_a_failed_worktree_repair_never_stops_registration(monkeypatch, capsys, 
 # ===========================================================================
 
 
-class TestClaude:
-    def test_writes_entry(self, tmp_path):
-        path = reg.claude_config_path(tmp_path)
-        assert reg.upsert_claude(path) is True
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["mcpServers"]["booley"] == reg.desired_claude_entry()
-        assert data["mcpServers"]["booley"] == {
-            "type": "http",
-            "url": reg.http_url(),
-            "timeout": 7200000,
-        }
+@pytest.mark.parametrize(
+    "servers",
+    [
+        None,
+        # Pre-ADR-0023 registrations spawned a per-session stdio child that a container
+        # resume never re-spawns: rewritten to the URL.
+        {"booley": {"command": "python", "args": ["-m", "booley.mcp.server"]}},
+        {"other": {"command": "x"}},
+    ],
+)
+def test_claude_entry_is_upserted_once_keeping_other_servers(tmp_path, servers):
+    path = reg.claude_config_path(tmp_path)
+    if servers is not None:
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
 
-    def test_idempotent(self, tmp_path):
-        path = reg.claude_config_path(tmp_path)
-        assert reg.upsert_claude(path) is True
-        assert reg.upsert_claude(path) is False
+    assert reg.upsert_claude(path) is True
+    assert reg.upsert_claude(path) is False
 
-    def test_migrates_stale_stdio_entry(self, tmp_path):
-        # Pre-ADR-0023 registrations spawned a per-session stdio child that a
-        # container resume never re-spawns; they must be rewritten to the URL.
-        path = reg.claude_config_path(tmp_path)
-        path.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "booley": {
-                            "command": "python",
-                            "args": ["-m", "booley.mcp.server"],
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        assert reg.upsert_claude(path) is True
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["mcpServers"]["booley"] == reg.desired_claude_entry()
-
-    def test_preserves_other_servers(self, tmp_path):
-        path = reg.claude_config_path(tmp_path)
-        path.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
-        reg.upsert_claude(path)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert "other" in data["mcpServers"] and "booley" in data["mcpServers"]
+    written = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+    assert written["booley"] == {"type": "http", "url": reg.http_url(), "timeout": 7200000}
+    assert written.get("other") == (servers or {}).get("other")
 
 
 # ===========================================================================
@@ -211,100 +265,42 @@ class TestClaude:
 # ===========================================================================
 
 
-class TestEnsureHttpServer:
-    def test_already_running(self, monkeypatch):
-        monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: True)
-        assert reg.ensure_http_server() == "running"
+def test_a_serving_server_is_not_started_again(first_run):
+    first_run.server.serve()
 
-    def test_spawned_server_is_the_developer_agents_surface(self, tmp_path, monkeypatch):
+    assert reg.ensure_http_server() == "running"
+    assert first_run.server.launches == []
 
-        states = iter([False, True])
-        monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: next(states))
-        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
-        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "submit_run_report")
-        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "submit_run_report")
-        spawned = {}
 
-        class FakeProc:
-            def poll(self):
-                return None
+def test_started_server_is_the_developer_agents_detached_surface(first_run, tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
+    for name in ("BOOLEY_NESTED_MCP_TOOLS", "BOOLEY_MCP_TOOLS"):
+        monkeypatch.setenv(name, "submit_run_report")
 
-        def fake_popen(cmd, **kwargs):
-            spawned["env"] = kwargs["env"]
-            return FakeProc()
+    assert reg.ensure_http_server(log_path=str(tmp_path / "server.log")) == "started"
 
-        monkeypatch.setattr(reg.subprocess, "Popen", fake_popen)
+    [(argv, options)] = first_run.server.launches
+    assert argv[-2:] == ["--transport", "http"]
+    # Detached: it must outlive the postStartCommand shell.
+    assert options["start_new_session"] is True
+    child_env = options["env"]
+    assert child_env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
+    assert not {"BOOLEY_NESTED_AGENT", "BOOLEY_NESTED_MCP_TOOLS", "BOOLEY_MCP_TOOLS"} & set(
+        child_env
+    )
+    assert catalog.status_visible(catalog.Exposure.from_mapping(child_env))
 
-        assert (
-            reg.ensure_http_server(
-                log_path=str(tmp_path / "server.log"),
-            )
-            == "started"
-        )
 
-        child_env = spawned["env"]
-        assert child_env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
-        assert "BOOLEY_NESTED_AGENT" not in child_env
-        assert "BOOLEY_NESTED_MCP_TOOLS" not in child_env
-        assert "BOOLEY_MCP_TOOLS" not in child_env
+@pytest.mark.parametrize(
+    ("outcome", "reason"), [("exits", "exited with 3"), ("unlaunchable", "spawn failed: no exec")]
+)
+def test_a_server_that_cannot_start_is_failed_not_raised(
+    first_run, tmp_path, capsys, outcome, reason
+):
+    first_run.server.outcome = outcome
 
-        with patch.dict(os.environ, child_env, clear=True):
-            assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
-
-    def test_starts_and_waits_for_port(self, tmp_path, monkeypatch):
-        # Port dead on the pre-check, alive once the (fake) server was spawned.
-        states = iter([False, True])
-        monkeypatch.setattr(
-            reg,
-            "_port_is_serving",
-            lambda port, **kw: next(states),
-        )
-
-        spawned = {}
-
-        class FakeProc:
-            def poll(self):
-                return None
-
-        def fake_popen(cmd, **kwargs):
-            spawned["cmd"] = cmd
-            spawned["kwargs"] = kwargs
-            return FakeProc()
-
-        monkeypatch.setattr(reg.subprocess, "Popen", fake_popen)
-        log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "started"
-        assert spawned["cmd"][-2:] == ["--transport", "http"]
-        # Detached: must not die with the postStartCommand shell.
-        assert spawned["kwargs"]["start_new_session"] is True
-
-    def test_reports_early_death(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: False)
-
-        class DeadProc:
-            returncode = 3
-
-            def poll(self):
-                return 3
-
-        monkeypatch.setattr(
-            reg.subprocess,
-            "Popen",
-            lambda cmd, **kw: DeadProc(),
-        )
-        log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "failed"
-
-    def test_spawn_oserror_is_failed_not_raised(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: False)
-
-        def boom(cmd, **kw):
-            raise OSError("no exec")
-
-        monkeypatch.setattr(reg.subprocess, "Popen", boom)
-        log = tmp_path / "server.log"
-        assert reg.ensure_http_server(log_path=str(log)) == "failed"
+    assert reg.ensure_http_server(log_path=str(tmp_path / "server.log")) == "failed"
+    assert reason in capsys.readouterr().err
 
 
 # ===========================================================================
@@ -312,363 +308,205 @@ class TestEnsureHttpServer:
 # ===========================================================================
 
 
-class TestSkills:
-    @staticmethod
-    def _fake_skills(root, names):
-        """Create a packaged-skills layout under *root* and return the dir."""
-        src = root / "data" / "skills"
-        for name in names:
-            (src / name).mkdir(parents=True)
-            (src / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
-        return src
-
-    @staticmethod
-    def _patch_src(monkeypatch, src):
-        from booley.runtime import paths
-
-        monkeypatch.setattr(paths, "skills_dir", lambda: src)
-
-    def test_claude_dir(self, tmp_path):
-        assert reg.skills_target_dir("claude", tmp_path) == tmp_path / ".claude" / "skills"
-
-    def test_codex_dir(self, tmp_path):
-        # Codex reads the generic cross-agent ~/.agents/skills (host Step 8 model).
-        assert reg.skills_target_dir("codex", tmp_path) == tmp_path / ".agents" / "skills"
-
-    def test_unknown_app_dir_is_none(self, tmp_path):
-        assert reg.skills_target_dir("none", tmp_path) is None
-
-    def test_links_all_skills(self, tmp_path, monkeypatch):
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a", "booley-b"])
-        self._patch_src(monkeypatch, src)
-
-        assert reg.deploy_skills("claude", tmp_path) == 2
-        target = reg.skills_target_dir("claude", tmp_path)
-        assert (target / "booley-a" / "SKILL.md").is_file()
-        assert (target / "booley-b" / "SKILL.md").is_file()
-
-    def test_codex_links_to_agents_dir(self, tmp_path, monkeypatch):
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a"])
-        self._patch_src(monkeypatch, src)
-
-        assert reg.deploy_skills("codex", tmp_path) == 1
-        assert (tmp_path / ".agents" / "skills" / "booley-a" / "SKILL.md").is_file()
-
-    def test_idempotent(self, tmp_path, monkeypatch):
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a"])
-        self._patch_src(monkeypatch, src)
-
-        assert reg.deploy_skills("claude", tmp_path) == 1
-        assert reg.deploy_skills("claude", tmp_path) == 0  # already linked
-
-    def test_skips_non_skill_dirs(self, tmp_path, monkeypatch):
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a"])
-        (src / "not-a-skill").mkdir()  # no SKILL.md
-        self._patch_src(monkeypatch, src)
-
-        assert reg.deploy_skills("claude", tmp_path) == 1
-        assert not (reg.skills_target_dir("claude", tmp_path) / "not-a-skill").exists()
-
-    def test_unknown_app_is_noop(self, tmp_path, monkeypatch):
-        src = self._fake_skills(tmp_path, ["booley-a"])
-        self._patch_src(monkeypatch, src)
-        assert reg.deploy_skills("none", tmp_path) == 0
-
-    def test_missing_source_is_noop(self, tmp_path, monkeypatch):
-        self._patch_src(monkeypatch, tmp_path / "nope")
-        assert reg.deploy_skills("claude", tmp_path) == 0
-
-    def test_prunes_dangling_links(self, tmp_path, monkeypatch):
-        # Skills dir persists across rebuilds; a removed skill leaves a dead
-        # link that must be pruned so the agent isn't offered a broken skill.
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a"])
-        self._patch_src(monkeypatch, src)
-        target = reg.skills_target_dir("claude", tmp_path)
-        target.mkdir(parents=True)
-        (target / "booley-gone").symlink_to(tmp_path / "removed-skill")  # dangling
-
-        reg.deploy_skills("claude", tmp_path)
-        assert not (target / "booley-gone").is_symlink()
-        assert (target / "booley-a" / "SKILL.md").is_file()
-
-    def test_link_failure_skips_only_that_skill(self, tmp_path, monkeypatch):
-        require_symlinks(tmp_path)
-        src = self._fake_skills(tmp_path, ["booley-a", "booley-b"])
-        self._patch_src(monkeypatch, src)
-        real_symlink_to = Path.symlink_to
-
-        def failing_first(self, target, target_is_directory=False):
-            if self.name == "booley-a":
-                raise OSError("read-only file system")
-            real_symlink_to(self, target, target_is_directory)
-
-        monkeypatch.setattr(Path, "symlink_to", failing_first)
-
-        assert reg.deploy_skills("claude", tmp_path) == 1
-        target = reg.skills_target_dir("claude", tmp_path)
-        assert not (target / "booley-a").exists()
-        assert (target / "booley-b" / "SKILL.md").is_file()
+@pytest.fixture
+def skill_sources(tmp_path, monkeypatch):
+    """Where packaged skills and the mounted host skills come from, for the tmp_path home."""
+    packaged = tmp_path / "packaged"
+    monkeypatch.setattr(paths, "skills_dir", lambda: packaged)
+    # The host-side spec mounts host skills here; registration must read the same place.
+    host = tmp_path / Path(dc.HOST_SKILLS_SIDECAR).relative_to(dc.AGENT_HOME)
+    return {"packaged": (reg.deploy_skills, packaged), "host": (reg.deploy_host_skills, host)}
 
 
-class TestHostSkills:
-    """deploy_host_skills — link the user's mounted host skills into the app dir."""
+def _skills(source, *names):
+    for name in names:
+        (source / name).mkdir(parents=True)
+        (source / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
 
-    @staticmethod
-    def _fake_sidecar(home, names):
-        """Create the mounted host-skills sidecar layout under *home*."""
-        sidecar = home / reg._HOST_SKILLS_SIDECAR
-        for name in names:
-            (sidecar / name).mkdir(parents=True)
-            (sidecar / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
-        return sidecar
 
-    def test_links_host_skills(self, tmp_path):
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop", "grill-me"])
+@pytest.mark.parametrize("kind", ["packaged", "host"])
+@pytest.mark.parametrize(("app", "where"), [("claude", ".claude"), ("codex", ".agents")])
+def test_skills_are_linked_where_the_app_reads_them(tmp_path, skill_sources, kind, app, where):
+    deploy, source = skill_sources[kind]
+    _skills(source, "booley-a", "booley-b")
+    (source / "not-a-skill").mkdir()
+    target = tmp_path / where / "skills"
+    target.mkdir(parents=True)
+    # The skills dir persists across rebuilds: a removed skill's dangling link is pruned.
+    (target / "booley-gone").symlink_to(tmp_path / "removed-skill")
 
-        assert reg.deploy_host_skills("claude", tmp_path) == 2
-        target = reg.skills_target_dir("claude", tmp_path)
-        assert (target / "deslop" / "SKILL.md").is_file()
-        assert (target / "grill-me" / "SKILL.md").is_file()
+    assert deploy(app, tmp_path) == 2
+    assert deploy(app, tmp_path) == 0
 
-    def test_codex_links_to_agents_dir(self, tmp_path):
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
+    assert sorted(child.name for child in target.iterdir()) == ["booley-a", "booley-b"]
+    assert (target / "booley-a" / "SKILL.md").is_file()
 
-        assert reg.deploy_host_skills("codex", tmp_path) == 1
-        assert (tmp_path / ".agents" / "skills" / "deslop" / "SKILL.md").is_file()
 
-    def test_builtin_wins_name_clash(self, tmp_path):
-        # A built-in of the same name is deployed first; deploy_host_skills must
-        # leave it alone so the in-image copy wins (exists() skip).
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["shared"])
-        target = reg.skills_target_dir("claude", tmp_path)
-        target.mkdir(parents=True)
-        builtin = tmp_path / "builtin" / "shared"
-        builtin.mkdir(parents=True)
-        (builtin / "SKILL.md").write_text("builtin", encoding="utf-8")
-        (target / "shared").symlink_to(builtin)  # built-in already linked
+@pytest.mark.parametrize("kind", ["packaged", "host"])
+def test_no_skill_is_linked_without_a_source_or_a_known_app(tmp_path, skill_sources, kind):
+    deploy, source = skill_sources[kind]
 
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
-        assert (target / "shared").resolve() == builtin.resolve()
+    assert deploy("claude", tmp_path) == 0
+    _skills(source, "booley-a")
+    assert deploy("none", tmp_path) == 0
+    assert not (tmp_path / ".claude").exists()
 
-    def test_idempotent(self, tmp_path):
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
-        assert reg.deploy_host_skills("claude", tmp_path) == 1
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
 
-    def test_skips_non_skill_dirs(self, tmp_path):
-        require_symlinks(tmp_path)
-        sidecar = self._fake_sidecar(tmp_path, ["deslop"])
-        (sidecar / "not-a-skill").mkdir()  # no SKILL.md
-        assert reg.deploy_host_skills("claude", tmp_path) == 1
-        assert not (reg.skills_target_dir("claude", tmp_path) / "not-a-skill").exists()
+def test_a_packaged_skill_wins_a_name_clash_with_a_host_skill(tmp_path, skill_sources):
+    for _deploy, source in skill_sources.values():
+        _skills(source, "shared")
 
-    def test_no_sidecar_is_noop(self, tmp_path):
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
+    assert reg.deploy_skills("claude", tmp_path) == 1
+    assert reg.deploy_host_skills("claude", tmp_path) == 0
 
-    def test_unknown_app_is_noop(self, tmp_path):
-        self._fake_sidecar(tmp_path, ["deslop"])
-        assert reg.deploy_host_skills("none", tmp_path) == 0
+    packaged = skill_sources["packaged"][1] / "shared"
+    assert (tmp_path / ".claude" / "skills" / "shared").resolve() == packaged.resolve()
 
-    def test_prunes_link_of_unmounted_host_skill(self, tmp_path):
-        # mount_host_skills turned off / skill removed -> its bind is gone, so the
-        # dangling link must be pruned (the sidecar child no longer exists).
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
-        target = reg.skills_target_dir("claude", tmp_path)
-        target.mkdir(parents=True)
-        (target / "gone").symlink_to(tmp_path / reg._HOST_SKILLS_SIDECAR / "gone")  # dangling
 
-        reg.deploy_host_skills("claude", tmp_path)
-        assert not (target / "gone").is_symlink()
-        assert (target / "deslop" / "SKILL.md").is_file()
+def test_a_skill_that_cannot_be_linked_skips_only_itself(tmp_path, skill_sources, monkeypatch):
+    _skills(skill_sources["packaged"][1], "booley-a", "booley-b")
+    real_symlink_to = Path.symlink_to
+
+    def failing_first(self, target, target_is_directory=False):
+        if self.name == "booley-a":
+            raise OSError("read-only file system")
+        real_symlink_to(self, target, target_is_directory)
+
+    monkeypatch.setattr(Path, "symlink_to", failing_first)
+
+    assert reg.deploy_skills("claude", tmp_path) == 1
+    assert [child.name for child in (tmp_path / ".claude" / "skills").iterdir()] == ["booley-b"]
 
 
 # ===========================================================================
 # apply_stored_credential — the `booley auth` sidecar seed
 # ===========================================================================
+#
+# The container-side delivery of the rotation-free credential: the route that reaches
+# VS Code's "Reopen in Container", where the spec's ${localEnv:...} reference resolves empty.
+
+_CREDENTIAL_VARS = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}
 
 
-class TestApplyStoredCredential:
-    """Container-side application of the rotation-free credential.
+def _store_credential(home, app):
+    """Mount the `booley auth` credential sidecar for *app* in *home*."""
+    (home / auth_token.TOKEN_SEED_BASENAME[app]).write_text("SYNTHETIC_STORED\n", encoding="utf-8")
 
-    This is the delivery path that reaches VS Code's "Reopen in Container",
-    where the spec's ${localEnv:...} reference resolves empty.
-    """
 
-    @staticmethod
-    def _clear_env(monkeypatch):
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def _credential_file(home, app):
+    return reg.claude_settings_path(home) if app == "claude" else reg.codex_auth_path(home)
 
-    @staticmethod
-    def _seed(tmp_path, app, value):
-        from booley.runtime.auth_token import TOKEN_SEED_BASENAME
 
-        (tmp_path / TOKEN_SEED_BASENAME[app]).write_text(value + "\n", encoding="utf-8")
+@pytest.mark.parametrize("app", ["claude", "codex"])
+@pytest.mark.parametrize("exported", [None, "", "SYNTHETIC_EXPORTED"], ids=["no", "empty", "set"])
+def test_stored_credential_is_applied_unless_one_is_exported(tmp_path, monkeypatch, app, exported):
+    # VS Code resolves an absent ${localEnv:...} to "": that falls through to the store.
+    # A real export wins, whichever way Claude layers settings env over the process env.
+    if exported is not None:
+        monkeypatch.setenv(_CREDENTIAL_VARS[app], exported)
+    _store_credential(tmp_path, app)
 
-    # --- Claude: settings.json env ---
+    assert reg.apply_stored_credential(app, tmp_path) == "written"
+    assert reg.apply_stored_credential(app, tmp_path) == "current"
 
-    def test_claude_seed_written_to_settings_env(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
+    path = _credential_file(tmp_path, app)
+    written = json.loads(path.read_text())
+    expected = {_CREDENTIAL_VARS[app]: exported or "SYNTHETIC_STORED"}
+    assert (written["env"] if app == "claude" else written) == expected
+    # The file holds a secret: owner-only, like the host store.
+    assert path.stat().st_mode & 0o077 == 0
 
-        assert reg.apply_stored_credential("claude", tmp_path) == "written"
-        settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
-        # The file now holds a secret — owner-only, like the host store.
-        if os.name != "nt":
-            assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
 
-    def test_claude_idempotent(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-        assert reg.apply_stored_credential("claude", tmp_path) == "written"
-        assert reg.apply_stored_credential("claude", tmp_path) == "current"
+@pytest.mark.parametrize(
+    ("app", "existing", "expected"),
+    [
+        (
+            "claude",
+            {"model": "opus", "env": {"FOO": "bar"}},
+            {
+                "model": "opus",
+                "env": {"FOO": "bar", "CLAUDE_CODE_OAUTH_TOKEN": "SYNTHETIC_STORED"},
+            },
+        ),
+        # After the postStart creds-seed copy: a stored key deliberately replaces the login.
+        ("codex", {"tokens": {"access_token": "x"}}, {"OPENAI_API_KEY": "SYNTHETIC_STORED"}),
+    ],
+)
+def test_stored_credential_lands_in_the_existing_file(tmp_path, app, existing, expected):
+    path = _credential_file(tmp_path, app)
+    path.parent.mkdir()
+    path.write_text(json.dumps(existing))
+    _store_credential(tmp_path, app)
 
-    def test_claude_nonempty_ambient_env_wins_over_seed(self, tmp_path, monkeypatch):
-        # The export escape hatch: an explicitly exported value overrides the
-        # store. Claude Code applies settings env ON TOP of the process env, so
-        # the exported value must be the one written.
-        self._clear_env(monkeypatch)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-exported")
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
+    reg.apply_stored_credential(app, tmp_path)
 
+    assert json.loads(path.read_text()) == expected
+
+
+@pytest.mark.parametrize(
+    ("app", "existing", "status", "kept"),
+    [
+        ("claude", None, "none", None),
+        # `booley auth --clear` and a rebuild: the dead token on the persistent volume
+        # would otherwise override the fresh subscription login forever.
+        (
+            "claude",
+            {"env": {"CLAUDE_CODE_OAUTH_TOKEN": "dead", "FOO": "bar"}},
+            "cleared",
+            {"env": {"FOO": "bar"}},
+        ),
+        ("codex", {"OPENAI_API_KEY": "dead"}, "cleared", None),
+        # Not the single-key file Booley writes: a user's own login stays.
+        (
+            "codex",
+            {"OPENAI_API_KEY": "k", "tokens": None},
+            "none",
+            {"OPENAI_API_KEY": "k", "tokens": None},
+        ),
+        ("none", None, "none", None),
+    ],
+)
+def test_without_a_credential_only_booleys_entry_is_removed(tmp_path, app, existing, status, kept):
+    path = _credential_file(tmp_path, app)
+    if existing is not None:
+        path.parent.mkdir()
+        path.write_text(json.dumps(existing))
+
+    assert reg.apply_stored_credential(app, tmp_path) == status
+
+    assert _files(tmp_path) == ([] if kept is None else [path])
+    assert kept is None or json.loads(path.read_text()) == kept
+
+
+@pytest.mark.parametrize("app", ["claude", "codex"])
+def test_policy_switch_clears_only_managed_credential_entries(tmp_path, monkeypatch, app):
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
+    sidecar = tmp_path / auth_token.TOKEN_SEED_BASENAME[app]
+    sidecar.write_text("SYNTHETIC")
+    assert reg.apply_stored_credential(app, tmp_path) == "written"
+    policy = "api_key" if app == "claude" else "subscription"
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
+    reg.apply_stored_credential(app, tmp_path)
+    if app == "claude":
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in reg.claude_settings_path(tmp_path).read_text()
+    else:
+        assert not reg.codex_auth_path(tmp_path).exists()
+
+
+def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+    login = tmp_path / ".claude" / ".credentials.json"
+    login.parent.mkdir()
+    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}')
+    before = login.read_bytes()
+    settings = reg.claude_settings_path(tmp_path)
+    settings.write_text('{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}')
+    settings_before = settings.read_bytes()
+    with pytest.raises(ValueError, match="conflicts") as caught:
         reg.apply_stored_credential("claude", tmp_path)
-        settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-exported"
-
-    def test_claude_empty_ambient_env_is_absent(self, tmp_path, monkeypatch):
-        # VS Code resolves an absent ${localEnv:...} to "" — that must fall
-        # through to the seed, matching the CLI's own truthiness handling.
-        self._clear_env(monkeypatch)
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-
-        reg.apply_stored_credential("claude", tmp_path)
-        settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
-
-    def test_claude_preserves_other_settings(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"model": "opus", "env": {"FOO": "bar"}}))
-
-        reg.apply_stored_credential("claude", tmp_path)
-        settings = json.loads(path.read_text())
-        assert settings["model"] == "opus"
-        assert settings["env"]["FOO"] == "bar"
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
-
-    def test_claude_no_credential_no_entry_is_noop(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        assert reg.apply_stored_credential("claude", tmp_path) == "none"
-        assert not reg.claude_settings_path(tmp_path).exists()
-
-    def test_claude_stale_entry_cleared_when_credential_gone(self, tmp_path, monkeypatch):
-        # `booley auth --clear` + rebuild: settings.json lives on the PERSISTENT
-        # state volume, so without cleanup the dead token would override the
-        # freshly seeded subscription credentials forever.
-        self._clear_env(monkeypatch)
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dead", "FOO": "bar"}})
-        )
-
-        assert reg.apply_stored_credential("claude", tmp_path) == "cleared"
-        settings = json.loads(path.read_text())
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in settings.get("env", {})
-        assert settings["env"]["FOO"] == "bar"  # only our entry is managed
-
-    # --- Codex: auth.json ---
-
-    def test_codex_seed_written_to_auth_json(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "codex", "sk-proj-stored")
-
-        assert reg.apply_stored_credential("codex", tmp_path) == "written"
-        auth = json.loads(reg.codex_auth_path(tmp_path).read_text())
-        assert auth == {"OPENAI_API_KEY": "sk-proj-stored"}
-        if os.name != "nt":
-            assert reg.codex_auth_path(tmp_path).stat().st_mode & 0o077 == 0
-
-    def test_codex_idempotent(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "codex", "sk-proj-stored")
-        assert reg.apply_stored_credential("codex", tmp_path) == "written"
-        assert reg.apply_stored_credential("codex", tmp_path) == "current"
-
-    def test_codex_key_wins_over_seeded_subscription_login(self, tmp_path, monkeypatch):
-        # Runs after the postStart creds-seed cp in the same hook chain: a
-        # stored key deliberately replaces the refreshing subscription login.
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "codex", "sk-proj-stored")
-        path = reg.codex_auth_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"tokens": {"access_token": "x"}, "last_refresh": "y"}))
-
-        reg.apply_stored_credential("codex", tmp_path)
-        assert json.loads(path.read_text()) == {"OPENAI_API_KEY": "sk-proj-stored"}
-
-    def test_codex_nonempty_ambient_env_wins_over_seed(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-exported")
-        self._seed(tmp_path, "codex", "sk-proj-stored")
-
-        reg.apply_stored_credential("codex", tmp_path)
-        auth = json.loads(reg.codex_auth_path(tmp_path).read_text())
-        assert auth == {"OPENAI_API_KEY": "sk-proj-exported"}
-
-    def test_codex_clears_only_booley_shaped_auth(self, tmp_path, monkeypatch):
-        # Removal is shape-checked: the exact single-key file Booley writes is
-        # cleaned up after `booley auth --clear`; a user's own login is not.
-        self._clear_env(monkeypatch)
-        path = reg.codex_auth_path(tmp_path)
-        path.parent.mkdir(parents=True)
-
-        path.write_text(json.dumps({"OPENAI_API_KEY": "sk-proj-dead"}))
-        assert reg.apply_stored_credential("codex", tmp_path) == "cleared"
-        assert not path.exists()
-
-        path.write_text(json.dumps({"OPENAI_API_KEY": "k", "tokens": None}))
-        assert reg.apply_stored_credential("codex", tmp_path) == "none"
-        assert path.exists()  # not Booley's shape — left alone
-
-    # --- dispatch ---
-
-    def test_unknown_app_is_noop(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        assert reg.apply_stored_credential("none", tmp_path) == "none"
-        assert not list(tmp_path.iterdir())
-
-    def test_register_reports_credential_status(self, tmp_path, monkeypatch):
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-        assert "cred:written" in reg.register("claude", home=tmp_path)
-        assert "cred:current" in reg.register("claude", home=tmp_path)
-
-    def test_register_pins_permission_mode_after_the_credential(self, tmp_path, monkeypatch):
-        # Both writers rewrite settings.json wholesale — running them in the
-        # wrong order would drop whichever wrote first.
-        self._clear_env(monkeypatch)
-        self._seed(tmp_path, "claude", "sk-ant-oat01-stored")
-
-        assert "perm:written" in reg.register("claude", home=tmp_path)
-        settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
-        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
-        assert "perm:current" in reg.register("claude", home=tmp_path)
+    assert "SYNTHETIC" not in str(caught.value)
+    assert login.read_bytes() == before
+    assert settings.read_bytes() == settings_before
 
 
 # ===========================================================================
@@ -676,125 +514,39 @@ class TestApplyStoredCredential:
 # ===========================================================================
 
 
-class TestClaudePermissionMode:
-    """The container IS the sandbox, so sessions launch in bypassPermissions.
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        # The state volume persists: a mode an older Booley or a hand edit left is pulled back.
+        {"permissions": {"defaultMode": "acceptEdits"}},
+        {"model": "opus", "permissions": {"deny": ["Bash(rm -rf /)"]}},
+    ],
+)
+def test_claude_sessions_launch_in_bypass_mode_beside_the_credential(tmp_path, settings):
+    """The container IS the sandbox; Claude Code offers bypassPermissions only to a session
+    launched in it, so settings.json is the one lever that reaches every door."""
+    _store_credential(tmp_path, "claude")
+    path = reg.claude_settings_path(tmp_path)
+    if settings is not None:
+        path.parent.mkdir()
+        path.write_text(json.dumps(settings))
 
-    Claude Code only makes that mode selectable when the session was launched
-    in it, so pinning it in settings.json is the only lever that reaches both
-    doors (VS Code "Reopen in Container" and `booley session enter`).
-    """
+    assert "claude:written" in (first := reg.register("claude", home=tmp_path))
+    assert "cred:written perm:written" in first
 
-    def test_writes_bypass_mode_and_skips_disclaimer(self, tmp_path):
-        assert reg._apply_claude_permission_mode(tmp_path) == "written"
-        settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
-        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
-        assert settings["permissions"]["deny"] == ["WebFetch", "WebSearch"]
-        # Without this the one-time disclaimer blocks a fresh state volume.
-        assert settings["skipDangerousModePermissionPrompt"] is True
-
-    def test_idempotent(self, tmp_path):
-        assert reg._apply_claude_permission_mode(tmp_path) == "written"
-        assert reg._apply_claude_permission_mode(tmp_path) == "current"
-
-    def test_owner_only_mode(self, tmp_path):
-        # Shares a file with the OAuth token, so it must not widen the mode.
-        reg._apply_claude_permission_mode(tmp_path)
-        if os.name != "nt":
-            assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
-
-    def test_preserves_credential_and_permission_rules(self, tmp_path):
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "model": "opus",
-                    "env": {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-stored"},
-                    "permissions": {"deny": ["Bash(rm -rf /)"]},
-                }
-            )
-        )
-
-        assert reg._apply_claude_permission_mode(tmp_path) == "written"
-        settings = json.loads(path.read_text())
-        assert settings["model"] == "opus"
-        assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
-        assert settings["permissions"]["deny"] == [
-            "Bash(rm -rf /)",
-            "WebFetch",
-            "WebSearch",
-        ]
-        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
-
-    def test_reasserted_over_a_downgrade(self, tmp_path):
-        # The state volume persists; a mode left behind by an older Booley (or
-        # hand-edited) must be pulled back on the next container start.
-        path = reg.claude_settings_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"permissions": {"defaultMode": "acceptEdits"}}))
-
-        assert reg._apply_claude_permission_mode(tmp_path) == "written"
-        settings = json.loads(path.read_text())
-        assert settings["permissions"]["defaultMode"] == "bypassPermissions"
-
-    def test_only_claude(self, tmp_path):
-        reg.register("codex", home=tmp_path)
-        assert not reg.claude_settings_path(tmp_path).exists()
-
-
-# ===========================================================================
-# register() dispatch
-# ===========================================================================
-
-
-class TestRegister:
-    def test_claude(self, tmp_path):
-        # Return string now carries both the MCP-write state and skill count.
-        assert reg.register("claude", home=tmp_path).startswith("claude:written")
-        assert reg.register("claude", home=tmp_path).startswith("claude:current")
-
-    def test_codex(self, tmp_path):
-        first = reg.register("codex", home=tmp_path)
-        second = reg.register("codex", home=tmp_path)
-        assert first.startswith("codex:written")
-        assert "perm:written" in first
-        assert "perm:current" in second
-
-    def test_none_is_noop(self, tmp_path):
-        assert reg.register("none", home=tmp_path) == "none"
-        assert not list(tmp_path.iterdir())
-
-    def test_main_uses_env(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-        # Registration must not depend on the real server spawn in tests.
-        requested: list[str] = []
-        monkeypatch.setattr(
-            reg,
-            "ensure_http_server",
-            lambda: requested.append("server") or "running",
-        )
-        monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
-        monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
-        # Under pytest the cwd is Booley's own source checkout, not a Project.
-        monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
-        entry.main()
-        assert reg.claude_config_path(tmp_path).exists()
-        assert requested == ["server"]
-
-    @pytest.mark.parametrize("app", ["none", "", "gemini"])
-    def test_main_skips_server_without_app(self, tmp_path, monkeypatch, app):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("BOOLEY_AGENT_APP", app)
-
-        def fail(**kw):
-            raise AssertionError("must not start a server with no client app")
-
-        monkeypatch.setattr(reg, "ensure_http_server", fail)
-        monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
-        monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
-        entry.main()
-        assert not list(tmp_path.iterdir())
+    written = json.loads(path.read_text())
+    # Both writers rewrite settings.json wholesale: neither may drop the other's keys.
+    assert written["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "SYNTHETIC_STORED"
+    assert written["permissions"]["defaultMode"] == "bypassPermissions"
+    user_denied = (settings or {}).get("permissions", {}).get("deny", [])
+    assert written["permissions"]["deny"] == [*user_denied, "WebFetch", "WebSearch"]
+    # Without this the one-time disclaimer blocks a fresh state volume.
+    assert written["skipDangerousModePermissionPrompt"] is True
+    assert written.get("model") == (settings or {}).get("model")
+    assert path.stat().st_mode & 0o077 == 0
+    assert "claude:current" in (again := reg.register("claude", home=tmp_path))
+    assert "cred:current perm:current" in again
 
 
 # ===========================================================================
@@ -894,8 +646,7 @@ def _registered(original):
 
 
 @pytest.mark.parametrize(("source", "keeps"), _CODEX_FORMS.values(), ids=_CODEX_FORMS)
-def test_codex_registration_forms(tmp_path, monkeypatch, source, keeps):
-    _stub_codex_effects(monkeypatch)
+def test_codex_registration_forms(tmp_path, source, keeps):
     path = reg.codex_config_path(tmp_path)
     text = (source or "").replace("SECTION", reg.codex_section())
     if source is not None:
@@ -910,34 +661,30 @@ def test_codex_registration_forms(tmp_path, monkeypatch, source, keeps):
         *(k.replace("SECTION", reg.codex_section()) for k in keeps),
     ):
         assert kept in body
-    if source is None and os.name != "nt":
+    if source is None:
         assert path.stat().st_mode & 0o777 == 0o600
+    assert not reg.claude_settings_path(tmp_path).exists()
     assert "codex:current" in reg.register("codex", home=tmp_path)
     assert path.read_bytes().decode() == body
 
 
-def test_codex_current_config_is_not_republished(tmp_path, monkeypatch):
-    _stub_codex_effects(monkeypatch)
+def test_codex_current_config_is_not_republished(tmp_path):
     reg.register("codex", home=tmp_path)
     path = reg.codex_config_path(tmp_path)
-    before = (path.read_bytes(), path.stat().st_mtime_ns)
-    publish = Mock(side_effect=AssertionError("current config must not be published"))
-    monkeypatch.setattr(reg, "_publish_codex_config", publish)
+    os.utime(path, ns=(10**9, 10**9))
+    before = path.read_bytes()
 
     assert "codex:current" in reg.register("codex", home=tmp_path)
 
-    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == (before, 10**9)
 
 
 def test_codex_registration_parses_config_once(tmp_path, monkeypatch):
     source = 'model="existing"\nnotice.other=true\nother={time=12:34, escaped="\\e\\x41"}\n'
     _seed_codex(tmp_path, source)
-    seen = []
     with count_parses(monkeypatch, source) as parses:
-        _stub_codex_effects(monkeypatch)
-        monkeypatch.setattr(reg, "deploy_skills", lambda *args: seen.append(parses()) or 0)
         reg.register("codex", home=tmp_path)
-    assert seen == [1], "the config was parsed more than once before the first effect"
+        assert parses() == 1
     parsed = tomli.loads(reg.codex_config_path(tmp_path).read_text())
     assert parsed["notice"] == {"other": True, "hide_full_access_warning": True}
     assert parsed["other"] == tomli.loads(source)["other"]
@@ -947,7 +694,6 @@ def test_codex_registration_parses_config_once(tmp_path, monkeypatch):
 def test_codex_publication_failure_preserves_destination(
     tmp_path, monkeypatch, failing_publication
 ):
-    _stub_codex_effects(monkeypatch)
     existing = 'model="existing"\n'
     path = _seed_codex(tmp_path, existing)
     path.chmod(0o640)
@@ -969,13 +715,11 @@ def test_codex_publication_failure_preserves_destination(
     assert parsed["model"] == "existing"
     assert ("approval_policy" in parsed) is False
     assert ("mcp_servers" in parsed) is bool(failing_publication)
-    if os.name != "nt":
-        assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_mode & 0o777 == 0o640
     assert list(path.parent.iterdir()) == [path]
 
 
 def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path):
-    require_symlinks(tmp_path)
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir(parents=True)
     target = tmp_path / "shared-config.toml"
@@ -992,85 +736,49 @@ def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path):
     )
     assert parsed["model"] == "existing"
     assert path.is_symlink()
-    if os.name != "nt":
-        assert target.stat().st_mode & 0o777 == 0o640
-
-
-@pytest.mark.parametrize(
-    "existing",
-    [
-        'bad = "',
-        'suppress_unstable_features_warning="bad"',
-        "features=true\n",
-        "notice=true\n",
-        'notice="x"\n',
-        "[notice]\nx=1\nx=2\n",
-        "mcp_servers = 1\n",
-        'mcp_servers = {other = {url="http://other"}}\n',
-        'mcp_servers = {booley = {command="old"}, other = {url="http://other"}}\n',
-    ],
-)
-def test_codex_invalid_config_is_refused_untouched(tmp_path, monkeypatch, existing):
-    calls = _stub_codex_effects(monkeypatch)
-    path = _seed_codex(tmp_path, existing)
-    for _ in range(2):
-        with pytest.raises(ValueError, match=re.escape(str(path))) as error:
-            reg.register("codex", home=tmp_path)
-        assert "repair this file and retry" in str(error.value)
-        assert path.read_text() == existing
-    assert calls == []
-
-
-def test_codex_unsupported_inline_servers_fail_with_named_repair_diagnostic(tmp_path, monkeypatch):
-    _stub_codex_effects(monkeypatch)
-    existing = 'mcp_servers = {booley = {command="old"}}\n'
-    path = _seed_codex(tmp_path, existing)
-
-    with pytest.raises(ValueError, match="inline mcp_servers table") as error:
-        reg.register("codex", home=tmp_path)
-
-    assert str(path) in str(error.value) and "repair this file and retry" in str(error.value)
-    assert path.read_text() == existing
+    assert target.stat().st_mode & 0o777 == 0o640
 
 
 def test_codex_editor_failure_during_an_edit_is_a_named_error(tmp_path, monkeypatch):
     from tomlkit.exceptions import TOMLKitError
 
-    calls = _stub_codex_effects(monkeypatch)
     path = _seed_codex(tmp_path, 'model="existing"\n')
+    # private: no valid config makes tomlkit fail mid-edit (#5397's plan lists the layouts
+    # tried), so the edit helper stands in for an editor that does.
     monkeypatch.setattr(reg, "_set_codex_table_key", Mock(side_effect=TOMLKitError("no fit")))
 
     with pytest.raises(ValueError, match=re.escape(str(path))) as error:
         reg.register("codex", home=tmp_path)
 
     assert "no fit" in str(error.value) and "repair this file and retry" in str(error.value)
-    assert calls == [] and path.read_text() == 'model="existing"\n'
+    assert _files(tmp_path) == [path] and path.read_text() == 'model="existing"\n'
 
 
 def test_codex_unusable_mcp_migration_is_refused_before_any_write(tmp_path, monkeypatch):
-    calls = _stub_codex_effects(monkeypatch)
     path = _seed_codex(tmp_path, 'model="existing"\n')
+    # No valid config makes the appended section miss its settings; an incomplete
+    # section stands in for a migration that does.
     monkeypatch.setattr(reg, "codex_section", lambda: '[mcp_servers.booley]\nurl = "http://x"\n')
 
     with pytest.raises(ValueError, match="did not produce current settings"):
         reg.register("codex", home=tmp_path)
 
-    assert calls == [] and path.read_text() == 'model="existing"\n'
+    assert _files(tmp_path) == [path] and path.read_text() == 'model="existing"\n'
 
 
 def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeypatch):
     path = _seed_codex(tmp_path, 'approval_policy="on-request"\n')
-    _stub_codex_effects(monkeypatch)
-    monkeypatch.setattr(
-        reg, "apply_stored_credential", Mock(side_effect=ValueError("credential policy conflict"))
-    )
-    with pytest.raises(ValueError, match="credential policy conflict"):
+    login = reg.codex_auth_path(tmp_path)
+    login.write_text('{"tokens": {"access_token": "SYNTHETIC"}}')
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+
+    with pytest.raises(ValueError, match="Codex login conflicts with API-key policy"):
         reg.register("codex", home=tmp_path)
     failed = tomllib.loads(path.read_text())
     assert failed["approval_policy"] == "on-request"
     assert failed["mcp_servers"]["booley"]["url"] == reg.http_url()
 
-    monkeypatch.setattr(reg, "apply_stored_credential", lambda *args: "none")
+    login.unlink()
     assert "perm:written" in reg.register("codex", home=tmp_path)
 
     healed = tomllib.loads(path.read_text())
@@ -1078,77 +786,21 @@ def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeyp
     assert healed["mcp_servers"] == failed["mcp_servers"]
 
 
-@pytest.mark.parametrize("app", ["claude", "codex"])
-def test_policy_switch_clears_only_managed_credential_entries(tmp_path, monkeypatch, app):
-    from booley.runtime import auth_token
-
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
-    for key in auth_token.CREDENTIAL_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    sidecar = tmp_path / auth_token.TOKEN_SEED_BASENAME[app]
-    sidecar.write_text("SYNTHETIC")
-    assert reg.apply_stored_credential(app, tmp_path) == "written"
-    policy = "api_key" if app == "claude" else "subscription"
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
-    reg.apply_stored_credential(app, tmp_path)
-    if app == "claude":
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in reg.claude_settings_path(tmp_path).read_text()
-    else:
-        assert not reg.codex_auth_path(tmp_path).exists()
-
-
-def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
-    login = tmp_path / ".claude" / ".credentials.json"
-    login.parent.mkdir()
-    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}')
-    before = login.read_bytes()
-    settings = reg.claude_settings_path(tmp_path)
-    settings.write_text('{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}')
-    settings_before = settings.read_bytes()
-    with pytest.raises(ValueError, match="conflicts") as caught:
-        reg.apply_stored_credential("claude", tmp_path)
-    assert "SYNTHETIC" not in str(caught.value)
-    assert login.read_bytes() == before
-    assert settings.read_bytes() == settings_before
+def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
+    """The gateway removal path relies on this check; the other writers validate their own text."""
+    path = reg.codex_config_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text('model="existing"\n')
+    # private: the removal path only ever produces valid text, so no public call can hand
+    # the publisher an invalid one.
+    with pytest.raises(ValueError, match=re.escape(str(path))):
+        reg._publish_codex_config(path, "notice=true\n")
+    assert path.read_text() == 'model="existing"\n'
 
 
 # ===========================================================================
 # First-run state — no onboarding, login or folder-trust prompt (#2258)
 # ===========================================================================
-
-_FIRST_RUN_ENV_VARS = (
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "OPENAI_API_KEY",
-    "BOOLEY_PRIMARY_AUTH",
-    "BOOLEY_DIR",
-    "RTL_PROJECT_ROOT",
-    "BOOLEY_CONTAINER",
-    "CODEX_HOME",
-)
-
-
-@pytest.fixture
-def first_run(tmp_path, monkeypatch):
-    """An unseeded Sandbox home plus Project Root and Booley Directory trust keys."""
-    from booley.runtime import booley_dir
-
-    for name in _FIRST_RUN_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    booley_dir.reset_cache()
-    home = tmp_path / "home"
-    root = tmp_path / "work"
-    booley = tmp_path / "booley"
-    for directory in (home, root, booley):
-        directory.mkdir()
-    yield SimpleNamespace(
-        home=home,
-        root=str(root.resolve()),
-        booley=str(booley.resolve()),
-        keys=(str(root.resolve()), str(booley.resolve())),
-    )
-    booley_dir.reset_cache()
 
 
 def _claude_config(home):
@@ -1172,127 +824,59 @@ def _assert_claude_trusted(config, first_run):
         assert config["projects"][key]["hasTrustDialogAccepted"] is True
 
 
-def test_claude_unseeded_with_credential_skips_first_run_prompts(first_run, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+@pytest.mark.parametrize("credential", [None, "oauth-token", "login", "api-key"])
+def test_claude_first_run_prompts_are_skipped_only_with_a_credential(
+    first_run, monkeypatch, credential
+):
+    if credential == "oauth-token":
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC")
+    elif credential == "api-key":
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC")
+    elif credential == "login":
+        login = first_run.home / ".claude" / ".credentials.json"
+        login.parent.mkdir()
+        login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC"}}))
 
     reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
 
     config = _claude_config(first_run.home)
-    assert config["hasCompletedOnboarding"] is True
+    _assert_claude_trusted(config, first_run)
     assert config["hasSeenAutoDefaultNudge"] is True
-    _assert_claude_trusted(config, first_run)
-    assert _claude_settings(first_run.home)["theme"] == "dark"
-    assert config["mcpServers"]["booley"]["type"] == "http"
-
-
-def test_claude_unseeded_with_login_file_skips_first_run_prompts(first_run):
-    login = first_run.home / ".claude" / ".credentials.json"
-    login.parent.mkdir()
-    login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "fake"}}), encoding="utf-8")
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    config = _claude_config(first_run.home)
-    assert config["hasCompletedOnboarding"] is True
-    _assert_claude_trusted(config, first_run)
-    assert _claude_settings(first_run.home)["theme"] == "dark"
-
-
-def test_claude_api_key_keeps_key_approval_dialog(first_run, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-test")
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    config = _claude_config(first_run.home)
-    assert config["hasCompletedOnboarding"] is True
-    _assert_claude_trusted(config, first_run)
+    onboarded = credential is not None
+    assert ("hasCompletedOnboarding" in config) is onboarded
+    assert _claude_settings(first_run.home).get("theme") == ("dark" if onboarded else None)
     # Claude's "use this API key?" dialog is the billing consent: never pre-answered.
     assert "customApiKeyResponses" not in config
 
 
-def test_codex_unseeded_with_api_key_skips_login_and_trust(first_run, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test")
-
-    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
-
-    auth = json.loads(reg.codex_auth_path(first_run.home).read_text(encoding="utf-8"))
-    assert auth == {"OPENAI_API_KEY": "sk-proj-test"}
-    config = _codex_config(first_run.home)
-    for key in first_run.keys:
-        assert config["projects"][key]["trust_level"] == "trusted"
-    assert config["mcp_servers"]["booley"]["url"].startswith("http://127.0.0.1:")
-
-
-def test_claude_without_credential_keeps_login_and_writes_trust(first_run):
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    config = _claude_config(first_run.home)
-    _assert_claude_trusted(config, first_run)
-    assert config["hasSeenAutoDefaultNudge"] is True
-    assert "hasCompletedOnboarding" not in config
-    assert "theme" not in _claude_settings(first_run.home)
-
-
-def test_codex_without_credential_keeps_login_and_writes_trust(first_run):
-    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
-
-    assert not reg.codex_auth_path(first_run.home).exists()
-    config = _codex_config(first_run.home)
-    for key in first_run.keys:
-        assert config["projects"][key]["trust_level"] == "trusted"
-
-
-def test_claude_seeded_config_keeps_seed_and_adds_sandbox_trust(first_run, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-    host_entry = {"hasTrustDialogAccepted": True, "allowedTools": ["Bash(ls:*)"]}
+def test_claude_first_run_keeps_every_user_choice(first_run, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC")
     seed = {
-        "hasCompletedOnboarding": True,
+        "hasCompletedOnboarding": False,
         "hasSeenAutoDefaultNudge": False,
         "autoUpdates": False,
         "cachedGrowthBookFeatures": {"gate": 1},
-        "projects": {"/host/checkout": host_entry},
+        "projects": {
+            "/host/checkout": {"hasTrustDialogAccepted": True, "allowedTools": ["Bash(ls:*)"]},
+            first_run.root: {"hasTrustDialogAccepted": False, "allowedTools": ["Read"]},
+            first_run.booley: {"allowedTools": ["Read"]},
+        },
     }
     _write_claude_config(first_run.home, seed)
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    config = _claude_config(first_run.home)
-    for kept in (
-        "hasCompletedOnboarding",
-        "hasSeenAutoDefaultNudge",
-        "autoUpdates",
-        "cachedGrowthBookFeatures",
-    ):
-        assert config[kept] == seed[kept]
-    assert config["projects"]["/host/checkout"] == host_entry
-    _assert_claude_trusted(config, first_run)
-
-
-def test_claude_keeps_user_onboarding_choice(first_run, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-    _write_claude_config(first_run.home, {"hasCompletedOnboarding": False})
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    config = _claude_config(first_run.home)
-    assert config["hasCompletedOnboarding"] is False
-    _assert_claude_trusted(config, first_run)
-
-
-def test_claude_keeps_user_theme(first_run, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
     settings = reg.claude_settings_path(first_run.home)
     settings.parent.mkdir()
     settings.write_text(json.dumps({"theme": "light"}), encoding="utf-8")
 
     reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
 
+    config = _claude_config(first_run.home)
+    seed["projects"][first_run.booley]["hasTrustDialogAccepted"] = True
+    assert {key: config[key] for key in seed} == seed
     assert _claude_settings(first_run.home)["theme"] == "light"
-    assert _claude_config(first_run.home)["hasCompletedOnboarding"] is True
 
 
 def test_claude_legacy_theme_blocks_default_theme(first_run, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC")
     _write_claude_config(first_run.home, {"theme": "light-daltonized"})
 
     reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
@@ -1303,36 +887,8 @@ def test_claude_legacy_theme_blocks_default_theme(first_run, monkeypatch):
     assert config["hasCompletedOnboarding"] is True
 
 
-def test_claude_keeps_user_project_entry(first_run):
-    user_entry = {"hasTrustDialogAccepted": False, "allowedTools": ["Read"]}
-    _write_claude_config(first_run.home, {"projects": {first_run.root: dict(user_entry)}})
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    projects = _claude_config(first_run.home)["projects"]
-    assert projects[first_run.root] == user_entry
-    assert projects[first_run.booley]["hasTrustDialogAccepted"] is True
-
-
-def test_codex_keeps_user_trust_level(first_run):
-    block = (
-        "# my notes\n"
-        f"[projects.{json.dumps(first_run.root)}]\n"
-        'trust_level = "untrusted"  # keep this folder out\n'
-    )
-    reg.codex_config_path(first_run.home).parent.mkdir()
-    reg.codex_config_path(first_run.home).write_text(block, encoding="utf-8")
-
-    reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
-
-    assert block in reg.codex_config_path(first_run.home).read_text(encoding="utf-8")
-    projects = _codex_config(first_run.home)["projects"]
-    assert projects[first_run.root]["trust_level"] == "untrusted"
-    assert projects[first_run.booley]["trust_level"] == "trusted"
-
-
-def test_sandbox_trust_paths_cover_linked_booley_dir(first_run, tmp_path):
-    require_symlinks(tmp_path)
+def test_sandbox_trust_paths_cover_linked_booley_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "unmounted"))
     real_root = tmp_path / "real-project"
     real_root.mkdir()
     spelled_root = tmp_path / "spelled-project"
@@ -1347,61 +903,63 @@ def test_sandbox_trust_paths_cover_linked_booley_dir(first_run, tmp_path):
     assert str(spelled_root.absolute()) in keys
     assert str(linked_target.resolve()) in keys
     assert str(spelled_root / ".booley") in keys
+    assert str(tmp_path / "unmounted") not in keys
 
 
-def test_main_registers_trust_for_hook_cwd(first_run, tmp_path, monkeypatch):
-    project = tmp_path / "hook-project"
+def test_booley_directory_symlink_to_an_ancestor_is_not_trusted(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOOLEY_DIR")
+    project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.chdir(project)
-    monkeypatch.setenv("PWD", str(project))
-    monkeypatch.setenv("HOME", str(first_run.home))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley"))
-    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
-    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    (project / ".booley").symlink_to(tmp_path, target_is_directory=True)
 
-    entry.main()
+    keys = entry.sandbox_trust_paths(project)
 
-    projects = _claude_config(first_run.home)["projects"]
-    assert projects[str(project.resolve())]["hasTrustDialogAccepted"] is True
-    assert projects[first_run.booley]["hasTrustDialogAccepted"] is True
+    assert str(tmp_path.resolve()) not in keys
+    assert str(project.resolve()) in keys
 
 
-def test_claude_invalid_config_is_refused_untouched(first_run):
-    path = reg.claude_config_path(first_run.home)
-    path.write_text("{not json", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="repair") as raised:
-        reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    assert str(path) in str(raised.value)
-    assert path.read_text(encoding="utf-8") == "{not json"
+_RETRY = "repair this file and retry"
 
 
-def test_claude_invalid_settings_is_refused_untouched(first_run):
-    path = reg.claude_settings_path(first_run.home)
-    path.parent.mkdir()
-    path.write_text("{ not json", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("app", "where", "existing", "reason"),
+    [
+        ("claude", reg.claude_config_path, "{not json", "restart the Sandbox"),
+        ("claude", reg.claude_settings_path, "{ not json", "restart the Sandbox"),
+        ("claude", reg.claude_config_path, '{"projects": []}', "projects must be an object"),
+        ("claude", reg.claude_config_path, '{"projects": null}', "projects must be an object"),
+        ("claude", reg.claude_config_path, '{"projects": {"/x": "?"}}', "projects./x must be"),
+        ("claude", reg.claude_config_path, '{"mcpServers": null}', "mcpServers must be"),
+        ("codex", reg.codex_config_path, 'bad = "', _RETRY),
+        ("codex", reg.codex_config_path, 'suppress_unstable_features_warning="bad"', _RETRY),
+        ("codex", reg.codex_config_path, "features=true\n", _RETRY),
+        ("codex", reg.codex_config_path, "notice=true\n", _RETRY),
+        ("codex", reg.codex_config_path, 'notice="x"\n', _RETRY),
+        ("codex", reg.codex_config_path, "[notice]\nx=1\nx=2\n", _RETRY),
+        ("codex", reg.codex_config_path, "mcp_servers = 1\n", _RETRY),
+        ("codex", reg.codex_config_path, 'mcp_servers = {other = {url="http://o"}}\n', _RETRY),
+        (
+            "codex",
+            reg.codex_config_path,
+            'mcp_servers = {booley = {command="old"}}\n',
+            "inline mcp_servers table",
+        ),
+        ("codex", reg.codex_config_path, 'projects = "x"\n', "projects must be a table"),
+    ],
+)
+def test_an_invalid_user_config_is_refused_before_any_write(
+    first_run, app, where, existing, reason
+):
+    path = where(first_run.home)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(existing, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="repair") as raised:
-        reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
+    with pytest.raises(ValueError, match="repair") as refused:
+        reg.register(app, home=first_run.home, trust_paths=("/x", *first_run.keys))
 
-    assert str(path) in str(raised.value)
-    assert path.read_text(encoding="utf-8") == "{ not json"
-
-
-def test_codex_invalid_projects_table_is_refused_untouched(first_run):
-    path = reg.codex_config_path(first_run.home)
-    path.parent.mkdir()
-    path.write_text('projects = "x"\n', encoding="utf-8")
-
-    with pytest.raises(ValueError, match="repair") as raised:
-        reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
-
-    assert str(path) in str(raised.value)
-    assert path.read_text(encoding="utf-8") == 'projects = "x"\n'
+    assert str(path) in str(refused.value) and reason in str(refused.value)
+    assert _files(first_run.home) == [path]
+    assert path.read_text(encoding="utf-8") == existing
 
 
 def _snapshot(home):
@@ -1434,39 +992,6 @@ def test_repeat_registration_is_a_no_op(first_run, monkeypatch):
     assert _snapshot(first_run.home) == before
 
 
-@pytest.mark.parametrize(
-    "existing",
-    [
-        {"projects": []},
-        {"projects": None},
-        {"projects": {"/x": "not an object"}},
-        {"mcpServers": None},
-    ],
-)
-def test_claude_misshaped_config_is_refused_before_any_write(first_run, existing):
-    path = reg.claude_config_path(first_run.home)
-    original = json.dumps(existing)
-    path.write_text(original, encoding="utf-8")
-    first_run_trust = ("/x", *first_run.keys)
-
-    with pytest.raises(ValueError, match="repair"):
-        reg.register("claude", home=first_run.home, trust_paths=first_run_trust)
-
-    assert path.read_text(encoding="utf-8") == original
-    assert not reg.claude_settings_path(first_run.home).exists()
-
-
-def test_claude_existing_entry_without_trust_key_gains_it_and_keeps_others(first_run):
-    _write_claude_config(
-        first_run.home, {"projects": {first_run.root: {"allowedTools": ["Read"]}}}
-    )
-
-    reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
-
-    project = _claude_config(first_run.home)["projects"][first_run.root]
-    assert project == {"allowedTools": ["Read"], "hasTrustDialogAccepted": True}
-
-
 def _trust_layout(first_run, existing):
     """Seed the Codex config with *existing* (``{root}`` filled in) and return its path."""
     # JSON string escaping is valid TOML basic-string escaping (Windows backslashes).
@@ -1474,58 +999,69 @@ def _trust_layout(first_run, existing):
 
 
 @pytest.mark.parametrize(
-    ("existing", "trusted_keys", "skipped"),
+    ("existing", "trusted"),
     [
-        ('# note\n[projects."{root}"]\nother = 1\n', "both", False),
-        ('model = "x"\n', "both", False),
-        ('model = "x"', "both", False),
-        ('projects."{root}".other = 1\n', "both", False),
-        ('[projects]\n"{root}".other = 1\n', "both", False),
-        ('projects = { "/elsewhere" = { trust_level = "trusted" } }\n', "none", True),
+        (None, "both"),
+        ('# note\n[projects."{root}"]\nother = 1\n', "both"),
+        ('model = "x"\n', "both"),
+        ('model = "x"', "both"),
+        ('projects."{root}".other = 1\n', "both"),
+        ('[projects]\n"{root}".other = 1\n', "both"),
+        # A user's own trust level, even untrusted, wins.
+        ('# notes\n[projects."{root}"]\ntrust_level = "untrusted"  # keep out\n', "booley"),
+        # An inline table cannot take a new entry: both are skipped, registration goes on.
+        ('projects = { "/elsewhere" = { trust_level = "trusted" } }\n', "none"),
     ],
     ids=[
+        "absent",
         "existing-table",
         "new-table",
         "new-table-no-final-newline",
         "root-dotted-entry",
         "dotted-entry-in-table",
+        "user-trust-level",
         "inline-table",
     ],
 )
-def test_codex_trust_layouts(first_run, capsys, existing, trusted_keys, skipped):
-    path = _trust_layout(first_run, existing)
-    before = path.read_text()
+def test_codex_trust_layouts(first_run, capsys, existing, trusted):
+    path = reg.codex_config_path(first_run.home)
+    if existing is not None:
+        _trust_layout(first_run, existing)
 
-    status = reg._apply_codex_trust(first_run.home, first_run.keys)
+    status = reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
 
     body = path.read_text()
     projects = tomllib.loads(body)["projects"]
-    assert tomllib.loads(body).get("model") == tomllib.loads(before).get("model")
-    for key in first_run.keys:
-        assert (projects.get(key, {}).get("trust_level") == "trusted") is (trusted_keys == "both")
-    if "other = 1" in before:
+    expected = {"both": first_run.keys, "booley": (first_run.booley,), "none": ()}[trusted]
+    assert [k for k in first_run.keys if projects.get(k, {}).get("trust_level") == "trusted"] == [
+        *expected
+    ]
+    for kept in re.findall(r'#[^\n]*|trust_level = "untrusted"', existing or ""):
+        assert kept in body
+    if "other = 1" in (existing or ""):
         assert projects[first_run.root]["other"] == 1
     warnings = capsys.readouterr().err
+    skipped = trusted == "none"
     assert all(key in warnings and "by hand" in warnings for key in first_run.keys) is skipped
-    assert status == ("current" if skipped else "written")
-    if skipped:
-        assert body == before
-    elif before.startswith("# note"):
-        assert body.startswith("# note\n") and body.count("[projects.") == 2
-    assert reg._apply_codex_trust(first_run.home, first_run.keys) == "current"
+    assert f"first-run:{'current' if skipped else 'written'}" in status
+    assert "first-run:current" in reg.register(
+        "codex", home=first_run.home, trust_paths=first_run.keys
+    )
     assert path.read_text() == body
 
 
 def test_codex_trust_skips_a_path_whose_edit_fails(first_run, monkeypatch, capsys):
     from tomlkit.exceptions import TOMLKitError
 
-    existing = f"[projects.{json.dumps(first_run.root)}]\nother = 1\n"
-    path = reg.codex_config_path(first_run.home)
-    path.parent.mkdir()
-    path.write_text(existing, encoding="utf-8")
+    path = _trust_layout(first_run, '[projects."{root}"]\nother = 1\n')
+    reg.register("codex", home=first_run.home)  # MCP and permissions current: no edit left
+    # private: no valid layout fails one path's edit and takes the next path's (#5397's
+    # plan lists the layouts tried).
     monkeypatch.setattr(reg, "_set_codex_table_key", Mock(side_effect=TOMLKitError("no fit")))
 
-    assert reg._apply_codex_trust(first_run.home, first_run.keys) == "written"
+    status = reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
+
+    assert "first-run:written" in status
 
     projects = tomllib.loads(path.read_text())["projects"]
     assert projects[first_run.root] == {"other": 1}
@@ -1534,121 +1070,26 @@ def test_codex_trust_skips_a_path_whose_edit_fails(first_run, monkeypatch, capsy
     assert first_run.root in warnings and first_run.booley not in warnings
 
 
-def test_codex_inline_projects_table_never_breaks_registration(first_run):
-    _trust_layout(first_run, 'projects = { "/elsewhere" = { trust_level = "trusted" } }\n')
-
-    result = reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
-
-    assert "first-run:current" in result
-
-
-def test_codex_trust_parses_config_once(first_run, monkeypatch):
-    source = 'model = "existing"\n'
-    _trust_layout(first_run, source)
-    with count_parses(monkeypatch, source) as parses:
-        reg._apply_codex_trust(first_run.home, first_run.keys)
-    assert parses() == 1
-
-
-def test_codex_trust_covers_non_ascii_paths(first_run, tmp_path):
-    odd = tmp_path / "café-\U0001f600"
-    odd.mkdir()
-
-    reg.register("codex", home=first_run.home, trust_paths=(str(odd.resolve()),))
-
-    assert (
-        _codex_config(first_run.home)["projects"][str(odd.resolve())]["trust_level"] == "trusted"
-    )
-
-
-def test_booley_directory_symlink_to_an_ancestor_is_not_trusted(first_run, tmp_path):
-    require_symlinks(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").symlink_to(tmp_path, target_is_directory=True)
-
-    keys = entry.sandbox_trust_paths(project)
-
-    assert str(tmp_path.resolve()) not in keys
-    assert str(project.resolve()) in keys
-
-
-def test_main_reports_refused_registration_but_still_runs_the_hook(
-    first_run, tmp_path, monkeypatch, capsys
-):
-    project = tmp_path / "hook-project"
-    project.mkdir()
-    monkeypatch.chdir(project)
-    monkeypatch.setenv("HOME", str(first_run.home))
-    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-    reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
-    doctor_runs = []
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
-    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
-
-    with pytest.raises(SystemExit) as raised:
-        entry.main()
-
-    assert raised.value.code == 1
-    assert doctor_runs == [1]
-    assert "registration refused" in capsys.readouterr().err
-
-
-def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
-    """The gateway removal path relies on this check; the other writers validate their own text."""
-    path = reg.codex_config_path(tmp_path)
-    path.parent.mkdir()
-    path.write_text('model="existing"\n')
-    with pytest.raises(ValueError, match=re.escape(str(path))):
-        reg._publish_codex_config(path, "notice=true\n")
-    assert path.read_text() == 'model="existing"\n'
-
-
 # ===========================================================================
 # Per-CLI Codex gateway in a Booley-issued Sandbox (#2897)
 # ===========================================================================
 
 _GATEWAY_URL = "https://gw.example/v1"
-_GATEWAY_KEYS = (
-    "BOOLEY_GATEWAY_URL",
-    "BOOLEY_GATEWAY_TOKEN",
-    "BOOLEY_GATEWAY_TOKEN_COMMAND",
-    "BOOLEY_GATEWAY_MODEL",
-    "BOOLEY_GATEWAY_EFFORT",
-)
+_ISSUED_RECORD = "claude=subscription,codex=gateway"
 
 
-def _gateway_start(first_run, tmp_path, monkeypatch, *, app, record, gateway_values=True):
+def _gateway_start(monkeypatch, *, app, record, gateway_values=True):
     """Prepare a container start of the registrar hook; ``record=None`` is a hand-written spec."""
-    from booley.config import agent as agent_config
-
-    project = tmp_path / "hook-project"
-    project.mkdir()
-    monkeypatch.chdir(project)
-    monkeypatch.setenv("PWD", str(project))
-    monkeypatch.setenv("HOME", str(first_run.home))
-    monkeypatch.setenv("USERPROFILE", str(first_run.home))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "booley"))
     monkeypatch.setenv("BOOLEY_AGENT_APP", app)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-    for key in _GATEWAY_KEYS:
-        monkeypatch.delenv(key, raising=False)
+    pin_venue(monkeypatch, inside=True)
     if gateway_values:
         monkeypatch.setenv("BOOLEY_GATEWAY_URL", _GATEWAY_URL)
         monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
     if record is None:
-        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
     else:
         monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "current")
-    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
-
-
-_ISSUED_RECORD = "claude=subscription,codex=gateway"
 
 
 def _assert_gateway_hidden(home):
@@ -1658,114 +1099,80 @@ def _assert_gateway_hidden(home):
     return env_map
 
 
-def test_claude_default_gateway_start_routes_codex_and_hides_gateway_from_claude(
-    first_run, tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("exported", [True, False], ids=["exported", "vs-code-without-exports"])
+def test_issued_gateway_start_routes_codex_and_hides_the_gateway_from_claude(
+    first_run, monkeypatch, capsys, exported
 ):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
+    _gateway_start(monkeypatch, app="claude", record=_ISSUED_RECORD, gateway_values=exported)
     settings_path = reg.claude_settings_path(first_run.home)
     settings_path.parent.mkdir()
     settings_path.write_text(json.dumps({"env": {"USER_KEY": "keep"}}), encoding="utf-8")
 
-    entry.main()
+    code, err = _main(capsys)
 
-    codex = _codex_config(first_run.home)
-    assert codex["model_provider"] == "booley_gateway"
-    assert codex["model_providers"]["booley_gateway"]["base_url"] == _GATEWAY_URL
+    assert code == 0
+    # Blanked even when unset: VS Code may export them on a later attach.
     assert _assert_gateway_hidden(first_run.home)["USER_KEY"] == "keep"
-    err = capsys.readouterr().err
-    assert "gateway:written" in err
     assert "claude-gateway:hidden" in err
+    assert ("gateway:written" if exported else "gateway:invalid") in err
+    if exported:
+        codex = _codex_config(first_run.home)
+        assert codex["model_provider"] == "booley_gateway"
+        assert codex["model_providers"]["booley_gateway"]["base_url"] == _GATEWAY_URL
 
 
-def test_gateway_start_hides_unset_gateway_keys_from_claude(
-    first_run, tmp_path, monkeypatch, capsys
-):
-    """VS Code without exports: the keys are blanked anyway for a later attach."""
-    _gateway_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="claude",
-        record=_ISSUED_RECORD,
-        gateway_values=False,
-    )
-
-    entry.main()
-
-    _assert_gateway_hidden(first_run.home)
-    assert "gateway:invalid" in capsys.readouterr().err
-
-
-def test_gateway_hiding_is_idempotent(first_run, tmp_path, monkeypatch):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
-
-    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
-    writes: list[Path] = []
-    monkeypatch.setattr(reg, "_write_private_json", lambda path, _data: writes.append(path))
-
-    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
-    assert writes == []  # nothing changed, so the file is not rewritten
-
-
-def test_gateway_hiding_replaces_a_misshaped_env_map(first_run, tmp_path, monkeypatch):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
+def test_gateway_hiding_replaces_a_misshaped_env_map_once(first_run, monkeypatch):
+    _gateway_start(monkeypatch, app="codex", record=_ISSUED_RECORD)
     path = reg.claude_settings_path(first_run.home)
     path.parent.mkdir()
     path.write_text(json.dumps({"env": ["not", "a", "map"], "theme": "dark"}), encoding="utf-8")
 
-    reg.hide_gateway_from_claude(first_run.home)
-
+    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
     _assert_gateway_hidden(first_run.home)
     assert _claude_settings(first_run.home)["theme"] == "dark"
+    os.utime(path, ns=(10**9, 10**9))
+
+    assert reg.hide_gateway_from_claude(first_run.home) == "hidden"
+    assert path.stat().st_mtime_ns == 10**9  # nothing changed, so the file is not rewritten
 
 
-def test_unreadable_claude_settings_refuses_a_gateway_start(
-    first_run, tmp_path, monkeypatch, capsys
-):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="codex", record=_ISSUED_RECORD)
+def test_unreadable_claude_settings_refuses_a_gateway_start(first_run, monkeypatch, capsys):
+    _gateway_start(monkeypatch, app="codex", record=_ISSUED_RECORD)
     path = reg.claude_settings_path(first_run.home)
     path.parent.mkdir()
     path.write_text("{ not json", encoding="utf-8")
 
-    with pytest.raises(SystemExit) as raised:
-        entry.main()
+    code, err = _main(capsys)
 
-    assert raised.value.code == 1
-    assert "registration refused" in capsys.readouterr().err
+    assert code == 1 and "registration refused" in err
     assert path.read_text(encoding="utf-8") == "{ not json"
 
 
-def test_refused_claude_registration_still_hides_gateway(first_run, tmp_path, monkeypatch, capsys):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
-    _write_claude_config(first_run.home, {"mcpServers": ["not", "an", "object"]})
-
-    with pytest.raises(SystemExit) as raised:
-        entry.main()
-
-    assert raised.value.code == 1
-    assert "refused" in capsys.readouterr().err
-    _assert_gateway_hidden(first_run.home)
-
-
-def test_invalid_codex_config_refuses_a_gateway_start_but_still_hides(
-    first_run, tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize(
+    ("where", "broken"),
+    [
+        (reg.claude_config_path, '{"mcpServers": ["not", "an", "object"]}'),
+        (reg.codex_config_path, "broken = ["),
+    ],
+    ids=["claude", "codex"],
+)
+def test_a_refused_registration_still_hides_the_gateway(
+    first_run, monkeypatch, capsys, where, broken
 ):
-    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=_ISSUED_RECORD)
-    codex_path = reg.codex_config_path(first_run.home)
-    codex_path.parent.mkdir()
-    codex_path.write_text("broken = [", encoding="utf-8")
+    _gateway_start(monkeypatch, app="claude", record=_ISSUED_RECORD)
+    path = where(first_run.home)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(broken, encoding="utf-8")
 
-    with pytest.raises(SystemExit) as raised:
-        entry.main()
+    code, err = _main(capsys)
 
-    assert raised.value.code == 1
-    assert "registration refused" in capsys.readouterr().err
+    assert code == 1 and "registration refused" in err
     _assert_gateway_hidden(first_run.home)
 
 
-def test_handwritten_gateway_start_leaves_claude_settings_alone(first_run, tmp_path, monkeypatch):
+def test_handwritten_gateway_start_leaves_claude_settings_alone(first_run, monkeypatch):
     """Guard: a hand-written Claude-app spec (no record) keeps Claude's environment."""
-    _gateway_start(first_run, tmp_path, monkeypatch, app="claude", record=None)
+    _gateway_start(monkeypatch, app="claude", record=None)
 
     entry.main()
 
@@ -1778,13 +1185,13 @@ def test_handwritten_gateway_start_leaves_claude_settings_alone(first_run, tmp_p
 # ===========================================================================
 
 
-def _multi_cli_start(first_run, tmp_path, monkeypatch, *, app, record, primary_auth):
+def _multi_cli_start(monkeypatch, *, app, record, primary_auth):
     """A container start of the registrar hook with *record* and *primary_auth*.
 
     ``record=None`` is a hand-written spec. No gateway values are exported, so a
     ``gateway`` policy is judged only by what the registrar writes.
     """
-    _gateway_start(first_run, tmp_path, monkeypatch, app=app, record=record, gateway_values=False)
+    _gateway_start(monkeypatch, app=app, record=record, gateway_values=False)
     if primary_auth is None:
         monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
     else:
@@ -1806,38 +1213,28 @@ def _booley_mcp_entries(home):
     }
 
 
-def test_issued_sandbox_registers_every_listed_cli(first_run, tmp_path, monkeypatch, capsys):
-    require_symlinks(tmp_path)
-    src = TestSkills._fake_skills(tmp_path, ["booley-a"])
-    TestSkills._patch_src(monkeypatch, src)
+def test_issued_sandbox_registers_every_listed_cli(first_run, monkeypatch, capsys):
     _multi_cli_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="claude",
-        record="claude=auto,codex=auto",
-        primary_auth="auto",
+        monkeypatch, app="claude", record="claude=auto,codex=auto", primary_auth="auto"
     )
 
-    entry.main()
+    code, err = _main(capsys)
 
+    assert code == 0
     assert _booley_mcp_entries(first_run.home) == {"claude": True, "codex": True}
-    assert (first_run.home / ".claude" / "skills" / "booley-a").exists()
-    assert (first_run.home / ".agents" / "skills" / "booley-a").exists()
-    err = capsys.readouterr().err
-    assert "claude:written" in err
-    assert "codex:written" in err
+    linked = [
+        sorted(link.name for link in (first_run.home / app / "skills").iterdir())
+        for app in (".claude", ".agents")
+    ]
+    assert linked[0] and linked[0] == linked[1]
+    assert "claude:written" in err and "codex:written" in err
 
 
 @pytest.mark.parametrize("default", ["claude-default", "codex-default"])
-def test_each_listed_cli_applies_its_own_recorded_policy(
-    first_run, tmp_path, monkeypatch, capsys, default
-):
+def test_each_listed_cli_applies_its_own_recorded_policy(first_run, monkeypatch, capsys, default):
     if default == "claude-default":
         # Codex's API-key policy must not be judged under the default's subscription policy.
         _multi_cli_start(
-            first_run,
-            tmp_path,
             monkeypatch,
             app="claude",
             record="claude=subscription,codex=api_key",
@@ -1847,8 +1244,6 @@ def test_each_listed_cli_applies_its_own_recorded_policy(
     else:
         # Claude's subscription login must be found although the default is on the gateway.
         _multi_cli_start(
-            first_run,
-            tmp_path,
             monkeypatch,
             app="codex",
             record="codex=gateway,claude=subscription",
@@ -1860,49 +1255,34 @@ def test_each_listed_cli_applies_its_own_recorded_policy(
             json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC_ACCESS"}}), encoding="utf-8"
         )
 
-    entry.main()
+    code, err = _main(capsys)
 
-    assert "refused" not in capsys.readouterr().err
+    assert code == 0 and "refused" not in err
     if default == "claude-default":
         auth_path = reg.codex_auth_path(first_run.home)
-        assert auth_path.exists()
         assert json.loads(auth_path.read_text(encoding="utf-8")) == {
             "OPENAI_API_KEY": "SYNTHETIC_CODEX_KEY"
         }
     else:
-        assert reg.claude_config_path(first_run.home).exists()
         assert _claude_config(first_run.home)["hasCompletedOnboarding"] is True
 
 
 @pytest.mark.parametrize("broken", ["claude", "codex"])
-def test_one_cli_refusal_leaves_the_other_registered(
-    first_run, tmp_path, monkeypatch, capsys, broken
-):
+def test_one_cli_refusal_leaves_the_other_registered(first_run, monkeypatch, capsys, broken):
     _multi_cli_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="claude",
-        record="claude=auto,codex=auto",
-        primary_auth="auto",
+        monkeypatch, app="claude", record="claude=auto,codex=auto", primary_auth="auto"
     )
-    doctor_runs = []
-    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: doctor_runs.append(1) or "current")
     if broken == "claude":
         reg.claude_config_path(first_run.home).write_text("{not json", encoding="utf-8")
     else:
-        codex_path = reg.codex_config_path(first_run.home)
-        codex_path.parent.mkdir()
-        codex_path.write_text("broken = [", encoding="utf-8")
+        _seed_codex(first_run.home, "broken = [")
     other = "codex" if broken == "claude" else "claude"
 
-    with pytest.raises(SystemExit) as raised:
-        entry.main()
+    code, err = _main(capsys)
 
-    assert raised.value.code == 1
-    assert doctor_runs == [1]
+    # The rest of the hook still runs, to help diagnose the refusal.
+    assert code == 1 and first_run.doctor == [True]
     assert _booley_mcp_entries(first_run.home)[other] is True
-    err = capsys.readouterr().err
     assert f"registration refused: {broken}:" in err
     assert f"{broken}:refused" in err
     assert f"{other}:written" in err
@@ -1917,33 +1297,27 @@ def test_one_cli_refusal_leaves_the_other_registered(
     ],
     ids=["handwritten-claude", "handwritten-codex", "issued-codex"],
 )
-def test_single_cli_sandbox_registers_only_that_cli(
-    first_run, tmp_path, monkeypatch, capsys, spec
-):
+def test_single_cli_sandbox_registers_only_that_cli(first_run, monkeypatch, capsys, spec):
     """Guard: a Sandbox allowing one CLI registers it alone and prints no set suffix."""
     app, record, primary_auth = spec
-    _multi_cli_start(
-        first_run, tmp_path, monkeypatch, app=app, record=record, primary_auth=primary_auth
-    )
+    _multi_cli_start(monkeypatch, app=app, record=record, primary_auth=primary_auth)
 
-    entry.main()
+    code, err = _main(capsys)
 
+    assert code == 0
     expected = {"claude": False, "codex": False}
     expected[app] = True
     assert _booley_mcp_entries(first_run.home) == expected
-    err = capsys.readouterr().err
     assert re.search(rf"(?<![-\w]){app}:written", err)
     other = "codex" if app == "claude" else "claude"
     assert not re.search(rf"(?<![-\w]){other}:", err)
     assert "clis:" not in err
 
 
-def test_issued_auto_record_starts_in_the_visitor_mode(first_run, tmp_path, monkeypatch, capsys):
+def test_issued_auto_record_starts_in_the_visitor_mode(first_run, monkeypatch, capsys):
     from booley.config.agent import sandbox_cli_policy
 
-    _multi_cli_start(
-        first_run, tmp_path, monkeypatch, app="claude", record="claude=auto", primary_auth="auto"
-    )
+    _multi_cli_start(monkeypatch, app="claude", record="claude=auto", primary_auth="auto")
     settings = reg.claude_settings_path(first_run.home)
     settings.parent.mkdir(parents=True, exist_ok=True)
     # A pinned subscription policy refuses this key; the visitor mode keeps it.
@@ -1951,24 +1325,16 @@ def test_issued_auto_record_starts_in_the_visitor_mode(first_run, tmp_path, monk
         json.dumps({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}), encoding="utf-8"
     )
 
-    entry.main()
+    code, err = _main(capsys)
 
-    err = capsys.readouterr().err
-    assert "refused" not in err
+    assert code == 0 and "refused" not in err
     assert "claude:written" in err
     assert sandbox_cli_policy("claude") == "visitor"
 
 
-def test_subscription_refusal_on_shared_volume_names_the_file(
-    first_run, tmp_path, monkeypatch, capsys
-):
+def test_subscription_refusal_on_shared_volume_names_the_file(first_run, monkeypatch, capsys):
     _multi_cli_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="codex",
-        record="codex=subscription",
-        primary_auth="subscription",
+        monkeypatch, app="codex", record="codex=subscription", primary_auth="subscription"
     )
     auth_path = reg.codex_auth_path(first_run.home)
     auth_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1977,70 +1343,40 @@ def test_subscription_refusal_on_shared_volume_names_the_file(
         encoding="utf-8",
     )
 
-    with pytest.raises(SystemExit):
-        entry.main()
+    code, err = _main(capsys)
 
-    err = capsys.readouterr().err
+    assert code == 1
     assert "auth.json" in err
     assert "recreate the Sandbox" not in err
 
     auth_path.unlink()
-    entry.main()
+    code, err = _main(capsys)
 
-    err = capsys.readouterr().err
-    assert "refused" not in err
+    assert code == 0 and "refused" not in err
     assert "codex:current" in err
 
 
-def test_subscription_claude_settings_refusal_names_the_file(
-    first_run, tmp_path, monkeypatch, capsys
-):
-    _multi_cli_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="claude",
-        record="claude=subscription",
-        primary_auth="subscription",
-    )
-    settings = reg.claude_settings_path(first_run.home)
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(
-        json.dumps({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}), encoding="utf-8"
-    )
-
-    with pytest.raises(SystemExit):
-        entry.main()
-
-    err = capsys.readouterr().err
-    assert "settings.json" in err
-    assert "recreate the Sandbox" not in err
-
-
-def test_subscription_refuses_a_claude_bearer_kept_in_settings(
-    first_run, tmp_path, monkeypatch, capsys
-):
-    _multi_cli_start(
-        first_run,
-        tmp_path,
-        monkeypatch,
-        app="claude",
-        record="claude=subscription",
-        primary_auth="subscription",
-    )
-    settings = reg.claude_settings_path(first_run.home)
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    for payload, expected in (
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
         ({"env": {"ANTHROPIC_AUTH_TOKEN": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_AUTH_TOKEN"),
         ({"env": {"ANTHROPIC_API_KEY": "SYNTHETIC_KEY"}}, "env.ANTHROPIC_API_KEY"),
         ({"env": "SYNTHETIC"}, "env is not an object"),
         ({"apiKeyHelper": "/bin/true"}, "remove apiKeyHelper"),
-    ):
-        settings.write_text(json.dumps(payload), encoding="utf-8")
+    ],
+)
+def test_subscription_refuses_a_claude_bearer_kept_in_settings(
+    first_run, monkeypatch, capsys, payload, expected
+):
+    _multi_cli_start(
+        monkeypatch, app="claude", record="claude=subscription", primary_auth="subscription"
+    )
+    settings = reg.claude_settings_path(first_run.home)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps(payload), encoding="utf-8")
 
-        with pytest.raises(SystemExit):
-            entry.main()
+    code, err = _main(capsys)
 
-        err = capsys.readouterr().err
-        assert expected in err
-        assert "settings.json" in err
+    assert code == 1
+    assert expected in err and "settings.json" in err
+    assert "recreate the Sandbox" not in err
