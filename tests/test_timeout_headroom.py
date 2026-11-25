@@ -11,13 +11,12 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 from tests.timeout_headroom import suggested_budget
 
 _SLOW_BODY = "time.sleep(0.2)"
@@ -281,11 +280,10 @@ def _run_case(
     if not autoload:
         environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     # Stay well inside this test's own 60 s CI budget (#1202).
-    return run_bounded_child(
-        [sys.executable, "-m", "pytest", "test_case.py", "-q", *plugins, *options],
+    return run_nested_pytest(
+        ["test_case.py", "-q", *plugins, *options],
         cwd=tmp_path,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

@@ -10,12 +10,15 @@ per-test limit stays at least twice the guard, are in
 Shared helpers start such a child through ``run_bounded_child``: plain
 ``subprocess.run(timeout=...)`` kills only the direct child and, on Windows,
 then waits without limit for pipes a surviving descendant holds (issue #3115).
+A nested pytest session starts through ``run_nested_pytest``, which also makes a
+stalled test dump every thread's stack before the hang guard fires.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Mapping
 
@@ -27,6 +30,11 @@ from tests.time_budget import hang_guard_s
 #: Seconds a test helper may wait for a script or external tool (git, bash, ...).
 #: The scaled hang guard: 30 s, times ``BOOLEY_TEST_TIME_SCALE``.
 SUBPROCESS_TIMEOUT_S = hang_guard_s()
+
+#: Seconds one test of a nested pytest session may run before the session writes
+#: every thread's stack to stderr and goes on: half the hang guard, so a hang guard
+#: failure shows where the session stopped.
+STALL_DUMP_S = SUBPROCESS_TIMEOUT_S / 2
 
 
 def _captured(stream: str | bytes | None) -> str:
@@ -70,3 +78,24 @@ def run_bounded_child(
     if check and result.returncode:
         raise subprocess.CalledProcessError(result.returncode, argv, result.stdout, result.stderr)
     return result
+
+
+def run_nested_pytest(
+    arguments: list[str],
+    *,
+    cwd: str | os.PathLike[str],
+    env: Mapping[str, str],
+    timeout: float = SUBPROCESS_TIMEOUT_S,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``python -m pytest`` with *arguments* through ``run_bounded_child``.
+
+    pytest's built-in ``faulthandler_timeout`` dumps every thread's stack to stderr
+    when one test's setup, call and teardown outlast ``STALL_DUMP_S``.
+    """
+    dump = f"faulthandler_timeout={STALL_DUMP_S:g}"
+    return run_bounded_child(
+        [sys.executable, "-m", "pytest", "-o", dump, *arguments],
+        timeout=timeout,
+        cwd=cwd,
+        env=env,
+    )

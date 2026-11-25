@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child, run_nested_pytest
 from tests.time_budget import hang_guard_s, scaled
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
@@ -151,24 +151,14 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
 
 def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     """The native integration job owns every test that executes B-Wave."""
-    result = run_bounded_child(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-q",
-            "-m",
-            "native_bwave",
-            "tests/bwave",
-        ],
+    result = run_nested_pytest(
+        ["--collect-only", "-q", "-m", "native_bwave", "tests/bwave"],
         cwd=REPOSITORY_ROOT,
         env={
             name: value
             for name, value in os.environ.items()
             if not name.startswith("PYTEST_XDIST_")
         },
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stderr
@@ -511,11 +501,8 @@ def test_suite_default_timeout_preserves_explicit_settings(
     }
     if environment_timeout is not None:
         environment["PYTEST_TIMEOUT"] = environment_timeout
-    result = run_bounded_child(
+    result = run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             "--collect-only",
             "-p",
             "no:cacheprovider",
@@ -524,7 +511,6 @@ def test_suite_default_timeout_preserves_explicit_settings(
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -542,11 +528,8 @@ def _collect_with_time_scale(scale: str, *options: str) -> subprocess.CompletedP
         if not name.startswith("PYTEST_") and name != "BOOLEY_TEST_TIME_SCALE"
     }
     environment["BOOLEY_TEST_TIME_SCALE"] = scale
-    return run_bounded_child(
+    return run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             "--collect-only",
             "-p",
             "no:cacheprovider",
@@ -555,7 +538,6 @@ def _collect_with_time_scale(scale: str, *options: str) -> subprocess.CompletedP
         ],
         cwd=REPOSITORY_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
@@ -669,11 +651,8 @@ def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
         for name, value in os.environ.items()
         if name != "PYTEST_ADDOPTS" and not name.startswith("PYTEST_XDIST_")
     }
-    result = run_bounded_child(
+    result = run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             "-q",
             "-c",
             str(REPOSITORY_ROOT / "pyproject.toml"),
@@ -688,7 +667,6 @@ def test_explicit_basetemp_keeps_only_failing_tmp_path(tmp_path: Path) -> None:
         ],
         cwd=project,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     output = result.stdout + result.stderr
     assert result.returncode == 1, output
