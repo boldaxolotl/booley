@@ -2726,8 +2726,9 @@ def _register_worktree(worktree: Path, administration: Path, *, absolute: bool =
     reverse = (
         worktree / ".git" if absolute else Path(os.path.relpath(worktree / ".git", administration))
     )
-    (worktree / ".git").write_text(f"gitdir: {pointer}\n", encoding="utf-8")
-    (administration / "gitdir").write_text(f"{reverse}\n", encoding="utf-8")
+    # Git writes forward slashes on every platform and finds a worktree by the "/.git" suffix.
+    (worktree / ".git").write_bytes(f"gitdir: {pointer.as_posix()}\n".encode())
+    (administration / "gitdir").write_bytes(f"{reverse.as_posix()}\n".encode())
 
 
 class TestWorktreePortability:
