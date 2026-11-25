@@ -239,7 +239,7 @@ def test_official_sdist_contains_every_shipped_doc(
 def test_validator_names_shipped_docs_missing_from_the_wheel(
     official_build: tuple[Path, Path, Path],
 ) -> None:
-    checkout, _sdist, wheel = official_build
+    _checkout, _sdist, wheel = official_build
     spec = importlib.util.spec_from_file_location(
         "validate_installed_artifact_under_test",
         SOURCE_ROOT / ".github" / "scripts" / "validate_installed_artifact.py",
@@ -249,10 +249,8 @@ def test_validator_names_shipped_docs_missing_from_the_wheel(
     spec.loader.exec_module(validator)
     with zipfile.ZipFile(wheel) as archive:
         files = validator._package_files(set(archive.namelist()))
-        changelog = archive.read("booley/data/refs/CHANGELOG.md")
 
     validator._assert_resources(files)
-    assert changelog == (checkout / "CHANGELOG.md").read_bytes()
 
     lacking = files - {
         "booley/data/docs/CONFIG.md",

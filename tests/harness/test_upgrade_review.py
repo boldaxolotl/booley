@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import doctor, upgrade_review
+from booley.runtime import paths
 from booley.runtime.changelog import parse_releases
 from tests.source_checkout_support import copy_source_checkout
 from tests.time_budget import hang_guard_s
@@ -200,7 +201,9 @@ def test_acknowledgment_clears_exact_pending_target(tmp_path: Path) -> None:
     assert _payload(booley_dir) == {"schema": 1, "reviewed_through": "2.0.0"}
 
 
-def test_unbuilt_source_checkout_has_no_packaged_changelog(tmp_path: Path) -> None:
+def test_unbuilt_source_checkout_has_no_packaged_changelog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without the build step the packaged changelog is absent and no reader falls back (#4356)."""
     checkout = tmp_path / "checkout"
     copy_source_checkout(
@@ -208,6 +211,9 @@ def test_unbuilt_source_checkout_has_no_packaged_changelog(tmp_path: Path) -> No
     )
     root_changelog = (checkout / "CHANGELOG.md").read_text(encoding="utf-8")
     newest = str(parse_releases(root_changelog)[0].version)
+    assert not (checkout / "src/booley/data/refs/CHANGELOG.md").exists()
+    # Point the default lookup at the unbuilt checkout's package data.
+    monkeypatch.setattr(paths, "package_data_dir", lambda: checkout / "src/booley/data")
     booley_dir = _project(tmp_path)
     upgrade_review.observe(booley_dir, current_version="0.0.1", now=_NOW)
     upgrade_review.observe(booley_dir, current_version=newest, now=_NOW)
@@ -219,7 +225,6 @@ def test_unbuilt_source_checkout_has_no_packaged_changelog(tmp_path: Path) -> No
             booley_dir,
             newest,
             current_version=newest,
-            packaged_changelog=checkout / "src/booley/data/refs/CHANGELOG.md",
         )
     assert _payload(booley_dir)["pending_target"] == newest
 

@@ -304,6 +304,13 @@ class TestWriteBuildStamp:
             resolve_wheel_source_fingerprint(repo),
         ) == baseline
 
+        # A sibling of the rendered changelog ships as package data, so it is hashed.
+        sibling = repo / f"{PACKAGED_CHANGELOG}.bak"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_bytes(b"stray\n")
+        assert resolve_payload_fingerprint(repo) != baseline[0]
+        assert resolve_wheel_source_fingerprint(repo) != baseline[1]
+
     def test_fingerprints_of_fixed_tree_are_pinned(self, tmp_path: Path):
         """Fingerprints are persisted in image labels and stamps (ADR 0053).
 

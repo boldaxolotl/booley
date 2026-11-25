@@ -65,8 +65,8 @@ _PAYLOAD_EXCLUDED = frozenset({STAMP_RELPATH, DEVELOPMENT_CONTEXT_RELPATH})
 # Rendered doc copies are derived from SHIPPED_DOCS, which the fingerprints hash,
 # so hashing them too would let a stale copy change the identity of a build.
 _RENDERED_DOCS_PREFIX = f"{PACKAGED_DOCS_RELATIVE_DIR}/"
-# The packaged changelog is a copy of CHANGELOG_SOURCE, skipped for the same reason.
-_RENDERED_COPIES = (_RENDERED_DOCS_PREFIX, PACKAGED_CHANGELOG_RELATIVE_PATH)
+# The packaged changelog is a copy of CHANGELOG_SOURCE, skipped for the same reason by exact
+# path, so a stray sibling file in the package data still enters the fingerprints.
 
 # Inputs which determine the Python wheel.  Native B-Wave sources and image
 # recipes deliberately live in substrate fingerprints instead.  The overlay
@@ -184,7 +184,11 @@ def _iter_tree_files(
             if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
             relative_path = path.relative_to(booley_root).as_posix()
-            if relative_path in _PAYLOAD_EXCLUDED or relative_path.startswith(_RENDERED_COPIES):
+            if (
+                relative_path in _PAYLOAD_EXCLUDED
+                or relative_path == PACKAGED_CHANGELOG_RELATIVE_PATH
+                or relative_path.startswith(_RENDERED_DOCS_PREFIX)
+            ):
                 continue
             yield path
     for relative in files:
