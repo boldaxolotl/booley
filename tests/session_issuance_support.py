@@ -1,6 +1,7 @@
 """Test-only helpers that issue Runtime specs through ``preview``/``issue_prepared``.
 
-``serve_host_docker`` fakes the Docker CLI boundary.
+``serve_host_docker`` fakes the Docker CLI boundary; ``install_trusted_validator``
+fakes the Runtime spec validator prefix seam.
 """
 
 from __future__ import annotations

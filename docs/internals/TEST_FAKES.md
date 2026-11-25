@@ -33,9 +33,7 @@ not exist. Link each module in a table row with a relative link; the test reads
 links from table rows only. The other stand-in modules are listed by behavior
 and kept honest by review.
 
-A boundary with several fakes links the issue that merges them. Each row of
-that kind was found by comparing the modules that answer the same command or
-patch the same name.
+A boundary with several fakes links the issue that merges them.
 
 ## Boundaries
 
@@ -46,10 +44,10 @@ patch the same name.
 | Live Git process scan | [tests/git_support.py](../../tests/git_support.py) | `no_live_git_processes` | patch `booley.runtime.git._iter_git_process_cmdlines` | `harness/git_support.py::fake_powershell` drives the scan's own tests one level down: not a duplicate |
 | `powershell` | [tests/harness/git_support.py](../../tests/harness/git_support.py) | `fake_powershell` | program on the search path | see the live Git process scan row |
 | Claude CLI | [tests/claude_cli_fake.py](../../tests/claude_cli_fake.py) | `write_claude_cli`, `replay_sdk_attempts`, `replay_sdk_stream` | program the SDK launches; patch `_claude_backend.query` |  |
-| Claude Agent SDK package, when absent | [tests/harness/conftest.py](../../tests/harness/conftest.py) | module-level `sys.modules["claude_agent_sdk"]` stub | `sys.modules` entry | installs only when the package is missing and `claude-agent-sdk` is a dependency, so it never answers in a supported environment: not a duplicate of the Claude CLI row |
-| Codex CLI | [tests/codex_cli_fake.py](../../tests/codex_cli_fake.py)<br>[tests/path_tool_fake.py](../../tests/path_tool_fake.py) | `install_fake_codex`, `replay_codex_run`<br>`PathToolFake.install` | program on the search path; patch `_inside_container`<br>program on the search path (a `codex` run in `tests/runtime/test_execution_ports.py`) | [#5660](https://github.com/boldaxolotl/booley/issues/5660) merges them |
+| Claude Agent SDK package, when absent | [tests/harness/conftest.py](../../tests/harness/conftest.py) | module-level `sys.modules["claude_agent_sdk"]` stub | `sys.modules` entry | installs when `claude_agent_sdk` is not yet in `sys.modules` as the conftest loads, so imports succeed; the Claude CLI row patches `_claude_backend.query`, the name the backend calls: not a duplicate |
+| Codex CLI | [tests/codex_cli_fake.py](../../tests/codex_cli_fake.py)<br>[tests/path_tool_fake.py](../../tests/path_tool_fake.py) | `install_fake_codex`, `replay_codex_run`<br>`PathToolFake.install` | program on the search path; patch `_inside_container`; `replay_codex_run` patches `_codex_run_subprocess`, `shutil.which` and `_inside_container`<br>program on the search path (a `codex` run in `tests/runtime/test_execution_ports.py`) | [#5660](https://github.com/boldaxolotl/booley/issues/5660) merges them |
 | Model provider API for the installed agent CLIs | [tests/docker/agent_policy_probe.py](../../tests/docker/agent_policy_probe.py) | `_Provider` | local HTTP server injected through `ANTHROPIC_BASE_URL` | in-image probe |
-| FPGA Flow's Vivado command | [tests/flows/fpga/vivado_fake.py](../../tests/flows/fpga/vivado_fake.py)<br>[tests/flows/fpga/vivado_run_fake.py](../../tests/flows/fpga/vivado_run_fake.py) | `FakeVivado.install`, `run_fpga`<br>`install` | program on the search path<br>patch `runtime_context.inside_session_runtime` | [#5598](https://github.com/boldaxolotl/booley/issues/5598) merges them |
+| FPGA Flow's Vivado command | [tests/flows/fpga/vivado_fake.py](../../tests/flows/fpga/vivado_fake.py)<br>[tests/flows/fpga/vivado_run_fake.py](../../tests/flows/fpga/vivado_run_fake.py) | `FakeVivado.install`, `run_fpga`<br>`install` | patch `fpga_edam.fpga_run_command` to a Python child<br>patch `fpga_edam.fpga_run_command`, `build_fpga_edam`, `parse_fpga_reports` | [#5598](https://github.com/boldaxolotl/booley/issues/5598) merges them |
 | Vivado release (provisioning) | [tests/vivado_release_fake.py](../../tests/vivado_release_fake.py) | `fake_vivado_release` | program in the release's `bin` | answers `vivado -version`, not the Flow's run |
 | Lint Flow's linter command | [tests/flows/lint/linter_run_fake.py](../../tests/flows/lint/linter_run_fake.py) | `install`, `isolated_verible_fusesoc` | patch `LintFlow._execute`, `fusesoc_registry.resolve_target_handle` |  |
 | `fusesoc run --setup` | [tests/fusesoc_test_support.py](../../tests/fusesoc_test_support.py) | `fusesoc_setup_runner` | injected runner | `linter_run_fake` runs the real setup and `target_test_support` calls through to the real `setup_command_for_handle`: not duplicates |
@@ -64,8 +62,8 @@ patch the same name.
 | Process liveness, identity and filesystem steps of Job slot stores | [tests/job_slot_steps.py](../../tests/job_slot_steps.py) | `FakeProcessWorld`, `StepScheduler`, `stepped_root`, `stepped_file_lock_wait` | injected into `SlotStore` |  |
 | Doctor's host and Sandbox commands | [tests/harness/doctor_host_support.py](../../tests/harness/doctor_host_support.py) | `serve_healthy_doctor_host`, `answer_doctor_commands`, `hide_container_cli` | patch `subprocess.run`, `host_diagnostics.inspect_host`, `shutil.which`, `developer_probe.resource` | builds on `tests/harness/test_doctor.py::_patch_environment`, a fake in a test file: [#5666](https://github.com/boldaxolotl/booley/issues/5666) |
 | MCP server process (launch) | [tests/mcp_server_launch_fake.py](../../tests/mcp_server_launch_fake.py) | `McpServerLaunchFake.installed` | patch `subprocess.Popen` | answers a different command than the MCP server's endpoint child |
-| MCP server's endpoint child | [tests/mcp_runner_fake.py](../../tests/mcp_runner_fake.py) | `install`, `application`, `call` | patch `server._run_subprocess` |  |
-| Clock of the file-lock wait | [tests/feedback/conftest.py](../../tests/feedback/conftest.py) | `lock_wait_expires` | patch `booley.core.file_lock.monotonic` | each clock row answers a different module's clock name (principle 16): not duplicates |
+| MCP server's endpoint child | [tests/mcp_runner_fake.py](../../tests/mcp_runner_fake.py) | `install`, `application`, `call` | patch `server._run_subprocess` | tests still patch it inline: [#5671](https://github.com/boldaxolotl/booley/issues/5671) |
+| Clock of the file-lock wait | [tests/feedback/conftest.py](../../tests/feedback/conftest.py) | `lock_wait_expires` | patch `booley.core.file_lock.monotonic` | each clock row answers a different module's clock name ([principle 16](CODING_PRINCIPLES.md#16-verification-is-deterministic-and-bounded)): not duplicates |
 | Deadline timer of the Simulation adapters | [tests/flows/sim/backends/conftest.py](../../tests/flows/sim/backends/conftest.py) | `never_firing_timer`, `instant_timer` | patch `threading.Timer` | see the file-lock clock row |
 | Clock of Job slot stores | [tests/job_slot_steps.py](../../tests/job_slot_steps.py) | `FakeProcessWorld`, `StepScheduler` | injected `now` and `sleep` | see the file-lock clock row |
 | Host platform (Windows paths, `sys.platform`, deadline policy) | [tests/host_platform_fake.py](../../tests/host_platform_fake.py) | `use_windows_paths`, `use_sys_platform`, `use_windows_deadline_policy` | patch | environment variables use `monkeypatch.setenv` |
@@ -86,7 +84,7 @@ patch the same name.
 ## Booley port stand-ins
 
 These replace a Booley function or object (a seam) rather than an external
-program. Principle 14 asks to patch a Booley name only where it is the boundary,
+program. [Principle 14](CODING_PRINCIPLES.md#14-tests-prove-behavior) asks to patch a Booley name only where it is the boundary,
 so each row here is a place to simplify, not to copy.
 
 | Seam | Stand-in | Entry point | Interception | Notes |
