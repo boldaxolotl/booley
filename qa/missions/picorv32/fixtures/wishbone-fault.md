@@ -1,10 +1,9 @@
 ### Seeded Wishbone fault
 
-Optional bait for the picorv32 mission's hunt. Its Interactive child is
-one long-lived session inside the Booley Sandbox with
-the Project working directory, PTY, Sandbox identity, and MCP tool access preserved. Launch it with
-`booley session enter -- booley`, or as a direct inherited child when those properties demonstrably
-hold. It is not a separate Specialist or delegate.
+Optional bait for the picorv32 mission's hunt. Its Interactive child is one
+long-lived T3 Code thread on the Project's main checkout, started as the
+[child rules](../../../shared/DEVELOPER-CHILD.md) say. It is not a separate
+Specialist or delegate.
 
 Send [`prompts/interactive.md`](../prompts/interactive.md) first, before injecting the fault.
 

@@ -24,12 +24,13 @@ child rules](../../shared/DEVELOPER-CHILD.md).
   repository.
 - Host: Docker with at least 6 GB free, plus artifact space; Verilator, Verible and Yosys come
   from the standard image. The evaluator needs cocotb 2.1.0 and Icarus outside the Sandbox.
-- Also: a Codex or Claude client; the previous published Booley release (upgrade and legacy
-  cases); a digest-pinned external image with the same Booley build and EDA tools. Optional:
-  VS Code with Dev Containers, a run-owned Git server.
-- Hosts: written for Ubuntu and Windows (Docker Desktop WSL2) with Codex CLI, Codex VS Code
-  and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
-  Windows-only.
+- Also: Codex or Claude signed in for T3 Code threads; the previous
+  published Booley release (upgrade and legacy cases); a digest-pinned
+  external image with the same Booley build and EDA tools. Optional: VS Code
+  with Dev Containers, a run-owned Git server.
+- Hosts: written for Ubuntu and Windows (Docker Desktop WSL2) with Codex and
+  Claude threads in T3 Code; rerun on another host or provider for coverage.
+  Area 2's CRLF cases are Windows-only.
 - Budget: 8 h for the primary run: 460 area minutes, including 90 for feature
   work and 45 for bounded repair, plus 20 contingency. Areas 12 and 16–19 are
   optional follow-up work outside this timebox (105 minutes total); log them as
@@ -285,9 +286,8 @@ Try:
 
 ### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:
-- Launch: in the Sandbox, bare `booley` (or `booley chat`) starts the configured provider in the
-  current working directory. With a missing client executable (disposable), you get an
-  actionable error; restore it. Make a safe edit and commit it, and check the exact local diff
+- Launch: a Developer Agent started in a T3 Code thread works in the thread's
+  directory. Make a safe edit and commit it, and check the exact local diff
   and history.
 - MCP: the Interactive Sandbox exposes the `booley_measure` schema. Disabling a
   Flow or Specialist (`enabled = false`) removes its tool; re-enabling restores
@@ -337,7 +337,7 @@ Look for: hidden downloads or rebuilds, a digest that drifts.
 Intent: a restarted client recovers a running measurement without losing work.
 Try:
 - A child starts `booley_measure` on a committed harmless change; save the
-  `run_id`; kill the child. A restarted child's `booley_poll` with that `run_id`
+  `run_id`; stop the child's thread. A new thread's `booley_poll` with that `run_id`
   returns the progress or final result.
 - `booley_cancel` stops the Flows (up to 45 s). Cancelled after one Flow
   finished while another still runs, the run is stored as cancelled with an

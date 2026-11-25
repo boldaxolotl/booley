@@ -29,6 +29,21 @@ BACKTICKED = re.compile(r"`([^`\s]+)`")
 MARKDOWN_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 
 
+# A Developer Agent runs only in a T3 Code thread, so QA text must never start one another
+# way: the retired `booley chat`, an agent CLI run through `session enter`, or bare `booley`
+# as an agent launcher. The Codespaces runbook was replaced by `shared/t3/RUNBOOK.md`.
+UNSUPPORTED_AGENT_LAUNCH = re.compile(
+    r"booley chat\b"
+    r"|session enter -- (?:claude|codex)\b"
+    r"|session enter -- booley`"
+    r"|\bstart `booley`"
+    r"|bare `booley`"
+    r"|shared/codespaces/"
+)
+# Frozen third-party text that QA only quotes.
+QA_TEXT_EXEMPT = ("missions/uart/spec/",)
+
+
 def _asset_references(text: str) -> set[str]:
     """Return backticked asset paths without glob or placeholder characters."""
     return {
@@ -158,3 +173,45 @@ def test_metrics_fixtures_load_with_the_product_parser() -> None:
     assert fixtures, "QA ships no metrics.toml fixture"
     for fixture in fixtures:
         parse_metrics_as_written(fixture.read_bytes())
+
+
+def _qa_text_files() -> list[Path]:
+    """Every Markdown and YAML file under qa/ except frozen third-party text."""
+    files = [*QA_ROOT.rglob("*.md"), *QA_ROOT.rglob("*.yaml")]
+    return sorted(
+        path
+        for path in files
+        if not path.relative_to(QA_ROOT).as_posix().startswith(QA_TEXT_EXEMPT)
+    )
+
+
+def test_unsupported_agent_launch_pattern_matches_launch_forms_only() -> None:
+    launches = [
+        "booley session enter -- booley chat --cli codex",
+        "booley session enter -- claude -p hi",
+        "Launch it with `booley session enter -- booley`, or",
+        "In one terminal start `booley` and send",
+        "bare `booley` starts the configured provider",
+        "../../shared/codespaces/RUNBOOK.md",
+    ]
+    allowed = [
+        "`booley auth --cli codex`",
+        "A bare `claude` or `codex` session is not a supported workflow",
+        "`codex` and `claude` each get Booley's MCP tools",
+        "booley session enter -- booley worktree new <area>",
+        "../../shared/t3/RUNBOOK.md",
+    ]
+    assert all(UNSUPPORTED_AGENT_LAUNCH.search(text) for text in launches)
+    assert not any(UNSUPPORTED_AGENT_LAUNCH.search(text) for text in allowed)
+
+
+def test_qa_text_starts_developer_agents_only_in_t3_code_threads() -> None:
+    offenders = [
+        f"{path.relative_to(QA_ROOT)}:{number}: {line.strip()}"
+        for path in _qa_text_files()
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if UNSUPPORTED_AGENT_LAUNCH.search(line)
+    ]
+    assert not offenders, "QA text starts an agent outside a T3 Code thread:\n" + "\n".join(
+        offenders
+    )

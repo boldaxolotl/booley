@@ -29,7 +29,7 @@ step never hides the bugs behind it.
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, coverage bounds, waivers, storage, a measured test-gap closure, the Coverage Analyst |
 | [mutation](missions/mutation/MISSION.md) | Mutation Flow on a fixture Project with a hand-written list of every Mutant: sites and decoys, determinism, selection, scoring, hangs, bad input, removed surface |
 | [scheduler](missions/scheduler/MISSION.md) | Memory-budget Job scheduling on the Caliptra demo Project plus a memory-hog Custom Flow: estimates, queueing and its reasons, jump-ahead, shrinking reservations, real OOM kills and the single requeue, Simulation Record items, Specialists admitted beside Flows, thread counts, Vivado Seat Caps, retired `[jobs]` keys |
-| [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live request and its measurement, `bwave gui` without a viewer, stop and resume, terminal output, Measurement Report, themes, docs site, all checked against the CLI |
+| [gui](missions/gui/MISSION.md) | T3 Code in a host browser on the picorv32 demo with a candidate build: pairing, the web Dashboard under a live request and its measurement, the Run form, Developer Agents in threads, `bwave gui` without a viewer, Sandbox stop and start, terminal output, Measurement Report, viewport and color scheme, docs site, all checked against the CLI |
 
 Each mission's primary areas fit an 8-hour budget (`gui`: 4 hours) and run in
 priority order; areas marked optional follow-up sit outside that budget. Host
@@ -77,7 +77,7 @@ booley bootstrap --with-qa-skills
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
 | [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Triage findings: interactively with the maintainer one cluster at a time, or automatically by a unanimous model jury (`booley-qa-run` does this by default); verify against current main, then file issues or fix the mission |
 | [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
-| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in a Codespace on its candidate image; posts a screenshot table on the PR and returns pass, fail, or blocked per step |
+| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in T3 Code on a Sandbox built locally from the PR head; posts a screenshot table on the PR and returns pass, fail, or blocked per step |
 
 ## Other files
 
@@ -91,7 +91,7 @@ booley bootstrap --with-qa-skills
 | [`shared/DEVELOPER-CHILD.md`](shared/DEVELOPER-CHILD.md) | Rules for every mission area that hands design work to a Developer Agent child and asks for a Measured Commit |
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
 | [`shared/mutation/`](shared/mutation/RUNBOOK.md) | Mutation fixture Project, hand-written expected Mutants and outcomes, and fault files; used by the `mutation` mission |
-| [`shared/codespaces/`](shared/codespaces/RUNBOOK.md) | Browser-driven Codespace on the picorv32 demo with a candidate image: setup, reading the terminal, GUI-vs-CLI oracles, evidence, cleanup, candidate image deletion; used by the `gui` mission and `booley-gui-check` |
+| [`shared/t3/`](shared/t3/RUNBOOK.md) | T3 Code in a host browser on the picorv32 demo with a candidate build: setup, pairing, threads, the web Dashboard, GUI-vs-CLI oracles, evidence, cleanup; used by the `gui` mission and `booley-gui-check` |
 
 ## Checking changes
 
