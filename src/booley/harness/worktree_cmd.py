@@ -166,8 +166,8 @@ def _add_prepare_parser(commands: argparse._SubParsersAction) -> None:
             "the Booley Directory repository's registrations whose folders are gone, "
             "applies the worktree Git settings, and runs the post-setup hook. "
             "It does nothing outside a Booley Project and refuses the main checkout and "
-            "a Booley Directory outside the checkout. If a step fails, what the run "
-            "created is removed. A second run creates nothing new. Submodules are not filled."
+            "a Booley Directory outside the checkout. If a step fails, the run deletes what it "
+            "created. A second run creates nothing new. Submodules are not filled."
         ),
     )
     prepare.add_argument(

@@ -84,9 +84,9 @@ again.
 <details markdown>
 <summary>In stealth mode</summary>
 
-The worktree gets a **Paired Checkout** on branch `booley-worktree/<folder>`,
-where `<folder>` is the worktree's folder name. Uncommitted files are left out,
-with a warning.
+With [Stealth Mode](STEALTH.md), the worktree gets a **Paired Checkout** on
+branch `booley-worktree/<folder>`, where `<folder>` is the worktree's folder
+name. Uncommitted files are left out, with a warning.
 
 </details>
 
