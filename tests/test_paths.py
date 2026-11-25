@@ -2,96 +2,60 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import pytest
 
 from booley.core import resources
 from booley.runtime import paths
+from tests.host_platform_fake import use_sys_platform
 
 
-class TestPackageDataDir:
-    def test_returns_path_with_data(self):
-        result = paths.package_data_dir()
-        assert result.name == "data"
-
-    def test_fallback_when_refs_missing(self, tmp_path):
-        shadow = tmp_path / "booley" / "data"
-        shadow.mkdir(parents=True)
-        real = Path(resources.__file__).resolve().parent.parent / "data"
-        assert (real / "refs").is_dir()
-        with patch("booley.core.resources.files") as mock_files:
-            mock_files.return_value.joinpath.return_value = shadow
-            assert resources.package_data_dir() == real
-            assert paths.package_data_dir() == real
-
-    def test_prefers_installed_package_resources(self, tmp_path, monkeypatch):
-        installed = tmp_path / "installed" / "booley"
-        (installed / "data" / "refs").mkdir(parents=True)
-        monkeypatch.setattr(resources, "files", lambda _name: installed)
-        assert resources.package_data_dir() == installed / "data"
-
-    def test_missing_fallback_retains_resource_location(self, tmp_path, monkeypatch):
-        shadow = tmp_path / "shadow"
-        monkeypatch.setattr(resources, "files", lambda _name: shadow)
+@pytest.mark.parametrize("case", ["installed", "shadow-with-fallback", "shadow-without-fallback"])
+def test_package_data_dir_prefers_the_installed_package_with_refs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+):
+    package = tmp_path / ("installed" if case == "installed" else "shadow")
+    if case == "installed":
+        (package / "data" / "refs").mkdir(parents=True)
+    if case == "shadow-without-fallback":
+        # No refs next to resources.py either, so the __file__-relative fallback fails too.
         monkeypatch.setattr(
             resources, "__file__", str(tmp_path / "missing" / "core" / "resources.py")
         )
-        assert resources.package_data_dir() == shadow / "data"
+    # importlib.resources decides which installed package "booley" names; no public input
+    # points it at a shadow package.
+    monkeypatch.setattr(resources, "files", lambda _name: package)
+
+    result = paths.package_data_dir()
+
+    if case == "shadow-with-fallback":
+        # The source package's data: it holds refs and lies outside the shadow.
+        assert (result / "refs").is_dir()
+        assert not result.resolve().is_relative_to(tmp_path.resolve())
+    else:
+        assert result == package / "data"
 
 
-class TestRefsDir:
-    def test_is_subdirectory_of_data(self):
-        result = paths.refs_dir()
-        assert result.parent == paths.package_data_dir()
-        assert result.name == "refs"
+@pytest.mark.parametrize(
+    ("accessor", "relative"),
+    [
+        (paths.refs_dir, "refs"),
+        (paths.user_docs_dir, "docs"),
+        (paths.troubleshooting_path, "docs/TROUBLESHOOTING.md"),
+        (paths.changelog_path, "refs/CHANGELOG.md"),
+        (paths.docker_data_dir, "docker"),
+        (paths.skills_dir, "skills"),
+        (paths.cheatsheet_path, "cheatsheet.md"),
+    ],
+)
+def test_accessors_name_the_wheel_layout_under_the_package_data(accessor, relative: str):
+    assert accessor() == paths.package_data_dir() / relative
 
 
-class TestPackagedDocs:
-    def test_returns_packaged_troubleshooting_guide(self):
-        result = paths.troubleshooting_path()
-        assert result.name == "TROUBLESHOOTING.md"
-        assert result.parent == paths.user_docs_dir()
-        assert paths.user_docs_dir() == paths.package_data_dir() / "docs"
-
-
-class TestChangelogPath:
-    def test_returns_packaged_changelog(self):
-        result = paths.changelog_path()
-        assert result.name == "CHANGELOG.md"
-        assert result.parent == paths.refs_dir()
-        assert result.is_file()
-
-
-class TestDockerDataDir:
-    def test_name_is_docker(self):
-        result = paths.docker_data_dir()
-        assert result.name == "docker"
-        assert result.parent == paths.package_data_dir()
-
-
-class TestSkillsDir:
-    def test_name_is_skills(self):
-        result = paths.skills_dir()
-        assert result.name == "skills"
-
-
-class TestBwaveBinary:
-    @patch.object(sys, "platform", "win32")
-    def test_windows_exe_suffix(self):
-        result = paths.bwave_binary()
-        assert result.name == "bwave.exe"
-
-    @patch.object(sys, "platform", "linux")
-    def test_linux_no_suffix(self):
-        result = paths.bwave_binary()
-        assert result.name == "bwave"
-
-
-class TestCheatsheetPath:
-    def test_returns_md_file(self):
-        result = paths.cheatsheet_path()
-        assert result.name == "cheatsheet.md"
-        assert result.parent == paths.package_data_dir()
+@pytest.mark.parametrize(("windows", "name"), [(True, "bwave.exe"), (False, "bwave")])
+def test_bwave_binary_suffix_follows_the_platform(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, name: str
+):
+    use_sys_platform(monkeypatch, windows=windows)
+    assert paths.bwave_binary() == paths.package_data_dir() / "bin" / name
