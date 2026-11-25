@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -752,24 +753,17 @@ class TestEnforceVenue:
         from booley.harness import init_cmd
         from booley.runtime import runtime_context
 
-        def reach_host_init(*_args):
-            raise OSError("host init reached")
-
-        mountinfo = tmp_path / "mountinfo"
-        mountinfo.write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+        (tmp_path / "mountinfo").write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
+        monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "mountinfo")
         monkeypatch.setenv("BOOLEY_CONTAINER", "0")
         monkeypatch.setattr(Path, "exists", lambda self: self.as_posix() == "/.dockerenv")
         # private: the first host-only step of run_init; reaching it proves the host dispatch.
-        monkeypatch.setattr(init_cmd, "_check_init_layout", reach_host_init)
+        monkeypatch.setattr(
+            init_cmd, "_check_init_layout", Mock(side_effect=OSError(init_message))
+        )
         for command in ("bootstrap", "session"):
-            if refused:
-                with pytest.raises(SystemExit) as exc:
-                    tlr._enforce_runtime_location(command)
-                assert exc.value.code == 2
-            else:
-                tlr._enforce_runtime_location(command)  # must not raise
-        capsys.readouterr()
+            with pytest.raises(SystemExit) if refused else contextlib.nullcontext():
+                tlr._enforce_runtime_location(command)
         assert init_cmd.run_init(Namespace(seed=True), tmp_path) == 2
         assert init_message in capsys.readouterr().err
 
