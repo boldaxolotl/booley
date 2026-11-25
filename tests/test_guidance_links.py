@@ -224,7 +224,7 @@ def test_reports_an_unreadable_mount_history_as_an_os_error(tmp_path: Path):
         ensure_guidance_links(project_root, booley_dir)
 
 
-def test_preserves_an_unrelatedsymlink_or_skip(tmp_path: Path):
+def test_preserves_an_unrelated_dangling_link(tmp_path: Path):
     project_root, booley_dir, _canon = _make_project(tmp_path)
     link = project_root / "AGENTS.md"
     symlink_or_skip(link, Path("..") / "temporarily-unmounted" / CANON_NAME)
