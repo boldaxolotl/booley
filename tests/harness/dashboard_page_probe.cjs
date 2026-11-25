@@ -1,6 +1,9 @@
 'use strict';
-// node dashboard_page_probe.cjs <dashboard.js> <scenario.json>
-// Runs the page script in a vm with stand-ins for the browser and prints what it did.
+// node dashboard_page_probe.cjs <page.js> <scenario.json>
+// Runs the page script (or the page's scripts joined) in a vm with stand-ins for the browser and prints what they did.
+// `scenario.steps` then drives the page: {click: id}, {change|input: id, target: {...}},
+// {key}, {poll: true} and {release: path} (answer a route answer marked `held`); `views[0]` is
+// the page after loading and `views[i + 1]` after step `i`.
 const fs = require('fs');
 const vm = require('vm');
 
@@ -17,7 +20,24 @@ function element() {
   return el;
 }
 
-const elements = { live: element(), results: element() };
+const elements = {};
+const focused = [];
+const clipboard = [];
+const hiddenIds = new Set(scenario.hidden || []);
+const documentListeners = [];
+function byId(id) {
+  if (!elements[id]) {
+    const el = element();
+    el.hidden = hiddenIds.has(id);
+    el.attributes = {};
+    el.setAttribute = (name, value) => { el.attributes[name] = value; };
+    el.focus = () => focused.push(id);
+    elements[id] = el;
+  }
+  return elements[id];
+}
+byId('live');
+byId('results');
 const store = {};
 const blocked = scenario.storage === 'blocked';
 const localStorage = {
@@ -32,12 +52,11 @@ const localStorage = {
 };
 
 const fetches = [];
+const held = {};
 const delays = [];
 const timers = [];
 let next = 0;
-function fetchStandIn(url, options) {
-  fetches.push({ url, cache: options && options.cache });
-  const response = scenario.responses[next++];
+function replyWith(response) {
   if (response.reject !== undefined) {
     return Promise.reject(new Error(response.reject));
   }
@@ -50,8 +69,25 @@ function fetchStandIn(url, options) {
   });
 }
 
+const routes = scenario.routes || {};
+function fetchStandIn(url, options) {
+  const { cache, method, body } = options || {};
+  fetches.push({ url, cache, method, body: body && JSON.parse(body) });
+  const path = url.split('?')[0];
+  if (path === '/api/snapshot') return replyWith(scenario.responses[next++]);
+  const response = (routes[path] || []).shift() || { status: 404, text: 'Not Found' };
+  if (!response.held) return replyWith(response);
+  return new Promise((resolve) => {
+    (held[path] = held[path] || []).push(() => resolve(replyWith(response)));
+  });
+}
+
 const context = {
-  document: { getElementById: (id) => elements[id] },
+  document: {
+    getElementById: byId,
+    addEventListener: (type, fn) => documentListeners.push({ type, fn }),
+  },
+  navigator: { clipboard: { writeText: (text) => { clipboard.push(text); return Promise.resolve(); } } },
   location: { search: scenario.search },
   localStorage,
   URLSearchParams,
@@ -65,13 +101,41 @@ const context = {
 };
 
 async function settle() {
-  for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 50; i += 1) await new Promise((r) => setImmediate(r));
+}
+
+function fire(listeners, type, event) {
+  listeners.filter((l) => l.type === type).forEach((l) => l.fn(event));
+}
+
+function view() {
+  const seen = {};
+  for (const [id, el] of Object.entries(elements)) {
+    seen[id] = { html: el.html, text: el.textContent, hidden: el.hidden, attributes: { ...el.attributes } };
+  }
+  return seen;
+}
+
+async function step(one) {
+  const [kind] = Object.keys(one);
+  if (kind === 'poll') timers.shift()();
+  else if (kind === 'release') (held[one.release] || []).forEach((release) => release());
+  else if (kind === 'key') fire(documentListeners, 'keydown', { key: one.key });
+  else fire(byId(one[kind]).listeners, kind, { type: kind, target: one.target });
+  await settle();
 }
 
 (async () => {
   vm.runInNewContext(fs.readFileSync(jsPath, 'utf8'), context);
+  const views = [];
   const renders = [];
-  for (let i = 0; i < scenario.responses.length; i += 1) {
+  await settle();
+  if (scenario.steps) views.push(view());
+  for (const one of scenario.steps || []) {
+    await step(one);
+    views.push(view());
+  }
+  for (let i = 0; !scenario.steps && i < scenario.responses.length; i += 1) {
     await settle();
     renders.push(elements.live.html + elements.results.html);
     if (scenario.toggle_after === i) {
@@ -86,6 +150,9 @@ async function settle() {
     fetches,
     delays,
     renders,
+    views,
+    focused,
+    clipboard,
     writes: { live: elements.live.writes, results: elements.results.writes },
     storage: store,
   }));

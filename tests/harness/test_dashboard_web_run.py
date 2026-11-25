@@ -6,6 +6,8 @@ import json
 import re
 import shutil
 import time
+from html import escape
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from starlette.applications import Starlette
@@ -557,3 +559,266 @@ def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
     assert [answer.status_code for answer in answers] == [422] * 3
     assert all("'Lint options'" in answer.json()["error"] for answer in answers)
     assert spawned == []
+
+
+def _probe(client, wt, tmp_path, calls, steps, *, responses=None, reject=None, held=()):
+    """Run the served page for *wt* through *steps*, answered as *client* answers *calls*.
+
+    A call is ``(route, query, body)``: a GET of the Run route, or a POST of *body*. The page must
+    send exactly those requests in that order. Returns the probe's output and the real answers.
+    """
+    page = client.get("/", params={"worktree": str(wt)})
+    refs = web_tests._References()
+    refs.feed(page.text)
+    scripts = [client.get(url).text for url in refs.urls if url.endswith(".js")]
+    routes: dict = {}
+    answers = []
+    for index, (route, query, body) in enumerate(calls):
+        params = {"worktree": str(wt), **query}
+        reply = (
+            client.get(f"/api/run/{route}", params=params)
+            if body is None
+            else _post(client, route, wt, body)
+        )
+        is_json = reply.headers["content-type"].startswith("application/json")
+        answers.append(
+            {
+                "status": reply.status_code,
+                **({"body": reply.json()} if is_json else {"text": reply.text}),
+            }
+        )
+        sent = {"reject": "refused"} if index == reject else {**answers[-1], "held": index in held}
+        routes.setdefault(f"/api/run/{route}", []).append(sent)
+    scenario = {
+        "search": web_tests._search(wt),
+        "hidden": refs.hidden,
+        "responses": responses or [web_tests._reply(client, wt)],
+        "routes": routes,
+        "steps": steps,
+    }
+    probe = web_tests._run_page(";\n".join(scripts), scenario, tmp_path)
+    asked = [
+        (
+            f.get("method") or "GET",
+            urlparse(f["url"]).path,
+            {key: value for key, [value] in parse_qs(urlparse(f["url"]).query).items()},
+            f.get("body"),
+        )
+        for f in probe["fetches"]
+        if "/api/run/" in f["url"]
+    ]
+    expected = [
+        (
+            "GET" if body is None else "POST",
+            f"/api/run/{route}",
+            {"worktree": str(wt), **query},
+            body,
+        )
+        for route, query, body in calls
+    ]
+    assert asked == expected
+    return probe, answers
+
+
+def _edit(dest, value, kind="text", **target):
+    event = "input" if kind == "text" else "change"
+    target = {"dataset": {"dest": dest}, "type": kind, "value": value, **target}
+    return {event: "run-fields", "target": target}
+
+
+def _choose(entry):
+    return {"change": "run-entry", "target": {"value": entry}}
+
+
+def _option_values(markup, dest=None):
+    if dest:
+        markup = re.search(rf'<select data-dest="{dest}">(.*?)</select>', markup)[1]
+    return re.findall(r'<option value="([^"]*)"', markup)
+
+
+ENTRIES = ("entries", {}, None)
+RUN = {"click": "run-button"}
+
+
+@pytest.mark.parametrize("case", ["on", "off", "refused", "unanswered"])
+def test_run_button_is_the_top_bar_primary_action_only_while_the_flag_is_on(
+    world, feature_flags, tmp_path, case
+):
+    wt = tmp_path / "nowhere" if case == "refused" else world.wt
+    calls, steps = ([ENTRIES], []) if case == "off" else ([ENTRIES, ENTRIES], [RUN])
+    with _client(world, feature_flags) as on, TestClient(_app(world, frozenset())) as off:
+        page = on.get("/", params={"worktree": str(world.wt)}).text
+        css = on.get("/assets/dashboard.css").text
+        probe, answers = _probe(
+            off if case == "off" else on,
+            wt,
+            tmp_path,
+            calls,
+            steps,
+            reject=0 if case == "unanswered" else None,
+        )
+
+    top_bar = r'<header class="topbar">.*?<button id="run-button" class="primary".*?</header>'
+    assert re.search(top_bar + r"\s*<section id=\"run\".*?<main>", page, re.S)
+    assert "<dialog" not in page
+    assert re.search(r"button\.primary \{[^}]*var\(--primary\)", css)
+    loaded, *clicked = probe["views"]
+    assert loaded["run-button"]["hidden"] is (case == "off")
+    if case != "off":
+        (opened,) = clicked
+        body = answers[-1]["body"]
+        assert opened["run"]["hidden"] is False
+        assert opened["run-button"]["attributes"]["aria-expanded"] == "true"
+        assert opened["run-problem"]["text"] == body.get("error", "")
+        assert _option_values(opened["run-entry"]["html"]) == [
+            *([""] if case != "refused" else []),
+            *(f"flow:{flow['name']}" for flow in body.get("flows", [])),
+            *(f"specialist:{item['name']}" for item in body.get("specialists", [])),
+        ]
+
+
+@pytest.mark.parametrize(
+    "close", [{"key": "Escape"}, {"click": "run-cancel"}], ids=["escape", "cancel"]
+)
+def test_run_form_opens_in_place_survives_polls_and_closes_without_side_effects(
+    world, feature_flags, tmp_path, close
+):
+    write_picker_project(world.wt)
+    lint = _run("lint", values={}, extra="")
+    typed = {**lint, "extra": "--x"}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "lint"}, None),
+        ("targets", {"flow": "lint"}, None),
+        ("command", {}, lint),
+        ("command", {}, typed),
+        ENTRIES,
+    ]
+    steps = [RUN, _choose("flow:lint"), _edit("extra", "--x"), {"poll": True}, close, RUN]
+    with _client(world, feature_flags) as client:
+        first = web_tests._reply(client, world.wt)
+        _job(world, "run-new", world.wt, target="t_new", ended="2026-10-08T10:00:10Z")
+        responses = [first, web_tests._reply(client, world.wt)]
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps, responses=responses)
+
+    _loaded, _opened, _chosen, typing, polled, closed, reopened = probe["views"]
+    assert "t_new" not in typing["results"]["html"]
+    assert "t_new" in polled["results"]["html"]
+    assert all(polled[id_]["html"] == typing[id_]["html"] for id_ in ("run-entry", "run-fields"))
+    assert not any(view["live"]["hidden"] for view in probe["views"])
+    assert closed["run"]["hidden"] is True
+    assert closed["run-button"]["attributes"]["aria-expanded"] == "false"
+    assert closed["run-fields"]["html"] == ""
+    assert probe["focused"][-2:] == ["run-button", "run-entry"]
+    assert reopened["run-entry"]["html"].startswith('<option value="" selected>')
+    assert reopened["run-fields"]["html"] == ""
+
+
+def test_flow_form_offers_the_api_choices_and_quotes_the_command(world, feature_flags, tmp_path):
+    write_picker_project(world.wt)
+    sim = _run("sim", values={}, extra="")
+    picked = {**sim, "values": {"target": "sim_fifo"}}
+    ticked = {**picked, "values": {"target": "sim_fifo", "test": ["stress+short"]}}
+    seeded = {**ticked, "extra": "--seed 3"}
+    commands = [("command", {}, body) for body in (sim, picked, ticked, seeded)]
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "sim"}, None),
+        ("targets", {"flow": "sim"}, None),
+        commands[0],
+        ("tests", {"target": "sim_fifo"}, None),
+        *commands[1:],
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _edit("target", "sim_fifo", "select-one"),
+        _edit("test", "stress+short", "checkbox", checked=True),
+        _edit("extra", "--seed 3"),
+        {"click": "run-copy"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps)
+
+    _loaded, _opened, chosen, targeted, ticking, seeding, _copied = probe["views"]
+    fields = chosen["run-fields"]["html"]
+    assert _option_values(fields, "target") == ["", *TARGETS_BY_FLOW["sim"]]
+    assert (
+        re.findall(r'data-dest="test" value="([^"]*)"', targeted["run-fields"]["html"])
+        == SIM_FIFO_RUNS
+    )
+    dests = set(re.findall(r'data-dest="(\w+)"', targeted["run-fields"]["html"]))
+    assert dests == {f["dest"] for f in answers[2]["body"]["fields"]} | {"extra"}
+    assert "worktree" not in dests
+    shown = [view["run-command"]["text"] for view in (chosen, targeted, ticking, seeding)]
+    assert shown == [answers[i]["body"]["command"] for i in (4, 6, 7, 8)]
+    assert shown[-1].endswith("booley flow sim --target sim_fifo --test stress+short --seed 3")
+    assert probe["clipboard"] == [shown[-1]]
+
+
+def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_error(
+    world, feature_flags, empty_home, tmp_path
+):
+    run = _job(world, "run-cov", world.wt, report={})
+    write_coverage_record(run.parent / "flow-reports" / "sim" / "run-cov", "uart")
+    reviewer = {"kind": "specialist", "name": "reviewer", "extra": ""}
+    analyst = {"kind": "specialist", "name": "coverage_analyst", "extra": "", "values": {}}
+    base = {"category": "rtl"}
+    more = {**base, "more": "on"}
+    scoped = {**more, "scope": "fifo.v"}
+    bugs = {**scoped, "focus": "bugs"}
+
+    def form(name, **values):
+        return ("form", {"kind": "specialist", "name": name, **values}, None)
+
+    def command(values):
+        return ("command", {}, {**reviewer, "values": values})
+
+    calls = [
+        *[ENTRIES] * 2,
+        form("reviewer"),
+        command(base),
+        form("reviewer", **more),
+        command(more),
+        command(scoped),
+        command(scoped),
+        form("reviewer", **bugs),
+        command(bugs),
+        command(bugs),
+        form("coverage_analyst"),
+        ("command", {}, analyst),
+    ]
+    steps = [
+        RUN,
+        _choose("specialist:reviewer"),
+        _edit("more", "", "checkbox", checked=True),
+        _edit("scope", "fifo.v"),
+        {"release": "/api/run/form"},
+        _edit("focus", "bugs", "select-one"),
+        _choose("specialist:coverage_analyst"),
+    ]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={4})
+
+    _loaded, _opened, chosen, opening, _typing, released, focused, analysing = probe["views"]
+    for view in (chosen, opening):
+        assert re.search(
+            r'<select data-dest="focus"><option value="" selected disabled>',
+            view["run-fields"]["html"],
+        )
+        assert "max_turns" not in view["run-fields"]["html"]
+        assert view["run-error"]["text"] == answers[3]["body"]["error"] == "Choose a focus"
+    assert 'data-dest="scope" value="fifo.v"' in released["run-fields"]["html"]
+    assert all(
+        f'data-dest="{dest}"' in released["run-fields"]["html"]
+        for dest in ("max_turns", "timeout")
+    )
+    assert focused["run-error"]["hidden"] is True
+    assert focused["run-command"]["text"].endswith(
+        "booley specialist reviewer --category rtl --focus bugs --scope fifo.v"
+    )
+    (record,) = answers[-2]["body"]["coverage_records"]
+    assert (
+        f'<datalist id="run-records"><option value="{escape(record["path"])}"'
+        in analysing["run-fields"]["html"]
+    )
