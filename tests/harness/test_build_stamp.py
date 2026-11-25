@@ -291,6 +291,7 @@ class TestWriteBuildStamp:
         copy = _copy_path(repo, "docs/user/CONFIG.md")
         copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_bytes(b"rendered copy\n")
+        (repo / PACKAGED_CHANGELOG).parent.mkdir(parents=True, exist_ok=True)
         (repo / PACKAGED_CHANGELOG).write_bytes(b"rendered changelog\n")
         assert (
             resolve_payload_fingerprint(repo),
