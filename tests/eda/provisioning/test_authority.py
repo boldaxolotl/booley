@@ -155,7 +155,10 @@ def test_grant_is_stored_by_canonical_project_identity(
 ) -> None:
     project, _ = _registered(tmp_path)
     alias = tmp_path / "project-alias"
-    alias.symlink_to(project, target_is_directory=True)
+    try:
+        alias.symlink_to(project, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
     copied = tmp_path / "copied"
     (copied / ".git").mkdir(parents=True)
 
