@@ -74,7 +74,8 @@ def first_run(tmp_path_factory, monkeypatch):
     for name, value in (("PWD", project), ("HOME", home), ("BOOLEY_DIR", booley)):
         monkeypatch.setenv(name, str(value))
     monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(booley))
-    # The server log's default is one fixed host path; each start gets its own.
+    # The server log's default is one fixed host path and no entry point sets it; each start
+    # gets its own, with the real function running.
     log = str(home.parent / f"{home.name}-server.log")
     start = functools.partial(reg.ensure_http_server, log_path=log)
     monkeypatch.setattr(reg, "ensure_http_server", start)
@@ -312,6 +313,7 @@ def test_a_server_that_cannot_start_is_failed_not_raised(
 def skill_sources(tmp_path, monkeypatch):
     """Where packaged skills and the mounted host skills come from, for the tmp_path home."""
     packaged = tmp_path / "packaged"
+    # The packaged skills live in the installed package; no setting points them elsewhere.
     monkeypatch.setattr(paths, "skills_dir", lambda: packaged)
     # The host-side spec mounts host skills here; registration must read the same place.
     host = tmp_path / Path(dc.HOST_SKILLS_SIDECAR).relative_to(dc.AGENT_HOME)
@@ -950,6 +952,12 @@ _RETRY = "repair this file and retry"
             'mcp_servers = {booley = {command="old"}}\n',
             "inline mcp_servers table",
         ),
+        (
+            "codex",
+            reg.codex_config_path,
+            'mcp_servers = {booley = {command="old"}, other = {url="http://other"}}\n',
+            "inline mcp_servers table",
+        ),
         ("codex", reg.codex_config_path, 'projects = "x"\n', "projects must be a table"),
     ],
 )
@@ -959,12 +967,15 @@ def test_an_invalid_user_config_is_refused_before_any_write(
     path = where(first_run.home)
     path.parent.mkdir(exist_ok=True)
     path.write_text(existing, encoding="utf-8")
+    # A mounted host skill: deploying it before validation would link it (f1999f6bd).
+    _skills(first_run.home / Path(dc.HOST_SKILLS_SIDECAR).relative_to(dc.AGENT_HOME), "host-a")
+    before = sorted(_files(first_run.home))
 
     with pytest.raises(ValueError, match="repair") as refused:
         reg.register(app, home=first_run.home, trust_paths=("/x", *first_run.keys))
 
     assert str(path) in str(refused.value) and reason in str(refused.value)
-    assert _files(first_run.home) == [path]
+    assert sorted(_files(first_run.home)) == before
     assert path.read_text(encoding="utf-8") == existing
 
 
