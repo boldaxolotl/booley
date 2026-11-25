@@ -21,6 +21,7 @@ from booley.harness.dashboard.jobs import (
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
 from booley.harness.dashboard.sessions import session_key_label
+from booley.harness.dashboard.specialist_form import SimRun, sim_runs
 from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.presentation.report_results import present_job_report
 from booley.runtime import job_records, job_slots
@@ -77,6 +78,11 @@ def find_report(reader: JobReader, worktree: Path, report: str) -> Path | None:
         ),
         None,
     )
+
+
+def finished_sim_runs(reader: JobReader, worktree: Path) -> tuple[SimRun, ...]:
+    """The finished Simulation Jobs of *worktree*, read now: their directories hold Coverage Records."""
+    return sim_runs(_worktree_jobs(worktree, _read_jobs(reader, worktree, wall_clock())))
 
 
 def _read_jobs(reader: JobReader, worktree: Path, now: float) -> tuple[JobView, ...]:
@@ -165,8 +171,9 @@ def _memory_claims(slots: Path | None, proc_root: Path) -> tuple[int, bool]:
     return round(reserved * _MIB), any(claim.run_alone for claim in claims)
 
 
-def _label(job: JobView) -> str:
-    return job.handle or job_prefix(job.record.endpoint) + "?"
+def job_label(handle: str, endpoint: str) -> str:
+    """What a Job's row shows: its handle, else ``J-SIM?`` for a live Job whose handle was not reserved."""
+    return handle or job_prefix(endpoint) + "?"
 
 
 def _owner(job: JobView, titles: Mapping[str, str]) -> str:
@@ -206,7 +213,7 @@ def _now_rows(
 ) -> list[dict[str, Any]]:
     return [
         {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
             "owner": _owner(job, titles),
@@ -236,7 +243,7 @@ def _results(
         passed += semantic in _PASSED
         failed += semantic in _FAILED
         row = {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
             "owner": _owner(job, titles),

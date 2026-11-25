@@ -31,8 +31,7 @@ from booley.config.agent import (
 )
 from booley.config.gateway import VISITOR_AUTH
 from booley.core.project_identity import project_name_id
-from booley.runtime import auth_token
-from booley.runtime import vaporview as _vaporview
+from booley.runtime import auth_token, bundled_extensions
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
@@ -44,7 +43,6 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
-from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
 APP_CLAUDE = "claude"
@@ -97,12 +95,6 @@ BOOLEY_DIR_BASENAME = ".booley"
 # absolute host path instead of relying on env-var indirection here.
 DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
-# Waveform Viewer (ADR 0078): VaporView is installed for every app so
-# `bwave gui` works in the attached window, driven through the Booley
-# extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
-# maps its stable red/blue/green interface to the extension's custom palette.
-_VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
-
 # VS Code setting through which the spec tells the dashboard extension its attach protocol.
 _DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
@@ -110,7 +102,7 @@ _DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
 # OFF by default, so it adds highlighting without competing with Booley's own
 # lint flow. Installed for every app — reading RTL isn't tied to which agent
-# is attached. Like VaporView it is the pinned VSIX bundled in the Sandbox
+# is attached. It is the pinned VSIX bundled in the Sandbox
 # Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
 # and VS Code pins a VSIX install so auto-update leaves it there.
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
@@ -127,11 +119,13 @@ HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
 
-# The bundled extensions besides VaporView, as Doctor checks them in the
-# attached window: built from the same pins the spec installs.
+# The bundled extensions, as Doctor checks them in the attached window: built
+# from the same pins the spec installs.
 BUNDLED_EXTENSIONS = (
-    _vaporview.BundledExtension("Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX),
-    _vaporview.BundledExtension(
+    bundled_extensions.BundledExtension(
+        "Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX
+    ),
+    bundled_extensions.BundledExtension(
         "Live Preview",
         "ms-vscode.live-server",
         _LIVE_PREVIEW_VERSION,
@@ -267,22 +261,6 @@ def mcp_post_start_command() -> str:
     return "python -m booley.harness.incontainer_register"
 
 
-def vaporview_patch_command() -> str:
-    """Shell command for ``postAttachCommand``: apply Booley's residual VaporView patch.
-
-    Runs on *attach* (not create/start) because it edits the installed
-    VaporView extension, which VS Code installs container-side only once a
-    window attaches — by postCreate/postStart it isn't on disk yet. The
-    patcher skips VaporView's remote desktop-theme lookup and makes the custom
-    palette slots behind `bwave gui` colors honor the spec's Machine settings.
-    If installation outlasts the short attach wait, it leaves a singleton
-    watcher until the configured extension arrives, including patching VS
-    Code's staging copy before publication. Idempotent and never fails the
-    hook. See :mod:`booley.runtime.incontainer_vaporview` for the rationale.
-    """
-    return "python -m booley.runtime.incontainer_vaporview"
-
-
 def live_preview_port_command() -> str:
     """Shell command that assigns Live Preview fresh remote ports on attach."""
     return "python -m booley.runtime.incontainer_live_preview"
@@ -290,7 +268,7 @@ def live_preview_port_command() -> str:
 
 def post_attach_command() -> str:
     """Run container UI compatibility setup before attached extensions activate."""
-    return f"{live_preview_port_command()} && {vaporview_patch_command()}"
+    return live_preview_port_command()
 
 
 def _auth_target_for_app(app: str) -> str | None:
@@ -1037,38 +1015,32 @@ def build_devcontainer_spec(
     if post_start:
         spec["postStartCommand"] = post_start
 
-    # The Waveform Viewer (ADR 0078, VaporView) rides along for every app —
-    # including "none": viewing a trace isn't tied to which app is attached —
-    # so the customizations block is unconditional now.
+    # The bundled extensions ride along for every app, including "none", so the
+    # customizations block is unconditional.
     vscode: dict = {
         "extensions": [
             # Builds bundled in the image, installed by path: the egress-locked
             # Sandbox cannot reach a gallery, and VS Code pins a VSIX install
             # so auto-update leaves it there.
-            _vaporview.BUNDLED_VSIX,
             HDL_VSIX,
             LIVE_PREVIEW_VSIX,
         ],
         "settings": {
-            **_VAPORVIEW_PRESENTATION_SETTINGS,
             **_LIVE_PREVIEW_SETTINGS,
             **_PYTHON_TERMINAL_SETTINGS,
         },
     }
     from booley.runtime.dashboard_extension import VSIX_PATH
 
-    # The image-local Booley Sandbox Integration extension hosts the `bwave gui` Viewer Bridge, so
-    # every Sandbox installs it; the attach protocol alone decides whether it
-    # also opens the Dashboard terminal.
+    # The image-local Booley Sandbox Integration extension is installed in every
+    # Sandbox; the attach protocol alone decides whether it also opens the
+    # Dashboard terminal.
     vscode["extensions"].append(VSIX_PATH)
     vscode["settings"][_DASHBOARD_PROTOCOL_SETTING] = 1 if dashboard else 0
     spec["customizations"] = {"vscode": vscode}
 
-    # The residual VaporView patch (theme lookup, palette scope) edits the
-    # installed extension, so it runs at attach, the first lifecycle point
-    # where that extension exists on disk. Unconditional: viewing traces is not
-    # tied to which agent app is attached, and the hook only fires when a UI
-    # client attaches, so headless Sandboxes skip it for free.
+    # The attach hook only fires when a UI client attaches, so headless
+    # Sandboxes skip it for free.
     spec["postAttachCommand"] = post_attach_command()
 
     return spec

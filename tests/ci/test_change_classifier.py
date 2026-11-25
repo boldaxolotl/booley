@@ -555,6 +555,9 @@ def test_deleted_project_metadata_keeps_stable_base(tmp_path: Path) -> None:
         ("src/booley/data/docker/base-python-requirements.txt", True),
         # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
+        # #4781: a T3 Code pin or policy change must run the binary probe.
+        ("src/booley/data/docker/agent-clis-package.json", True),
+        ("src/booley/data/docker/t3code-policy.json", True),
     ],
 )
 def test_package_inventory_inputs_select_their_image_gates(
@@ -936,6 +939,8 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         ("src/booley/mcp/project_flow_loader.py", False),
         ("src/booley/runtime/agent_execution.py", False),
         ("tests/runtime/test_agent_execution.py", False),
+        # #4781: the T3 Code binary probe runs in bwave-smoke.
+        (".github/scripts/verify_t3code_runtime.py", False),
     ],
 )
 def test_release_regression_paths_request_focused_image_smoke(

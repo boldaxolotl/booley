@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from booley.runtime.session_admission import Sandbox
     from booley.runtime.session_issuance import Issuance
     from booley.runtime.session_refresh import RefreshImage
+    from booley.runtime.t3_relay import RelayStart
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +175,8 @@ def vscode_session_container(workspace: Path) -> str | None:
     Recognised by the ``devcontainer.local_folder`` label the Dev Containers CLI
     stamps — our own headless `session up` container never carries it, so this
     distinguishes the two container origins. The label does not prove that a
-    renderer or extension host is still attached; callers such as the VaporView
-    doctor check must probe their live service after finding the container.
+    renderer or extension host is still attached; callers such as Doctor's
+    bundled-extension check must probe their live service after finding the container.
     """
     selected = resolve_running_sandbox(workspace)
     return selected.name if selected is not None and selected.vscode else None
@@ -880,6 +881,7 @@ class EnsureResult:
     name: str
     vscode: bool
     started: bool
+    relay: RelayStart | None = None
 
 
 def _up_unlocked(
@@ -901,11 +903,16 @@ def _up_unlocked(
 
 def ensure(workspace: Path, *, rebuild: bool = False) -> EnsureResult:
     """Ensure a Sandbox and expose startup metadata to the CLI."""
+    from booley.runtime import t3_relay
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
         _recover_before_lifecycle("booley session up")
-        return _ensure_unlocked(workspace, rebuild=rebuild)
+        result = _ensure_unlocked(workspace, rebuild=rebuild)
+        # A VS Code-owned Sandbox is not stopped by `session down`, so it gets no relay.
+        if result.vscode:
+            return result
+        return replace(result, relay=t3_relay.start(workspace, result.name))
 
 
 def _ensure_unlocked(
@@ -2495,9 +2502,10 @@ class DownResult:
     headless: bool = False
     relay: bool = False
     claim_cleared: bool = False
+    t3_relay: bool = False
 
     def __bool__(self) -> bool:
-        return self.headless or self.relay or self.claim_cleared
+        return self.headless or self.relay or self.claim_cleared or self.t3_relay
 
 
 def _down_unlocked(
@@ -2508,7 +2516,7 @@ def _down_unlocked(
     ``before_stop`` runs once, with the running Sandbox (``None`` when the container exists
     but is not running), after every refusal and before the stop actually proceeds.
     """
-    from booley.runtime import session_admission
+    from booley.runtime import session_admission, t3_relay
 
     selected = resolve_running_sandbox(workspace)
     _refuse_editor(selected, "stop from the CLI")
@@ -2536,7 +2544,7 @@ def _down_unlocked(
     if relay_exists:
         _remove_license_relay(relay)
     claim_cleared = session_admission.clear_vscode_claim(workspace)
-    return DownResult(session_exists, relay_exists, claim_cleared)
+    return DownResult(session_exists, relay_exists, claim_cleared, t3_relay.stop(workspace))
 
 
 def down(

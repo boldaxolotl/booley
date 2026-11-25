@@ -970,6 +970,20 @@ def test_script_refusal_has_one_error_prefix(project, capsys):
     assert "ERROR: ERROR:" not in error
 
 
+@_real_script
+def test_failed_worktree_setup_rolls_back_and_reports_one_error(project, capsys):
+    _write(project / ".booley" / "booley.toml", "[agent.git]\nname = 42\n")
+
+    assert _new("bad-identity", project) == 1
+
+    error = capsys.readouterr().err
+    assert "ERROR: [agent.git] name must be a string" in error
+    assert "Traceback" not in error
+    assert not worktree_cmd.worktree_path(project, "bad-identity").exists()
+    assert "bad-identity" not in _git(project, "worktree", "list").stdout
+    assert _git(project, "show-ref", "--quiet", "refs/heads/booley/bad-identity").returncode != 0
+
+
 def test_pairing_source_is_discovered_once_and_left_out_files_are_read_under_the_lock(
     versioned_project, python_outer, monkeypatch, capsys
 ):

@@ -32,7 +32,9 @@ class FeatureFlag:
 
 
 #: Every registered flag; deleting an entry enables its feature.
-FEATURE_FLAGS: tuple[FeatureFlag, ...] = ()
+FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
+    FeatureFlag("web-run-panel", "booley dashboard --web: the Run panel", 3874),
+)
 
 
 class UnknownFeatureFlagError(LookupError):

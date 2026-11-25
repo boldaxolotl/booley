@@ -65,9 +65,9 @@ if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     exit 1
 fi
 
-# Python's os.getcwd() returns Windows-style paths (C:\...) which break
-# tar's -C flag — tar interprets the colon as a remote host separator.
-# Convert to POSIX (/c/...) on MSYS2/Cygwin; no-op elsewhere.
+# Python's os.getcwd() returns Windows-style paths (C:\...) which break the
+# script's POSIX path handling (git, flock, mkdir) on MSYS2/Cygwin.
+# Convert to POSIX (/c/...) there; no-op elsewhere.
 if command -v cygpath >/dev/null 2>&1; then
     CWD_MIXED=$(cygpath -m "$CWD")
     if [[ "$CWD_MIXED" =~ ^([A-Za-z]):/(.*)$ ]]; then
@@ -99,9 +99,9 @@ PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
     "${PY[@]}" -c 'import sys; from pathlib import Path; from booley.core.booley_layout import validate_environment,require_current_layout; validate_environment(); require_current_layout(Path(sys.argv[1]))' "$CWD"
 
 # The checkout's own Booley Directory, relative to the root and read from the
-# checkout alone (booley.runtime.worktree_paths). With --ambient it also refuses
-# a Booley Directory outside the checkout, or a BOOLEY_DIR naming another one,
-# before anything is created. The root is passed in native form so a Windows
+# checkout alone (booley.runtime.worktree_paths --ambient). It refuses a Booley
+# Directory outside the checkout, or a BOOLEY_DIR naming another one, before
+# anything is created. The root is passed in native form so a Windows
 # Python reads the right file.
 booley_dir_relative() {
     local root="$1" out
@@ -130,27 +130,6 @@ fi
 WORKTREE_DIR="$BOOLEY_DIR_PATH/worktrees/$NAME"
 CREATING_MARKER="$WORKTREE_DIR/.creating"
 
-# Keep this worktree's .core copies out of FuseSoC's recursive --cores-root
-# scan. Each worktree is a full checkout carrying the project's .core files
-# (same VLNV as /work); without this marker FuseSoC's scan lets a stale copy
-# shadow the source at the Project Root and silently build the wrong RTL. `booley init`
-# also drops this marker, but a worktree can be created against a project that
-# predates the fix — so guarantee it here whenever a worktree exists. The
-# marker suppresses .core DISCOVERY only; source files a baseline fileset
-# references under .booley/ are still read.
-mkdir -p "$BOOLEY_DIR_PATH"
-FUSESOC_IGNORE_MARKER="$BOOLEY_DIR_PATH/FUSESOC_IGNORE"
-# A Versioned Booley Directory may have no committed root marker. Quarantine its
-# transient worktrees without adding an untracked input to the clean source.
-if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
-    mkdir -p "$BOOLEY_DIR_PATH/worktrees"
-    FUSESOC_IGNORE_MARKER="$BOOLEY_DIR_PATH/worktrees/FUSESOC_IGNORE"
-fi
-if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
-    printf '# Booley Directory: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
-        > "$FUSESOC_IGNORE_MARKER" 2>/dev/null || true
-fi
-
 # Cleanup trap: if we fail mid-build AND we're the one that started creating
 # this worktree (marker file present), remove the half-built worktree so it
 # doesn't leave an orphan that confuses later runs. Concurrent runners are
@@ -170,7 +149,6 @@ _drop_new_branch() {
 }
 cleanup_on_error() {
     local rc=$?
-    if [ -n "$SNAPSHOT_LIST" ]; then rm -f "$SNAPSHOT_LIST"; fi
     if [ "$_OWNS_WORKTREE" = true ] && [ -f "$CREATING_MARKER" ]; then
         echo "ERROR: worktree_create.sh failed (rc=$rc) — cleaning up partial worktree" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
@@ -181,7 +159,6 @@ cleanup_on_error() {
     exit $rc
 }
 trap cleanup_on_error ERR
-SNAPSHOT_LIST=""
 
 # Serialize concurrent invocations on the SAME worktree name. Different
 # worktrees still run in parallel (lockfile is per-name). Prevents racing
@@ -256,12 +233,12 @@ else
     trap 'rm -rf "$LOCK_MKDIR" 2>/dev/null || true; [ "${_PARENT_LOCK_HELD:-false}" = true ] && [ -n "${_PARENT_LOCK_MKDIR:-}" ] && rm -rf "$_PARENT_LOCK_MKDIR" 2>/dev/null || true' EXIT
 fi
 
-# Parent-git lock: serialises ONLY the sections that mutate the parent repo's
-# .git/config and .git/worktrees/ metadata. Different worktree names race here
+# Parent-git lock: serialises the section that mutates the parent repo's
+# .git/config and .git/worktrees/ metadata (Python's worktree_setup takes the same
+# lock file for its own config writes). Different worktree names race here
 # because the per-name lock above doesn't cover the shared parent .git/config —
 # concurrent `git worktree add` / `git config` calls collide on .git/config.lock
 # and on Windows the loser exits 128 with "could not lock config file".
-# Tar/copy work between the two critical sections still overlaps across workers.
 _PARENT_LOCKFILE="$LOCK_DIR/_parent_git.lock"
 _PARENT_LOCK_MKDIR=""
 _PARENT_LOCK_HELD=false
@@ -308,9 +285,9 @@ _parent_lock_release() {
     fi
 }
 
-# --- Critical section A: parent .git/config + .git/worktrees/ writes ---
+# --- Critical section: parent .git/config + .git/worktrees/ writes ---
 # Take the parent-git lock around worktree-remove/prune/add so concurrent
-# workers don't race on .git/config.lock. Released before the tar/copy work.
+# workers don't race on .git/config.lock.
 _parent_lock_acquire
 
 # Refuse policy (the default): an existing destination may be an active
@@ -443,7 +420,7 @@ fi
 rm -f "$ADD_ERR"
 
 _parent_lock_release
-# --- End critical section A ---
+# --- End critical section ---
 
 # Drop marker so cleanup_on_error knows this is a mid-build worktree.
 # Removed at the end of the script once everything succeeded. From here on
@@ -469,103 +446,6 @@ fi
 if [ ! -f "$WORKTREE_DIR/.git" ]; then
     echo "ERROR: Worktree creation failed — .git file missing at $WORKTREE_DIR" >&2
     exit 1
-fi
-
-# Resolve the linked worktree's private gitdir once and use it for host-side
-# worktree commands. Some sandbox runs leave the shared repo config with
-# core.worktree=/work, which is valid there but makes host-side
-# `git -C "$WORKTREE_DIR" checkout` fail with "must be run in a work tree".
-WORKTREE_GIT_DIR=$(sed 's/^gitdir: //' "$WORKTREE_DIR/.git")
-if [[ "$WORKTREE_GIT_DIR" != /* && ! "$WORKTREE_GIT_DIR" =~ ^[A-Za-z]: ]]; then
-    WORKTREE_GIT_DIR="$WORKTREE_DIR/$WORKTREE_GIT_DIR"
-fi
-
-git_wt() {
-    git --git-dir="$WORKTREE_GIT_DIR" --work-tree="$WORKTREE_DIR" "$@"
-}
-
-# --- Critical section B: more parent .git/config writes ---
-# Enable per-worktree config and keep all worktree settings out of the shared
-# parent .git/config. Re-acquire the parent-git lock around this cluster because
-# enabling extensions.worktreeConfig still mutates the shared config.
-_parent_lock_acquire
-
-# Disable automatic submodule recursion. Python materializes exact gitlinks
-# after final branch selection without remotes or shared .git pointers.
-git -C "$CWD" config extensions.worktreeConfig true
-RELATIVE_WORKTREE_DIR=$("${PY[@]}" -c 'import os,sys; print(os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])).replace(os.sep, "/"))' "$WORKTREE_DIR" "$WORKTREE_GIT_DIR")
-git_wt config --worktree core.worktree "$RELATIVE_WORKTREE_DIR"
-git_wt config --worktree submodule.recurse false
-git_wt config --worktree diff.ignoreSubmodules all
-git_wt config --worktree status.submoduleSummary false
-echo "Submodule recursion disabled in worktree git config" >&2
-
-# Force LF line endings in the worktree.  The host (Windows) has
-# core.autocrlf=true, but Docker containers do not — any git command the
-# agent runs inside Docker would see every CRLF file as "modified".
-# Setting autocrlf=false here makes host and container agree on LF.
-git_wt config --worktree core.autocrlf false
-git_wt checkout -f >&2
-echo "Line endings normalised to LF (core.autocrlf=false)" >&2
-
-if [ "$(git -C "$CWD" config --bool --get worktree.useRelativePaths 2>/dev/null || true)" = "true" ]; then
-    WORKTREE_POINTER=$(sed 's/^gitdir: //' "$WORKTREE_DIR/.git")
-    REVERSE_POINTER=$(cat "$WORKTREE_GIT_DIR/gitdir")
-    CONFIGURED_WORKTREE=$(git_wt config --worktree --get core.worktree)
-    if [[ "$WORKTREE_POINTER" = /* || "$WORKTREE_POINTER" =~ ^[A-Za-z]: ]] ||
-       [[ "$REVERSE_POINTER" = /* || "$REVERSE_POINTER" =~ ^[A-Za-z]: ]] ||
-       [[ "$CONFIGURED_WORKTREE" = /* || "$CONFIGURED_WORKTREE" =~ ^[A-Za-z]: ]]; then
-        echo "ERROR: relative worktree policy produced non-portable metadata" >&2
-        exit 1
-    fi
-fi
-
-# Apply the same validated [agent.git] policy used by Developer Agent checkouts,
-# read from the checkout's own Booley Directory (the ambient BOOLEY_DIR was checked to be
-# that directory, or unset, before anything was created). pipeline.toml is never read.
-PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-    BOOLEY_DIR="$BOOLEY_DIR_PATH" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
-    "${PY[@]}" -m booley.runtime.incontainer_git_identity --ticket
-
-_parent_lock_release
-# --- End critical section B ---
-
-# The new worktree's own root booley.toml (it may come from another branch) names
-# where that worktree expects its Booley Directory; a refusal here rolls the
-# worktree back through the ERR trap.
-WORKTREE_BOOLEY_REL=$(booley_dir_relative "$WORKTREE_DIR")
-
-# Copy the Booley Directory into the worktree if it exists (convention-based discovery).
-# The Snapshot is an allowlist: only paths classified as Checkout state versioned
-# with the RTL in booley.core.booley_dir_parts.BOOLEY_DIR_PATHS are copied.
-# Common state, state tied to one checkout's sources, and paths no row covers stay
-# in the Main Booley Directory (unclassified ones Git neither tracks nor ignores
-# are named on stderr). A [coverage.waivers] directory anchored to the project
-# data repository is copied too. Only nested repositories and tool caches inside
-# copied configuration are excluded.
-if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$BOOLEY_DIR_PATH" ]; then
-    echo "Copying $BOOLEY_REL/ into worktree..." >&2
-    mkdir -p "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL"
-    SNAPSHOT_LIST="$LOCK_DIR/${NAME}.snapshot.$$.list"
-    PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-        "${PY[@]}" -m booley.runtime.worktree_snapshot "$BOOLEY_DIR_PATH" "$SNAPSHOT_LIST"
-    tar -C "$BOOLEY_DIR_PATH" --exclude='.git' --exclude='.venv' --exclude='__pycache__' \
-        --null -T "$SNAPSHOT_LIST" -cf - | tar -C "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL" -xf -
-    # No pipefail here: check both tar exits so a vanished entry fails creation.
-    _snapshot_status=("${PIPESTATUS[@]}")
-    rm -f "$SNAPSHOT_LIST"
-    if [ "${_snapshot_status[0]}" != 0 ] || [ "${_snapshot_status[1]}" != 0 ]; then
-        echo "ERROR: copying the Snapshot failed (tar exit ${_snapshot_status[*]})" >&2
-        false
-    fi
-    echo "$WORKTREE_BOOLEY_REL/ copied ($(du -sh "$WORKTREE_DIR/$WORKTREE_BOOLEY_REL" 2>/dev/null | cut -f1))" >&2
-fi
-
-# Root-level quarantine markers are commonly untracked by design, so git
-# worktree add cannot carry them. Preserve the same FuseSoC scan boundary in
-# every linked worktree.
-if [ -f "$CWD/FUSESOC_IGNORE" ]; then
-    cp "$CWD/FUSESOC_IGNORE" "$WORKTREE_DIR/FUSESOC_IGNORE"
 fi
 
 # Project-specific setup (sim symlinks, git hooks, DPI build, etc.) remains

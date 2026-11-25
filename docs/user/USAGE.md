@@ -348,12 +348,12 @@ instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
 
 ### Viewing waveforms
 
-When a simulation with tracing fails, the Developer Agent reads the waveform on its own
-with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
-around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
-just the signals and time range that matter. VS Code installs the extension
-automatically when you attach to the container. If it is missing,
-`booley doctor` in the Sandbox prints the command that installs it.
+When a simulation with tracing fails, the Developer Agent reads the waveform
+on its own with `bwave`. Booley has no waveform viewer for now, so when *you*
+want to know what happened, ask: *"what does the FIFO handshake do around the
+failure"*. The agent answers from the waveform, naming the signals, times and
+values. You can open the FST file in a viewer of your own, such as GTKWave or
+Surfer.
 
 ## When Booley itself misbehaves
 

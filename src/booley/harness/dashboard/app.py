@@ -36,10 +36,16 @@ from booley.harness.dashboard.jobs import (
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.measurement import checkout_of, measuring_text
-from booley.harness.dashboard.model import DashboardSnapshot
+from booley.harness.dashboard.model import (
+    HANDLE_NUMBER,
+    DashboardSnapshot,
+    session_checkouts,
+    session_handle,
+    session_title,
+    worktree_occupants,
+)
 from booley.harness.dashboard.resources import Resources
-from booley.harness.dashboard.review import Occupants
-from booley.harness.dashboard.specialist_form import SimRun
+from booley.harness.dashboard.specialist_form import SimRun, sim_runs
 from booley.harness.dashboard.targets import (
     TargetDetail,
     TargetListing,
@@ -167,7 +173,6 @@ class Owner(Enum):
 
 #: Label of the Jobs window's owner filter that lists everything.
 ALL_SESSIONS = "All sessions"
-_HANDLE_NUMBER = re.compile(r"S(\d+)")
 
 
 @dataclass(frozen=True)
@@ -1040,7 +1045,7 @@ class DashboardApp(App[None]):
                 choices,
                 message,
                 self._default_worktree,
-                self._worktree_occupants,
+                lambda worktree: worktree_occupants(self.snapshot, worktree),
                 self._finished_sim_runs,
                 preset,
             ),
@@ -1161,7 +1166,7 @@ class DashboardApp(App[None]):
             title=self._session_title(facts.key),
             checkout=checkout,
             branch=branch,
-            mode="Interactive",
+            mode=sessions.SESSION_MODE,
             connection=_connection_label(row, now) if connected else "disconnected",
             started=format_age(row.started_at, now=now),
             activity=_sentence(self._activity_label(facts.key)),
@@ -1256,7 +1261,7 @@ class DashboardApp(App[None]):
             by_label.setdefault(self._owner_handle(key) or key, key)
 
         def order(label: str) -> tuple[int, int, str]:
-            number = _HANDLE_NUMBER.fullmatch(label)
+            number = HANDLE_NUMBER.fullmatch(label)
             return (0, int(number[1]), label) if number else (1, 0, label)
 
         choices: list[tuple[str | Owner | None, str]] = [(None, ALL_SESSIONS)]
@@ -1387,11 +1392,10 @@ class DashboardApp(App[None]):
         return target_arg(job.record.argv) or "Target —"
 
     def _session_handle(self, key: str) -> str:
-        return self.snapshot.session_handles.get(key, "S?")
+        return session_handle(self.snapshot, key)
 
     def _session_title(self, key: str) -> str:
-        """The handle with its ``--name`` label when the session has one."""
-        return self.snapshot.session_titles.get(key) or self._session_handle(key)
+        return session_title(self.snapshot, key)
 
     def _owned_by(self, job: JobView, key: str | None) -> bool:
         """Aliases affect presentation membership only; routing keeps durable keys."""
@@ -1415,7 +1419,7 @@ class DashboardApp(App[None]):
             key=facts.key,
             handle=self._session_handle(facts.key),
             title=self._session_title(facts.key),
-            mode="Interactive",
+            mode=sessions.SESSION_MODE,
             branch=branch,
             work_dir=checkout,
             started=format_age(row.started_at, now=self.snapshot.observed_at),
@@ -1965,43 +1969,6 @@ class DashboardApp(App[None]):
             add("Run a Booley Flow", "")
         return text
 
-    def _session_checkouts(self) -> list[tuple[Path, str]]:
-        """Each connected session's checkout and ``S3 · uart-fix Interactive`` label, by handle number.
-
-        The label starts with the session title (the bare handle when unnamed); the order
-        follows the handle number, never the title.
-        """
-
-        def number(row: SessionRow) -> int:
-            match = _HANDLE_NUMBER.fullmatch(self._session_handle(row.attribution.key))
-            return int(match[1]) if match else 1 << 30
-
-        pairs: list[tuple[Path, str]] = []
-        for row in sorted(self.snapshot.sessions, key=number):
-            facts = row.attribution
-            checkout = facts.work_dir or facts.default_work_dir
-            if checkout:
-                label = f"{self._session_title(facts.key)} {self._session_facts(row).mode}"
-                pairs.append((Path(checkout), label))
-        return pairs
-
-    def _worktree_occupants(self, worktree: Path) -> Occupants:
-        """The connected sessions and unfinished Jobs in *worktree*, as the last read showed them."""
-        if self.snapshot.observed_at == 0:
-            return Occupants(problem="the Dashboard has not read them yet")
-        here = worktree.resolve()
-        sessions = tuple(
-            label for path, label in self._session_checkouts() if path.resolve() == here
-        )
-        unfinished = tuple(
-            job.handle or job.record.run_id
-            for job in self.snapshot.jobs.jobs
-            if not _finished(job)
-            and job.record.work_dir
-            and Path(job.record.work_dir).resolve() == here
-        )
-        return Occupants(sessions, unfinished)
-
     def _finished_sim_runs(self, worktree: Path) -> tuple[SimRun, ...] | None:
         """The finished Simulation Jobs of *worktree* that the last read retained; ``None`` before any read.
 
@@ -2011,20 +1978,15 @@ class DashboardApp(App[None]):
         if self.snapshot.observed_at == 0:
             return None
         here = worktree.resolve()
-        return tuple(
-            SimRun(job.report_path.parent, job.record.ended_at or "")
-            for job in self.snapshot.jobs.jobs
-            if job.record.endpoint == "sim"
-            and _finished(job)
-            and job.report_path is not None
-            and job.record.work_dir
-            and Path(job.record.work_dir).resolve() == here
+        return sim_runs(
+            self.snapshot.jobs.jobs,
+            lambda job: bool(job.record.work_dir and Path(job.record.work_dir).resolve() == here),
         )
 
     def _worktree_choices(self) -> tuple[WorktreeChoice, ...]:
         """The worktrees to pick from; sessions' first, the main checkout last."""
         entries = self._worktree_list.entries if self._worktree_list else ()
-        return order_worktrees(entries, self._session_checkouts())
+        return order_worktrees(entries, session_checkouts(self.snapshot))
 
     def _highlighted_checkout(self) -> Path | None:
         """The checkout of the session the Sessions window has open or under its cursor."""

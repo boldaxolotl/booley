@@ -1,8 +1,8 @@
 # GUI on the Codespaces demo
 
 Bug-hunt Booley's GUI surfaces in a browser Codespace on the published PicoRV32
-demo: onboarding, the Dashboard, the B-Wave Waveform Viewer (VaporView), the
-terminal, the Measurement Report, Live Preview and the docs site. The main
+demo: onboarding, the Dashboard, the terminal, the Measurement Report, Live
+Preview and the docs site. The main
 bug class is **the GUI disagrees with the CLI**: every GUI claim gets checked
 against a CLI oracle, or the missing oracle is logged as a gap. The
 `booley-qa-run` skill runs this mission; to check one PR's GUI change, use
@@ -34,8 +34,8 @@ against a CLI oracle, or the missing oracle is logged as a gap. The
   `-c model_provider=openai`. Do the same after any re-sign-in. Record in
   `log.md` that the run did not use the demo token, and go on; it is not a
   finding.
-- Budget: 4 h 35 min: 265 area minutes plus 10 contingency, one 4-core
-  Codespace (about 4.6 h of the Free plan's ~30 h). Areas are in priority
+- Budget: 4 h 5 min: 235 area minutes plus 10 contingency, one 4-core
+  Codespace (about 4.1 h of the Free plan's ~30 h). Areas are in priority
   order. Areas 4 (its warnings item) and 6 need area 3's child or its
   measurement still running, and that work (about 30 min) usually ends inside
   area 3's hour: once it has run about 10 min and the Flow comparisons are
@@ -209,33 +209,19 @@ back-out that leaves a Job behind.
 Evidence: `run-wizard-*` review-screen screenshots, each with its Job record
 and the CLI run's record.
 
-### 5. bwave-gui — Scoped waveform views (~35 min)
-Intent: what VaporView shows is what `bwave gui` asked for and what it reported back.
-Try:
-- Register a fresh trace from area 1's or 3's `sim_core` run. Run scoped views
-  in a command terminal: `-s` globs, `-g NAME=GLOB` groups (repeat a NAME),
-  `%b`/`%h`/`%d` radix, `@red`/`@blue`/`@green` colors, `--time START:END`,
-  `--cursor`, `--append`, `--no-clock`.
-- Compare three things for each: the request, the command's readback report,
-  and the screenshot. Check a few values in the view with `bwave value` /
-  `bwave signal` at the marker times.
-- Loud failure: `-s` globs that all match nothing, a `--time` start past the
-  trace end, a `--cursor` past the trace end, a missing trace. Each must fail
-  with a message; none may silently show the whole trace. A glob that misses
-  while others match only warns on stderr.
-- Large trace: compare the sizes of the waveforms the traced runs print
-  (`ls -la` each `waveform:` path) and open the largest; currently that is
-  `sim_core`'s `axi` Test Run from `booley flow sim --target sim_core --trace`
-  (about 28 MB FST). Note the open time and whether the UI stays responsive.
-- Two traces in two VaporView tabs: a scoped view goes to the right one.
-- Reopen after a reload (Developer: Reload Window), then a scoped view again.
-- The bundled VaporView VSIX is the one installed: compare
-  `ls /usr/local/libexec/booley/vaporview-*.vsix` with
-  `code --list-extensions --show-versions`.
-Look for: readback that differs from the screen, radix or color ignored,
-markers in the wrong place, a silent fallback, a view sent to the wrong tab.
-Evidence: `bwave-gui-*` screenshots, each with the command and its report as
-`.txt`.
+### 5. bwave-gui — `bwave gui` without a viewer (~5 min)
+Intent: `bwave gui` still checks its request, then says plainly that Booley
+has no waveform viewer.
+Try: in a command terminal, with a trace registered from area 1's or 3's
+`sim_core` run, run `bwave gui` with a valid `-s` glob, with no selection, and
+with `-g NAME=GLOB`. Then run it with a missing trace, `-s` globs that all
+match nothing, a `--time` start past the trace end and a `--cursor` past the
+trace end.
+Look for: a valid request that opens something or exits 0, a failing request
+that reports the no-viewer message instead of its own error, a selector error
+that is silent or unclear.
+Evidence: `bwave-gui-*` `.txt` files with each command, its report and exit
+code.
 
 ### 6. stop-resume — Stop and resume the Codespace mid-measurement (~15 min)
 Intent: Booley state survives a Codespace stop, and the GUI comes back to it.
@@ -310,7 +296,7 @@ Evidence: `live-preview-*` screenshots.
 ### 10. matrix — Viewport and theme matrix (~15 min)
 Intent: the main views still work at other sizes and themes.
 Try: the main run is 1440×900, dark. Do a short pass over the Dashboard
-Sessions window and one scoped VaporView view at 1024 wide, then `Light 2026`,
+Sessions window at 1024 wide, then `Light 2026`,
 then `Default High Contrast` and `Default High Contrast Light`. Change the
 theme only through machine settings (the runbook step 6 one-liner with another
 `workbench.colorTheme` ID), never the theme picker, and check that the

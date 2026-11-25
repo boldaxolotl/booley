@@ -109,7 +109,12 @@ from booley.mcp.peer_checkout import CallerCheckout
 from booley.mcp.report_encoding import ReportEncoder
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
-from booley.mcp.session_registry import Attribution
+from booley.mcp.session_registry import (
+    Attribution,
+    SessionRegistry,
+    canonical_attribution,
+    git_checkout_metadata,
+)
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import loopback_http, pid, runtime_context
@@ -124,6 +129,7 @@ from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
 from booley.runtime.git import is_linked_worktree
+from booley.runtime.handles import HandleStore
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
@@ -677,7 +683,70 @@ def _build_mcp_tool_index(
     return index
 
 
-def _format_status_card(mcp_tool_names: list[str]) -> str:
+_UNATTRIBUTED = (
+    "Session: unknown (Booley could not attribute this call)",
+    "Branch: unknown",
+    "Checkout: unknown",
+)
+_UNRECORDED = (
+    "Session: unknown (Booley has not recorded this session)",
+    "Branch: unknown",
+    "Checkout: unknown",
+)
+
+
+_UNREADABLE = (
+    "Session: unknown (Booley could not read its session state)",
+    "Branch: unknown",
+    "Checkout: unknown",
+)
+
+
+def _checkout_kind(path: str) -> str:
+    """Say whether *path* is in a main checkout or a linked worktree, as far as Git metadata shows."""
+    try:
+        metadata = git_checkout_metadata(Path(path))
+    except (OSError, ValueError, UnicodeError):
+        return "checkout kind unknown"
+    if metadata is None:
+        return "checkout kind unknown"
+    return "main checkout" if metadata[1] == metadata[2] else "worktree"
+
+
+def _recorded_identity_lines(attribution: Attribution) -> tuple[str, ...]:
+    """Session, branch and checkout lines from the registry row the Dashboard lists."""
+    try:
+        common = resolve_common_booley_dir()
+    except (SourceCheckoutProjectError, BooleyLayoutError, OSError):
+        return _UNRECORDED
+    key = canonical_attribution(attribution).key
+    row = next(
+        (r for r in SessionRegistry(common).snapshot().rows if r.attribution.key == key), None
+    )
+    if row is None:
+        return _UNRECORDED
+    labels, titles, _ = HandleStore(common).titled_snapshot()
+    facts = row.attribution
+    path = facts.work_dir or facts.default_work_dir
+    checkout = f"{path} ({_checkout_kind(path)})" if path else "unknown"
+    return (
+        f"Session: {titles.get(key) or labels.get(key) or 'unknown'}",
+        f"Branch: {facts.branch or 'unknown'}",
+        f"Checkout: {checkout}",
+    )
+
+
+def _session_identity_lines(attribution: Attribution | None) -> tuple[str, ...]:
+    """The calling session's handle, branch and checkout, with what is unknown said so."""
+    if attribution is None:
+        return _UNATTRIBUTED
+    try:
+        return _recorded_identity_lines(attribution)
+    except Exception:  # noqa: BLE001 — status must survive unreadable session state
+        return _UNREADABLE
+
+
+def _format_status_card(mcp_tool_names: list[str], attribution: Attribution | None) -> str:
     """Return the concise user-facing Sandbox status card."""
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
@@ -687,9 +756,11 @@ def _format_status_card(mcp_tool_names: list[str]) -> str:
         health = current_summary(Path.cwd())
     except Exception:  # noqa: BLE001 — status must survive corrupt/missing advisory state
         health = "Automatic Doctor status unavailable."
+    identity = "\n".join(_session_identity_lines(attribution))
     return (
         "```text\n"
         f"Booley ready. Sandbox container {session_id} is running.\n"
+        f"{identity}\n"
         f"{format_status_line()}\n"
         f"Available MCP tools: {mcp_tools_text}.\n"
         f"Health: {health}\n"
@@ -697,12 +768,15 @@ def _format_status_card(mcp_tool_names: list[str]) -> str:
     )
 
 
-def _dispatch_status(mcp_tool_names: list[str]) -> list[TextContent]:
+def _dispatch_status(
+    mcp_tool_names: list[str], request_context: McpRequestContext | None
+) -> list[TextContent]:
     """Handle the synthetic status MCP tool without spawning a subprocess."""
+    attribution = request_context.attribution if request_context is not None else None
     return [
         TextContent(
             type="text",
-            text=_format_status_card(mcp_tool_names),
+            text=_format_status_card(mcp_tool_names, attribution),
         ),
     ]
 
@@ -1836,7 +1910,7 @@ async def _dispatch_special_mcp_tool(
     sync_meta: dict[str, tuple[Callable[[], bool], Callable[[], McpToolContent]]] = {
         catalog._STATUS_MCP_TOOL_NAME: (
             lambda: catalog.status_visible(_exposure()),
-            lambda: _dispatch_status(status_mcp_tool_names),
+            lambda: _dispatch_status(status_mcp_tool_names, request_context),
         ),
         catalog._REPORT_MCP_TOOL_NAME: (
             lambda: catalog.report_visible(_exposure()),

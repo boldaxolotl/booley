@@ -679,9 +679,21 @@ def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(
     titles = {f"t3-thread-{n}": f"Title {n}" for n in range(3)}
     for n, thread in enumerate(titles):
         _job(world, f"run{n}", world.wt, target=f"run{n}", client="claude", thread=thread)
-    cli, log = write_t3_cli(tmp_path, titles, delay_s=scaled(0.4))
+    cli, log = write_t3_cli(tmp_path, titles)
     monkeypatch.setenv("T3CODE_CLI_PATH", str(cli))
-    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", scaled(1.2))
+    budget = scaled(1.2)
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", budget)
+    # Each lookup costs a third of the budget on a clock the test moves itself, so a slow host
+    # cannot change how many threads one snapshot has time for.
+    now = [0.0]
+    lookup = thread_titles.run_captured_bounded
+
+    def slow_lookup(*args, **kwargs):
+        now[0] += budget / 3
+        return lookup(*args, **kwargs)
+
+    monkeypatch.setattr(thread_titles, "monotonic", lambda: now[0])
+    monkeypatch.setattr(thread_titles, "run_captured_bounded", slow_lookup)
 
     with _client(world, monkeypatch) as client:
         rounds = [

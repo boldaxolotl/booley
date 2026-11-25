@@ -4,7 +4,7 @@
 //! by a simulator) and presents it through the exact same `ColumnCache`
 //! surface the ten `*_from_cache` query functions consume. The disk format is
 //! pure FST — no sidecars, no custom attributes — so every trace bwave
-//! produces opens directly in GTKWave and VaporView.
+//! produces opens directly in GTKWave and Surfer.
 //!
 //! Metadata that `.bwave` v7 headers carried (clock table, sampling edge,
 //! first-rise tick, clock-before-reset flag) is

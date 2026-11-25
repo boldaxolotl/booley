@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.devcontainer_spec_support import build_spec
+from tests.t3code_fake import serve_t3_code
 
 from booley.config import agent as config_agent
 from booley.config import agent_app
@@ -63,6 +64,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(config_agent, "_inside_container", lambda: True)
     monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
     monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
+    serve_t3_code(monkeypatch, running=True)
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
     monkeypatch.setattr(shutil, "which", lambda name, mode=None: None)

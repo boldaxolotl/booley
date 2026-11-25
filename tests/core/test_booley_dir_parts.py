@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
@@ -258,21 +260,17 @@ def test_walk_yields_topmost_uniform_entries(tmp_path):
     assert list(walked) == sorted(walked)
 
 
-def test_snapshot_main_reports_an_unreadable_source(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_copy_snapshot_reports_an_unreadable_source(tmp_path: Path) -> None:
+    from booley.runtime.worktree_snapshot import SnapshotError, copy_snapshot
+
+    with pytest.raises(SnapshotError, match="cannot list the Booley Directory for the Snapshot"):
+        copy_snapshot(tmp_path / "missing", tmp_path / "copy")
+
+
+def test_copy_snapshot_names_every_unclassified_path_without_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime import worktree_snapshot
-
-    status = worktree_snapshot.main([str(tmp_path / "missing"), str(tmp_path / "list")])
-
-    assert status == 1
-    assert "cannot list the Booley Directory for the Snapshot" in capsys.readouterr().err
-
-
-def test_snapshot_main_names_every_unclassified_path_without_git(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.runtime import worktree_snapshot
+    from booley.runtime.worktree_snapshot import copy_snapshot
 
     source = tmp_path / "data"
     (source / "eval_tmp").mkdir(parents=True)
@@ -281,10 +279,7 @@ def test_snapshot_main_names_every_unclassified_path_without_git(
     no_tools.mkdir()
     monkeypatch.setenv("PATH", str(no_tools))
 
-    status = worktree_snapshot.main([str(source), str(tmp_path / "list")])
-
-    assert status == 0
-    assert "Snapshot skipped eval_tmp" in capsys.readouterr().err
+    assert copy_snapshot(source, tmp_path / "copy") == ["eval_tmp"]
 
 
 def test_a_configured_directory_never_reclassifies_booley_state(tmp_path: Path) -> None:
@@ -311,14 +306,54 @@ def test_a_configured_directory_never_reclassifies_booley_state(tmp_path: Path) 
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-def test_snapshot_main_names_every_unclassified_path_outside_a_repository(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.runtime import worktree_snapshot
+def test_copy_snapshot_names_unclassified_paths_and_skips_tool_state(tmp_path: Path) -> None:
+    from booley.runtime.worktree_snapshot import copy_snapshot
 
     source = tmp_path / "data"
-    (source / "eval_tmp").mkdir(parents=True)
-    (source / "eval_tmp" / "x").write_text("x\n", encoding="utf-8")
+    for relative in (
+        "eval_tmp/x",
+        "cores/ip/x.core",
+        "cores/ip/.git/HEAD",
+        "cores/ip/rtl.v",
+        "cores/ip/.venv/bin/python",
+        "cores/ip/__pycache__/m.pyc",
+    ):
+        (source / relative).parent.mkdir(parents=True, exist_ok=True)
+        (source / relative).write_text("x\n", encoding="utf-8")
+    destination = tmp_path / "copy"
 
-    assert worktree_snapshot.main([str(source), str(tmp_path / "list")]) == 0
-    assert "Snapshot skipped eval_tmp" in capsys.readouterr().err
+    assert copy_snapshot(source, destination) == ["eval_tmp"]
+
+    copied = sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*"))
+    assert [path for path in copied if path.startswith("cores/ip/")] == [
+        "cores/ip/rtl.v",
+        "cores/ip/x.core",
+    ]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks and FIFOs")
+def test_copy_snapshot_replaces_existing_entries_without_following_links(tmp_path: Path) -> None:
+    from booley.runtime.worktree_snapshot import SnapshotError, copy_snapshot
+
+    source, destination = tmp_path / "data", tmp_path / "copy"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n", encoding="utf-8")
+    for folder in (source / "cores", source / "tools", destination / "cores"):
+        folder.mkdir(parents=True)
+    (source / "cores" / "run").write_text("new\n", encoding="utf-8")
+    (source / "cores" / "link").symlink_to("../rtl")
+    os.mkfifo(source / "tools" / "channel")
+    (destination / "cores" / "run").symlink_to(outside)
+    (destination / "cores" / "link").symlink_to("elsewhere")
+
+    copy_snapshot(source, destination)
+
+    assert outside.read_text(encoding="utf-8") == "keep\n"
+    assert (destination / "cores" / "run").read_text(encoding="utf-8") == "new\n"
+    assert not (destination / "cores" / "run").is_symlink()
+    assert (destination / "cores" / "link").readlink() == Path("../rtl")
+    assert stat.S_ISFIFO((destination / "tools" / "channel").lstat().st_mode)
+    (destination / "cores" / "run").unlink()
+    (destination / "cores" / "run").mkdir()
+    with pytest.raises(SnapshotError, match="copying the Snapshot failed"):
+        copy_snapshot(source, destination)
