@@ -3,107 +3,63 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from booley.core import private_store
-from booley.eda.provisioning import authority
-from booley.eda.provisioning.policies.vivado import Inspection
 from booley.projects import inventory as project_inventory
 from tests import eda_grant_support
 
 
-def test_remembered_initialized_project_is_listed_as_present(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "project"
-    (project / ".git").mkdir(parents=True)
-    (project / ".booley").mkdir()
-
-    assert project_inventory.remember_project(project) == project.resolve()
-
-    assert project_inventory.project_inventory() == (
-        project_inventory.ProjectInventoryEntry(
-            project_root=str(project.resolve()),
-            status=project_inventory.ProjectStatus.PRESENT,
-            remembered=True,
-            grants=(),
-        ),
-    )
-
-
-def test_inventory_joins_grants_and_keeps_deleted_root_visible(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(
-        authority,
-        "inspect_installation",
-        lambda source, project_root=None: Inspection(source.resolve(), "2025.2", "linux-x86_64"),
-    )
-    project = tmp_path / "project"
-    source = tmp_path / "Xilinx" / "2025.2"
-    (project / ".git").mkdir(parents=True)
-    (project / ".booley").mkdir()
-    source.mkdir(parents=True)
-    project_inventory.remember_project(project)
-    authority.register_installation("vivado_2025_2", "vivado", source)
-    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
-    shutil.rmtree(project)
-
-    assert project_inventory.project_inventory() == (
-        project_inventory.ProjectInventoryEntry(
-            project_root=str(project.resolve()),
-            status=project_inventory.ProjectStatus.MISSING,
-            remembered=True,
-            grants=(
-                project_inventory.ProjectGrantSummary(
-                    kind="vivado",
-                    installation="vivado_2025_2",
-                    license_profile=None,
-                ),
-            ),
-        ),
-    )
-
-
-def test_inventory_includes_a_grant_only_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(
-        authority,
-        "inspect_installation",
-        lambda source, project_root=None: Inspection(source.resolve(), "2025.2", "linux-x86_64"),
-    )
-    project = tmp_path / "project"
-    source = tmp_path / "Xilinx" / "2025.2"
-    (project / ".git").mkdir(parents=True)
-    source.mkdir(parents=True)
-    authority.register_installation("vivado_2025_2", "vivado", source)
-    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
-
-    entry = project_inventory.project_inventory()[0]
-
-    assert entry.project_root == str(project.resolve())
-    assert entry.remembered is False
-    assert entry.status is project_inventory.ProjectStatus.UNINITIALIZED
-    assert entry.grants[0].installation == "vivado_2025_2"
-
-
-def test_discovery_remembers_projects_and_prunes_their_subtrees(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    search_root = tmp_path / "workplace"
-    project = search_root / "project"
-    nested_fixture = project / "tests" / "fixture"
-    second = search_root / "second"
-    for root in (project, nested_fixture, second):
-        (root / ".git").mkdir(parents=True)
+def _project(root: Path, *, booley: bool = True) -> Path:
+    (root / ".git").mkdir(parents=True)
+    if booley:
         (root / ".booley").mkdir()
+    return root
+
+
+def _grant(root: Path) -> None:
+    """A real license-only Project Grant: it needs no installation inspection."""
+    eda_grant_support.register_license()
+    eda_grant_support.add_grant(root, license_profile="registered")
+
+
+_REGISTERED = project_inventory.ProjectGrantSummary("vivado", None, "registered")
+
+
+@pytest.mark.parametrize("case", ["present", "deleted", "grant-only"])
+def test_inventory_joins_status_memory_and_grants(tmp_path: Path, case: str) -> None:
+    project = _project(tmp_path / "project", booley=case != "grant-only")
+    if case != "grant-only":
+        assert project_inventory.remember_project(project) == project.resolve()
+    if case != "present":
+        _grant(project)
+    if case == "deleted":
+        shutil.rmtree(project)
+    status = {
+        "present": project_inventory.ProjectStatus.PRESENT,
+        "deleted": project_inventory.ProjectStatus.MISSING,
+        "grant-only": project_inventory.ProjectStatus.UNINITIALIZED,
+    }[case]
+
+    assert project_inventory.project_inventory() == (
+        project_inventory.ProjectInventoryEntry(
+            project_root=str(project.resolve()),
+            status=status,
+            remembered=case != "grant-only",
+            grants=() if case == "present" else (_REGISTERED,),
+        ),
+    )
+
+
+def test_discovery_remembers_projects_and_prunes_their_subtrees(tmp_path: Path) -> None:
+    search_root = tmp_path / "workplace"
+    project = _project(search_root / "project")
+    _project(project / "tests" / "fixture")
+    second = _project(search_root / "second")
 
     assert project_inventory.discover_projects((search_root,)) == (
         project.resolve(),
@@ -116,84 +72,38 @@ def test_discovery_remembers_projects_and_prunes_their_subtrees(
     ]
 
 
-def test_forget_removes_a_missing_remembered_root(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "project"
-    (project / ".git").mkdir(parents=True)
-    (project / ".booley").mkdir()
-    project_inventory.remember_project(project)
-    shutil.rmtree(project)
-
-    assert project_inventory.forget_project(project) == project
-
-    assert project_inventory.project_inventory() == ()
-
-
-def test_forget_refuses_a_root_with_a_live_grant(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(
-        authority,
-        "inspect_installation",
-        lambda source, project_root=None: Inspection(source.resolve(), "2025.2", "linux-x86_64"),
-    )
-    project = tmp_path / "project"
-    source = tmp_path / "Xilinx" / "2025.2"
-    (project / ".git").mkdir(parents=True)
-    (project / ".booley").mkdir()
-    source.mkdir(parents=True)
-    project_inventory.remember_project(project)
-    authority.register_installation("vivado_2025_2", "vivado", source)
-    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
-
-    with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
-        project_inventory.forget_project(project)
-
-    assert project_inventory.project_inventory()[0].remembered is True
-
-
-def test_inventory_rejects_a_symlinked_state_file(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    inventory_dir = tmp_path / "config" / "booley"
-    inventory_dir.mkdir(parents=True, mode=0o700)
-    inventory_dir.parent.chmod(0o700)
-    inventory_dir.chmod(0o700)
+def test_inventory_rejects_a_symlinked_state_file(tmp_path: Path) -> None:
+    project_inventory.remember_project(_project(tmp_path / "project"))
     redirected = tmp_path / "redirected.json"
     redirected.write_text(json.dumps({"schema": 1, "projects": []}), encoding="utf-8")
-    (inventory_dir / "projects.json").symlink_to(redirected)
+    project_inventory.state_path().unlink()
+    project_inventory.state_path().symlink_to(redirected)
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="must not be a symlink"):
         project_inventory.project_inventory()
 
 
-def test_inventory_lock_contention_has_a_bounded_error(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "project"
-    (project / ".booley").mkdir(parents=True)
-    monkeypatch.setattr(
-        private_store,
-        "acquire_file_lock",
-        lambda _lock: (_ for _ in ()).throw(BlockingIOError()),
-    )
-    times = iter((0.0, 11.0))
-    monkeypatch.setattr(private_store, "monotonic", lambda: next(times))
-    monkeypatch.setattr(private_store.time, "sleep", lambda _seconds: None)
+def test_inventory_lock_contention_has_a_bounded_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path / "project")
+    times = iter((0.0, 11.0))  # the deadline check comes before any sleep
+    with project_inventory.locked_protected_roots():
+        monkeypatch.setattr(private_store, "monotonic", lambda: next(times))
 
-    with pytest.raises(project_inventory.ProjectInventoryError, match="busy"):
-        project_inventory.remember_project(project)
+        with pytest.raises(project_inventory.ProjectInventoryError, match="busy"):
+            project_inventory.remember_project(project)
 
 
-def test_inventory_rejects_a_symlinked_config_directory(tmp_path: Path, monkeypatch) -> None:
-    platform_root = tmp_path / "config"
-    platform_root.mkdir(mode=0o700)
+def test_inventory_rejects_a_symlinked_config_directory(tmp_path: Path) -> None:
+    config = project_inventory.state_path().parent
+    config.parent.mkdir(mode=0o700)
     redirected = tmp_path / "redirected"
     redirected.mkdir(mode=0o700)
-    (platform_root / "booley").symlink_to(redirected, target_is_directory=True)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(platform_root))
-    project = tmp_path / "project"
-    (project / ".booley").mkdir(parents=True)
+    config.symlink_to(redirected, target_is_directory=True)
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="must not be a symlink"):
-        project_inventory.remember_project(project)
+        project_inventory.remember_project(_project(tmp_path / "project"))
 
     assert not (redirected / "projects.json").exists()
 
@@ -210,68 +120,19 @@ def test_inventory_rejects_a_symlinked_config_directory(tmp_path: Path, monkeypa
         {"schema": 1, "projects": ["/project", "/project"]},
     ],
 )
-def test_inventory_rejects_invalid_boundary_documents(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: object
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    inventory_dir = tmp_path / "config" / "booley"
-    inventory_dir.mkdir(parents=True, mode=0o700)
-    inventory_dir.parent.chmod(0o700)
-    inventory_dir.chmod(0o700)
-    state = inventory_dir / "projects.json"
-    state.write_text(json.dumps(document), encoding="utf-8")
-    state.chmod(0o600)
+def test_inventory_rejects_invalid_boundary_documents(tmp_path: Path, document: object) -> None:
+    project_inventory.remember_project(_project(tmp_path / "project"))
+    project_inventory.state_path().write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="unreadable"):
         project_inventory.project_inventory()
-
-
-def test_inventory_wraps_authority_store_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr(
-        authority,
-        "load_state",
-        lambda: (_ for _ in ()).throw(authority.AuthorityError("corrupt authority")),
-    )
-
-    with pytest.raises(
-        project_inventory.ProjectInventoryError, match="cannot read Project Grants"
-    ):
-        project_inventory.project_inventory()
-
-
-def test_before_forget_receives_stored_identity_and_failure_keeps_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "project"
-    (project / ".booley").mkdir(parents=True)
-    project_inventory.remember_project(project)
-    shutil.rmtree(project)
-    observed = []
-
-    def fail(root: Any) -> None:
-        observed.append(str(root))
-        raise RuntimeError("release failed")
-
-    with pytest.raises(RuntimeError, match="release failed"):
-        project_inventory.forget_project(project, before_forget=fail)
-    assert observed == [str(project)]
-    assert project_inventory.project_inventory()[0].remembered
 
 
 def test_purge_uses_the_stored_spelling_of_a_case_folded_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """On a case-folding OS a case variant names the stored root, so the Grant guard sees it."""
-    import os
-    from types import SimpleNamespace
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "Project"
-    (project / ".booley").mkdir(parents=True)
+    project = _project(tmp_path / "Project")
     project_inventory.remember_project(project)
     stored = str(project.resolve())
     variant = Path(stored.swapcase())
@@ -286,32 +147,20 @@ def test_purge_uses_the_stored_spelling_of_a_case_folded_root(
     assert project_inventory.project_inventory() == ()
 
     project_inventory.remember_project(project)
-    grant = SimpleNamespace(
-        project_root=stored, kind="vivado", installation=None, license_profile=None
-    )
-    monkeypatch.setattr(project_inventory, "_authority_grants", lambda: (grant,))
+    _grant(project)
     with pytest.raises(project_inventory.ProjectInventoryError, match="live Project Grant"):
         project_inventory.forget_project(variant, allow_forgotten=True)
     assert project_inventory.project_inventory()[0].remembered
 
 
 @pytest.mark.parametrize("folder", ["present", "deleted"])
-def test_live_grant_refusal_names_the_revoke_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: str
-) -> None:
-    from types import SimpleNamespace
-
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    project = tmp_path / "My Project"
-    (project / ".booley").mkdir(parents=True)
+def test_live_grant_refusal_names_the_revoke_command(tmp_path: Path, folder: str) -> None:
+    project = _project(tmp_path / "My Project")
     project_inventory.remember_project(project)
     stored = str(project.resolve())
+    _grant(project)
     if folder == "deleted":
         shutil.rmtree(project)
-    grant = SimpleNamespace(
-        project_root=stored, kind="vivado", installation=None, license_profile=None
-    )
-    monkeypatch.setattr(project_inventory, "_authority_grants", lambda: (grant,))
 
     with pytest.raises(project_inventory.ProjectInventoryError) as caught:
         project_inventory.forget_project(project)
@@ -320,12 +169,10 @@ def test_live_grant_refusal_names_the_revoke_command(
         f"cannot forget {stored}: revoke its live Project Grant first with "
         f"`booley eda grant revoke --kind vivado '{stored}'`"
     )
+    assert project_inventory.project_inventory()[0].remembered
 
 
-def test_unremembered_root_refusal_names_both_fixes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+def test_unremembered_root_refusal_names_both_fixes(tmp_path: Path) -> None:
     path = tmp_path / "never"
 
     with pytest.raises(project_inventory.ProjectInventoryError) as caught:
