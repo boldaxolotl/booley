@@ -30,6 +30,8 @@ from .model import SimulationRecordManifest
 
 _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
 _SHUTDOWN_POLL_SLICES = 10
+# A busy lease gate refuses renewal without losing the lease; retry well inside the 30 s lease.
+_LEASE_CONFIRM_RETRY_SECONDS = 0.05
 
 
 class SimulationRecordCapacityError(RuntimeError):
@@ -366,14 +368,27 @@ class SimulationRecordCapacity:
         return self.cancellation_cause()
 
     def _confirm_lease(self, permit: ChildPermit) -> bool:
-        """Prove the lease is held before the lane goes terminal; reaping is normal after."""
+        """Prove the lease is held before the lane goes terminal; reaping is normal after.
+
+        A busy lease gate refuses renewal without losing the lease, so the proof is
+        retried until a renewal (this one or the renewal thread's) extends the lease,
+        renewal marks it lost, or the record is cancelled.
+        """
         store = self._admission.slot_store
         assert store is not None, "child permits exist only under managed admission"
-        held = not permit.lease_health.lost.is_set() and store.renew(permit.token)
-        if held:
-            with self._gate:
-                self._confirmed.add(permit.token.lease_id)
-        return held
+        lost = permit.lease_health.lost
+        extended = permit.token.lease_generation
+        while lost.is_set() or not store.renew(permit.token):
+            if lost.is_set():
+                return False
+            if permit.token.lease_generation != extended:
+                break  # the renewal thread extended it since the work ended
+            if self._cancelled():
+                raise ClaimAbortedError("record cancellation requested")
+            lost.wait(_LEASE_CONFIRM_RETRY_SECONDS)
+        with self._gate:
+            self._confirmed.add(permit.token.lease_id)
+        return True
 
     def _acquire_child(
         self,
