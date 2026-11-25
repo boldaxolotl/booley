@@ -41,13 +41,13 @@ def _steps(workflow: dict[Any, Any]) -> list[dict[str, Any]]:
 
 def _runner_step(workflow: dict[Any, Any]) -> dict[str, Any]:
     """The one step that runs ``docker run``, found by what it does."""
-    [step] = [s for s in _steps(workflow) if str(s.get("run", "")).startswith("docker run")]
+    [step] = [s for s in _steps(workflow) if "docker run" in str(s.get("run", ""))]
     return step
 
 
 def _docker_arguments(command: str) -> tuple[list[str], list[str]]:
     """Names passed as ``--env NAME`` (no value) and ``-v`` mounts of a ``docker run`` command."""
-    tokens = shlex.split(command)
+    tokens = shlex.split(command.split("&&")[-1])
     assert tokens[:3] == ["docker", "run", "--rm"], tokens[:3]
     names: list[str] = []
     mounts: list[str] = []
