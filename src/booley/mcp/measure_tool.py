@@ -12,12 +12,10 @@ import sys
 from typing import Any
 
 from booley.mcp.report_encoding import _format_mcp_tool_result
-from booley.measurement.mcp_job import MEASURE_ENDPOINT, progress_text
+from booley.measurement.mcp_job import MEASURE_ENDPOINT
 from booley.measurement.measuring_rules import MEASURING_RULES
 
 MEASURE_TOOL_NAME = "booley_measure"
-# A measurement has no Job budget, like a Standalone ``booley measure`` run.
-MEASURE_TIMEOUT_S = 7 * 24 * 3600
 
 _DESCRIPTION = (
     "Measure a commit against the Target Metrics rules in metrics.toml, as `booley measure` "
@@ -91,11 +89,6 @@ def measure_argv(arguments: dict[str, Any]) -> list[str]:
     return argv
 
 
-def running_text(progress: dict[str, Any]) -> str:
-    """What a poll of a running measurement adds: Flows finished of the total, and running."""
-    return f"Progress: {progress_text(progress)}."
-
-
 def result_text(exit_code: int, stdout: str, stderr: str, report: dict[str, Any] | None) -> str:
     """The final result: the exit status, the whole summary, then the notes and exit rule.
 
@@ -117,10 +110,8 @@ def result_text(exit_code: int, stdout: str, stderr: str, report: dict[str, Any]
 
 __all__ = [
     "MEASURE_ENDPOINT",
-    "MEASURE_TIMEOUT_S",
     "MEASURE_TOOL_NAME",
     "measure_argv",
     "measure_tool_def",
     "result_text",
-    "running_text",
 ]
