@@ -2,7 +2,6 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    chat      Open the Project's default (or --cli chosen) Agent CLI
     worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
     coverage  List uncovered coverage points of a finished coverage run
@@ -86,7 +85,6 @@ class CommandLocation(Enum):
 COMMAND_LOCATIONS = {
     "help": CommandLocation.EITHER,
     "dashboard": CommandLocation.SESSION_RUNTIME,
-    "chat": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
     "coverage": CommandLocation.EITHER,
@@ -127,7 +125,6 @@ class ProjectBinding(Enum):
 COMMAND_PROJECT_BINDINGS = {
     "help": ProjectBinding.INDEPENDENT,
     "dashboard": ProjectBinding.REQUIRED,
-    "chat": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
     "coverage": ProjectBinding.INDEPENDENT,
@@ -479,8 +476,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
 _MIN_WRAP_WIDTH = 11
 _ROOT_DESCRIPTION = "Booley — RTL development harness."
 _ROOT_FOOTER = (
-    "Run bare `booley` on the host for help, or inside the Sandbox to open this "
-    "Project's default Agent CLI. See `booley cheat --skills` for guided agent workflows."
+    "See `booley cheat --skills` for guided agent workflows."
 )
 
 
@@ -508,19 +504,6 @@ class _RootHelpFormatter(argparse.RawDescriptionHelpFormatter):
 
     def __init__(self, prog: str) -> None:
         super().__init__(prog, width=_help_width())
-
-
-_SESSION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
-
-
-def _session_name(value: str) -> str:
-    """Validate a `--name` label (argparse ``type=``): the trimmed text, or a usage error."""
-    name = value.strip()
-    if _SESSION_NAME.fullmatch(name) is None:
-        raise argparse.ArgumentTypeError(
-            "use 1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or digit"
-        )
-    return name
 
 
 def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentParser:
@@ -1041,72 +1024,6 @@ def _add_shell_subparser(sub) -> None:
 
 def _add_utility_subparsers(sub) -> None:
     """Add host utilities, setup commands, and direct Flow commands."""
-    chat_p = sub.add_parser(
-        "chat",
-        help="Open this Project's default (or chosen) Agent CLI [invokes agent]",
-        description=(
-            "Open an interactive Agent CLI for this Project: its default, or the one --cli names."
-        ),
-        usage=(
-            "%(prog)s [-h] [-C PATH | --project PATH] [--cli {claude,codex}] "
-            "[--new-worktree | --here] [--name NAME] [--] [ARGS ...]"
-        ),
-        epilog=(
-            "Arguments after `chat` and its own options are passed unchanged to the "
-            "Agent CLI, after Booley's own launch arguments, for example "
-            "`booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); "
-            "a resumed conversation reopens in the worktree it ran in. "
-            "Booley reads -h/--help, -C/--project, --cli, --new-worktree, --here and --name "
-            "only before any other argument. Put `--` first to forward them to the agent: "
-            "`booley chat -- --help`. Claude Code's own `--worktree` is not Booley's and "
-            "goes to the agent."
-        ),
-    )
-    chat_p.add_argument(
-        "--cli",
-        choices=AGENT_CLIS,
-        default=None,
-        help=(
-            "Agent CLI to open; must be listed in booley.toml [agent] clis "
-            "(default: the Project's default Agent CLI)"
-        ),
-    )
-    placement = chat_p.add_mutually_exclusive_group()
-    placement.add_argument(
-        "--new-worktree",
-        dest="chat_worktree",
-        action="store_const",
-        const="always",
-        default=None,
-        help=(
-            "Start in a new worktree `s<N>` even if the main checkout is free "
-            "(overrides [worktree] chat for this launch)"
-        ),
-    )
-    placement.add_argument(
-        "--here",
-        dest="chat_worktree",
-        action="store_const",
-        const="never",
-        default=None,
-        help=(
-            "Start in the main checkout even if another session uses it; from inside a "
-            "linked worktree, stay there (overrides [worktree] chat for this launch)"
-        ),
-    )
-    chat_p.add_argument(
-        "--name",
-        dest="session_name",
-        metavar="NAME",
-        type=_session_name,
-        default=None,
-        help=(
-            "Label the session: the tab title and the Dashboard show `S3 · NAME` "
-            "(1-32 letters, digits, spaces, '.', '_' or '-', starting with a letter or "
-            "digit). A conversation resumed in its worktree keeps its label unless --name sets a "
-            "new one"
-        ),
-    )
     _add_cheat_subparser(sub)
 
     from booley.eda import cli as eda_cli
@@ -1195,21 +1112,17 @@ def _normalize_project_options(parser, args) -> None:
 def _normalize_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> argparse.Namespace:
-    """Resolve the location-dependent default command."""
+    """Answer a bare `booley` with the help; the host adds a getting-started hint."""
     if args.command is None:
+        parser.print_help()
         if not runtime_context.inside_session_runtime():
-            parser.print_help()
             getting_started = (
                 "Getting started: run `booley bootstrap`, then `booley init` in your RTL "
                 "repo, and open the Project in its devcontainer. "
                 f"See `booley --help` and {docs_url('SETUP.md')}"
             )
             print("\n" + "\n".join(_wrap(getting_started, _help_width())))
-            parser.exit(0)
-        else:
-            args.command = "chat"
-            args.default_chat = True
-            args.agent_args = []
+        parser.exit(0)
 
     _normalize_project_options(parser, args)
     _validate_doctor_args(parser, args)
@@ -1260,48 +1173,6 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
     return None
 
 
-def _chat_option_width(tail: list[str], position: int) -> int:
-    """Return how many tokens Booley's own `chat` option takes at `position`.
-
-    Those are -C/--project, --cli, --new-worktree, --here and --name.
-    """
-    if position >= len(tail):
-        return 0
-    token = tail[position]
-    if token in ("-C", "--project"):
-        return 2 if position + 1 < len(tail) else 1
-    if token in ("--cli", "--name"):
-        return 2 if position + 1 < len(tail) else 1
-    if token in ("--new-worktree", "--here"):
-        return 1
-    if token.startswith(("--project=", "--cli=", "--name=")) or (
-        token.startswith("-C") and len(token) > 2
-    ):
-        return 1
-    return 0
-
-
-def _split_chat_tail(argv: list[str], command_index: int) -> tuple[list[str], list[str]]:
-    """Split `booley ... chat TAIL` into Booley's argv and the agent CLI's arguments.
-
-    Booley keeps `-C`/`--project`, `--cli`, `--new-worktree`, `--here` and `--name` only
-    while they lead the tail. Everything after them goes to the agent CLI untouched, with
-    one leading `--` dropped so `booley chat -- --help` forwards `--help`. A leading
-    `-h`/`--help` stays Booley's: the whole argv goes to argparse, which prints the `chat`
-    help.
-    """
-    tail = argv[command_index + 1 :]
-    own_end = 0
-    while width := _chat_option_width(tail, own_end):
-        own_end += width
-    agent_args = tail[own_end:]
-    if agent_args[:1] in (["-h"], ["--help"]):
-        return argv, []
-    if agent_args[:1] == ["--"]:
-        agent_args = agent_args[1:]
-    return argv[: command_index + 1] + tail[:own_end], agent_args
-
-
 def _parse_features() -> frozenset[str]:
     """The ambient Project's enabled flags, or none when they cannot be read.
 
@@ -1326,12 +1197,7 @@ def _parse_cli() -> argparse.Namespace:
     command = None if command_index is None else argv[command_index]
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
-    agent_args: list[str] = []
-    if command == "chat" and command_index is not None:
-        argv, agent_args = _split_chat_tail(argv, command_index)
     args = parser.parse_args(argv)
-    if args.command == "chat":
-        args.agent_args = agent_args
     if args.command == "help":
         parser.print_help()
         parser.exit()
@@ -2091,13 +1957,6 @@ def _cmd_feedback(args: argparse.Namespace, project_root: Path) -> int:
     return feedback_cli.run(args, project_root, env=env, list_view=feedback_view.render_listing)
 
 
-def _cmd_chat(args: argparse.Namespace, project_root: Path) -> int:
-    """Dispatch `booley chat`; the chat module loads only when it runs."""
-    from booley.harness.chat_cmd import run
-
-    return run(args, project_root)
-
-
 def _cmd_doctor(args: argparse.Namespace, project_root: Path) -> int:
     """Dispatch `booley doctor`; Doctor and its audits load only when it runs."""
     from booley.harness.doctor import run_doctor
@@ -2125,7 +1984,6 @@ def _cmd_auth(args: argparse.Namespace, project_root: Path | None) -> int:
 # `--version` do not pay for commands they never run. Entries that name an imported module's
 # function (`resources_cli.run`, ...) are fine: those modules also register their subparser.
 _EARLY_COMMANDS: dict[str, Callable] = {
-    "chat": _cmd_chat,
     "cheat": _cmd_cheat,
     "doctor": _cmd_doctor,
     "init": _cmd_init,
@@ -2444,10 +2302,6 @@ def _dispatch_main() -> int:
     command = _effective_command(args)
     assert command is not None, "CLI normalization always supplies a command"
 
-    default_chat = getattr(args, "default_chat", False)
-    if default_chat:
-        _enforce_runtime_location(command)
-
     if deleted_root := _deleted_session_down_root(command, args):
         # A deleted Project has no checkout to discover or guard; INDEPENDENT skips
         # only those checks, while the host-only and host-install gates still run.
@@ -2467,12 +2321,9 @@ def _dispatch_main() -> int:
     if binding is ProjectBinding.REQUIRED:
         assert project_root is not None, "a REQUIRED command resolves a Project Root"
         _require_command_project(command, project_root)
-    # Doctor reports retired config as a FAIL; upgrade, session and chat open the
+    # Doctor reports retired config as a FAIL; upgrade and session open the
     # Developer Agent chat where booley-heal removes it. Flows and MCP tools refuse.
-    exempt = (
-        command in {"doctor", "upgrade", "session", "chat"}
-        or binding is ProjectBinding.INDEPENDENT
-    )
+    exempt = command in {"doctor", "upgrade", "session"} or binding is ProjectBinding.INDEPENDENT
     if project_root is not None and not exempt:
         refuse_retired_config(project_root)
     if project_root is not None and binding is not ProjectBinding.INDEPENDENT:
@@ -2499,13 +2350,11 @@ def _dispatch_selected(
     args: argparse.Namespace, command: str, project_root: Path | None, binding: ProjectBinding
 ) -> int:
     """Dispatch an already validated selection under its host consumer admission."""
-    default_chat = getattr(args, "default_chat", False)
     if _endpoint_help_candidate(args):
         return _dispatch_help_candidate(args, project_root)
     # Bootstrap has no Project and must not even discover one. Its host-only
     # venue guard still runs before configuration or reconciliation.
-    if not default_chat:
-        _enforce_runtime_location(command)
+    _enforce_runtime_location(command)
     if authority_error := _host_install_authority_error(command):
         print(authority_error, file=sys.stderr)
         return 2

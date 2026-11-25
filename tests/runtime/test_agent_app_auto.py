@@ -1,7 +1,7 @@
 """``BOOLEY_AGENT_APP=auto``: the registrar picks the app and every consumer agrees (#2425).
 
 Every test runs as a Sandbox start: the registrar hook runs, then the Specialist,
-MCP-server, ``booley chat`` and Doctor consumers read what the start decided.
+MCP-server and Doctor consumers read what the start decided.
 Nothing here depends on host credentials or on ``claude``/``codex`` being on PATH.
 """
 
@@ -21,7 +21,7 @@ from booley.config import agent as config_agent
 from booley.config import agent_app
 from booley.config.agent import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.config.settings import set_agent_settings
-from booley.harness import auth_cmd, chat_cmd, doctor
+from booley.harness import auth_cmd, doctor
 from booley.harness import incontainer_register as entry
 from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
@@ -171,9 +171,6 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
     assert doctor._configured_provider(None) == app
     recorded = SimpleNamespace(booley_toml={"agent": {"auth": "visitor"}})
     assert doctor._configured_auth_policy(recorded) == policy
-    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
-    assert chat_cmd.run(argparse.Namespace(agent_args=[]), sandbox.project) == 2
-    assert f"configured agent CLI '{app}'" in capsys.readouterr().err
 
 
 def test_consumers_keep_the_start_choice_when_a_credential_appears_later(

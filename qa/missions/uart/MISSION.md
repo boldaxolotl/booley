@@ -285,9 +285,8 @@ Try:
 
 ### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:
-- Launch: in the Sandbox, bare `booley` (or `booley chat`) starts the configured provider in the
-  current working directory. With a missing client executable (disposable), you get an
-  actionable error; restore it. Make a safe edit and commit it, and check the exact local diff
+- Launch: in the Sandbox, `claude` or `codex` starts in the current working
+  directory. Make a safe edit and commit it, and check the exact local diff
   and history.
 - MCP: the Interactive Sandbox exposes the `booley_measure` schema. Disabling a
   Flow or Specialist (`enabled = false`) removes its tool; re-enabling restores

@@ -181,7 +181,6 @@ def test_detached_endpoint_inventory():
         ["session", "-C", "../b", "status"],
         ["session", "status", "--project=../b"],
         ["-C../b", "session", "status"],
-        ["-C", "../b"],
         ["cleanup", "preview", "--run-id", "r", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
@@ -416,7 +415,7 @@ def dispatch(argv, monkeypatch):
 
 @pytest.mark.parametrize(
     "route",
-    ["targets", "chat", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
+    ["targets", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
 )
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []

@@ -75,7 +75,7 @@
   <text class="t" x="64" y="244">Developer Agent sessions</text>
   <text class="b" x="64" y="282">Claude Code or Codex,</text>
   <text class="b" x="64" y="303">one per Sandbox terminal</text>
-  <text class="s" x="64" y="327">started by booley chat</text>
+  <text class="s" x="64" y="327">started from T3 Code</text>
 
   <path class="ln" d="M390 280 H430" marker-end="url(#f2a)"/>
   <text class="e" x="410" y="271" text-anchor="middle">edit</text>

@@ -147,7 +147,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,
         "runtime/synth_probe.json": _COMMON,
-        "runtime/chat-main.lock": _COMMON,
         ".runtime/sandbox-mounts.json": _COMMON,
         "runtime/resources/": _COMMON,
         ".runtime/executions/": _COMMON,

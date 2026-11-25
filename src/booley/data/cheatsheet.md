@@ -7,13 +7,10 @@ and nested actions.
 
 #### Sandbox-only commands
 
-On the host, bare `booley` prints help and a getting-started hint.
-Inside the Sandbox, we recommend `booley` / `booley chat`, which launches
-the default Agent CLI (`booley chat --cli <name>` picks another allowed one).
+Bare `booley` prints help; on the host it adds a getting-started hint.
 
 | Command | Purpose |
 |---------|---------|
-| `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley dashboard` | Show sessions, Jobs, and Targets |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley measure` | Measure a commit against `metrics.toml`; `--validate` checks the file |
@@ -27,7 +24,7 @@ requires the Sandbox.
 
 | Command | Location | Purpose |
 |---------|----------|---------|
-| `booley` | either | Host: help; Sandbox: open the configured Developer Agent CLI |
+| `booley` | either | Show top-level help; on the host, add a getting-started hint |
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 | `booley coverage` | either | List uncovered coverage points of a finished coverage run |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
@@ -244,18 +241,13 @@ clients, and development dependencies. It backs the per-folder Sandbox
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
-| `booley` / `booley chat` | Launch the default `claude` or `codex` command inside the Sandbox; `--cli <name>` picks another allowed one |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 Offline copies of the user docs that skills cite (config, Flows, troubleshooting, Sandbox) are in `/booley-docs/<FILE>.md`.
 
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
-Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
-it starts the native CLI as a child process and exits with its status. Arguments after `booley chat` and its own options (`--cli`, `-C`) are passed to it unchanged, for example `booley chat --resume <id>` (Claude) or `booley chat resume --last` (Codex); `booley chat -- --help` forwards `--help`.
-
-**`booley chat` and `booley dashboard` run in the Sandbox.**
-Bare `booley` prints help on the host and starts the configured Developer Agent in the
-Sandbox. For parallel work, use one linked worktree per session. The
+**`booley dashboard` runs in the Sandbox.**
+For parallel work, use one linked worktree per session. The
 Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
 `booley session` runs on the host. `booley init` runs on the host or in a hand-written Sandbox (Project Initialization only); a Booley-issued Sandbox refuses it. Doctor works on either side.

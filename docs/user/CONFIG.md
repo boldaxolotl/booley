@@ -3,8 +3,8 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard, worktree settings (where `booley chat` starts,
-cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
+Dashboard, worktree settings (cleanup of idle worktrees and Git submodules),
+and feedback redaction. Settings for one Flow, the Sandbox, or
 Stealth Mode live on their own pages; the table below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
@@ -197,11 +197,11 @@ clis = ["claude", "codex"]   # every Agent CLI this Project may use
 default = "claude"           # the one used unless you pick another
 ```
 
-- **`default`** is what `booley chat` opens. It also runs Specialists unless a
-  [`[models]`](#model-selection-models) entry needs the other CLI. Without it, the first entry of `clis` is the default.
-- **`clis`**: listing a second CLI lets you open it with
-  `booley chat --cli codex`, lets a `[models]` entry run a Specialist on it, and
-  gives the Sandbox its login (see
+- **`default`** runs Specialists unless a
+  [`[models]`](#model-selection-models) entry needs the other CLI. Without it,
+  the first entry of `clis` is the default.
+- **`clis`**: listing a second CLI lets a `[models]` entry run a Specialist on
+  it and gives the Sandbox its login (see
   [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
   Without `clis`, the Project uses only `default`.
 
@@ -329,32 +329,15 @@ Git folder).
 
 ```toml
 [worktree]
-chat = "auto"          # "auto" (default), "always", or "never"
 gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
 ```
 
-`chat` decides where `booley chat` starts when you run it from the main
-checkout:
-
-- `auto`: in the main checkout when no other Booley session is using it,
-  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
-  Stealth Mode).
-- `always`: always in a new worktree; if the main checkout was free, the launch
-  holds it until its session ends, so a later `auto` launch starts in a
-  worktree too.
-- `never`: always in the main checkout.
-
-`booley chat --new-worktree` and `--here` override it for one launch. Any other
-value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
-linked worktree, `booley chat` starts there whatever this says. See
-[Several agents at once](USAGE.md#several-agents-at-once).
-
 `booley worktree gc` removes worktrees whose last use is older than
 `gc_older_than`, keeping any that `booley worktree rm` would refuse (default
-`"7d"`). Every `booley chat` launch runs the same cleanup with this age.
-`gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
-worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
-it. See [Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
+`"7d"`). `gc_older_than` is read from the main checkout's
+`.booley/booley.toml`; a worktree's own copy is ignored.
+`booley worktree gc --older-than AGE` overrides it. See
+[Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
 
 ### Worktree setup hooks (`.booley/hooks/`)
 

@@ -2,7 +2,7 @@
 
 Booley runs on a Windows host only for ``HOST`` and ``EITHER`` commands (see
 ``COMMAND_LOCATIONS`` in ``booley.harness.booley``); Booley Flows, Specialists, MCP
-tools, the Dashboard, chat, and worktree code run inside the Sandbox, a Linux container.
+tools, the Dashboard, and worktree code run inside the Sandbox, a Linux container.
 Windows CI therefore skips tests whose subject only runs there, and Linux CI runs them all.
 
 This registry is the only place that applies the ``sandbox_only`` marker; the guard in
@@ -93,8 +93,7 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_session_requests.py",
     "tests/mcp_tools/test_sim_seed_dispatch.py",
     "tests/mcp_tools/test_unread_job_notice.py",
-    # Dashboard, chat, and MCP probe commands: Sandbox commands.
-    "tests/harness/test_chat_terminal.py",
+    # Dashboard and MCP probe commands: Sandbox commands.
     "tests/harness/test_dashboard.py",
     "tests/harness/test_dashboard_cli.py",
     "tests/harness/test_dashboard_job_columns.py",

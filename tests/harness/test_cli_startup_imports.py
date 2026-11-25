@@ -248,7 +248,6 @@ def test_help_loads_no_dispatch_handler_module(tmp_path):
 
 
 LAZY_HANDLERS = (
-    ("chat", "booley.harness.chat_cmd", "run"),
     ("doctor", "booley.harness.doctor", "run_doctor"),
     ("init", "booley.harness.init_cmd", "run_init"),
     ("auth", "booley.harness.auth_cmd", "run_auth"),
@@ -267,7 +266,7 @@ def test_lazy_dispatch_reaches_real_handler(monkeypatch, tmp_path):
             return 37
 
         monkeypatch.setattr(module, attribute, recorder)
-        args = cli.argparse.Namespace(command=command, agent_args=[], session_name=None, cli=None)
+        args = cli.argparse.Namespace(command=command, agent_args=[], cli=None)
 
         code = cli._EARLY_COMMANDS[command](args, tmp_path)
 

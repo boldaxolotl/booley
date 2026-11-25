@@ -210,18 +210,16 @@ class SessionObserver:
         fallback = observation.fallback
         registry = self._registry()
         return registry.preserve_worktree(
-            registry.chat_attribution(
-                observation.resolved
-                or resolve_attribution(
-                    observation.root,
-                    metadata={"threadId": fallback.key.removeprefix("codex:")}
-                    if fallback.kind == "thread"
-                    else {},
-                    client_name=observation.client_name,
-                    peer=observation.caller.peer
-                    if observation.caller is not None and observation.caller.peer is not None
-                    else observed_peer(observation.request),
-                )
+            observation.resolved
+            or resolve_attribution(
+                observation.root,
+                metadata={"threadId": fallback.key.removeprefix("codex:")}
+                if fallback.kind == "thread"
+                else {},
+                client_name=observation.client_name,
+                peer=observation.caller.peer
+                if observation.caller is not None and observation.caller.peer is not None
+                else observed_peer(observation.request),
             ),
             predecessor_keys=(fallback.key,) if fallback.kind == "thread" else (),
         )
