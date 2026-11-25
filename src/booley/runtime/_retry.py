@@ -32,12 +32,15 @@ _TRANSIENT_PHRASES = (
     "stream disconnected",
 )
 # A failed connection, not any text that mentions one ("Invalid connection string").
+# A failure word within a few words of "connection", in either order, covers the
+# reset/refused/closed/lost/timed-out wordings of Python, httpx, urllib3 and Windows.
+_CONNECTION_FAILURE_WORD = (
+    r"(?:reset|refus|clos|abort|time(?:d ?| )?out|error|lost|terminat|fail|broken|disconnect)"
+)
 _CONNECTION_FAILURE_RE = re.compile(
-    r"\bconnection(?: to \S+)? (?:was )?(?:forcibly )?"
-    r"(?:reset|refused|closed|aborted|timed out|error|lost|terminated|failed|broken)\b"
-    r"|\bconnection attempts failed\b"
-    r"|\bclosed connection\b|\bfailed to establish a new connection\b"
-    r"|\bconnection(?:reset|refused|aborted)?error\b|\bconnection(?:reset|refused|aborted)"
+    rf"\bconnect(?:ion)?\b(?! string).{{0,60}}?\b{_CONNECTION_FAILURE_WORD}"
+    rf"|\b{_CONNECTION_FAILURE_WORD}.{{0,40}}?\bconnection\b(?! string)"
+    r"|\bconnection(?:reset|refused|aborted|error)"
 )
 # The Claude SDK's ProcessError text when the CLI exits nonzero and reports no
 # provider message: the cause is unknown, so it gets the transient retry budget.
