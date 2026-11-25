@@ -187,7 +187,13 @@ variants, and the first public test that killed each detected mutant.
 `frontend`, and `eda_tools`. Developer Agents get the same listing via the
 `booley_targets` MCP tool.
 
-Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
+Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving
+Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that
+distinguishes the Target from others, coarse to fine: `sim_smoke`,
+`synth_timing`. The axis leads because nothing else distinguishes a synth Target
+from an FPGA Target (CAPI2 has no synth flow). Vendored upstream cores keep
+their own names. Add a `default:` Target only to a core another core `depend:`s
+on.
 
 For FPGA Targets the `fpga` axis, not `flow_options.tool`, determines drivability. The declared tool still controls FuseSoC resolution conditions; the FPGA Flow always rebuilds those resolved inputs into a Vivado EDAM. Unprefixed vendored Targets retain a `tool: vivado` fallback.
 

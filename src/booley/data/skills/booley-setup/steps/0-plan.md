@@ -598,10 +598,9 @@ separate columns (see "How a row resolves"). The standard checklist:
    lowercase snake_case, where `<axis>` is one of the four fixed tokens
    `sim` / `lint` / `synth` / `fpga` (the Booley Flow family). The axis is not derivable from
    `.core` metadata, so the name must carry it. Reject plausible-but-wrong
-   names now rather than at the Step-4 doctor NOTE: `asic_core` is wrong
-   (`asic` is not a naming axis — use `synth_core`);
-   `synthesis`/`impl` are likewise not axis tokens. A vendored upstream `.core`
-   keeps its upstream Target names and is exempt.
+   names now: `asic_core` is wrong (`asic` is not a naming axis — use
+   `synth_core`); `synthesis`/`impl` are likewise not axis tokens. A
+   vendored upstream `.core` keeps its upstream Target names and is exempt.
 3. **Toplevel(s)** — per intent; **flat-port wrapper needed?** (from the
    non-scalar-ports determinant: interface ports ⇒ yes, packed-struct ports ⇒
    no + an elaboration check).
