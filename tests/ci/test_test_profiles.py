@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 from tests.time_budget import hang_guard_s
 
 from booley.dev_support import test_profiles as profiles
@@ -111,19 +110,10 @@ def _run_suite(
     )
     env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "src"), str(ROOT)])
-    return run_bounded_child(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(suite),
-            "-q",
-            f"--basetemp={tmp_path / 'pytest-temp'}",
-            *options,
-        ],
+    return run_nested_pytest(
+        [str(suite), "-q", f"--basetemp={tmp_path / 'pytest-temp'}", *options],
         cwd=tmp_path,
         env=env,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

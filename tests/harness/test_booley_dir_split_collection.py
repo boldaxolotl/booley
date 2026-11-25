@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,11 +45,8 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         "PYTEST_XDIST_TESTRUNUID",
     ):
         environment.pop(name, None)
-    result = run_bounded_child(
+    result = run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             "-v",
             "-p",
             "no:xdist",
@@ -66,7 +62,6 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         ],
         cwd=REPO_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
     passed = [

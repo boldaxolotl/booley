@@ -9,14 +9,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 
 _TESTS_DIR = Path(__file__).parent
 _SOURCE_DIR = _TESTS_DIR.parent / "src"
@@ -67,11 +66,10 @@ def _run_inner(
         *extra_args,
         "-n", str(workers),
     ]  # fmt: skip
-    return run_bounded_child(
-        [sys.executable, "-m", "pytest", "test_case.py", "-q", *arguments],
+    return run_nested_pytest(
+        ["test_case.py", "-q", *arguments],
         cwd=tmp_path,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

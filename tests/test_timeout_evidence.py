@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_nested_pytest
 from tests.time_budget import scaled
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -239,8 +239,8 @@ def _run_nested_pytest(
     tmp_path: Path, arguments: list[str], environment: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     """Run ``test_case.py`` under a nested pytest, bounded so a stall leaves evidence."""
-    return run_bounded_child(
-        [sys.executable, "-m", "pytest", "test_case.py", "-q", *arguments],
+    return run_nested_pytest(
+        ["test_case.py", "-q", *arguments],
         cwd=tmp_path,
         env=environment,
         timeout=SUBPROCESS_TIMEOUT_S,

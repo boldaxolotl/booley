@@ -14,7 +14,7 @@ _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 import ci_pytest_shard as shard_plugin
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 
 
 class _Config:
@@ -102,11 +102,8 @@ def test_timing_output_records_only_reported_phases(tmp_path: Path, case: str) -
     }
     environment["PYTHONPATH"] = str(_ROOT / ".github/scripts")
 
-    run_bounded_child(
+    run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             str(module),
             "-p",
             "ci_pytest_shard",
@@ -121,7 +118,6 @@ def test_timing_output_records_only_reported_phases(tmp_path: Path, case: str) -
         ],
         cwd=_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
     payload = json.loads(output.read_text(encoding="utf-8"))
