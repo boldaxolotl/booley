@@ -45,6 +45,7 @@ _UUID = "01234567-89ab-4def-8123-456789abcdef"
 # leaking out of a float helper (or the reverse) fails.
 _ACCEPTED: list[tuple[str, Callable[[], Any], Any]] = [
     ("as_dict", lambda: as_dict({"a": 1}), {"a": 1}),
+    ("require_dict", lambda: require_dict({"k": "v"}), {"k": "v"}),
     ("as_str", lambda: as_str("hi"), "hi"),
     ("as_str-empty", lambda: as_str(""), ""),
     ("is_str_list", lambda: is_str_list(["a", "b"]), True),
