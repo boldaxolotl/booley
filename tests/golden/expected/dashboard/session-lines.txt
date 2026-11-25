@@ -1,0 +1,9 @@
+UNKNOWN 4
+S1       Interactive  main    /work/0   5m ago   unknown (no report yet)
+  Measured 1a2b3c4 · Reviewed 5d6e7f8
+S2       Interactive  main    /work/1   5m ago   unknown (no report yet)
+  Reviewed 5d6e7f8
+S3       Interactive  main    /work/2   5m ago   unknown (no report yet)
+  last Measured 1a2b3c4 · latest 9f8e7d6: 1 unmet
+S4       Interactive  main    /work/3   5m ago   unknown (no report yet)
+  measuring 2/5 · 14m 00s · Reviewed 5d6e7f8
