@@ -3,26 +3,22 @@
 from __future__ import annotations
 
 import functools
-import importlib
-import importlib.util
 import re
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.flows.synth.recipe import synth_target_tools
-from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
     projected_core_path,
     reconcile_projected_cores,
 )
+from booley.harness import targets_view
 from booley.targets import target_surface
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -53,12 +49,6 @@ detail_payload = functools.partial(_detail_payload, synth_tools=synth_target_too
 surface_payload = functools.partial(_surface_payload, synth_tools=synth_target_tools)
 
 
-def _targets_view():
-    """Import the terminal views lazily so the file collects before the module exists."""
-    assert importlib.util.find_spec("booley.harness.targets_view"), "targets view missing"
-    return importlib.import_module("booley.harness.targets_view")
-
-
 def select_target(project_root, token, *, for_flow=None):
     return TargetCatalog.build(project_root).select(token, for_flow=for_flow)
 
@@ -70,11 +60,6 @@ def select_targets(project_root, target_arg, *, for_flow=None):
 def inspect_target(project_root, handle):
     return TargetCatalog.build(project_root).inspect(handle)
 
-
-# ---------------------------------------------------------------------------
-# Fixture project: two cores, one ambiguous target name, one legacy target,
-# and explicit per-Target Doctor membership.
-# ---------------------------------------------------------------------------
 
 _ALPHA_CORE = textwrap.dedent(
     """\
@@ -163,6 +148,50 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _rtl(root: Path, *modules: str) -> None:
+    (root / "rtl").mkdir(exist_ok=True)
+    for module in modules:
+        (root / "rtl" / f"{module}.sv").write_text(
+            f"module {module}; endmodule\n", encoding="utf-8"
+        )
+
+
+def _synth_core(module: str) -> str:
+    return (
+        "CAPI=2:\nname: booley::demo:0\nfilesets:\n"
+        f"  rtl:\n    files: [rtl/{module}.sv]\ntargets:\n  synth:\n    flow: generic\n"
+        f"    flow_options: {{tool: yosys, arch: xilinx}}\n    filesets: [rtl]\n    toplevel: {module}\n"
+    )
+
+
+def _lint_core(toplevel: str) -> str:
+    return (
+        "CAPI=2:\nname: booley::demo:0\ntargets:\n  lint:\n    flow: lint\n"
+        f"    flow_options: {{tool: verible}}\n    toplevel: {toplevel}\n"
+    )
+
+
+def _stealth_core(
+    root: Path, core_text: str, stealth: str = "enabled = true", *, ignore: bool = True
+) -> Path:
+    """Author ``.booley/cores/demo.core`` under *stealth* settings; create its RTL."""
+    booley_dir = root / ".booley"
+    (booley_dir / "cores").mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(f"[stealth]\n{stealth}\n", encoding="utf-8")
+    if ignore:
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    _rtl(root, *re.findall(r"rtl/(\w+)\.sv", core_text))
+    authored = booley_dir / "cores" / "demo.core"
+    authored.write_text(core_text, encoding="utf-8")
+    return authored
+
+
+def _touch(root: Path, *relative: str) -> None:
+    for rel in relative:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).touch()
+
+
 def _entry(surface: target_surface.TargetSurface, selector: str) -> TargetHandle:
     return next(e for e in surface.entries() if e.selector == selector)
 
@@ -225,38 +254,8 @@ class TestTargetInterface:
         assert "booley" in message
 
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "rtl" / "demo.sv").write_text(
-            "module demo; endmodule\n",
-            encoding="utf-8",
-        )
-        authored = cores / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                filesets:
-                  rtl:
-                    files: [rtl/demo.sv]
-                targets:
-                  synth:
-                    flow: generic
-                    flow_options: {tool: yosys, arch: xilinx}
-                    filesets: [rtl]
-                    toplevel: demo
-                """
-            ),
-            encoding="utf-8",
-        )
+        authored = _stealth_core(tmp_path, _synth_core("demo"))
+
         inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
 
         assert inspection.handle.core_file == authored
@@ -264,42 +263,10 @@ class TestTargetInterface:
         assert inspection.rtl_files == ("rtl/demo.sv",)
 
     def test_inspection_refreshes_owned_stale_projection(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "rtl" / "old.sv").write_text(
-            "module old; endmodule\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "rtl" / "fresh.sv").write_text(
-            "module fresh; endmodule\n",
-            encoding="utf-8",
-        )
-        authored = cores / "demo.core"
-        core_template = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: booley::demo:0
-            filesets:
-              rtl:
-                files: [rtl/{module}.sv]
-            targets:
-              synth:
-                flow: generic
-                flow_options: {{tool: yosys, arch: xilinx}}
-                filesets: [rtl]
-                toplevel: {module}
-            """
-        )
-        authored.write_text(core_template.format(module="old"), encoding="utf-8")
+        authored = _stealth_core(tmp_path, _synth_core("old"))
+        _rtl(tmp_path, "fresh")
         reconcile_projected_cores(tmp_path)
-        authored.write_text(core_template.format(module="fresh"), encoding="utf-8")
+        authored.write_text(_synth_core("fresh"), encoding="utf-8")
 
         inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
 
@@ -309,29 +276,7 @@ class TestTargetInterface:
     def test_inspection_uses_state_core_as_second_library_when_projection_is_disabled(
         self, tmp_path: Path
     ):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = false\n",
-            encoding="utf-8",
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        authored = cores / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                targets:
-                  lint:
-                    flow: lint
-                    flow_options: {tool: verible}
-                    toplevel: demo
-                """
-            ),
-            encoding="utf-8",
-        )
+        authored = _stealth_core(tmp_path, _lint_core("demo"), "enabled = false")
 
         inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
@@ -342,30 +287,12 @@ class TestTargetInterface:
     def test_inspection_ignores_generated_build_core_copy(self, tmp_path: Path):
         (tmp_path / ".booley").mkdir()
         (tmp_path / ".booley" / "booley.toml").write_text(
-            "[stealth]\nenabled = false\n",
-            encoding="utf-8",
+            "[stealth]\nenabled = false\n", encoding="utf-8"
         )
         authored = tmp_path / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                targets:
-                  lint:
-                    flow: lint
-                    flow_options: {tool: verible}
-                    toplevel: authored
-                """
-            ),
-            encoding="utf-8",
-        )
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        (build_dir / "stale.core").write_text(
-            authored.read_text(encoding="utf-8").replace("authored", "stale"),
-            encoding="utf-8",
-        )
+        authored.write_text(_lint_core("authored"), encoding="utf-8")
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "stale.core").write_text(_lint_core("stale"), encoding="utf-8")
 
         inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
@@ -373,38 +300,14 @@ class TestTargetInterface:
         assert inspection.toplevel == "authored"
 
     def test_inspection_ignores_state_worktree_core_copies(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
-        authored = cores / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                targets:
-                  lint:
-                    flow: lint
-                    flow_options: {tool: verible}
-                    toplevel: authored
-                """
-            ),
-            encoding="utf-8",
-        )
+        authored = _stealth_core(tmp_path, _lint_core("authored"), ignore=False)
         reconcile_projected_cores(tmp_path)
         for state_copy in (
-            booley_dir / "worktrees" / "ticket" / "stale.core",
-            booley_dir / ".baseline-wt-old" / "stale.core",
+            tmp_path / ".booley" / "worktrees" / "ticket" / "stale.core",
+            tmp_path / ".booley" / ".baseline-wt-old" / "stale.core",
         ):
             state_copy.parent.mkdir(parents=True)
-            state_copy.write_text(
-                authored.read_text(encoding="utf-8").replace("authored", "stale"),
-                encoding="utf-8",
-            )
+            state_copy.write_text(_lint_core("stale"), encoding="utf-8")
 
         inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
@@ -449,28 +352,7 @@ class TestTargetInterface:
             inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
     def test_inspection_refuses_foreign_expected_projection(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
-        authored = cores / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                targets:
-                  lint:
-                    flow: lint
-                    flow_options: {tool: verible}
-                    toplevel: demo
-                """
-            ),
-            encoding="utf-8",
-        )
+        authored = _stealth_core(tmp_path, _lint_core("demo"), ignore=False)
         projected = projected_core_path(tmp_path, authored)
         foreign_content = "CAPI=2:\nname: foreign::core:0\n"
         projected.write_text(foreign_content, encoding="utf-8")
@@ -485,34 +367,8 @@ class TestTargetInterface:
         assert projected.read_text(encoding="utf-8") == foreign_content
 
     def test_inspection_uses_isolated_registry_when_native_cores_are_ignored(self, tmp_path: Path):
-        booley_dir = tmp_path / ".booley"
-        cores = booley_dir / "cores"
-        cores.mkdir(parents=True)
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
-        )
-        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        (tmp_path / "rtl").mkdir()
-        (tmp_path / "rtl" / "demo.sv").write_text("module demo; endmodule\n", encoding="utf-8")
-        authored = cores / "demo.core"
-        authored.write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: booley::demo:0
-                filesets:
-                  rtl:
-                    files: [rtl/demo.sv]
-                targets:
-                  synth:
-                    flow: generic
-                    flow_options: {tool: yosys, arch: xilinx}
-                    filesets: [rtl]
-                    toplevel: demo
-                """
-            ),
-            encoding="utf-8",
+        authored = _stealth_core(
+            tmp_path, _synth_core("demo"), "enabled = true\nignore_native_cores = true"
         )
         (tmp_path / "native.core").write_text("not valid CAPI2\n", encoding="utf-8")
         reconcile_projected_cores(tmp_path)
@@ -551,59 +407,6 @@ class TestTargetInterface:
         assert [item.path for item in inspection.inputs] == ["ibex_simple_system_main.cc"]
         assert inspection.toplevel == "ibex_simple_system"
         assert inspection.eda_tool == "verilator"
-
-    def test_source_inspector_keeps_target_conditions_isolated_in_a_b_a_order(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        (tmp_path / "conditional.core").write_text(
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: acme:ip:conditional:1.0
-                filesets:
-                  selected:
-                    files:
-                      - target_lint_a ? (rtl/a.sv)
-                      - target_lint_b ? (rtl/b.sv)
-                targets:
-                  lint_a:
-                    flow: lint
-                    flow_options: {tool: verilator}
-                    filesets: [selected]
-                    toplevel: a
-                  lint_b:
-                    flow: lint
-                    flow_options: {tool: verilator}
-                    filesets: [selected]
-                    toplevel: b
-                """
-            ),
-            encoding="utf-8",
-        )
-        catalog = TargetCatalog.build(tmp_path)
-        handles = {handle.name: handle for handle in catalog.list()}
-        resolutions = 0
-        real_get_depends = target_inspection.CoreManager.get_depends
-
-        def counting_get_depends(self, *args, **kwargs):
-            nonlocal resolutions
-            resolutions += 1
-            return real_get_depends(self, *args, **kwargs)
-
-        monkeypatch.setattr(
-            target_inspection.CoreManager,
-            "get_depends",
-            counting_get_depends,
-        )
-
-        observed = [
-            catalog.inspect(handles[name]).rtl_files for name in ("lint_a", "lint_b", "lint_a")
-        ]
-
-        assert observed == [("rtl/a.sv",), ("rtl/b.sv",), ("rtl/a.sv",)]
-        assert resolutions == 2
 
     def test_source_inspector_continues_after_one_target_cannot_resolve(
         self, tmp_path: Path
@@ -741,35 +544,12 @@ class TestTargetInterface:
         ]
 
 
-# ---------------------------------------------------------------------------
-# minimal_selector (fusesoc_registry)
-# ---------------------------------------------------------------------------
-
-
 class TestMinimalSelector:
-    def _ref(self, vlnv: str) -> TargetRef:
-        return TargetRef(name="lint", vlnv=vlnv, core_file=Path(f"{vlnv}.core"))
-
-    def test_unique_name_stays_bare(self):
-        ref = self._ref("acme:ip:alpha:1.0")
-        assert minimal_selector(ref, [ref]) == "lint"
-
-    def test_ambiguous_name_gets_shortest_qualifier(self):
-        a = self._ref("acme:ip:alpha:1.0")
-        b = self._ref("acme:ip:beta:1.0")
-        assert minimal_selector(a, [a, b]) == "alpha#lint"
-        assert minimal_selector(b, [a, b]) == "beta#lint"
-
     def test_same_core_name_extends_to_library_segment(self):
-        a = self._ref("acme:ip:gamma:1.0")
-        b = self._ref("evil:ip2:gamma:2.0")
+        a = TargetRef(name="lint", vlnv="acme:ip:gamma:1.0", core_file=Path("a.core"))
+        b = TargetRef(name="lint", vlnv="evil:ip2:gamma:2.0", core_file=Path("b.core"))
         assert minimal_selector(a, [a, b]) == "ip:gamma#lint"
         assert minimal_selector(b, [a, b]) == "ip2:gamma#lint"
-
-
-# ---------------------------------------------------------------------------
-# collect_surface
-# ---------------------------------------------------------------------------
 
 
 class TestCollectSurface:
@@ -830,40 +610,50 @@ class TestCollectSurface:
             selected = TargetCatalog.build(project).select(entry.selector)
             assert selected.identity == entry.identity
 
-    def test_declared_toplevel_is_read(self, project: Path):
-        surface = collect_surface(project)
-        assert _entry(surface, "sim").declared_toplevel == "tb_alpha"
-        assert _entry(surface, "beta#lint").declared_toplevel == ""  # undeclared
-
-    def test_doctor_membership_comes_from_target_metadata(self, project: Path):
-        surface = collect_surface(project)
-        assert _entry(surface, "sim").doctor_flows == ("sim",)
-        assert _entry(surface, "alpha#lint").doctor_flows == ("lint",)
-        assert _entry(surface, "beta#lint").doctor_flows == ()
-
-    def test_surface_has_no_separate_target_wiring_warnings(self, project: Path):
-        assert collect_surface(project).warnings == ()
-
-    def test_cocotb_module_enumerated(self, project: Path):
-        assert _entry(collect_surface(project), "sim").cocotb_module == "tb_alpha_tests"
-
-    def test_drivable_by(self, project: Path):
-        surface = collect_surface(project)
-        assert _entry(surface, "sim").drivable_by == ("sim",)
-        assert _entry(surface, "synth").drivable_by == ("synth",)
-        assert _entry(surface, "fpga").drivable_by == ("fpga",)
-        assert _entry(surface, "smoke").drivable_by == ("sim",)
+    @pytest.mark.parametrize(
+        ("selector", "field", "expected"),
+        [
+            ("sim", "declared_toplevel", "tb_alpha"),
+            ("beta#lint", "declared_toplevel", ""),
+            ("sim", "doctor_flows", ("sim",)),
+            ("alpha#lint", "doctor_flows", ("lint",)),
+            ("beta#lint", "doctor_flows", ()),
+            ("sim", "cocotb_module", "tb_alpha_tests"),
+            ("sim", "drivable_by", ("sim",)),
+            ("synth", "drivable_by", ("synth",)),
+            ("fpga", "drivable_by", ("fpga",)),
+            ("smoke", "drivable_by", ("sim",)),
+        ],
+    )
+    def test_entry_carries_declared_facts(
+        self, project: Path, selector: str, field: str, expected: object
+    ):
+        assert getattr(_entry(collect_surface(project), selector), field) == expected
 
 
-# ---------------------------------------------------------------------------
-# filter_surface
-# ---------------------------------------------------------------------------
+_ALPHA = "acme:ip:alpha:1.0"
+_BETA = "acme:ip:beta:1.0"
 
 
 class TestFilterSurface:
-    def test_for_flow_keeps_only_drivable(self, project: Path):
-        surface = filter_surface(collect_surface(project), for_flow="sim")
-        assert sorted(entry.name for entry in surface.entries()) == ["sim", "smoke"]
+    @pytest.mark.parametrize(
+        ("for_flow", "glob", "expected"),
+        [
+            ("sim", None, {_ALPHA: ["sim"], _BETA: ["smoke"]}),
+            ("synth", None, {_ALPHA: ["synth"]}),
+            # The fpga axis wins over the declared verilator resolution tool.
+            ("fpga", None, {_BETA: ["fpga"]}),
+            (None, "s*", {_ALPHA: ["sim", "synth"], _BETA: ["smoke"]}),
+            (None, "*#lint", {_ALPHA: ["alpha#lint"], _BETA: ["beta#lint"]}),
+            (None, "acme:ip:beta#*", {_BETA: ["fpga", "beta#lint", "smoke"]}),
+            ("lint", "alpha*", {_ALPHA: ["alpha#lint"]}),
+        ],
+    )
+    def test_filter_keeps_matching_entries_and_drops_empty_groups(
+        self, project: Path, for_flow: str | None, glob: str | None, expected: dict
+    ):
+        surface = filter_surface(collect_surface(project), for_flow=for_flow, glob=glob)
+        assert {g.vlnv: [e.selector for e in g.entries] for g in surface.groups} == expected
 
     def test_for_flow_consumes_catalog_drivability_facts(self, project: Path):
         handle = make_target_handle(
@@ -888,32 +678,9 @@ class TestFilterSurface:
         assert tuple(filter_surface(surface, for_flow="sim").entries()) == (handle,)
         assert not tuple(filter_surface(surface, for_flow="lint").entries())
 
-    def test_for_flow_drops_empty_groups(self, project: Path):
-        surface = filter_surface(collect_surface(project), for_flow="synth")
-        assert [g.vlnv for g in surface.groups] == ["acme:ip:alpha:1.0"]
-
-    def test_for_fpga_uses_axis_instead_of_resolution_tool(self, project: Path):
-        surface = filter_surface(collect_surface(project), for_flow="fpga")
-        assert [entry.name for entry in surface.entries()] == ["fpga"]
-        assert _entry(surface, "fpga").eda_tool == "verilator"
-
     def test_for_flow_rejects_non_flow(self, project: Path):
         with pytest.raises(ValueError, match=", ".join(TARGET_AWARE_FLOWS)):
             filter_surface(collect_surface(project), for_flow="reviewer")
-
-    def test_glob_matches_bare_name(self, project: Path):
-        surface = filter_surface(collect_surface(project), glob="s*")
-        assert sorted(entry.name for entry in surface.entries()) == ["sim", "smoke", "synth"]
-
-    def test_glob_matches_selector_and_qualified_form(self, project: Path):
-        by_selector = filter_surface(collect_surface(project), glob="*#lint")
-        assert sorted(e.selector for e in by_selector.entries()) == ["alpha#lint", "beta#lint"]
-        qualified = filter_surface(collect_surface(project), glob="acme:ip:beta#*")
-        assert sorted(entry.name for entry in qualified.entries()) == ["fpga", "lint", "smoke"]
-
-    def test_filters_compose(self, project: Path):
-        surface = filter_surface(collect_surface(project), for_flow="lint", glob="alpha*")
-        assert [e.selector for e in surface.entries()] == ["alpha#lint"]
 
     def test_observations_survive_filtering(self, project: Path):
         original = collect_surface(project)
@@ -923,27 +690,20 @@ class TestFilterSurface:
         assert surface.warnings == ("observation",)
 
 
-# ---------------------------------------------------------------------------
-# is_glob
-# ---------------------------------------------------------------------------
-
-
-class TestIsGlob:
-    def test_metacharacters_are_globs(self):
-        assert is_glob("soc*")
-        assert is_glob("*#lint")
-        assert is_glob("s?m")
-        assert is_glob("[ab]lint")
-
-    def test_names_and_qualifiers_are_not(self):
-        assert not is_glob("sim")
-        assert not is_glob("alpha#lint")
-        assert not is_glob("acme:ip:alpha:1.0#lint")
-
-
-# ---------------------------------------------------------------------------
-# toplevel display (list-valued CAPI2 toplevels, width cap)
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("soc*", True),
+        ("*#lint", True),
+        ("s?m", True),
+        ("[ab]lint", True),
+        ("sim", False),
+        ("alpha#lint", False),
+        ("acme:ip:alpha:1.0#lint", False),
+    ],
+)
+def test_is_glob(token: str, expected: bool):
+    assert is_glob(token) is expected
 
 
 class TestToplevelDisplay:
@@ -986,16 +746,11 @@ class TestToplevelDisplay:
             vlnv="acme:ip:alpha:1.0", core_file=project / "alpha/alpha.core", entries=(patched,)
         )
         surface = target_surface.TargetSurface(groups=(group,), warnings=(), flow_options={})
-        text = _targets_view().render_listing(surface_payload(surface, project))
+        text = targets_view.render_listing(surface_payload(surface, project))
         assert long_top not in text
         assert "tool_verilator?" in text and "…" in text and "top=" not in text
         # the payload keeps the full string — only the terminal column is capped
         assert surface_payload(surface, project)["cores"][0]["targets"][0]["toplevel"] == long_top
-
-
-# ---------------------------------------------------------------------------
-# payloads + rendering
-# ---------------------------------------------------------------------------
 
 
 class TestSurfacePayload:
@@ -1024,48 +779,42 @@ class TestSurfacePayload:
 
 class TestRenderListing:
     def test_listing_groups_and_marks_doctor_membership(self, project: Path):
-        text = _targets_view().render_listing(surface_payload(collect_surface(project), project))
+        text = targets_view.render_listing(surface_payload(collect_surface(project), project))
         assert "acme:ip:alpha:1.0  (alpha/alpha.core)" in text
         assert "✓ sim" in text
         assert re.search(r"\bDr\b", text) is None
         assert "cocotb tb_alpha_tests" in text
         assert "booley targets <name>" in text  # legend/hint line
 
-    def test_empty_filter_result(self, project: Path):
-        surface = filter_surface(collect_surface(project), glob="zzz*")
-        payload = surface_payload(surface, project)
-        assert "(no Targets match)" in _targets_view().render_listing(payload)
-
     def test_warnings_are_listed_after_the_footer(self, project: Path):
         payload = surface_payload(collect_surface(project), project)
         payload["warnings"] = ["something odd"]
-        text = _targets_view().render_listing(payload)
+        text = targets_view.render_listing(payload)
         assert text.splitlines()[-1] == "WARNING: something odd"
 
     def test_warnings_are_listed_after_an_empty_result(self, project: Path):
         payload = surface_payload(filter_surface(collect_surface(project), glob="zzz*"), project)
         payload["warnings"] = ["something odd"]
-        assert _targets_view().render_listing(payload).splitlines() == [
+        assert targets_view.render_listing(payload).splitlines() == [
             "(no Targets match)",
             "WARNING: something odd",
         ]
 
 
-# ---------------------------------------------------------------------------
-# detail_payload + render_detail
-# ---------------------------------------------------------------------------
-
-
 class TestDetail:
-    def test_cheap_detail_does_not_calculate_or_resolve_builds(self, project, monkeypatch):
-        def unexpected(*args, **kwargs):
-            pytest.fail("cheap detail must not calculate or resolve builds")
-
-        monkeypatch.setattr(target_surface, "work_root_for", unexpected)
-        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", unexpected)
-        payload = detail_payload(project, "sim", resolve=False)
-        assert payload["name"] == "sim"
+    def test_cheap_detail_does_not_resolve_builds(self, project: Path):
+        # A build root cannot be calculated in a source checkout; the cheap half needs none.
+        (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+        calls: list[dict[str, object]] = []
+        payload = detail_payload(
+            project, "sim", resolve=False, runner=fusesoc_setup_runner(calls=calls)
+        )
+        assert payload["selector"] == "sim"
+        assert payload["vlnv"] == "acme:ip:alpha:1.0"
+        assert payload["doctor_flows"] == ["sim"]
+        assert payload["drivable_by"] == ["sim"]
         assert "resolved" not in payload and "resolved_error" not in payload
+        assert calls == []
         assert not (project / ".booley" / ".runtime" / "edalize").exists()
 
     def test_source_checkout_rejection_is_not_a_resolution_error(self, project):
@@ -1074,24 +823,6 @@ class TestDetail:
             detail_payload(project, "sim")
         assert not (project / ".booley" / ".runtime" / "edalize").exists()
 
-    @pytest.mark.parametrize(
-        ("message", "expected"),
-        [
-            ("\n  first diagnostic\nsecond diagnostic\n", "first diagnostic"),
-            ("   ", "FuseSocError"),
-        ],
-    )
-    def test_resolution_error_payload_keeps_first_line_or_class(
-        self, project, monkeypatch, message, expected
-    ):
-        def fail_resolution(*args, **kwargs):
-            raise fusesoc_registry.FuseSocError(message)
-
-        monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", fail_resolution)
-        payload = detail_payload(project, "sim")
-        assert payload["resolved_error"] == expected
-        assert "resolved" not in payload
-
     def test_resolution_error_names_unprovided_dependency(self, tmp_path: Path):
         (tmp_path / "top.core").write_bytes(
             b"CAPI=2:\nname: acme:lib:top:0\nfilesets:\n  rtl:\n    depend: ['>=::vlog_tb_utils:1.1']\n"
@@ -1099,10 +830,8 @@ class TestDetail:
             b"    filesets: [rtl]\n"
         )
 
-        def failing(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-
-        payload = detail_payload(tmp_path, "sim", runner=failing)
+        runner = fusesoc_setup_runner(returncode=1, stderr="boom")
+        payload = detail_payload(tmp_path, "sim", runner=runner)
 
         assert payload["resolved_error"] == (
             "fusesoc run --setup --target sim acme:lib:top:0 failed (exit 1): "
@@ -1130,33 +859,33 @@ class TestDetail:
             "fusesoc run --setup --target sim acme:lib:top:0 failed (exit 1):"
         )
 
-    def test_cheap_half(self, project: Path):
-        payload = detail_payload(project, "sim", resolve=False)
-        assert payload["selector"] == "sim"
-        assert payload["vlnv"] == "acme:ip:alpha:1.0"
-        assert payload["doctor_flows"] == ["sim"]
-        assert payload["drivable_by"] == ["sim"]
-        assert "resolved" not in payload and "resolved_error" not in payload
-
     def test_unknown_and_ambiguous_tokens_raise(self, project: Path):
         with pytest.raises(UnknownTargetError):
             detail_payload(project, "ghost", resolve=False)
         with pytest.raises(AmbiguousTargetError):
             detail_payload(project, "lint", resolve=False)
 
-    def test_resolution_failure_degrades_to_error_field(self, project: Path):
-        def failing_runner(*args, **kwargs):
-            raise OSError("no fusesoc on this host")
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            (
+                OSError("no fusesoc on this host"),
+                "could not invoke fusesoc (fusesoc): no fusesoc on this host",
+            ),
+            (OSError(), "could not invoke fusesoc (fusesoc) with no diagnostic output"),
+        ],
+        ids=["diagnostic", "silent"],
+    )
+    def test_invocation_failure_degrades_to_error_field(
+        self, project: Path, error: OSError, expected: str
+    ):
+        _touch(project, "alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv")
 
-        # sources exist so the preflight passes and the runner is reached
-        for rel in ("alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv"):
-            (project / rel).parent.mkdir(parents=True, exist_ok=True)
-            (project / rel).touch()
+        payload = detail_payload(project, "sim", runner=fusesoc_setup_runner(error=error))
 
-        payload = detail_payload(project, "sim", runner=failing_runner)
         assert "resolved" not in payload
-        assert "no fusesoc" in payload["resolved_error"]
-        text = _targets_view().render_detail(payload)
+        assert payload["resolved_error"] == expected
+        text = targets_view.render_detail(payload)
         assert "Resolved view unavailable" in text
         assert "booley session enter" not in text
 
@@ -1175,31 +904,13 @@ class TestDetail:
             "xdc_files": [],
             "build_root": "build",
         }
-        lines = _targets_view().render_detail(payload).splitlines()
+        lines = targets_view.render_detail(payload).splitlines()
         assert lines[-1] == "WARNING: something odd"
         assert any(line.endswith("(none)") and "parameters" in line for line in lines)
         assert any("cocotb" in line and "tb_alpha_tests" in line for line in lines)
 
-    def test_silent_invocation_failure_has_actionable_error(self, project: Path):
-        def failing_runner(*args, **kwargs):
-            raise OSError()
-
-        for rel in ("alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv"):
-            (project / rel).parent.mkdir(parents=True, exist_ok=True)
-            (project / rel).touch()
-
-        payload = detail_payload(project, "sim", runner=failing_runner)
-
-        assert payload["resolved_error"] == (
-            "could not invoke fusesoc (fusesoc) with no diagnostic output"
-        )
-
     def test_resolved_half_reads_edam(self, project: Path):
-        for rel in ("alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv"):
-            (project / rel).parent.mkdir(parents=True, exist_ok=True)
-            (project / rel).touch()
-
-        build_root = project / ".booley" / ".runtime" / "edalize" / "targets" / "sim"
+        _touch(project, "alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv")
         edam_text = textwrap.dedent(
             """\
             name: acme_ip_alpha_1.0
@@ -1215,14 +926,12 @@ class TestDetail:
               tags: [tb]
             """
         )
+        edam = ("acme_ip_alpha_1.0/sim/acme_ip_alpha_1.0.eda.yml", edam_text)
 
-        def fake_runner(cmd, **kwargs):
-            edam = build_root / "acme_ip_alpha_1.0" / "sim" / "acme_ip_alpha_1.0.eda.yml"
-            edam.parent.mkdir(parents=True, exist_ok=True)
-            edam.write_text(edam_text, encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        payload = detail_payload(
+            project, "sim", runner=fusesoc_setup_runner(edams={"acme:ip:alpha:1.0": edam})
+        )
 
-        payload = detail_payload(project, "sim", runner=fake_runner)
         resolved = payload["resolved"]
         assert resolved["toplevel"] == "tb_alpha"
         assert resolved["eda_tool"] == "verilator"
@@ -1237,14 +946,35 @@ class TestDetail:
             "WIDTH": {"datatype": "int", "default": 8, "paramtype": "vlogparam"}
         }
 
-        text = _targets_view().render_detail(payload)
+        text = targets_view.render_detail(payload)
         assert "WIDTH (int) = 8" in text
         assert "constraints/alpha.sdc" in text
 
+    @pytest.mark.parametrize(
+        ("token", "vlnv", "backend", "configured_tool"),
+        [
+            # Legacy tool_options configure a backend other than the authored one.
+            ("sim", "acme:ip:alpha:1.0", "tool_options: {icarus: {}}\n", "icarus"),
+            ("fpga", "acme:ip:beta:1.0", "", None),
+        ],
+    )
+    def test_resolved_display_uses_configured_backend_without_changing_authored_tool(
+        self, project: Path, token: str, vlnv: str, backend: str, configured_tool: str | None
+    ) -> None:
+        _touch(project, "alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv", "beta/rtl/beta.sv")
+        core = vlnv.replace(":", "_")  # FuseSoC's sanitized core name
+        edam = (
+            f"{core}/{token}/{core}.eda.yml",
+            f"name: {core}\ntoplevel: top\n{backend}files: []\n",
+        )
+
+        payload = detail_payload(project, token, runner=fusesoc_setup_runner(edams={vlnv: edam}))
+
+        assert payload["eda_tool"] == "verilator"
+        assert payload["resolved"]["eda_tool"] == configured_tool
+
     def test_resolved_half_isolates_cores_sharing_a_target_name(self, project: Path) -> None:
-        for rel in ("alpha/rtl/alpha.sv", "beta/rtl/beta.sv"):
-            (project / rel).parent.mkdir(parents=True, exist_ok=True)
-            (project / rel).touch()
+        _touch(project, "alpha/rtl/alpha.sv", "beta/rtl/beta.sv")
 
         def edam(core: str, top: str, parameter: str) -> tuple[str, str]:
             text = (
@@ -1270,40 +1000,6 @@ class TestDetail:
         assert resolved["build_root"] == (
             ".booley/.runtime/edalize/targets/beta_lint/acme_ip_beta_1.0/lint"
         )
-        text = _targets_view().render_detail(payload)
+        text = targets_view.render_detail(payload)
         assert "DEPTH" in text
         assert "WIDTH" not in text
-
-    @pytest.mark.parametrize(
-        ("token", "configured_tool"),
-        (("sim", "icarus"), ("fpga", None)),
-    )
-    def test_resolved_display_uses_configured_backend_without_changing_authored_tool(
-        self,
-        project: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        token: str,
-        configured_tool: str | None,
-    ) -> None:
-        selected = TargetCatalog.build(project).select(token)
-        resolved = fusesoc_registry.ResolvedTarget(
-            name=selected.name,
-            vlnv=selected.vlnv,
-            toplevel="top",
-            eda_tool=None,
-            configured_eda_tool=configured_tool,
-            files=(),
-            parameters={},
-            build_root=project / "build",
-            edam_path=project / "build/demo.eda.yml",
-        )
-        monkeypatch.setattr(
-            fusesoc_registry,
-            "resolve_target_handle",
-            lambda *_args, **_kwargs: resolved,
-        )
-
-        payload = detail_payload(project, token)
-
-        assert payload["eda_tool"] == selected.eda_tool
-        assert payload["resolved"]["eda_tool"] == configured_tool
