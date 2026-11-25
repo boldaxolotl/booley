@@ -6,8 +6,23 @@
 <title>Booley Dashboard</title>
 <link rel="stylesheet" href="/assets/dashboard.css">
 <script src="/assets/dashboard.js" defer></script>
+<script src="/assets/run.js" defer></script>
 </head>
 <body>
+<header class="topbar">
+<span class="brand">Booley Dashboard</span>
+<button id="run-button" class="primary" type="button" hidden
+  aria-expanded="false" aria-controls="run">Run</button>
+</header>
+<section id="run" class="run-form" hidden aria-label="Run a Booley Flow or Specialist">
+<label>Run <select id="run-entry"></select></label>
+<p id="run-problem" class="error" hidden></p>
+<div id="run-fields"></div>
+<div class="run-command"><code id="run-command"></code>
+<button id="run-copy" type="button" disabled>Copy</button></div>
+<p id="run-error" class="error" hidden></p>
+<div class="run-actions"><button id="run-cancel" type="button">Cancel</button></div>
+</section>
 <main>
 <div id="live"><p>Loading</p></div>
 <div id="results"></div>
