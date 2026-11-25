@@ -3029,7 +3029,9 @@ class TestWorktreePortability:
             )
         elif hazard == "metadata":
             _register_worktree(
-                project.booley_dir / "worktrees" / "ticket", tmp_path / "admin", absolute=True
+                tmp_path / "t3" / "ticket",
+                tmp_path / ".git" / "worktrees" / "ticket",
+                absolute=True,
             )
         git_versions((2, 53, 0))
         findings = self._inspect(project, None, True)
@@ -3043,13 +3045,18 @@ class TestWorktreePortability:
         else:
             assert any("host Git capability is unknown" in item.message for item in findings)
 
+    def test_unlistable_registry_lists_no_worktrees(self, tmp_path):
+        assert readiness._live_worktree_paths(self._project(tmp_path)) == ()
+
     @pytest.mark.parametrize(
         "row",
         ["absolute", "relative", "unreadable", "worktree-config", "config-unreadable", "paired"],
     )
     def test_live_worktree_metadata(self, tmp_path, monkeypatch, row):
+        _git_init(tmp_path)
         project = self._project(tmp_path)
-        outer = project.booley_dir / "worktrees" / "ticket"
+        # Git's registry decides what is a worktree, wherever T3 Code put it.
+        outer = tmp_path / "t3" / "ticket"
         (project.booley_dir / "worktrees" / "not-a-worktree").mkdir(parents=True)
         administration = tmp_path / ".git" / "worktrees" / "ticket"
         _register_worktree(outer, administration, absolute=row == "absolute")

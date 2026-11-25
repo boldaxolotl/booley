@@ -1,6 +1,6 @@
 """``booley worktree prepare [PATH]``: prepare a linked worktree made by Git or T3 Code.
 
-The worktree gets the same Booley Directory, Git settings, and post-setup hook, and the
+The worktree gets a Booley Directory, Git settings, and the post-setup hook, and the
 run undoes what it created when a step fails. A Versioned Booley Directory gets a Paired
 Checkout on ``booley-worktree/<folder>`` at its last commit (uncommitted files are named in
 a warning and left out); a non-versioned Booley Directory gets a Snapshot.
@@ -80,8 +80,8 @@ def _add_prepare_parser(commands: argparse._SubParsersAction) -> None:
     )
 
 
-class WorktreeCreationError(Exception):
-    """A worktree setup step failed."""
+class WorktreePostSetupError(Exception):
+    """The post-setup step failed."""
 
 
 class WorktreeMountRepairError(Exception):
@@ -136,17 +136,15 @@ def _run_post_setup(project_root: Path, worktree: Path, name: str) -> None:
     try:
         sim_enabled = flow_enabled("sim", worktree)
     except FlowConfigError as exc:
-        raise WorktreeCreationError(
-            f"cannot read the new worktree's Flow settings: {exc}"
-        ) from exc
+        raise WorktreePostSetupError(f"cannot read the worktree's Flow settings: {exc}") from exc
     result = prepare_project(worktree, worktree, slug=name, sim_flow_enabled=sim_enabled, log=log)
     if not result.ok:
-        raise WorktreeCreationError(f"{result.error}; log: {log}")
+        raise WorktreePostSetupError(f"{result.error}; log: {log}")
 
 
 # Failures reported as one ERROR line; anything else is a defect and propagates.
 _PREPARE_FAILURES = (
-    WorktreeCreationError,
+    WorktreePostSetupError,
     WorktreeMountRepairError,
     ProjectPairingError,
     WorktreeSetupError,

@@ -573,6 +573,15 @@ CASES: list[Refusal] = [
         lambda _env: _audit(project_schema.audit_ignored_settings({"worktree": {"chat": "auto"}})),
     ),
     Refusal(
+        "ignored-worktree-gc-older-than",
+        (f"{_PROJECT_SCHEMA}::audit_ignored_settings",),
+        "[worktree].gc_older_than",
+        None,
+        lambda _env: _audit(
+            project_schema.audit_ignored_settings({"worktree": {"gc_older_than": "7d"}})
+        ),
+    ),
+    Refusal(
         "agent-primary",
         ("src/booley/audit/agent_schema.py::audit_agent_table",),
         "primary",

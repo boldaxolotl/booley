@@ -31,7 +31,7 @@ rules and adds its own details per area.
   `booley session enter -- booley ...`; a Sandbox command written without that
   prefix is meant for the child's terminal inside the container.
 - Integration: merge the worktree's branch (in Stealth Mode also
-  `booley-worktree/<area>`) into its run-owned destination, record in
+  `booley-worktree/<folder>`) into its run-owned destination, record in
   `resources.md` only the branches actually created, then remove the worktree
   by deleting its T3 Code thread; commits stay on the branches. Leave every
   participating destination clean before the next worktree.
