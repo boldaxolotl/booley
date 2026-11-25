@@ -9,24 +9,17 @@ import pytest
 from booley.core.config_paths import main_repository_root
 
 
-def test_linked_worktree_marker_resolves_to_main_root(tmp_path: Path) -> None:
+@pytest.mark.parametrize("absolute", [False, True], ids=["relative", "absolute"])
+def test_linked_worktree_marker_resolves_to_main_root(tmp_path: Path, absolute: bool) -> None:
     main = tmp_path / "main"
-    (main / ".git" / "worktrees" / "feature").mkdir(parents=True)
-    worktree = tmp_path / "feature"
-    worktree.mkdir()
-    (worktree / ".git").write_bytes(b"gitdir: ../main/.git/worktrees/feature\n")
-
-    assert main_repository_root(worktree) == main.resolve()
-
-
-def test_absolute_gitdir_marker_resolves_to_main_root(tmp_path: Path) -> None:
-    gitdir = tmp_path / "main" / ".git" / "worktrees" / "feature"
+    gitdir = main / ".git" / "worktrees" / "feature"
     gitdir.mkdir(parents=True)
     worktree = tmp_path / "feature"
     worktree.mkdir()
-    (worktree / ".git").write_bytes(f"gitdir: {gitdir}\n".encode())
+    marker = str(gitdir) if absolute else "../main/.git/worktrees/feature"
+    (worktree / ".git").write_bytes(f"gitdir: {marker}\n".encode())
 
-    assert main_repository_root(worktree) == tmp_path / "main"
+    assert main_repository_root(worktree) == main.resolve()
 
 
 @pytest.mark.parametrize(

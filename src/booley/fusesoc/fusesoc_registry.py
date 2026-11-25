@@ -1609,45 +1609,6 @@ def _dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
     return list(filesets) if isinstance(filesets, Mapping) else []
 
 
-def _target_source_files(
-    project_root: Path | str,
-    target: str,
-    include_dependencies: bool = False,
-    *,
-    include_headers: bool = False,
-) -> CoreSources:
-    """Partition a Target's declared source files RTL-vs-TB from the ``.core``.
-
-    Reads ``.core`` YAML directly (decision 6) — no ``fusesoc run`` subprocess —
-    walking the Target's ``filesets`` and splitting files by the ``tags:[tb]``
-    marker. RTL include headers are omitted by default because this is normally
-    a compile list; *include_headers* retains them for build-input consumers
-    such as freshness fingerprinting. This is the pre-resolve partition
-    (decision 13) for consumers that cannot wait for :func:`resolve_target_handle`.
-    Every returned source is canonicalized through resolution symlinks first;
-    this applies equally to RTL, TB, and dependency files.
-
-    With *include_dependencies*, also walk the CAPI2 ``depend`` closure. In a
-    layered repo the root core owns only the harness — Ibex's sim Target holds
-    the C++/firmware assets while ``ibex_top_tracing.sv`` arrives transitively —
-    so a root-core-only read yields an empty RTL list and callers conclude the
-    Target has no design to work on (F-27). Still pure YAML: the closure walk
-    keeps the subprocess-free ordering guarantee that the Mutation Flow's
-    in-place mux swap depends on.
-
-    Raises :class:`~booley.targets.domain.UnknownTargetError` /
-    :class:`~booley.targets.domain.AmbiguousTargetError` when
-    *target* is not a single selectable Target (ADR 0030).
-    """
-    ref = _resolve_ref(project_root, target)
-    return target_source_files_for_ref(
-        project_root,
-        ref,
-        include_dependencies=include_dependencies,
-        include_headers=include_headers,
-    )
-
-
 def target_source_files_for_ref(
     project_root: Path | str,
     ref: TargetRef,
@@ -1878,73 +1839,6 @@ def _literal_target_source_paths(
                 seen.add(path)
                 paths.append(path)
     return paths
-
-
-def _target_referenced_files(project_root: Path | str, target: str) -> tuple[str, ...]:
-    """Return every file referenced by one Target, including data files.
-
-    Unlike :func:`target_source_files`, this inventory intentionally includes
-    ``file_type: user`` inputs such as firmware images. Conditional filesets and
-    files from dependency cores' ``default`` Targets are included conservatively.
-    Paths are relative to *project_root*, matching ticket Scope and CI contracts.
-    """
-    root = Path(project_root)
-    ref = _resolve_ref(root, target)
-    doc = read_core(ref.core_file)
-    targets = doc.get("targets") or {}
-    target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
-    referenced = _referenced_files_for_filesets(
-        ref.core_file,
-        root,
-        doc.get("filesets"),
-        possible_target_fileset_names(target_def),
-    )
-
-    closure = _selectable_core_closure_for_refs(root, [ref])
-    for core_file in sorted(closure):
-        if core_file == ref.core_file:
-            continue
-        dep_doc = read_core(core_file)
-        referenced.extend(
-            _referenced_files_for_filesets(
-                core_file,
-                root,
-                dep_doc.get("filesets"),
-                _possible_dependency_fileset_names(dep_doc),
-            )
-        )
-    return tuple(dict.fromkeys(referenced))
-
-
-def _possible_dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
-    """Every fileset a dependency core's default Target may contribute."""
-    targets = doc.get("targets")
-    default_def = targets.get("default") if isinstance(targets, Mapping) else None
-    if isinstance(default_def, Mapping):
-        return possible_target_fileset_names(default_def)
-    return []
-
-
-def _referenced_files_for_filesets(
-    core_file: Path,
-    project_root: Path,
-    filesets: Any,
-    fileset_names: Collection[str],
-) -> list[str]:
-    """Expand one core's possible fileset inputs into project-relative paths."""
-    if not isinstance(filesets, Mapping):
-        return []
-    referenced: list[str] = []
-    for fileset_name in fileset_names:
-        fileset = filesets.get(fileset_name)
-        if not isinstance(fileset, Mapping):
-            continue
-        for expression, _attrs in _fileset_file_attrs(fileset):
-            for declared in _possible_expression_values(expression):
-                if _NON_LITERAL_PATH_CHARS.intersection(declared):
-                    continue
-                referenced.append(core_relative_to_project(core_file, project_root, declared))
-    return referenced
 
 
 def _worktree_root_of(path: str) -> str | None:
@@ -2229,11 +2123,6 @@ def explicit_target_sources(
                     rel = _core_relative_path(core_file, Path(project_root), candidate)
                     (tb if "tb" in tags else rtl).append(rel)
     return CoreSources(rtl_source_files=tuple(rtl), tb_files=tuple(tb))
-
-
-def _sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
-    sources = explicit_target_sources(project_root, _resolve_ref(project_root, target))
-    return bool(sources.rtl_source_files) and not sources.tb_files
 
 
 # ---------------------------------------------------------------------------
