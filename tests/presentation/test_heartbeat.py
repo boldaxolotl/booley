@@ -5,45 +5,32 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from booley.presentation.colors import dim
-from booley.presentation.heartbeat import format_heartbeat, render_heartbeat
+from booley.presentation.heartbeat import render_heartbeat
 
 
-def test_formatter_defines_shared_heartbeat_text() -> None:
-    assert format_heartbeat("simulation", "2.0s", "working") == (
-        "  * [simulation] elapsed: 2.0s | working"
-    )
-    assert format_heartbeat("simulation", "2.0s") == "  * [simulation] elapsed: 2.0s"
-
-
-def test_standalone_renderer_stays_plain_when_colors_are_disabled(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize(
+    ("colors_enabled", "tty", "extra", "expected"),
+    [
+        (False, True, "working", "  * [simulation] elapsed: 2.0s | working\n"),
+        (True, True, "", "\033[2m  * [simulation] elapsed: 2.0s\033[0m\n"),
+        (True, False, "", "  * [simulation] elapsed: 2.0s\n"),
+    ],
+    ids=["colors-disabled", "tty", "pipe"],
+)
+def test_standalone_renderer_dims_only_a_colored_tty(
+    monkeypatch, capsys, colors_enabled, tty, extra, expected
+) -> None:
     # NO_COLOR and TERM=dumb are read once, by booley.presentation.colors at import
-    # (pinned in tests/presentation/test_colors.py); the renderer only consults the result.
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", False)
-    monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: True)
+    # (tested in tests/presentation/test_colors.py); the renderer only consults the result.
+    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", colors_enabled)
+    monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: tty)
 
-    render_heartbeat("simulation", "2.0s", "working", style=dim)
+    render_heartbeat("simulation", "2.0s", extra, style=dim)
 
-    assert capsys.readouterr().out == "  * [simulation] elapsed: 2.0s | working\n"
-
-
-def test_standalone_renderer_dims_tty_output(monkeypatch, capsys) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
-    monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: True)
-
-    render_heartbeat("simulation", "2.0s", style=dim)
-
-    assert capsys.readouterr().out == "\033[2m  * [simulation] elapsed: 2.0s\033[0m\n"
-
-
-def test_standalone_renderer_stays_plain_on_a_pipe(monkeypatch, capsys) -> None:
-    monkeypatch.setattr("booley.presentation.colors.COLORS_ENABLED", True)
-    monkeypatch.setattr("booley.presentation.heartbeat.sys.stdout.isatty", lambda: False)
-
-    render_heartbeat("simulation", "2.0s", style=dim)
-
-    assert capsys.readouterr().out == "  * [simulation] elapsed: 2.0s\n"
+    assert capsys.readouterr().out == expected
 
 
 def test_every_standalone_heartbeat_caller_passes_a_style() -> None:

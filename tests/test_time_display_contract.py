@@ -12,6 +12,9 @@ from unittest.mock import patch
 
 from booley.flows import endpoint_reporting, terminal_progress
 from booley.flows.fpga.flow import FpgaImplFlow, FpgaMetrics
+
+# private: the Flow formatters and standalone recipe types below run only after an
+# EDA tool or frontend finished, so no public entry point reaches them without one.
 from booley.flows.lint.flow import (
     LintConfigResult,
     LintFlow,
@@ -20,6 +23,8 @@ from booley.flows.lint.flow import (
 )
 from booley.flows.sim import flow as sim
 from booley.flows.sim import record_presentation
+
+# private: standalone recipe types, as above.
 from booley.flows.sim.standalone import (
     StandaloneMixin,
     _StandalonePlanRecipe,
@@ -58,27 +63,12 @@ def test_old_formatters_are_removed():
     assert not found, f"private time formatters remain: {found}"
 
 
-def test_human_sinks_use_adaptive_durations():
-    lint = LintConfigResult("top", duration_s=61)
-    assert _target_summary_line(lint).endswith("1m 01s")
-
-    synth = object.__new__(AsicSynthesizeFlow)
-    assert "1h 01m" in synth._format_config_line(
-        "top", SynthMetrics(elapsed_s=3661), None, human=True
-    )
-    assert "1m 01s" in FpgaImplFlow._format_config_line(
-        "top", FpgaMetrics(elapsed_s=61), None, human=True
-    )
-    standalone = object.__new__(StandaloneMixin)
-    standalone._mode = SimpleNamespace(value="elab-only")
-    standalone.set_criterion = lambda *_a, **_k: None
-    assert standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 61).display.endswith(
-        "1m 01s"
-    )
-
-
 def _one_probe_recipe():
-    """A single-module, single-frontend (Verilator) standalone recipe."""
+    """A single-module, single-frontend (Verilator) standalone recipe.
+
+    private: the recipe types are built by standalone planning, which needs the
+    Project's sources and a frontend tool.
+    """
     probe = _StandaloneProbe("top", "top.sv", "verilator", (), False, ())
     return _StandalonePlanRecipe(
         probes=(probe,),
@@ -88,7 +78,11 @@ def _one_probe_recipe():
 
 
 def _protected_outputs(root, monkeypatch):
-    """Fixed inputs also used to capture literal base output before source edits."""
+    """Fixed inputs also used to capture literal base output before source edits.
+
+    private: the Flow formatters below run only after an EDA tool finishes, so no
+    public entry point reaches them without Docker and the tools.
+    """
     synth = object.__new__(AsicSynthesizeFlow)
     fpga = object.__new__(FpgaImplFlow)
     outputs = []
@@ -110,6 +104,7 @@ def _protected_outputs(root, monkeypatch):
     standalone._mode = SimpleNamespace(value="elab-only")
     standalone.set_criterion = lambda *_a, **_k: None
     outcome = standalone._standalone_verdict(_one_probe_recipe(), [], [], None, 3661)
+    assert outcome.display.endswith("1h 01m")  # the human line adapts; the record does not
     outputs.append(outcome.lines)
     report = {"report_text": "RESULT: PASS\n  elapsed 3661.0s", "elapsed_s": 3661, "passed": True}
     outputs.append(ReportEncoder.text_result(0, report["report_text"] + "\n", "", report))
@@ -121,7 +116,11 @@ def _protected_outputs(root, monkeypatch):
 
 
 def _protected_simulation_record(root, monkeypatch):
-    """Simulation Record report lines and ``simulation.json`` test entries for a fixed passing record."""
+    """Simulation Record report lines and ``simulation.json`` test entries for a fixed passing record.
+
+    private: the report lines and projection are produced inside a Simulation Flow
+    run, which needs a simulator; ``_cache`` is patched so teardown restores it.
+    """
     from booley.flows.sim.acceptance import _simulation_record_projection
     from tests.flows.sim.test_endpoint_record_lifecycle import _public_cycle_simulation_record
 
@@ -147,9 +146,9 @@ def _protected_transport():
     progress = terminal_progress.TerminalProgress(
         "sim", "top", Path("/fixture"), stream=stream, clock=lambda: 1000
     )
-    progress.started = 0
+    progress.started = progress.last_record = 0
     with patch.object(terminal_progress, "utc_now_rfc3339", return_value="2026-10-08T10:00:00Z"):
-        progress._record("heartbeat (elapsed time; process health unknown)")
+        progress.tick()
     outputs.append(stream.getvalue())
     assert (
         stream.getvalue()
@@ -158,6 +157,8 @@ def _protected_transport():
     for passed in (True, False):
         report_text = f"RESULT: {'PASS' if passed else 'FAIL'}\n  elapsed 3661.0s"
         stdout = io.StringIO()
+        # private: console publication runs at the end of a Flow invocation; the
+        # endpoint state and witness stand in for one.
         witness = endpoint_reporting._StdoutWitness(stdout)
         endpoint = SimpleNamespace(
             _console_publication_requested=True,
@@ -205,6 +206,7 @@ def test_human_output_changes_without_machine_or_report_changes(tmp_path, monkey
 
 
 def _completion_fixture(flow, elapsed):
+    # private: each Flow builds its completion line after its EDA tool ran.
     if flow == "lint":
         return _target_summary_line(LintConfigResult("top", duration_s=elapsed))
     if flow == "synth":
@@ -216,9 +218,9 @@ def _completion_fixture(flow, elapsed):
     )
 
 
-def test_completion_records_preserve_legacy_stage_bytes(monkeypatch):
-    events = []
-    monkeypatch.setattr(endpoint_reporting, "_write_display_event", events.append)
+def test_completion_records_preserve_legacy_stage_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
+    display = tmp_path / "display.jsonl"
     monkeypatch.setattr(terminal_progress, "utc_now_rfc3339", lambda: "2026-10-08T10:00:00Z")
     prefixes = {
         "lint": "[lint] top          [] 0 warnings (target total), ",
@@ -232,6 +234,8 @@ def test_completion_records_preserve_legacy_stage_bytes(monkeypatch):
         )
         progress.started = 0
         progress.log = io.BytesIO()
+        # private: emit_completion reads the endpoint's _display_identity; only a live
+        # flow endpoint sets it, so this stand-in carries the unset value.
         endpoint = SimpleNamespace(name=flow, terminal_progress=progress, _display_identity=None)
         expected_records, expected_log = [], []
         for elapsed in (61.1, 61.9):
@@ -241,9 +245,11 @@ def test_completion_records_preserve_legacy_stage_bytes(monkeypatch):
             expected_records.append(
                 f"[booley-progress] 2026-10-08T10:00:00Z {flow} Target=top stage={legacy} elapsed=1000s \n"
             )
-            progress._consume("stdout", b"", terminal_progress._Lines())
+            progress.observe("stdout", b"")
+            progress.end_command()
             expected_log.append(f"\n[{flow} Target=top stage={legacy} source=stdout]\n")
-            assert "1m 01s" in events[-1]["line"], "completion display/record contract missing"
+            event = json.loads(display.read_text(encoding="utf-8").splitlines()[-1])
+            assert "1m 01s" in event["line"], "completion display/record contract missing"
         assert stream.getvalue() == "".join(expected_records), (
             "completion display/record contract missing"
         )
