@@ -98,7 +98,11 @@ const context = {
     activeElement: null,
     addEventListener: (type, fn) => documentListeners.push({ type, fn }),
   },
-  navigator: { clipboard: { writeText: (text) => { clipboard.push(text); return Promise.resolve(); } } },
+  navigator: { clipboard: { writeText: (text) => {
+    if (scenario.copyFails) return Promise.reject(new Error('denied'));
+    clipboard.push(text);
+    return Promise.resolve();
+  } } },
   location: { search: scenario.search },
   localStorage,
   URLSearchParams,

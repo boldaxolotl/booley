@@ -561,7 +561,9 @@ def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
     assert spawned == []
 
 
-def _probe(client, wt, tmp_path, calls, steps, *, responses=None, reject=None, held=()):
+def _probe(
+    client, wt, tmp_path, calls, steps, *, responses=None, reject=None, held=(), copy_fails=False
+):
     """Run the served page for *wt* through *steps*, answered as *client* answers *calls*.
 
     A call is ``(route, query, body)``: a GET of the Run route, or a POST of *body*. The page must
@@ -596,6 +598,7 @@ def _probe(client, wt, tmp_path, calls, steps, *, responses=None, reject=None, h
         "responses": [r or web_tests._reply(client, wt) for r in responses or [None]],
         "routes": routes,
         "steps": steps,
+        "copyFails": copy_fails,
     }
     probe = web_tests._run_page(";\n".join(scripts), scenario, tmp_path)
     asked = [
@@ -841,8 +844,107 @@ def test_review_shows_the_checks_facts_and_submit_starts_the_job_listed_as_yours
     handle = answers[9]["body"]["handle"]
     assert (released["run"]["hidden"], handle in released["live"]["html"]) == (True, False)
     assert re.search(
-        rf"{handle}</span>(<span>[^<]*</span>)*?<span>you</span>", polled["live"]["html"]
+        rf"<h2>Now</h2>((?!<h2>).)*?{handle}</span>(<span>[^<]*</span>)*?<span>you</span>",
+        polled["live"]["html"],
+        re.S,
     )
+
+
+@pytest.mark.parametrize("case", ["refused", "lost"])
+def test_a_failed_submit_shows_on_the_form_and_needs_a_new_review(
+    world, feature_flags, spawned, tmp_path, case
+):
+    if case == "refused":
+        standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
+        standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
+    synth = _run("synth", values={}, extra="")
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "synth"}, None),
+        ("targets", {"flow": "synth"}, None),
+        ("command", {}, synth),
+        ("check", {}, synth),
+        ("submit", {}, synth),
+        ("check", {}, synth),
+    ]
+    steps = [RUN, _choose("flow:synth"), REVIEW, SUBMIT, SUBMIT, REVIEW]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(
+            client, world.wt, tmp_path, calls, steps, reject=6 if case == "lost" else None
+        )
+
+    *_before, reviewed, failed, again, renewed = probe["views"]
+    assert reviewed["run-submit"]["disabled"] is False
+    error = "refused" if case == "lost" else answers[6]["body"]["error"]
+    assert case == "lost" or error.startswith("Could not start the Job: ")
+    for view in (failed, again):
+        assert (view["run"]["hidden"], view["run-error"]["text"]) == (False, error)
+        assert (view["run-review"]["hidden"], view["run-submit"]["disabled"]) == (True, True)
+        assert view["run-check"]["disabled"] is False
+    assert (renewed["run-review"]["hidden"], renewed["run-submit"]["disabled"]) == (False, False)
+    assert renewed["run-error"]["hidden"] is True
+    assert len(spawned) == (case == "lost")  # the lost answer still started its Job
+
+
+def _reviewer_calls(*more_calls):
+    """The reads and commands of choosing the reviewer, scoping it and focusing it on bugs."""
+    reviewer = {"kind": "specialist", "name": "reviewer", "extra": ""}
+    base = {"category": "rtl"}
+    scoped = {**base, "scope": "fifo.v"}
+    bugs = {**scoped, "focus": "bugs"}
+
+    def form(**values):
+        return ("form", {"kind": "specialist", "name": "reviewer", **values}, None)
+
+    def command(values):
+        return ("command", {}, {**reviewer, "values": values})
+
+    steps = [
+        RUN,
+        _choose("specialist:reviewer"),
+        _edit("scope", "fifo.v"),
+        _edit("focus", "bugs", "select-one"),
+    ]
+    calls = [*[ENTRIES] * 2, form(), command(base), command(scoped), form(**bugs)]
+    return [*calls, command(bugs), command(bugs)], steps, (reviewer, bugs, form, command)
+
+
+def test_a_reloaded_specialist_form_clears_the_review_made_while_it_was_loading(
+    world, feature_flags, empty_home, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    write_config(world.wt, '[agent]\nauth = "api_key"\n')
+    calls, steps, (reviewer, bugs, form, command) = _reviewer_calls()
+    more = {**bugs, "more": "on"}
+    calls += [
+        form(**more),
+        command(more),
+        ("check", {}, {**reviewer, "values": more}),
+        command(more),
+    ]
+    steps += [_edit("more", "", "checkbox", checked=True), REVIEW, {"release": "/api/run/form"}]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={8})
+
+    reviewed, released = probe["views"][-2:]
+    assert (answers[10]["body"]["refusal"], reviewed["run-submit"]["disabled"]) == ("", False)
+    assert (reviewed["run-review"]["hidden"], released["run-review"]["hidden"]) == (False, True)
+    assert (released["run-review"]["html"], released["run-submit"]["disabled"]) == ("", True)
+    assert released["run-command"]["text"] == answers[11]["body"]["command"]
+
+
+def test_a_failed_copy_keeps_the_refusal_it_follows(world, feature_flags, empty_home, tmp_path):
+    write_config(world.wt, '[agent]\nauth = "api_key"\n')
+    calls, steps, (reviewer, bugs, _form, _command) = _reviewer_calls()
+    calls.append(("check", {}, {**reviewer, "values": bugs}))
+    steps += [REVIEW, {"click": "run-copy"}]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, copy_fails=True)
+
+    refusal = answers[8]["body"]["refusal"]
+    assert refusal.startswith("Refused:")
+    assert probe["views"][-1]["run-error"]["text"] == f"{refusal} Copy failed: select the command"
+    assert probe["clipboard"] == []
 
 
 def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_error(

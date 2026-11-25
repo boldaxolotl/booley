@@ -23,6 +23,7 @@
   var checkSeq = 0;
   // The request the shown review checked and allows to submit, or null; submitting while one is sent.
   var reviewed = null;
+  var refusal = '';
   var submitting = false;
   var entry = null;
   var form = null;
@@ -227,6 +228,7 @@
   function clearReview() {
     checkSeq += 1;
     reviewed = null;
+    refusal = '';
     reviewEl.innerHTML = '';
     reviewEl.hidden = true;
     updateButtons();
@@ -287,8 +289,9 @@
         return '<li>' + escapeHtml(line) + '</li>';
       }).join('');
       reviewEl.hidden = false;
-      show(errorEl, r.body.refusal);
-      reviewed = r.body.refusal ? null : sent;
+      refusal = r.body.refusal;
+      show(errorEl, refusal);
+      reviewed = refusal ? null : sent;
       updateButtons();
     }).catch(function (err) {
       if (mine === gen && seq === checkSeq) {
@@ -402,6 +405,7 @@
   // A Specialist's fields follow its list values and More, as the wizard's form does.
   function reloadForm() {
     dependentRead('/api/run/form', Object.assign({ kind: entry.kind, name: entry.name }, values), function (body) {
+      clearReview(); // the answer may change the values a shown review checked
       adopt(body);
       postCommand();
     });
@@ -440,7 +444,7 @@
     Promise.resolve().then(function () {
       return navigator.clipboard.writeText(text);
     }).catch(function () {
-      show(errorEl, 'Copy failed: select the command');
+      show(errorEl, (refusal ? refusal + ' ' : '') + 'Copy failed: select the command');
     });
   }
 
