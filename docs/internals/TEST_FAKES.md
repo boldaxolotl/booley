@@ -2,9 +2,9 @@
 
 This page names the fake that owns each test boundary and the stand-in for each
 Booley seam, so a contributor or agent finds it before writing a test. Read it
-before you write a fake or patch a command; it does not explain how to write a
-good test (see [principle 14 of the coding principles](CODING_PRINCIPLES.md#14-tests-prove-behavior))
-and is not a user doc.
+before you write a fake or patch a command. How to write a good test is
+[principle 14](CODING_PRINCIPLES.md#14-tests-prove-behavior) of the coding
+principles; this page is for contributors and agents, not users.
 
 The rule: extend the catalogued fake for a boundary instead of adding another.
 A new fake module, named with `fake` or `double`, needs a new row for a boundary
