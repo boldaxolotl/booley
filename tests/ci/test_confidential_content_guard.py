@@ -1938,6 +1938,11 @@ _PUBLISH_CASES = {
     "unshared-outside-term": ((OUTSIDER, _TERM_FILE), True, False, False, "public", [_PASSED], 0),
     "superseded-event": ((SAFE, _CLEAN_FILE), False, False, False, "renamed", [], 0),
 }
+# A failed scan whose event the PR has since changed publishes nothing, like a passed one.
+_FAILED_CASES = {
+    "superseded-failed-event": ("renamed", []),
+    "current-failed-event": ("public", [("failure", "Confidential-content scan failed")]),
+}
 
 
 @POSIX_ONLY
@@ -1966,6 +1971,30 @@ def test_publish_step_fails_a_head_commit_another_open_pr_shares(
     result = _run_publish_step(repo, event, gh)
 
     _expect_exit(result, exit_status)
+    assert _published(gh, head) == expected
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", sorted(_FAILED_CASES))
+def test_publish_step_leaves_a_stale_failed_scan_to_the_newer_run(
+    tmp_path: Path, case: str
+) -> None:
+    title, expected = _FAILED_CASES[case]
+    repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
+    event = _pr_event(head=head, base=base)
+    own = _open_pull(head=head, head_repo_id=1, association="OWNER") | {
+        "number": 7,
+        "body": "",
+        "title": title,
+    }
+    gh = _FakeGh(tmp_path)
+    gh.serve_open_pulls(own)
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    gh.reset()
+
+    result = _run_publish_step(repo, event, gh, PR_OUTCOME="failure")
+
+    _expect_exit(result, 0)
     assert _published(gh, head) == expected
 
 

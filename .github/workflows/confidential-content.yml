@@ -157,19 +157,25 @@ jobs:
             description='Confidential-content scan failed'
           fi
           check=0
-          if [ "${GITHUB_EVENT_NAME}" = pull_request_target ] && [ "${state}" = success ]; then
+          if [ "${GITHUB_EVENT_NAME}" = pull_request_target ]; then
             python .github/scripts/confidential_content_guard.py --repo . head-status \
               --event "${GITHUB_EVENT_PATH}" || check=$?
+            # A failed scan is checked too: a stale failure must not overwrite
+            # the newer event's result. Its own failure state stays as it is.
             case "${check}" in
               0) ;;
-              3)
-                state=failure
-                description='Head commit is shared with another open pull request'
-                ;;
               4) exit 0 ;;
+              3)
+                if [ "${state}" = success ]; then
+                  state=failure
+                  description='Head commit is shared with another open pull request'
+                fi
+                ;;
               *)
-                state=failure
-                description='Open pull-request lookup failed'
+                if [ "${state}" = success ]; then
+                  state=failure
+                  description='Open pull-request lookup failed'
+                fi
                 ;;
             esac
           fi

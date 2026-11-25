@@ -81,7 +81,8 @@ publishes `failure` when another open PR has the same head commit, or when
 the list of open PRs cannot be read, whatever its own scan found. Close one
 of the PRs, then re-run the newest `Confidential content` run of the other.
 A run whose PR title, body, or branches changed after its event publishes
-nothing; the newer event's run sets the status.
+nothing, whatever its scan found; the newer event's run sets the status, so
+re-run only the newest run.
 
 ## Provenance rules
 
