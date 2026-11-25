@@ -114,3 +114,23 @@ def _completed(
             stderr.decode(errors="replace"),
         )
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+
+def answer_git_version(monkeypatch: pytest.MonkeyPatch, reply: str | OSError) -> None:
+    """Answer ``git --version`` with *reply* (stdout, or the error starting Git raises).
+
+    Booley probes the version through ``platform_paths.run_captured_bounded``, not
+    ``subprocess.run``; every other command still runs real Git.
+    """
+    from booley.runtime import platform_paths
+
+    real = platform_paths.run_captured_bounded
+
+    def run(argv: list[str], **kwargs: Any) -> Any:
+        if argv != ["git", "--version"]:
+            return real(argv, **kwargs)
+        if isinstance(reply, OSError):
+            raise reply
+        return subprocess.CompletedProcess(argv, 0, reply, "")
+
+    monkeypatch.setattr(platform_paths, "run_captured_bounded", run)
