@@ -1,49 +1,31 @@
-"""Exact raw publication proof and post-CAS index reconciliation over real Git."""
+"""Raw-bytes Git runner and commit-OID validation over real Git."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from tests.runtime import test_history_commit
-from tests.runtime.test_history_commit import (
-    RECORD,
-    _git,
-    _head,
-    _record_blob,
-)
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
+from tests.git_support import git, hostile, repository
 
-from booley.runtime.history_commit import FileCommitError, build_commit
-from booley.runtime.pinned_history import (
-    PinnedPublication,
-    proves_publication,
-    publication_pack,
-    publish_pinned,
-    raw_git,
-    restore_publication_objects,
-    validate_pin,
-)
+from booley.runtime.pinned_history import FileCommitError, raw_git, tree_rows, validate_pin
 
-repo = test_history_commit.repo
+
+def _repository(root: Path, algorithm: str = "sha1") -> Path:
+    """A repository with one commit that holds ``README``."""
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main", f"--object-format={algorithm}")
+    git(root, "config", "user.name", "Test")
+    git(root, "config", "user.email", "test@example.invalid")
+    (root / "README").write_bytes(b"project\n")
+    git(root, "add", "README")
+    git(root, "commit", "-qm", "baseline")
+    return root
 
 
 @pytest.fixture
-def publication(repo):
-    return PinnedPublication(_head(repo), "refs/heads/main", RECORD, _record_blob(repo))
-
-
-def test_raw_proof_accepts_only_one_parent_exact_mode_blob_and_tree(repo, publication):
-    commit = build_commit(repo, publication.pin, RECORD, publication.blob, "publication")
-    assert proves_publication(repo, commit, publication)
-    assert not proves_publication(repo, publication.pin, publication)
-    assert not proves_publication(repo, commit, replace(publication, path="README"))
-    other = raw_git(repo, "hash-object", "README").strip().decode()
-    assert not proves_publication(repo, commit, replace(publication, blob=other))
-    _git(repo, "replace", commit, publication.pin)
-    assert proves_publication(repo, commit, publication)
+def repo(tmp_path: Path) -> Path:
+    return _repository(tmp_path / "repo")
 
 
 @pytest.mark.parametrize(
@@ -63,270 +45,44 @@ def test_a_git_failure_without_stderr_names_how_git_ended(repo, args, message):
         raw_git(repo, *args)
 
 
-@pytest.mark.parametrize("pin", ["HEAD", "HEAD~0", "a" * 39, "A" * 40, "0" * 40])
-def test_invalid_pin_refuses_before_writes(repo, publication, pin):
-    before = (repo / ".git/index").read_bytes()
-    count = _git(repo, "count-objects", "-v")
-    with pytest.raises(FileCommitError):
-        publish_pinned(
-            repo,
-            replace(publication, pin=pin),
-            "x",
-            lambda _commit: pytest.fail("journaled invalid pin"),
-        )
-    assert (repo / ".git/index").read_bytes() == before
-    assert _git(repo, "count-objects", "-v") == count
-
-
-def test_intended_commit_is_durable_before_ref_cas_and_index_only_after_ref(repo, publication):
-    seen = []
-    before = (repo / ".git/index").read_bytes()
-
-    def journal(commit):
-        assert _head(repo) == publication.pin
-        assert (repo / ".git/index").read_bytes() == before
-        seen.append(commit)
-
-    published = publish_pinned(repo, publication, "summary", journal)
-    assert seen == [published]
-    assert _git(repo, "ls-files", "--stage", RECORD).split()[1] == publication.blob
-    assert (
-        publish_pinned(
-            repo,
-            replace(publication, intended_commit=published),
-            "ignored",
-            lambda _: pytest.fail(),
-        )
-        == published
-    )
-
-
-@pytest.mark.parametrize(
-    "stage", ["unrelated", "destination", "ancestor", "intent-to-add", "conflicted"]
-)
-def test_preserves_unrelated_or_conflicting_staging_without_wedging(repo, publication, stage):
-    if stage == "unrelated":
-        (repo / "README").write_bytes(b"user staged work\n")
-        _git(repo, "add", "README")
-    elif stage == "destination":
-        (repo / RECORD).write_bytes(b"user's different summary\n")
-        _git(repo, "add", RECORD)
-    elif stage == "ancestor":
-        blob = raw_git(repo, "hash-object", "-w", "README").strip().decode()
-        _git(repo, "update-index", "--add", "--cacheinfo", f"100644,{blob},notes")
-    elif stage == "intent-to-add":
-        _git(repo, "add", "-N", RECORD)
-    else:
-        blob = raw_git(repo, "hash-object", "README").strip()
-        import subprocess
-
-        # Kept on subprocess.run: feeds binary index data on stdin.
-        subprocess.run(
-            ["git", "update-index", "--index-info"],
-            cwd=repo,
-            input=b"100644 " + blob + b" 1\t" + RECORD.encode() + b"\n",
-            check=True,
-            capture_output=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-    before = raw_git(repo, "ls-files", "--stage", "-z")
-    commit = publish_pinned(repo, publication, "summary", lambda _: None)
-    assert proves_publication(repo, commit, publication)
-    after = raw_git(repo, "ls-files", "--stage", "-z")
-    if stage != "unrelated":
-        assert before == after
-    else:
-        assert before.split(b"\0")[0] == after.split(b"\0")[0]
-
-
-@pytest.mark.parametrize(
-    ("switch_args", "message"),
-    [
-        (("checkout", "-qb", "sibling"), "worktree is on"),
-        (("checkout", "-q", "--detach"), "HEAD is detached"),
-    ],
-)
-def test_same_sha_manual_branch_switch_refuses_without_index_effect(
-    repo, publication, switch_args, message
-):
-    before = (repo / ".git/index").read_bytes()
-
-    def switch(branch):
-        assert branch == publication.branch
-        _git(repo, *switch_args)
-
-    with pytest.raises(FileCommitError, match=message):
-        publish_pinned(repo, publication, "summary", lambda _: None, check_branch=switch)
-    assert _git(repo, "rev-parse", "main") == publication.pin
-    assert (repo / ".git/index").read_bytes() == before
-
-
-def test_concurrent_ordinary_commit_before_cas_refuses_without_staging(repo, publication):
-    before = (repo / ".git/index").read_bytes()
-
-    def journal(_commit):
-        _git(repo, "commit", "--allow-empty", "-qm", "ordinary commit")
-
-    with pytest.raises(FileCommitError, match="moved"):
-        publish_pinned(repo, publication, "summary", journal)
-    assert (repo / ".git/index").read_bytes() == before
-
-
-def test_index_lock_conflict_after_ref_is_retryable(repo, publication):
-    commit = []
-    lock = repo / ".git/index.lock"
-
-    def journal(oid):
-        commit.append(oid)
-        lock.write_bytes(b"user lock")
-
-    with pytest.raises(FileCommitError, match="index is locked"):
-        publish_pinned(repo, publication, "summary", journal)
-    assert _head(repo) == commit[0]
-    assert lock.read_bytes() == b"user lock"
-    lock.unlink()
-    assert (
-        publish_pinned(
-            repo,
-            replace(publication, intended_commit=commit[0]),
-            "summary",
-            lambda _: pytest.fail(),
-        )
-        == commit[0]
-    )
-
-
 @pytest.mark.parametrize("algorithm", ["sha1", "sha256"])
-def test_sha256_and_shallow_raw_parent_proof(tmp_path, algorithm):
-    root = tmp_path / "source"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main", f"--object-format={algorithm}")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
-    (root / "README").write_bytes(b"base\n")
-    _git(root, "add", "README")
-    _git(root, "commit", "-qm", "base")
-    clone = tmp_path / "shallow"
-    _git(tmp_path, "clone", "-q", "--depth=1", root.as_uri(), str(clone))
-    _git(clone, "config", "user.name", "Test")
-    _git(clone, "config", "user.email", "test@example.invalid")
-    source = clone / "summary"
-    source.write_bytes(b"proof")
-    blob = raw_git(clone, "hash-object", "-w", "summary").strip().decode()
-    publication = PinnedPublication(_head(clone), "refs/heads/main", "summary", blob)
-    intended = build_commit(clone, publication.pin, "summary", blob, "summary")
-    publication = replace(publication, intended_commit=intended)
-    pack = publication_pack(clone, publication)
-    _git(clone, "prune", "--expire=now")
+def test_validate_pin_accepts_only_a_full_canonical_existing_commit(tmp_path, algorithm):
+    root = _repository(tmp_path / algorithm, algorithm)
+    head = git(root, "rev-parse", "HEAD")
+    validate_pin(root, head)
+    for pin in ("HEAD", "HEAD~0", head[:-1], head.upper()):
+        with pytest.raises(FileCommitError, match="full canonical"):
+            validate_pin(root, pin)
+    with pytest.raises(FileCommitError, match="existing commit"):
+        validate_pin(root, git(root, "rev-parse", "HEAD^{tree}"))
     with pytest.raises(FileCommitError):
-        raw_git(clone, "cat-file", "commit", intended)
-    restore_publication_objects(clone, publication, b"proof", pack)
-    commit = publish_pinned(clone, publication, "summary", lambda _: None)
-    validate_pin(clone, commit)
-    assert proves_publication(clone, commit, publication)
+        validate_pin(root, "0" * len(head))
 
 
-@pytest.mark.skipif(
-    os.name == "nt", reason="Windows filesystems forbid carriage-return path components"
-)
-def test_literal_carriage_return_path_is_preserved(repo, publication):
-    call = replace(publication, path="notes/carriage\r.md")
-    commit = publish_pinned(repo, call, "summary", lambda _: None)
-    assert proves_publication(repo, commit, call)
-    assert b"carriage\r.md\0" in raw_git(repo, "ls-files", "-z")
-
-
-def test_index_handoff_does_not_delete_successor_git_lock(repo, publication, monkeypatch):
-    lock = repo / ".git/index.lock"
-    replace_path = Path.replace
-
-    def replace_then_acquire_successor(path, destination):
-        result = replace_path(path, destination)
-        if path == lock:
-            lock.write_bytes(b"successor Git process owns this lock")
-        return result
-
-    monkeypatch.setattr(Path, "replace", replace_then_acquire_successor)
-    commit = publish_pinned(repo, publication, "summary", lambda _: None)
-    assert proves_publication(repo, commit, publication)
-    assert lock.read_bytes() == b"successor Git process owns this lock"
-
-
-@pytest.mark.parametrize("attack", ["summary", "recipe", "parent", "tree", "headers", "mode"])
-def test_exact_object_recipe_refuses_substitution_before_any_git_write(repo, publication, attack):
-    from booley.runtime.pinned_history import build_commit as build_pinned_commit
-
-    commit = build_pinned_commit(
-        repo, publication.pin, publication.path, publication.blob, "summary"
-    )
-    raw = raw_git(repo, "cat-file", "commit", commit)
-    content = raw_git(repo, "cat-file", "blob", publication.blob)
-    if attack == "summary":
-        content += b"substituted"
-    elif attack == "recipe":
-        raw += b"substituted"
-    elif attack == "parent":
-        raw = raw.replace(b"parent " + publication.pin.encode(), b"parent " + commit.encode())
-    elif attack == "tree":
-        rows = raw_git(repo, "ls-tree", commit)
-        empty = raw_git(repo, "mktree", input_bytes=b"").strip()
-        tree = raw_git(
-            repo, "mktree", input_bytes=rows + b"040000 tree " + empty + b"\tempty\n"
-        ).strip()
-        raw = b"tree " + tree + b"\n" + raw.split(b"\n", 1)[1]
-    elif attack == "headers":
-        raw = raw.replace(b"\n\n", b"\nforeign header\n\n", 1)
-    elif attack == "mode":
-        raw_git(
-            repo, "update-index", "--add", "--cacheinfo", f"100755,{publication.blob},{RECORD}"
-        )
-        tree = raw_git(repo, "write-tree").strip()
-        raw = b"tree " + tree + b"\n" + raw.split(b"\n", 1)[1]
-    if attack in {"parent", "tree", "headers", "mode"}:
-        commit = (
-            raw_git(repo, "hash-object", "-w", "-t", "commit", "--stdin", input_bytes=raw)
-            .strip()
-            .decode()
-        )
-    pack = publication_pack(repo, replace(publication, intended_commit=commit))
-    if attack == "recipe":
-        pack = pack[:-1]
-    _git(repo, "prune", "--expire=now")
-    with pytest.raises(FileCommitError):
-        raw_git(repo, "cat-file", "-e", commit)
-    before = (_git(repo, "count-objects", "-v"), _head(repo), (repo / ".git/index").read_bytes())
-    with pytest.raises(FileCommitError):
-        restore_publication_objects(
-            repo, replace(publication, intended_commit=commit), content, pack
-        )
-    assert before == (
-        _git(repo, "count-objects", "-v"),
-        _head(repo),
-        (repo / ".git/index").read_bytes(),
-    )
-
-
-def test_publication_ignores_inherited_foreign_selection(repo, publication, tmp_path, monkeypatch):
-    from tests.git_support import git, hostile, repository
-
+def test_raw_git_ignores_inherited_repository_selection(repo, tmp_path, monkeypatch):
     foreign = repository(tmp_path / "foreign")
-    (foreign / "README").write_bytes(b"foreign\n")
-    # Detached auto-maintenance after the commit would race the snapshot below
-    # with a transient .git/objects/maintenance.lock.
+    # Detached auto-maintenance would race the snapshot with a transient lock.
     git(foreign, "config", "maintenance.auto", "false")
     git(foreign, "config", "gc.auto", "0")
-    git(foreign, "add", "README")
-    git(foreign, "commit", "-qm", "foreign")
     before = {
         str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
     }
     for key, value in hostile(foreign).items():
         monkeypatch.setenv(key, value)
-    commit = publish_pinned(repo, publication, "summary", lambda _: None)
-    assert proves_publication(repo, commit, publication)
+    oid = raw_git(repo, "hash-object", "-w", "--stdin", input_bytes=b"local only\n")
+    oid = oid.strip().decode()
+    assert (repo / ".git/objects" / oid[:2] / oid[2:]).is_file()
     assert before == {
         str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
     }
+
+
+def test_raw_git_reads_objects_without_replacements(repo):
+    first = git(repo, "rev-parse", "HEAD")
+    git(repo, "commit", "--allow-empty", "-qm", "second")
+    second = git(repo, "rev-parse", "HEAD")
+    git(repo, "replace", first, second)
+    assert b"baseline" in raw_git(repo, "cat-file", "commit", first)
 
 
 def test_explicit_index_and_object_directory_override_inherited_values(
@@ -358,3 +114,14 @@ def test_explicit_index_and_object_directory_override_inherited_values(
     )
     assert (objects / oid[:2] / oid[2:]).is_file()
     assert not (tmp_path / "poison-index").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a carriage return is not a Windows file name")
+def test_tree_rows_keep_every_path_byte(repo):
+    odd = b"odd\rname"
+    (repo / os.fsdecode(odd)).write_bytes(b"x\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "odd name")
+    rows = tree_rows(repo, "HEAD")
+    assert set(rows) == {b"README", odd}
+    assert rows[odd].startswith(b"100644 blob ")
