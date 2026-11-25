@@ -2,146 +2,110 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.targets import target_naming
 from booley.targets.target_surface import TARGET_AWARE_FLOWS
 
 
-class TestAxisVocabulary:
-    def test_every_target_aware_flow_has_exactly_one_axis(self):
-        """A Booley Flow with no axis would make its Targets unnameable under the rule."""
-        assert set(target_naming.AXIS_FOR_FLOW) == set(TARGET_AWARE_FLOWS)
-
-    def test_elaboration_check_has_no_separate_axis(self):
-        assert "elab" not in target_naming.AXIS_FOR_FLOW
-        assert target_naming.AXIS_FOR_FLOW["sim"] == "sim"
-
-    def test_synth_and_fpga_are_distinct_axes(self):
-        """The whole reason the axis is in the name: CAPI2 cannot tell them apart."""
-        assert target_naming.AXIS_FOR_FLOW["synth"] == "synth"
-        assert target_naming.AXIS_FOR_FLOW["fpga"] == "fpga"
+def test_every_target_aware_flow_has_exactly_one_axis():
+    """A Booley Flow with no axis would make its Targets unnameable under the rule."""
+    assert set(target_naming.AXIS_FOR_FLOW) == set(TARGET_AWARE_FLOWS)
 
 
-class TestAxisOf:
-    @pytest.mark.parametrize(
-        "name,axis",
-        [
-            ("sim_soc", "sim"),
-            ("synth_matmul_par_b8", "synth"),
-            ("fpga_soc", "fpga"),
-            ("lint_style", "lint"),
-        ],
-    )
-    def test_recognized(self, name: str, axis: str):
-        assert target_naming.axis_of(name) == axis
-
-    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
-    def test_bare_axis_keeps_its_axis_but_breaks_the_convention(self, axis: str):
-        """Flow intent and Criteria selection still read the axis off a bare name."""
-        assert target_naming.axis_of(axis) == axis
-        assert target_naming.fpga_intent(axis, "verilator") is (axis == "fpga")
-        assert not target_naming.is_conventional(axis)
-
-    @pytest.mark.parametrize("name", ["soc_sim", "simulate_soc", "simsoc", "asic"])
-    def test_not_recognized(self, name: str):
-        """`simsoc` matters: the axis is a whole segment, not a string prefix."""
-        assert target_naming.axis_of(name) is None
+@pytest.mark.parametrize(
+    "name,axis",
+    [
+        ("sim_soc", "sim"),
+        ("synth_matmul_par_b8", "synth"),
+        ("fpga_soc", "fpga"),
+        ("lint_style", "lint"),
+        # The axis is a whole segment, not a string prefix; elab has no axis.
+        ("soc_sim", None),
+        ("simulate_soc", None),
+        ("simsoc", None),
+        ("asic", None),
+        ("elab_soc", None),
+    ],
+)
+def test_axis_of(name: str, axis: str | None):
+    assert target_naming.axis_of(name) == axis
 
 
-class TestFpgaIntent:
-    def test_fpga_axis_is_authoritative_over_resolution_tool(self):
-        assert target_naming.fpga_intent("fpga_core", "verilator")
-        assert not target_naming.fpga_intent("synth_core", "vivado")
-
-    def test_unprefixed_vendored_target_falls_back_to_vivado(self):
-        assert target_naming.fpga_intent("upstream_board", "vivado")
-        assert not target_naming.fpga_intent("upstream_board", "verilator")
-
-
-class TestViolation:
-    def test_conformant_name_has_no_violation(self):
-        assert target_naming.violation("sim_soc") is None
-
-    def test_fusesoc_default_is_exempt(self):
-        """`default` is FuseSoC plumbing; it carries its own doctor finding."""
-        assert target_naming.violation("default") is None
-        assert target_naming.is_conventional("default")
-
-    def test_missing_axis_is_named_as_such(self):
-        assert "no axis prefix" in (target_naming.violation("soc_sim") or "")
-
-    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
-    def test_bare_axis_is_named_as_such(self, axis: str):
-        assert target_naming.violation(axis) == "bare axis; add a subject"
-
-    @pytest.mark.parametrize("name", ["Sim_SOC", "sim-soc", "sim__soc", "sim_"])
-    def test_non_snake_case_is_reported_before_the_axis(self, name: str):
-        """A name that is not snake_case fails on shape, whatever prefix it wears."""
-        assert target_naming.violation(name) == "not lowercase_snake_case"
+@pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
+def test_bare_axis_keeps_its_axis_but_breaks_the_convention(axis: str):
+    """Flow intent and Criteria selection still read the axis off a bare name."""
+    assert target_naming.axis_of(axis) == axis
+    assert target_naming.fpga_intent(axis, "verilator") is (axis == "fpga")
+    assert not target_naming.is_conventional(axis)
+    assert target_naming.violation(axis) == "bare axis; add a subject"
 
 
-class TestSuggestName:
-    @pytest.mark.parametrize(
-        "legacy,expected",
-        [
-            ("soc_sim", "sim_soc"),
-            ("matmul_par_b8_synth", "synth_matmul_par_b8"),
-            ("style_lint", "lint_style"),
-            ("soc_fpga", "fpga_soc"),
-            ("soc_lite_lint", "lint_soc_lite"),
-            ("soc_xcelium_sim", "sim_soc_xcelium"),
-        ],
-    )
-    def test_legacy_suffix_drives_the_rename(self, legacy: str, expected: str):
-        assert target_naming.suggest_name(legacy) == expected
+@pytest.mark.parametrize(
+    "name,eda_tool,expected",
+    [
+        # The fpga axis is authoritative over the resolution tool.
+        ("fpga_core", "verilator", True),
+        ("synth_core", "vivado", False),
+        # An unprefixed vendored Target falls back to vivado.
+        ("upstream_board", "vivado", True),
+        ("upstream_board", "verilator", False),
+    ],
+)
+def test_fpga_intent(name: str, eda_tool: str, expected: bool):
+    assert target_naming.fpga_intent(name, eda_tool) is expected
 
-    def test_bare_legacy_word_needs_a_subject(self):
-        assert target_naming.suggest_name("synth") is None
 
-    @pytest.mark.parametrize("axis", ["sim", "lint", "synth", "fpga"])
-    def test_bare_axis_takes_the_subject(self, axis: str):
-        """A bare axis is renamed after the caller's subject (Doctor: the core name)."""
-        assert target_naming.suggest_name(axis, subject="demo") == f"{axis}_demo"
-        assert target_naming.suggest_name("asic", "synth", subject="demo") == "synth_demo"
-        # The subject is only sanitized, so the suggestion is literally <axis>_<subject>.
-        assert target_naming.suggest_name("fpga", subject="impl_top") == "fpga_impl_top"
-        assert target_naming.suggest_name("lint", subject="Lint-Top") == "lint_lint_top"
-        assert target_naming.suggest_name("sim", subject="-") is None
-        assert target_naming.suggest_name("synth") is None
+@pytest.mark.parametrize(
+    "name,violation",
+    [
+        ("sim_soc", None),
+        # `default` is FuseSoC plumbing; it carries its own doctor finding.
+        ("default", None),
+        ("soc_sim", "no axis prefix (sim/lint/synth/fpga)"),
+        # A name that is not snake_case fails on shape, whatever prefix it wears.
+        ("Sim_SOC", "not lowercase_snake_case"),
+        ("sim-soc", "not lowercase_snake_case"),
+        ("sim__soc", "not lowercase_snake_case"),
+        ("sim_", "not lowercase_snake_case"),
+    ],
+)
+def test_violation(name: str, violation: str | None):
+    assert target_naming.violation(name) == violation
 
-    def test_explicit_axis_overrides_the_suffix(self):
-        """Doctor metadata is stronger evidence than a trailing word.
 
-        A project may declare its synth Targets as `flow: lint` resolution
-        vehicles named `*_synth`; explicit fpga intent means fpga, not asic.
-        """
-        assert target_naming.suggest_name("soc_synth", "fpga") == "fpga_soc"
-
-    def test_no_axis_evidence_yields_no_suggestion(self):
-        """Better silent than a confidently wrong rename."""
-        assert target_naming.suggest_name("soc") is None
-
-    def test_leading_legacy_word_is_replaced_not_prepended(self):
-        """An old `asic_core` Target becomes `synth_core`, without stuttering."""
-        assert target_naming.suggest_name("asic_core", "synth") == "synth_core"
-        assert target_naming.suggest_name("impl_top", "fpga") == "fpga_top"
-
-    def test_leading_word_for_a_different_axis_is_kept(self):
-        """`sim_core` wired to synth keeps `sim` — it is a real subject token
-        there, not a redundant restatement of the synth axis."""
-        assert target_naming.suggest_name("sim_core", "synth") == "synth_sim_core"
-
-    def test_suggestions_are_themselves_conformant(self):
-        for legacy in ("soc_sim", "matmul_par_b8_synth", "style_lint"):
-            suggested = target_naming.suggest_name(legacy)
-            assert suggested is not None
-            assert target_naming.violation(suggested) is None
-        suggested = target_naming.suggest_name("synth", subject="demo")
-        assert suggested is not None
-        assert target_naming.violation(suggested) is None
+@pytest.mark.parametrize(
+    "args,subject,expected",
+    [
+        (("soc_sim",), None, "sim_soc"),
+        (("matmul_par_b8_synth",), None, "synth_matmul_par_b8"),
+        (("style_lint",), None, "lint_style"),
+        (("soc_fpga",), None, "fpga_soc"),
+        (("soc_lite_lint",), None, "lint_soc_lite"),
+        (("soc_xcelium_sim",), None, "sim_soc_xcelium"),
+        # A bare axis needs a subject (Doctor passes the core name).
+        (("synth",), None, None),
+        (("sim",), "demo", "sim_demo"),
+        (("lint",), "demo", "lint_demo"),
+        (("synth",), "demo", "synth_demo"),
+        (("fpga",), "demo", "fpga_demo"),
+        (("asic", "synth"), "demo", "synth_demo"),
+        # The subject is only sanitized: the suggestion is literally <axis>_<subject>.
+        (("fpga",), "impl_top", "fpga_impl_top"),
+        (("lint",), "Lint-Top", "lint_lint_top"),
+        (("sim",), "-", None),
+        # Doctor metadata is stronger evidence than a trailing word: a `flow: lint`
+        # resolution vehicle named `*_synth` with explicit fpga intent means fpga.
+        (("soc_synth", "fpga"), None, "fpga_soc"),
+        # Better silent than a confidently wrong rename.
+        (("soc",), None, None),
+        # A leading legacy word is replaced, not prepended.
+        (("asic_core", "synth"), None, "synth_core"),
+        (("impl_top", "fpga"), None, "fpga_top"),
+        # A leading word for a different axis is a real subject token there.
+        (("sim_core", "synth"), None, "synth_sim_core"),
+    ],
+)
+def test_suggest_name(args: tuple[str, ...], subject: str | None, expected: str | None):
+    kwargs = {} if subject is None else {"subject": subject}
+    assert target_naming.suggest_name(*args, **kwargs) == expected
