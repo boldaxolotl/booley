@@ -450,11 +450,16 @@ def test_docker_check_reports_the_probe(checkout, bare_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize(
-    "case", ["build", "no-cargo", pytest.param("binary", marks=pytest.mark.native_bwave)]
+    "case",
+    ["build", "no-cargo", "ready", pytest.param("binary", marks=pytest.mark.native_bwave)],
 )
 def test_full_profile_reports_native_prerequisites(checkout, bare_path, monkeypatch, capsys, case):
     if case == "build":
         PathToolFake.install(bare_path, "cargo", monkeypatch)
+    if case == "ready":
+        # Only a compiled binary passes the probe, and CI without a B-Wave build has none: the
+        # default CI run still has to see the full profile advertise its broad command.
+        monkeypatch.setattr(readiness, "native_test_problem", lambda root: None)
     if case == "binary":
         binary = native_test_binary(checkout)
         binary.parent.mkdir(parents=True)
@@ -462,7 +467,7 @@ def test_full_profile_reports_native_prerequisites(checkout, bare_path, monkeypa
     document = _report(capsys, "--phase", "develop", "--test-profile", "full")
     check = document["by_id"]["native.bwave"]
     commands = {command["id"]: command for command in document["commands"]}
-    if case == "binary":
+    if case in ("ready", "binary"):
         assert check["status"] == "ready"
         assert commands["pytest.broad"]["argv"][4:6] == ["--test-profile", "full"]
         return
@@ -593,7 +598,7 @@ def test_prepare_reports_each_check(checkout, monkeypatch, capsys, case):
     assert {key: document["by_id"][key]["status"] for key in statuses} == statuses
     assert document["exit"] == int("blocked" in statuses.values())
     argv = [command["argv"] for command in document["commands"]]
-    worktree = [str((root / planned).resolve())] if planned else None
+    worktree = [str((root / planned).resolve())] if planned else []
     assert argv == (
         [["git", "worktree", "add", "-b", "codex/x", *worktree, "main"]] if planned else []
     )
