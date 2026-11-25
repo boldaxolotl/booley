@@ -308,11 +308,13 @@ def _configuration(
 
     The preconditions tested here (image, provider, CLI set) run before it is consulted.
     """
-    # Real temporary-directory Git inspection reports no tracked spec.
     # Isolate from the developer machine's own `booley auth` store, which the
     # credential-policy precondition reads.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg-isolated"))
     on_disk = dc.devcontainer_path(root)
+    # idk.image_id resolves the image through Docker, which these Docker-less cases lack;
+    # the tag itself stands in for its ID. Git inspection of the temporary directory is real
+    # and reports no tracked spec.
     monkeypatch.setattr(idk, "image_id", lambda image: image)
     rec = _Rec()
     request = inspection.RuntimeInspectionRequest(
@@ -379,6 +381,7 @@ def test_immutable_image_pin_is_not_stale_when_resolution_unavailable(tmp_path, 
     # cannot be resolved there; string-comparing the ID to the tag would be
     # a false stale-image warning.
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=_OLD_ID))
+    # The comparison needs a Docker image store; only its verdict matters here.
     monkeypatch.setattr(
         idk,
         "compare_issued_selection",
@@ -397,6 +400,7 @@ def test_immutable_image_pin_is_not_stale_when_resolution_unavailable(tmp_path, 
 
 def test_same_source_immutable_image_tag_move_passes(tmp_path, monkeypatch):
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=_OLD_ID))
+    # The comparison needs a Docker image store; only its verdict matters here.
     monkeypatch.setattr(
         idk,
         "compare_issued_selection",
@@ -410,21 +414,21 @@ def test_same_source_immutable_image_tag_move_passes(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("reply", "image"),
+    ("comparator", "image"),
     [
-        ("logical switch", "managed"),
-        ("rebuilt external image", "custom-sandbox"),
+        ("compare_issued_selection", "managed"),
+        ("compare_issued_reference", "custom-sandbox"),
     ],
 )
-def test_changed_image_warns_stale(tmp_path, monkeypatch, reply, image):
+def test_changed_image_warns_stale(tmp_path, monkeypatch, comparator, image):
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=_OLD_ID))
     mismatch = inspection.image_identity.Comparison(inspection.image_identity.Status.MISMATCH)
-    # A logical switch of the managed image and a rebuilt external image resolve differently.
-    monkeypatch.setattr(idk, "compare_issued_selection", lambda *_a, **_kw: mismatch)
-    monkeypatch.setattr(idk, "compare_issued_reference", lambda *_a, **_kw: mismatch)
+    # idk's comparators are patched because they need a live Docker image store; only
+    # the one the image kind selects answers MISMATCH, so a swapped dispatch finds no warn.
+    monkeypatch.setattr(idk, comparator, lambda *_a, **_kw: mismatch)
     selected = project_image.project_image_name(tmp_path) if image == "managed" else image
     rec = _configuration(tmp_path, monkeypatch, image=selected)
-    assert any(level == "warn" and "stale" in message for level, message in rec.events), reply
+    assert any(level == "warn" and "stale" in message for level, message in rec.events), comparator
 
 
 def test_agent_app_drift_fails(tmp_path, monkeypatch):
