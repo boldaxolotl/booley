@@ -8,10 +8,10 @@ from booley.evidence.timing import (
 
 
 def test_clock_timing_round_trip_preserves_derived_values() -> None:
-    timing = make_clock_timing("clk", 10.0, -2.0, 0.1)
+    timing = make_clock_timing("clk", 10.0, -2.5, 0.1)
 
-    assert timing.critical_path_ps == 12_000.0
-    assert timing.fmax_mhz == 1_000_000.0 / 12_000.0
+    assert timing.critical_path_ps == 12_500.0
+    assert timing.fmax_mhz == 80.0
     assert per_clock_from_json(per_clock_to_json({"clk": timing})) == {"clk": timing}
 
 
@@ -22,7 +22,7 @@ def test_timing_parser_tolerates_malformed_entries() -> None:
     }
 
 
-def test_worst_clock_uses_fmax_then_critical_path_then_slack() -> None:
+def test_worst_clock_is_the_lowest_fmax() -> None:
     clocks = {
         "fast": ClockTiming(clock="fast", fmax_mhz=200.0),
         "slow": ClockTiming(clock="slow", fmax_mhz=100.0),
