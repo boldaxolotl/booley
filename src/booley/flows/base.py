@@ -700,26 +700,27 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         if not isinstance(plan, FlowPlan):
             raise TypeError("built-in dry-run requires a FlowPlan")
         payload = plan.as_dict()
+        # Every Flow entry resolves a report directory before it plans.
         report_dir = self.args.report_dir
-        if report_dir is not None:
-            report_path = Path(report_dir) / self.name / "flow_plan.json"
-            make_directories(report_path.parent)
-            serialized = json.dumps(payload, indent=2) + "\n"
-            temporary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=report_path.parent,
-                    prefix=f".{report_path.name}.",
-                    delete=False,
-                ) as temporary:
-                    temporary_path = Path(temporary.name)
-                    temporary.write(serialized)
-                temporary_path.replace(report_path)
-            finally:
-                if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
+        assert report_dir is not None
+        report_path = Path(report_dir) / self.name / "flow_plan.json"
+        make_directories(report_path.parent)
+        serialized = json.dumps(payload, indent=2) + "\n"
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=report_path.parent,
+                prefix=f".{report_path.name}.",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(serialized)
+            temporary_path.replace(report_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         print(json.dumps(payload, indent=2))
         if plan.aggregate_errors:
             summary = "Dry-run planning failed: " + "; ".join(plan.aggregate_errors)
