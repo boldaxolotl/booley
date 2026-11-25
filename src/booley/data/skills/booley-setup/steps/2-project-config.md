@@ -240,10 +240,10 @@ Authoring rules:
   `SIM:{target}` / `LINT:{target}` / `SYNTH:{target}` and the value a
   Booley Flow passes as `--target`. The axis leads because nothing in CAPI2
   distinguishes an ASIC Target from an FPGA one — both resolve as `generic`.
-  Do not author a `default` target
-  unless another `.core` `depend:`s on this one — it is FuseSoC's
-  dependency-build fallback, never a selectable config (drop it from a
-  depended-on core and that core silently contributes zero filesets).
+  Do not author a `default` target unless another `.core` `depend:`s on this
+  one — it is FuseSoC's dependency-build fallback, never a selectable config
+  (drop it from a depended-on core and that core silently contributes zero
+  filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
   `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
