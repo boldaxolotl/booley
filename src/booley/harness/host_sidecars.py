@@ -457,26 +457,29 @@ def _reaper_socket_source(docker: _DockerPort) -> str:
 def _verify_reaper_daemon(docker: _DockerPort) -> None:
     """Fail unless the reaper reaches the same Docker daemon as Booley's CLI."""
     expected = _docker_text(docker, ["info", "--format", "{{.ID}}"], "the Docker daemon ID")
-    result = docker.run(
-        [
-            "exec",
-            legacy.REAPER_CONTAINER,
-            "docker",
-            "--host",
-            f"unix://{legacy.DOCKER_SOCK}",
-            "info",
-            "--format",
-            "{{.ID}}",
-        ],
-        timeout=15,
-    )
+    try:
+        result = docker.run(
+            [
+                "exec",
+                legacy.REAPER_CONTAINER,
+                "docker",
+                "--host",
+                f"unix://{legacy.DOCKER_SOCK}",
+                "info",
+                "--format",
+                "{{.ID}}",
+            ],
+            timeout=15,
+        )
+    except SidecarError as exc:
+        result = subprocess.CompletedProcess([], 1, "", str(exc))
     seen = result.stdout.strip()
     if not result.returncode and seen == expected:
         return
     reached = (
         f"another Docker daemon ({seen})"
         if not result.returncode
-        else (f"no Docker daemon ({_failure_detail(result)})")
+        else f"no Docker daemon ({_failure_detail(result)})"
     )
     raise SidecarError(
         f"{legacy.REAPER_CONTAINER} reaches {reached}, not the daemon Booley uses "

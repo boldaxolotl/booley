@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -108,6 +109,13 @@ def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
     proxy = SandboxHostPolicy(600, 2, egress="proxy")
     unproxied = SandboxHostPolicy(600, 2, egress="unproxied")
     assert sidecars.policy_fingerprint(proxy) == sidecars.policy_fingerprint(unproxied)
+    # An installed default-socket reaper keeps this identity, so an upgrade never replaces it.
+    assert sidecars.policy_fingerprint(first) == (
+        "ad58d65e02ea54f9b3bdc194943002fca1d7f5c2e6e34f6d35eae705c48abaa8"
+    )
+    assert sidecars.policy_fingerprint(first, "/var/run/docker.sock") == (
+        sidecars.policy_fingerprint(first)
+    )
 
 
 def test_ensure_converges_a_missing_installation_then_stays_current(docker: EgressDocker) -> None:
@@ -629,6 +637,25 @@ def test_docker_failures_are_reported_on_their_row(
     assert failure.fragment in row.detail
     if failure.state is _ERROR:
         assert result.findings[-1] is row, "no later resource is reconciled after the failure"
+
+
+def test_a_hung_reaper_probe_is_reported_with_the_remedy(
+    docker: EgressDocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = docker.run
+
+    def hang(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        if args[0] == "exec":
+            raise sidecars.SidecarError("Docker command failed: timed out")
+        return run(args, timeout=timeout)
+
+    monkeypatch.setattr(docker, "run", hang)
+
+    row = _row(sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE), "reaper")
+
+    assert row.state is _ERROR
+    assert "no Docker daemon (Docker command failed: timed out)" in row.detail
+    assert "retry `booley bootstrap`" in row.detail
 
 
 @pytest.mark.skipif(
