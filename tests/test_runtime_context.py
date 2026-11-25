@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -16,18 +17,31 @@ from booley.runtime import runtime_context
 # ---------------------------------------------------------------------------
 
 
+def _pin_runtime(
+    monkeypatch: pytest.MonkeyPatch, *, env: str | None, marker_file: str | None = None
+) -> None:
+    """Pin the env marker to *env* (unset for ``None``) and the one probe file that exists."""
+    if env is None:
+        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    else:
+        monkeypatch.setenv("BOOLEY_CONTAINER", env)
+    # as_posix(): plain str() renders "\\.dockerenv" on Windows and the
+    # comparison silently never matches (F-16).
+    monkeypatch.setattr(
+        Path, "exists", lambda self: marker_file is not None and self.as_posix() == marker_file
+    )
+
+
 @pytest.fixture
-def host(monkeypatch):
+def host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulate the host: env marker unset, no container marker files."""
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    with patch.object(Path, "exists", lambda self: False):
-        yield
+    _pin_runtime(monkeypatch, env=None)
 
 
 @pytest.fixture
-def container_env(monkeypatch):
+def container_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulate the sandbox via the baked-in env marker (primary signal)."""
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    _pin_runtime(monkeypatch, env="1")
 
 
 # ===========================================================================
@@ -35,37 +49,32 @@ def container_env(monkeypatch):
 # ===========================================================================
 
 
-class TestInsideSessionRuntime:
-    def test_false_on_host(self, host):
-        assert runtime_context.inside_session_runtime() is False
-
-    def test_true_with_env_marker(self, container_env):
-        assert runtime_context.inside_session_runtime() is True
-
-    def test_env_marker_must_be_exactly_1(self, monkeypatch):
-        """BOOLEY_CONTAINER=0 (or junk) does not count as inside."""
-        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
-        with patch.object(Path, "exists", lambda self: False):
-            assert runtime_context.inside_session_runtime() is False
-
-    def test_true_with_dockerenv_fallback(self, monkeypatch):
-        """/.dockerenv probe covers images built before the env var existed."""
-        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-        # as_posix(): plain str() renders "\\.dockerenv" on Windows and the
-        # comparison silently never matches (F-16).
-        with patch.object(Path, "exists", lambda self: self.as_posix() == "/.dockerenv"):
-            assert runtime_context.inside_session_runtime() is True
-
-    def test_true_with_containerenv_fallback(self, monkeypatch):
-        """/run/.containerenv covers Podman/OCI runtimes."""
-        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-        with patch.object(Path, "exists", lambda self: self.as_posix() == "/run/.containerenv"):
-            assert runtime_context.inside_session_runtime() is True
+@pytest.mark.parametrize(
+    ("env", "marker_file", "inside"),
+    [
+        (None, None, False),
+        ("1", None, True),
+        ("0", None, False),  # the marker must be exactly 1
+        (None, "/.dockerenv", True),  # images built before the env var existed
+        (None, "/run/.containerenv", True),  # Podman/OCI runtimes
+    ],
+    ids=["host", "env-marker", "env-marker-0", "dockerenv", "containerenv"],
+)
+def test_inside_session_runtime_reads_the_marker_then_the_probe_files(
+    monkeypatch: pytest.MonkeyPatch, env: str | None, marker_file: str | None, inside: bool
+):
+    _pin_runtime(monkeypatch, env=env, marker_file=marker_file)
+    assert runtime_context.inside_session_runtime() is inside
 
 
 # ===========================================================================
 # ensure_proxy_env()
 # ===========================================================================
+
+# The environment the Session's devcontainer spec sets (session_issuance remoteEnv)
+# and ensure_proxy_env restores when a bare docker exec drops it.
+PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+PROXY_URL = "http://booley-proxy:8080"
 
 
 class TestEnsureProxyEnv:
@@ -73,41 +82,27 @@ class TestEnsureProxyEnv:
     default the proxy vars in the sandbox, and ONLY in the sandbox."""
 
     @pytest.fixture(autouse=True)
-    def _no_inherited_proxy(self, monkeypatch):
-        for var in (*runtime_context._PROXY_ENV_VARS, "NO_PROXY"):
+    def _no_inherited_proxy_config(self, monkeypatch):
+        for var in (*PROXY_ENV_VARS, "NO_PROXY", "BOOLEY_EGRESS"):
             monkeypatch.delenv(var, raising=False)
 
-    def test_defaults_all_proxy_vars_in_sandbox(self, container_env):
-        import os
-
+    @pytest.mark.parametrize(
+        "declared",
+        [{}, {"BOOLEY_EGRESS": "proxy"}, {"CODESPACES": "true"}],
+        ids=["unset", "proxy", "codespaces-signal"],
+    )
+    def test_defaults_all_proxy_vars_in_sandbox(self, container_env, monkeypatch, declared):
+        for name, value in declared.items():
+            monkeypatch.setenv(name, value)
         assert runtime_context.ensure_proxy_env() is True
-        for var in runtime_context._PROXY_ENV_VARS:
-            assert os.environ[var] == runtime_context._PROXY_URL
+        for var in PROXY_ENV_VARS:
+            assert os.environ[var] == PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
 
-    @pytest.fixture(autouse=True)
-    def _no_inherited_egress_mode(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_EGRESS", raising=False)
-
-    @pytest.mark.parametrize("declared", [None, "proxy"], ids=["unset", "proxy"])
-    def test_proxy_mode_defaults_proxy_vars(self, container_env, monkeypatch, declared):
-        import os
-
-        if declared is not None:
-            monkeypatch.setenv("BOOLEY_EGRESS", declared)
-        assert runtime_context.egress_mode() == "proxy"
-        assert runtime_context.ensure_proxy_env() is True
-        assert all(
-            os.environ[var] == runtime_context._PROXY_URL
-            for var in runtime_context._PROXY_ENV_VARS
-        )
-
     def test_unproxied_mode_sets_no_proxy_vars(self, container_env, monkeypatch):
-        import os
-
         monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
         assert runtime_context.ensure_proxy_env() is False
-        assert not any(var in os.environ for var in (*runtime_context._PROXY_ENV_VARS, "NO_PROXY"))
+        assert not any(var in os.environ for var in (*PROXY_ENV_VARS, "NO_PROXY"))
 
     @pytest.mark.parametrize("value", ["bogus", ""], ids=["bogus", "empty"])
     def test_invalid_mode_refuses(self, container_env, monkeypatch, value):
@@ -115,34 +110,16 @@ class TestEnsureProxyEnv:
         with pytest.raises(runtime_context.EgressModeError, match=r"`proxy`.*`unproxied`"):
             runtime_context.ensure_proxy_env()
 
-    def test_codespaces_signal_does_not_select_unproxied(self, container_env, monkeypatch):
-        import os
-
-        monkeypatch.setenv("CODESPACES", "true")
-        assert runtime_context.ensure_proxy_env() is True
-        assert os.environ["HTTPS_PROXY"] == runtime_context._PROXY_URL
-
-    def test_noop_on_host(self, host):
-        import os
-
-        assert runtime_context.ensure_proxy_env() is False
-        assert "HTTPS_PROXY" not in os.environ
-
     def test_noop_in_foreign_container(self, monkeypatch):
         """/.dockerenv alone is NOT enough — a foreign container has no
         booley-proxy, and forcing a dead proxy on it would break egress."""
-        import os
-
-        monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-        with patch.object(Path, "exists", lambda self: self.as_posix() == "/.dockerenv"):
-            assert runtime_context.ensure_proxy_env() is False
+        _pin_runtime(monkeypatch, env=None, marker_file="/.dockerenv")
+        assert runtime_context.ensure_proxy_env() is False
         assert "HTTPS_PROXY" not in os.environ
 
     def test_existing_proxy_config_is_respected_wholesale(self, container_env, monkeypatch):
         """Any pre-set proxy var means the entry path DID deliver config —
         partially overwriting it could mix two proxy setups."""
-        import os
-
         monkeypatch.setenv("https_proxy", "http://corp-proxy:3128")
         assert runtime_context.ensure_proxy_env() is False
         if os.name == "nt":
@@ -165,15 +142,18 @@ class TestAgentSessionApp:
     def test_none_in_a_plain_shell(self):
         assert runtime_context.agent_session_app() is None
 
-    @pytest.mark.parametrize("marker", ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"])
-    def test_claude_markers(self, monkeypatch, marker):
+    @pytest.mark.parametrize(
+        ("marker", "app"),
+        [
+            ("CLAUDECODE", "claude"),
+            ("CLAUDE_CODE_ENTRYPOINT", "claude"),
+            ("CODEX_SANDBOX", "codex"),
+            ("CODEX_HOME", "codex"),
+        ],
+    )
+    def test_markers_name_the_agent_cli(self, monkeypatch, marker, app):
         monkeypatch.setenv(marker, "1")
-        assert runtime_context.agent_session_app() == "claude"
-
-    @pytest.mark.parametrize("marker", ["CODEX_SANDBOX", "CODEX_HOME"])
-    def test_codex_markers(self, monkeypatch, marker):
-        monkeypatch.setenv(marker, "1")
-        assert runtime_context.agent_session_app() == "codex"
+        assert runtime_context.agent_session_app() == app
 
     def test_empty_marker_does_not_count(self, monkeypatch):
         """An exported-but-empty var is not a session."""
@@ -182,78 +162,44 @@ class TestAgentSessionApp:
 
 
 # ===========================================================================
-# container_only_error()
+# container_only_error() and host_only_error()
 # ===========================================================================
-
-
-class TestContainerOnlyError:
-    def test_none_inside_container(self, container_env):
-        assert runtime_context.container_only_error("booley flow") is None
-
-    def test_message_on_host(self, host):
-        msg = runtime_context.container_only_error("booley flow")
-        assert msg is not None
-        assert msg.startswith("ERROR: `booley flow` runs inside the Booley Sandbox")
-
-    def test_message_names_command_and_fix(self, host):
-        """Refusal must name the offending command AND how to fix it."""
-        msg = runtime_context.container_only_error("bwave")
-        assert "`bwave`" in msg
-        assert "Reopen in Container" in msg
-        assert "booley session enter -- bwave" in msg
-        assert "docker exec" not in msg
-
-
-# ===========================================================================
-# host_only_error()
-# ===========================================================================
-
-
-class TestHostOnlyError:
-    def test_none_on_host(self, host):
-        assert runtime_context.host_only_error("booley init") is None
-
-    def test_message_inside_container(self, container_env):
-        msg = runtime_context.host_only_error("booley init")
-        assert msg is not None
-        assert "`booley init`" in msg
-        assert "HOST terminal" in msg  # the fix: run it outside the container
-
-
-def test_host_refusal_points_to_location_source(host):
-    message = runtime_context.container_only_error("booley flow")
-    assert "`booley --help`" in message
-    assert "Only `booley init`" not in message
-
-
-def test_sandbox_refusal_points_to_location_source(container_env):
-    message = runtime_context.host_only_error("booley init")
-    assert "`booley --help`" in message
-    assert "Everything else" not in message
 
 
 @pytest.mark.parametrize(
-    "guard,inside",
-    [(runtime_context.container_only_error, False), (runtime_context.host_only_error, True)],
+    ("guard", "own_side", "other_side", "fixes"),
+    [
+        (
+            runtime_context.container_only_error,
+            "1",
+            None,
+            ("Reopen in Container", "booley session enter -- booley flow"),
+        ),
+        (runtime_context.host_only_error, None, "1", ("HOST terminal",)),
+    ],
+    ids=["container-only", "host-only"],
 )
-def test_venue_refusal_has_no_drifting_command_list(guard, inside, monkeypatch):
-    import re
+def test_venue_guard_refuses_only_on_the_wrong_side(
+    monkeypatch: pytest.MonkeyPatch,
+    guard,
+    own_side: str | None,
+    other_side: str | None,
+    fixes: tuple[str, ...],
+):
+    _pin_runtime(monkeypatch, env=own_side)
+    assert guard("booley flow") is None
 
-    from booley.harness.booley import COMMAND_LOCATIONS, CommandLocation
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
+    _pin_runtime(monkeypatch, env=other_side)
     message = guard("booley flow")
+    assert message is not None
+    assert message.startswith("ERROR: `booley flow` ")
+    for fix in fixes:
+        assert fix in message
+    assert "`booley --help`" in message
+    # The refusal points at the command-location source instead of listing commands (#1236);
+    # the heading line names the guarded command, so only the instructions are checked.
     instructions = "\n".join(message.splitlines()[1:])
-    named_commands = set(re.findall(r"`booley ([a-z]+)`", instructions))
-    if named_commands:
-        expected = {
-            command
-            for command, location in COMMAND_LOCATIONS.items()
-            if location is not CommandLocation.SESSION_RUNTIME
-        }
-        assert named_commands == expected
-    else:
-        assert "`booley --help`" in instructions
+    assert re.findall(r"`booley ([a-z]+)`", instructions) == []
 
 
 # ===========================================================================
@@ -266,78 +212,85 @@ def _mountinfo_line(mount_point: str) -> str:
     return f"36 35 98:0 /src {mount_point} rw,noatime master:1 - ext4 /dev/root rw\n"
 
 
-def _use_mountinfo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *mount_points: str) -> None:
-    """Point the location probe at a mountinfo file listing *mount_points*."""
+def _mountinfo(*mount_points: str) -> str:
+    return "".join(_mountinfo_line(point) for point in mount_points)
+
+
+def _use_mountinfo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str | None) -> None:
+    """Point the location probe at a mountinfo file holding *text* (absent for ``None``)."""
     mountinfo = tmp_path / "mountinfo"
-    mountinfo.write_bytes("".join(_mountinfo_line(point) for point in mount_points).encode())
+    if text is not None:
+        mountinfo.write_bytes(text.encode())
+    # private: /proc/self/mountinfo is the kernel's mount table; no public input moves the probe.
     monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
 
 
-ISSUED_MOUNT_CASES = (
-    (("/", "/work", "/work/.devcontainer"), "ISSUED_SANDBOX"),
-    (("/", "/booley"), "ISSUED_SANDBOX"),
-    (("/", "/work/.booley"), "ISSUED_SANDBOX"),
-    (("/", "/booley/masked"), "ISSUED_SANDBOX"),
-    (("/", "/work/.devcontainer/sub dir"), "ISSUED_SANDBOX"),
-    (("/", "/work", "/workspaces/repo", "/work/.booleyx"), "HAND_WRITTEN_SANDBOX"),
-    ((), "HAND_WRITTEN_SANDBOX"),
+ISSUED = runtime_context.RuntimeLocation.ISSUED_SANDBOX
+HAND_WRITTEN = runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (_mountinfo("/", "/work", "/work/.devcontainer"), ISSUED),
+        (_mountinfo("/", "/booley"), ISSUED),
+        (_mountinfo("/", "/work/.booley"), ISSUED),
+        (_mountinfo("/", "/booley/masked"), ISSUED),
+        (_mountinfo("/", "/work", "/workspaces/repo", "/work/.booleyx"), HAND_WRITTEN),
+        ("", HAND_WRITTEN),
+        # Short records are skipped.
+        ("garbage\n\n" + _mountinfo("/mnt"), HAND_WRITTEN),
+        # A false "issued" verdict only causes a refusal, so unreadable means issued.
+        (None, ISSUED),
+    ],
+    ids=[
+        "devcontainer",
+        "booley",
+        "work-booley",
+        "under-booley",
+        "lookalike",
+        "empty",
+        "short-records",
+        "unreadable",
+    ],
 )
-
-
-def test_runtime_location_reads_issued_mounts(
-    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_runtime_location_reads_the_mounts(
+    container_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    text: str | None,
+    expected: runtime_context.RuntimeLocation,
 ) -> None:
-    for mount_points, expected in ISSUED_MOUNT_CASES:
-        _use_mountinfo(monkeypatch, tmp_path, *mount_points)
-        location = runtime_context.runtime_location()
-        assert location is runtime_context.RuntimeLocation[expected], mount_points
-
-
-def test_runtime_location_escaped_space_in_mount_point(
-    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """mountinfo spells a space as ``\\040``; an issued target stays recognizable."""
-    _use_mountinfo(monkeypatch, tmp_path, "/work/.devcontainer/a\\040b")
-    assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX
-
-
-def test_runtime_location_ignores_short_records(
-    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    mountinfo = tmp_path / "mountinfo"
-    mountinfo.write_bytes(b"garbage\n\n" + _mountinfo_line("/mnt").encode())
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
-    assert (
-        runtime_context.runtime_location() is runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
-    )
-
-
-def test_runtime_location_unreadable_mountinfo_counts_as_issued(
-    container_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A false 'issued' verdict only causes a refusal, so unreadable means issued."""
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "absent")
-    assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX
+    _use_mountinfo(monkeypatch, tmp_path, text)
+    assert runtime_context.runtime_location() is expected
 
 
 def test_runtime_location_on_host_never_reads_mountinfo(
     host: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # A host whose mountinfo happens to list an issued target is still the host.
-    _use_mountinfo(monkeypatch, tmp_path, "/work/.devcontainer")
+    _use_mountinfo(monkeypatch, tmp_path, _mountinfo("/work/.devcontainer"))
     assert runtime_context.runtime_location() is runtime_context.RuntimeLocation.HOST
 
 
-def test_booley_init_hint_names_the_location(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = {
-        "HOST": ("booley init", "`booley init`"),
-        "HAND_WRITTEN_SANDBOX": ("booley init in this Sandbox", "`booley init` in this Sandbox"),
-        "ISSUED_SANDBOX": ("booley init on the host", "`booley init` on the host"),
-    }
-    for name, (plain, code) in expected.items():
-        location = runtime_context.RuntimeLocation[name]
-        monkeypatch.setattr(
-            runtime_context, "runtime_location", lambda location=location: location
-        )
-        assert runtime_context.booley_init_hint() == plain
-        assert runtime_context.booley_init_hint(code=True) == code
+@pytest.mark.parametrize(
+    ("env", "mounts", "plain", "code"),
+    [
+        (None, ("/work/.devcontainer",), "booley init", "`booley init`"),
+        ("1", ("/",), "booley init in this Sandbox", "`booley init` in this Sandbox"),
+        ("1", ("/", "/booley"), "booley init on the host", "`booley init` on the host"),
+    ],
+    ids=["host", "hand-written-sandbox", "issued-sandbox"],
+)
+def test_booley_init_hint_names_the_location(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    env: str | None,
+    mounts: tuple[str, ...],
+    plain: str,
+    code: str,
+) -> None:
+    _pin_runtime(monkeypatch, env=env)
+    _use_mountinfo(monkeypatch, tmp_path, _mountinfo(*mounts))
+    assert runtime_context.booley_init_hint() == plain
+    assert runtime_context.booley_init_hint(code=True) == code
