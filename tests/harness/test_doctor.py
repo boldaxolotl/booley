@@ -3498,13 +3498,10 @@ def test_runtime_location(row, tmp_path, monkeypatch):
 
 
 def test_runtime_location_names_the_container_host_override(tmp_path, monkeypatch):
-    """A container that declares itself a host gets a PASS naming the override, not a warning."""
     _runtime_setup(tmp_path, monkeypatch, inside=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "0")
     monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
-
     result = _doctor_run(tmp_path)
-
     assert any("BOOLEY_CONTAINER=0 set" in m for m in _messages(result, Severity.PASS))
     assert _messages(result, Severity.WARN, check_id="sandbox.runtime-marker") == []
 

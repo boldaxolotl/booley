@@ -326,7 +326,6 @@ def test_container_host_override(
     mounts: tuple[str, ...] | None,
     location: runtime_context.RuntimeLocation,
 ) -> None:
-    """BOOLEY_CONTAINER=0 makes a container a host, unless issued-Sandbox mounts say otherwise."""
     _pin_runtime(monkeypatch, env=env, marker_file=marker_file)
     _use_mountinfo(monkeypatch, tmp_path, None if mounts is None else _mountinfo(*mounts))
     is_host = location is runtime_context.RuntimeLocation.HOST
