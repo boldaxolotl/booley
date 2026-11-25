@@ -187,14 +187,21 @@ def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, monkeypatch, logged: b
     log = tmp_path / "h.log" if logged else None
     with heartbeat_tree(tmp_path) as paths:
         root = _heartbeat_hook_checkout(tmp_path, paths)
+        began = time.monotonic()
         if logged:
             # The logged path starts its deadline before it spawns the hook, so only
-            # its tree kill can wait for the tree to start.
-            real_kill, started = platform_paths.kill_process_tree, []
+            # its tree kill can wait for the tree to start.  The wait is timed apart
+            # from the timeout, and the kill still runs when the tree never started.
+            real_kill, waited = platform_paths.kill_process_tree, []
 
             def kill(process: subprocess.Popen) -> None:
-                started.append(wait_for_tree_start(paths))
-                real_kill(process)
+                wait_began = time.monotonic()
+                try:
+                    if not waited:  # the exception cleanup calls the kill a second time
+                        wait_for_tree_start(paths)
+                finally:
+                    waited.append(time.monotonic() - wait_began)
+                    real_kill(process)
 
             monkeypatch.setattr(platform_paths, "kill_process_tree", kill)
         else:
@@ -206,7 +213,8 @@ def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, monkeypatch, logged: b
 
         # The timeout plus the helper's fixed 32 s Windows margin, under a scaled
         # bound below the grandchild's self-exit
-        assert time.monotonic() - started[0] < scaled(38)
+        tree_started = began + waited[0] if logged else started[0]
+        assert time.monotonic() - tree_started < scaled(38)
         assert not result.ok
         assert result.error == f"post-setup hook timed out ({_HOOK_TIMEOUT_S}s)"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
