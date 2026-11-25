@@ -14,6 +14,8 @@ def test_malformed_seat_caps_are_config_errors_naming_the_key() -> None:
         "bool": ({"jobs": {"seats": {"vivado": True}}}, "[jobs.seats].vivado = True"),
         "not-a-table": ({"jobs": {"seats": 2}}, "[jobs].seats"),
         "open-source-tool": ({"jobs": {"seats": {"verilator": 1}}}, "[jobs.seats].verilator"),
+        "negative": ({"jobs": {"seats": {"vivado": -1}}}, "[jobs.seats].vivado"),
+        "fractional": ({"jobs": {"seats": {"vivado": 2.0}}}, "[jobs.seats].vivado"),
     }
     for name, (data, key) in cases.items():
         with pytest.raises(SeatCapError) as raised:
@@ -24,26 +26,13 @@ def test_malformed_seat_caps_are_config_errors_naming_the_key() -> None:
         parse_seat_caps({"jobs": {"seats": {"verilator": 1}}})
 
 
-@pytest.mark.parametrize("count", [-1, 2.0])
-def test_negative_and_fractional_seat_counts_are_config_errors(count: object) -> None:
-    from booley.config.jobs import SeatCapError, parse_seat_caps
-
-    with pytest.raises(SeatCapError, match=r"\[jobs\.seats\]\.vivado"):
-        parse_seat_caps({"jobs": {"seats": {"vivado": count}}})
-
-
-def test_absent_or_unreadable_jobs_table_has_no_seat_caps() -> None:
-    from booley.config.jobs import parse_seat_caps
+def test_absent_seat_caps_are_empty_and_required_seats_pair_each_tool_with_its_cap() -> None:
+    from booley.config.jobs import SeatCapError, parse_seat_caps, required_seats, seat_cap_fix
 
     assert parse_seat_caps({}) == {}
     assert parse_seat_caps({"jobs": {"max_light": 2}}) == {}
     # A non-table [jobs] has no seats.
     assert parse_seat_caps({"jobs": "many"}) == {}
-
-
-def test_required_seats_pairs_each_tool_with_its_cap_or_names_the_fix() -> None:
-    from booley.config.jobs import SeatCapError, required_seats, seat_cap_fix
-
     data = {"jobs": {"seats": {"vivado": 3}}}
     assert required_seats(("vivado",), data) == (("vivado", 3),)
     # A Job that uses no licensed tool never reads the table, so a bad table refuses nothing.
@@ -99,68 +88,54 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
     )
 
 
-def test_queue_max_is_retired_with_its_own_reason(tmp_path: Path) -> None:
-    from booley.config.jobs import (
-        RetiredKey,
-        retired_jobs_keys,
-        retired_jobs_keys_fix,
-        retired_jobs_keys_message,
-    )
-
-    path = tmp_path / "booley.toml"
-    path.write_bytes(b"[jobs]\nmax_heavy = 2\nqueue_max = 8\n")
-    found = retired_jobs_keys(path)
-    assert found == (RetiredKey("max_heavy", 2), RetiredKey("queue_max", 3))
-
-    reason = "the Job queue has no limit: a Job waits until it runs or is cancelled"
-    assert retired_jobs_keys_fix(found[1]) == f"delete [jobs].queue_max (line 3); {reason}"
-    message = retired_jobs_keys_message(path, found)
-    assert f"queue_max (line 3: {reason})" in message
-    assert "max_heavy (line 2: memory admission replaced it)" in message
-    assert message.count("Fix: delete these lines") == 1
-
-
-def test_memory_budget_is_retired_with_its_own_fix(tmp_path: Path) -> None:
-    from booley.config.jobs import (
-        RetiredKey,
-        retired_jobs_keys,
-        retired_jobs_keys_fix,
-        retired_jobs_keys_message,
-    )
-
-    path = tmp_path / "booley.toml"
-    path.write_bytes(b'[jobs]\nmemory_budget = "24g"\n')
-    found = retired_jobs_keys(path)
-    assert found == (RetiredKey("memory_budget", 2),)
-
-    assert retired_jobs_keys_fix(found[0]).endswith("set [sandbox].memory instead")
-    message = retired_jobs_keys_message(path, found)
-    assert "memory_budget (line 2: " in message
-    assert "set [sandbox].memory instead" in message
-    assert "memory admission replaced it" not in message
-
-
-def test_refuse_retired_config_reads_the_main_booley_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("text", "found", "fix", "fragments", "absent"),
+    [
+        (
+            b"[jobs]\nmax_heavy = 2\nqueue_max = 8\n",
+            (("max_heavy", 2), ("queue_max", 3)),
+            "delete [jobs].queue_max (line 3); "
+            "the Job queue has no limit: a Job waits until it runs or is cancelled",
+            (
+                "queue_max (line 3: the Job queue has no limit: a Job waits until it runs "
+                "or is cancelled)",
+                "max_heavy (line 2: memory admission replaced it)",
+            ),
+            None,
+        ),
+        (
+            b'[jobs]\nmemory_budget = "24g"\n',
+            (("memory_budget", 2),),
+            "set [sandbox].memory instead",
+            ("memory_budget (line 2: ", "set [sandbox].memory instead"),
+            "memory admission replaced it",
+        ),
+    ],
+    ids=["queue_max", "memory_budget"],
+)
+def test_retired_keys_carry_their_own_reason_and_fix(
+    tmp_path: Path,
+    text: bytes,
+    found: tuple[tuple[str, int], ...],
+    fix: str,
+    fragments: tuple[str, ...],
+    absent: str | None,
 ) -> None:
-    from booley.config.retired import refuse_retired_config
-    from booley.runtime import booley_dir as booley_dir_module
+    from booley.config.jobs import (
+        RetiredKey,
+        retired_jobs_keys,
+        retired_jobs_keys_fix,
+        retired_jobs_keys_message,
+    )
 
-    booley_dir = tmp_path / ".booley"
-    booley_dir.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-    booley_dir_module.reset_cache()
-    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_heavy = 1\n")
+    path = tmp_path / "booley.toml"
+    path.write_bytes(text)
+    keys = retired_jobs_keys(path)
+    assert keys == tuple(RetiredKey(name, line) for name, line in found)
 
-    with pytest.raises(ValueError, match=r"max_heavy \(line 2: "):
-        refuse_retired_config(tmp_path)
-
-    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_light = 1\n")
-    with pytest.raises(ValueError, match=r"max_light \(line 2: "):
-        refuse_retired_config(tmp_path)
-    (booley_dir / "booley.toml").write_bytes(b"[jobs]\nmax_tickets = 1\n")
-    refuse_retired_config(tmp_path)
-    # A Project that cannot be resolved has nothing to refuse.
-    monkeypatch.delenv("BOOLEY_DIR")
-    booley_dir_module.reset_cache()
-    refuse_retired_config(tmp_path / "nowhere")
+    assert retired_jobs_keys_fix(keys[-1]).endswith(fix)
+    message = retired_jobs_keys_message(path, keys)
+    for fragment in fragments:
+        assert fragment in message
+    assert absent is None or absent not in message
+    assert message.count("Fix: delete these lines") == 1

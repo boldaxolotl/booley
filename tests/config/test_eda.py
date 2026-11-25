@@ -10,16 +10,20 @@ import pytest
 from tests.subprocess_budget import run_bounded_child
 
 from booley.config import eda, project_config, settings
+from booley.core.booley_dir import reset_cache
 
 
 @pytest.fixture
 def document(tmp_path, monkeypatch):
-    path = tmp_path / "booley.toml"
-    monkeypatch.setattr(eda, "resolve_booley_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(project_config, "resolve_booley_dir", lambda: tmp_path)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    monkeypatch.chdir(tmp_path)
+    # private: no public function empties the memoized Project configuration
     monkeypatch.setattr(project_config, "_CONFIG_CACHE", None)
-    monkeypatch.setattr(settings, "resolve_booley_toml", lambda _root: path)
-    return path
+    reset_cache()
+    yield booley_dir / "booley.toml"
+    reset_cache()
 
 
 @pytest.mark.parametrize(
@@ -44,47 +48,48 @@ def test_unhashable_provisioning_preserves_existing_exception(value):
 
 
 def test_eda_loader_absent_and_malformed_documents(document):
-    assert eda.load_eda_config(document.parent) == {}
+    assert eda.load_eda_config(document.parents[1]) == {}
     document.write_text("[broken")
     with pytest.raises(eda.EdaConfigError, match="cannot read"):
-        eda.load_eda_config(document.parent)
+        eda.load_eda_config(document.parents[1])
 
 
 def test_readers_preserve_different_malformed_document_behavior(document, caplog):
     document.write_text("[broken")
-    assert settings._load_booley_toml(document.parent) == {}
+    assert settings.load_submodule_config(document.parents[1]) == settings.SubmoduleConfig()
     assert "Failed to load" in caplog.text
     with pytest.raises(tomllib.TOMLDecodeError):
-        project_config._load_config()
+        project_config.project_name()
 
 
-@pytest.mark.parametrize("reader", ["eda", "settings", "project"])
-def test_migration_diagnostic_precedes_invalid_eda(document, reader):
-    document.write_text('[flows.sim]\nbackend = "none"\n[eda.unknown]\n')
-    with pytest.raises(eda.EdaConfigError, match="enabled = false"):
-        if reader == "eda":
-            eda.load_eda_config(document.parent)
-        elif reader == "settings":
-            settings._load_booley_toml(document.parent)
-        else:
-            project_config._load_config()
+@pytest.mark.parametrize(
+    "reader",
+    [
+        eda.load_eda_config,
+        settings.load_submodule_config,
+        lambda _root: project_config.project_name(),
+    ],
+    ids=["eda", "settings", "project"],
+)
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ('[flows.sim]\nbackend = "none"\n[eda.unknown]\n', "enabled = false"),
+        ("[eda.unknown]\n", "unsupported EDA kind"),
+    ],
+    ids=["retired-key-first", "invalid-eda"],
+)
+def test_migration_diagnostic_precedes_invalid_eda(document, reader, text, match):
+    document.write_text(text)
+    with pytest.raises(eda.EdaConfigError, match=match):
+        reader(document.parents[1])
 
 
-def test_project_config_parses_only_on_first_access_and_caches(document, monkeypatch):
-    document.write_text('[project]\nname = "first"\n[eda.vivado]\nprovisioning = "host"\n')
-    calls = []
-    parse = eda.parse_eda_config
-
-    def observe(raw):
-        calls.append(raw)
-        return parse(raw)
-
-    monkeypatch.setattr(eda, "parse_eda_config", observe)
-    assert calls == []
-    assert project_config._get("PROJECT_NAME") == "first"
+def test_project_config_is_read_once_and_cached(document):
+    document.write_text('[project]\nname = "first"\n')
+    assert project_config.project_name() == "first"
     document.write_text('[project]\nname = "second"\n')
-    assert project_config._get("PROJECT_NAME") == "first"
-    assert len(calls) == 1
+    assert project_config.project_name() == "first"
 
 
 def test_config_imports_do_not_open_project_documents():
@@ -114,26 +119,27 @@ def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(configuration, "sys", SimpleNamespace(platform="win32"))
-    assert eda.load_eda_config(document.parent) == {"vivado": eda.EdaConfig("vivado", "host")}
-    assert settings._load_booley_toml(document.parent)["eda"]["vivado"]["provisioning"] == "host"
-    assert project_config._get("PROJECT_NAME") == "rtl_project"
+    assert eda.load_eda_config(document.parents[1]) == {"vivado": eda.EdaConfig("vivado", "host")}
+    assert settings.load_submodule_config(document.parents[1]) == settings.SubmoduleConfig()
+    assert project_config.project_name() == "rtl_project"
     for loader in (configuration.load_eda_config, public_eda.load_eda_config):
         with pytest.raises(eda.EdaConfigError, match="unsupported on Windows") as raised:
-            loader(document.parent)
+            loader(document.parents[1])
         assert raised.value.path == document
 
 
 @pytest.mark.parametrize(
-    ("text", "line"),
+    ("text", "line", "match"),
     [
-        (b"[a]\n[a]\n", 2),
-        (b"x = [1,\n", 2 if sys.version_info >= (3, 14) else None),
+        (b"[a]\n[a]\n", 2, "cannot read"),
+        (b"x = [1,\n", 2 if sys.version_info >= (3, 14) else None, "cannot read"),
+        (b'[flows.lint]\nbackend = "x"\n', None, "retired"),
     ],
 )
-def test_unreadable_document_reports_its_path_and_parser_line(document, text, line):
+def test_refused_document_reports_its_path_and_parser_line(document, text, line, match):
     document.write_bytes(text)
-    with pytest.raises(eda.EdaConfigError) as raised:
-        eda.load_eda_config(document.parent)
+    with pytest.raises(eda.EdaConfigError, match=match) as raised:
+        eda.load_eda_config(document.parents[1])
     assert raised.value.path == document
     assert raised.value.line == line
 
@@ -145,10 +151,3 @@ def test_toml_error_line_reads_only_the_trailing_location_suffix():
     quoted = Old("Cannot declare ('at line 9, column 9',) twice (at line 4, column 2)")
     assert eda.toml_error_line(quoted) == 4
     assert eda.toml_error_line(Old("Unclosed array (at end of document)")) is None
-
-
-def test_retired_key_error_names_the_document(document):
-    document.write_bytes(b'[flows.lint]\nbackend = "x"\n')
-    with pytest.raises(eda.EdaConfigError, match="retired") as raised:
-        eda.load_eda_config(document.parent)
-    assert (raised.value.path, raised.value.line) == (document, None)

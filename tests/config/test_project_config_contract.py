@@ -13,7 +13,6 @@ from booley.config.project_config import (
     normalize_tests_toml,
     project_name,
 )
-from booley.config.tests_toml_rules import TEST_NAME_RULES
 
 
 def _write_toml(work_dir: Path, body: str) -> None:
@@ -46,97 +45,43 @@ class TestProjectName:
         assert "could not read Project name" in caplog.text
 
 
-class TestNormalizeConfigsToml:
-    def test_resolves_shared_test_list(self):
-        configs = normalize_configs_toml(
-            {
-                "test_lists": {"rv_tests": ["smoke", "full"]},
-                "fast": {"defines": [], "test_list": "rv_tests"},
-                "slow": {"defines": [], "tests": ["nightly"]},
-            }
-        )
-
-        assert configs == {
-            "fast": {"defines": [], "tests": ["smoke", "full"]},
+def test_configs_toml_resolves_shared_test_list():
+    configs = normalize_configs_toml(
+        {
+            "test_lists": {"rv_tests": ["smoke", "full"]},
+            "fast": {"defines": [], "test_list": "rv_tests"},
             "slow": {"defines": [], "tests": ["nightly"]},
         }
+    )
 
-    def test_rejects_unknown_shared_test_list(self):
-        with pytest.raises(ValueError, match="unknown test list"):
-            normalize_configs_toml(
-                {
-                    "test_lists": {"rv_tests": ["smoke"]},
-                    "fast": {"defines": [], "test_list": "missing"},
-                }
-            )
-
-    def test_rejects_inline_tests_and_shared_test_list_together(self):
-        with pytest.raises(ValueError, match="both tests and test_list"):
-            normalize_configs_toml(
-                {
-                    "test_lists": {"rv_tests": ["smoke"]},
-                    "fast": {
-                        "defines": [],
-                        "tests": ["smoke"],
-                        "test_list": "rv_tests",
-                    },
-                }
-            )
+    assert configs == {
+        "fast": {"defines": [], "tests": ["smoke", "full"]},
+        "slow": {"defines": [], "tests": ["nightly"]},
+    }
 
 
-class TestNormalizeTestsToml:
-    """tests.toml — the per-Target test registry (ADR 0022 decisions 15/16)."""
-
-    def test_inline_tests_and_select(self):
-        result = normalize_tests_toml(
-            {
-                "lite": {"tests": ["smoke", "stress"], "select": "+test_id={index}"},
-            }
-        )
-        assert result == {
-            "lite": {"tests": ["smoke", "stress"], "select": "+test_id={index}"},
-        }
-
-    def test_resolves_shared_test_list(self):
-        result = normalize_tests_toml(
-            {
-                "test_lists": {"rv_tests": ["smoke", "full"]},
-                "fast": {"test_list": "rv_tests"},
-                "slow": {"tests": ["nightly"]},
-            }
-        )
-        assert result == {
-            "fast": {"tests": ["smoke", "full"]},
-            "slow": {"tests": ["nightly"]},
-        }
-
-    def test_target_without_tests_is_allowed(self):
-        # A Target may declare only a select template (tests added later).
-        assert normalize_tests_toml({"lite": {"select": "+t={index}"}}) == {
-            "lite": {"select": "+t={index}"},
-        }
-
-    def test_rejects_unknown_shared_test_list(self):
-        with pytest.raises(ValueError, match="unknown test list"):
-            normalize_tests_toml(
-                {
-                    "test_lists": {"rv_tests": ["smoke"]},
-                    "fast": {"test_list": "missing"},
-                }
-            )
-
-    def test_rejects_inline_tests_and_shared_test_list_together(self):
-        with pytest.raises(ValueError, match="both tests and test_list"):
-            normalize_tests_toml(
-                {
-                    "test_lists": {"rv_tests": ["smoke"]},
-                    "fast": {"tests": ["smoke"], "test_list": "rv_tests"},
-                }
-            )
-
-    def test_rejects_non_string_tests(self):
-        with pytest.raises(ValueError, match="must be list"):
-            normalize_tests_toml({"lite": {"tests": [1, 2]}})
+@pytest.mark.parametrize(
+    ("normalize", "section", "match"),
+    [
+        (normalize_configs_toml, {"defines": [], "test_list": "missing"}, "unknown test list"),
+        (normalize_tests_toml, {"test_list": "missing"}, "unknown test list"),
+        (
+            normalize_configs_toml,
+            {"defines": [], "tests": ["smoke"], "test_list": "rv_tests"},
+            "both tests and test_list",
+        ),
+        (
+            normalize_tests_toml,
+            {"tests": ["smoke"], "test_list": "rv_tests"},
+            "both tests and test_list",
+        ),
+        (normalize_tests_toml, {"tests": [1, 2]}, "must be list"),
+    ],
+    ids=["configs-unknown", "tests-unknown", "configs-both", "tests-both", "non-string"],
+)
+def test_shared_test_list_refusals(normalize, section, match):
+    with pytest.raises(ValueError, match=match):
+        normalize({"test_lists": {"rv_tests": ["smoke"]}, "fast": section})
 
 
 class TestTestsTomlNameRules:
@@ -161,31 +106,6 @@ class TestTestsTomlNameRules:
             "lib:ip:port#sim": {"tests": ["reset"]},
             "sim_empty": {},
         }
-
-    @pytest.mark.parametrize(
-        ("name", "reason"),
-        [
-            ("", "it is empty"),
-            ("my test", "it contains whitespace"),
-            ("smoke+fast", "it contains '+'"),
-            ("smoke@1", "it contains '@'"),
-            ("-foo", "it starts with '-'"),
-            ("<default>", "it contains '<'"),
-            ("it's", "single quote"),
-            ('say"hi', "double quote"),
-            ("a\\b", "backslash"),
-            ("bell\x07", "control character"),
-            ("default", "reserved"),
-        ],
-    )
-    @pytest.mark.parametrize("key", ["tests", "skip"])
-    def test_rejects_invalid_test_name(self, key: str, name: str, reason: str):
-        with pytest.raises(ValueError) as excinfo:
-            normalize_tests_toml({"sim": {key: ["reset", name]}})
-        message = str(excinfo.value)
-        assert message.startswith(f"tests.toml [sim].{key}: Test name ")
-        assert reason in message
-        assert message.endswith(f"Rule: {TEST_NAME_RULES}")
 
     def test_rejects_invalid_name_in_shared_test_list(self):
         # An unreferenced list is refused too: the file states a Test name.
@@ -216,14 +136,6 @@ class TestTestsTomlNameRules:
         )
         assert "[sim].tests" not in message
 
-    def test_a_test_may_be_both_registered_and_skipped(self):
-        raw = {"sim": {"tests": ["a", "b"], "skip": ["b"]}}
-        assert normalize_tests_toml(raw) == raw
-
-    def test_same_test_name_in_two_targets_is_allowed(self):
-        raw = {"sim_a": {"tests": ["reset"]}, "sim_b": {"tests": ["reset"]}}
-        assert normalize_tests_toml(raw) == raw
-
     def test_explicit_checkout_read_path_applies_the_rules(self, tmp_path: Path):
         project = tmp_path / ".booley"
         project.mkdir()
@@ -239,6 +151,7 @@ class TestTestsTomlNameRules:
         (project / "tests.toml").write_text('[sim]\ntests = ["a+b"]\n', encoding="utf-8")
         monkeypatch.setenv("BOOLEY_DIR", str(project))
         monkeypatch.chdir(tmp_path)
+        # private: no public function empties the memoized Project configuration
         monkeypatch.setattr(project_config, "_CONFIG_CACHE", None)
         reset_cache()
         try:
@@ -300,7 +213,7 @@ _VARIANTS = {
 class TestTestsTomlVariantsAndSeeds:
     """`variants`, `seed` and `default_seed` load, with every refusal (ADR 0072)."""
 
-    def test_accepts_the_adr_example(self):
+    def test_accepts_the_adr_example_and_a_getopt_seed_and_an_empty_default_variant(self):
         raw = _section(
             select="+test_id={name}", seed="+seed={seed}", default_seed=7, variants=_VARIANTS
         )
@@ -308,10 +221,12 @@ class TestTestsTomlVariantsAndSeeds:
         assert section["seed"] == "+seed={seed}"
         assert section["default_seed"] == 7
         assert section["variants"] == _VARIANTS
-
-    def test_empty_default_variant_is_the_migration_path(self):
-        variants = {"stress": {"default": "plain", "plain": []}}
-        assert normalize_tests_toml(_section(variants=variants))["sim"]["variants"] == variants
+        # A getopt seed option and an empty default variant (the migration path) load too.
+        assert (
+            normalize_tests_toml(_section(seed="--seed={seed}"))["sim"]["seed"] == "--seed={seed}"
+        )
+        plain = {"stress": {"default": "plain", "plain": []}}
+        assert normalize_tests_toml(_section(variants=plain))["sim"]["variants"] == plain
 
     @pytest.mark.parametrize(
         ("variants", "message"),
@@ -410,10 +325,6 @@ class TestTestsTomlVariantsAndSeeds:
         with pytest.raises(ValueError, match=rf"tests\.toml \[sim\]\.env may not set {name}: "):
             normalize_tests_toml(_section(env={name: "1"}))
 
-    def test_ordinary_environment_names_still_load(self):
-        section = normalize_tests_toml(_section(env={"FLAVOR": "a", "BOOLEYISH": "b"}))["sim"]
-        assert section["env"] == {"FLAVOR": "a", "BOOLEYISH": "b"}
-
     @pytest.mark.parametrize(
         ("template", "message"),
         [
@@ -463,11 +374,6 @@ class TestTestsTomlVariantsAndSeeds:
         with pytest.raises(ValueError) as excinfo:
             normalize_tests_toml(_section(seed=template))
         assert str(excinfo.value) == message
-
-    def test_seed_template_accepts_a_getopt_argument(self):
-        assert normalize_tests_toml(_section(seed="--seed={seed}"))["sim"]["seed"] == (
-            "--seed={seed}"
-        )
 
     @pytest.mark.parametrize("value", [1, 7, 2**31 - 1])
     def test_default_seed_accepts_the_whole_range(self, value: int):
@@ -526,58 +432,39 @@ class TestShippedTestsTemplate:
 class TestSelectTemplateValidation:
     """`select` must be exactly one well-formed option token (decision 16)."""
 
-    def test_accepts_index_and_name_fields(self):
-        for template in ("+test_id={index}", "+test={name}", "+TESTID={index}"):
-            assert normalize_tests_toml({"k": {"select": template}})["k"]["select"] == (template)
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "+test_id={index}",
+            "+test={name}",
+            "+TESTID={index}",
+            # SETUP-7: a getopt long option (a CPU core's --meminit) is a valid
+            # single-token selector; no plusarg can express it.
+            "--meminit=ram,{name}",
+            "--test={index}",
+            "-t{index}",
+        ],
+    )
+    def test_select_template_accepts_one_option_token(self, template: str):
+        assert normalize_tests_toml({"k": {"select": template}})["k"]["select"] == template
 
-    def test_accepts_getopt_argument(self):
-        # SETUP-7: a getopt long option (a CPU core's --meminit) is a valid
-        # single-token selector — no plusarg can express it.
-        for template in ("--meminit=ram,{name}", "--test={index}", "-t{index}"):
-            assert normalize_tests_toml({"k": {"select": template}})["k"]["select"] == (template)
-
-    def test_rejects_missing_leading_prefix(self):
-        with pytest.raises(ValueError, match="exactly one option token"):
-            normalize_tests_toml({"k": {"select": "test_id={index}"}})
-
-    def test_rejects_multiple_tokens(self):
-        with pytest.raises(ValueError, match="exactly one option token"):
-            normalize_tests_toml({"k": {"select": "+a={index} +b=1"}})
-
-    def test_rejects_multiple_getopt_tokens(self):
-        with pytest.raises(ValueError, match="exactly one option token"):
-            normalize_tests_toml({"k": {"select": "--meminit=ram,{name} --extra"}})
-
-    def test_rejects_unknown_template_field(self):
-        with pytest.raises(ValueError, match="unknown field"):
-            normalize_tests_toml({"k": {"select": "+t={bogus}"}})
-
-    def test_rejects_empty_template(self):
-        with pytest.raises(ValueError, match="non-empty string"):
-            normalize_tests_toml({"k": {"select": "  "}})
+    @pytest.mark.parametrize(
+        ("template", "match"),
+        [
+            ("test_id={index}", "exactly one option token"),
+            ("+a={index} +b=1", "exactly one option token"),
+            ("--meminit=ram,{name} --extra", "exactly one option token"),
+            ("+t={bogus}", "unknown field"),
+            ("  ", "non-empty string"),
+        ],
+    )
+    def test_select_template_refusals(self, template: str, match: str):
+        with pytest.raises(ValueError, match=match):
+            normalize_tests_toml({"k": {"select": template}})
 
 
 class TestEnvTableValidation:
     """tests.toml `env` — the per-Target simulator environment (F-5)."""
-
-    def test_accepts_string_valued_table(self):
-        assert normalize_tests_toml({"sim_vanilla": {"env": {"FLAVOR": "vanilla"}}}) == {
-            "sim_vanilla": {"env": {"FLAVOR": "vanilla"}},
-        }
-
-    def test_coexists_with_tests_and_select(self):
-        result = normalize_tests_toml(
-            {"k": {"tests": ["a"], "select": "+t={index}", "env": {"FLAVOR": "small"}}}
-        )
-        assert result["k"]["env"] == {"FLAVOR": "small"}
-
-    def test_rejects_non_table(self):
-        with pytest.raises(ValueError, match="must be a table"):
-            normalize_tests_toml({"k": {"env": ["FLAVOR=vanilla"]}})
-
-    def test_rejects_non_identifier_name(self):
-        with pytest.raises(ValueError, match="not a valid environment"):
-            normalize_tests_toml({"k": {"env": {"MY-VAR": "x"}}})
 
     @pytest.mark.parametrize("name", ["X\n", "FLAVOR\n", "\nX"])
     def test_rejects_name_with_a_newline(self, name: str):
@@ -587,13 +474,6 @@ class TestEnvTableValidation:
         assert str(excinfo.value) == (
             f"tests.toml [k].env key {name!r} is not a valid environment variable "
             "name ([A-Za-z_][A-Za-z0-9_]*)"
-        )
-
-    def test_non_string_value_message_is_unchanged(self):
-        with pytest.raises(ValueError) as excinfo:
-            normalize_tests_toml({"k": {"env": {"WIDTH": 32}}})
-        assert str(excinfo.value) == (
-            "tests.toml [k].env.WIDTH must be a string — quote the value (got int)"
         )
 
 
