@@ -55,11 +55,7 @@ def runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     # Seat Caps are covered by the admission tests; these tests are about transport.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
-    for name in (
-        "BOOLEY_TICKET_FILE",
-        "BOOLEY_LOGS_DIR",
-        "BOOLEY_RUNTIME_DIR",
-    ):
+    for name in ("BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_RUNTIME_DIR"):
         monkeypatch.delenv(name, raising=False)
     return tmp_path
 
@@ -259,9 +255,7 @@ def test_uninitialized_flow_fails_before_execution(runtime, monkeypatch):
 
 
 def _assert_distinct_artifact_invocations(
-    runtime: Path,
-    cli_artifacts: dict[str, str],
-    mcp_artifacts: dict[str, str],
+    runtime: Path, cli_artifacts: dict[str, str], mcp_artifacts: dict[str, str]
 ) -> None:
     assert mcp_artifacts.keys() == cli_artifacts.keys()
     for name, cli_path in cli_artifacts.items():
@@ -331,9 +325,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     for key in ("flow", "target", "passed", "eda_tool"):
         assert report[key] == cli_report[key]
     _assert_distinct_artifact_invocations(
-        runtime,
-        cli_report["detail"]["artifacts"],
-        report["detail"]["artifacts"],
+        runtime, cli_report["detail"]["artifacts"], report["detail"]["artifacts"]
     )
 
 
@@ -385,10 +377,7 @@ class ProjectEndpoint(BASE):
     assert "timeout_ms" not in schema["properties"]
     result = endpoint.execute_cli(["--target", "demo", "--timeout", "long"])
     assert result.exit_code == 0
-    expected = {
-        "configured": "initialized by the argument hook",
-        "timeout": "long",
-    }
+    expected = {"configured": "initialized by the argument hook", "timeout": "long"}
     if base == "BooleyFlow":
         expected["report_dir"] = str(runtime / "flow-reports")
     else:
@@ -463,10 +452,7 @@ def test_mutation_flow_and_specialist_reports_carry_no_criterion(runtime, monkey
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 
     _report_targets(runtime)
-    classes = {
-        "mutation": MutationFlow,
-        "coverage_analyst": CoverageAnalystSpecialist,
-    }
+    classes = {"mutation": MutationFlow, "coverage_analyst": CoverageAnalystSpecialist}
     endpoint_type = classes[name]
     extras = {
         "mutation": ["--target", "first", "--scope", "rtl"],

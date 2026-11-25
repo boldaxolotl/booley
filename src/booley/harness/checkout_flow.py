@@ -86,11 +86,7 @@ from booley.harness.standalone_job import (
     standalone_jobs_dir,
     standalone_log_path,
 )
-from booley.measurement.environment import (
-    PDK_ROOT_ENV,
-    measurement_environment,
-    write_git_refusal,
-)
+from booley.measurement.environment import PDK_ROOT_ENV, measurement_environment, write_git_refusal
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
 from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
@@ -708,10 +704,7 @@ def _split_unavailable(
 
 
 def _failure_excerpt(
-    timeout_s: float | None,
-    unavailable: Mapping[str, str],
-    report_text: str,
-    log_path: Path,
+    timeout_s: float | None, unavailable: Mapping[str, str], report_text: str, log_path: Path
 ) -> str:
     """Why a run failed or measured nothing, from the Flow's own words, bounded.
 

@@ -472,8 +472,4 @@ def _remove_created(
     return False
 
 
-__all__ = [
-    "StagedInputLedger",
-    "leftover_message",
-    "sweep_cancelled_run_inputs",
-]
+__all__ = ["StagedInputLedger", "leftover_message", "sweep_cancelled_run_inputs"]

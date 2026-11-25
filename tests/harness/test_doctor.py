@@ -19,18 +19,8 @@ from types import SimpleNamespace
 import pytest
 
 from booley import __version__
-from booley.audit import (
-    design_size,
-    eda_environment,
-    host_environment,
-    project_schema,
-)
-from booley.audit.diagnostic_results import (
-    DiagnosticFinding,
-    DiagnosticReport,
-    Findings,
-    Severity,
-)
+from booley.audit import design_size, eda_environment, host_environment, project_schema
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
 from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -64,10 +54,7 @@ from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
-from tests.diagnostic_helpers import (
-    _issued_runtime_state,
-    _Rec,
-)
+from tests.diagnostic_helpers import _issued_runtime_state, _Rec
 from tests.docker_cli_guard import (
     assert_docker_processes_unused,
     forbid_docker_processes,
@@ -154,10 +141,7 @@ name = "unit"
 [agent]
 auth = "subscription"
 """.lstrip().replace("{sandbox_section}", sandbox_section)
-    (booley_dir / "booley.toml").write_text(
-        booley_toml,
-        encoding="utf-8",
-    )
+    (booley_dir / "booley.toml").write_text(booley_toml, encoding="utf-8")
     (booley_dir / "configs.toml").write_text(
         configs_text
         or """
@@ -209,8 +193,7 @@ tests = ["full"]
     )
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "tb.sv").write_text(
-        'module tb; initial $display("[SIM_RESULT] PASSED"); endmodule\n',
-        encoding="utf-8",
+        'module tb; initial $display("[SIM_RESULT] PASSED"); endmodule\n', encoding="utf-8"
     )
     if write_tickets:
         _write_tickets_tree(booley_dir)
@@ -235,18 +218,12 @@ def _seed_sandbox_files(root: Path) -> None:
     dc.write_devcontainer(root, build_spec(dc.APP_NONE, image=doctor.pi.project_image_name(root)))
     info_dir = root / ".git" / "info"
     info_dir.mkdir(parents=True, exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "/.devcontainer\n/.booley\n",
-        encoding="utf-8",
-    )
+    (info_dir / "exclude").write_text("/.devcontainer\n/.booley\n", encoding="utf-8")
 
 
 def _write_skills_home(root: Path) -> Path:
     home = root / "home"
-    (home / ("." + "ag" + "ents") / "skills" / "one").mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    (home / ("." + "ag" + "ents") / "skills" / "one").mkdir(parents=True, exist_ok=True)
     return home
 
 
@@ -317,9 +294,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     monkeypatch.setattr(session_issuance, "validate", lambda *_args: issuance)
     monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
-        doctor.session_runtime,
-        "up_without_recovery",
-        lambda _root: "booley-session-test",
+        doctor.session_runtime, "up_without_recovery", lambda _root: "booley-session-test"
     )
     monkeypatch.setattr(
         doctor.idk,
@@ -405,15 +380,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
         if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
             payload = mcp_payload or {
                 "tools": mcp_tools
-                or [
-                    "synth",
-                    "bwave",
-                    "coverage_analyst",
-                    "lint",
-                    "mutation",
-                    "reviewer",
-                    "sim",
-                ],
+                or ["synth", "bwave", "coverage_analyst", "lint", "mutation", "reviewer", "sim"],
                 "errors": [],
                 "logs_dir": "/work/.booley/job_logs/session",
                 "logs_dir_ok": True,
@@ -514,9 +481,7 @@ def _fixes(result: doctor.DoctorRunResult, text: str) -> list[str]:
 
 
 def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
-    tmp_path,
-    monkeypatch,
-    capsys,
+    tmp_path, monkeypatch, capsys
 ):
     booley_dir = _write_project(tmp_path)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
@@ -585,9 +550,7 @@ def test_plain_doctor_lint_dry_run_judges_the_toplevel(
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
 def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     real_up = session_runtime.up_without_recovery
     booley_dir = _write_project(tmp_path)
@@ -661,8 +624,7 @@ permanent = true
     )
 
     rc = doctor.run_doctor(
-        argparse.Namespace(verbose=False, deep=False, concise=concise),
-        tmp_path,
+        argparse.Namespace(verbose=False, deep=False, concise=concise), tmp_path
     )
 
     assert rc == 0
@@ -690,12 +652,7 @@ def test_doctor_warning_run_does_not_record_freshness_stamp(tmp_path, monkeypatc
 def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     # Missing asic_synthesize in the MCP probe is a hard FAIL (rc 1).
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        mcp_tools=["bwave", "lint", "sim"],
-    )
+    _patch_environment(monkeypatch, tmp_path, booley_dir, mcp_tools=["bwave", "lint", "sim"])
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -704,17 +661,10 @@ def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
 
 
 def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
-    tmp_path,
-    monkeypatch,
-    capsys,
+    tmp_path, monkeypatch, capsys
 ):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
-        monkeypatch,
-        tmp_path,
-        booley_dir,
-        runtime_booley_version="9.9.9",
-    )
+    _patch_environment(monkeypatch, tmp_path, booley_dir, runtime_booley_version="9.9.9")
     monkeypatch.setattr(
         doctor.inspection.idk,
         "compare_issued_build",
@@ -734,11 +684,7 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     assert doctor_stamp.load_stamp(booley_dir) is None
 
 
-def test_doctor_fails_and_does_not_stamp_agent_app_drift(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
+def test_doctor_fails_and_does_not_stamp_agent_app_drift(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
     toml_path = booley_dir / "booley.toml"
     toml_path.write_text(
@@ -786,7 +732,7 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
                     "codex: booley.toml [agent] auth 'auto' is retired; detected: api_key",
                     'set codex = "api_key" under [agent.auth] in booley.toml, '
                     "or re-run booley init",
-                ),
+                )
             ],
         ),
     ],
@@ -1003,9 +949,7 @@ def _write_complete_synth_report(booley_dir: Path, target: str = "synth_fast") -
     measurement as unavailable instead of depending on host memory.
     """
     _write_synth_report(
-        booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports",
-        _COMPLETE_LOGICAL_SYNTH_REPORT,
-        target,
+        booley_dir / doctor.DOCTOR_TMP_DIR / "flow-reports", _COMPLETE_LOGICAL_SYNTH_REPORT, target
     )
 
 
@@ -1239,11 +1183,7 @@ def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
     assert result.deep_status.current is False
 
 
-def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
+def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(tmp_path, monkeypatch, capsys):
     from booley.runtime import agent_config
 
     booley_dir = _write_project(tmp_path)
@@ -1262,8 +1202,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     monkeypatch.setattr(agent_config, "get_backend_config", unexpected_agent_check)
 
     rc = doctor.run_doctor(
-        argparse.Namespace(verbose=False, deep=True, skip_agent_checks=True),
-        tmp_path,
+        argparse.Namespace(verbose=False, deep=True, skip_agent_checks=True), tmp_path
     )
 
     output = capsys.readouterr().out
@@ -1588,8 +1527,7 @@ def _tables_read_by_production_code() -> dict[str, str]:
 # ``[^\n]*`` after the tag: the redirection can carry trailing words
 # (``<<'PYEOF' 2>/dev/null``), which an anchored ``\n`` would miss entirely.
 _SH_PY_HEREDOC_RE = re.compile(
-    r"<<\s*'(?P<tag>\w+)'[^\n]*\n(?P<body>.*?)\n(?P=tag)$",
-    re.DOTALL | re.MULTILINE,
+    r"<<\s*'(?P<tag>\w+)'[^\n]*\n(?P<body>.*?)\n(?P=tag)$", re.DOTALL | re.MULTILINE
 )
 
 
@@ -1745,10 +1683,7 @@ class TestKnownTablesMatchLiveConfig:
 
 
 def test_doctor_uses_configured_sandbox_image(tmp_path, monkeypatch):
-    booley_dir = _write_project(
-        tmp_path,
-        sandbox_image="ibex-booley-sandbox:latest",
-    )
+    booley_dir = _write_project(tmp_path, sandbox_image="ibex-booley-sandbox:latest")
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
@@ -1789,12 +1724,7 @@ def test_doctor_fails_when_job_logs_tracked(tmp_path, monkeypatch, capsys):
 
     def run_with_tracked_logs(cmd, **kwargs):
         if cmd[:4] == ["git", "ls-files", "--", "job_logs"]:
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout="job_logs/session/a0f4\n",
-                stderr="",
-            )
+            return subprocess.CompletedProcess(cmd, 0, stdout="job_logs/session/a0f4\n", stderr="")
         return base_run(cmd, **kwargs)
 
     monkeypatch.setattr(doctor.subprocess, "run", run_with_tracked_logs)
@@ -2456,12 +2386,7 @@ _STALENESS_ROWS = {
         "pass",
         "newer than its Dockerfile",
     ),
-    "custom-no-dockerfile": (
-        {_CUSTOM["image"]: _OLD},
-        _CUSTOM,
-        "silent",
-        "custom sandbox image",
-    ),
+    "custom-no-dockerfile": ({_CUSTOM["image"]: _OLD}, _CUSTOM, "silent", "custom sandbox image"),
     "user-managed": (
         {"base": _NEW, "derived": _OLD, "custom/user-image:latest": _OLD},
         {"image": "custom/user-image:latest"},
@@ -2841,13 +2766,7 @@ class TestWorktreePortability:
 
     @pytest.mark.parametrize(
         "root_policy,data_policy",
-        [
-            ("true", "true"),
-            ("true", "false"),
-            ("true", None),
-            ("false", "true"),
-            (None, "true"),
-        ],
+        [("true", "true"), ("true", "false"), ("true", None), ("false", "true"), (None, "true")],
     )
     def test_runtime_paired_repository_policy(
         self, tmp_path, git_versions, root_policy, data_policy
@@ -2927,8 +2846,7 @@ class TestWorktreePortability:
                 check=True,
             )
             run_bounded_child(
-                ["git", "-C", str(tmp_path), "config", "--worktree", _RELATIVE, "true"],
-                check=True,
+                ["git", "-C", str(tmp_path), "config", "--worktree", _RELATIVE, "true"], check=True
             )
         elif source == "foreign":
             monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
@@ -5402,10 +5320,7 @@ _LINT_ROWS = [
     "  ✓  lint: 'verilator' on the Sandbox PATH",
     "  ✓  lint dry-run [lint_fast] passed",
 ]
-_LINT_VERBOSE_EXCERPT = [
-    "      lint: ok line one",
-    "      … (2 more line(s); see the report dir)",
-]
+_LINT_VERBOSE_EXCERPT = ["      lint: ok line one", "      … (2 more line(s); see the report dir)"]
 
 
 def test_invalid_endpoint_config_is_left_to_the_endpoint_check(tmp_path):

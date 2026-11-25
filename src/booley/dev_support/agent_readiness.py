@@ -177,12 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = run_phase(args)
     except ReadinessUsageError as error:
-        check = Check(
-            "repository.source-marker",
-            Status.BLOCKED,
-            True,
-            str(error)[:240],
-        )
+        check = Check("repository.source-marker", Status.BLOCKED, True, str(error)[:240])
         result = Result(
             args.phase,
             Status.BLOCKED,
@@ -688,10 +683,7 @@ def validate_environment(
 
 def _docker_check(required: bool) -> Check:
     observation = probe_docker(
-        which=shutil.which,
-        run=run_captured_bounded,
-        probe_daemon=required,
-        cwd=Path.cwd(),
+        which=shutil.which, run=run_captured_bounded, probe_daemon=required, cwd=Path.cwd()
     )
     if observation.state is ProbeState.MISSING:
         return Check(
@@ -776,10 +768,7 @@ def _source_check_commands(python: Path, root: Path) -> tuple[Command, ...]:
 
 
 def _verification_commands(
-    python: Path,
-    root: Path,
-    test_profile: str = "python",
-    native_ready: bool = True,
+    python: Path, root: Path, test_profile: str = "python", native_ready: bool = True
 ) -> tuple[Command, ...]:
     common = (str(python), "-m")
     lint = (
@@ -869,12 +858,7 @@ def _broad_pytest_options(root: Path) -> tuple[str, ...]:
     can fill. Windows keeps pytest's default, which ``tests/conftest.py``
     already keeps on the checkout's drive for FuseSoC.
     """
-    options = (
-        "-n",
-        "auto",
-        f"--maxprocesses={_BROAD_PYTEST_MAX_WORKERS}",
-        "--dist=loadscope",
-    )
+    options = ("-n", "auto", f"--maxprocesses={_BROAD_PYTEST_MAX_WORKERS}", "--dist=loadscope")
     if sys.platform == "win32":
         return options
     return (*options, f"--basetemp={pytest_basetemp(root)}")

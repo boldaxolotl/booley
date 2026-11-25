@@ -65,12 +65,7 @@ def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
     surface = resolve_target_compile_surface(handle)
     identities = {path.relative_to(tmp_path).as_posix() for path in surface.authored_paths}
 
-    assert {
-        "rtl/counter.sv",
-        "rtl/counter.svh",
-        "counter.core",
-        "dependency.core",
-    } <= identities
+    assert {"rtl/counter.sv", "rtl/counter.svh", "counter.core", "dependency.core"} <= identities
     assert "rtl/unselected.sv" not in identities
     assert ".booley/worktrees/T-1/rtl/copy.sv" not in identities
     before = project_compile_surface(surface)
@@ -354,8 +349,7 @@ def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) ->
     (tmp_path / ".booley").mkdir()
     marker = tmp_path / "child-started"
     handle = cast(
-        TargetHandle,
-        SimpleNamespace(project_root=tmp_path, identity="acme:lib:demo:1#sim"),
+        TargetHandle, SimpleNamespace(project_root=tmp_path, identity="acme:lib:demo:1#sim")
     )
     script = (
         "import sys\n"
@@ -449,9 +443,7 @@ def icarus_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _write_icarus_recipe(
-    work: Path,
-    scripts: tuple[str, ...] = (_STOCK_SCRIPT,),
-    makefile: str = _ICARUS_MAKEFILE,
+    work: Path, scripts: tuple[str, ...] = (_STOCK_SCRIPT,), makefile: str = _ICARUS_MAKEFILE
 ) -> None:
     for index, text in enumerate(scripts):
         (work / f"demo{index}.scr").write_text(text, encoding="utf-8")

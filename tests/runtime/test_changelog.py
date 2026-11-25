@@ -91,9 +91,7 @@ def test_packaged_changelog_is_byte_identical_to_public_document() -> None:
 
 def test_packaged_changelog_retains_pre_review_release_history() -> None:
     release_range = changelog.releases_between(
-        changelog_path().read_text(encoding="utf-8"),
-        "0.2.6",
-        "0.2.10",
+        changelog_path().read_text(encoding="utf-8"), "0.2.6", "0.2.10"
     )
 
     assert [str(entry.version) for entry in release_range.entries] == [

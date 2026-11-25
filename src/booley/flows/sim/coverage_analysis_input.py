@@ -13,10 +13,7 @@ from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
 from booley.flows.sim.coverage_json import FrozenJson, freeze_coverage_mapping
 from booley.flows.sim.coverage_record import CoverageRecord
-from booley.flows.sim.coverage_record_store import (
-    LoadedCoverageRecord,
-    load_coverage_record,
-)
+from booley.flows.sim.coverage_record_store import LoadedCoverageRecord, load_coverage_record
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
     REFERENCE_SCHEMA,

@@ -18,11 +18,7 @@ from booley.core.project_identity import accepted_project_labels, project_name_i
 from booley.projects.image_keepers import Leftover, LeftoverKind, LeftoverReason, PurgeResult
 from booley.runtime import host_docker
 from booley.runtime.devcontainer import state_volume_names
-from booley.runtime.image_lifecycle import (
-    ImageReference,
-    OwnedImages,
-    cleanup_owned_images,
-)
+from booley.runtime.image_lifecycle import ImageReference, OwnedImages, cleanup_owned_images
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 # Docker prints a missing repository or tag as this placeholder.

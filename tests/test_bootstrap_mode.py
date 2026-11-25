@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from booley.runtime.bootstrap_mode import (
-    BootstrapMode,
-    should_run_outer_bookkeeping,
-)
+from booley.runtime.bootstrap_mode import BootstrapMode, should_run_outer_bookkeeping
 
 # The marker is a strict "1" check: anything else is TOP_LEVEL, which guards against
 # accidental truthy reinterpretation.

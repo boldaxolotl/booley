@@ -70,10 +70,7 @@ from booley.flows.mutation.generator import (
 )
 from booley.flows.mutation.memory_claims import CampaignClaims, MutationInvocation
 from booley.flows.mutation.metrics import mutation_metrics_detail
-from booley.flows.mutation.operators import (
-    MutantGeneratorError,
-    SourceParseError,
-)
+from booley.flows.mutation.operators import MutantGeneratorError, SourceParseError
 from booley.flows.mutation.request import MutationRequest
 from booley.flows.mutation.score import default_min_detected
 from booley.flows.mutation.snippet import detection_snippet, tail, tail_snippet
@@ -112,11 +109,7 @@ from booley.flows.sim.execution.engine import (
     simulation_plusargs,
     target_test_plan,
 )
-from booley.flows.sim.result import (
-    SIM_INFRA_ERROR_PREFIX,
-    has_infra_error,
-    has_simulation_timeout,
-)
+from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error, has_simulation_timeout
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, unstaged_runtime_input_diagnostic
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
@@ -562,10 +555,7 @@ def generate_specs_markdown(specs: list[MutationSpec]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _mutation_source_link(
-    spec: MutationSpec,
-    variant_paths: dict[int, str],
-) -> str:
+def _mutation_source_link(spec: MutationSpec, variant_paths: dict[int, str]) -> str:
     label = f"{spec.file}:{spec.line}"
     path = variant_paths.get(spec.index)
     return f"[{label}]({quote(path, safe='/:._-')})" if path else label
@@ -967,9 +957,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         """Resolve this Target's campaign for *scope*."""
         try:
             return resolve_target_campaign(
-                self.args.target,
-                scope,
-                **self._registered_tests(self.args.target),
+                self.args.target, scope, **self._registered_tests(self.args.target)
             )
         except UnsupportedSimTargetError as exc:
             return _error_outcome("target", str(exc), report_text=str(exc))
@@ -1163,9 +1151,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     # ------------------------------------------------------------------
 
     def _resolve_count(
-        self,
-        scope_files: list[str],
-        work_dir: Path,
+        self, scope_files: list[str], work_dir: Path
     ) -> tuple[int, dict | None, int, bool]:
         """Resolve the mutation count (int | "auto").
 
@@ -1191,7 +1177,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if auto_mode:
             self.emit_progress(
                 f"auto-scaled: {count} Mutants "
-                f"(source-size formula {formula_count}, budget cap {budget_cap})",
+                f"(source-size formula {formula_count}, budget cap {budget_cap})"
             )
         else:
             self.emit_progress(f"target: {count} Mutants")
@@ -1244,8 +1230,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             message = "selected Target does not declare a toplevel"
             return _error_outcome("target", message, report_text=f"mutation: {message}")
         count, source_size_budget, formula_count, auto_mode = self._resolve_count(
-            scope_files,
-            work_dir,
+            scope_files, work_dir
         )
         min_detected = self.args.min_detected
         explicit_min_detected = min_detected is not None
@@ -1277,8 +1262,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _dry_run_preview(self, plan: MutationRunPlan) -> EndpointOutcome:
         """Describe the validated mutation campaign without executing it."""
         budget = plan.source_size_budget or compute_source_size_budget(
-            plan.scope_files,
-            plan.work_dir,
+            plan.scope_files, plan.work_dir
         )
         summary = (
             f"mutation dry-run: target={plan.target}; "
@@ -1293,7 +1277,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if not plan.explicit_min_detected:
             lines.append(
                 "min_detected: default 80% of --count; if fewer Mutants are scored "
-                "than --count, it follows the number scored",
+                "than --count, it follows the number scored"
             )
         lines.append(summary)
         result = self._dry_run_outcome(
@@ -1361,10 +1345,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return None
 
     def _validate_run_inputs(
-        self,
-        target: str,
-        work_dir: Path,
-        scope_files: list[str],
+        self, target: str, work_dir: Path, scope_files: list[str]
     ) -> EndpointOutcome | None:
         if list_error := self._target_list_error(target):
             return list_error
@@ -1585,10 +1566,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             verdict or reason,
             report_text=f"mutation: cannot generate Mutants: {shown}",
             detail=_failure_detail(
-                phase="mutant_generation",
-                reason=shown,
-                specs=[],
-                work_dir=plan.work_dir,
+                phase="mutant_generation", reason=shown, specs=[], work_dir=plan.work_dir
             ),
         )
 
@@ -1607,12 +1585,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return self._baseline_build_error(plan, elab, oom_kill)
 
         cpp, version = self._baseline_verilator_build(plan.work_dir, build_path)
-        runs = self._run_target_test_suite(
-            plan.target,
-            plan.work_dir,
-            build_path,
-            plan.tb_top,
-        )
+        runs = self._run_target_test_suite(plan.target, plan.work_dir, build_path, plan.tb_top)
         output = self._suite_output(runs)
         self._persist_baseline_log(output)
         paths = self._baseline_project_paths()
@@ -1676,10 +1649,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return generated_cpp(generated, build_path, work_dir), version
 
     def _variant_infra_error(
-        self,
-        plan: MutationRunPlan,
-        inputs: RunResultInputs,
-        reason: str,
+        self, plan: MutationRunPlan, inputs: RunResultInputs, reason: str
     ) -> EndpointOutcome:
         """The run has no trustworthy verdict: ``inputs`` holds only the Mutants it kept."""
         detail = _failure_detail(
@@ -1702,11 +1672,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         if artifact_lines:
             report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
         return _error_outcome(
-            "sweep",
-            reason,
-            report_text=report_text,
-            detail=detail,
-            display_lines=artifact_lines,
+            "sweep", reason, report_text=report_text, detail=detail, display_lines=artifact_lines
         )
 
     def _no_scorable_mutants(self, plan: MutationRunPlan, sweep: VariantSweep) -> EndpointOutcome:
@@ -1941,12 +1907,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             )
         return CocotbSimTarget(module=module, eda_tool=eda_tool)
 
-    def target_eda_tool(
-        self,
-        target: str,
-        work_dir: Path,
-        build_path: Path | None = None,
-    ) -> str:
+    def target_eda_tool(self, target: str, work_dir: Path, build_path: Path | None = None) -> str:
         """Return the run-half family for *target*, preferring resolved build metadata."""
         declared = self._declared_sim_tool(target, work_dir)
         marker = build_path / _EDALIZE_EDA_TOOL_MARKER if build_path is not None else None
@@ -1973,12 +1934,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return self._supported_sim_tool(declared, target)
 
     @classmethod
-    def _matching_sim_tool(
-        cls,
-        declared: str | None,
-        configured: str | None,
-        target: str,
-    ) -> str:
+    def _matching_sim_tool(cls, declared: str | None, configured: str | None, target: str) -> str:
         """Authenticate configured simulator metadata against the Target declaration."""
         try:
             family = matching_eda_tool(declared, configured, target=target)
@@ -2081,11 +2037,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             raise UnsupportedSimTargetError(f"mutation: {exc}") from exc
 
     def _default_test_run_launch(
-        self,
-        target: str,
-        work_dir: Path,
-        adapter: str,
-        test_names: tuple[str, ...],
+        self, target: str, work_dir: Path, adapter: str, test_names: tuple[str, ...]
     ) -> tuple[TestRunLaunch, list[str]]:
         """Launch inputs and simulator arguments of *test_names* as default Test Runs.
 
@@ -2299,9 +2251,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                 )
             except (OSError, subprocess.SubprocessError) as exc:
                 return MutationTestRun(
-                    test_name=unit.display_name,
-                    error=str(exc),
-                    requires_cocotb_results=batched,
+                    test_name=unit.display_name, error=str(exc), requires_cocotb_results=batched
                 )
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
@@ -2359,23 +2309,17 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _suite_inconclusive_reason(runs: list[MutationTestRun]) -> str:
         """Reject outcomes that cannot establish pass or fail for every test."""
         for run in runs:
-            verdict = MutationFlow._classify_mutation_run(
-                run,
-                timeout_is_inconclusive=True,
-            )
+            verdict = MutationFlow._classify_mutation_run(run, timeout_is_inconclusive=True)
             if verdict.inconclusive_reason:
                 return verdict.inconclusive_reason
         return ""
 
     @staticmethod
     def _classify_mutation_run(
-        run: MutationTestRun,
-        *,
-        timeout_is_inconclusive: bool,
+        run: MutationTestRun, *, timeout_is_inconclusive: bool
     ) -> VariantSuiteVerdict:
         early = MutationFlow._preclassify_mutation_run(
-            run,
-            timeout_is_inconclusive=timeout_is_inconclusive,
+            run, timeout_is_inconclusive=timeout_is_inconclusive
         )
         if early is not None:
             return early
@@ -2407,9 +2351,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     @staticmethod
     def _preclassify_mutation_run(
-        run: MutationTestRun,
-        *,
-        timeout_is_inconclusive: bool,
+        run: MutationTestRun, *, timeout_is_inconclusive: bool
     ) -> VariantSuiteVerdict | None:
         prefix = f"{run.test_name}: "
         if run.error:
@@ -2433,9 +2375,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     @staticmethod
     def _classify_cocotb_run(
-        test_name: str,
-        returncode: int,
-        parsed: CocotbResults,
+        test_name: str, returncode: int, parsed: CocotbResults
     ) -> VariantSuiteVerdict:
         prefix = f"{test_name}: "
         if parsed.state != STATE_OK:
@@ -2449,10 +2389,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             return VariantSuiteVerdict(
                 inconclusive_reason=prefix + f"no verdict for {', '.join(unresolved)}"
             )
-        failed = next(
-            (test.name for test in parsed.tests if test.status == VERDICT_FAIL),
-            "",
-        )
+        failed = next((test.name for test in parsed.tests if test.status == VERDICT_FAIL), "")
         if failed:
             return VariantSuiteVerdict(detected=True, first_killing_test=failed)
         if returncode != 0:
@@ -2465,11 +2402,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _classify_variant_suite(runs: list[MutationTestRun]) -> VariantSuiteVerdict:
         """Classify one mutant once so status and first-kill evidence cannot drift."""
         verdicts = [
-            MutationFlow._classify_mutation_run(
-                run,
-                timeout_is_inconclusive=False,
-            )
-            for run in runs
+            MutationFlow._classify_mutation_run(run, timeout_is_inconclusive=False) for run in runs
         ]
         reasons = [
             verdict.inconclusive_reason for verdict in verdicts if verdict.inconclusive_reason
@@ -2529,9 +2462,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     def _persist_mutant_log(self, index: int, output: str) -> str:
         """Write one isolated variant's simulator output."""
         return self._persist_capped_log(
-            workspace.mutant_logs_dir() / f"mutant_{index}.log",
-            output,
-            f"mutation {index}",
+            workspace.mutant_logs_dir() / f"mutant_{index}.log", output, f"mutation {index}"
         )
 
     def _persist_baseline_log(self, output: str) -> str:
@@ -2545,10 +2476,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         try:
             make_directories(path.parent)
             path.write_bytes(
-                cap_log_bytes(
-                    output.encode("utf-8", errors="replace"),
-                    _MUTANT_LOG_MAX_BYTES,
-                )
+                cap_log_bytes(output.encode("utf-8", errors="replace"), _MUTANT_LOG_MAX_BYTES)
             )
         except OSError:
             logger.debug("could not persist %s log", label, exc_info=True)
@@ -2570,10 +2498,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             shutil.rmtree(workspace.mutant_logs_dir(), ignore_errors=True)
 
     def _run_variant_sweep(
-        self,
-        plan: MutationRunPlan,
-        generated: GeneratedMutants,
-        baseline: Baseline,
+        self, plan: MutationRunPlan, generated: GeneratedMutants, baseline: Baseline
     ) -> VariantSweep:
         """Build and run candidates in pick order until ``plan.count`` Mutants are kept.
 
@@ -2741,10 +2666,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return sorted(rel for rel, digest in baseline.items() if current[rel] != digest)
 
     def _add_residue_warning(
-        self,
-        result: EndpointOutcome,
-        baseline: Mapping[str, str],
-        work_dir: Path,
+        self, result: EndpointOutcome, baseline: Mapping[str, str], work_dir: Path
     ) -> None:
         """Warn, naming the files, when the run left scope content changed."""
         residue = self._scope_residue(baseline, work_dir)
@@ -2768,11 +2690,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     # Result assembly
     # ------------------------------------------------------------------
 
-    def _build_run_result(
-        self,
-        plan: MutationRunPlan,
-        inputs: RunResultInputs,
-    ) -> EndpointOutcome:
+    def _build_run_result(self, plan: MutationRunPlan, inputs: RunResultInputs) -> EndpointOutcome:
         # Unpack the plan config + run outcome the assembly below reads.
         min_detected, target = plan.min_detected, plan.target
         auto_mode, source_size_budget = plan.auto_mode, plan.source_size_budget
@@ -2827,21 +2745,14 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         )
 
     def _attach_campaign_artifacts(
-        self,
-        plan: MutationRunPlan,
-        inputs: RunResultInputs,
-        detail: dict[str, Any],
+        self, plan: MutationRunPlan, inputs: RunResultInputs, detail: dict[str, Any]
     ) -> None:
         invocation_dir = self.reserve_invocation_dir() if plan.report_dir else None
         if invocation_dir is None:
             variant_root = workspace.variants_dir()
             shutil.rmtree(variant_root, ignore_errors=True)
             variants = inputs.variants.write_variants(variant_root)
-            detail["variant_files"] = self._variant_detail(
-                variants,
-                variant_root,
-                variant_root,
-            )
+            detail["variant_files"] = self._variant_detail(variants, variant_root, variant_root)
             self._attach_campaign_directories(detail, None)
             return
 
@@ -2902,10 +2813,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
 
     @staticmethod
     def _retarget_log_paths(
-        summary: MutationSummary,
-        log_dir: Path | None,
-        campaign_dir: Path,
-        work_dir: Path,
+        summary: MutationSummary, log_dir: Path | None, campaign_dir: Path, work_dir: Path
     ) -> None:
         if log_dir is None:
             return
@@ -2990,28 +2898,19 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         }
 
     def _attach_campaign_directories(
-        self,
-        detail: dict[str, Any],
-        artifact_dir: Path | None,
+        self, detail: dict[str, Any], artifact_dir: Path | None
     ) -> None:
         variants_dir = artifact_dir / "variants" if artifact_dir else workspace.variants_dir()
         mutant_logs = artifact_dir / "mutant-logs" if artifact_dir else workspace.mutant_logs_dir()
         _artifacts.merge_artifacts(
             detail,
             _artifacts.artifacts_block(
-                self.args.work_dir,
-                dirs={
-                    "variants": variants_dir,
-                    "mutant_logs": mutant_logs,
-                },
+                self.args.work_dir, dirs={"variants": variants_dir, "mutant_logs": mutant_logs}
             ),
         )
 
     def _variant_detail(
-        self,
-        variants: dict[int, Path],
-        staging_dir: Path,
-        campaign_dir: Path,
+        self, variants: dict[int, Path], staging_dir: Path, campaign_dir: Path
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for index, path in variants.items():
@@ -3034,10 +2933,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
         return lines
 
     @staticmethod
-    def _format_display_line(
-        plan: MutationRunPlan,
-        inputs: RunResultInputs,
-    ) -> str:
+    def _format_display_line(plan: MutationRunPlan, inputs: RunResultInputs) -> str:
         summary = inputs.summary
         valid_count = summary.detected_count + summary.not_detected_count
         base = f"{summary.detected_count}/{valid_count} detected (need {plan.min_detected})"
@@ -3060,11 +2956,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             f"{verilator})"
         )
 
-    def _format_report_text(
-        self,
-        plan: MutationRunPlan,
-        inputs: RunResultInputs,
-    ) -> str:
+    def _format_report_text(self, plan: MutationRunPlan, inputs: RunResultInputs) -> str:
         summary = inputs.summary
         min_detected = plan.min_detected
         valid_count = summary.detected_count + summary.not_detected_count
@@ -3079,15 +2971,15 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
             lines.append(replaced_line)
         lines.append(
             f"[mutation_test] sim sweep: {len(summary.results)}/{len(summary.specs)} "
-            f"tested              {inputs.tester_elapsed / 60:.0f}m",
+            f"tested              {inputs.tester_elapsed / 60:.0f}m"
         )
         lines.append(
             f"  {summary.detected_count} detected ({summary.detected_timeout_count} timeout), "
-            f"{summary.not_detected_count} not detected",
+            f"{summary.not_detected_count} not detected"
         )
         lines.append(
             f"  detected: {summary.detected_count}/{valid_count} "
-            f"(required: {min_detected}, {source})",
+            f"(required: {min_detected}, {source})"
         )
         if inputs.coverage_gap:
             # Name the diagnosis instead of leaving a bare 0/N to be misread as
@@ -3102,7 +2994,7 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
                     "Either extend the Target's stimulus to exercise the scope, "
                     "run --scope against a Target whose tests drive it, or lower "
                     "--min-detected if a partial score is acceptable.",
-                ],
+                ]
             )
         # Name every survivor (file:line + the code change): the one datum the
         # run exists to produce (QA_REPORT C2.4).
@@ -3278,9 +3170,7 @@ def _snippet(code: str, room: int) -> str:
 
 
 def _mutation_detail(
-    summary: MutationSummary,
-    min_detected: int,
-    requested: int,
+    summary: MutationSummary, min_detected: int, requested: int
 ) -> dict[str, Any]:
     """The tally fields.
 

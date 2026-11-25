@@ -41,12 +41,7 @@ from booley.runtime.platform_paths import (
     same_host_path,
 )
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_apply import (
-    Attachment,
-    apply_steps,
-    image_is_managed,
-    shell_command,
-)
+from booley.runtime.sandbox_apply import Attachment, apply_steps, image_is_managed, shell_command
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -108,11 +103,7 @@ def _run(argv: list[str], *, timeout: int = _DOCKER_TIMEOUT_S) -> subprocess.Com
 
 
 def admit_start(
-    project_root: Path,
-    *,
-    target_name: str,
-    run: Run = _run,
-    now: datetime | None = None,
+    project_root: Path, *, target_name: str, run: Run = _run, now: datetime | None = None
 ) -> None:
     """Admit a slot-consuming start or raise an actionable refusal."""
     root = _canonical_root(project_root)
@@ -128,10 +119,7 @@ def admit_start(
 
 
 def claim_vscode_start(
-    project_root: Path,
-    *,
-    run: Run = _run,
-    now: datetime | None = None,
+    project_root: Path, *, run: Run = _run, now: datetime | None = None
 ) -> bool:
     """Atomically reserve capacity for a later VS Code Docker start."""
     root = _canonical_root(project_root)
@@ -149,10 +137,7 @@ def claim_vscode_start(
         raise AdmissionError(_refusal(policy, live, claims, instant, diagnostics))
     baseline = {item.container_id: _started_token(item) for item in project_sandboxes}
     claim = PendingStartClaim(
-        _SCHEMA_VERSION,
-        root,
-        rfc3339_from_datetime(instant, microseconds=True),
-        baseline,
+        _SCHEMA_VERSION, root, rfc3339_from_datetime(instant, microseconds=True), baseline
     )
     claim_store().write(root, json.dumps(asdict(claim), sort_keys=True))
     return True

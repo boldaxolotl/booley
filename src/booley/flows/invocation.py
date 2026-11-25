@@ -17,13 +17,7 @@ from booley.core.boundary import BoundaryError, require_int
 from booley.targets.flow_names import canonical, config_section
 
 _BUILTIN_TIMEOUT_DEFAULTS_MS: Final[Mapping[str, int]] = MappingProxyType(
-    {
-        "sim": 600_000,
-        "lint": 120_000,
-        "synth": 1_800_000,
-        "fpga": 7_200_000,
-        "mutation": 1_800_000,
-    }
+    {"sim": 600_000, "lint": 120_000, "synth": 1_800_000, "fpga": 7_200_000, "mutation": 1_800_000}
 )
 
 
@@ -36,11 +30,7 @@ def default_timeout_ms(flow_name: str) -> int:
         raise BoundaryError(f"{flow_name!r} is not a built-in Flow") from exc
 
 
-def resolve_timeout_ms(
-    flow_name: str,
-    work_dir: Path | None,
-    requested: Any,
-) -> int:
+def resolve_timeout_ms(flow_name: str, work_dir: Path | None, requested: Any) -> int:
     """Resolve a built-in Flow timeout using call > config > default precedence.
 
     CLI values have already crossed the argparse boundary, but callers at the
@@ -61,8 +51,7 @@ def resolve_timeout_ms(
             timeout_ms = default_timeout_ms(flow_name)
         else:
             timeout_ms = require_int(
-                section[field],
-                field=f"[flows.{canonical(flow_name)}].{field}",
+                section[field], field=f"[flows.{canonical(flow_name)}].{field}"
             )
     if timeout_ms <= 0:
         source = field if requested is not None else f"[flows.{canonical(flow_name)}].{field}"

@@ -276,10 +276,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _ = in_tree_repository(tmp_path / "repo")
-    write(
-        repo / ".booley" / "metrics.toml",
-        SYNTH + "area_kge_max = 60\ncell_count_max = 100\n",
-    )
+    write(repo / ".booley" / "metrics.toml", SYNTH + "area_kge_max = 60\ncell_count_max = 100\n")
     commit_all(repo, "rules")
     git(repo, "checkout", "-q", "-b", "feature")
     write(

@@ -120,10 +120,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     )
     with pytest.raises(session_admission.AdmissionError) as caught:
         session_admission.admit_start(
-            current,
-            target_name="new",
-            run=run,
-            now=datetime(2026, 9, 27, 10, 0, tzinfo=UTC),
+            current, target_name="new", run=run, now=datetime(2026, 9, 27, 10, 0, tzinfo=UTC)
         )
 
     message = str(caught.value)
@@ -272,23 +269,13 @@ def test_inventory_failure_refuses_instead_of_assuming_empty(tmp_path: Path) -> 
         session_admission.admit_start(project, target_name="headless", run=run)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("Name", 7), ("StartedAt", "0001-01-01T00:00:00Z")],
-)
+@pytest.mark.parametrize(("field", "value"), [("Name", 7), ("StartedAt", "0001-01-01T00:00:00Z")])
 def test_malformed_live_inspection_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    field: str,
-    value: object,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str, value: object
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    document = _vscode_inspection(
-        project,
-        running=True,
-        started="2026-09-27T08:00:00Z",
-    )
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
     if field == "StartedAt":
         document["State"][field] = value
     else:
@@ -301,9 +288,7 @@ def test_malformed_live_inspection_fails_closed(
 
     with pytest.raises(session_admission.AdmissionError, match="incomplete inspection"):
         session_admission.admit_start(
-            project,
-            target_name="headless",
-            run=_Docker({"editor-id": document}),
+            project, target_name="headless", run=_Docker({"editor-id": document})
         )
 
 
@@ -349,9 +334,7 @@ def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
     )
 
     assert session_admission.claim_vscode_start(
-        project,
-        run=docker,
-        now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC),
+        project, run=docker, now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC)
     )
     assert session_admission.has_pending_claim(project, run=docker)
 
@@ -389,10 +372,7 @@ def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(tmp_path: Pat
     docker = _Docker(
         {
             "editor-id": _vscode_inspection(
-                project,
-                running=True,
-                started="2026-09-27T08:00:00Z",
-                project_id="wrong",
+                project, running=True, started="2026-09-27T08:00:00Z", project_id="wrong"
             )
         }
     )
@@ -739,10 +719,7 @@ def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     run, inspected = _listing_only_docker(
-        [
-            "reaper-id\tbooley-reaper\t\t\treaper",
-            "proxy-id\tbooley-proxy\t\t\tegress-proxy",
-        ]
+        ["reaper-id\tbooley-reaper\t\t\treaper", "proxy-id\tbooley-proxy\t\t\tegress-proxy"]
     )
 
     assert session_admission.running_project_sandboxes(project, run=run) == ()
@@ -874,9 +851,7 @@ def test_project_inventory_classifies_unproven_relay_from_one_inspect(tmp_path: 
     assert inspected == ["hinted-id"]
 
 
-def test_project_inventory_refuses_relay_hinted_row_with_malformed_mounts(
-    tmp_path: Path,
-) -> None:
+def test_project_inventory_refuses_relay_hinted_row_with_malformed_mounts(tmp_path: Path) -> None:
     """A relay-hinted row whose `Mounts` is malformed is refused, never skipped."""
     project = tmp_path / "project"
     project.mkdir()

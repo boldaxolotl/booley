@@ -513,11 +513,7 @@ def _rollback_creation(
 
 
 def _undo_creation(
-    root: Path,
-    worktree: Path,
-    name: str,
-    paired_source: Path | None,
-    new_branch: NewBranch | None,
+    root: Path, worktree: Path, name: str, paired_source: Path | None, new_branch: NewBranch | None
 ) -> None:
     if paired_source is not None:
         rollback_project_pairing(paired_source, worktree, name)

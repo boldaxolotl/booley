@@ -80,8 +80,7 @@ def install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
         if "output" in state:
             build = Path(state["recipe"].resolved.build_root).resolve()
             output = state["output"].format(
-                build=build.as_posix(),
-                rel=Path(os.path.relpath(build, work_root)).as_posix(),
+                build=build.as_posix(), rel=Path(os.path.relpath(build, work_root)).as_posix()
             )
         return [
             sys.executable,

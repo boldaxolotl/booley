@@ -52,8 +52,7 @@ def test_policy_probe_accepts_complete_policy(tmp_path: Path) -> None:
     claude_path = tmp_path / web_isolation.CLAUDE_POLICY
     claude_path.parent.mkdir(parents=True)
     claude_path.write_text(
-        json.dumps({"permissions": {"deny": ["WebFetch", "WebSearch"]}}),
-        encoding="utf-8",
+        json.dumps({"permissions": {"deny": ["WebFetch", "WebSearch"]}}), encoding="utf-8"
     )
 
     assert web_isolation.policy_error(tmp_path) is None
@@ -73,10 +72,7 @@ def test_policy_probe_rejects_each_missing_boundary(tmp_path: Path) -> None:
 
 def test_claude_backend_always_denies_provider_web_tools(tmp_path: Path) -> None:
     params = AgentCallParams(
-        prompt="p",
-        model="m",
-        cwd=tmp_path,
-        disallowed_agent_capabilities=["Bash"],
+        prompt="p", model="m", cwd=tmp_path, disallowed_agent_capabilities=["Bash"]
     )
 
     options = _claude_backend._build_sdk_options(params)

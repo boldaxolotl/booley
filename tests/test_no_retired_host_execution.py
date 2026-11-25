@@ -23,13 +23,7 @@ _FORBIDDEN_SYMBOLS = (
     "kill_zombie_flow_processes",
     "legacy_backend",
 )
-_FORBIDDEN_FUNCTIONS = {
-    "do_run",
-    "run_openroad_timing",
-    "run_opensta",
-    "run_sv2v",
-    "run_yosys",
-}
+_FORBIDDEN_FUNCTIONS = {"do_run", "run_openroad_timing", "run_opensta", "run_sv2v", "run_yosys"}
 
 
 def test_retired_host_execution_files_are_absent() -> None:

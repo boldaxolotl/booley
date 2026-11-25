@@ -53,12 +53,7 @@ def provider_exception_message(exc: Exception) -> str:
     return bounded_exception_message(exc)
 
 
-def log_exception(
-    target: logging.Logger,
-    exc: Exception,
-    *,
-    summary: str,
-) -> str:
+def log_exception(target: logging.Logger, exc: Exception, *, summary: str) -> str:
     """Log one bounded ordinary summary plus one DEBUG traceback."""
     message = bounded_exception_message(exc)
     target.error("%s: %s", summary, message)
@@ -155,9 +150,7 @@ def with_diagnostic(text: str, diagnostic_path: Path | None) -> str:
 
 
 def exception_report_text(
-    endpoint_name: str,
-    exc: Exception,
-    diagnostic_path: Path | None = None,
+    endpoint_name: str, exc: Exception, diagnostic_path: Path | None = None
 ) -> str:
     """Build the stable human-facing failure surface for an unexpected exception."""
     text = f"{endpoint_name} failed: {type(exc).__name__}: {bounded_exception_message(exc)}"

@@ -74,8 +74,7 @@ def load_git_identity(booley_dir: Path) -> GitIdentity:
     agent = _table(data.get("agent", {}), "[agent]")
     git = _table(agent.get("git", {}), "[agent.git]")
     return GitIdentity(
-        _identity_field(git, "name", _DEFAULT_NAME),
-        _identity_field(git, "email", _DEFAULT_EMAIL),
+        _identity_field(git, "name", _DEFAULT_NAME), _identity_field(git, "email", _DEFAULT_EMAIL)
     )
 
 

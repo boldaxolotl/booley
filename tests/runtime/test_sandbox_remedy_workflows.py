@@ -133,8 +133,7 @@ def test_sandbox_remedy_unknown_owner_when_both_kinds_exist(host: SimpleNamespac
 
 
 @pytest.mark.parametrize(
-    ("owner", "expected"),
-    [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)],
+    ("owner", "expected"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)]
 )
 def test_corrupt_stamp_keeps_headless_reseed_and_vscode_init(
     host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, owner: str, expected: str
@@ -150,8 +149,7 @@ def test_corrupt_stamp_keeps_headless_reseed_and_vscode_init(
 
 
 @pytest.mark.parametrize(
-    ("owner", "expected"),
-    [("vscode", VSCODE_INIT), ("headless", HEADLESS_REFRESH)],
+    ("owner", "expected"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_REFRESH)]
 )
 def test_withdrawn_stamp_is_what_refresh_repairs(
     host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, owner: str, expected: str
@@ -167,8 +165,7 @@ def test_withdrawn_stamp_is_what_refresh_repairs(
 
 
 @pytest.mark.parametrize(
-    ("owner", "steps"),
-    [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)],
+    ("owner", "steps"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)]
 )
 def test_misnamed_stamp_starts_with_removing_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str, steps: str

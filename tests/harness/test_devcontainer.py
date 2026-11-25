@@ -130,10 +130,7 @@ class TestBuildSpec:
         )
 
     def test_custom_booley_dir_source(self):
-        spec = build_spec(
-            dc.APP_NONE,
-            booley_dir_source="/host/proj/.booley",
-        )
+        spec = build_spec(dc.APP_NONE, booley_dir_source="/host/proj/.booley")
         assert spec["mounts"][0] == (
             f"source=/host/proj/.booley,target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
@@ -151,8 +148,7 @@ class TestBuildSpec:
 
     def test_fixed_container_env_is_literal_host_policy(self):
         spec = build_spec(
-            dc.APP_NONE,
-            fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
+            dc.APP_NONE, fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"}
         )
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
@@ -206,11 +202,7 @@ class TestBuildSpec:
         # .booley is visible TWICE (via /work and /booley), so
         # a subtree under it must be masked in both views or the bytes remain
         # readable through the second mount.
-        spec = build_spec(
-            dc.APP_NONE,
-            mask_paths=[".booley/oracle"],
-            mask_source="/empty",
-        )
+        spec = build_spec(dc.APP_NONE, mask_paths=[".booley/oracle"], mask_source="/empty")
         assert (
             f"source=/empty,target={dc.WORK_DIR}/.booley/oracle,type=bind,readonly"
             in spec["mounts"]
@@ -225,9 +217,7 @@ class TestBuildSpec:
         # workspaceMount first, then `mounts` in order, so a mask listed
         # BEFORE the project-dir mount would be buried by it.
         spec = build_spec(
-            dc.APP_CLAUDE,
-            mask_paths=[".booley/oracle", "lanes/b"],
-            mask_source="/empty",
+            dc.APP_CLAUDE, mask_paths=[".booley/oracle", "lanes/b"], mask_source="/empty"
         )
         mounts = spec["mounts"]
         project_idx = mounts.index(
@@ -243,11 +233,7 @@ class TestBuildSpec:
         # Trailing slashes / "." segments must not leak into mount targets —
         # docker would treat "target=/work/x/" and "target=/work/x" as
         # different strings even though they name the same path.
-        spec = build_spec(
-            dc.APP_NONE,
-            mask_paths=["a/./b/", "c//d"],
-            mask_source="/empty",
-        )
+        spec = build_spec(dc.APP_NONE, mask_paths=["a/./b/", "c//d"], mask_source="/empty")
         assert f"source=/empty,target={dc.WORK_DIR}/a/b,type=bind,readonly" in spec["mounts"]
         assert f"source=/empty,target={dc.WORK_DIR}/c/d,type=bind,readonly" in spec["mounts"]
 
@@ -406,10 +392,7 @@ class TestAuthMount:
         # Claude's creds are bound read-only at the sidecar SEED path (outside
         # ~/.claude/) — never directly onto the real file — so the in-container
         # refresh can rewrite the writable copy without hitting an RO mount.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            login_source="/home/u/.claude/.credentials.json",
-        )
+        spec = build_spec(dc.APP_CLAUDE, login_source="/home/u/.claude/.credentials.json")
         auth = spec["mounts"][1]
         assert "source=/home/u/.claude/.credentials.json" in auth
         assert f"target={dc.AGENT_HOME}/.claude-creds-seed.json" in auth
@@ -439,10 +422,7 @@ class TestAuthMount:
         # refresh. A read-only bind on that path makes the refresh write fail and
         # 401s the session, so Codex gets the same sidecar-seed + writable-copy
         # treatment as Claude.
-        spec = build_spec(
-            dc.APP_CODEX,
-            login_source="/home/u/.codex/auth.json",
-        )
+        spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
         auth_mount = spec["mounts"][1]
         assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in auth_mount
         assert auth_mount.endswith(",readonly")  # the SEED is read-only, not the target
@@ -463,10 +443,7 @@ class TestAuthMount:
     def test_no_auth_for_app_none(self):
         # "none" has no auth target and no persistent state dir, so only the
         # project-dir mount remains.
-        spec = build_spec(
-            dc.APP_NONE,
-            login_source="/whatever",
-        )
+        spec = build_spec(dc.APP_NONE, login_source="/whatever")
         assert len(spec["mounts"]) == 1
 
 
@@ -480,10 +457,7 @@ class TestTokenSeedMount:
     """
 
     def test_claude_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            token_source="/home/u/.config/booley/claude-oauth-token",
-        )
+        spec = build_spec(dc.APP_CLAUDE, token_source="/home/u/.config/booley/claude-oauth-token")
         seed = next(m for m in spec["mounts"] if "oauth-token-seed" in m)
         assert "source=/home/u/.config/booley/claude-oauth-token" in seed
         assert f"target={dc.AGENT_HOME}/.booley-oauth-token-seed" in seed
@@ -493,10 +467,7 @@ class TestTokenSeedMount:
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
     def test_codex_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = build_spec(
-            dc.APP_CODEX,
-            token_source="/home/u/.config/booley/openai-api-key",
-        )
+        spec = build_spec(dc.APP_CODEX, token_source="/home/u/.config/booley/openai-api-key")
         seed = next(m for m in spec["mounts"] if "api-key-seed" in m)
         assert f"target={dc.AGENT_HOME}/.booley-api-key-seed" in seed
         assert seed.endswith(",readonly")
@@ -544,10 +515,7 @@ class TestStateVolume:
         # The seed must be a SIBLING of ~/.codex, never nested under it: the state
         # volume owns that dir and would shadow a seed placed inside it, leaving
         # the copy with nothing to copy from.
-        spec = build_spec(
-            dc.APP_CODEX,
-            login_source="/home/u/.codex/auth.json",
-        )
+        spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
         seed_mount = spec["mounts"][1]
         assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in seed_mount
         assert f"target={dc.AGENT_HOME}/.codex/" not in seed_mount
@@ -556,10 +524,7 @@ class TestStateVolume:
     def test_claude_creds_seed_sits_outside_state_dir(self):
         # The Claude creds seed must be a sibling of ~/.claude, not nested under
         # it, else the state volume would shadow it.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            login_source="/home/u/.claude/.credentials.json",
-        )
+        spec = build_spec(dc.APP_CLAUDE, login_source="/home/u/.claude/.credentials.json")
         seed = next(m for m in spec["mounts"] if "claude-creds-seed" in m)
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
@@ -646,11 +611,7 @@ class TestConfigSeed:
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the
         # host-derived config, not an empty one.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            config_source=self._SRC,
-            mcp_start_command=self._MCP,
-        )
+        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC, mcp_start_command=self._MCP)
         pc = spec["postCreateCommand"]
         assert pc.index("cp -n") < pc.index(self._MCP)
         assert f"{dc.AGENT_HOME}/.claude-config-seed.json" in pc
@@ -702,8 +663,7 @@ class TestMcpStartCommand:
         # postCreateCommand registers before the first session (avoids the race);
         # postStartCommand repeats it on resume/rebuild.
         spec = build_spec(
-            dc.APP_NONE,
-            mcp_start_command="python -m booley.harness.incontainer_register",
+            dc.APP_NONE, mcp_start_command="python -m booley.harness.incontainer_register"
         )
         expected = f"{dc.git_identity_command()} && python -m booley.harness.incontainer_register"
         assert spec["postCreateCommand"] == expected

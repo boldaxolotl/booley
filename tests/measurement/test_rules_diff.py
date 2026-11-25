@@ -464,9 +464,7 @@ def test_versioned_booley_directory_loosened_rule_and_protected_edit(tmp_path: P
         assert edits == (".booley/booley.toml", ".booley/metrics.toml"), layout
 
 
-def test_versioned_booley_directory_without_default_branch_reports_no_base(
-    tmp_path: Path,
-) -> None:
+def test_versioned_booley_directory_without_default_branch_reports_no_base(tmp_path: Path) -> None:
     from booley.measurement.protected_set import protected_set
     from booley.measurement.rules_diff import header_amber, paired_protected_edits, rules_diff
     from booley.measurement.run_key import resolve_measurement_key

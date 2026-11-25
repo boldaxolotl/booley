@@ -60,11 +60,7 @@ from .planning import (
 )
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
-from .run_directory import (
-    expand_run_directory,
-    literal_run_path,
-    require_literal_run_directory,
-)
+from .run_directory import expand_run_directory, literal_run_path, require_literal_run_directory
 from .scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt, work_item_label
 from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
@@ -84,9 +80,7 @@ class SimulationRecordPolicy:
 
 
 def simulation_options_from_policy(
-    policy: SimulationRecordPolicy,
-    *,
-    trace: bool,
+    policy: SimulationRecordPolicy, *, trace: bool
 ) -> SimulationOptions:
     """Translate one invocation policy into leaf Simulation options."""
     return SimulationOptions(
@@ -699,12 +693,7 @@ class SimulationRecord:
             )
         executor.prepare_attempt(
             self._work_execution_request(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_execution_id,
+                store, manifest, attempt, invocation, request, child_execution_id
             )
         )
 
@@ -811,13 +800,7 @@ class SimulationRecord:
         return settled
 
     def _work_execution_request(
-        self,
-        store,
-        manifest,
-        attempt,
-        invocation,
-        request,
-        child_execution_id,
+        self, store, manifest, attempt, invocation, request, child_execution_id
     ) -> WorkExecutionRequest:
         binding = (
             request.validated.binding_for(manifest)
@@ -976,9 +959,7 @@ def _outcome(
 
 
 def _recovery_status(
-    manifest_path: Path,
-    manifest_sha256: str,
-    recovery: SimulationRecordRecovery,
+    manifest_path: Path, manifest_sha256: str, recovery: SimulationRecordRecovery
 ) -> SimulationRecordRecoveryStatus:
     return SimulationRecordRecoveryStatus(
         manifest_path=manifest_path,
@@ -1211,8 +1192,7 @@ def _prerequisite_simulation_record(
 
 
 def _prerequisite_facts(
-    owner_store: SimulationRecordStore,
-    manifest: SimulationRecordManifest,
+    owner_store: SimulationRecordStore, manifest: SimulationRecordManifest
 ) -> list[dict[str, object]]:
     facts: list[dict[str, object]] = []
     entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
@@ -1268,9 +1248,7 @@ def _baseline_test_run_facts(run: Mapping[str, object]) -> dict[str, object]:
 
 
 def _authenticate_prerequisite_manifest(
-    store: SimulationRecordStore,
-    entry: Mapping[str, object],
-    reference: Mapping[str, object],
+    store: SimulationRecordStore, entry: Mapping[str, object], reference: Mapping[str, object]
 ) -> tuple[SimulationRecordManifest, str, Mapping[str, object]]:
     linked = store.load_manifest()
     if manifest_digest(linked) != reference["sha256"]:
@@ -1308,8 +1286,7 @@ def _selected_prerequisite_result(
     recovery: SimulationRecordRecovery, entry: Mapping[str, object]
 ) -> tuple[str, SimulationResult]:
     selected = next(
-        (item for item in recovery.items if item.work_item_id == entry["work_item_id"]),
-        None,
+        (item for item in recovery.items if item.work_item_id == entry["work_item_id"]), None
     )
     if selected is None or selected.result is None:
         raise SimulationRecordIntegrityError("Cycle Count prerequisite result is unavailable")

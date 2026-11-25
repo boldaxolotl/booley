@@ -96,9 +96,7 @@ def _recipes(package: Path) -> None:
 def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
     first = SandboxHostPolicy(600, 2, ("example.com",))
     same = SandboxHostPolicy(
-        idle_timeout_seconds=600,
-        max_sessions=2,
-        egress_allowlist=("example.com",),
+        idle_timeout_seconds=600, max_sessions=2, egress_allowlist=("example.com",)
     )
     changed = SandboxHostPolicy(600, 3, ("example.com",))
     assert sidecars.policy_fingerprint(first) == sidecars.policy_fingerprint(same)
@@ -480,10 +478,7 @@ _FAILURES = {
         stopped_session=True,
     ),
     "session-without-project": _Failure(
-        "reaper",
-        "cannot identify owning Project",
-        damage="stale-reaper",
-        unowned_session=True,
+        "reaper", "cannot identify owning Project", damage="stale-reaper", unowned_session=True
     ),
     "proxy-remove-fails": _Failure(
         "network",

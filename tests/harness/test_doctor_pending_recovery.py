@@ -10,12 +10,7 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.harness import doctor
 from booley.runtime import issuance_invalidation, session_issuance, session_runtime
-from tests.harness.test_doctor import (
-    _doctor_run,
-    _messages,
-    _patch_environment,
-    _write_project,
-)
+from tests.harness.test_doctor import _doctor_run, _messages, _patch_environment, _write_project
 
 
 @pytest.mark.parametrize("pending_for", ["this-project", "another-project"])

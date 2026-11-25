@@ -149,11 +149,7 @@ def test_review_runs_needed_reviews_in_the_export_and_keeps_every_run(
     rtl, tb = run["reviews"]
     assert (rtl["role"], rtl["focus"], rtl["outcome"]) == ("rtl", "code_style", "pass")
     assert rtl["targets"] == [
-        {
-            "target": SIM_CORE_ID,
-            "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"],
-            "needed": True,
-        },
+        {"target": SIM_CORE_ID, "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"], "needed": True},
         {
             "target": "::sim_core:0#sim_fifo",
             "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"],

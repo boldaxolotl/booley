@@ -46,8 +46,7 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     project = root / ".booley"
     (project / "hooks").mkdir(parents=True)
     (project / "hooks" / "post-setup.sh").write_text(
-        "#!/bin/sh\nprintf 'firmware\\n' > generated.hex\n",
-        encoding="utf-8",
+        "#!/bin/sh\nprintf 'firmware\\n' > generated.hex\n", encoding="utf-8"
     )
     _git(root, "add", "-A")
     _git(root, "commit", "-m", "initial")

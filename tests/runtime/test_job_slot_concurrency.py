@@ -38,20 +38,11 @@ def test_job_slot_import_does_not_require_fusesoc_api(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def _hold_single_slot(
-    root: str,
-    start: Any,
-    active: Any,
-    maximum: Any,
-    counter_lock: Any,
-) -> None:
+def _hold_single_slot(root: str, start: Any, active: Any, maximum: Any, counter_lock: Any) -> None:
     store = job_slots.SlotStore(Path(root))
     start.wait(timeout=hang_guard_s())
     token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=os.getpid(),
-        poll_interval=0.005,
-        memory=_RUN_ALONE,
+        job_slots.CLASS_MEMORY, pid=os.getpid(), poll_interval=0.005, memory=_RUN_ALONE
     )
     try:
         with counter_lock:
@@ -72,8 +63,7 @@ def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
     counter_lock = ctx.Lock()
     workers = [
         ctx.Process(
-            target=_hold_single_slot,
-            args=(str(tmp_path), start, active, maximum, counter_lock),
+            target=_hold_single_slot, args=(str(tmp_path), start, active, maximum, counter_lock)
         )
         for _ in range(4)
     ]
@@ -103,16 +93,10 @@ def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
     gate.write_text("987654321\n", encoding="utf-8")
     old = time.time() - job_slots._UNREADABLE_REAP_AGE_SECONDS - 1
     os.utime(gate, (old, old))
-    store = job_slots.SlotStore(
-        tmp_path,
-        is_pid_alive=lambda pid: pid == os.getpid(),
-    )
+    store = job_slots.SlotStore(tmp_path, is_pid_alive=lambda pid: pid == os.getpid())
 
     token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=os.getpid(),
-        poll_interval=0.005,
-        memory=_RUN_ALONE,
+        job_slots.CLASS_MEMORY, pid=os.getpid(), poll_interval=0.005, memory=_RUN_ALONE
     )
     try:
         assert token.is_holder

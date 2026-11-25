@@ -106,9 +106,7 @@ def _read_result(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     )
 
 
-def _import_file_safe(
-    py_path: Path,
-) -> tuple[object | None, str | None]:
+def _import_file_safe(py_path: Path) -> tuple[object | None, str | None]:
     """Import a Python file as a module. Returns (module, None) or (None, error_msg)."""
     import importlib.util
     import traceback
@@ -116,8 +114,7 @@ def _import_file_safe(
     module_name = py_path.stem
     try:
         spec = importlib.util.spec_from_file_location(
-            f"booley_custom_mcp_tools.{module_name}",
-            py_path,
+            f"booley_custom_mcp_tools.{module_name}", py_path
         )
         if spec is None or spec.loader is None:
             return None, f"Could not create module spec for {py_path}"
@@ -134,9 +131,7 @@ def _import_file_safe(
         return None, msg
 
 
-def _import_and_extract_file(
-    py_path: Path,
-) -> tuple[dict[str, Any] | None, str | None]:
+def _import_and_extract_file(py_path: Path) -> tuple[dict[str, Any] | None, str | None]:
     """Import a custom MCP tool from a file path and extract its schema."""
     mod, err = _import_file_safe(py_path)
     if err is not None:

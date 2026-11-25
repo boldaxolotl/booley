@@ -249,10 +249,7 @@ class TestCollectAndReap:
 
     def test_licensed_vscode_session_removes_container_relay_then_networks(self):
         project_id = "b" * 64
-        labels = {
-            reaper.LICENSE_LABEL: "site-a",
-            reaper.PROJECT_LABEL: project_id,
-        }
+        labels = {reaper.LICENSE_LABEL: "site-a", reaper.PROJECT_LABEL: project_id}
         run = FakeRun(
             [
                 (lambda a: a[0] == "ps", _cp(0, stdout="abc\tvscode-devcontainer\n")),
@@ -264,10 +261,7 @@ class TestCollectAndReap:
                     lambda a: a[0] == "inspect" and ".Config.Labels" in a[-1],
                     _cp(0, stdout=json.dumps(labels)),
                 ),
-                (
-                    lambda a: a[0] == "exec",
-                    _cp(0, stdout=f"{reaper._HEARTBEAT_MISSING}\n"),
-                ),
+                (lambda a: a[0] == "exec", _cp(0, stdout=f"{reaper._HEARTBEAT_MISSING}\n")),
             ]
         )
 

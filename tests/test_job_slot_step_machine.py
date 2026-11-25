@@ -590,10 +590,7 @@ def _plant_entry_without_token(machine: JobSlotStepMachine) -> None:
 
 
 def test_checks_run_after_every_step(build_machine: Callable[[], JobSlotStepMachine]) -> None:
-    for invariant_name, plant in (
-        ("I1", _plant_third_holder),
-        ("I4", _plant_entry_without_token),
-    ):
+    for invariant_name, plant in (("I1", _plant_third_holder), ("I4", _plant_entry_without_token)):
         machine = build_machine()
         reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
         plant(machine)

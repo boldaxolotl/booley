@@ -170,10 +170,7 @@ def test_demo_evidence_names_candidate_digest_and_base_source(tmp_path: Path) ->
 def test_stable_base_changes_run_demo_on_a_source_built_base() -> None:
     root = Path(__file__).parents[2]
     patterns = _workflow_events()["pull_request"]["paths"]
-    inputs = (
-        *stable_base_inputs(root),
-        "src/booley/data/docker/stable-base-inputs.txt",
-    )
+    inputs = (*stable_base_inputs(root), "src/booley/data/docker/stable-base-inputs.txt")
     unmatched = [
         path for path in inputs if not any(_glob_matches(pattern, path) for pattern in patterns)
     ]
@@ -272,11 +269,7 @@ def test_measurement_evidence_is_mounted_and_retained() -> None:
 @pytest.mark.parametrize(
     "path,producer_name,upload_name",
     [
-        (
-            WORKFLOW,
-            "Run measurement round trip on the public demo",
-            "Retain measurement evidence",
-        ),
+        (WORKFLOW, "Run measurement round trip on the public demo", "Retain measurement evidence"),
         (TEST_WORKFLOW, "Run RISC-V candidate image contract", "Upload measurement evidence"),
     ],
 )
@@ -521,10 +514,7 @@ _INVALID_CONTRACT_CASES = [
         id="project-revision",
     ),
     pytest.param(
-        (
-            "https://example.invalid/toolchain.tar.gz",
-            "http://example.invalid/toolchain.tar.gz",
-        ),
+        ("https://example.invalid/toolchain.tar.gz", "http://example.invalid/toolchain.tar.gz"),
         "toolchain_url",
         id="toolchain-url",
     ),
@@ -561,34 +551,22 @@ _INVALID_CONTRACT_CASES = [
     ),
     pytest.param(("[[generated_input]]", "[[other_input]]"), "generated_input", id="inputs"),
     pytest.param(
-        (
-            'producer = "Makefile"\ntargets = ["sim"]',
-            'producer = "Makefile"\ntargets = [7]',
-        ),
+        ('producer = "Makefile"\ntargets = ["sim"]', 'producer = "Makefile"\ntargets = [7]'),
         "generated_input[0].targets",
         id="malformed-consumer",
     ),
     pytest.param(
-        (
-            'producer = "Makefile"\ntargets = ["sim"]',
-            'producer = "Makefile"\ntargets = []',
-        ),
+        ('producer = "Makefile"\ntargets = ["sim"]', 'producer = "Makefile"\ntargets = []'),
         "generated_input[0].targets",
         id="empty-consumers",
     ),
     pytest.param(
-        (
-            'producer = "Makefile"\ntargets = ["sim"]',
-            'producer = "Makefile"\ntargets = [""]',
-        ),
+        ('producer = "Makefile"\ntargets = ["sim"]', 'producer = "Makefile"\ntargets = [""]'),
         "generated_input[0].targets[0] must be a non-empty string",
         id="empty-consumer",
     ),
     pytest.param(
-        (
-            'producer = "Makefile"\ntargets = ["sim"]',
-            'producer = "Makefile"\ntargets = [" sim"]',
-        ),
+        ('producer = "Makefile"\ntargets = ["sim"]', 'producer = "Makefile"\ntargets = [" sim"]'),
         "generated_input[0].targets[0] must be trimmed",
         id="untrimmed-consumer",
     ),
@@ -601,10 +579,7 @@ _INVALID_CONTRACT_CASES = [
         id="duplicate-consumer",
     ),
     pytest.param(
-        (
-            'producer = "Makefile"\ntargets = ["sim"]',
-            'producer = "Makefile"\ntargets = ["other"]',
-        ),
+        ('producer = "Makefile"\ntargets = ["sim"]', 'producer = "Makefile"\ntargets = ["other"]'),
         "generated_input[0].targets consumer 'other' is not in required_targets",
         id="out-of-set-consumer",
     ),
@@ -613,9 +588,7 @@ _INVALID_CONTRACT_CASES = [
 
 @pytest.mark.parametrize(("replacement", "message"), _INVALID_CONTRACT_CASES)
 def test_contract_rejects_invalid_boundary_values(
-    tmp_path: Path,
-    replacement: tuple[str, str],
-    message: str,
+    tmp_path: Path, replacement: tuple[str, str], message: str
 ) -> None:
     with pytest.raises(DemoContractError, match=re.escape(message)):
         load_contract(_write_contract(tmp_path, replacement))
@@ -643,9 +616,7 @@ def test_contract_target_metrics_parse_as_metrics_toml() -> None:
 
 @pytest.mark.parametrize(("replacement", "message"), _INVALID_CONTRACT_CASES)
 def test_exporter_rejects_invalid_typed_contract_without_outputs(
-    tmp_path: Path,
-    replacement: tuple[str, str],
-    message: str,
+    tmp_path: Path, replacement: tuple[str, str], message: str
 ) -> None:
     result = _run_exporter(_write_contract(tmp_path, replacement))
 
@@ -691,8 +662,7 @@ def test_target_validation_handles_invalid_and_broken_targets(
     )
 
     errors = demo_contract_module._validate_targets(
-        tmp_path,
-        ("future", "valid", "empty", "broken"),
+        tmp_path, ("future", "valid", "empty", "broken")
     )
 
     assert errors == [
@@ -749,9 +719,7 @@ def test_generated_input_collection_keeps_only_available_digests(
     )
     outcomes = iter([(["bad one"], "one.hex", "abc"), ([], "two.hex", "")])
     monkeypatch.setattr(
-        demo_contract_module,
-        "_validate_generated_input",
-        lambda *_args: next(outcomes),
+        demo_contract_module, "_validate_generated_input", lambda *_args: next(outcomes)
     )
 
     errors, digests = demo_contract_module._validate_generated_inputs(tmp_path, items)
@@ -786,9 +754,7 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     monkeypatch.setattr(demo_contract_module, "_validate_targets", lambda *_args: ["target"])
     generated = iter([(["generated"], {"image.hex": "one"}), (["again"], {"image.hex": "two"})])
     monkeypatch.setattr(
-        demo_contract_module,
-        "_validate_generated_inputs",
-        lambda *_args: next(generated),
+        demo_contract_module, "_validate_generated_inputs", lambda *_args: next(generated)
     )
 
     errors = demo_contract_module.validate_demo(tmp_path / "c.toml", tmp_path, tmp_path)
@@ -814,10 +780,7 @@ def test_validate_demo_aggregates_readiness_and_idempotence_failures(
     ],
 )
 def test_validate_demo_reports_checkout_inspection_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    error: Exception,
-    expected: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, expected: str
 ) -> None:
     monkeypatch.setattr(demo_contract_module, "load_contract", lambda _path: _demo_contract())
 
@@ -875,10 +838,7 @@ def test_demo_verifier_uses_explicit_directory_for_both_stages(tmp_path, monkeyp
     monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
     monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
     monkeypatch.setenv("BOOLEY_IMAGE_DIGEST", "sha256:image")
-    run_bounded_child(
-        ["bash", str(VERIFY_SCRIPT.resolve())],
-        check=True,
-    )
+    run_bounded_child(["bash", str(VERIFY_SCRIPT.resolve())], check=True)
     calls = [json.loads(line) for line in commands.read_text().splitlines()]
     assert len(calls) == 2
     for arguments, option in zip(calls, ("--booley-dir", "--project-state"), strict=True):

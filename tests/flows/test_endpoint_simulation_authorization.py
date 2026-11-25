@@ -17,12 +17,7 @@ from tests.flows.invocation_doubles import prepare_as
 def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
     return cast(
         TargetHandle,
-        SimpleNamespace(
-            selector=selector,
-            name=selector,
-            identity=identity,
-            project_root=root,
-        ),
+        SimpleNamespace(selector=selector, name=selector, identity=identity, project_root=root),
     )
 
 
@@ -52,9 +47,7 @@ def test_refusal_precedes_build_timeout(
     build_timeout_resolutions: list[object] = []
     # Private seam: the build timeout resolves only inside the preflight under test.
     monkeypatch.setattr(
-        flow,
-        "_effective_build_timeout_ms",
-        lambda: build_timeout_resolutions.append(object()),
+        flow, "_effective_build_timeout_ms", lambda: build_timeout_resolutions.append(object())
     )
 
     assert flow.prepare_simulation_endpoint() is refusal
@@ -62,9 +55,7 @@ def test_refusal_precedes_build_timeout(
 
 
 @pytest.mark.parametrize(
-    "value",
-    ['"make -C tests build"', '["make", 3]'],
-    ids=["bare-string", "non-string-entry"],
+    "value", ['"make -C tests build"', '["make", 3]'], ids=["bare-string", "non-string-entry"]
 )
 def test_invalid_pre_run_commands_refuse_in_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
@@ -102,9 +93,7 @@ def test_invalid_pre_run_commands_refuse_in_preflight(
 
 
 def test_state_backed_simulation_preflight_rejection_reaches_stderr(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # The state gate refuses a Flow run outside the container before preparation.
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

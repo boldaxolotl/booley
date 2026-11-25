@@ -13,11 +13,7 @@ def test_contract_tracks_scoped_file_content_and_inline_spec(tmp_path: Path) -> 
     scoped.parent.mkdir()
     scoped.write_text("module top; endmodule\n", encoding="utf-8")
     invocation = ReviewInvocation(
-        work_dir=tmp_path,
-        category="tb",
-        focus="quality",
-        scope=("./rtl\\top.sv",),
-        mode="done",
+        work_dir=tmp_path, category="tb", focus="quality", scope=("./rtl\\top.sv",), mode="done"
     )
 
     before = build_review_contract_detail(invocation)

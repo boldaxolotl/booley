@@ -74,9 +74,7 @@ def fixed(spec: dict[str, Any]) -> runtime_spec.SpecBuilder:
 
 
 def issue_built(
-    project: Path,
-    build: runtime_spec.SpecBuilder,
-    monkeypatch: pytest.MonkeyPatch,
+    project: Path, build: runtime_spec.SpecBuilder, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[runtime_spec.PreparedSessionSpec, Path, runtime_spec.Issuance]:
     """Preview *build* and issue it, as production does; return prepared, path and stamp."""
     stub_keeper(monkeypatch)

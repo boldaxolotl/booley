@@ -30,10 +30,7 @@ from booley.flows.sim.build_session import SimulationBuildSession, snapshot_buil
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
-from booley.fusesoc.fusesoc_registry import (
-    ResolvedFile,
-    setup_command_for_handle,
-)
+from booley.fusesoc.fusesoc_registry import ResolvedFile, setup_command_for_handle
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)

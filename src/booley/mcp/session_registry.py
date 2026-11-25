@@ -24,12 +24,7 @@ from booley.runtime.handles import (
     session_writer,
 )
 from booley.runtime.mount_history import MountHistoryError, translate_stored_path
-from booley.runtime.pid import (
-    DEAD_PROCESS_STATES,
-    ProcessIdentity,
-    ProcessState,
-    observe_process,
-)
+from booley.runtime.pid import DEAD_PROCESS_STATES, ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
     ActivityStore,
@@ -463,10 +458,7 @@ class SessionRegistry:
             handles.reserve(
                 facts.key,
                 "S",
-                predecessors=(
-                    *predecessors,
-                    *fallback_predecessors(facts.key, facts.work_dir),
-                ),
+                predecessors=(*predecessors, *fallback_predecessors(facts.key, facts.work_dir)),
             )
             if (handles.entries, handles.aliases) != before:
                 store.save(handles)

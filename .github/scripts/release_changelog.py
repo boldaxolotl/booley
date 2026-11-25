@@ -171,9 +171,7 @@ def _fragment_lines(path: Path) -> list[str]:
     return lines
 
 
-def read_fragments(
-    directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME,
-) -> list[Fragment]:
+def read_fragments(directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME) -> list[Fragment]:
     """Read every fragment, held ones too; one error lists every malformed file."""
     fragments: list[Fragment] = []
     problems: list[str] = []
@@ -295,11 +293,7 @@ def cut(
 
 
 def _validate_contract(
-    root: Path,
-    packaged: Path,
-    *,
-    target: str | None = None,
-    notes_file: Path | None = None,
+    root: Path, packaged: Path, *, target: str | None = None, notes_file: Path | None = None
 ) -> None:
     """Validate mirror equality, Unreleased heading, ordering, VERSION bound, target, and notes.
 

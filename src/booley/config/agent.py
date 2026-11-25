@@ -758,7 +758,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
         # limit when one is derivable, but tell the user to migrate.
         logger.warning(
             "[sandbox] memory tier table is retired (Booley runs one container "
-            'with one memory limit); use a single string, e.g. memory = "8g"',
+            'with one memory limit); use a single string, e.g. memory = "8g"'
         )
         legacy_default = mem_val.get("default", "")
         if isinstance(legacy_default, str):
@@ -768,7 +768,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     if "memory_tiers" in section:
         logger.warning(
             "[sandbox] memory_tiers is retired (Booley runs one container with "
-            'one memory limit); use memory = "8g" — ignoring',
+            'one memory limit); use memory = "8g" — ignoring'
         )
 
     swap = ""
@@ -781,10 +781,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
     return SandboxConfig(
-        image=image,
-        memory=memory,
-        swap=swap,
-        mount_host_skills=mount_host_skills,
+        image=image, memory=memory, swap=swap, mount_host_skills=mount_host_skills
     )
 
 

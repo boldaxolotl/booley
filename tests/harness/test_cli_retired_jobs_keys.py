@@ -34,11 +34,7 @@ def test_project_commands_refuse_retired_jobs_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _project(tmp_path / "proj")
-    for argv in (
-        ("targets",),
-        ("resources",),
-        ("flow", "sim", "--dry-run"),
-    ):
+    for argv in (("targets",), ("resources",), ("flow", "sim", "--dry-run")):
         assert _run(root, monkeypatch, *argv) == 2, argv
         err = capsys.readouterr().err
         assert "max_heavy (line 5: memory admission replaced it)" in err, argv

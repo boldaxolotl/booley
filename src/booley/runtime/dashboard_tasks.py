@@ -17,10 +17,7 @@ from booley.core.file_lock import nonblocking_file_lock
 from booley.runtime import platform_paths, runtime_context
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
-from booley.runtime.project_repositories import (
-    GitDirectoryInspectionError,
-    git_directories,
-)
+from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)

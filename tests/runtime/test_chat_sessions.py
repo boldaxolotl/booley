@@ -181,9 +181,7 @@ def test_nested_clients_cannot_claim_an_outer_tab_but_backend_helpers_can(tmp_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("initial_peer_unavailable", [False, True])
 async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
-    tmp_path,
-    monkeypatch,
-    initial_peer_unavailable,
+    tmp_path, monkeypatch, initial_peer_unavailable
 ):
     proc = tmp_path / "proc"
     owner = process(proc, 100, 1, executable="node")

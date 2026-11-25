@@ -145,10 +145,7 @@ def _attempt_directories(simulation_record_path: Path) -> dict[str, Path]:
 
 def _validate_owned_run_directory(item: dict[str, object], attempt_directory: Path) -> None:
     attempt = _load(attempt_directory / "attempt.json")
-    _need(
-        attempt.get("$schema") == _ATTEMPT_SCHEMA,
-        "Simulation Attempt schema differs",
-    )
+    _need(attempt.get("$schema") == _ATTEMPT_SCHEMA, "Simulation Attempt schema differs")
     _need(attempt.get("work_item_id") == item["work_item_id"], "attempt work item differs")
     _need(
         attempt.get("child_execution_id") == item["child_execution_id"],
@@ -314,10 +311,7 @@ def _validate_result_identity(
 def _validate_summary(
     summary: dict[str, object], expected_ids: list[object], identity: dict[str, object]
 ) -> None:
-    _need(
-        summary.get("$schema") == _SUMMARY_SCHEMA,
-        "summary schema differs",
-    )
+    _need(summary.get("$schema") == _SUMMARY_SCHEMA, "summary schema differs")
     _need(summary.get("aggregate_grade") == "fail", "summary is not a strict failure")
     _need(
         summary.get("manifest_sha256") == identity["manifest_sha256"],

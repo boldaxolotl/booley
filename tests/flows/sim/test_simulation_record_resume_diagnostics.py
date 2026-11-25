@@ -221,9 +221,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     assert result.exit_code == 2
     assert len(executions) == 1
     assert "source changed: rtl/counter.sv" in result.outcome.detail["mismatch_summary"]
-    assert result.outcome.detail["mismatch_summary"] == [
-        "source changed: rtl/counter.sv",
-    ]
+    assert result.outcome.detail["mismatch_summary"] == ["source changed: rtl/counter.sv"]
     assert "/planning_disclosures/" not in result.outcome.report_text or verbose
     assert result.outcome.detail["derived_fingerprint_count"] == 8
     for line in result.outcome.detail["mismatch_summary"]:
@@ -246,10 +244,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
 
 @pytest.mark.parametrize(
     ("changed", "line"),
-    [
-        ("parameter", "parameter WIDTH:"),
-        ("option", "build command model changed"),
-    ],
+    [("parameter", "parameter WIDTH:"), ("option", "build command model changed")],
 )
 def test_public_resume_parameters_suite_content_and_opaque_options(
     tmp_path, monkeypatch, changed, line
@@ -383,9 +378,7 @@ def test_legacy_record_resumes_only_against_an_unchanged_suite(
 ):
     unnamed = case == "unnamed-tests-added"
     reports, manifest, executions = _interrupted_simulation_record(
-        tmp_path,
-        monkeypatch,
-        **({"tests_toml": "# no Tests for sim_0\n"} if unnamed else {}),
+        tmp_path, monkeypatch, **({"tests_toml": "# no Tests for sim_0\n"} if unnamed else {})
     )
     _rewrite_manifest(manifest, lambda document: document["required_suite"].pop("target_tests"))
     path = tmp_path / ".booley/tests.toml"

@@ -121,10 +121,7 @@ def resolve_report_artifact_reference(
     invocation = report_path.absolute().parent
     if report_path.name != "report.json" or not invocation.name.isdecimal():
         raise ArtifactReferenceError("expected a numbered invocation report.json")
-    bases = {
-        "report_invocation": invocation,
-        "reports_root": invocation.parent.parent,
-    }
+    bases = {"report_invocation": invocation, "reports_root": invocation.parent.parent}
     if external_origin_target is not None:
         bases["external_origin_target"] = external_origin_target
     return resolve_artifact_reference(
@@ -167,12 +164,7 @@ def _artifact_reference(
     if not isinstance(sha256, str) or not _DIGEST.fullmatch(sha256):
         raise ArtifactReferenceError("artifact digest is invalid")
     return ArtifactReference(
-        base,
-        relative,
-        bytes_,
-        sha256,
-        _nonempty(kind, "kind"),
-        _nonempty(owner, "owner"),
+        base, relative, bytes_, sha256, _nonempty(kind, "kind"), _nonempty(owner, "owner")
     )
 
 

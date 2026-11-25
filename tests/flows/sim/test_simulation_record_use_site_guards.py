@@ -21,9 +21,7 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import result_observations
 from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
-from booley.flows.sim.record.inspection import (
-    read_durable_results,
-)
+from booley.flows.sim.record.inspection import read_durable_results
 from booley.flows.sim.record.model import BundleBuildResult
 from booley.flows.sim.record.planning import manifest_digest
 from tests.flows.sim.simulation_record_test_support import (

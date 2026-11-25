@@ -193,10 +193,7 @@ def test_delta_for_every_reported_metric_with_a_value_in_both_runs(world: World)
         Table("sim", (Entry("cycles", "cycle_count", 70, prefix="smoke", test_run="smoke_1"),)),
         Table("coverage", (Entry("line_coverage", "line_coverage", 80),)),  # base values: null
         Table("fpga", (Entry("lut_count", "lut_count", 5),)),  # no base table
-        Table(
-            "lint",
-            (Entry("errors_max", "errors", None, bound=0, verdict=Verdict.ERROR),),
-        ),
+        Table("lint", (Entry("errors_max", "errors", None, bound=0, verdict=Verdict.ERROR),)),
     )
     base_tables = (
         Table(

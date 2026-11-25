@@ -223,10 +223,7 @@ def _register_trace_locked(trace: Path, alias: str | None, store: SessionStore) 
     """Load-modify-save one registration; the caller holds the store lock."""
     sessions = _sessions_for_update(store)
     alias = alias or _DEFAULT_ALIAS
-    entry = {
-        "trace": store.record(trace),
-        "registered_at": utc_now_rfc3339(),
-    }
+    entry = {"trace": store.record(trace), "registered_at": utc_now_rfc3339()}
     # Preserve existing markers
     if alias in sessions and "markers" in sessions[alias]:
         entry["markers"] = sessions[alias]["markers"]
@@ -260,15 +257,7 @@ def _trace_identity(trace: Path) -> str:
 
     try:
         result = subprocess.run(
-            [
-                *bwave._bwave_cmd(),
-                "list",
-                str(trace),
-                "--format",
-                "json",
-                "--limit",
-                "1",
-            ],
+            [*bwave._bwave_cmd(), "list", str(trace), "--format", "json", "--limit", "1"],
             capture_output=True,
             text=True,
             timeout=60,

@@ -83,9 +83,7 @@ class AdmissionContext:
         execution_id = _coerce_execution_id(self.execution_id)
         object.__setattr__(self, "execution_id", execution_id)
         object.__setattr__(
-            self,
-            "parent_execution_id",
-            execution_id or ExecutionId(uuid.uuid4().hex),
+            self, "parent_execution_id", execution_id or ExecutionId(uuid.uuid4().hex)
         )
 
     def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
@@ -263,17 +261,12 @@ def _enter_admission(
     """
     try:
         return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
-    except (
-        job_slots.ClaimLostError,
-        AdmissionIdentityError,
-        SeatCapError,
-    ) as exc:
+    except (job_slots.ClaimLostError, AdmissionIdentityError, SeatCapError) as exc:
         raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
 
 
 def _admission_rejection(
-    endpoint: EndpointState,
-    exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError,
+    endpoint: EndpointState, exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.ClaimLostError):

@@ -22,11 +22,7 @@ _EXIT_ERROR = 2
 
 
 def _assert_refused_before_simulation_record_state(
-    reserved: list[object],
-    started: list[object],
-    reports: Path,
-    result: Any,
-    expected_text: str,
+    reserved: list[object], started: list[object], reports: Path, result: Any, expected_text: str
 ) -> None:
     """A planning refusal: exit 2 and no reservation, build, progress or record manifest."""
     assert result.exit_code == _EXIT_ERROR

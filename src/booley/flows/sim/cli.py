@@ -26,10 +26,7 @@ def parse_seed_argument(value: str) -> int | str:
 
 class SimArguments(BuiltinArguments):
     help_groups = (
-        HelpGroup(
-            "Output",
-            (HelpOption("verbose", "Default: off."),),
-        ),
+        HelpGroup("Output", (HelpOption("verbose", "Default: off."),)),
         HelpGroup(
             "Simulation options",
             (
@@ -157,10 +154,7 @@ class SimArguments(BuiltinArguments):
             help=argparse.SUPPRESS,
         )
         parser.add_argument(
-            "--standalone",
-            dest="_legacy_standalone",
-            action="store_true",
-            help=argparse.SUPPRESS,
+            "--standalone", dest="_legacy_standalone", action="store_true", help=argparse.SUPPRESS
         )
 
     @staticmethod
@@ -199,8 +193,4 @@ class SimArguments(BuiltinArguments):
         # overlay .core traces the full hierarchy at a fixed depth, so there is no
         # per-call scope knob. Scoping, when a specialist needs it, lives on the
         # specialist's own surface, not the built-in simulate one.
-        parser.add_argument(
-            "--no-kill",
-            action="store_true",
-            help="Skip zombie process cleanup",
-        )
+        parser.add_argument("--no-kill", action="store_true", help="Skip zombie process cleanup")

@@ -191,10 +191,7 @@ def _schema1_document():
         pytest.param('{"schema_version":2}', id="missing-fields"),
         pytest.param('{"deep":true}', id="no-schema"),
         pytest.param('{"schema_version":true}', id="bool-schema"),
-        pytest.param(
-            _schema1_document(),
-            id="schema-1",
-        ),
+        pytest.param(_schema1_document(), id="schema-1"),
         pytest.param(
             json.dumps(
                 {

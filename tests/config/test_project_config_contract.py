@@ -193,7 +193,7 @@ class TestTestsTomlClosedKeySet:
             "default": {"defines": [], "test_list": "any", "tb_top": "tb"},
         }
         assert normalize_configs_toml(raw) == {
-            "default": {"defines": [], "tb_top": "tb", "tests": ["a+b", "default"]},
+            "default": {"defines": [], "tb_top": "tb", "tests": ["a+b", "default"]}
         }
 
 

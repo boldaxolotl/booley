@@ -180,10 +180,7 @@ def test_unprovided_dependency_fails_with_hint_naming_it(tmp_path, monkeypatch):
     result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(err)))
 
     assert _rows(result) == [(Severity.FAIL, ".core Target 'sim' fails to resolve", hint)]
-    assert _excerpt(result) == [
-        "    ERROR: Could not find core",
-        "    vendor_lib_name == 1.0-0",
-    ]
+    assert _excerpt(result) == ["    ERROR: Could not find core", "    vendor_lib_name == 1.0-0"]
 
 
 def test_transitive_unprovided_dependency_is_named(tmp_path, monkeypatch):

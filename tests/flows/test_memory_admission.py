@@ -25,12 +25,7 @@ BUDGET_MIB = 1200.0
 
 
 def _record(
-    target: str,
-    phase: str,
-    peak_mib: float,
-    *,
-    test_run: str = "",
-    wall_s: float | None = 1.0,
+    target: str, phase: str, peak_mib: float, *, test_run: str = "", wall_s: float | None = 1.0
 ) -> dict[str, Any]:
     """A history record with only the fields the estimator reads."""
     return {
@@ -465,9 +460,7 @@ def test_settled_work_item_reserves_sim_prepare_with_its_run() -> None:
     assert without_setup.run_alone
 
 
-def test_work_item_request_resolves_each_target_plan_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_work_item_request_resolves_each_target_plan_once(monkeypatch: pytest.MonkeyPatch) -> None:
     flow = _sim_flow()
     flow.begin_invocation()
     plans: list[str] = []

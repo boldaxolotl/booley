@@ -13,9 +13,7 @@ from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
-from booley.mcp import (
-    call_context,
-)
+from booley.mcp import call_context
 from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
@@ -48,13 +46,7 @@ def layout(tmp_path, monkeypatch):
 
 
 def snapshot_jobs(
-    booley_dir,
-    *,
-    interactive_root=None,
-    slots_root=None,
-    proc_root=None,
-    reader=None,
-    now=None,
+    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None, now=None
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
@@ -550,11 +542,7 @@ def test_terminal_job_uses_recorded_resources_and_tool(tmp_path, state):
         report={
             "flow": "sim",
             "eda_tool": "verilator",
-            "resources": {
-                "cpu_user_s": 2,
-                "cpu_sys_s": 1,
-                "peak_rss_mb": 32,
-            },
+            "resources": {"cpu_user_s": 2, "cpu_sys_s": 1, "peak_rss_mb": 32},
         },
     )
     rendered = job_detail(view)
@@ -595,8 +583,7 @@ def test_terminal_flow_without_tool_explains_missing_record(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "resources",
-    [[], {"cpu_user_s": 10**400, "cpu_sys_s": 1, "peak_rss_mb": 32}],
+    "resources", [[], {"cpu_user_s": 10**400, "cpu_sys_s": 1, "peak_rss_mb": 32}]
 )
 def test_invalid_recorded_resources_are_unavailable(tmp_path, resources):
     from booley.harness.dashboard.jobs import JobView

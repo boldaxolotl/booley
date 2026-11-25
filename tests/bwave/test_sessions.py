@@ -57,11 +57,7 @@ def _write_sessions(entries: dict) -> None:
 
 
 def _make_entry(trace: str, **overrides) -> dict:
-    return {
-        "trace": trace,
-        "registered_at": datetime.now(UTC).isoformat(),
-        **overrides,
-    }
+    return {"trace": trace, "registered_at": datetime.now(UTC).isoformat(), **overrides}
 
 
 def _query(*extra_args: str) -> subprocess.CompletedProcess[str]:
@@ -299,12 +295,7 @@ def test_fresh_trace_with_old_registration_does_not_warn():
     _ensure_bwave_fixture()
     os.utime(BWAVE)  # "re-sim just happened": data is fresh regardless of build date
     _write_sessions(
-        {
-            "_last": _make_entry(
-                str(BWAVE.resolve()),
-                registered_at="2026-05-12T00:00:00+00:00",
-            )
-        }
+        {"_last": _make_entry(str(BWAVE.resolve()), registered_at="2026-05-12T00:00:00+00:00")}
     )
     r = _query("--wave", "-t", "1:5", "-s", "*req*")
     assert r.returncode == 0
@@ -312,13 +303,7 @@ def test_fresh_trace_with_old_registration_does_not_warn():
 
 
 def test_missing_trace_error():
-    _write_sessions(
-        {
-            "_last": _make_entry(
-                str(FIXTURE_DIR / "nonexistent_xyz.fst"),
-            )
-        }
-    )
+    _write_sessions({"_last": _make_entry(str(FIXTURE_DIR / "nonexistent_xyz.fst"))})
     r = _query("--wave", "-t", "1:5", "-s", "*req*")
     assert r.returncode != 0
     assert "no longer exists" in r.stderr.lower()
@@ -356,8 +341,7 @@ def test_register_missing_trace_includes_incident(tmp_path):
     from booley.bwave import cli as bwave
 
     (tmp_path / "trace_status.json").write_text(
-        '{"current_status": "failed", "failure_reason": "no artifact"}\n',
-        encoding="utf-8",
+        '{"current_status": "failed", "failure_reason": "no artifact"}\n', encoding="utf-8"
     )
     (tmp_path / "trace_incident.txt").write_text(
         "reason: trace requested but no queryable .fst store or .vcd was produced\n",
@@ -415,10 +399,7 @@ def test_register_raw_vcd_with_build_converts_and_registers(tmp_path, monkeypatc
         from booley.bwave.waveform_store import ConversionResult, inspect_store
 
         out_path.write_bytes(MINIMAL_FST_BYTES)
-        return ConversionResult(
-            out_path,
-            inspection=inspect_store(out_path, probe_reader=False),
-        )
+        return ConversionResult(out_path, inspection=inspect_store(out_path, probe_reader=False))
 
     monkeypatch.setattr("booley.bwave.sessions.convert_vcd", _fake_build)
     monkeypatch.setattr("booley.bwave.sessions._trace_identity", lambda _t: "top")
@@ -476,10 +457,7 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
     existing.write_bytes(b"precious-scoped-store")
 
     called = []
-    monkeypatch.setattr(
-        "booley.bwave.sessions.convert_vcd",
-        lambda *a: called.append(a) or True,
-    )
+    monkeypatch.setattr("booley.bwave.sessions.convert_vcd", lambda *a: called.append(a) or True)
 
     with pytest.raises(SystemExit) as exc:
         bwave.cmd_register(argparse.Namespace(sim_dir=str(vcd), alias="dut", build=True))
@@ -993,20 +971,14 @@ def test_query_resolves_markers_and_injects_wave_labels(tmp_path, monkeypatch):
     use_store(monkeypatch, session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
-    _write_sessions(
-        {
-            "dut": _make_entry(str(trace), markers={"start": 10, "done": 20}),
-        }
-    )
+    _write_sessions({"dut": _make_entry(str(trace), markers={"start": 10, "done": 20})})
     calls = []
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
     monkeypatch.setattr(bwave, "_run", lambda cmd: calls.append(cmd) or 0)
 
     with pytest.raises(SystemExit) as exc:
         bwave.cmd_query(
-            argparse.Namespace(
-                extra=["@dut", "wave", "-s", "top.dut.state", "-t", "start:done"],
-            )
+            argparse.Namespace(extra=["@dut", "wave", "-s", "top.dut.state", "-t", "start:done"])
         )
 
     assert exc.value.code == 0
@@ -1085,11 +1057,7 @@ def test_query_resolves_v02_diff_markers(tmp_path, monkeypatch):
     use_store(monkeypatch, session_file)
     trace = tmp_path / "trace.fst"
     trace.write_bytes(b"\x00\x00\x00\x00\x00\x00\x00\x01I" + b"\0" * 16)
-    _write_sessions(
-        {
-            "dut": _make_entry(str(trace), markers={"start": 10, "done": 20}),
-        }
-    )
+    _write_sessions({"dut": _make_entry(str(trace), markers={"start": 10, "done": 20})})
     calls = []
     monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
     monkeypatch.setattr(bwave, "_run", lambda cmd: calls.append(cmd) or 0)
@@ -1349,8 +1317,7 @@ def test_wrapper_help_command_lists_match_accepted_commands():
 
     # (b) `bwave --help` text.
     top_lines = _help_section_lines(
-        bwave._TOP_HELP_TEXT,
-        ("Setup:", "Viewing", "Trace commands:", "Meta/direct subcommands:"),
+        bwave._TOP_HELP_TEXT, ("Setup:", "Viewing", "Trace commands:", "Meta/direct subcommands:")
     )
     assert _help_entry_names(top_lines) == bwave._V02_SUBCOMMANDS | wrapper_only
 

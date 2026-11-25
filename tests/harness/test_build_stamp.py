@@ -239,8 +239,7 @@ class TestWriteBuildStamp:
             assert commit != "" and not commit.endswith("+dirty")
 
         status = run_bounded_child(
-            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
-            check=True,
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"], check=True
         )
         assert status.stdout == ""
 
@@ -369,9 +368,7 @@ class TestWriteBuildStamp:
             booley,
             "version_attribution",
             VersionAttribution(
-                version="4.5.6",
-                origin=VersionOrigin.DISTRIBUTION,
-                distribution_name="booley-rtl",
+                version="4.5.6", origin=VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl"
             ),
         )
         monkeypatch.setattr(
@@ -407,8 +404,7 @@ class TestWriteBuildStamp:
         wheel = tmp_path / WHEEL_NAME
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr(
-                "booley/_build_commit.py",
-                f'WHEEL_SOURCE_FINGERPRINT = "{"a" * 64}"\n',
+                "booley/_build_commit.py", f'WHEEL_SOURCE_FINGERPRINT = "{"a" * 64}"\n'
             )
 
         assert wheel_embedded_source_fingerprint(wheel) == "a" * 64
@@ -567,9 +563,7 @@ class TestDevelopmentBuildContext:
         with monkeypatch.context() as build_patch:
             build_patch.setattr(build_stamp_module, "stamp_path", lambda _root: stamp_file)
             build_patch.setattr(
-                build_stamp_module,
-                "development_context_path",
-                lambda _root: context_file,
+                build_stamp_module, "development_context_path", lambda _root: context_file
             )
             write_build_stamp(root)
 
@@ -580,9 +574,7 @@ class TestDevelopmentBuildContext:
         embedded.PAYLOAD_FINGERPRINT = namespace["PAYLOAD_FINGERPRINT"]
         monkeypatch.setitem(sys.modules, "booley._build_commit", embedded)
         monkeypatch.setattr(
-            build_stamp_module,
-            "__file__",
-            str(package_root / "runtime" / "build_stamp.py"),
+            build_stamp_module, "__file__", str(package_root / "runtime" / "build_stamp.py")
         )
 
         assert embedded_development_context_path() == context_file

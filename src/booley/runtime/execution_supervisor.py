@@ -39,11 +39,7 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.heartbeat import touch_reaper_heartbeat
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
-from booley.runtime.process_tree import (
-    descendant_pids,
-    environment_value,
-    is_zombie_child_of,
-)
+from booley.runtime.process_tree import descendant_pids, environment_value, is_zombie_child_of
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _PR_SET_CHILD_SUBREAPER = 36
@@ -306,11 +302,7 @@ def _cancellation_request(paths: ExecutionPaths) -> tuple[str, bool, int] | None
         signum = require_int(cancel.get("signum"), field="cancellation signum")
     except BoundaryError:
         signum = signal.SIGINT
-    return (
-        reason,
-        cancel.get("force") is True or force,
-        signum if signum > 0 else signal.SIGINT,
-    )
+    return (reason, cancel.get("force") is True or force, signum if signum > 0 else signal.SIGINT)
 
 
 def _wait_until_stop(
@@ -341,9 +333,7 @@ def _wait_until_stop(
 
 
 def _finish_prestart_cancellation(
-    paths: ExecutionPaths,
-    supervisor: ProcessIdentity | None,
-    cancellation: tuple[str, bool, int],
+    paths: ExecutionPaths, supervisor: ProcessIdentity | None, cancellation: tuple[str, bool, int]
 ) -> int:
     reason, _force, signum = cancellation
     exit_code = 128 + signum
@@ -401,11 +391,7 @@ def _finish_owned_tree(
         atomic_write_json(paths.record, cancelling)
     root_returncode = child.returncode
     tree_terminal = _terminate_tree(
-        child,
-        paths,
-        grace_seconds=grace_seconds,
-        initial_signal=requested_signal,
-        force=force,
+        child, paths, grace_seconds=grace_seconds, initial_signal=requested_signal, force=force
     )
     child.poll()
     root_returncode = child.returncode if root_returncode is None else root_returncode
@@ -472,14 +458,7 @@ def supervise(
             running = _execution_record(state="running", supervisor=supervisor, leader=leader)
             atomic_write_json(paths.record, running)
             stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
-        return _finish_owned_tree(
-            child,
-            paths,
-            supervisor,
-            leader,
-            stop,
-            grace_seconds,
-        )
+        return _finish_owned_tree(child, paths, supervisor, leader, stop, grace_seconds)
 
 
 @contextlib.contextmanager

@@ -26,13 +26,7 @@ from tests.harness import test_session_runtime as resolution_fixtures
 from booley.core.host_shell import quote_arg
 from booley.harness import doctor
 from booley.harness.setup import readiness
-from booley.runtime import (
-    auth_token,
-    inspection,
-    project_image,
-    runtime_context,
-    session_runtime,
-)
+from booley.runtime import auth_token, inspection, project_image, runtime_context, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime import host_docker as idk
 
@@ -215,10 +209,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     assert any("state differs from current host issuance" in message for message in rec.fails())
 
 
-def test_host_doctor_names_rebuild_repair_for_running_old_vscode(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_host_doctor_names_rebuild_repair_for_running_old_vscode(tmp_path, monkeypatch) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
     booley_dir = tmp_path / ".booley"
@@ -360,9 +351,7 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
         Path("/usr/lib/locale/locale-archive"),
     }
     monkeypatch.setattr(
-        Path,
-        "is_file",
-        lambda path: True if path in compatibility else original_is_file(path),
+        Path, "is_file", lambda path: True if path in compatibility else original_is_file(path)
     )
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
     monkeypatch.setattr(Path, "read_text", read_text)
@@ -379,11 +368,7 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
         ),
     )
     project = readiness.ProjectAudit(
-        tmp_path,
-        booley_dir,
-        {"eda": {"vivado": {"provisioning": "host"}}},
-        {},
-        "sim",
+        tmp_path, booley_dir, {"eda": {"vivado": {"provisioning": "host"}}}, {}, "sim"
     )
     rec = _Rec()
 
@@ -403,8 +388,7 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
 
 
 def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
@@ -413,10 +397,7 @@ def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
     project = readiness.ProjectAudit(
         tmp_path,
         booley_dir,
-        {
-            "eda": {"vivado": {"provisioning": "host"}},
-            "flows": {"fpga": {"enabled": False}},
-        },
+        {"eda": {"vivado": {"provisioning": "host"}}, "flows": {"fpga": {"enabled": False}}},
         {},
         "sim",
     )
@@ -621,10 +602,7 @@ class TestDevcontainerSpecStaleness:
         # Spec built for the same custom image the project configures: no drift.
         from booley.runtime import devcontainer as dc
 
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            image="openc910-booley-sandbox:latest",
-        )
+        spec = build_spec(dc.APP_CLAUDE, image="openc910-booley-sandbox:latest")
         dc.write_devcontainer(tmp_path, spec)
         rec = self._run(tmp_path, monkeypatch, image="openc910-booley-sandbox:latest")
         assert rec.kinds() == {"pass"}
@@ -690,16 +668,12 @@ class TestDevcontainerSpecStaleness:
 
     def test_logical_image_switch_warns(self, tmp_path, monkeypatch):
         old_id = "sha256:" + "a" * 64
-        dc.write_devcontainer(
-            tmp_path,
-            build_spec(dc.APP_CLAUDE, image=old_id),
-        )
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=old_id))
         monkeypatch.setattr(
             inspection.idk,
             "compare_issued_selection",
             lambda *_args, **_kwargs: inspection.image_identity.Comparison(
-                inspection.image_identity.Status.MISMATCH,
-                "sandbox_flavor standard -> riscv",
+                inspection.image_identity.Status.MISMATCH, "sandbox_flavor standard -> riscv"
             ),
         )
         rec = self._run(tmp_path, monkeypatch, image=project_image.project_image_name(tmp_path))
@@ -708,10 +682,7 @@ class TestDevcontainerSpecStaleness:
 
     def test_rebuilt_external_image_warns_despite_inherited_labels(self, tmp_path, monkeypatch):
         old_id = "sha256:" + "a" * 64
-        dc.write_devcontainer(
-            tmp_path,
-            build_spec(dc.APP_CLAUDE, image=old_id),
-        )
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=old_id))
         monkeypatch.setattr(
             inspection.idk,
             "compare_issued_reference",

@@ -170,10 +170,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
         """Inspect the baseline checkout before its Targets run."""
 
     def _build_implementation_report(
-        self,
-        context: ImplementationContext,
-        current: MetricsT,
-        baseline: MetricsT | None,
+        self, context: ImplementationContext, current: MetricsT, baseline: MetricsT | None
     ) -> ImplementationReport:
         """Adapt the Flow's native evidence to the canonical report."""
         raise NotImplementedError
@@ -298,9 +295,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
             return progress.publication_failure(exc)
 
     def _run_baseline_configs(
-        self,
-        pairs: Sequence[TargetPairPlan],
-        baseline_results: dict[str, MetricsT] | None = None,
+        self, pairs: Sequence[TargetPairPlan], baseline_results: dict[str, MetricsT] | None = None
     ) -> tuple[dict[str, MetricsT] | EndpointOutcome, str | None]:
         """Run each paired baseline Target in an ephemeral ``git worktree``.
 
@@ -436,28 +431,19 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
         return selected_target_handle(
-            getattr(self, "_target_handles", {}),
-            self.args.work_dir,
-            target,
-            flow=self.name,
+            getattr(self, "_target_handles", {}), self.args.work_dir, target, flow=self.name
         )
 
     def _target_plan(self, target: str) -> TargetPairPlan:
         """Look up the total pair plan by canonical candidate identity."""
         return target_plan_for_handle(
-            getattr(self, "_target_pairs", ()),
-            self._target_handle(target),
-            flow=self.name,
+            getattr(self, "_target_pairs", ()), self._target_handle(target), flow=self.name
         )
 
     # -- Publication ----------------------------------------------------------
 
     def _implementation_report(
-        self,
-        target: str,
-        current: MetricsT,
-        baseline: MetricsT | None,
-        baseline_ref: str | None,
+        self, target: str, current: MetricsT, baseline: MetricsT | None, baseline_ref: str | None
     ) -> ImplementationReport:
         """Build the canonical report for one Target from its run context."""
         context = implementation_context(
@@ -521,11 +507,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
         self._publisher().publish_progress(progress)
 
     def _persist_target_outcome(
-        self,
-        target: str,
-        current: MetricsT,
-        baseline: MetricsT | None,
-        baseline_ref: str | None,
+        self, target: str, current: MetricsT, baseline: MetricsT | None, baseline_ref: str | None
     ) -> None:
         """Durably record one terminal Target before the next one starts."""
         implementation = self._implementation_report(target, current, baseline, baseline_ref)
@@ -538,8 +520,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
 
     @staticmethod
     def _baseline_error_notes(
-        baseline_results: dict[str, MetricsT],
-        reports: dict[str, ImplementationReport],
+        baseline_results: dict[str, MetricsT], reports: dict[str, ImplementationReport]
     ) -> tuple[list[str], list[str]]:
         """Return note lines and failure reasons for baseline and comparison errors."""
         lines: list[str] = []

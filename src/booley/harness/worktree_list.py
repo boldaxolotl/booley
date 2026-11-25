@@ -34,15 +34,7 @@ _GIT_TIMEOUT_S = 60
 PAIRED: Literal["Paired Checkout"] = "Paired Checkout"
 SNAPSHOT: Literal["Snapshot"] = "Snapshot"
 
-_HEADER = (
-    "NAME",
-    "BRANCH",
-    "BOOLEY DIR",
-    "UNCOMMITTED",
-    "UNMERGED",
-    "SESSION",
-    "LAST USED",
-)
+_HEADER = ("NAME", "BRANCH", "BOOLEY DIR", "UNCOMMITTED", "UNMERGED", "SESSION", "LAST USED")
 
 
 class WorktreeListError(RuntimeError):

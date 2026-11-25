@@ -29,17 +29,13 @@ def _labels() -> dict[str, str]:
 def test_validate_requires_labels_runtime_payload_and_sbom(monkeypatch) -> None:
     monkeypatch.setattr(image_provenance, "_inspect_labels", lambda _image: _labels())
     monkeypatch.setattr(
-        image_provenance,
-        "_runtime_wheel_source_fingerprint",
-        lambda _image: "wheel-source",
+        image_provenance, "_runtime_wheel_source_fingerprint", lambda _image: "wheel-source"
     )
     monkeypatch.setattr(
         image_provenance, "_runtime_identity", lambda _image: {"uid": 1000, "gid": 1000}
     )
     monkeypatch.setattr(
-        image_provenance,
-        "_sbom_summary",
-        lambda _image: {"present": True, "sections": ["SPDX"]},
+        image_provenance, "_sbom_summary", lambda _image: {"present": True, "sections": ["SPDX"]}
     )
 
     evidence = image_provenance.validate(
@@ -56,10 +52,7 @@ def test_validate_requires_labels_runtime_payload_and_sbom(monkeypatch) -> None:
     )
 
     assert evidence["errors"] == []
-    assert evidence["candidate"] == {
-        "sha": "candidate-sha",
-        "image_digest": "sha256:candidate",
-    }
+    assert evidence["candidate"] == {"sha": "candidate-sha", "image_digest": "sha256:candidate"}
     assert evidence["identity"] == {"uid": 1000, "gid": 1000}
     assert {check["id"] for check in evidence["checks"]} == {
         "provenance.exact-digest",
@@ -74,17 +67,13 @@ def test_validate_reports_missing_shared_contracts(monkeypatch) -> None:
     labels.pop("io.booley.build.origin")
     monkeypatch.setattr(image_provenance, "_inspect_labels", lambda _image: labels)
     monkeypatch.setattr(
-        image_provenance,
-        "_runtime_wheel_source_fingerprint",
-        lambda _image: "wrong",
+        image_provenance, "_runtime_wheel_source_fingerprint", lambda _image: "wrong"
     )
     monkeypatch.setattr(
         image_provenance, "_runtime_identity", lambda _image: {"uid": 1000, "gid": 1000}
     )
     monkeypatch.setattr(
-        image_provenance,
-        "_sbom_summary",
-        lambda _image: {"present": False, "sections": []},
+        image_provenance, "_sbom_summary", lambda _image: {"present": False, "sections": []}
     )
 
     evidence = image_provenance.validate(

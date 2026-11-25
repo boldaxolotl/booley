@@ -11,12 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from booley.core.boundary import (
-    BoundaryError,
-    require_dict,
-    require_int,
-    require_str,
-)
+from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.filesystem_utils import make_directories
@@ -188,10 +183,7 @@ def _manifest(
     scoring = _expected_scoring(coverage_record.collection)
     document["scoring"] = scoring
     document["source_rollups"] = [
-        {
-            "source": item.source,
-            "rollups": [_rollup_document(rollup) for rollup in item.rollups],
-        }
+        {"source": item.source, "rollups": [_rollup_document(rollup) for rollup in item.rollups]}
         for item in (
             derive_coverage_source_rollups(coverage_record.points)
             if scoring["status"] == "valid"
@@ -462,9 +454,7 @@ def load_coverage_record(
 
 
 def load_coverage_record_bytes(
-    path: Path,
-    raw: bytes,
-    expected_target: DurableTargetIdentity | None = None,
+    path: Path, raw: bytes, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageRecord:
     """Deep-load a Coverage Record from exact manifest bytes already authenticated."""
     return _load_manifest(_canonical_coverage_record_path(path), raw, expected_target)

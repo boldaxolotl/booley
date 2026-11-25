@@ -41,10 +41,7 @@ def _git_identity_env() -> dict[str, str]:
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = run_bounded_child(
-        ["git", "-C", str(repo), *args],
-        check=True,
-    )
+    result = run_bounded_child(["git", "-C", str(repo), *args], check=True)
     return result.stdout.strip()
 
 
@@ -52,11 +49,7 @@ def _commit(repo: Path, message: str) -> str:
     env = _git_identity_env()
     staged = run_bounded_child(["git", "-C", str(repo), "add", "-A"], env=env)
     assert staged.returncode == 0, staged.stderr
-    run_bounded_child(
-        ["git", "-C", str(repo), "commit", "-m", message],
-        check=True,
-        env=env,
-    )
+    run_bounded_child(["git", "-C", str(repo), "commit", "-m", message], check=True, env=env)
     return _git(repo, "rev-parse", "HEAD")
 
 
@@ -264,9 +257,7 @@ def test_shard_benchmark_selects_the_ordinary_python_job_set(
             id="non-merge-head",
         ),
         pytest.param(
-            {"event_name": "pull_requset"},
-            "invalid choice: 'pull_requset'",
-            id="unknown-event",
+            {"event_name": "pull_requset"}, "invalid choice: 'pull_requset'", id="unknown-event"
         ),
         pytest.param(
             {"event_name": "push", "linux_options": {"shard-benchmark": "true"}},
@@ -327,12 +318,7 @@ def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
     current_base = _commit(repo, "upstream image changes")
     merge_head = _merge(repo, "feature")
 
-    outputs = _classify(
-        repo,
-        stale_base,
-        merge_head,
-        event_name="pull_request",
-    )
+    outputs = _classify(repo, stale_base, merge_head, event_name="pull_request")
 
     assert outputs["diff_base"] == current_base
     assert outputs["python_source"] == "true"
@@ -355,13 +341,7 @@ def test_push_ending_in_merge_still_uses_event_base(tmp_path: Path) -> None:
     _commit(repo, "stable base change")
     merge_head = _merge(repo, "side-branch")
 
-    outputs = _classify(
-        repo,
-        before,
-        merge_head,
-        force_all=True,
-        event_name="push",
-    )
+    outputs = _classify(repo, before, merge_head, force_all=True, event_name="push")
 
     assert outputs["diff_base"] == before
     assert outputs["stable_base"] == "true"
@@ -836,12 +816,7 @@ def test_main_push_runs_only_the_cache_writing_tier(tmp_path: Path) -> None:
 
     outputs = _classify(repo, base, head, force_all=True, event_name="push", ref=MAIN_REF)
 
-    assert _required(outputs) == {
-        "changes",
-        "release-semantic",
-        "build-dist",
-        "bwave-smoke",
-    }
+    assert _required(outputs) == {"changes", "release-semantic", "build-dist", "bwave-smoke"}
     assert {job for job, selected in _jobs(outputs).items() if selected} == {
         "build-dist",
         "bwave-smoke",
@@ -941,9 +916,7 @@ _TODAYS_LINUX_FULL_COMMAND = (
 )
 
 
-def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
-    tmp_path: Path,
-) -> None:
+def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(tmp_path: Path) -> None:
     repo, base, head = _merged_source_change(tmp_path)
     workflow = yaml.safe_load((_ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8"))
     full_step = next(

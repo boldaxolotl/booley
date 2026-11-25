@@ -60,8 +60,7 @@ class HostInstallationIdentity:
 
 
 def host_identity_differences(
-    recorded: HostInstallationIdentity,
-    actual: HostInstallationIdentity,
+    recorded: HostInstallationIdentity, actual: HostInstallationIdentity
 ) -> str:
     """Render every safe canonical-installation identity difference."""
     return format_differences(asdict(recorded), asdict(actual))
@@ -217,9 +216,7 @@ def _executable_version(executable: Path) -> str | None:
     """Version printed by `executable --version`, or None when unreadable."""
     try:
         result = run_captured_bounded(
-            [str(executable), "--version"],
-            timeout=_VERSION_TIMEOUT_S,
-            stdin=subprocess.DEVNULL,
+            [str(executable), "--version"], timeout=_VERSION_TIMEOUT_S, stdin=subprocess.DEVNULL
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -239,8 +236,7 @@ def _launcher(identity: HostInstallationIdentity) -> Path:
 
 
 def shadowing_installs(
-    recorded: HostInstallationIdentity,
-    running: HostInstallationIdentity,
+    recorded: HostInstallationIdentity, running: HostInstallationIdentity
 ) -> str | None:
     """List every `booley` on PATH when two or more exist, else None."""
     executables = _path_executables()
@@ -262,10 +258,7 @@ def shadowing_installs(
 
 
 def _mismatch_message(
-    lead: str,
-    recorded: HostInstallationIdentity,
-    running: HostInstallationIdentity,
-    remedy: str,
+    lead: str, recorded: HostInstallationIdentity, running: HostInstallationIdentity, remedy: str
 ) -> str:
     listing = shadowing_installs(recorded, running)
     tail = f"{listing}; {SHADOWED_INSTALL_FIX}" if listing else remedy
@@ -273,10 +266,7 @@ def _mismatch_message(
 
 
 def register_host_installation(
-    package_resource: Path,
-    *,
-    update: bool = False,
-    path: Path | None = None,
+    package_resource: Path, *, update: bool = False, path: Path | None = None
 ) -> HostInstallationIdentity:
     """Record this eligible wheel as canonical, refusing implicit updates."""
     if error := _eligibility_error(package_resource):
@@ -304,11 +294,7 @@ def register_host_installation(
     return persisted
 
 
-def host_install_error(
-    package_resource: Path,
-    *,
-    path: Path | None = None,
-) -> str | None:
+def host_install_error(package_resource: Path, *, path: Path | None = None) -> str | None:
     """Explain why this process cannot mutate Booley host-owned state."""
     if error := _eligibility_error(package_resource):
         return error + "; run the canonical host `booley bootstrap`"

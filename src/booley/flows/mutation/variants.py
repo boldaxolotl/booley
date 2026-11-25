@@ -59,10 +59,7 @@ class MutationVariantPlan:
     """
 
     def __init__(
-        self,
-        work_dir: Path,
-        originals: dict[str, bytes],
-        mutations: tuple[ResolvedMutation, ...],
+        self, work_dir: Path, originals: dict[str, bytes], mutations: tuple[ResolvedMutation, ...]
     ) -> None:
         self._work_dir = work_dir
         self._originals = originals
@@ -71,10 +68,7 @@ class MutationVariantPlan:
 
     @classmethod
     def resolve(
-        cls,
-        proposals: Sequence[MutationProposal],
-        work_dir: Path,
-        scope_files: Sequence[str],
+        cls, proposals: Sequence[MutationProposal], work_dir: Path, scope_files: Sequence[str]
     ) -> MutationVariantPlan:
         """Resolve proposals against pristine source or raise one clear error."""
         originals = cls._read_originals(work_dir, set(scope_files))

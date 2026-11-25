@@ -25,11 +25,7 @@ class AgentBackend(Protocol):
         """Short human-readable label (used in logs)."""
         ...
 
-    async def call(
-        self,
-        params: AgentCallParams,
-        **kwargs: Any,
-    ) -> AgentResult:
+    async def call(self, params: AgentCallParams, **kwargs: Any) -> AgentResult:
         """Run an agent with the given params and return the result.
 
         Optional keyword ``on_start``: a callable the backend invokes once it

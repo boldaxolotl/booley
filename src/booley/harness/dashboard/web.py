@@ -113,12 +113,7 @@ def create_app(
         worktree, branch = _accepted_worktree(main, request.query_params.get("worktree"))
         with lock:
             body = read_snapshot(
-                reader,
-                sampler,
-                slots=slots,
-                proc_root=proc_root,
-                worktree=worktree,
-                branch=branch,
+                reader, sampler, slots=slots, proc_root=proc_root, worktree=worktree, branch=branch
             )
         return JSONResponse(body)
 

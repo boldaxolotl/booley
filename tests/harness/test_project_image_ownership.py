@@ -235,9 +235,7 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
     for directory in ["first", "second"]:
         project = _project(tmp_path / directory, logical)
         observed = lifecycle.plan(
-            lifecycle.ProjectImageScope(project),
-            docker=docker,
-            artifact_policy=policy,
+            lifecycle.ProjectImageScope(project), docker=docker, artifact_policy=policy
         )
         prepared = lifecycle.prepare(observed, docker=docker, builder=TransactionBuilder(docker))
         result = lifecycle.commit(prepared, docker=docker)

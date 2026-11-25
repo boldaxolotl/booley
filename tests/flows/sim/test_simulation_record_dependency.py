@@ -367,10 +367,7 @@ def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, 
 
 
 def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):
-    from booley.flows.sim.record.codec import (
-        SimulationRecordIntegrityError,
-        canonical_json_bytes,
-    )
+    from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
     from booley.flows.sim.record.store import SimulationRecordStore
     from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 

@@ -16,29 +16,17 @@ from typing import TYPE_CHECKING, Any
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import default_report_root
-from booley.flows.progress_lifecycle import (
-    supersede_progress,
-)
+from booley.flows.progress_lifecycle import supersede_progress
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_progress import CoverageProgress
-from booley.flows.sim.live_progress import (
-    attempt_scope,
-)
+from booley.flows.sim.live_progress import attempt_scope
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry
-from booley.runtime.endpoint_execution import (
-    EXIT_ERROR,
-    EXIT_SUCCESS,
-    EndpointOutcome,
-)
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 
-from ..baseline_worktree import (
-    git_full_sha,
-)
-from .execution import (
-    SelectedTestRuns,
-)
+from ..baseline_worktree import git_full_sha
+from .execution import SelectedTestRuns
 from .record import (
     ResumeSimulationRecordPreview,
     ResumeSimulationRecordPreviewRequest,
@@ -54,18 +42,12 @@ from .record import (
     ValidatedResumeManifest,
 )
 from .record.coordinator import SimulationRecordPublicationError
-from .record.coverage_execution import (
-    CoverageAggregateExecutor,
-    _CoverageAggregateError,
-)
+from .record.coverage_execution import CoverageAggregateExecutor, _CoverageAggregateError
 from .record.flow_planning import (
     plan_coarse_simulation_record,
     plan_ordinary_hdl_simulation_record,
 )
-from .record.planning import (
-    SimulationRecordWorkloadMismatchError,
-    verify_workload,
-)
+from .record.planning import SimulationRecordWorkloadMismatchError, verify_workload
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import (
     _coverage_failed_target,
@@ -90,16 +72,13 @@ if TYPE_CHECKING:
     from .record import SimulationRecordPolicy
 
 
-def _manifest_run_groups(
-    manifest: SimulationRecordManifest,
-) -> tuple[tuple[TestRun, ...], ...]:
+def _manifest_run_groups(manifest: SimulationRecordManifest) -> tuple[tuple[TestRun, ...], ...]:
     """The Test Runs of each work item, exactly as the manifest froze them."""
     return SimulationRecordManifestView(manifest).test_run_groups
 
 
 def _fresh_simulation_record_recovery_detail(
-    validated: ValidatedResumeManifest,
-    observed: SimulationRecordRecoveryStatus,
+    validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
 ) -> dict[str, object]:
     """Refresh failure presentation without treating the pre-run view as authority."""
     try:
@@ -149,8 +128,7 @@ class SimulationRecordResumeMixin:
         def _simulation_record_policy(self) -> SimulationRecordPolicy: ...
         @staticmethod
         def _simulation_record_cancelled_outcome(
-            error: SimulationRecordCancellationError,
-            detail: Mapping[str, object] | None = None,
+            error: SimulationRecordCancellationError, detail: Mapping[str, object] | None = None
         ) -> EndpointOutcome: ...
         def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None: ...
         def _write_simulation_record_progress(
@@ -198,8 +176,7 @@ class SimulationRecordResumeMixin:
             status = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record integrity failure: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"Simulation Record integrity failure: {exc}"
             )
         unfinished = view.unfinished_work_item_ids(status)
         if not unfinished:
@@ -295,8 +272,7 @@ class SimulationRecordResumeMixin:
             observed = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record integrity failure: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"Simulation Record integrity failure: {exc}"
             )
         if self.args.dry_run:
             return self._preview_simulation_record_resume(validated, observed)
@@ -386,9 +362,7 @@ class SimulationRecordResumeMixin:
         )
 
     def _lock_simulation_record_resume_origin(
-        self,
-        validated: ValidatedResumeManifest,
-        observed: SimulationRecordRecoveryStatus,
+        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
     ) -> EndpointOutcome | None:
         from .record_reports import simulation_record_invocation_lock
 
@@ -487,11 +461,7 @@ class SimulationRecordResumeMixin:
             self._write_simulation_record_progress(
                 (selector,), outcomes, phase="starting", complete=False
             )
-            with attempt_scope(
-                selector,
-                identity=target.identity,
-                operation="publication",
-            ):
+            with attempt_scope(selector, identity=target.identity, operation="publication"):
                 outcome = self._run_validated_resume_simulation_record(
                     validated, invocation, admission, None, manifest_published
                 )

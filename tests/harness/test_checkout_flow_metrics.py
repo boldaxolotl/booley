@@ -297,10 +297,7 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     detail = find_import_failure(noise)
     stdout = noise + _cocotb_output([], state="missing", detail=detail, passed=False)
     _run_cocotb(
-        import_failure,
-        monkeypatch,
-        stdout,
-        report_dir=import_failure / "out" / "flow-reports",
+        import_failure, monkeypatch, stdout, report_dir=import_failure / "out" / "flow-reports"
     )
     cocotb = checkout_result(import_failure / "out", "sim", 1)
 
@@ -311,10 +308,7 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
         (Bound("tests_total_min", "tests_total", "min", 1, None, None, None),),
         (),
     )
-    for result, expected in (
-        (missing, ("missing tool: verilator",)),
-        (cocotb, fragments),
-    ):
+    for result, expected in ((missing, ("missing tool: verilator",)), (cocotb, fragments)):
         assert result.metrics == {}
         assert result.excerpt is not None
         assert all(fragment in result.excerpt for fragment in expected), result.excerpt

@@ -17,10 +17,7 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.core.host_shell import quote_arg
 from booley.harness import auto_doctor, doctor, host_diagnostics
 from booley.presentation import colors
-from booley.runtime import (
-    doctor_stamp,
-    platform_paths,
-)
+from booley.runtime import doctor_stamp, platform_paths
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import StaleTargetCatalogError
 from tests.conftest import symlink_or_skip
@@ -30,10 +27,7 @@ from tests.docker_cli_guard import (
     route_docker_helper_through_subprocess_run,
 )
 from tests.harness.doctor_host_support import answer_doctor_commands, hide_container_cli
-from tests.harness.test_doctor import (
-    _patch_environment,
-    _write_project,
-)
+from tests.harness.test_doctor import _patch_environment, _write_project
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -345,11 +339,7 @@ def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, val
 
 
 # Doctor's own evidence and scratch output stay writable; nothing else may change.
-_DOCTOR_WRITABLE_PREFIXES = (
-    ".git/",
-    ".booley/runtime/",
-    ".booley/tmp/",
-)
+_DOCTOR_WRITABLE_PREFIXES = (".git/", ".booley/runtime/", ".booley/tmp/")
 
 
 def _project_files(root: Path) -> dict[str, bytes]:

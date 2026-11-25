@@ -71,11 +71,7 @@ _NO_SUBCLASS_FIX = (
             "Python syntax error on line 2: invalid syntax",
             "fix the syntax error",
         ),
-        (
-            "class Ordinary:\n    name = 'ordinary'\n",
-            _NO_SUBCLASS_REASON,
-            _NO_SUBCLASS_FIX,
-        ),
+        ("class Ordinary:\n    name = 'ordinary'\n", _NO_SUBCLASS_REASON, _NO_SUBCLASS_FIX),
         (
             "class Custom(McpTool):\n    name = 'missing_description'\n",
             _NO_SUBCLASS_REASON,

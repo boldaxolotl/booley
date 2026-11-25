@@ -181,11 +181,7 @@ def guarded_write(
         )
 
     outcome = _planned_write_outcome(
-        target,
-        content,
-        owner_marker=owner_marker,
-        backup_suffix=backup_suffix,
-        newline=newline,
+        target, content, owner_marker=owner_marker, backup_suffix=backup_suffix, newline=newline
     )
     if outcome in (WriteOutcome.SKIPPED, WriteOutcome.REFUSED):
         return outcome

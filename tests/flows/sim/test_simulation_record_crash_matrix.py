@@ -26,25 +26,17 @@ from booley.flows.sim.execution.contract import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.record import collect_pre_sim_firings
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
-from booley.flows.sim.record.coverage_execution import (
-    CoverageAggregateExecutor,
-)
+from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
 from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-)
+from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
@@ -275,10 +267,7 @@ def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None
 @pytest.mark.parametrize("route", ("shared", "private"))
 @pytest.mark.parametrize("crash_point", _CRASH_POINTS)
 def test_serial_publication_boundary_resume_matrix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    crash_point: str,
-    route: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_point: str, route: str
 ) -> None:
     """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
     crash = _CrashOnce(crash_point)
@@ -810,15 +799,10 @@ def test_compatibility_projection_boundary_is_retryable(tmp_path: Path) -> None:
         _write_projection(path, crash)
     _write_projection(path, crash)
 
-    assert json.loads(path.read_text(encoding="utf-8")) == {
-        "complete": True,
-        "target": "sim",
-    }
+    assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
 
 
-def test_invalid_committed_result_fails_closed_before_executor_entry(
-    tmp_path: Path,
-) -> None:
+def test_invalid_committed_result_fails_closed_before_executor_entry(tmp_path: Path) -> None:
     document = _manifest()
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
@@ -838,9 +822,7 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
             raise AssertionError("invalid Result must fail before EDA execution")
 
     validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
-        (),
-        (),
+        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
     )
     request = ResumeSimulationRecordRunRequest(
         validated=validated,
@@ -924,10 +906,7 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
     engine_root.mkdir()
     infrastructure = failure_path.endswith("spawn")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
+        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
     )
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
@@ -1187,8 +1166,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
 
 
 def test_result_commit_and_scan_trust_evidence_changed_after_publication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Booley's own published evidence is trusted on commit and on every scan."""
 

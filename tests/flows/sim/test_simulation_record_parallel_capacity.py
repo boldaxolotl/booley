@@ -26,9 +26,7 @@ from booley.flows.sim.record.capacity import (
     SimulationRecordCapacityError,
 )
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
-from booley.flows.sim.record.codec import (
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,
@@ -40,13 +38,8 @@ from booley.flows.sim.record.run_directory import (
     claimed_run_directory,
     expand_run_directory,
 )
-from booley.flows.sim.record.scheduler import (
-    BoundedSimulationRecordScheduler,
-    ScheduledAttempt,
-)
-from booley.flows.sim.record.serial_execution import (
-    OrdinaryHdlSerialExecutor,
-)
+from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -214,9 +207,7 @@ def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
     assert terminal is not None and terminal["tree_terminal"] is True
 
 
-def test_cancelled_scope_rejects_a_later_command_between_processes(
-    tmp_path: Path,
-) -> None:
+def test_cancelled_scope_rejects_a_later_command_between_processes(tmp_path: Path) -> None:
     cancelled = threading.Event()
     scope = SupervisedExecutionScope(None, tmp_path, cancelled.is_set)
     flow = FlowMechanics()
@@ -609,9 +600,7 @@ class _ExitsDuringFinalWait(threading.Event):
         return False
 
 
-def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
-    tmp_path: Path,
-) -> None:
+def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(tmp_path: Path) -> None:
     """Regression for #977: a lane that exits in the final wait is a clean shutdown."""
     manifest = _two_item_manifest()
     simulation_record_store = SimulationRecordStore(tmp_path / "record")
@@ -637,11 +626,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
 @pytest.mark.parametrize("first_finisher", ["beta", "gamma"])
 @pytest.mark.parametrize("schedule_seed", (0, 3))
 def test_managed_simulation_record_bounds_overlap_keeps_order_and_cleans_child_claims(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    slots,
-    first_finisher: str,
-    schedule_seed: int,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots, first_finisher: str, schedule_seed: int
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)

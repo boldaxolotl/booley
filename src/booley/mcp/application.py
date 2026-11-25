@@ -179,8 +179,7 @@ class McpApplication:
         error = next(generation.validators[canonical_name].iter_errors(arguments), None)
         if error is not None:
             return McpToolPayload(
-                content=(McpTextBlock(_format_validation_error(error)),),
-                is_error=True,
+                content=(McpTextBlock(_format_validation_error(error)),), is_error=True
             )
         if request_context is not None and request_context.checkout is not None:
             arguments = _with_routed_work_dir(
@@ -231,18 +230,12 @@ class McpApplication:
             )
         if canonical_name in self._generation.definitions:
             raise ValueError(f"Duplicate MCP wire name or canonical alias: {canonical_name!r}")
-        schema = require_dict(
-            source.get("schema"),
-            field=f"MCP tool {name!r} input schema",
-        )
+        schema = require_dict(source.get("schema"), field=f"MCP tool {name!r} input schema")
         validator_type = validator_for(schema, default=Draft202012Validator)
         validator_type.check_schema(schema)
         output_schema = source.get("output_schema")
         if output_schema is not None:
-            output_schema = require_dict(
-                output_schema,
-                field=f"MCP tool {name!r} output schema",
-            )
+            output_schema = require_dict(output_schema, field=f"MCP tool {name!r} output schema")
             output_validator = validator_for(output_schema, default=Draft202012Validator)
             output_validator.check_schema(output_schema)
         self._generation.definitions[canonical_name] = McpToolDefinition(
@@ -298,7 +291,5 @@ def _normalize_payload(result: object) -> McpToolPayload:
             raise TypeError("Booley MCP tools currently support text content only")
         normalized.append(McpTextBlock(text))
     return McpToolPayload(
-        content=tuple(normalized),
-        structured_content=structured,
-        is_error=is_error,
+        content=tuple(normalized), structured_content=structured, is_error=is_error
     )

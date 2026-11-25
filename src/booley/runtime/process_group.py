@@ -59,20 +59,13 @@ def _taskkill(pid: int, *, force: bool) -> None:
         logger.debug("taskkill exited %s for process group %s", result.returncode, pid)
 
 
-def request_group_termination(
-    group: ProcessGroup,
-    *,
-    is_windows: bool | None = None,
-) -> None:
+def request_group_termination(group: ProcessGroup, *, is_windows: bool | None = None) -> None:
     """Request graceful termination without waiting for the group."""
     _platform(is_windows).request(group)
 
 
 def force_group_termination(
-    process: subprocess.Popen[Any],
-    group: ProcessGroup,
-    *,
-    is_windows: bool | None = None,
+    process: subprocess.Popen[Any], group: ProcessGroup, *, is_windows: bool | None = None
 ) -> None:
     """Force termination without waiting for the group."""
     _platform(is_windows).force(group, process)
@@ -105,9 +98,7 @@ async def _async_taskkill(pid: int, *, force: bool) -> None:
     command.extend(["/T", "/PID", str(pid)])
     try:
         killer = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            *command, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
     except OSError as exc:
         logger.debug("could not launch taskkill for process group %s: %s", pid, exc)
@@ -227,17 +218,13 @@ def _platform(is_windows: bool | None = None) -> _Platform:
 
 
 def force_async_process_group_now(
-    process: asyncio.subprocess.Process,
-    group: ProcessGroup,
+    process: asyncio.subprocess.Process, group: ProcessGroup
 ) -> None:
     """Synchronously signal a forced stop during coroutine cancellation."""
     _platform().force_now(group, process)
 
 
-async def _reap_async_leader(
-    process: asyncio.subprocess.Process,
-    group: ProcessGroup,
-) -> None:
+async def _reap_async_leader(process: asyncio.subprocess.Process, group: ProcessGroup) -> None:
     if process.returncode is not None:
         return
     try:
@@ -247,8 +234,7 @@ async def _reap_async_leader(
 
 
 async def force_async_process_group(
-    process: asyncio.subprocess.Process,
-    group: ProcessGroup,
+    process: asyncio.subprocess.Process, group: ProcessGroup
 ) -> None:
     """Force an asyncio child group down and reap the direct child."""
     await _platform().force_async(group)
@@ -256,10 +242,7 @@ async def force_async_process_group(
 
 
 async def terminate_async_process_group(
-    process: asyncio.subprocess.Process,
-    group: ProcessGroup,
-    *,
-    grace_seconds: float = 2,
+    process: asyncio.subprocess.Process, group: ProcessGroup, *, grace_seconds: float = 2
 ) -> None:
     """Gracefully terminate an asyncio child group, then force survivors."""
     platform = _platform()
@@ -273,9 +256,7 @@ async def terminate_async_process_group(
 
 
 async def terminate_adopted_process_group(
-    group: ProcessGroup,
-    *,
-    grace_seconds: float = 2,
+    group: ProcessGroup, *, grace_seconds: float = 2
 ) -> None:
     """Terminate a group whose original ``Process`` object is unavailable."""
     platform = _platform()

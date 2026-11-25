@@ -105,9 +105,7 @@ def test_verified_inherited_execution_accepts_descendant_and_supervisor_itself(
     ) == ExecutionId(execution_id)
 
 
-def test_verified_inherited_execution_rejects_record_from_another_project(
-    tmp_path: Path,
-) -> None:
+def test_verified_inherited_execution_rejects_record_from_another_project(tmp_path: Path) -> None:
     execution_id = "e" * 32
     foreign = tmp_path / "foreign"
     current = tmp_path / "current"
@@ -151,11 +149,7 @@ def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> No
 
 def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None:
     assert (
-        verify_inherited_execution_id(
-            "not-an-execution",
-            booley_dir=tmp_path,
-            owner_pid=20,
-        )
+        verify_inherited_execution_id("not-an-execution", booley_dir=tmp_path, owner_pid=20)
         is None
     )
 

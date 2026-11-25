@@ -16,14 +16,7 @@ from booley.flows.implementation_report import (
 if TYPE_CHECKING:
     from .backends.vivado.metrics import FpgaMetrics
 
-_FPGA_DELTA_METRICS = (
-    "lut_count",
-    "ff_count",
-    "bram_count",
-    "dsp_count",
-    "wns_ns",
-    "whs_ns",
-)
+_FPGA_DELTA_METRICS = ("lut_count", "ff_count", "bram_count", "dsp_count", "wns_ns", "whs_ns")
 
 
 def _failure_reasons(metrics: FpgaMetrics) -> tuple[str, ...]:
@@ -78,10 +71,7 @@ def _run(metrics: FpgaMetrics) -> ImplementationRun:
         recipe_fingerprint=metrics.recipe_fingerprint or None,
         recipe_snapshot=metrics.recipe_snapshot,
         provenance=metrics.run_evidence,
-        cache={
-            "cached": metrics.cached,
-            "fingerprint": metrics.cache_fingerprint or None,
-        },
+        cache={"cached": metrics.cached, "fingerprint": metrics.cache_fingerprint or None},
         cache_consumer_run_id=metrics.cache_consumer_run_id or None,
         artifacts={
             **({"log": metrics.log_path} if metrics.log_path else {}),
@@ -91,18 +81,12 @@ def _run(metrics: FpgaMetrics) -> ImplementationRun:
 
 
 def build_fpga_implementation_report(
-    context: ImplementationContext,
-    current: FpgaMetrics,
-    baseline: FpgaMetrics | None,
+    context: ImplementationContext, current: FpgaMetrics, baseline: FpgaMetrics | None
 ) -> ImplementationReport:
     """Normalize FPGA evidence and build its canonical v1 report."""
     policy = MetricPolicy(
-        delta_metrics=_FPGA_DELTA_METRICS,
-        required_comparison_metrics=("lut_count", "ff_count"),
+        delta_metrics=_FPGA_DELTA_METRICS, required_comparison_metrics=("lut_count", "ff_count")
     )
     return build_implementation_report(
-        context,
-        _run(current),
-        _run(baseline) if baseline is not None else None,
-        policy,
+        context, _run(current), _run(baseline) if baseline is not None else None, policy
     )

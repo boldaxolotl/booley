@@ -220,11 +220,7 @@ def write_run_log_progress(
     return path
 
 
-def write_run_log(
-    work_dir: str | Path,
-    text: str,
-    max_bytes: int | None = 10_000_000,
-) -> Path:
+def write_run_log(work_dir: str | Path, text: str, max_bytes: int | None = 10_000_000) -> Path:
     """Atomically persist Flow output, preserving an existing ownership header."""
     path = Path(work_dir, RUN_LOG_NAME)
     first, _ = _read_run_log_head(path)

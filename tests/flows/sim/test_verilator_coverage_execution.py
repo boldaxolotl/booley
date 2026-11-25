@@ -115,10 +115,7 @@ def test_prepare_collection_projects_resolved_sources_and_custom_main_recipe(
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
 
     request = prepare_coverage_collection(
-        handle,
-        selected_tests=("wrap",),
-        artifact_root=tmp_path / "coverage",
-        trace=True,
+        handle, selected_tests=("wrap",), artifact_root=tmp_path / "coverage", trace=True
     )
 
     assert request.target.identity == handle.identity
@@ -143,9 +140,7 @@ def test_prepare_collection_defaults_to_reset_inclusive_coverage(tmp_path: Path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
 
     request = prepare_coverage_collection(
-        handle,
-        selected_tests=("reset",),
-        artifact_root=tmp_path / "coverage",
+        handle, selected_tests=("reset",), artifact_root=tmp_path / "coverage"
     )
 
     assert request.reset_included is True
@@ -183,9 +178,7 @@ def test_prepare_collection_rejects_invalid_inherited_coverage_recipe(tmp_path: 
         r"must be a boolean",
     ):
         prepare_coverage_collection(
-            handle,
-            selected_tests=("reset",),
-            artifact_root=tmp_path / "coverage",
+            handle, selected_tests=("reset",), artifact_root=tmp_path / "coverage"
         )
 
 
@@ -291,9 +284,7 @@ def test_coverage_run_labels_its_test_variant_and_source_bytes(
     assert expected_bytes > 0
 
 
-def test_prepare_collection_gives_every_selected_test_its_default_test_run(
-    tmp_path: Path,
-) -> None:
+def test_prepare_collection_gives_every_selected_test_its_default_test_run(tmp_path: Path) -> None:
     _write_target(tmp_path)
     _declare_variants(tmp_path)
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
@@ -386,10 +377,7 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
         )
         assert execution.run(request).verdict == "pass"
 
-    assert (tmp_path / "firings.txt").read_text(encoding="utf-8").splitlines() == [
-        "gap",
-        "full",
-    ]
+    assert (tmp_path / "firings.txt").read_text(encoding="utf-8").splitlines() == ["gap", "full"]
     assert len(captured["run_scripts"]) == 2
     assert captured["staged_values"] == ["gap", "full"]
     assert captured["work"].adapter == "cocotb"
@@ -593,8 +581,7 @@ def test_pre_sim_missing_executable_is_an_infrastructure_error(
     tmp_path: Path, monkeypatch
 ) -> None:
     _pre_sim_config(
-        tmp_path,
-        "[flows.sim]\npre_run_commands = ['booley-command-that-does-not-exist']\n",
+        tmp_path, "[flows.sim]\npre_run_commands = ['booley-command-that-does-not-exist']\n"
     )
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
     assert _build_coverage(execution, target).success
@@ -629,10 +616,7 @@ def test_legacy_build_access_with_commands_fails_before_coverage_build(
 def test_legacy_build_access_without_commands_remains_compatible(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _pre_sim_config(
-        tmp_path,
-        "[flows.sim]\npre_sim_build_access = 'legacy-per-test'\n",
-    )
+    _pre_sim_config(tmp_path, "[flows.sim]\npre_sim_build_access = 'legacy-per-test'\n")
     execution, target, _raw_path, _captured = _execution_fixture(tmp_path, monkeypatch)
 
     assert _build_coverage(execution, target).success
@@ -855,8 +839,7 @@ def _fake_invoke(captured, raw_path: Path):
                 image.write_text("compiled image", encoding="utf-8")
                 image.chmod(0o755)
             return SubprocessResult(
-                returncode=0,
-                stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n",
+                returncode=0, stdout=f"BOOLEY_BUILD_STAGE token={token} rc=0 duration_ms=1\n"
             )
         work = captured["work"]
         verdict = "pass"
@@ -931,13 +914,10 @@ def test_coverage_record_outcomes_follow_the_flow(
 
 
 def test_coverage_build_run_and_identity_keep_distinct_budgets(
-    tmp_path: Path,
-    monkeypatch,
+    tmp_path: Path, monkeypatch
 ) -> None:
     execution, target, raw_path, captured = _execution_fixture(
-        tmp_path,
-        monkeypatch,
-        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+        tmp_path, monkeypatch, options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)
     )
 
     assert _build_coverage(execution, target).success
@@ -949,14 +929,9 @@ def test_coverage_build_run_and_identity_keep_distinct_budgets(
     assert timeouts[2][1] == 95
 
 
-def test_traced_coverage_run_deadline_adds_conversion_budget(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_traced_coverage_run_deadline_adds_conversion_budget(tmp_path: Path, monkeypatch) -> None:
     execution, target, raw_path, captured = _execution_fixture(
-        tmp_path,
-        monkeypatch,
-        options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
+        tmp_path, monkeypatch, options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000)
     )
 
     assert _build_coverage(execution, target).success
@@ -1017,11 +992,7 @@ def test_missing_per_test_evidence_is_rejected_without_losing_process_timeout(
     execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
     assert _build_coverage(execution, target).success
     captured["result"] = AdapterResult(
-        passed=False,
-        inconclusive=True,
-        sva_errors=0,
-        tests=("wrap",),
-        failure_kind="inconclusive",
+        passed=False, inconclusive=True, sva_errors=0, tests=("wrap",), failure_kind="inconclusive"
     )
     captured["process"] = SubprocessResult(returncode=1, timed_out=process_timeout)
 
@@ -1196,10 +1167,7 @@ def test_coverage_log_failure_remains_advisory(tmp_path, monkeypatch, observed, 
         assert sink.error == "OSError: full"
 
 
-def test_coverage_lease_wait_is_bounded_by_the_build_timeout(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_coverage_lease_wait_is_bounded_by_the_build_timeout(tmp_path: Path, monkeypatch) -> None:
     """A busy slot ends the coverage build after the build timeout, not 60 s (#4843)."""
     execution, target, _raw_path, _captured = _execution_fixture(
         tmp_path, monkeypatch, options=SimulationOptions(build_timeout_ms=1000)

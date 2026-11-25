@@ -20,14 +20,10 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.scheduler import (
-    BoundedSimulationRecordScheduler,
-)
+from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.runtime.job_slots import (
-    SlotStore,
-)
+from booley.runtime.job_slots import SlotStore
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _holder_claim,

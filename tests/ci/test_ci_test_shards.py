@@ -25,10 +25,7 @@ from ci_test_shards import (
 
 def test_longest_processing_time_balances_known_slow_tests() -> None:
     nodeids = ("test::slow", "test::medium", "test::fast-a", "test::fast-b")
-    timings = TimingModel(
-        default_seconds=1.0,
-        tests={"test::slow": 9.0, "test::medium": 7.0},
-    )
+    timings = TimingModel(default_seconds=1.0, tests={"test::slow": 9.0, "test::medium": 7.0})
 
     shards = assign_shards(nodeids, 2, timings)
 
@@ -80,11 +77,7 @@ def _write_group(tmp_path: Path, shards: tuple[tuple[str, ...], ...]) -> list[Pa
     for index in range(len(shards)):
         path = tmp_path / str(index) / "shard-manifest.json"
         write_manifest(
-            path,
-            group="windows",
-            shard_index=index,
-            shards=shards,
-            all_nodeids=all_nodeids,
+            path, group="windows", shard_index=index, shards=shards, all_nodeids=all_nodeids
         )
         paths.append(path)
     return paths

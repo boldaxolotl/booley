@@ -204,11 +204,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.booley-",
-            delete=False,
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.booley-", delete=False
         ) as handle:
             handle.write(content)
             handle.flush()
@@ -496,10 +492,7 @@ def _wait_for_manifests(home: Path, *, sleep, clock) -> list[Path]:
     if budget <= 0 or sentinel.exists():
         return []
     manifests = _poll_until(
-        lambda: find_manifests(home) or None,
-        sleep=sleep,
-        clock=clock,
-        deadline=clock() + budget,
+        lambda: find_manifests(home) or None, sleep=sleep, clock=clock, deadline=clock() + budget
     )
     _mark_waited(sentinel)
     return manifests or []

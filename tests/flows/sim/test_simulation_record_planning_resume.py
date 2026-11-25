@@ -23,23 +23,14 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.model import (
-    create_simulation_record_plan,
-)
+from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-)
+from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
-from booley.runtime.execution_records import (
-    ExecutionId,
-)
-from booley.runtime.job_slots import (
-    CLASS_MEMORY,
-)
+from booley.runtime.execution_records import ExecutionId
+from booley.runtime.job_slots import CLASS_MEMORY
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _interrupted_simulation_record,
@@ -75,9 +66,7 @@ def _child_parent_ids(project: Path) -> set[str]:
 
 @pytest.mark.parametrize("runtime_execution_id", ["b" * 32, None])
 def test_interrupted_managed_simulation_record_exact_resume_preserves_parent_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_execution_id: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_execution_id: str | None
 ) -> None:
     case = _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id)
     assert not case.store.summary_path.exists()
@@ -167,9 +156,7 @@ def _seed_authenticated_states(
 def _resume_request(store: SimulationRecordStore, project: Path):
     manifest = store.load_manifest()
     validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
-        (),
-        (),
+        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
     )
     return ResumeSimulationRecordPreviewRequest(
         validated=validated,
@@ -183,8 +170,7 @@ def _resume_request(store: SimulationRecordStore, project: Path):
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
 @pytest.mark.timeout(90)
 def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_eda(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(os, "fsync", lambda _descriptor: None)
     manifest = _manifest_for(tuple(f"case_{index:04d}" for index in range(1_000)))
@@ -222,11 +208,7 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
         len(preview.recovery.completed),
         len(preview.recovery.interrupted),
         len(preview.recovery.pending),
-    ) == (
-        1,
-        1,
-        998,
-    )
+    ) == (1, 1, 998)
     assert first == second
     assert store.summary_path.read_bytes() == first_bytes
     assert elapsed < scaled(15)
@@ -234,10 +216,7 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
 
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_resume_endpoint_refreshes_recovery_after_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    cancelled: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cancelled: bool
 ) -> None:
     reports, manifest, _executions = _interrupted_project_record(tmp_path, monkeypatch)
     store = SimulationRecordStore(manifest.parent)
@@ -316,9 +295,7 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     assert store.manifest_path.read_bytes() == manifest_bytes
 
 
-def test_resume_inspection_scans_the_validated_manifest_without_rereading(
-    tmp_path: Path,
-) -> None:
+def test_resume_inspection_scans_the_validated_manifest_without_rereading(tmp_path: Path) -> None:
     store = SimulationRecordStore(
         tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
     )

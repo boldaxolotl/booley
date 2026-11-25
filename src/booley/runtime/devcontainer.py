@@ -175,10 +175,7 @@ _APP_AUTH_TARGET = {
 # writable layer is discarded on rebuild, so without this the agent loses its
 # plans, session transcripts, and todos (e.g. ~/.claude/plans/*.md). Backed by a
 # named Docker volume (see :func:`_state_volume_mount`).
-_APP_STATE_DIR = {
-    APP_CLAUDE: f"{AGENT_HOME}/.claude",
-    APP_CODEX: f"{AGENT_HOME}/.codex",
-}
+_APP_STATE_DIR = {APP_CLAUDE: f"{AGENT_HOME}/.claude", APP_CODEX: f"{AGENT_HOME}/.codex"}
 
 # Claude Code's user config (``~/.claude.json``) caches statsig feature-gate
 # evaluations — including staged-rollout / promotional model grants (e.g.
@@ -704,11 +701,7 @@ def _build_mounts(
     mounts.extend(_mask_mounts(mask_paths, mask_source))
     if protected_devcontainer_source:
         mounts.append(
-            _bind_mount(
-                protected_devcontainer_source,
-                f"{WORK_DIR}/.devcontainer",
-                readonly=True,
-            )
+            _bind_mount(protected_devcontainer_source, f"{WORK_DIR}/.devcontainer", readonly=True)
         )
     return mounts
 

@@ -209,28 +209,21 @@ def _child(cmd, **kwargs):
 class TestRunSubprocess:
     def test_successful_run(self):
         # Real subprocess via asyncio — `python -c` is portable on Win/Linux.
-        code, out, _err, timed_out = asyncio.run(
-            _child([sys.executable, "-c", "print('ok')"]),
-        )
+        code, out, _err, timed_out = asyncio.run(_child([sys.executable, "-c", "print('ok')"]))
         assert code == 0
         assert "ok" in out
         assert timed_out is False
 
     def test_timeout(self):
         code, _out, err, timed_out = asyncio.run(
-            _child(
-                [sys.executable, "-c", "import time; time.sleep(5)"],
-                timeout=scaled(1),
-            ),
+            _child([sys.executable, "-c", "import time; time.sleep(5)"], timeout=scaled(1))
         )
         assert code == 2
         assert "timed out" in err.lower()
         assert timed_out is True
 
     def test_os_error(self):
-        code, _out, err, timed_out = asyncio.run(
-            _child(["__definitely_not_a_real_binary__"]),
-        )
+        code, _out, err, timed_out = asyncio.run(_child(["__definitely_not_a_real_binary__"]))
         assert code == 2
         assert err  # message describes the launch failure
         assert timed_out is False
@@ -285,9 +278,7 @@ class TestRunSubprocess:
             f"for _ in range({(cap * 2) // 1024}): sys.stdout.write(chunk)\n"
             "sys.stdout.write('END_MARKER')\n"
         )
-        code, out, _err, _timed_out = asyncio.run(
-            _child([sys.executable, "-c", script]),
-        )
+        code, out, _err, _timed_out = asyncio.run(_child([sys.executable, "-c", script]))
         assert code == 0
         assert out.endswith("END_MARKER")
         assert len(out.encode("utf-8")) <= cap
@@ -707,13 +698,7 @@ class TestBooleyStatus:
 
         mcp_tools = catalog.visible_definitions(
             catalog.Exposure.from_mapping(os.environ),
-            [
-                {
-                    "name": "sim",
-                    "description": "Run simulation",
-                    "schema": {"type": "object"},
-                },
-            ],
+            [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}],
         )
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
@@ -854,13 +839,7 @@ class TestBooleySleep:
 
         mcp_tools = catalog.visible_definitions(
             catalog.Exposure.from_mapping(os.environ),
-            [
-                {
-                    "name": "sim",
-                    "description": "Run simulation",
-                    "schema": {"type": "object"},
-                },
-            ],
+            [{"name": "sim", "description": "Run simulation", "schema": {"type": "object"}}],
         )
 
         assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
@@ -1145,10 +1124,7 @@ class TestLoadAgentSettingsFromToml:
     def test_claude_provider_from_booley_dir(self, tmp_path, monkeypatch):
         # BOOLEY_DIR points at the .booley dir; the loader must
         # resolve the *parent* as the Project Root.
-        root = self._write_project(
-            tmp_path,
-            '[agent]\nprovider = "claude"\n',
-        )
+        root = self._write_project(tmp_path, '[agent]\nprovider = "claude"\n')
         monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
 
         self._load()
@@ -1169,10 +1145,7 @@ class TestLoadAgentSettingsFromToml:
         assert self._get().settings.default_cli == "codex"
 
     def test_falls_back_to_cwd_when_env_unset(self, tmp_path, monkeypatch):
-        root = self._write_project(
-            tmp_path,
-            '[agent]\nprovider = "claude"\n',
-        )
+        root = self._write_project(tmp_path, '[agent]\nprovider = "claude"\n')
         monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.chdir(root)
 
@@ -1501,13 +1474,7 @@ async def _live_checkpoint_response(
         monkeypatch.setattr(server, "_JobManager", lambda _lifetime: selected_jobs)
         application = server._build_mcp_application([], [], server._McpLifetime(None, None))
         assert "booley_poll" in [tool.name for tool in application.list_tools()]
-        payload = await application.call_tool(
-            "booley_poll",
-            {
-                "run_id": run_id,
-                "wait_seconds": 0,
-            },
-        )
+        payload = await application.call_tool("booley_poll", {"run_id": run_id, "wait_seconds": 0})
         assert not payload.is_error
         structured = payload.structured_content
         assert "synthesis verdict" not in payload.content[0].text

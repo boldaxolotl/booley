@@ -32,10 +32,7 @@ from .codec import (
     SimulationRecordIntegrityError,
 )
 from .model import SimulationRecordPlan, create_simulation_record_plan
-from .planning import (
-    derive_runtime_input_declarations,
-    finalize_manifest,
-)
+from .planning import derive_runtime_input_declarations, finalize_manifest
 
 
 def _require_ordinary_hdl_inputs(
@@ -102,10 +99,7 @@ def plan_ordinary_hdl_simulation_record(
     )
     target = _target_document(handle, root, revision, role)
     suite = _required_suite(
-        root,
-        required_suite,
-        handle.identity,
-        catalog_backed=required_suite_catalog_backed,
+        root, required_suite, handle.identity, catalog_backed=required_suite_catalog_backed
     )
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(
@@ -161,10 +155,7 @@ def plan_coarse_simulation_record(
     )
     target = _target_document(handle, root, revision, "candidate")
     suite = _required_suite(
-        root,
-        required_suite,
-        handle.identity,
-        catalog_backed=required_suite_catalog_backed,
+        root, required_suite, handle.identity, catalog_backed=required_suite_catalog_backed
     )
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(runs, target, variant, configured_cwd, run_kind, kind=kind)
@@ -305,10 +296,7 @@ def _workload_document(
         "mode": "simulate",
         "trace": trace,
         "coverage": coverage,
-        "eda": {
-            "kind": inspection.eda_tool or "",
-            "version": _eda_identity(inspection.eda_tool),
-        },
+        "eda": {"kind": inspection.eda_tool or "", "version": _eda_identity(inspection.eda_tool)},
         "planner_contract_version": "1",
         "adapter_contract_version": "1",
         "pre_sim_build_access": resolve_pre_sim_build_access(root),
@@ -393,12 +381,7 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             else "rtl"
         )
         entries.append(
-            {
-                "path": relative,
-                "bytes": len(raw),
-                "sha256": content_digest(raw),
-                "kind": kind,
-            }
+            {"path": relative, "bytes": len(raw), "sha256": content_digest(raw), "kind": kind}
         )
     return entries
 
@@ -418,11 +401,7 @@ def _eda_identity(kind: str | None) -> str:
 
 
 def _required_suite(
-    root: Path,
-    names: Sequence[str],
-    identity: str,
-    *,
-    catalog_backed: bool | None = None,
+    root: Path, names: Sequence[str], identity: str, *, catalog_backed: bool | None = None
 ) -> dict[str, object]:
     ordered = list(dict.fromkeys(names))
     backed = bool(ordered) if catalog_backed is None else catalog_backed
@@ -544,10 +523,7 @@ def _work_items(
             "role": target["role"],
             "revision": target["revision"],
             "target": target,
-            "selection": {
-                "kind": selection_kind,
-                "names": list(names),
-            },
+            "selection": {"kind": selection_kind, "names": list(names)},
             "arguments": list(names),
             "test_runs": [test_run_document(run) for run in runs],
             "build_variant_id": variant["build_variant_id"],

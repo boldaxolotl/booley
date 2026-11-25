@@ -345,11 +345,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     # The child, not Booley, reserves the handle: the handle belongs to the agent's process.
     # Bare `booley` has no chat options, so `session_name` may be absent too.
     launch = functools.partial(
-        _launch,
-        provider,
-        project_root,
-        args.agent_args,
-        name=getattr(args, "session_name", None),
+        _launch, provider, project_root, args.agent_args, name=getattr(args, "session_name", None)
     )
     resume = chat_resume.request(provider, args.agent_args)
     resolve = (

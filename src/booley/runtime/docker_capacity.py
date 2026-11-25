@@ -14,12 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from booley.core.boundary import (
-    BoundaryError,
-    require_dict,
-    require_list,
-    require_str_value,
-)
+from booley.core.boundary import BoundaryError, require_dict, require_list, require_str_value
 from booley.runtime.platform_paths import run_captured_bounded
 
 GIB = 2**30
@@ -282,11 +277,7 @@ def _request_from_document(entry: object) -> DockerBuildRequest:
     managed_image = require_str_value(document.get("managed_image"), field="managed_image")
     output_tag = require_str_value(document.get("output_tag"), field="output_tag")
     estimate_class = require_str_value(document.get("estimate_class"), field="estimate_class")
-    return DockerBuildRequest(
-        managed_image,
-        output_tag,
-        BuildEstimateClass(estimate_class),
-    )
+    return DockerBuildRequest(managed_image, output_tag, BuildEstimateClass(estimate_class))
 
 
 def _plan_from_file(path: Path, current_index: int) -> tuple[DockerBuildRequest, DockerBuildPlan]:
@@ -323,10 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if current.output_tag != args.image:
                 raise DockerCapacityError("current plan output tag does not match --image")
         ensure_docker_build_capacity(
-            command,
-            image=args.image,
-            current_request=current,
-            remaining_plan=plan,
+            command, image=args.image, current_request=current, remaining_plan=plan
         )
     except DockerCapacityError as exc:
         print(f"Docker image-build preflight failed: {exc}", file=sys.stderr)

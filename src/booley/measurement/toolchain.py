@@ -59,9 +59,7 @@ def _probe(executable: str, arguments: tuple[str, ...], timeout_s: int) -> str:
     return lines[0] if result.returncode == 0 and lines else UNKNOWN_VERSION
 
 
-def collect_toolchain_fingerprint(
-    environ: Mapping[str, str] = os.environ,
-) -> ToolchainFingerprint:
+def collect_toolchain_fingerprint(environ: Mapping[str, str] = os.environ) -> ToolchainFingerprint:
     """Collect the fingerprint of the calling environment; ``IdentityError`` if unhashable."""
     kind: Literal["build", "source"] = "build"
     note: str | None = None
@@ -75,9 +73,5 @@ def collect_toolchain_fingerprint(
         if (path := shutil.which(name)) is not None
     }
     return ToolchainFingerprint(
-        environ.get(SANDBOX_IMAGE_ID_ENV) or None,
-        booley,
-        kind,
-        note,
-        tools,
+        environ.get(SANDBOX_IMAGE_ID_ENV) or None, booley, kind, note, tools
     )

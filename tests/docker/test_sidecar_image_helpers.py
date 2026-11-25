@@ -25,10 +25,7 @@ class FakeDockerBoundary:
     @staticmethod
     def completed(args, returncode=0, stdout="", stderr=""):
         return subprocess.CompletedProcess(
-            args=args,
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
+            args=args, returncode=returncode, stdout=stdout, stderr=stderr
         )
 
     def _inner_command(self, args, inner):
@@ -178,9 +175,7 @@ def test_isolated_daemon_rejects_outer_daemon_identity(monkeypatch, tmp_path: Pa
     ],
 )
 def test_isolated_daemon_rejects_malformed_inspection_payload(
-    monkeypatch,
-    tmp_path: Path,
-    inspect_output: str,
+    monkeypatch, tmp_path: Path, inspect_output: str
 ) -> None:
     class MalformedInspectBoundary(FakeDockerBoundary):
         def __call__(self, args, **kwargs):
@@ -194,8 +189,7 @@ def test_isolated_daemon_rejects_malformed_inspection_payload(
 
     with (
         pytest.raises(
-            AssertionError,
-            match="invalid Docker inspect response for 'booley-test-dind-",
+            AssertionError, match="invalid Docker inspect response for 'booley-test-dind-"
         ),
         isolated_docker_daemon("candidate", tmp_path, name_prefix="booley-test"),
     ):
@@ -238,10 +232,7 @@ def test_readiness_timeout_cleans_named_daemon(monkeypatch, tmp_path: Path) -> N
     with (
         pytest.raises(AssertionError, match="did not become ready"),
         isolated_docker_daemon(
-            "candidate",
-            tmp_path,
-            name_prefix="booley-test",
-            readiness_timeout=scaled(0.01),
+            "candidate", tmp_path, name_prefix="booley-test", readiness_timeout=scaled(0.01)
         ),
     ):
         pytest.fail("unready daemon was yielded")
@@ -305,10 +296,7 @@ def test_unsafe_dind_configuration_fails_closed(
                 self.calls.append(args)
                 config = [
                     {
-                        "HostConfig": {
-                            "NetworkMode": network_mode,
-                            "PortBindings": port_bindings,
-                        },
+                        "HostConfig": {"NetworkMode": network_mode, "PortBindings": port_bindings},
                         "Mounts": mounts,
                     }
                 ]

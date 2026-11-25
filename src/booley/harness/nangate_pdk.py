@@ -273,11 +273,7 @@ def _manifest_bytes() -> bytes:
         "revision": REVISION,
         "source_repository": "https://github.com/The-OpenROAD-Project/OpenROAD",
         "files": [
-            {
-                "destination": item.destination,
-                "sha256": item.sha256,
-                "url": item.url,
-            }
+            {"destination": item.destination, "sha256": item.sha256, "url": item.url}
             for item in FILES
         ],
     }

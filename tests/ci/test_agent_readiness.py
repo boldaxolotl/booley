@@ -205,10 +205,7 @@ def test_packaged_copies_check_runs_as_reported():
     assert command is not None
     environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     result = run_bounded_child(
-        list(command.argv),
-        cwd=command.cwd,
-        env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
+        list(command.argv), cwd=command.cwd, env=environment, timeout=SUBPROCESS_TIMEOUT_S
     )
     assert (result.returncode, result.stdout) == (0, "")
 
@@ -450,8 +447,7 @@ def test_docker_check_reports_the_probe(checkout, bare_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize(
-    "case",
-    ["build", "no-cargo", "ready", pytest.param("binary", marks=pytest.mark.native_bwave)],
+    "case", ["build", "no-cargo", "ready", pytest.param("binary", marks=pytest.mark.native_bwave)]
 )
 def test_full_profile_reports_native_prerequisites(checkout, bare_path, monkeypatch, capsys, case):
     if case == "build":

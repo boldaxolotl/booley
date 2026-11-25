@@ -10,10 +10,7 @@ import pytest
 from booley.harness import doctor
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
-from tests.harness.test_doctor import (
-    _patch_environment,
-    _write_project,
-)
+from tests.harness.test_doctor import _patch_environment, _write_project
 
 
 @pytest.fixture(autouse=True)

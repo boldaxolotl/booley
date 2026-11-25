@@ -16,10 +16,7 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.flows import runtime_reality as owner
 from booley.runtime import runtime_context, sandbox_apply, session_runtime
-from booley.runtime.sandbox_apply import (
-    UNKNOWN_SANDBOX_STEPS,
-    Attachment,
-)
+from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
 

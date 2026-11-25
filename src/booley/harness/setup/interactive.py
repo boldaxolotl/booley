@@ -7,10 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.commit_policy import stealth_enabled
-from booley.eda.provisioning.licensing.flexnet_docker import (
-    remove_relay,
-    resources_for_session,
-)
+from booley.eda.provisioning.licensing.flexnet_docker import remove_relay, resources_for_session
 from booley.runtime import dashboard_tasks, host_docker, session_issuance, session_runtime
 from booley.runtime.git import add_git_excludes, git_excludes_pending, stealth_exclude_names
 
@@ -89,9 +86,7 @@ class InteractiveInitChanges:
 def inspect(request: InteractiveInitRequest) -> InteractiveInitPlan:
     """Prepare desired state and compare every managed Sandbox output."""
     prepared = session_issuance.preview(
-        request.project_root,
-        request.build_spec,
-        expected_image_id=request.expected_image_id,
+        request.project_root, request.build_spec, expected_image_id=request.expected_image_id
     )
     issuance, issuance_problem = _inspect_issuance(request.project_root, prepared)
     licensed = prepared.inputs.license_profile_name is not None
@@ -126,9 +121,7 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
         if plan.request.mask_source is not None:
             plan.request.mask_source.mkdir(parents=True, exist_ok=True)
         issuance = session_issuance.issue_prepared(
-            plan.request.project_root,
-            plan.prepared,
-            force_dependencies=force,
+            plan.request.project_root, plan.prepared, force_dependencies=force
         )
     dashboard_changed = bool(issued and plan.dashboard_tasks.pending)
     if not issued:
@@ -160,8 +153,7 @@ def apply(plan: InteractiveInitPlan, *, force: bool = False) -> InteractiveInitC
 
 
 def _inspect_issuance(
-    project_root: Path,
-    prepared: session_issuance.PreparedSessionSpec,
+    project_root: Path, prepared: session_issuance.PreparedSessionSpec
 ) -> tuple[session_issuance.Issuance | None, str]:
     try:
         return session_issuance.inspect_prepared(project_root, prepared), ""
@@ -182,7 +174,6 @@ def _remove_unlicensed_relay(project_root: Path) -> bool:
     if not _unlicensed_relay_pending(project_root):
         return False
     remove_relay(
-        resources_for_session(str(project_root.resolve())),
-        runner=host_docker.relay_docker,
+        resources_for_session(str(project_root.resolve())), runner=host_docker.relay_docker
     )
     return True

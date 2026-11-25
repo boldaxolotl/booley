@@ -114,10 +114,7 @@ _D21_REASON = "Review renders artifacts from resolved evidence without Harness o
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
     DirectionRule(
-        "D8",
-        (source,),
-        tuple(target for target in _FLOW_PREFIXES if target != source),
-        _D8_REASON,
+        "D8", (source,), tuple(target for target in _FLOW_PREFIXES if target != source), _D8_REASON
     )
     for source in _FLOW_PREFIXES
 )
@@ -178,11 +175,7 @@ DIRECTION_RULES = (
     DirectionRule(
         "D34",
         (prefix("booley.commit_policy"),),
-        (
-            prefix("booley.dev_support"),
-            prefix("booley.harness"),
-            prefix("booley.runtime"),
-        ),
+        (prefix("booley.dev_support"), prefix("booley.harness"), prefix("booley.runtime")),
         "shared commit policy remains independent of scripts and execution composition",
     ),
     DirectionRule(
@@ -200,10 +193,7 @@ DIRECTION_RULES = (
     DirectionRule(
         "D31",
         (prefix("booley"),),
-        (
-            exact("booley.flows.sim.record.store"),
-            exact("booley.flows.sim.record.inspection"),
-        ),
+        (exact("booley.flows.sim.record.store"), exact("booley.flows.sim.record.inspection")),
         "Simulation Record durable storage is private implementation behind the "
         "public Simulation Record interface",
     ),
@@ -317,19 +307,11 @@ DIRECTION_RULES = (
         ),
         "diagnostic owners return observations without command orchestration or rendering",
     ),
-    DirectionRule(
-        "D21",
-        (prefix("booley.review"),),
-        (prefix("booley.harness"),),
-        _D21_REASON,
-    ),
+    DirectionRule("D21", (prefix("booley.review"),), (prefix("booley.harness"),), _D21_REASON),
     DirectionRule(
         "D20",
         (prefix("booley.eda"),),
-        (
-            exact("booley.runtime.session_issuance"),
-            exact("booley.runtime.issuance_invalidation"),
-        ),
+        (exact("booley.runtime.session_issuance"), exact("booley.runtime.issuance_invalidation")),
         "EDA supplies provisioning facts without knowing Runtime issuance or invalidation",
     ),
     DirectionRule(
@@ -377,20 +359,12 @@ DIRECTION_RULES = (
         (prefix("booley.mcp"), prefix("booley.specialists")),
         _D5_REASON,
     ),
-    DirectionRule(
-        "D6",
-        (prefix("booley.runtime"),),
-        (prefix("booley.harness"),),
-        _D6_REASON,
-    ),
+    DirectionRule("D6", (prefix("booley.runtime"),), (prefix("booley.harness"),), _D6_REASON),
     DirectionRule(
         "D7",
         tuple(
             exact(name)
-            for name in (
-                "booley.flows.target_campaign",
-                "booley.flows.target_test_suite",
-            )
+            for name in ("booley.flows.target_campaign", "booley.flows.target_test_suite")
         ),
         tuple(prefix(name) for name in ("booley.harness", "booley.mcp")),
         _D7_REASON,
@@ -419,27 +393,18 @@ DIRECTION_RULES = (
     DirectionRule(
         "D11",
         (prefix("booley.flows.synth.backends.openroad"),),
-        (
-            exact("booley.flows.synth.flow"),
-            prefix("booley.flows.synth.backends.yosys"),
-        ),
+        (exact("booley.flows.synth.flow"), prefix("booley.flows.synth.backends.yosys")),
         _D11_REASON,
     ),
     DirectionRule(
         "D11",
         (prefix("booley.flows.synth.backends.yosys"),),
-        (
-            exact("booley.flows.synth.flow"),
-            prefix("booley.flows.synth.backends.openroad"),
-        ),
+        (exact("booley.flows.synth.flow"), prefix("booley.flows.synth.backends.openroad")),
         _D11_REASON,
     ),
     DirectionRule(
         "D12",
-        (
-            exact("booley.targets.domain"),
-            exact("booley.targets.selection"),
-        ),
+        (exact("booley.targets.domain"), exact("booley.targets.selection")),
         (
             prefix("booley.fusesoc"),
             *_FLOW_PREFIXES,
@@ -451,21 +416,10 @@ DIRECTION_RULES = (
     DirectionRule(
         "D12",
         (prefix("booley.fusesoc"),),
-        tuple(
-            exact(name)
-            for name in (
-                "booley.targets.catalog",
-                "booley.targets.target_surface",
-            )
-        ),
+        tuple(exact(name) for name in ("booley.targets.catalog", "booley.targets.target_surface")),
         _D12_REASON,
     ),
-    DirectionRule(
-        "D13",
-        (prefix("booley.fusesoc"),),
-        _FLOW_PREFIXES,
-        _D13_REASON,
-    ),
+    DirectionRule("D13", (prefix("booley.fusesoc"),), _FLOW_PREFIXES, _D13_REASON),
 )
 
 COMPOSITION_PERMISSIONS = (

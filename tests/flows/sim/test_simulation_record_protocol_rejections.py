@@ -7,16 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.sim.record import child_protocol
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.runtime.execution_records import (
-    ExecutionId,
-    atomic_write_json,
-    execution_paths,
-)
+from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
 from tests.flows.sim.simulation_record_test_support import _two_item_manifest
 from tests.fusesoc_test_support import symlinked_booley_dir
 

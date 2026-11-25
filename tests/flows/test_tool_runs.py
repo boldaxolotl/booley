@@ -107,11 +107,7 @@ def test_a_monitor_that_cannot_start_kills_the_tool_and_records_nothing(
     [(True, "sandbox_limit", "oom_kill"), (False, "host", "host_oom_kill")],
 )
 def test_a_tool_the_oom_killer_took_names_which_kill_it_was(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    limit_reached: bool,
-    kill: str,
-    outcome: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_reached: bool, kill: str, outcome: str
 ) -> None:
     rising_oom_events(monkeypatch, limit_reached=limit_reached)
     killed = [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"]
@@ -140,10 +136,7 @@ def _start_monitor_after_tree_start(
 
 @pytest.mark.parametrize(
     "mode",
-    [
-        pytest.param("live-until-stop", id="tool-running"),
-        pytest.param("exit", id="tool-exited"),
-    ],
+    [pytest.param("live-until-stop", id="tool-running"), pytest.param("exit", id="tool-exited")],
 )
 def test_a_timed_out_tool_leaves_none_of_its_tree_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str

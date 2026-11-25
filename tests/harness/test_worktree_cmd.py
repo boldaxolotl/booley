@@ -1820,10 +1820,7 @@ def relocated_versioned_project(tmp_path, monkeypatch):
     _write(root / ".git/info/exclude", "/state\n")
     source = root / "state"
     _write(source / ".gitignore", PROJECT_GITIGNORE)
-    _write(
-        source / "booley.toml",
-        "[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n",
-    )
+    _write(source / "booley.toml", "[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n")
     _write(source / "cores/top.core", CORE)
     git(source, "init", "-q", "-b", "main")
     git(source, "add", ".")

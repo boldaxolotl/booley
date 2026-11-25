@@ -51,13 +51,7 @@ class ExecutionResult:
 class SupervisedExecutionDriver:
     """Drive one preallocated execution ID through bounded terminal proof."""
 
-    def __init__(
-        self,
-        project_data: Path,
-        *,
-        project_root: Path,
-        cwd: str | None = None,
-    ) -> None:
+    def __init__(self, project_data: Path, *, project_root: Path, cwd: str | None = None) -> None:
         self._project_data = project_data
         self._project_root = project_root
         self._cwd = cwd
@@ -166,19 +160,11 @@ def _stop_transport(process: subprocess.Popen) -> None:
 
 
 def _request_protocol_shutdown(paths: ExecutionPaths) -> None:
-    request_cancellation(
-        paths,
-        force=True,
-        signum=signal.SIGTERM,
-        reason="protocol_mismatch",
-    )
+    request_cancellation(paths, force=True, signum=signal.SIGTERM, reason="protocol_mismatch")
 
 
 def _force_recovery_if_due(
-    paths: ExecutionPaths,
-    pending: _PendingSignals,
-    recovery_started: float | None,
-    now: float,
+    paths: ExecutionPaths, pending: _PendingSignals, recovery_started: float | None, now: float
 ) -> None:
     if recovery_started is None or now - recovery_started < _RECOVERY_FORCE_SECONDS:
         return
@@ -191,9 +177,7 @@ def _force_recovery_if_due(
 
 
 def _drive_execution(
-    process: subprocess.Popen,
-    paths: ExecutionPaths,
-    pending: _PendingSignals,
+    process: subprocess.Popen, paths: ExecutionPaths, pending: _PendingSignals
 ) -> ExecutionResult:
     generation = 1
     started_at = time.monotonic()
@@ -210,11 +194,7 @@ def _drive_execution(
             write_attachment_heartbeat(paths, generation=generation)
             next_heartbeat = now + _HEARTBEAT_INTERVAL_SECONDS
         if pending.signum is not None:
-            request_cancellation(
-                paths,
-                force=pending.count > 1,
-                signum=pending.signum,
-            )
+            request_cancellation(paths, force=pending.count > 1, signum=pending.signum)
             recovery_started = recovery_started or now
         record_readable = True
         try:

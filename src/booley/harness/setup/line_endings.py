@@ -289,9 +289,7 @@ def _probe_git_worktree(
 
 
 def _parse_git_worktree_probe(
-    role: LineEndingRole,
-    candidate: Path,
-    probe: subprocess.CompletedProcess[str],
+    role: LineEndingRole, candidate: Path, probe: subprocess.CompletedProcess[str]
 ) -> tuple[LineEndingRepository | None, RepositoryDiscoveryFailure | None]:
     if probe.returncode != 0:
         detail = probe.stderr.strip() or "not a Git repository"
@@ -469,14 +467,7 @@ def _worktree_is_clean(project_root: Path) -> bool | None:
     """
     try:
         proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "status",
-                "--porcelain",
-                "--untracked-files=no",
-            ],
+            ["git", "-C", str(project_root), "status", "--porcelain", "--untracked-files=no"],
             capture_output=True,
             text=True,
             check=False,
@@ -958,10 +949,7 @@ def _eol_only_recheckout(root: Path, crlf_paths: tuple[str, ...]) -> _Normalizat
 
 
 def _observation(
-    code: LineEndingObservationCode,
-    *,
-    count: int | None = None,
-    detail: str | None = None,
+    code: LineEndingObservationCode, *, count: int | None = None, detail: str | None = None
 ) -> LineEndingObservation:
     return LineEndingObservation(code, count=count, detail=detail)
 
@@ -1029,8 +1017,7 @@ def _read_worktree_observations(
 
 
 def _plan_repository(
-    repository: LineEndingRepository,
-    baseline_clean: bool | None = None,
+    repository: LineEndingRepository, baseline_clean: bool | None = None
 ) -> tuple[_RepositoryPlan | None, tuple[LineEndingObservation, ...]]:
     effective, local, local_eol, observations = _read_required_policy(repository)
     crlf_paths, phantom_paths, worktree_observations = _read_worktree_observations(repository)
@@ -1257,10 +1244,7 @@ def _refresh_action(plan: _RepositoryPlan) -> LineEndingActionResult:
         )
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
     return _action(
-        LineEndingActionKind.REFRESH_INDEX,
-        state,
-        count=len(plan.phantom_paths),
-        detail=error,
+        LineEndingActionKind.REFRESH_INDEX, state, count=len(plan.phantom_paths), detail=error
     )
 
 
@@ -1323,10 +1307,7 @@ def _repair_repository(
     plan, initial_observations = _plan_repository(repository, baseline_clean)
     if plan is None:
         return RepositoryLineEndingReport(
-            repository,
-            LineEndingStatus.UNSAFE,
-            initial_observations,
-            (),
+            repository, LineEndingStatus.UNSAFE, initial_observations, ()
         )
     actions = _repair_settings_actions(plan) if settings_only else _repair_actions(plan)
     final = _inspection_report(repository)

@@ -152,9 +152,7 @@ def _deny_patterns_to_prompt(patterns: list[str]) -> str | None:
 
 
 def _codex_build_prompt(
-    prompt: str,
-    system_prompt: str | None,
-    disallowed_agent_capabilities: list[str] | None = None,
+    prompt: str, system_prompt: str | None, disallowed_agent_capabilities: list[str] | None = None
 ) -> str:
     """Assemble the full prompt with optional system prefix."""
     parts: list[str] = []
@@ -268,18 +266,12 @@ class CodexBackend:
             )
         return None
 
-    async def call(
-        self,
-        params: AgentCallParams,
-        **kwargs: Any,
-    ) -> AgentResult:
+    async def call(self, params: AgentCallParams, **kwargs: Any) -> AgentResult:
         on_event = kwargs.pop("on_event", None)
         on_start = kwargs.pop("on_start", None)
         tag = self._log_start(params)
         full_prompt = _codex_build_prompt(
-            params.prompt,
-            params.system_prompt,
-            params.disallowed_agent_capabilities,
+            params.prompt, params.system_prompt, params.disallowed_agent_capabilities
         )
 
         last_exc: Exception | None = None
@@ -335,10 +327,7 @@ class CodexBackend:
         source = transcript_path_for_label(transcript_path, params.label)
         paths = (params.artifact_paths or adjacent_artifact_paths)(source)
         transcript_path, cmd, schema_file = self._prepare_call(
-            params,
-            full_prompt=full_prompt,
-            transcript_path=transcript_path,
-            paths=paths,
+            params, full_prompt=full_prompt, transcript_path=transcript_path, paths=paths
         )
         try:
             raw_output, raw_stderr, returncode = await _codex_run_subprocess(
@@ -364,8 +353,7 @@ class CodexBackend:
                 error_msg, output, returncode, raw_stderr, raw_output, model=params.model
             )
             structured, structured_fallback = _codex_resolve_structured(
-                params.output_format,
-                output,
+                params.output_format, output
             )
             return AgentResult(
                 output=output,
@@ -676,9 +664,7 @@ async def _resolve_gateway_command_token() -> str | None:
 
 
 async def _codex_spawn(
-    cmd: list[str],
-    params: AgentCallParams,
-    auth_mode: str = "subscription",
+    cmd: list[str], params: AgentCallParams, auth_mode: str = "subscription"
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
@@ -785,11 +771,7 @@ async def _codex_run_subprocess(
             with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
 
-    await _run_codex_work(
-        _stream_and_drain(),
-        proc,
-        timeout_seconds=params.timeout_seconds,
-    )
+    await _run_codex_work(_stream_and_drain(), proc, timeout_seconds=params.timeout_seconds)
     # ``_stream_and_drain`` awaited ``proc.wait()``, so the exit status is set here.
     assert proc.returncode is not None
     if not prompt_fed and proc.returncode == 0:
@@ -832,10 +814,7 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _run_codex_work(
-    work: Coroutine[Any, Any, None],
-    proc: asyncio.subprocess.Process,
-    *,
-    timeout_seconds: int,
+    work: Coroutine[Any, Any, None], proc: asyncio.subprocess.Process, *, timeout_seconds: int
 ) -> None:
     """Run streamed Codex work and always terminate its process on cancellation."""
     try:
@@ -876,11 +855,7 @@ async def _read_stdout(
             buf.extend(chunk)
 
 
-def _dispatch_stdout_event(
-    event: dict,
-    on_event: Any,
-    live_usage: CodexLiveUsage | None,
-) -> None:
+def _dispatch_stdout_event(event: dict, on_event: Any, live_usage: CodexLiveUsage | None) -> None:
     """Route one validated ``codex exec --json`` record."""
     etype = event.get("type")
     item = event.get("item", {})
@@ -954,8 +929,7 @@ def _raise_for_codex_detail(detail: str, *, prefix: str, model: str) -> None:
 
 
 def _codex_resolve_structured(
-    output_format: dict[str, Any] | None,
-    output: str,
+    output_format: dict[str, Any] | None, output: str
 ) -> tuple[dict | None, bool]:
     """Resolve structured output from Codex response."""
     if output_format is None or not output:

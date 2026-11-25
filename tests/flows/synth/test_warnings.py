@@ -47,10 +47,7 @@ def test_real_yosys_v068_structural_warnings_are_counted() -> None:
     assert diagnostics.warnings.total_warnings == 80
     assert diagnostics.warnings.unique_warnings == 2
     assert diagnostics.warnings.by_tool == {"yosys": 80}
-    assert diagnostics.warnings.by_category == {
-        "combinational_loop": 32,
-        "multi_driver": 48,
-    }
+    assert diagnostics.warnings.by_category == {"combinational_loop": 32, "multi_driver": 48}
     assert diagnostics.warnings.by_disposition == {"structural": 80}
 
 
@@ -75,11 +72,7 @@ def test_warning_groups_keep_counts_and_representative_diagnostics() -> None:
     assert summary["total_warnings"] == 4
     assert summary["unique_warnings"] == 3
     assert summary["by_tool"] == {"abc": 1, "openroad": 3}
-    assert summary["by_category"] == {
-        "constraint": 1,
-        "deprecation": 2,
-        "other": 1,
-    }
+    assert summary["by_category"] == {"constraint": 1, "deprecation": 2, "other": 1}
     assert summary["by_disposition"] == {"advisory": 2, "benign": 2}
     representatives = summary["representatives"]
     assert len(representatives) == 3
@@ -347,10 +340,7 @@ def test_loop_in_final_check_alone_still_counts() -> None:
     # still fails the run even when the pre-mapping check is clean.
     loop = "Warning: found logic loop in module top:\n    wire \\feedback\n"
     diagnostics = parse_synth_diagnostics(
-        {
-            "premap_check": _CLEAN_CHECK,
-            "final_check": loop + "Found and reported 1 problems.\n",
-        }
+        {"premap_check": _CLEAN_CHECK, "final_check": loop + "Found and reported 1 problems.\n"}
     )
 
     assert diagnostics.structural.complete is True

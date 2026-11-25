@@ -49,11 +49,7 @@ def _profile() -> RelayProfile:
 
 def _validate(docker: RelayDocker, labels: tuple[str, ...] = ()) -> None:
     validate_relay(
-        docker.resources,
-        SESSION_CONTAINER,
-        _profile(),
-        issuance_labels=labels,
-        runner=docker,
+        docker.resources, SESSION_CONTAINER, _profile(), issuance_labels=labels, runner=docker
     )
 
 
@@ -261,10 +257,7 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
         ({"PidsLimit": 65}, "resource limits"),
         ({"RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}}, "restart"),
         ({"LogConfig": {"Type": "json-file", "Config": {}}}, "logging"),
-        (
-            {"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]},
-            "environment differs",
-        ),
+        ({"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]}, "environment differs"),
     ],
 )
 def test_resume_validation_rejects_each_container_security_drift(

@@ -29,11 +29,7 @@ from uuid import uuid4
 
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
-from booley.evidence.review_guides import (
-    REVIEW_GUIDES,
-    ReviewGuide,
-    review_guides_root,
-)
+from booley.evidence.review_guides import REVIEW_GUIDES, ReviewGuide, review_guides_root
 from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewInvocation,
@@ -55,12 +51,7 @@ from booley.evidence.review_vocabulary import (
 )
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
-from booley.mcp.base import (
-    EXIT_ERROR,
-    EXIT_FAILURE,
-    EXIT_SUCCESS,
-    McpToolResult,
-)
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.booley_dir import own_booley_dir, resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
@@ -153,9 +144,7 @@ _RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\")
 _TB_PREFIXES_DEFAULT = ("tb/", "tb\\")
 
 
-def _get_prefixes(
-    work_dir: Path | None = None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _get_prefixes(work_dir: Path | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Resolve file-aware RTL and TB prefixes, with cross-platform variants.
 
     Tries booley.toml in *work_dir* first, then shared_infra, then defaults.
@@ -173,10 +162,7 @@ def _get_prefixes(
     from booley.runtime.shared_infra import source_dir_prefixes
 
     rtl_names, tb_names = parsed
-    return (
-        source_dir_prefixes(rtl_names, work_dir),
-        source_dir_prefixes(tb_names, work_dir),
-    )
+    return (source_dir_prefixes(rtl_names, work_dir), source_dir_prefixes(tb_names, work_dir))
 
 
 def _get_rtl_prefixes(work_dir: Path | None = None) -> tuple[str, ...]:
@@ -208,10 +194,7 @@ _SOURCE_SUFFIXES = (
 )
 
 
-def _warn_unregistered_sources(
-    scope_paths: list[str],
-    work_dir: Path | None,
-) -> None:
+def _warn_unregistered_sources(scope_paths: list[str], work_dir: Path | None) -> None:
     """Warn for review-scope source files absent from the project's ``.core``.
 
     Under pure-``.core`` classification a source file declared in no ``.core``
@@ -257,10 +240,7 @@ def _guide_paths() -> dict[str, str]:
 
 # Project style-guide overlay file names, read from work_dir's own Booley Directory. Absence is the
 # normal case for a project that has not authored one — never warn on a miss.
-_STYLE_OVERLAYS = {
-    "rtl": "rtl_style_guide.md",
-    "tb": "tb_style_guide.md",
-}
+_STYLE_OVERLAYS = {"rtl": "rtl_style_guide.md", "tb": "tb_style_guide.md"}
 
 
 # TB checks that evaluate existing scenarios separately from demands for new
@@ -321,9 +301,7 @@ def _truncate_spec(content: str, *, label: str = "") -> str:
 
 
 def resolve_spec_content(
-    spec_arg: str | None,
-    work_dir: str | Path | None = None,
-    spec_text: str | None = None,
+    spec_arg: str | None, work_dir: str | Path | None = None, spec_text: str | None = None
 ) -> tuple[str | None, str]:
     """Return inline *spec_text*, or read the explicit specification file in the worktree."""
     if spec_text is not None:
@@ -546,21 +524,17 @@ def _validate_issue_dict(
     errs: list[str] = []
     sev = d.get("severity")
     if not isinstance(sev, str) or sev.upper() not in ALL_SEVERITIES:
-        errs.append(
-            f"severity must be one of {sorted(ALL_SEVERITIES)} (got {sev!r})",
-        )
+        errs.append(f"severity must be one of {sorted(ALL_SEVERITIES)} (got {sev!r})")
     conf = d.get("confidence")
     if not isinstance(conf, str) or conf.upper() not in ALL_CONFIDENCES:
-        errs.append(
-            f"confidence must be one of {sorted(ALL_CONFIDENCES)} (got {conf!r})",
-        )
+        errs.append(f"confidence must be one of {sorted(ALL_CONFIDENCES)} (got {conf!r})")
     category = d.get("category")
     if not isinstance(category, str) or not category.strip():
         errs.append(f"category must be a non-empty string (got {category!r})")
     elif allowed_category is not None and category.strip().lower() != allowed_category:
         errs.append(
             f"category must be exactly {allowed_category!r} "
-            f"for this review focus (got {category!r})",
+            f"for this review focus (got {category!r})"
         )
     file_ = d.get("file")
     if not isinstance(file_, str) or not file_.strip():
@@ -602,10 +576,7 @@ class ReviewParseResult:
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _find_balanced_json_object(
-    text: str,
-    required_key: str,
-) -> dict[str, Any] | None:
+def _find_balanced_json_object(text: str, required_key: str) -> dict[str, Any] | None:
     """Find the first balanced ``{...}`` JSON object containing ``required_key``.
 
     Walks ``text`` with brace tracking that respects JSON string literals
@@ -679,10 +650,7 @@ def _extract_issues_payload(output: str) -> tuple[list[Any], bool]:
 
 
 def parse_review_output(
-    output: str,
-    allowed_category: str | None = None,
-    *,
-    diff_scoped: bool = False,
+    output: str, allowed_category: str | None = None, *, diff_scoped: bool = False
 ) -> ReviewParseResult:
     """Strict-schema parser for the initial Reviewer Specialist output.
 
@@ -709,9 +677,7 @@ def parse_review_output(
             rejected.append((ord_idx, errs))
             diagnostics.append({"ordinal": ord_idx, "raw": item, "errors": errs})
             logger.warning(
-                "Rejecting review issue #%d due to schema violations: %s",
-                ord_idx,
-                "; ".join(errs),
+                "Rejecting review issue #%d due to schema violations: %s", ord_idx, "; ".join(errs)
             )
             continue
         issue = ReviewIssue.from_dict(item)
@@ -720,10 +686,7 @@ def parse_review_output(
         issue.proposal_ordinal = ord_idx
         issues.append(issue)
     return ReviewParseResult(
-        issues=issues,
-        json_present=json_present,
-        rejected=rejected,
-        diagnostics=diagnostics,
+        issues=issues, json_present=json_present, rejected=rejected, diagnostics=diagnostics
     )
 
 
@@ -799,8 +762,7 @@ def merge_report_calls(calls: list[list[MirrorFinding]]) -> list[MirrorFinding]:
 
 
 def mirror_findings_missing_from_canonical(
-    mirror: list[MirrorFinding],
-    canonical: list[ReviewIssue],
+    mirror: list[MirrorFinding], canonical: list[ReviewIssue]
 ) -> list[MirrorFinding]:
     """Return mirror findings the canonical JSON leaves out or rates lower.
 
@@ -831,11 +793,7 @@ def mirror_findings_missing_from_canonical(
 
 def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
     """Count issues grouped by severity."""
-    counts: dict[str, int] = {
-        SEVERITY_CRITICAL: 0,
-        SEVERITY_MAJOR: 0,
-        SEVERITY_MINOR: 0,
-    }
+    counts: dict[str, int] = {SEVERITY_CRITICAL: 0, SEVERITY_MAJOR: 0, SEVERITY_MINOR: 0}
     for issue in issues:
         sev = issue.severity.upper()
         if sev in counts:
@@ -843,10 +801,7 @@ def count_by_severity(issues: list[ReviewIssue]) -> dict[str, int]:
     return counts
 
 
-def _format_status_and_counts(
-    counts: dict[str, int],
-    gate_passed: bool,
-) -> tuple[str, str]:
+def _format_status_and_counts(counts: dict[str, int], gate_passed: bool) -> tuple[str, str]:
     """Return (status, count_str) for a review result summary line.
 
     status is "PASS"/"FAIL"; count_str is a comma-joined per-severity
@@ -874,9 +829,7 @@ def _pre_existing_lines(issues: Iterable[ReviewIssue]) -> list[str]:
 
 
 def validate_scope_category(
-    scope_paths: list[str],
-    category: str,
-    work_dir: Path | None = None,
+    scope_paths: list[str], category: str, work_dir: Path | None = None
 ) -> list[str]:
     """Validate scope paths match the review category.
 
@@ -922,11 +875,7 @@ def validate_scope_category(
 
 
 def format_summary_line(
-    category: str,
-    focus: str,
-    issue_count: int,
-    counts: dict[str, int],
-    duration_s: float,
+    category: str, focus: str, issue_count: int, counts: dict[str, int], duration_s: float
 ) -> str:
     """Format a single summary line for output.
 
@@ -1074,10 +1023,7 @@ class ReviewerSpecialist(Specialist):
             ),
         )
         parser.add_argument(
-            "--category",
-            default=None,
-            choices=["rtl", "tb"],
-            help="Review category: rtl or tb",
+            "--category", default=None, choices=["rtl", "tb"], help="Review category: rtl or tb"
         )
         parser.add_argument(
             "--focus",
@@ -1088,10 +1034,7 @@ class ReviewerSpecialist(Specialist):
                 f"TB: {', '.join(sorted(TB_FOCUS_CATEGORIES))}."
             ),
         )
-        self._add_steer_arg(
-            parser,
-            help_text="Developer Agent context and steering instructions.",
-        )
+        self._add_steer_arg(parser, help_text="Developer Agent context and steering instructions.")
         self._add_spec_args(parser)
         parser.add_argument(
             "--fail-on",
@@ -1181,11 +1124,7 @@ class ReviewerSpecialist(Specialist):
 
         # Validate scope paths against category
         scope_paths = self._parse_scope()
-        scope_errors = validate_scope_category(
-            scope_paths,
-            self.args.category,
-            self.args.work_dir,
-        )
+        scope_errors = validate_scope_category(scope_paths, self.args.category, self.args.work_dir)
         errors.extend(scope_errors)
         _warn_unregistered_sources(scope_paths, self.args.work_dir)
 
@@ -1218,8 +1157,7 @@ class ReviewerSpecialist(Specialist):
             return None
         try:
             self._scope_contract = resolve_review_scope(
-                self._parse_scope(),
-                category=self.args.category,
+                self._parse_scope(), category=self.args.category
             )
         except ReviewContractError as exc:
             return str(exc)
@@ -1339,10 +1277,7 @@ match the strength of the evidence.
         )
 
     def _append_style_guides(
-        self,
-        sections: list[str],
-        category: str,
-        guide_paths: dict[str, str],
+        self, sections: list[str], category: str, guide_paths: dict[str, str]
     ) -> None:
         """Append packaged and project-specific style guidance."""
         label = "RTL" if category == "rtl" else "Testbench"
@@ -1672,10 +1607,7 @@ object, even after calling the capability.
         self._stamp_model_note(detail)
         path = self._review_evidence_path
         detail["audit_evidence"] = str(path)
-        detail["artifacts"] = {
-            **detail.get("artifacts", {}),
-            "reviewer_evidence": str(path),
-        }
+        detail["artifacts"] = {**detail.get("artifacts", {}), "reviewer_evidence": str(path)}
         # Written atomically, so the detail never points at partial evidence.
         atomic_write_json(path, {"exit_code": exit_code, "detail": detail})
         self._review_evidence_written = True
@@ -1765,8 +1697,7 @@ object, even after calling the capability.
         """
         if contract_error := self._resolve_scope_contract():
             return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"Review scope contract error: {contract_error}",
+                exit_code=EXIT_ERROR, report_text=f"Review scope contract error: {contract_error}"
             )
         if spec_error := self._validate_review_spec():
             return spec_error
@@ -1803,8 +1734,7 @@ object, even after calling the capability.
         self._scope_contract = None
         if contract_error := self._resolve_scope_contract():
             return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=f"Review scope contract error: {contract_error}",
+                exit_code=EXIT_ERROR, report_text=f"Review scope contract error: {contract_error}"
             )
         return None
 
@@ -1825,9 +1755,7 @@ object, even after calling the capability.
             return McpToolResult(exit_code=EXIT_ERROR, report_text="--spec-text must not be empty")
         try:
             spec_content, _ = resolve_spec_content(
-                getattr(self.args, "spec", None),
-                getattr(self.args, "work_dir", None),
-                spec_text,
+                getattr(self.args, "spec", None), getattr(self.args, "work_dir", None), spec_text
             )
         except OSError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
@@ -1897,10 +1825,7 @@ object, even after calling the capability.
         return exception_report_text(self.name, exc, diagnostic_path)
 
     def _capability_channel_findings(
-        self,
-        result: Any,
-        focus: str,
-        output_lines: list[str],
+        self, result: Any, focus: str, output_lines: list[str]
     ) -> list[MirrorFinding] | None:
         """Merge captured ``ReportFindings`` calls into one mirror report.
 
@@ -1925,9 +1850,7 @@ object, even after calling the capability.
         return findings
 
     def _valid_mirror_calls(
-        self,
-        rf_calls: list[Any],
-        output_lines: list[str],
+        self, rf_calls: list[Any], output_lines: list[str]
     ) -> list[list[dict[str, Any]]]:
         """Return each call's valid entries; record malformed wrappers and entries."""
         calls: list[list[Any]] = []
@@ -1956,15 +1879,12 @@ object, even after calling the capability.
         if malformed:
             output_lines.append(
                 f"WARN: dropped {len(malformed)} malformed {REPORT_FINDINGS_CAPABILITY} "
-                "entr" + ("y" if len(malformed) == 1 else "ies") + " (missing file/summary)",
+                "entr" + ("y" if len(malformed) == 1 else "ies") + " (missing file/summary)"
             )
         return [[item for item in call if _is_mirror_entry(item)] for call in calls]
 
     def _extract_review_issues(
-        self,
-        result: Any,
-        focus: str,
-        output_lines: list[str],
+        self, result: Any, focus: str, output_lines: list[str]
     ) -> list[ReviewIssue] | None:
         """Turn a Reviewer Specialist result into issues, honoring both contracts.
 
@@ -2002,7 +1922,7 @@ object, even after calling the capability.
             )
             output_lines.append(
                 f"ERROR: {REPORT_FINDINGS_CAPABILITY} is only a mirror; the final message "
-                "must contain issues JSON with disposition metadata",
+                "must contain issues JSON with disposition metadata"
             )
             return None
 
@@ -2013,10 +1933,7 @@ object, even after calling the capability.
         )
 
     def _note_rejected_issues(
-        self,
-        parsed: ReviewParseResult,
-        focus: str,
-        output_lines: list[str],
+        self, parsed: ReviewParseResult, focus: str, output_lines: list[str]
     ) -> bool:
         """Report schema-rejected issues; True when *every* reported issue died.
 
@@ -2041,7 +1958,7 @@ object, even after calling the capability.
         )
         output_lines.append(
             f"ERROR: all {count} reported issue entr{plural} failed the schema "
-            "(see logs) — not a clean pass",
+            "(see logs) — not a clean pass"
         )
         return True
 
@@ -2074,15 +1991,12 @@ object, even after calling the capability.
         )
         output_lines.append(
             f"ERROR: {REPORT_FINDINGS_CAPABILITY} reported finding(s) its canonical issues "
-            f"JSON leaves out or rates lower: {cited}",
+            f"JSON leaves out or rates lower: {cited}"
         )
         return None
 
     def _interpret_review_parse(
-        self,
-        output: str,
-        focus: str,
-        output_lines: list[str],
+        self, output: str, focus: str, output_lines: list[str]
     ) -> list[ReviewIssue] | None:
         """Parse Specialist output for a review focus.
 
@@ -2101,7 +2015,7 @@ object, even after calling the capability.
                 focus,
             )
             output_lines.append(
-                "ERROR: Specialist output contained no parseable issues JSON — not a clean pass",
+                "ERROR: Specialist output contained no parseable issues JSON — not a clean pass"
             )
             return None
         if self._note_rejected_issues(parsed, focus, output_lines):
@@ -2121,10 +2035,7 @@ object, even after calling the capability.
             prompt=prompt if prompt is not None else self._build_prompt(focus_override=focus),
             model=self._resolve_model(),
             cwd=self.args.work_dir,
-            allowed_agent_capabilities=[
-                *self.agent_capabilities,
-                REPORT_FINDINGS_CAPABILITY,
-            ],
+            allowed_agent_capabilities=[*self.agent_capabilities, REPORT_FINDINGS_CAPABILITY],
             disallowed_agent_capabilities=list(self.READ_ONLY_DENY),
             system_prompt=self._build_system_prompt(focus, guides),
             output_format=self._output_format(),
@@ -2150,12 +2061,7 @@ object, even after calling the capability.
         return tuple(tuple(g for g in guides if g.kind == kind) for kind in kinds)
 
     def _new_guide_call(
-        self,
-        focus: str,
-        prompt: str,
-        guides: tuple[ReviewGuide, ...],
-        *,
-        tagged: bool,
+        self, focus: str, prompt: str, guides: tuple[ReviewGuide, ...], *, tagged: bool
     ) -> _GuideCallRun:
         """Prepare one call; a multi-call review gives each its own transcript file."""
         name = "+".join(guide.name for guide in guides)
@@ -2357,9 +2263,7 @@ object, even after calling the capability.
         return issues, output_lines
 
     def _filter_review_issues(
-        self,
-        issues: list[ReviewIssue],
-        output_lines: list[str],
+        self, issues: list[ReviewIssue], output_lines: list[str]
     ) -> list[ReviewIssue]:
         """Enforce explicit source membership and honor agent dispositions.
 
@@ -2408,8 +2312,7 @@ object, even after calling the capability.
         return contract.contains_file(str(path))
 
     def _done_finding_records(
-        self,
-        all_issues: list[ReviewIssue],
+        self, all_issues: list[ReviewIssue]
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         # Schema-3 rows state whether they are corrective. Fail closed if a
         # non-canonical channel somehow reaches persistence without metadata.
@@ -2428,12 +2331,7 @@ object, even after calling the capability.
         )
         return records, corrective_records
 
-    def _done_detail(
-        self,
-        outcome: _DoneReviewOutcome,
-        *,
-        elapsed: float,
-    ) -> dict[str, Any]:
+    def _done_detail(self, outcome: _DoneReviewOutcome, *, elapsed: float) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
             **self._audit_detail(),
@@ -2467,17 +2365,12 @@ object, even after calling the capability.
         )
 
     def _build_result(
-        self,
-        all_issues: list[ReviewIssue],
-        output_lines: list[str],
-        *,
-        elapsed: float,
+        self, all_issues: list[ReviewIssue], output_lines: list[str], *, elapsed: float
     ) -> McpToolResult:
         """Compute gate, set criterion, and format display lines (_done mode)."""
         done_outcome = self._done_outcome(all_issues)
         _status, count_str = _format_status_and_counts(
-            done_outcome.counts,
-            done_outcome.gate_passed,
+            done_outcome.counts, done_outcome.gate_passed
         )
         result_label = (
             "REVIEWED WITH FINDINGS" if done_outcome.records else "REVIEWED — NO FINDINGS"
@@ -2507,10 +2400,7 @@ object, even after calling the capability.
         )
         self._attach_review_evidence(detail, exit_code)
         return McpToolResult(
-            exit_code=exit_code,
-            display_lines=lines,
-            detail=detail,
-            report_text=report_text,
+            exit_code=exit_code, display_lines=lines, detail=detail, report_text=report_text
         )
 
     # --- Re-check (issue #4522) ---

@@ -67,13 +67,7 @@ def find_fixture(repo_root: Path) -> Path:
 
 
 def run_bwave(binary: str, args: list[str]) -> tuple[int, str, str]:
-    proc = subprocess.run(
-        [binary, *args],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    proc = subprocess.run([binary, *args], capture_output=True, text=True, timeout=60, check=False)
     return proc.returncode, proc.stdout, proc.stderr
 
 

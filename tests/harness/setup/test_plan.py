@@ -36,11 +36,7 @@ def _manifest(root: Path) -> dict[str, tuple[str, str, int]]:
         if path.is_symlink():
             result[relative] = ("symlink", str(path.readlink()), mode)
         elif path.is_file():
-            result[relative] = (
-                "file",
-                hashlib.sha256(path.read_bytes()).hexdigest(),
-                mode,
-            )
+            result[relative] = ("file", hashlib.sha256(path.read_bytes()).hexdigest(), mode)
         elif path.is_dir():
             result[relative] = ("directory", "", mode)
     return result
@@ -48,10 +44,7 @@ def _manifest(root: Path) -> dict[str, tuple[str, str, int]]:
 
 def _write_target(path: Path, content: bytes = b"managed\n") -> InitTarget:
     return InitTarget.write_file(
-        path,
-        content,
-        owner_marker=b"managed",
-        reason="install managed config",
+        path, content, owner_marker=b"managed", reason="install managed config"
     )
 
 
@@ -91,8 +84,7 @@ def test_blocker_prevents_every_planned_mutation(tmp_path: Path) -> None:
     before = _manifest(tmp_path)
     plan = plan_init_filesystem(
         InitFilesystemRequest(
-            root=tmp_path,
-            targets=(_write_target(new_file), _write_target(foreign)),
+            root=tmp_path, targets=(_write_target(new_file), _write_target(foreign))
         ),
         _Probe(),
     )
@@ -135,8 +127,7 @@ def test_precondition_change_aborts_before_any_write(tmp_path: Path) -> None:
 
 
 def test_unreadable_existing_target_aborts_planning(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "managed.txt"
     target.write_text("managed old\n", encoding="utf-8")
@@ -151,8 +142,7 @@ def test_unreadable_existing_target_aborts_planning(
 
     with pytest.raises(PermissionError, match="denied"):
         plan_init_filesystem(
-            InitFilesystemRequest(root=tmp_path, targets=(_write_target(target),)),
-            _Probe(),
+            InitFilesystemRequest(root=tmp_path, targets=(_write_target(target),)), _Probe()
         )
 
 
@@ -168,8 +158,7 @@ def test_target_cannot_escape_through_symlinked_parent(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="outside Project Root"):
         plan_init_filesystem(
             InitFilesystemRequest(
-                root=tmp_path,
-                targets=(_write_target(linked_parent / "config.txt"),),
+                root=tmp_path, targets=(_write_target(linked_parent / "config.txt"),)
             ),
             _Probe(),
         )

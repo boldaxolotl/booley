@@ -173,11 +173,7 @@ def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monk
     real.mkdir()  # the pin needs an existing target
     symlink_or_skip(entry, real)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(entry / "runtime"))
-    monkeypatch.setattr(
-        job_results,
-        "project_booley_dir",
-        lambda: entry,
-    )
+    monkeypatch.setattr(job_results, "project_booley_dir", lambda: entry)
     rec = job_records.JobRecord("run-1", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
     job_records.write_record(rec, root=entry / "runtime" / "jobs")
     checkpoint = real / "runtime" / "flow-reports" / "sim" / "1" / "progress.json"

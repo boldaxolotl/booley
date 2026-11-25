@@ -219,8 +219,7 @@ _REJECTED: list[tuple[str, Callable[[], Any], str | None]] = [
 
 
 @pytest.mark.parametrize(
-    ("call", "match"),
-    [pytest.param(call, match, id=name) for name, call, match in _REJECTED],
+    ("call", "match"), [pytest.param(call, match, id=name) for name, call, match in _REJECTED]
 )
 def test_strict_validators_reject(call: Callable[[], Any], match: str | None):
     with pytest.raises(BoundaryError, match=match):

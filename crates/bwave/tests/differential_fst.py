@@ -87,11 +87,7 @@ def normalize(output: str, store: str) -> str:
     except json.JSONDecodeError:
         parsed = None
     if parsed is not None:
-        return json.dumps(
-            _normalize_json(parsed, store),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return json.dumps(_normalize_json(parsed, store), sort_keys=True, separators=(",", ":"))
 
     lines: list[str] = []
     last_value: dict[str, str] = {}

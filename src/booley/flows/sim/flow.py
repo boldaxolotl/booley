@@ -21,9 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
-from booley.config.project_config import (
-    lookup_target_section,
-)
+from booley.config.project_config import lookup_target_section
 from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_admission import AdmissionContext
@@ -58,12 +56,8 @@ from booley.flows.sim.record_reports import invocation_booley_dir
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
-from booley.flows.target_test_suite import (
-    resolve_target_test_suite,
-)
-from booley.flows.test_runs import (
-    TestRun,
-)
+from booley.flows.target_test_suite import resolve_target_test_suite
+from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -77,26 +71,14 @@ from booley.runtime.endpoint_execution import (
 from booley.runtime.file_lock import LockContentionError
 from booley.runtime.filesystem_utils import make_directories
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import (
-    TargetHandle,
-)
+from booley.targets.domain import TargetHandle
 
 from ..base import BuiltinFlow, SubprocessResult
-from ..baseline_worktree import (
-    baseline_worktree,
-    git_full_sha,
-)
+from ..baseline_worktree import baseline_worktree, git_full_sha
 from ..invocation import default_timeout_ms
-from .build import (
-    SimulationBuildPreparationError,
-)
+from .build import SimulationBuildPreparationError
 from .elab_only import ElabOnlyMixin
-from .execution import (
-    SelectedTestRuns,
-    SimulationExecution,
-    SimulationOptions,
-    SimulationPreview,
-)
+from .execution import SelectedTestRuns, SimulationExecution, SimulationOptions, SimulationPreview
 from .execution.engine import TRACE_CLEANUP_MARGIN_S
 from .flow_resume import SimulationRecordResumeMixin
 from .mode import SimulationMode
@@ -114,10 +96,7 @@ from .record import (
     ValidatedResumeManifest,
     validate_resume_manifest,
 )
-from .record.coverage_execution import (
-    CoverageAggregateExecutor,
-    _CoverageAggregateError,
-)
+from .record.coverage_execution import CoverageAggregateExecutor, _CoverageAggregateError
 from .record.flow_planning import (
     plan_coarse_simulation_record,
     plan_ordinary_hdl_simulation_record,
@@ -150,9 +129,7 @@ from .record_presentation import (
 )
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
 from .standalone import StandaloneMixin
-from .test_run_invocation import (
-    TestRunInvocation,
-)
+from .test_run_invocation import TestRunInvocation
 from .test_selection import SimulationTestSelectionMixin, _get_test_names, _get_test_skips
 
 logger = logging.getLogger(__name__)
@@ -343,9 +320,7 @@ class SimulateFlow(
         return result
 
     def finish_execution(
-        self,
-        prepared: PreparedExecution,
-        outcome: EndpointOutcome,
+        self, prepared: PreparedExecution, outcome: EndpointOutcome
     ) -> ExecutionResult:
         """Register the published Targets' bwave traces, then report: the attempt's final step.
 
@@ -478,15 +453,12 @@ class SimulateFlow(
                     return coverage_error
         except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"sim Simulation Record preflight failed: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"sim Simulation Record preflight failed: {exc}"
             )
         return PreparedSimulationEndpoint(targets, resume, selected_targets, test_names_map)
 
     def run_prepared_simulation(
-        self,
-        prepared: PreparedSimulationEndpoint,
-        admission: object | None,
+        self, prepared: PreparedSimulationEndpoint, admission: object | None
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
         if prepared.resume is not None:
@@ -703,10 +675,7 @@ class SimulateFlow(
         """True when *target* declares a ``cocotb_module`` (a Cocotb Target)."""
         return self._cocotb_module_for_target(target) is not None
 
-    def _validate_call_args(
-        self,
-        targets: list[str],
-    ) -> EndpointOutcome | None:
+    def _validate_call_args(self, targets: list[str]) -> EndpointOutcome | None:
         """Developer Agent session guard: a Target must be selected.
 
         ``tb_top`` left the surface (ADR 0021) — a sim Target's ``toplevel`` is
@@ -727,9 +696,7 @@ class SimulateFlow(
         return None
 
     def _plan_ordinary_run(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
+        self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> OrdinarySimulationRecordPlanning | EndpointOutcome:
         """Validate the selection, then plan the run once; an outcome refuses it.
 
@@ -756,9 +723,7 @@ class SimulateFlow(
         return self._plan_ordinary_simulation_records(targets, test_names_map)
 
     def _plan_ordinary_simulation_records(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
+        self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> OrdinarySimulationRecordPlanning | EndpointOutcome:
         """Preview every Target before anything is reserved."""
         candidates, errors = self._preview_targets(targets, test_names_map)
@@ -771,9 +736,7 @@ class SimulateFlow(
         return OrdinarySimulationRecordPlanning(tuple(candidates), test_names_map)
 
     def _preview_targets(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
+        self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> tuple[list[PlannedTarget], list[str]]:
         """Preview one checkout's selected Simulation Targets, once each."""
         planned: list[PlannedTarget] = []
@@ -965,10 +928,7 @@ class SimulateFlow(
         admission: AdmissionContext,
         invocation: Path,
         manifest_published: Callable[[Path], None] | None = None,
-    ) -> tuple[
-        SimulationRecord,
-        list[NewSimulationRecordRunRequest],
-    ]:
+    ) -> tuple[SimulationRecord, list[NewSimulationRecordRunRequest]]:
         """Publish every immutable coverage manifest before admitting work."""
         prepared = self._coverage_prepared
         plans = {plan.handle.identity: plan for plan in prepared.targets}
@@ -1071,10 +1031,7 @@ class SimulateFlow(
         self._capture_cycle_report(
             (*outcomes, failed_outcome) if failed_outcome is not None else outcomes
         )
-        targets = _coverage_compatibility_targets(
-            outcomes,
-            self._reserved_invocation_dir,
-        )
+        targets = _coverage_compatibility_targets(outcomes, self._reserved_invocation_dir)
         failed = _coverage_request_selector(request)
         evaluation = self._coverage_failure_evaluation(request, error)
         if evaluation is None:
@@ -1084,11 +1041,7 @@ class SimulateFlow(
         )
         pending = [failed, *[_coverage_request_selector(item) for item in requests[index + 1 :]]]
         return _coverage_failure_outcome(
-            outcomes,
-            targets,
-            pending,
-            error,
-            self._reserved_invocation_dir,
+            outcomes, targets, pending, error, self._reserved_invocation_dir
         )
 
     def _coverage_failure_evaluation(
@@ -1359,13 +1312,10 @@ class SimulateFlow(
 
     @staticmethod
     def _simulation_record_cancelled_outcome(
-        error: SimulationRecordCancellationError,
-        detail: Mapping[str, object] | None = None,
+        error: SimulationRecordCancellationError, detail: Mapping[str, object] | None = None
     ) -> EndpointOutcome:
         return EndpointOutcome(
-            exit_code=EXIT_CANCELLED,
-            detail=dict(detail or {}),
-            report_text=str(error),
+            exit_code=EXIT_CANCELLED, detail=dict(detail or {}), report_text=str(error)
         )
 
     def _candidate_simulation_record_requests(
@@ -1454,10 +1404,7 @@ class SimulateFlow(
         try:
             for planned in planning.candidates:
                 plan = self._ordinary_simulation_record_plan(
-                    planned,
-                    planning.test_names_map,
-                    invocation_id=1,
-                    execution_id="",
+                    planned, planning.test_names_map, invocation_id=1, execution_id=""
                 )
                 request = NewSimulationRecordPreviewRequest(
                     plan,
@@ -1471,8 +1418,7 @@ class SimulateFlow(
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record preview failed: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"Simulation Record preview failed: {exc}"
             )
         try:
             for request in requests:
@@ -1587,11 +1533,7 @@ class SimulateFlow(
         }
         invocation = self._reserved_invocation_dir
         simulation_records = _simulation_record_structured_details(outcomes, invocation)
-        coverage_targets = _coverage_compatibility_targets(
-            outcomes,
-            invocation,
-            coverage_records,
-        )
+        coverage_targets = _coverage_compatibility_targets(outcomes, invocation, coverage_records)
         detail: dict[str, object] = {"records": simulation_records}
         firings, current_keys = _simulation_record_hook_inputs(outcomes, invocation)
         pre_sim_detail, hook_lines = _pre_sim_projection(firings, current_keys, invocation)

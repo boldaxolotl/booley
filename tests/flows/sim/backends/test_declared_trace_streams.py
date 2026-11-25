@@ -335,10 +335,7 @@ def test_failed_supervision_still_releases_held_fifo_diagnostics(monkeypatch):
         ),
     )
     trace = SimpleNamespace(
-        session=session,
-        current=None,
-        mode=verilator_adapter.TraceMode.VCD_FIFO,
-        conversion=None,
+        session=session, current=None, mode=verilator_adapter.TraceMode.VCD_FIFO, conversion=None
     )
 
     def _boom(_launch):

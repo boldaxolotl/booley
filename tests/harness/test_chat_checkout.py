@@ -497,10 +497,7 @@ def test_setup_sees_sigint_held_by_the_launch_window_then_holds_it_again(monkeyp
     held = {signal.SIGINT, signal.SIGQUIT}
     outer = signal.pthread_sigmask(signal.SIG_BLOCK, held)
     try:
-        with (
-            pytest.raises(chat_cmd._SetupInterruptedError),
-            chat_cmd._signals_interrupt_setup(),
-        ):
+        with pytest.raises(chat_cmd._SetupInterruptedError), chat_cmd._signals_interrupt_setup():
             signal.raise_signal(signal.SIGINT)
         assert held <= signal.pthread_sigmask(signal.SIG_BLOCK, [])
     finally:

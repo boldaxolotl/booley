@@ -62,10 +62,7 @@ def test_load_eda_config_uses_external_project_data_dir(
     data = tmp_path / "private-project-data"
     project.mkdir()
     data.mkdir()
-    (data / "booley.toml").write_text(
-        '[eda.vivado]\nprovisioning = "host"\n',
-        encoding="utf-8",
-    )
+    (data / "booley.toml").write_text('[eda.vivado]\nprovisioning = "host"\n', encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
 

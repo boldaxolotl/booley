@@ -41,9 +41,7 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_unsupported_type,
     copy_older_invocation,
 )
-from tests.flows.sim.test_simulation_record_unsupported_formats import (
-    reports as _reports_fixture,
-)
+from tests.flows.sim.test_simulation_record_unsupported_formats import reports as _reports_fixture
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture

@@ -32,13 +32,7 @@ def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
 
 def test_registry_marks_only_sandbox_only_modules(tmp_path: Path) -> None:
     result = _pytest(
-        tmp_path,
-        "--collect-only",
-        "-q",
-        "-m",
-        "sandbox_only",
-        _MARKED_MODULE,
-        _HOST_MODULE,
+        tmp_path, "--collect-only", "-q", "-m", "sandbox_only", _MARKED_MODULE, _HOST_MODULE
     )
 
     modules = {line.partition("::")[0] for line in result.stdout.splitlines() if "::" in line}

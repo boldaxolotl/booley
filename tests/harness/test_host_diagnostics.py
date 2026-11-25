@@ -152,11 +152,7 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch, t
 def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     report = host_diagnostics.Findings()
     identity = replace(_identity(), payload_fingerprint="abcdef0123456789")
-    monkeypatch.setattr(
-        host_diagnostics,
-        "load_host_installation",
-        lambda: identity,
-    )
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
 
     host_diagnostics._inspect_host_installation(report)

@@ -562,10 +562,7 @@ def test_crlf_task_enable_update_disable_restores_exact_bytes(project, monkeypat
 
 
 def test_owned_task_update_removes_environment_and_keeps_disable_reversible(project, monkeypatch):
-    obsolete = {
-        **tasks.TASK,
-        "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}},
-    }
+    obsolete = {**tasks.TASK, "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}}}
     baseline = project.exclude.read_bytes()
     with monkeypatch.context() as prior:
         prior.setattr(tasks, "TASK", obsolete)

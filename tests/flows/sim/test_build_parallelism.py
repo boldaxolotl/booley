@@ -17,10 +17,7 @@ from booley.targets.domain import TargetHandle, TargetInspection
 
 
 def _inspection(
-    *,
-    eda_tool: str = "verilator",
-    modern: tuple[str, ...] = (),
-    legacy: tuple[str, ...] = (),
+    *, eda_tool: str = "verilator", modern: tuple[str, ...] = (), legacy: tuple[str, ...] = ()
 ) -> TargetInspection:
     handle = cast(TargetHandle, SimpleNamespace())
     flow_options = {"make_options": modern} if modern else {}
@@ -74,11 +71,7 @@ def _probe_fails(_pid: int) -> set[int]:
 
 @pytest.mark.parametrize(
     ("affinity", "host_cpus", "expected"),
-    (
-        (lambda _pid: {0, 1, 2}, 32, 3),
-        (None, 7, 7),
-        (_probe_fails, None, 1),
-    ),
+    ((lambda _pid: {0, 1, 2}, 32, 3), (None, 7, 7), (_probe_fails, None, 1)),
     ids=("affinity-below-host", "no-affinity-api", "probe-fails"),
 )
 def test_affinity_bounds_the_cpu_count(
@@ -140,10 +133,7 @@ def test_unreserved_lane_stays_serial_and_does_not_probe_shared_resources(
     )
 
 
-@pytest.mark.parametrize(
-    "option",
-    ("-j", "-j8", "--jobs", "--jobs=8", "-kj4", "-j 8", "--jobs 8"),
-)
+@pytest.mark.parametrize("option", ("-j", "-j8", "--jobs", "--jobs=8", "-kj4", "-j 8", "--jobs 8"))
 @pytest.mark.parametrize("api", ("modern", "legacy"))
 def test_authored_jobs_options_are_preserved_without_injection(option: str, api: str) -> None:
     kwargs = {api: (option,)}
@@ -151,12 +141,10 @@ def test_authored_jobs_options_are_preserved_without_injection(option: str, api:
 
 
 @pytest.mark.parametrize(
-    "option",
-    ("-junk", "--job=8", "OPT_FAST=-O3", "-I/x/proj", "-fobj", "-Wno-j", "-I/usr/j2"),
+    "option", ("-junk", "--job=8", "OPT_FAST=-O3", "-I/x/proj", "-fobj", "-Wno-j", "-I/usr/j2")
 )
 def test_jobs_option_lookalikes_do_not_disable_parallel_policy(
-    monkeypatch: pytest.MonkeyPatch,
-    option: str,
+    monkeypatch: pytest.MonkeyPatch, option: str
 ) -> None:
     monkeypatch.setenv(JOB_THREADS_ENV, "3")
 

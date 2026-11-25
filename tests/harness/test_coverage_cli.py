@@ -223,11 +223,7 @@ def test_summary_counts_uncovered_and_waived_points(
     [
         (["--metric", "line"], [1, 2, 7, 8], "4 uncovered points; 1 waived point not listed"),
         (["--source", "rtl/b.sv"], [6, 7, 8], "3 uncovered points; 1 waived point not listed"),
-        (
-            ["--metric", "branch", "--source", "rtl/a.sv"],
-            [0],
-            "1 uncovered point",
-        ),
+        (["--metric", "branch", "--source", "rtl/a.sv"], [0], "1 uncovered point"),
         (
             ["--metric", "branch", "--source", "rtl/b.sv"],
             [6],

@@ -79,9 +79,7 @@ async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
     async with (
         sdk.session_manager.run(),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://localhost",
-            headers=headers,
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost", headers=headers
         ) as client,
     ):
         response = await client.post(
@@ -116,12 +114,7 @@ async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
             )
             assert response.status_code == 200, response.text
         response = await client.post(
-            "/mcp",
-            json={
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/list",
-            },
+            "/mcp", json={"jsonrpc": "2.0", "id": 4, "method": "tools/list"}
         )
         assert response.status_code == 200, response.text
     assert seen == ([None, None] if stateless else [98765, 98766])

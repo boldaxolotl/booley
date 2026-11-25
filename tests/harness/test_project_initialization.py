@@ -78,8 +78,7 @@ def _repository_state(root: Path) -> dict[str, object]:
     }
     configs = {
         repository: run_bounded_child(
-            ["git", "-C", str(root / repository), "config", "--local", "--list"],
-            check=True,
+            ["git", "-C", str(root / repository), "config", "--local", "--list"], check=True
         ).stdout
         for repository in (".", ".booley")
         if (root / repository / ".git").exists()
@@ -163,11 +162,7 @@ def _outer_branch(root: Path, branch: str, monkeypatch: pytest.MonkeyPatch) -> N
     ids=["main", "release-next", "existing", "partial"],
 )
 def test_stealth_booley_dir_repository_follows_the_outer_branch(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    branch: str,
-    prior: str | None,
-    expected: str,
+    project: Path, monkeypatch: pytest.MonkeyPatch, branch: str, prior: str | None, expected: str
 ) -> None:
     _outer_branch(project, branch, monkeypatch)
     inner = project / ".booley"

@@ -542,9 +542,7 @@ _REUSE_DECLINING_ENVIRONMENT = ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS")
 
 
 def _verilator_reuse_key(
-    prepared: PreparedSimulationBuild,
-    inputs: Mapping[str, str],
-    environment: Mapping[str, str],
+    prepared: PreparedSimulationBuild, inputs: Mapping[str, str], environment: Mapping[str, str]
 ) -> tuple[str, build_reuse.VerilatorIdentity] | None:
     """Key a stock Edalize Verilator recipe by its complete pre-build identity.
 
@@ -573,12 +571,7 @@ def _verilator_reuse_key(
             prepared, inputs, identity, python_recipe, build_environment
         )
         return _json_digest(record), identity
-    except (
-        OSError,
-        UnicodeError,
-        yaml.YAMLError,
-        importlib.metadata.PackageNotFoundError,
-    ):
+    except (OSError, UnicodeError, yaml.YAMLError, importlib.metadata.PackageNotFoundError):
         return None
 
 
@@ -825,9 +818,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     ) -> PreparedSimulationBuild:
         edam_rel = candidate.resolved.edam_path.relative_to(candidate.work_root)
         resolved = fusesoc_registry.parse_edam(
-            root / edam_rel,
-            target=candidate.resolved.name,
-            vlnv=candidate.resolved.vlnv,
+            root / edam_rel, target=candidate.resolved.name, vlnv=candidate.resolved.vlnv
         )
         make_rel = edam_layer.relpath_for_make(resolved.build_root, self.handle.project_root)
         return PreparedSimulationBuild(
@@ -866,10 +857,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         return None
 
     def authorize_fresh_image(
-        self,
-        prepared: PreparedSimulationBuild,
-        inputs: Mapping[str, str],
-        key: str | None = None,
+        self, prepared: PreparedSimulationBuild, inputs: Mapping[str, str], key: str | None = None
     ) -> tuple[Path, ...]:
         """Record the built image and return its launch artifact paths."""
         try:

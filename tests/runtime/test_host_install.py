@@ -488,12 +488,7 @@ def test_mismatch_message_unchanged_with_one_distinct_install(
 @_POSIX_ONLY
 @pytest.mark.parametrize(
     "answer",
-    [
-        {"returncode": 3},
-        {"hang_s": 60},
-        {"stdout": "other 1.0\n"},
-        {"stdout": "booley\n"},
-    ],
+    [{"returncode": 3}, {"hang_s": 60}, {"stdout": "other 1.0\n"}, {"stdout": "booley\n"}],
     ids=["failing", "hanging", "other tool", "bare name"],
 )
 def test_mismatch_lists_unreadable_version_as_unknown(

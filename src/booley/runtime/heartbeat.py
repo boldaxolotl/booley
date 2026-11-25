@@ -53,10 +53,7 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
             if previous is not None:
                 candidate = max(candidate, previous)
             fd, temporary = tempfile.mkstemp(
-                dir=heartbeat.parent,
-                prefix=f".{heartbeat.name}.",
-                suffix=".tmp",
-                text=True,
+                dir=heartbeat.parent, prefix=f".{heartbeat.name}.", suffix=".tmp", text=True
             )
             with os.fdopen(fd, "w", encoding="ascii") as fh:
                 fh.write(f"{candidate:.0f}\n")

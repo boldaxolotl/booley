@@ -312,12 +312,7 @@ def _require_within_ceiling(raw: bytes, limit: int) -> None:
 
 
 def _decode(
-    raw: bytes,
-    *,
-    schema: str,
-    fields: frozenset[str],
-    limit: int,
-    value_type: type[T],
+    raw: bytes, *, schema: str, fields: frozenset[str], limit: int, value_type: type[T]
 ) -> T:
     _require_within_ceiling(raw, limit)
     try:
@@ -394,11 +389,7 @@ def _require_variant_id(value: object) -> str:
 
 
 def _bounded_string(
-    value: object,
-    field: str,
-    *,
-    limit: int = MAX_STRING_BYTES,
-    allow_empty: bool = False,
+    value: object, field: str, *, limit: int = MAX_STRING_BYTES, allow_empty: bool = False
 ) -> str:
     parsed = require_str_value(value, field=field, allow_empty=allow_empty)
     if len(parsed.encode("utf-8")) > limit:
@@ -407,11 +398,7 @@ def _bounded_string(
 
 
 def _bounded_string_list(
-    value: object,
-    field: str,
-    *,
-    count_limit: int,
-    byte_limit: int,
+    value: object, field: str, *, count_limit: int, byte_limit: int
 ) -> list[str]:
     items = _exact_list(value, field, count_limit)
     return [
@@ -540,12 +527,7 @@ _DOCUMENT_SPECS: dict[
         MANIFEST_MAX_BYTES,
         _read_manifest,
     ),
-    SimulationAttempt: (
-        "booley.simulation-attempt/v2",
-        _ATTEMPT_FIELDS,
-        RECORD_MAX_BYTES,
-        None,
-    ),
+    SimulationAttempt: ("booley.simulation-attempt/v2", _ATTEMPT_FIELDS, RECORD_MAX_BYTES, None),
     BundleBuildAttempt: (
         "booley.bundle-build-attempt/v2",
         _BUILD_ATTEMPT_FIELDS,
@@ -558,18 +540,8 @@ _DOCUMENT_SPECS: dict[
         RECORD_MAX_BYTES,
         None,
     ),
-    SimulationResult: (
-        RESULT_SCHEMA,
-        _RESULT_FIELDS,
-        RECORD_MAX_BYTES,
-        None,
-    ),
-    SimulatorBundle: (
-        "booley.simulator-bundle/v3",
-        _BUNDLE_FIELDS,
-        MANIFEST_MAX_BYTES,
-        None,
-    ),
+    SimulationResult: (RESULT_SCHEMA, _RESULT_FIELDS, RECORD_MAX_BYTES, None),
+    SimulatorBundle: ("booley.simulator-bundle/v3", _BUNDLE_FIELDS, MANIFEST_MAX_BYTES, None),
 }
 _DOCUMENT_READERS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values() if spec[3] is not None}
 
@@ -603,10 +575,7 @@ def decode_simulator_bundle(raw: bytes) -> SimulatorBundle:
     return _decode_registered(raw, SimulatorBundle)
 
 
-def _encode_checked(
-    value: SimulationRecordDocument,
-    expected_type: type[T],
-) -> bytes:
+def _encode_checked(value: SimulationRecordDocument, expected_type: type[T]) -> bytes:
     if type(value) is not expected_type:
         raise SimulationRecordIntegrityError(f"expected {expected_type.__name__}")
     raw = canonical_json_bytes(value.document)

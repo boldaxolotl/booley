@@ -16,10 +16,7 @@ import yaml
 
 from booley.audit import target_matrix
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.fusesoc.fusesoc_registry import (
-    core_schema_errors,
-    read_core,
-)
+from booley.fusesoc.fusesoc_registry import core_schema_errors, read_core
 from booley.harness import doctor, init_cmd
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
 from booley.harness.setup.common import InitContext

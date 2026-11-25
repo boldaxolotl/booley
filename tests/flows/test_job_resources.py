@@ -276,8 +276,7 @@ def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeyp
     fake_make.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     plan = SimpleNamespace(
-        build_dir=tmp_path / "build",
-        spec=SimpleNamespace(timing=SimpleNamespace(mode="physical")),
+        build_dir=tmp_path / "build", spec=SimpleNamespace(timing=SimpleNamespace(mode="physical"))
     )
     job_resources.label_commands("core", "synth")
 
@@ -963,8 +962,7 @@ def test_simulation_stages_label_build_and_run_commands():
 
 
 @pytest.mark.parametrize(
-    ("coverage", "trace", "flags"),
-    [(False, False, ()), (True, True, ("coverage", "trace"))],
+    ("coverage", "trace", "flags"), [(False, False, ()), (True, True, ("coverage", "trace"))]
 )
 def test_simulation_flags_key_the_history(coverage, trace, flags):
     sim = SimulateFlow()
@@ -1324,10 +1322,7 @@ def test_doctor_started_runs_write_no_records(run, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("field", "value", "context"),
-    [
-        ("source_bytes", 1234, contextlib.nullcontext),
-        ("threads", 4, lambda: fixed_job_threads(4)),
-    ],
+    [("source_bytes", 1234, contextlib.nullcontext), ("threads", 4, lambda: fixed_job_threads(4))],
 )
 def test_records_carry_a_label_field_only_when_known(flow, tmp_path, field, value, context):
     job_resources.label_commands("core", "sim_build", source_bytes=1234)

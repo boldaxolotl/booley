@@ -620,11 +620,7 @@ def test_handle_map_without_names_loads_and_titles_are_handles(tmp_path):
     legacy = {"schema": 1, "entries": {"k": "S4"}, "aliases": {"old": "k"}, "next_number": 5}
     store.path.write_text(json.dumps(legacy))
     assert store.load().names == {}
-    assert store.titled_snapshot() == (
-        {"k": "S4", "old": "S4"},
-        {"k": "S4", "old": "S4"},
-        (),
-    )
+    assert store.titled_snapshot() == ({"k": "S4", "old": "S4"}, {"k": "S4", "old": "S4"}, ())
     # Reading a label-less map writes nothing; a reservation without a name leaves it as is.
     store.reserve("k", "S")
     assert json.loads(store.path.read_text()) == legacy

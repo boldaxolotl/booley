@@ -164,10 +164,7 @@ class InitPreconditionError(RuntimeError):
 ActionApplier = Callable[[InitAction], None]
 
 
-def plan_init_filesystem(
-    request: InitFilesystemRequest,
-    host_probe: HostProbe,
-) -> InitPlan:
+def plan_init_filesystem(request: InitFilesystemRequest, host_probe: HostProbe) -> InitPlan:
     """Classify every target without mutating the filesystem."""
     root = request.root.resolve()
     actions: list[InitAction] = []
@@ -206,13 +203,7 @@ def apply_init_plan(plan: InitPlan, apply_action: ActionApplier | None = None) -
 
 def _classify(target: InitTarget, observed: ObservedPrecondition) -> InitAction:
     if observed.kind is NodeKind.ABSENT:
-        return InitAction(
-            target,
-            Ownership.ABSENT,
-            observed,
-            target.mutation,
-            target.reason,
-        )
+        return InitAction(target, Ownership.ABSENT, observed, target.mutation, target.reason)
     if target.mutation is FilesystemMutation.WRITE_FILE:
         return _classify_write(target, observed)
     if target.mutation is FilesystemMutation.LINK_FILE:
@@ -228,20 +219,11 @@ def _classify_write(target: InitTarget, observed: ObservedPrecondition) -> InitA
         )
         blocker = "" if ownership is Ownership.TRACKED_MATCH else "tracked file differs"
         return InitAction(
-            target,
-            ownership,
-            observed,
-            FilesystemMutation.NONE,
-            target.reason,
-            blocker,
+            target, ownership, observed, FilesystemMutation.NONE, target.reason, blocker
         )
     if observed.kind is NodeKind.FILE and observed.digest == desired_digest:
         return InitAction(
-            target,
-            Ownership.MANAGED_CURRENT,
-            observed,
-            FilesystemMutation.NONE,
-            target.reason,
+            target, Ownership.MANAGED_CURRENT, observed, FilesystemMutation.NONE, target.reason
         )
     if observed.kind is NodeKind.FILE and target.owner_marker is not None:
         try:
@@ -251,19 +233,11 @@ def _classify_write(target: InitTarget, observed: ObservedPrecondition) -> InitA
             managed = False
         if managed:
             return InitAction(
-                target,
-                Ownership.MANAGED_STALE,
-                observed,
-                target.mutation,
-                target.reason,
+                target, Ownership.MANAGED_STALE, observed, target.mutation, target.reason
             )
     if observed.kind is NodeKind.FILE and observed.digest in target.recognized_legacy_digests:
         return InitAction(
-            target,
-            Ownership.MANAGED_STALE,
-            observed,
-            target.mutation,
-            target.reason,
+            target, Ownership.MANAGED_STALE, observed, target.mutation, target.reason
         )
     return InitAction(
         target,
@@ -279,11 +253,7 @@ def _classify_link(target: InitTarget, observed: ObservedPrecondition) -> InitAc
     assert target.desired_identity is not None
     if _points_to(target.path, target.desired_identity):
         return InitAction(
-            target,
-            Ownership.MANAGED_CURRENT,
-            observed,
-            FilesystemMutation.NONE,
-            target.reason,
+            target, Ownership.MANAGED_CURRENT, observed, FilesystemMutation.NONE, target.reason
         )
     identity_digest = _file_digest(target.desired_identity)
     if observed.tracked:
@@ -294,12 +264,7 @@ def _classify_link(target: InitTarget, observed: ObservedPrecondition) -> InitAc
         )
         blocker = "" if ownership is Ownership.TRACKED_MATCH else "tracked file differs"
         return InitAction(
-            target,
-            ownership,
-            observed,
-            FilesystemMutation.NONE,
-            target.reason,
-            blocker,
+            target, ownership, observed, FilesystemMutation.NONE, target.reason, blocker
         )
     recognized_link = (
         observed.kind is NodeKind.SYMLINK
@@ -307,11 +272,7 @@ def _classify_link(target: InitTarget, observed: ObservedPrecondition) -> InitAc
     )
     if recognized_link or observed.digest in target.recognized_legacy_digests:
         return InitAction(
-            target,
-            Ownership.MANAGED_STALE,
-            observed,
-            target.mutation,
-            target.reason,
+            target, Ownership.MANAGED_STALE, observed, target.mutation, target.reason
         )
     return InitAction(
         target,
@@ -332,17 +293,11 @@ def _observe(root: Path, path: Path, host_probe: HostProbe) -> ObservedPrecondit
     mode = stat.S_IMODE(metadata.st_mode)
     if stat.S_ISLNK(metadata.st_mode):
         return ObservedPrecondition(
-            NodeKind.SYMLINK,
-            link_target=str(path.readlink()),
-            mode=mode,
-            tracked=tracked,
+            NodeKind.SYMLINK, link_target=str(path.readlink()), mode=mode, tracked=tracked
         )
     if stat.S_ISREG(metadata.st_mode):
         return ObservedPrecondition(
-            NodeKind.FILE,
-            digest=_file_digest(path),
-            mode=mode,
-            tracked=tracked,
+            NodeKind.FILE, digest=_file_digest(path), mode=mode, tracked=tracked
         )
     if stat.S_ISDIR(metadata.st_mode):
         return ObservedPrecondition(NodeKind.DIRECTORY, mode=mode, tracked=tracked)

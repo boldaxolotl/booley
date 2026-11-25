@@ -21,7 +21,5 @@ class LintArguments(BuiltinArguments):
     @staticmethod
     def add_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--scope",
-            default="",
-            help="Comma-separated file paths to filter warnings",
+            "--scope", default="", help="Comma-separated file paths to filter warnings"
         )

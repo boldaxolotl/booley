@@ -42,12 +42,7 @@ def session_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    for name in (
-        "BOOLEY_STATE_FILE",
-        "BOOLEY_TICKET_FILE",
-        "BOOLEY_LOGS_DIR",
-        "BOOLEY_DIR",
-    ):
+    for name in ("BOOLEY_STATE_FILE", "BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     return tmp_path

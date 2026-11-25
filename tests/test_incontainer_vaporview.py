@@ -44,7 +44,7 @@ def _vanilla_manifest() -> dict:
                         "vaporview.customColor8": {"scope": "application", "default": "#4abfa8"},
                     }
                 },
-            ],
+            ]
         },
     }
 
@@ -512,10 +512,7 @@ class TestInstallRaceWait:
                 )
 
         assert iv._watch_for_late_install(
-            home,
-            sleep=sleep,
-            clock=lambda: state["t"],
-            stop=lambda: state["sleeps"] > 3,
+            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] > 3
         )
         assert activation_payload is not None
         properties = _color_properties(activation_payload)
@@ -559,11 +556,7 @@ class TestInstallRaceWait:
                 bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
 
         assert iv._watch_for_late_install(
-            home,
-            sleep=sleep,
-            clock=lambda: state["t"],
-            stop=lambda: state["sleeps"] > 3,
-            err=err,
+            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] > 3, err=err
         )
         assert state["sleeps"] == 2
         assert "manifest is not readable JSON yet" in err.getvalue()
@@ -577,10 +570,7 @@ class TestInstallRaceWait:
             state.update(t=state["t"] + dt, sleeps=state["sleeps"] + 1)
 
         assert not iv._watch_for_late_install(
-            home,
-            sleep=sleep,
-            clock=lambda: state["t"],
-            stop=lambda: state["sleeps"] == 40,
+            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] == 40
         )
         assert state["sleeps"] == 40
 
@@ -593,10 +583,7 @@ class TestInstallRaceWait:
         monkeypatch.setattr(iv, "_open_watch_lock", fail)
 
         assert not iv._watch_for_late_install(
-            home,
-            sleep=lambda _dt: None,
-            clock=lambda: 0.0,
-            err=err,
+            home, sleep=lambda _dt: None, clock=lambda: 0.0, err=err
         )
         assert str(home / ".booley" / iv._WATCH_LOCK) in err.getvalue()
         assert "read-only state directory" in err.getvalue()

@@ -109,9 +109,7 @@ def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None
     _write_proc_entry(tmp_path, 123, state="S", start_ticks=100, namespace="pid:[10]")
     identity = runtime_pid.capture_process_identity(123, proc_root=tmp_path)
     assert identity == runtime_pid.ProcessIdentity(
-        pid=123,
-        identity_scope="pid:[10]",
-        start_token=100,
+        pid=123, identity_scope="pid:[10]", start_token=100
     )
     assert runtime_pid.observe_process(identity, proc_root=tmp_path).state is runtime_pid.RUNNING
 
@@ -126,11 +124,7 @@ def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None
 
 
 def test_process_identity_owns_protocol_serialization() -> None:
-    identity = runtime_pid.ProcessIdentity(
-        pid=123,
-        identity_scope="pid:[10]",
-        start_token=100,
-    )
+    identity = runtime_pid.ProcessIdentity(pid=123, identity_scope="pid:[10]", start_token=100)
 
     assert identity.to_payload() == {
         "pid": 123,
@@ -164,20 +158,10 @@ def test_process_identity_owns_protocol_serialization() -> None:
     )
     assert runtime_pid.ProcessIdentity.from_payload(
         {"pid": 123, "pid_namespace": "windows", "start_ticks": 100}
-    ) == runtime_pid.ProcessIdentity(
-        123,
-        "windows",
-        100,
-        identity_kind="windows-creation-time",
-    )
+    ) == runtime_pid.ProcessIdentity(123, "windows", 100, identity_kind="windows-creation-time")
     assert runtime_pid.ProcessIdentity.from_payload(
         {"pid": 123, "pid_namespace": "ps:darwin", "start_ticks": 100}
-    ) == runtime_pid.ProcessIdentity(
-        123,
-        "ps:darwin",
-        100,
-        identity_kind="posix-ps-start",
-    )
+    ) == runtime_pid.ProcessIdentity(123, "ps:darwin", 100, identity_kind="posix-ps-start")
     for kind in ("windows-creation-time", "posix-ps-start"):
         assert (
             runtime_pid.ProcessIdentity.from_payload(

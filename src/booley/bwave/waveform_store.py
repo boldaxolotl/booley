@@ -165,10 +165,7 @@ def can_stream_waveform() -> bool:
 
 
 def inspect_store(
-    path: Path,
-    *,
-    expected_scope: str | None = None,
-    probe_reader: bool = True,
+    path: Path, *, expected_scope: str | None = None, probe_reader: bool = True
 ) -> StoreInspection:
     """Inspect one store without conflating structure and native readability."""
     structure = _inspect_structure(path)
@@ -225,9 +222,7 @@ def convert_vcd(
     binary = native_bwave_binary()
     if not binary:
         return ConversionResult(
-            store_path,
-            failure_kind="missing_binary",
-            detail="native B-Wave binary is unavailable",
+            store_path, failure_kind="missing_binary", detail="native B-Wave binary is unavailable"
         )
     make_directories(store_path.parent)
     attempts: list[ConversionAttempt] = []
@@ -299,9 +294,7 @@ def _conversion_failure(
 
 
 def _apply_existing_store_policy(
-    store_path: Path,
-    inspection: StoreInspection,
-    policy: ExistingStorePolicy,
+    store_path: Path, inspection: StoreInspection, policy: ExistingStorePolicy
 ) -> ConversionResult | None:
     if store_path.exists() and policy is ExistingStorePolicy.REFUSE:
         return ConversionResult(
@@ -312,9 +305,7 @@ def _apply_existing_store_policy(
         )
     if inspection.structurally_usable and (policy is ExistingStorePolicy.REUSE_STRUCTURALLY_VALID):
         return ConversionResult(
-            store_path,
-            inspection=inspection,
-            events=("reused existing store",),
+            store_path, inspection=inspection, events=("reused existing store",)
         )
     return None
 
@@ -595,10 +586,7 @@ def start_streaming_conversion(
     try:
         try:
             process = subprocess.Popen(
-                command,
-                stdin=read_fd,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
+                command, stdin=read_fd, stdout=subprocess.DEVNULL, stderr=stderr_file
             )
         except OSError:
             os.close(keepalive_fd)
@@ -698,8 +686,7 @@ def _store_metadata(metadata: BWaveListMetadata) -> StoreMetadata:
 
 
 def _stores_in(
-    directory: Path,
-    store_name: str | None = None,
+    directory: Path, store_name: str | None = None
 ) -> tuple[list[Path], tuple[StoreInspection, ...], str]:
     if not directory.is_dir():
         return [], (), ""
@@ -776,11 +763,7 @@ def _run_build(
     with vcd_path.open("rb") as stream:
         try:
             return subprocess.run(
-                command,
-                stdin=stream,
-                capture_output=True,
-                check=False,
-                timeout=timeout_s,
+                command, stdin=stream, capture_output=True, check=False, timeout=timeout_s
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _decode_output(exc.stderr)
@@ -804,10 +787,7 @@ def _bounded(value: str) -> str:
 
 
 def _conversion_detail(
-    vcd_path: Path,
-    store_path: Path,
-    scope: str | None,
-    attempts: list[ConversionAttempt],
+    vcd_path: Path, store_path: Path, scope: str | None, attempts: list[ConversionAttempt]
 ) -> str:
     lines = [
         f"vcd_path: {vcd_path}",

@@ -33,11 +33,7 @@ from booley.flows.artifact_durability import (
 )
 from booley.flows.sim.build_session import CacheDecision
 from booley.flows.sim.coverage_json import content_digest
-from booley.flows.sim.record_files import (
-    read_bounded,
-    read_json_object,
-    stream_digest,
-)
+from booley.flows.sim.record_files import read_bounded, read_json_object, stream_digest
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import is_report_link
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -563,9 +559,7 @@ class SimulationRecordStore:
         return path
 
     def scan(
-        self,
-        manifest: SimulationRecordManifest | None = None,
-        manifest_sha256: str | None = None,
+        self, manifest: SimulationRecordManifest | None = None, manifest_sha256: str | None = None
     ) -> SimulationRecordRecovery:
         """Recover work item state without reading Pre-Sim sidecars.
 
@@ -584,10 +578,7 @@ class SimulationRecordStore:
         return SimulationRecordRecovery(recovered)
 
     def _scan_item(
-        self,
-        work_item: Mapping[str, object],
-        manifest_sha256: str,
-        workload_sha256: str,
+        self, work_item: Mapping[str, object], manifest_sha256: str, workload_sha256: str
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -679,9 +670,7 @@ class SimulationRecordStore:
         return tuple(children)
 
     def regenerate_summary(
-        self,
-        manifest: SimulationRecordManifest | None = None,
-        manifest_sha256: str | None = None,
+        self, manifest: SimulationRecordManifest | None = None, manifest_sha256: str | None = None
     ) -> Mapping[str, object]:
         """Regenerate the projection; ``manifest_sha256`` is the digest of the passed manifest."""
         manifest = manifest or self.load_manifest()
@@ -723,9 +712,7 @@ _PRE_SIM_DAG_BOUND = 4096
 
 
 def collect_pre_sim_firings(
-    *manifest_paths: Path,
-    booley_dir: Path | None = None,
-    prior: tuple[PreSimFiring, ...] = (),
+    *manifest_paths: Path, booley_dir: Path | None = None, prior: tuple[PreSimFiring, ...] = ()
 ) -> tuple[PreSimFiring, ...]:
     """Read Pre-Sim firings; the only entry that does, in one of two modes.
 

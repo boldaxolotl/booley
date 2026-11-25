@@ -85,11 +85,7 @@ def _destination(root: Path, components: tuple[str, ...]) -> Path:
 
 
 def publish_bytes(
-    invocation_dir: Path,
-    components: tuple[str, ...],
-    raw: bytes,
-    *,
-    work_dir: Path,
+    invocation_dir: Path, components: tuple[str, ...], raw: bytes, *, work_dir: Path
 ) -> str:
     """Create immutable captured-output evidence and return its public path."""
     destination = _destination(invocation_dir, components)
@@ -98,11 +94,7 @@ def publish_bytes(
 
 
 def publish_file(
-    invocation_dir: Path,
-    components: tuple[str, ...],
-    source: Path,
-    *,
-    work_dir: Path,
+    invocation_dir: Path, components: tuple[str, ...], source: Path, *, work_dir: Path
 ) -> str:
     """Publish an authenticated regular-file snapshot beneath an invocation."""
     before = source.stat()

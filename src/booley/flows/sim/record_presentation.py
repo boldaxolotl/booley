@@ -23,9 +23,7 @@ from booley.flows.sim.record.test_run_report import (
     simulation_record_test_run_rows,
 )
 from booley.flows.sim.record_files import document_digest
-from booley.flows.test_runs import (
-    DEFAULT_SEED,
-)
+from booley.flows.test_runs import DEFAULT_SEED
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -35,10 +33,7 @@ from booley.runtime.endpoint_execution import (
 
 from .. import output_budget
 from .coverage_record_store import load_coverage_record
-from .coverage_reference import (
-    MAX_REFERENCE_BYTES,
-    resolve_coverage_record_reference,
-)
+from .coverage_reference import MAX_REFERENCE_BYTES, resolve_coverage_record_reference
 from .coverage_source_gaps import source_gap_report_lines
 from .metrics import coverage_record_path, simulation_flow_metrics
 from .record import (
@@ -56,11 +51,7 @@ from .record.coordinator import (
     SimulationRecordPublicationError,
     SimulationRecordPublicationFailure,
 )
-from .record.coverage_execution import (
-    _CoverageAggregateError,
-    _endpoint_collection,
-    _failure_test,
-)
+from .record.coverage_execution import _CoverageAggregateError, _endpoint_collection, _failure_test
 from .record.model import simulation_status_from_observations
 from .record_reports import invocation_booley_dir
 
@@ -92,10 +83,7 @@ def _compact_coverage_number(value: FrozenJson) -> str:
 
 def _failed_metric_detail(metrics: FrozenJson) -> str | None:
     records = cast(tuple[Mapping[str, FrozenJson], ...], metrics)
-    failed = next(
-        (item for item in records if item["verdict"] == "fail"),
-        None,
-    )
+    failed = next((item for item in records if item["verdict"] == "fail"), None)
     if failed is None:
         return None
     return (
@@ -524,8 +512,7 @@ def _coverage_preflight_findings_outcome(findings: Sequence[Any]) -> EndpointOut
 
 
 def _simulation_record_structured_details(
-    outcomes: Sequence[SimulationRecordOutcome],
-    report_invocation: Path | None = None,
+    outcomes: Sequence[SimulationRecordOutcome], report_invocation: Path | None = None
 ) -> dict[str, object]:
     """Expose one canonical artifact map based on the containing report."""
     return {
@@ -624,11 +611,7 @@ def _simulation_record_artifact_paths(
     outcome: SimulationRecordOutcome,
 ) -> dict[str, tuple[Path, str, int]]:
     paths = {
-        "manifest": (
-            outcome.manifest_path,
-            "simulation_record_manifest",
-            MANIFEST_MAX_BYTES,
-        ),
+        "manifest": (outcome.manifest_path, "simulation_record_manifest", MANIFEST_MAX_BYTES),
         "simulation": (
             outcome.manifest_path.parents[1] / "simulation.json",
             "simulation_projection",
@@ -856,9 +839,7 @@ def _coverage_compatibility_targets(
             "abort_remaining": False,
         }
         reference = _coverage_reference_artifact(
-            public,
-            report_invocation,
-            str(outcome.acceptance_facts.document["campaign_id"]),
+            public, report_invocation, str(outcome.acceptance_facts.document["campaign_id"])
         )
         if reference is not None:
             target["coverage_record"] = reference
@@ -885,10 +866,7 @@ def _coverage_reference_artifact(
 
 
 def _attach_failure_reference(
-    detail: dict[str, object],
-    public: Path,
-    report_invocation: Path | None,
-    owner: str,
+    detail: dict[str, object], public: Path, report_invocation: Path | None, owner: str
 ) -> None:
     try:
         reference = _coverage_reference_artifact(public, report_invocation, owner)

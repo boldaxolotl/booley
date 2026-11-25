@@ -102,10 +102,7 @@ def test_cross_process_observers_preserve_highest_target(tmp_path: Path) -> None
     )
     env = os.environ | {"PYTHONPATH": python_path}
     processes = [
-        subprocess.Popen(
-            [sys.executable, "-c", script, str(booley_dir), version],
-            env=env,
-        )
+        subprocess.Popen([sys.executable, "-c", script, str(booley_dir), version], env=env)
         for version in ["1.1.0", "1.5.0", "1.2.0", "1.4.0"]
     ]
 
@@ -188,10 +185,7 @@ def test_acknowledgment_clears_exact_pending_target(tmp_path: Path) -> None:
     upgrade_review.observe(booley_dir, current_version="2.0.0", now=_NOW)
 
     status = upgrade_review.acknowledge(
-        booley_dir,
-        "2.0.0",
-        current_version="2.0.0",
-        packaged_changelog=_changelog(tmp_path),
+        booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
     )
 
     assert status.condition is upgrade_review.ReviewCondition.CURRENT
@@ -205,10 +199,7 @@ def test_acknowledgment_rejects_stale_runtime_and_missing_entry(tmp_path: Path) 
 
     with pytest.raises(upgrade_review.AcknowledgmentError, match="running Booley"):
         upgrade_review.acknowledge(
-            booley_dir,
-            "2.0.0",
-            current_version="1.0.0",
-            packaged_changelog=_changelog(tmp_path),
+            booley_dir, "2.0.0", current_version="1.0.0", packaged_changelog=_changelog(tmp_path)
         )
     with pytest.raises(upgrade_review.AcknowledgmentError, match="no release entry"):
         upgrade_review.acknowledge(
@@ -228,10 +219,7 @@ def test_newer_observation_wins_before_acknowledgment(tmp_path: Path) -> None:
 
     with pytest.raises(upgrade_review.AcknowledgmentError, match="pending target changed"):
         upgrade_review.acknowledge(
-            booley_dir,
-            "2.0.0",
-            current_version="2.0.0",
-            packaged_changelog=_changelog(tmp_path),
+            booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
         )
 
     assert _payload(booley_dir)["pending_target"] == "3.0.0"

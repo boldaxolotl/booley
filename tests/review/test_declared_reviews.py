@@ -110,9 +110,7 @@ resolve = "critical"
     assert declared.path == root / ".booley" / "reviews.toml"
 
 
-def test_unwritten_keys_take_built_in_defaults_and_entries_carry_their_own(
-    tmp_path: Path,
-) -> None:
+def test_unwritten_keys_take_built_in_defaults_and_entries_carry_their_own(tmp_path: Path) -> None:
     from booley.review.review_resolution import load_declared_reviews
 
     root = write_project(
@@ -293,10 +291,7 @@ ERRORS = {
             "[sim_core.review] exclude: must be a list of strings",
         ],
     ),
-    "review-is-not-a-table": (
-        "[sim_core]\nreview = 1\n",
-        ["[sim_core.review] must be a table"],
-    ),
+    "review-is-not-a-table": ("[sim_core]\nreview = 1\n", ["[sim_core.review] must be a table"]),
     "paths-is-not-an-array-of-tables": (
         FOCUS + "paths = 1\n",
         ["[sim_core.review] paths: must be an array of tables"],

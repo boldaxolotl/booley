@@ -32,10 +32,7 @@ def validate_manifest_reference(
         isinstance(reference, dict), "compatibility manifest backlink is not an artifact reference"
     )
     _need(reference.get("path_base") == "origin_target", "manifest backlink base differs")
-    _need(
-        reference.get("kind") == "simulation_record_manifest",
-        "manifest backlink kind differs",
-    )
+    _need(reference.get("kind") == "simulation_record_manifest", "manifest backlink kind differs")
     _need(reference.get("owner") == simulation_record_id, "manifest backlink owner differs")
     path = reference.get("path")
     _need(isinstance(path, str) and bool(path), "manifest backlink path is invalid")
@@ -47,6 +44,5 @@ def validate_manifest_reference(
         "manifest backlink size differs",
     )
     _need(
-        reference.get("sha256") == _file_digest(manifest_raw),
-        "manifest backlink digest differs",
+        reference.get("sha256") == _file_digest(manifest_raw), "manifest backlink digest differs"
     )

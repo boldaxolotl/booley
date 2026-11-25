@@ -20,13 +20,9 @@ def _project(root: Path, marker: str, command: str | None = None) -> TargetHandl
     project.mkdir(parents=True)
     command = command or f"printf {marker} > hook.txt"
     (project / "booley.toml").write_text(
-        f'[flows.sim]\npre_run_commands = ["{command}"]\nrun_cwd = "."\n',
-        encoding="utf-8",
+        f'[flows.sim]\npre_run_commands = ["{command}"]\nrun_cwd = "."\n', encoding="utf-8"
     )
-    return cast(
-        TargetHandle,
-        SimpleNamespace(project_root=root.resolve(), selector="sim"),
-    )
+    return cast(TargetHandle, SimpleNamespace(project_root=root.resolve(), selector="sim"))
 
 
 def test_each_target_handle_resolves_its_own_project_configuration(tmp_path: Path) -> None:

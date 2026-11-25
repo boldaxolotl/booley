@@ -406,10 +406,7 @@ _DRIFT_CASES = {
     ),
     "attach-patch": (_unpatch_attach, "postAttachCommand"),
     "hdl-vsix": (_remove_extension(dc.HDL_VSIX), "customizations.vscode.extensions[]"),
-    "retired-extension": (
-        _add_extension("bitwisecook.tcl"),
-        "customizations.vscode.extensions[]",
-    ),
+    "retired-extension": (_add_extension("bitwisecook.tcl"), "customizations.vscode.extensions[]"),
     "retired-file-association": (
         _set_setting("files.associations", {"*.sdc": "tcl"}),
         "customizations.vscode.settings.files.associations.*.sdc",

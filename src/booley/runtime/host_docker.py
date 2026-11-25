@@ -51,10 +51,7 @@ GATEWAY_MODE_ISOLATED = "isolated"
 
 
 def _run_docker(
-    args: list[str],
-    *,
-    timeout: int = _DOCKER_TIMEOUT,
-    executable: str = "docker",
+    args: list[str], *, timeout: int = _DOCKER_TIMEOUT, executable: str = "docker"
 ) -> subprocess.CompletedProcess:
     """Run ``docker <args>`` capturing text output. Never raises on non-zero exit.
 
@@ -94,10 +91,7 @@ def network_exists(name: str = EGRESS_NETWORK) -> bool:
 def network_is_internal(name: str = EGRESS_NETWORK) -> bool:
     """True if the named network exists and is ``--internal`` (no external route)."""
     try:
-        result = _run_docker(
-            ["network", "inspect", name, "--format", "{{.Internal}}"],
-            timeout=15,
-        )
+        result = _run_docker(["network", "inspect", name, "--format", "{{.Internal}}"], timeout=15)
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
@@ -113,8 +107,7 @@ def container_exists(name: str) -> bool:
 def container_running(name: str) -> bool:
     try:
         result = _run_docker(
-            ["container", "inspect", name, "--format", "{{.State.Running}}"],
-            timeout=15,
+            ["container", "inspect", name, "--format", "{{.State.Running}}"], timeout=15
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
@@ -162,9 +155,7 @@ def _inspect_image(
     """
     try:
         result = _run_docker(
-            ["image", "inspect", reference, *extra],
-            timeout=timeout,
-            executable=executable,
+            ["image", "inspect", reference, *extra], timeout=timeout, executable=executable
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ImageInspectError(f"cannot inspect Docker image {reference!r}: {exc}") from exc
@@ -195,11 +186,7 @@ def image_id(reference: str) -> str | None:
     )
 
 
-def inspect_image_metadata(
-    reference: str,
-    *,
-    executable: str = "docker",
-) -> ImageMetadata | None:
+def inspect_image_metadata(reference: str, *, executable: str = "docker") -> ImageMetadata | None:
     """Return the full metadata of exactly *reference*, or ``None`` when it does not exist.
 
     Same contract as :func:`image_id`: only "no such image" is absent. Failures
@@ -281,10 +268,7 @@ def compare_issued_selection(
 
 
 def compare_issued_reference(
-    issued_reference: str,
-    configured_reference: str,
-    *,
-    executable: str = "docker",
+    issued_reference: str, configured_reference: str, *, executable: str = "docker"
 ) -> Comparison:
     """Compare exact IDs when no trusted logical provenance contract exists."""
     from booley.runtime.image_identity import Comparison, Status

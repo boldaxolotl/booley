@@ -39,10 +39,7 @@ def _coverage_plan(tmp_path: Path, *, no_waivers: bool, trace: bool = False):
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
     runs = (_RESET, _SOAK)
     preview = replace(
-        preview,
-        groups=(("reset", "count"),),
-        run_groups=(runs,),
-        commands=(("run",),),
+        preview, groups=(("reset", "count"),), run_groups=(runs,), commands=(("run",),)
     )
     return plan_coarse_simulation_record(
         handle=handle,
@@ -61,11 +58,7 @@ def _coverage_plan(tmp_path: Path, *, no_waivers: bool, trace: bool = False):
 
 def _traced_hdl_plan(tmp_path: Path):
     _project, handle, inspection, preview = _planning_fixture(tmp_path)
-    preview = replace(
-        preview,
-        groups=(("reset",), ("count",)),
-        run_groups=((_RESET,), (_SOAK,)),
-    )
+    preview = replace(preview, groups=(("reset",), ("count",)), run_groups=((_RESET,), (_SOAK,)))
     return plan_ordinary_hdl_simulation_record(
         handle=handle,
         inspection=inspection,

@@ -18,11 +18,7 @@ from booley.flows.sim.coverage_record_store import (
     LoadedCoverageRecord,
     load_coverage_record_bytes,
 )
-from booley.flows.sim.record_files import (
-    canonical_json,
-    parse_json_object,
-    read_bounded,
-)
+from booley.flows.sim.record_files import canonical_json, parse_json_object, read_bounded
 from booley.flows.sim.record_layout import (
     COVERAGE_RECORD_DIRECTORY,
     RECORD_DIRECTORY,
@@ -216,8 +212,7 @@ def resolve_persisted_coverage_record_reference(
         )
     _digest(persisted["sha256"], "coverage_campaign_reference.sha256")
     _digest(
-        persisted["nested_campaign_sha256"],
-        "coverage_campaign_reference.nested_campaign_sha256",
+        persisted["nested_campaign_sha256"], "coverage_campaign_reference.nested_campaign_sha256"
     )
     public_path = _contained_relative(reports_root.absolute(), relative)
     raw = read_bounded(

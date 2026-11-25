@@ -816,8 +816,7 @@ class TestCmdShell:
     def test_shell_parser_accepts_net_and_command(self):
         parser = tlr._build_parser()
         args = tlr._normalize_args(
-            parser,
-            parser.parse_args(["shell", "--net", "--", "verilator", "-V"]),
+            parser, parser.parse_args(["shell", "--net", "--", "verilator", "-V"])
         )
         assert args.command == "shell"
         assert args.net is True
@@ -847,15 +846,9 @@ class TestCmdShell:
 
         monkeypatch.setattr(cfgmod, "load_agent_settings", _boom)
         sandbox = type("S", (), {"image": "img", "memory": ""})()
+        monkeypatch.setattr(cfgmod, "get_agent_settings", type("C", (), {"sandbox": sandbox}))
         monkeypatch.setattr(
-            cfgmod,
-            "get_agent_settings",
-            type("C", (), {"sandbox": sandbox}),
-        )
-        monkeypatch.setattr(
-            sandbox_mod.DockerSandboxConfig,
-            "verify",
-            lambda self: "docker unavailable",
+            sandbox_mod.DockerSandboxConfig, "verify", lambda self: "docker unavailable"
         )
 
         args = tlr._build_parser().parse_args(["shell"])
@@ -1306,10 +1299,7 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
         assert authority.load_state().installations == {}
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [["cheat"], ["cheat", "--list"]],
-)
+@pytest.mark.parametrize("argv", [["cheat"], ["cheat", "--list"]])
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     monkeypatch.chdir(tmp_path)
@@ -1645,8 +1635,7 @@ def test_refresh_cli_reports_verified_container_outcome(
 
 
 @pytest.mark.parametrize(
-    "configuration",
-    ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"],
+    "configuration", ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"]
 )
 def test_auth_status_cli_refuses_corrupt_owned_project(
     tmp_path, monkeypatch, capsys, configuration

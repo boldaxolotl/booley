@@ -72,13 +72,7 @@ from booley.presentation.report_results import (
 from booley.runtime.handles import job_prefix
 from booley.runtime.job_records import parse_stamp, target_arg
 from booley.runtime.pid import ProcessState
-from booley.runtime.session_activity import (
-    UNKNOWN,
-    WAITING_TOOL,
-    WAITING_USER,
-    WORKING,
-    Activity,
-)
+from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, WAITING_USER, WORKING, Activity
 from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)

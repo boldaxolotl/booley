@@ -67,10 +67,7 @@ def inspect_agent_installation(provider: str) -> AgentInstallation:
     return AgentInstallation((Path.home() / f".{provider}").is_dir(), shutil.which(provider))
 
 
-def audit_python_version(
-    current: tuple[int, int],
-    minimum: tuple[int, int],
-) -> EnvironmentFinding:
+def audit_python_version(current: tuple[int, int], minimum: tuple[int, int]) -> EnvironmentFinding:
     """Assess the interpreter version against Booley's supported minimum."""
     if current >= minimum:
         return EnvironmentFinding(EnvironmentSeverity.PASS, f"Python {current[0]}.{current[1]}")
@@ -91,8 +88,7 @@ def audit_legacy_distribution() -> EnvironmentFinding:
         legacy = distribution("booley")
     except PackageNotFoundError:
         return EnvironmentFinding(
-            EnvironmentSeverity.PASS,
-            "no legacy `booley` distribution shadowing `booley-rtl`",
+            EnvironmentSeverity.PASS, "no legacy `booley` distribution shadowing `booley-rtl`"
         )
 
     resolved = Path(booley.__file__ or "?").resolve().parent
@@ -131,10 +127,7 @@ def _legacy_only_finding(version: str, resolved: Path) -> EnvironmentFinding:
     )
 
 
-def probe_host_clock(
-    *,
-    now: Callable[[], datetime] | None = None,
-) -> EnvironmentFinding:
+def probe_host_clock(*, now: Callable[[], datetime] | None = None) -> EnvironmentFinding:
     """Compare the host clock with reachable HTTP Date references."""
     current_time = now or (lambda: datetime.now(UTC))
     for url in CLOCK_REFERENCE_URLS:
@@ -144,8 +137,7 @@ def probe_host_clock(
         skew = (current_time() - remote).total_seconds()
         if abs(skew) <= CLOCK_SKEW_WARN_SECONDS:
             return EnvironmentFinding(
-                EnvironmentSeverity.PASS,
-                f"host clock agrees with true UTC (skew {skew:+.0f}s)",
+                EnvironmentSeverity.PASS, f"host clock agrees with true UTC (skew {skew:+.0f}s)"
             )
         return _clock_skew_finding(url, skew)
     return EnvironmentFinding(

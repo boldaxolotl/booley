@@ -217,9 +217,7 @@ def test_specialist_check_parses_like_the_shell(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.asyncio
-async def test_choice_step_lists_enabled_builtin_specialists_and_each_is_selectable(
-    checkout,
-):
+async def test_choice_step_lists_enabled_builtin_specialists_and_each_is_selectable(checkout):
     (checkout / ".booley" / "mcp_tools").mkdir(parents=True)
     (checkout / ".booley" / "mcp_tools" / "custom.py").write_text(
         "from booley.specialists.specialist import Specialist\n\n\n"

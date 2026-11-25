@@ -76,10 +76,7 @@ def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
     for settings in (_loaded(project), _lazy()):
         assert {
             name: settings.model_for_specialist(name) for name in agent_config.SPECIALISTS
-        } == {
-            "reviewer": "claude-opus-5-5",
-            "coverage_analyst": _PIN,
-        }
+        } == {"reviewer": "claude-opus-5-5", "coverage_analyst": _PIN}
         assert settings.internal_model() == _PIN
         assert settings.model_settings() == {
             "claude-opus-5-5": ("[models] reviewer",),

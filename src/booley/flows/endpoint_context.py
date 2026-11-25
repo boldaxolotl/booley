@@ -52,8 +52,7 @@ class EndpointContext(EndpointState):
         return "\n".join(v for v in values if v)
 
     def _prepare_cli_execution(
-        self,
-        argv: list[str] | None,
+        self, argv: list[str] | None
     ) -> PreparedExecution | EndpointOutcome:
         self._console_publication_requested = True
         self.parse_args(argv)

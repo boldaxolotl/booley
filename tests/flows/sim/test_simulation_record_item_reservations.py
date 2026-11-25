@@ -44,10 +44,7 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecord,
     SimulationRecordPolicy,
 )
-from booley.flows.sim.record.model import (
-    SimulationRecordManifest,
-    create_simulation_record_plan,
-)
+from booley.flows.sim.record.model import SimulationRecordManifest, create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
@@ -60,12 +57,7 @@ from booley.runtime.endpoint_execution import (
     job_stopped_after_oom,
     note_job_oom_kill,
 )
-from booley.runtime.job_slots import (
-    CLASS_MEMORY,
-    ClaimAbortedError,
-    ClaimLostError,
-    MemoryClaim,
-)
+from booley.runtime.job_slots import CLASS_MEMORY, ClaimAbortedError, ClaimLostError, MemoryClaim
 from booley.runtime.resource_history import SCHEMA
 from booley.runtime.supervised_execution import current_supervised_execution
 from tests.flows.sim.simulation_record_test_support import (
@@ -775,10 +767,7 @@ def test_item_reserves_its_build_when_the_shared_build_does_not_cover_it(
     ],
 )
 def test_item_with_pre_sim_commands_reserves_their_estimate_not_the_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    pre_sim_peak: float | None,
-    reservation: float,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pre_sim_peak: float | None, reservation: float
 ) -> None:
     sized: list[tuple[JobRequest, bool]] = []
     original = MemorySizing.plan_work_item

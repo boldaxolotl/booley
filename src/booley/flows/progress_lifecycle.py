@@ -189,11 +189,7 @@ def write_progress_json(
 
 
 def read_progress_for_run(
-    report_roots: Sequence[Path],
-    endpoint: str,
-    run_id: str,
-    *,
-    booley_dir: Path | None = None,
+    report_roots: Sequence[Path], endpoint: str, run_id: str, *, booley_dir: Path | None = None
 ) -> tuple[Path, dict[str, Any]] | None:
     """Return the newest trusted run-scoped checkpoint and its exact path.
 
@@ -238,11 +234,7 @@ def read_progress_for_run(
 
 
 def repair_progress_after_reap(
-    report_roots: Sequence[Path],
-    endpoint: str,
-    run_id: str,
-    *,
-    booley_dir: Path | None = None,
+    report_roots: Sequence[Path], endpoint: str, run_id: str, *, booley_dir: Path | None = None
 ) -> bool:
     """Best-effort terminalization after the supervisor proved a child dead."""
     try:
@@ -356,10 +348,7 @@ def validate_coverage_origin_progress(
 
 
 def _read_trusted_progress(
-    path: Path,
-    report_roots: Sequence[Path],
-    *,
-    booley_dir: Path | None = None,
+    path: Path, report_roots: Sequence[Path], *, booley_dir: Path | None = None
 ) -> dict[str, Any] | None:
     try:
         root = _containing_root(path, report_roots)

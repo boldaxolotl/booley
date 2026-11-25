@@ -41,11 +41,7 @@ from tests.git_support import repository
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.harness.session_docker_fake import SandboxDocker, serve_sandbox_docker
 from tests.runtime import test_session_issuance as issuance_fixtures
-from tests.runtime.test_sandbox_remedy_workflows import (
-    EXTERNAL,
-    HEADLESS_RESEED,
-    VSCODE_SEED,
-)
+from tests.runtime.test_sandbox_remedy_workflows import EXTERNAL, HEADLESS_RESEED, VSCODE_SEED
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace

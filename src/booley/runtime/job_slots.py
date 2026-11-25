@@ -84,11 +84,7 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.execution_recovery import recover_execution, recover_process_owner
 from booley.runtime.filesystem_utils import replace_file, unlink_file
-from booley.runtime.job_records import (
-    DEADLINE_SLACK_SECONDS,
-    _proc_cmdline,
-    parse_stamp,
-)
+from booley.runtime.job_records import DEADLINE_SLACK_SECONDS, _proc_cmdline, parse_stamp
 from booley.runtime.pid import (
     DEAD_PROCESS_STATES,
     ProcessIdentity,
@@ -1113,9 +1109,7 @@ class SlotStore:
 
     @staticmethod
     def _new_waiter_payload(
-        request: _WaiterRequest,
-        lease_id: str,
-        owner_identity: ProcessIdentity | None,
+        request: _WaiterRequest, lease_id: str, owner_identity: ProcessIdentity | None
     ) -> dict:
         payload: dict = {
             "schema_version": SLOT_SCHEMA_VERSION,
@@ -1139,12 +1133,7 @@ class SlotStore:
             payload["job"] = request.job.to_payload()
         return payload
 
-    def _new_waiter_token(
-        self,
-        path: Path,
-        payload: dict,
-        request: _WaiterRequest,
-    ) -> SlotToken:
+    def _new_waiter_token(self, path: Path, payload: dict, request: _WaiterRequest) -> SlotToken:
         published = _parse_entry_name(path.name)
         if published is None:
             raise ValueError(f"invalid published waiter entry name: {path.name}")
@@ -1257,10 +1246,7 @@ class SlotStore:
         return self._retry_entry_io(lambda: source.rename(target))
 
     def _retry_entry_io(
-        self,
-        operation: Callable[[], object],
-        *,
-        on_exhausted: Callable[[], None] | None = None,
+        self, operation: Callable[[], object], *, on_exhausted: Callable[[], None] | None = None
     ) -> bool:
         """Run *operation*, retrying any ``PermissionError`` within the entry-I/O bound.
 

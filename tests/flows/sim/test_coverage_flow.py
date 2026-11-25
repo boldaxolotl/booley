@@ -11,10 +11,7 @@ import pytest
 from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
-from booley.flows.sim.coverage_reference import (
-    REFERENCE_SCHEMA,
-    resolve_coverage_record_reference,
-)
+from booley.flows.sim.coverage_reference import REFERENCE_SCHEMA, resolve_coverage_record_reference
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import (
@@ -74,11 +71,7 @@ def _pin_revision(monkeypatch: pytest.MonkeyPatch, revision: str) -> None:
 
 class _SplitMetricsExecution(NativeExecution):
     def payload(self, _hits):
-        records = (
-            ("line", 1, "block", 1),
-            ("expr", 2, "true", 1),
-            ("branch", 3, "true", 0),
-        )
+        records = (("line", 1, "block", 1), ("expr", 2, "true", 1), ("branch", 3, "true", 0))
         body = "".join(
             "C '\x01f\x02rtl/counter.sv"
             f"\x01l\x02{line}\x01n\x021\x01h\x02TOP.counter"
@@ -502,10 +495,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     ],
 )
 def test_coverage_recipe_schema_errors_are_atomic_preflight_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    coverage_recipe: str,
-    message: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage_recipe: str, message: str
 ) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -755,10 +745,7 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
         (tmp_path / "reports/sim/1/targets/sim_1").rglob("coverage-record/coverage.json")
     )
     invalid_manifest = json.loads(coverage_record_path.read_text())
-    assert invalid_manifest["scoring"] == {
-        "status": "invalid",
-        "reason": "collector_error",
-    }
+    assert invalid_manifest["scoring"] == {"status": "invalid", "reason": "collector_error"}
     assert invalid_manifest["rollups"] == []
     failed_block = _target_block(result.outcome.report_text, "sim_1")
     assert not any(line.startswith("  coverage: ") for line in failed_block)
@@ -812,8 +799,7 @@ def test_unmatched_coverage_failure_lists_completed_simulation_records(tmp_path,
     # `SimulateFlow` reaches the unmatched-failure card only for a failed request that matches no prepared plan; no Flow input does.
     monkeypatch.setattr(sim_flow, "_simulation_record_structured_details", lambda *_args: {})
     finished = SimpleNamespace(
-        manifest_path=tmp_path / "targets/sim_0/record/manifest.json",
-        coverage_reference=object(),
+        manifest_path=tmp_path / "targets/sim_0/record/manifest.json", coverage_reference=object()
     )
 
     # `SimulateFlow` reaches the unmatched-failure card only for a failed request that matches no prepared plan; no Flow input does.
@@ -907,11 +893,7 @@ def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize(
     ("selected", "expected_runs", "exit_code"),
-    [
-        (("wrap",), ["wrap"], 1),
-        (("reset", "wrap"), ["reset", "wrap"], 1),
-        (None, ["reset"], 0),
-    ],
+    [(("wrap",), ["wrap"], 1), (("reset", "wrap"), ["reset", "wrap"], 1), (None, ["reset"], 0)],
 )
 def test_explicit_coverage_selection_executes_configured_skips(
     tmp_path, monkeypatch, selected, expected_runs, exit_code
@@ -1147,11 +1129,7 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, ski
             raise KeyboardInterrupt("simulated publication interruption")
 
     request = SimRequest(
-        target="sim_0",
-        test=selected,
-        work_dir=tmp_path,
-        coverage=True,
-        report_dir=reports,
+        target="sim_0", test=selected, work_dir=tmp_path, coverage=True, report_dir=reports
     )
     with pytest.raises(KeyboardInterrupt):
         SimulateFlow(
@@ -1162,9 +1140,7 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, ski
 
 
 def test_resume_continues_its_origin_and_writes_no_dependency_receipt(tmp_path, monkeypatch):
-    from booley.flows.sim.record.artifact_reference import (
-        resolve_report_artifact_reference,
-    )
+    from booley.flows.sim.record.artifact_reference import resolve_report_artifact_reference
     from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
 
     reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
@@ -1258,8 +1234,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
 
     origin = tmp_path / "sim/1"
     validated = SimpleNamespace(
-        path=origin / "targets/sim_0/record/manifest.json",
-        booley_dir=None,
+        path=origin / "targets/sim_0/record/manifest.json", booley_dir=None
     )
     flow = SimulateFlow()
     origin.mkdir(parents=True)
@@ -1362,9 +1337,7 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     from booley.flows.sim.record.store import SimulationRecordStore
 
     reports, _request = _interrupt_coverage_collection(
-        tmp_path,
-        monkeypatch,
-        boundary="after:manifest_commit" if state == "pending" else None,
+        tmp_path, monkeypatch, boundary="after:manifest_commit" if state == "pending" else None
     )
     simulation_record = reports / "sim/1/targets/sim_0/record"
     manifest = simulation_record / "manifest.json"
@@ -1641,9 +1614,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
                 raise OSError("resumed publication failed")
 
         result = _coverage(
-            tmp_path,
-            checkpoint=checkpoint,
-            resume_from=public.parent / "record/manifest.json",
+            tmp_path, checkpoint=checkpoint, resume_from=public.parent / "record/manifest.json"
         )
     else:
         _reports, _runs, _public, _factory, result = _crash_coverage_publication(
@@ -1892,9 +1863,7 @@ def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, mo
     completed_runs = tuple(runs)
 
     resumed = _coverage(
-        tmp_path,
-        factory=execution_factory,
-        resume_from=public.parent / "record/manifest.json",
+        tmp_path, factory=execution_factory, resume_from=public.parent / "record/manifest.json"
     )
 
     assert resumed.exit_code == 0, resumed.outcome
@@ -1957,10 +1926,7 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
         pytest.fail("mismatch refusal must precede coverage build and collection")
 
     result = _coverage(
-        tmp_path,
-        factory=forbidden_execution,
-        resume_from=manifest,
-        dry_run=dry_run,
+        tmp_path, factory=forbidden_execution, resume_from=manifest, dry_run=dry_run
     )
     assert result.exit_code == 2
     assert "source changed: rtl/counter.sv" in result.outcome.report_text

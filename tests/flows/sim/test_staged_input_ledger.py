@@ -155,8 +155,7 @@ def test_a_live_or_foreign_owner_is_never_acted_on(
 
 
 @pytest.mark.parametrize(
-    "content",
-    [b"not json", b"[]", b'{"kind": "other"}', b"x" * (2 * 1024 * 1024), b"\xff"],
+    "content", [b"not json", b"[]", b'{"kind": "other"}', b"x" * (2 * 1024 * 1024), b"\xff"]
 )
 def test_an_unrecognised_record_is_left_alone(case: _Case, content: bytes) -> None:
     case.record.write_bytes(content)

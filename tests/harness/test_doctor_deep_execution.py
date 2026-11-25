@@ -425,10 +425,7 @@ def test_core_resolution_requires_and_completes_one_identifier_per_selected_targ
         assert identifiers.isdisjoint(record.reasons)
     else:
         assert payloads == [], "an unavailable runtime dispatches nothing"
-        skip = (
-            "skip",
-            ".core resolvability skipped - Sandbox recovery is pending on this host",
-        )
+        skip = ("skip", ".core resolvability skipped - Sandbox recovery is pending on this host")
         assert skip in rows
         assert identifiers <= set(record.reasons)
 

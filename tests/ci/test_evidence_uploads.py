@@ -247,10 +247,7 @@ def test_smoke_evidence_is_uploaded_after_container_cleanup() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Clean up image validation containers"
     )
-    for name in (
-        "Upload coverage release test timing",
-        "Upload OpenROAD runtime evidence",
-    ):
+    for name in ("Upload coverage release test timing", "Upload OpenROAD runtime evidence"):
         index = next(index for index, step in enumerate(steps) if step.get("name") == name)
         assert index > cleanup
 

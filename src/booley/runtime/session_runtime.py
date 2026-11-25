@@ -81,10 +81,7 @@ def _requested_issued_license(workspace: Path, issuance: Issuance) -> LicensePro
     """Resolve exactly the licence named by a validated Sandbox issuance."""
     from booley.runtime import session_issuance as runtime_spec
 
-    return runtime_spec.requested_license(
-        workspace,
-        expected_name=issuance.license_profile,
-    )
+    return runtime_spec.requested_license(workspace, expected_name=issuance.license_profile)
 
 
 def session_container_name(workspace: Path) -> str:
@@ -338,11 +335,7 @@ def _append_environment(
                 argv += ["-e", f"{key}={resolved}"]
 
 
-def docker_run_argv(
-    spec: dict,
-    workspace: Path,
-    name: str,
-) -> DockerRunArgv:
+def docker_run_argv(spec: dict, workspace: Path, name: str) -> DockerRunArgv:
     """Derive the ``docker run`` argv for *spec*.
 
     Mirrors how the Dev Containers CLI consumes the spec:
@@ -766,21 +759,12 @@ def _validate_up_request(workspace: Path) -> UpRequest:
     )
 
 
-def _create_or_resume_session(
-    workspace: Path,
-    request: UpRequest,
-    *,
-    exists: bool,
-) -> bool:
+def _create_or_resume_session(workspace: Path, request: UpRequest, *, exists: bool) -> bool:
     from booley.runtime import session_admission
 
     if not exists or not idk.container_running(request.name):
         try:
-            session_admission.admit_start(
-                workspace,
-                target_name=request.name,
-                run=_run,
-            )
+            session_admission.admit_start(workspace, target_name=request.name, run=_run)
         except session_admission.AdmissionError as exc:
             raise SessionError(str(exc)) from exc
     relay, relay_created = _prepare_license_relay(
@@ -840,18 +824,11 @@ def _run_up_transaction(
     candidate_ready = False
     relay_created = False
     try:
-        relay_created = _create_or_resume_session(
-            workspace,
-            request,
-            exists=exists,
-        )
+        relay_created = _create_or_resume_session(workspace, request, exists=exists)
         candidate_ready = True
         if expected_image_id is not None:
             if not container_matches_issuance(
-                request.name,
-                request.issuance,
-                spec=request.spec,
-                workspace=workspace,
+                request.name, request.issuance, spec=request.spec, workspace=workspace
             ):
                 raise SessionError(
                     "refreshed Sandbox labels or network topology do not match "
@@ -939,9 +916,7 @@ def _ensure_unlocked(
     if resolve_running_sandbox(workspace) != selected:
         raise SessionError("Sandbox identity changed before startup; retry")
     stale_vscode = _stopped_vscode_reconcile_candidates(
-        workspace,
-        request.issuance,
-        remove_unavailable_current=False,
+        workspace, request.issuance, remove_unavailable_current=False
     )
     _run_up_transaction(
         workspace,
@@ -1109,22 +1084,13 @@ def _has_pending_invalidation(workspace: Path) -> bool:
         raise SessionError(str(exc)) from exc
 
 
-def up(
-    workspace: Path,
-    *,
-    rebuild: bool = False,
-    expected_image_id: str | None = None,
-) -> str:
+def up(workspace: Path, *, rebuild: bool = False, expected_image_id: str | None = None) -> str:
     """Create or start one Session while excluding other host mutations."""
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
         _recover_before_lifecycle("booley session up")
-        return _up_unlocked(
-            workspace,
-            rebuild=rebuild,
-            expected_image_id=expected_image_id,
-        )
+        return _up_unlocked(workspace, rebuild=rebuild, expected_image_id=expected_image_id)
 
 
 class RecoveryPendingError(SessionError):
@@ -1229,12 +1195,7 @@ def _prepare_unlocked(workspace: Path) -> str:
                 runner=idk.relay_docker,
             )
         else:
-            _provision_license_relay(
-                workspace,
-                profile,
-                issuance_labels,
-                issuance.relay_image_id,
-            )
+            _provision_license_relay(workspace, profile, issuance_labels, issuance.relay_image_id)
         return issuance.spec_sha256
     except RelayDockerError as exc:
         if claim_created:
@@ -1292,9 +1253,7 @@ def _inspected_running(state: dict) -> bool | None:
 
 
 def _vscode_runtime_labels_for_workspace(
-    state: dict,
-    workspace: Path,
-    expected: dict[str, str],
+    state: dict, workspace: Path, expected: dict[str, str]
 ) -> dict[str, Any] | None:
     """Return labels only for a positively identified VS Code Sandbox."""
     config = state.get("Config")
@@ -1315,8 +1274,7 @@ def _vscode_config_matches_workspace(labels: Mapping[str, Any], workspace: Path)
     """Whether Dev Containers named this Project's current configuration file."""
     config_file = labels.get("devcontainer.config_file")
     return isinstance(config_file, str) and same_host_path(
-        config_file,
-        dc.devcontainer_path(workspace),
+        config_file, dc.devcontainer_path(workspace)
     )
 
 
@@ -1436,11 +1394,7 @@ def _strict_sandbox_states(
 
 
 def _classify_drifted_container(
-    name: str,
-    workspace: Path,
-    issuance: Issuance,
-    expected: dict[str, str],
-    pending: Path,
+    name: str, workspace: Path, issuance: Issuance, expected: dict[str, str], pending: Path
 ) -> str:
     """Return ``vscode``, ``outdated`` (running, old mount layout), or ``ambiguous``."""
     raw = _docker_stdout(["docker", "inspect", name])
@@ -1464,11 +1418,7 @@ def _classify_drifted_container(
     return "vscode" if pinned else "outdated"
 
 
-def issued_runtime_drift_fix(
-    workspace: Path,
-    issuance: Issuance,
-    drifted: list[str],
-) -> str:
+def issued_runtime_drift_fix(workspace: Path, issuance: Issuance, drifted: list[str]) -> str:
     """Return the documented recreate steps for each drifted Sandbox resource."""
     from booley.runtime import session_issuance as runtime_spec
 
@@ -1598,8 +1548,7 @@ def _stale_relay_for_plan(
 
 
 def plan_stopped_headless_runtime_reconciliation(
-    workspace: Path,
-    issuance: Issuance,
+    workspace: Path, issuance: Issuance
 ) -> StoppedHeadlessRuntimePlan:
     """Inspect the cleanup ordinary init would apply, without changing Docker."""
     name = session_container_name(workspace)
@@ -1621,19 +1570,12 @@ def plan_stopped_headless_runtime_reconciliation(
         return StoppedHeadlessRuntimePlan()
     _assert_no_other_project_sessions(project_id, excluding=name)
     relay = _stale_relay_for_plan(
-        workspace,
-        issuance,
-        project_id,
-        excluding=name,
-        check_sessions=False,
+        workspace, issuance, project_id, excluding=name, check_sessions=False
     )
     return StoppedHeadlessRuntimePlan(container_name=name, relay=relay)
 
 
-def reconcile_stopped_headless_runtime(
-    workspace: Path,
-    issuance: Issuance,
-) -> bool:
+def reconcile_stopped_headless_runtime(workspace: Path, issuance: Issuance) -> bool:
     """Remove a stopped headless Runtime that predates *issuance*.
 
     ``booley init`` regenerates and reissues the Sandbox spec. A stopped
@@ -1650,10 +1592,7 @@ def reconcile_stopped_headless_runtime(
     return plan.pending
 
 
-def _relay_matches_issuance(
-    relay,
-    issuance: Issuance,
-) -> bool:
+def _relay_matches_issuance(relay, issuance: Issuance) -> bool:
     """Whether an existing relay is positively owned by and current for issuance."""
     state = _strict_refresh_container(relay.relay_container)
     if state is None:
@@ -1877,20 +1816,12 @@ def container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect 
     ):
         return False
     return _mounts_match_spec(
-        state.get("Mounts"),
-        spec,
-        workspace,
-        allow_vscode_mounts=is_devcontainer,
+        state.get("Mounts"), spec, workspace, allow_vscode_mounts=is_devcontainer
     )
 
 
 def _environment_matches(
-    spec: dict,
-    config: dict,
-    workspace: Path,
-    is_devcontainer: bool,
-    *,
-    container_held_env: bool,
+    spec: dict, config: dict, workspace: Path, is_devcontainer: bool, *, container_held_env: bool
 ) -> bool:
     """True when the container's environment holds every variable the spec sets."""
     remote_env = spec.get("remoteEnv") or {}
@@ -1976,11 +1907,7 @@ def _canonical_bind_source(raw: object) -> str | None:
 
 
 def _mounts_match_spec(
-    raw: object,
-    spec: dict,
-    workspace: Path,
-    *,
-    allow_vscode_mounts: bool = False,
+    raw: object, spec: dict, workspace: Path, *, allow_vscode_mounts: bool = False
 ) -> bool:
     """Compare Docker's resolved mount state with every issued spec mount."""
     if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
@@ -2109,13 +2036,7 @@ def _create_session_container(
     if relay_image_id is None:
         raise SessionError("licensed Sandbox issuance lacks an immutable relay image")
     try:
-        _connect_and_validate_license_relay(
-            relay,
-            name,
-            profile,
-            labels,
-            relay_image_id,
-        )
+        _connect_and_validate_license_relay(relay, name, profile, labels, relay_image_id)
     except SessionError:
         _run(["docker", "rm", "-f", name])
         _remove_license_relay(relay)
@@ -2136,24 +2057,15 @@ def _relay_profile(profile: Any):
     from booley.eda.provisioning.licensing.flexnet_docker import RelayProfile
 
     return RelayProfile(
-        profile.server_ipv4,
-        profile.server_hostid,
-        profile.lmgrd_port,
-        profile.vendor_port,
+        profile.server_ipv4, profile.server_hostid, profile.lmgrd_port, profile.vendor_port
     )
 
 
 def _provision_license_relay(
-    workspace: Path,
-    profile: Any,
-    labels: tuple[str, ...],
-    relay_image_id: str | None,
+    workspace: Path, profile: Any, labels: tuple[str, ...], relay_image_id: str | None
 ):
     """Create and health-gate the relay before creating a licensed Session."""
-    from booley.eda.provisioning.licensing.flexnet_docker import (
-        RelayDockerError,
-        recreate_relay,
-    )
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, recreate_relay
 
     try:
         if relay_image_id is None:
@@ -2170,11 +2082,7 @@ def _provision_license_relay(
 
 
 def _connect_and_validate_license_relay(
-    relay,
-    name: str,
-    profile: Any,
-    labels: tuple[str, ...],
-    relay_image_id: str,
+    relay, name: str, profile: Any, labels: tuple[str, ...], relay_image_id: str
 ) -> None:
     """Attach only the private network and verify the resulting exact topology."""
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
@@ -2193,11 +2101,7 @@ def _connect_and_validate_license_relay(
 
 
 def _validate_license_relay(
-    relay,
-    name: str,
-    profile: Any,
-    labels: tuple[str, ...],
-    relay_image_id: str,
+    relay, name: str, profile: Any, labels: tuple[str, ...], relay_image_id: str
 ) -> None:
     """Fail closed when a resumed licensed Session's relay has drifted."""
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
@@ -2335,12 +2239,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
         return selected.container_id, command_env
     if resolve_running_sandbox(workspace) is not None:
         raise SessionError("Sandbox appeared before startup; retry")
-    _run_up_transaction(
-        workspace,
-        request,
-        rebuild=False,
-        expected_image_id=None,
-    )
+    _run_up_transaction(workspace, request, rebuild=False, expected_image_id=None)
     _warn_on_stale_session_containers(request.spec, workspace)
     selected = resolve_running_sandbox(workspace)
     if selected is None:
@@ -2390,12 +2289,7 @@ def run_project_command(
 
     try:
         return run_command(
-            workspace,
-            name,
-            list(command),
-            tty=tty,
-            env=command_env,
-            cwd=cwd,
+            workspace, name, list(command), tty=tty, env=command_env, cwd=cwd
         ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
         raise SessionError(f"could not attach to Sandbox {name!r}: {exc}") from exc
@@ -2410,12 +2304,7 @@ def enter(
     first if it exists but is stopped, so this is the one entry point a script
     needs.
     """
-    return run_project_command(
-        workspace,
-        command or ["/bin/bash", "-l"],
-        tty=tty,
-        cwd=cwd,
-    )
+    return run_project_command(workspace, command or ["/bin/bash", "-l"], tty=tty, cwd=cwd)
 
 
 def verify_refreshed_session(
@@ -2451,10 +2340,7 @@ def _verify_wheel_identity(
         "'package_version': importlib.metadata.version('booley-rtl'), "
         "'module_version': booley.__version__}))"
     )
-    result = _run(
-        ["docker", "exec", name, "python3", "-I", "-c", probe],
-        capture=True,
-    )
+    result = _run(["docker", "exec", name, "python3", "-I", "-c", probe], capture=True)
     try:
         identity = json.loads(result.stdout)
     except json.JSONDecodeError:

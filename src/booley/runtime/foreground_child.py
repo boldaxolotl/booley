@@ -39,15 +39,7 @@ from collections.abc import Callable, Set
 from dataclasses import dataclass
 from typing import Any
 
-_RESTORED_NAMES = (
-    "SIGINT",
-    "SIGQUIT",
-    "SIGTSTP",
-    "SIGTTOU",
-    "SIGTERM",
-    "SIGHUP",
-    "SIGCHLD",
-)
+_RESTORED_NAMES = ("SIGINT", "SIGQUIT", "SIGTSTP", "SIGTTOU", "SIGTERM", "SIGHUP", "SIGCHLD")
 _TTY_SIGNAL_NAMES = ("SIGINT", "SIGQUIT", "SIGTSTP")
 _FORWARDED_NAMES = ("SIGTERM", "SIGHUP")
 _EXEC_FAILED = 2

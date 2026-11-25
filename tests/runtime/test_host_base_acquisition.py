@@ -24,10 +24,7 @@ from booley.runtime.docker_capacity import (
     DockerCapacityError,
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
-from booley.runtime.image_provenance import (
-    LABEL_RUNTIME_BASE_CONTRACT,
-    LABEL_SCHEMA,
-)
+from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT, LABEL_SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
 RECIPE = ROOT / "src/booley/data/docker/Dockerfile.base"

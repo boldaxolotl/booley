@@ -11,14 +11,8 @@ import pytest
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.store import SimulationRecordStore
-from tests.flows.sim.test_simulation_record_codec_golden import (
-    _BUILD_READY,
-    _simulation_result,
-)
-from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _manifest,
-    _prerequisite_entry,
-)
+from tests.flows.sim.test_simulation_record_codec_golden import _BUILD_READY, _simulation_result
+from tests.flows.sim.test_simulation_record_manifest_codec import _manifest, _prerequisite_entry
 from tests.flows.sim.test_simulation_record_model import _attempt
 
 
@@ -165,11 +159,7 @@ def _tamper_manifest(document: dict[str, object]) -> None:
             _tamper_build_attempt,
         ),
         (codec.decode_bundle_build_result, lambda: json.loads(_BUILD_READY), _tamper_build_result),
-        (
-            codec.decode_simulator_bundle,
-            lambda: _fixture_document("bundle.json"),
-            _tamper_bundle,
-        ),
+        (codec.decode_simulator_bundle, lambda: _fixture_document("bundle.json"), _tamper_bundle),
         (
             codec.decode_simulation_result,
             lambda: json.loads(_simulation_result("completed")),
@@ -210,11 +200,7 @@ _DELETE = object()
         (("workload", "run_cwd", "configured"), 7, r"run_cwd\.configured"),
         (("target", "selector"), _DELETE, r"target\.selector"),
         (("work_items", 0, "kind"), _DELETE, r"work_items\[0\]\.kind"),
-        (
-            ("prerequisites", 0, "manifest", "path"),
-            _DELETE,
-            r"prerequisites\[0\]\.manifest\.path",
-        ),
+        (("prerequisites", 0, "manifest", "path"), _DELETE, r"prerequisites\[0\]\.manifest\.path"),
     ],
     ids=[
         "workload-run-cwd",

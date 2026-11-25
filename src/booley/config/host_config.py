@@ -149,19 +149,9 @@ def _parse_document(document: object, path: Path) -> SandboxHostPolicy:
     allowlist = _egress_allowlist(section, path, table)
     return SandboxHostPolicy(
         idle_timeout_seconds=_positive_int(
-            section,
-            "idle_timeout_seconds",
-            DEFAULT_IDLE_TIMEOUT_SECONDS,
-            path,
-            table,
+            section, "idle_timeout_seconds", DEFAULT_IDLE_TIMEOUT_SECONDS, path, table
         ),
-        max_sessions=_positive_int(
-            section,
-            "max_sessions",
-            DEFAULT_MAX_SESSIONS,
-            path,
-            table,
-        ),
+        max_sessions=_positive_int(section, "max_sessions", DEFAULT_MAX_SESSIONS, path, table),
         egress_allowlist=allowlist,
         egress=_egress_mode(section, path, table, allowlist),
     )
@@ -279,10 +269,7 @@ def retired_project_policy_message(
         reason = (
             "host policy is retired" if table == "interactive" else "contains host-only policy"
         )
-        lines = [
-            f"booley.toml [{table}] {reason}; move these fields to {target}:",
-            "[sandbox]",
-        ]
+        lines = [f"booley.toml [{table}] {reason}; move these fields to {target}:", "[sandbox]"]
         lines.extend(f"{key} = {_toml_value(raw[key])}" for key in misplaced)
         lines.extend(
             (

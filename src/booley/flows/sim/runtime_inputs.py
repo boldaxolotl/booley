@@ -254,11 +254,7 @@ def _clean_runtime_state(staged: list[tuple[Path, Path]], overlay_root: Path) ->
 
 @contextmanager
 def materialize_runtime_inputs(
-    build_dir: Path,
-    run_cwd: Path,
-    inputs: Iterable[str],
-    *,
-    booley_dir: Path,
+    build_dir: Path, run_cwd: Path, inputs: Iterable[str], *, booley_dir: Path
 ) -> Iterator[None]:
     """Expose declared build-staged inputs in ``run_cwd`` for one run."""
     declared = tuple(inputs)
@@ -408,10 +404,7 @@ def _expose_simulation_record_input(
 
 
 def _prepare_destination_parent(
-    run_cwd: Path,
-    destination: Path,
-    owned_directories: list[Path],
-    ledger: StagedInputLedger,
+    run_cwd: Path, destination: Path, owned_directories: list[Path], ledger: StagedInputLedger
 ) -> None:
     """Create and remember only missing literal-cwd parent directories."""
     if conflict := destination_parent_conflict(run_cwd, destination):

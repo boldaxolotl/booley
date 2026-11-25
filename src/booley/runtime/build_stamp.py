@@ -45,10 +45,7 @@ from booley.runtime.packaged_docs import (
 STAMP_RELPATH = "src/booley/_build_commit.py"
 DEVELOPMENT_CONTEXT_RELPATH = "src/booley/data/development-build-context.tar.gz"
 
-_PAYLOAD_TREES = (
-    "src/booley",
-    "crates/bwave/src",
-)
+_PAYLOAD_TREES = ("src/booley", "crates/bwave/src")
 _PAYLOAD_FILES = (
     ".dockerignore",
     "pyproject.toml",
@@ -349,10 +346,7 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
         raise ValueError("development build context is too large")
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        dir=target.parent,
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        delete=False,
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
     ) as handle:
         temporary = Path(handle.name)
     completed = False
@@ -383,9 +377,7 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
 
 
 def write_build_stamp(
-    booley_root: Path,
-    *,
-    profile: BuildProfile = BuildProfile.DEVELOPMENT_WHEEL,
+    booley_root: Path, *, profile: BuildProfile = BuildProfile.DEVELOPMENT_WHEEL
 ) -> str:
     """Generate the stamp module for *booley_root*; return the stamped commit.
 

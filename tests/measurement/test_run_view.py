@@ -132,10 +132,7 @@ def test_identical_tree_commit_records_measured_as_and_its_own_base_and_diffs(
     assert (change["old"], change["new"], change["kind"]) == (70, 80, "maximum raised")
     assert own["commit"]["measured_as"] is None
     assert own["base"]["commit"] == base_a
-    assert sorted(f["path"] for f in own["changed"]["files"]) == [
-        ".booley/metrics.toml",
-        "rtl.v",
-    ]
+    assert sorted(f["path"] for f in own["changed"]["files"]) == [".booley/metrics.toml", "rtl.v"]
     (own_change,) = own["rules_diff"]["changes"]
     assert (own_change["old"], own_change["new"]) == (60, 80)
 
@@ -309,12 +306,7 @@ def test_delta_reads_no_base_run_then_no_base_value(tmp_path: Path) -> None:
         build_run(
             key_of(repo, base),
             "base",
-            (
-                Table(
-                    "synth",
-                    values=values(plain={"cell_count": 80, "tests_total": 10}),
-                ),
-            ),
+            (Table("synth", values=values(plain={"cell_count": 80, "tests_total": 10})),),
             toolchain=fingerprint("sha256:b"),
         ),
         [],
@@ -372,9 +364,7 @@ def test_history_gives_position_earlier_outcomes_and_problems(tmp_path: Path) ->
     assert (last["position"], last["earlier"][-1]) == (6, {"run_id": "r3", "outcome": "met"})
 
 
-def test_history_carries_an_earlier_run_with_a_damaged_result_as_a_problem(
-    tmp_path: Path,
-) -> None:
+def test_history_carries_an_earlier_run_with_a_damaged_result_as_a_problem(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)

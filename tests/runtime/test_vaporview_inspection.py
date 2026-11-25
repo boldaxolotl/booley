@@ -154,10 +154,7 @@ def _bundled(
         shown = (
             None if versions is None else [extension.version if v == "=" else v for v in versions]
         )
-        answer[extension.extension_id] = {
-            "versions": dict.fromkeys(roots, shown),
-            "vsix": vsix,
-        }
+        answer[extension.extension_id] = {"versions": dict.fromkeys(roots, shown), "vsix": vsix}
     return _Reply(stdout=json.dumps(answer))
 
 
@@ -712,10 +709,7 @@ _OUTSIDE_HOME = lambda _home: b"/vscode/out/bootstrap-fork\x00--type=extensionHo
         ),
         ([_ELSEWHERE_PROC], (0, {"roots": [], "unidentified": 1})),
         ([_LOOKALIKE_PROC, _OUTSIDE_HOME], (0, {"roots": [], "unidentified": 2})),
-        (
-            [_STABLE_PROC, _ELSEWHERE_PROC],
-            (0, {"roots": [_ROOT], "unidentified": 1}),
-        ),
+        ([_STABLE_PROC, _ELSEWHERE_PROC], (0, {"roots": [_ROOT], "unidentified": 1})),
         ([_PTY_HOST, None], (3, None)),
         ([], (3, None)),
     ],

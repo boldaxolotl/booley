@@ -26,10 +26,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-    linked_manifest_path,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, linked_manifest_path
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.test_simulation_record_names import _OLD_MANIFEST, _at_record_layout
@@ -41,9 +38,7 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_unsupported_type,
     copy_older_invocation,
 )
-from tests.flows.sim.test_simulation_record_unsupported_formats import (
-    reports as _reports_fixture,
-)
+from tests.flows.sim.test_simulation_record_unsupported_formats import reports as _reports_fixture
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture

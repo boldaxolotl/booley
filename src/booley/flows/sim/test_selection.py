@@ -7,34 +7,19 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from booley.config.project_config import (
-    load_test_configuration_field,
-    lookup_target_section,
-)
-from booley.flows.target_test_plan import (
-    TargetTestPlan,
-)
+from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
     resolve_target_test_suite,
 )
-from booley.flows.test_runs import (
-    TestRun,
-    parse_test_selector,
-)
+from booley.flows.test_runs import TestRun, parse_test_selector
 from booley.fusesoc import fusesoc_registry
-from booley.runtime.endpoint_execution import (
-    EXIT_ERROR,
-    EndpointOutcome,
-)
+from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 
-from .execution import (
-    DefaultSelection,
-    NamedTests,
-    SelectedTestRuns,
-)
+from .execution import DefaultSelection, NamedTests, SelectedTestRuns
 from .execution.engine import simulation_adapter_kind, target_test_plan
 
 if TYPE_CHECKING:
@@ -111,9 +96,7 @@ class SimulationTestSelectionMixin:
         )
 
     def _validate_test_selector(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
+        self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> EndpointOutcome | None:
         """Reject a ``--test`` that names no registered Test before any sim runs.
 
@@ -211,9 +194,7 @@ class SimulationTestSelectionMixin:
         return None
 
     def _validate_runnable_tests(
-        self,
-        targets: list[str],
-        test_names_map: dict[str, list[str]],
+        self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> EndpointOutcome | None:
         """Reject Targets whose skip policy excludes every declared test."""
         if self.args.test:
@@ -241,9 +222,7 @@ class SimulationTestSelectionMixin:
         return None
 
     def _resolve_tests_to_run(
-        self,
-        target: str,
-        test_names_map: dict[str, list[str]],
+        self, target: str, test_names_map: dict[str, list[str]]
     ) -> list[str | None]:
         """Resolve the list of tests to run for a target, minus skip list.
 
@@ -279,9 +258,7 @@ class SimulationTestSelectionMixin:
         return list(suite.tests)
 
     def _resolve_test_runs(
-        self,
-        target: str,
-        test_names_map: Mapping[str, list[str]],
+        self, target: str, test_names_map: Mapping[str, list[str]]
     ) -> tuple[TestRun, ...]:
         """The concrete Test Runs this invocation runs on *target* (ADR 0072).
 

@@ -53,26 +53,11 @@ def _commit_file(repo: Path, text: str, message: str) -> str:
 
 
 def _add_submodule(parent: Path, dependency: Path, relative: str) -> None:
-    _git(
-        parent,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        str(dependency),
-        relative,
-    )
+    _git(parent, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), relative)
 
 
 def _add_worktree(source: Path, destination: Path, ref: str | None = None) -> None:
-    args = [
-        "-c",
-        "submodule.recurse=false",
-        "worktree",
-        "add",
-        "--detach",
-        str(destination),
-    ]
+    args = ["-c", "submodule.recurse=false", "worktree", "add", "--detach", str(destination)]
     if ref is not None:
         args.append(ref)
     _git(source, *args)
@@ -154,8 +139,7 @@ def _nested_source_repositories(tmp_path: Path) -> tuple[Path, str, str, str]:
 
 
 def test_materializes_historical_pin_without_using_ssh(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dependency = tmp_path / "dependency"
     _init_repo(dependency)
@@ -198,8 +182,7 @@ def test_materializes_historical_pin_without_using_ssh(
 
 
 def test_materializes_paired_project_submodules_in_composite_ticket(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dependency = tmp_path / "dependency"
     _init_repo(dependency)
@@ -270,10 +253,7 @@ def test_composite_materialization_normalizes_invalid_paired_checkout(tmp_path: 
     destination = tmp_path / "destination"
     destination.mkdir()
 
-    with pytest.raises(
-        SubmoduleMaterializationError,
-        match="Paired Checkout is unavailable",
-    ):
+    with pytest.raises(SubmoduleMaterializationError, match="Paired Checkout is unavailable"):
         materialize_project_submodules(source, destination)
 
 
@@ -471,8 +451,7 @@ def test_rejects_source_path_that_crosses_a_symlink(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _init_repo(source)
     (source / ".gitmodules").write_text(
-        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n',
-        encoding="utf-8",
+        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n', encoding="utf-8"
     )
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -498,17 +477,10 @@ def test_rejects_shallow_source_repository(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _init_repo(source)
     (source / ".gitmodules").write_text(
-        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n',
-        encoding="utf-8",
+        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n', encoding="utf-8"
     )
     (source / "vendor").mkdir()
-    _git(
-        source / "vendor",
-        "clone",
-        "--depth=1",
-        dependency.as_uri(),
-        "ip",
-    )
+    _git(source / "vendor", "clone", "--depth=1", dependency.as_uri(), "ip")
     _git(source, "add", ".gitmodules", "vendor/ip")
     _git(source, "commit", "-m", "shallow submodule")
     destination = tmp_path / "destination"
@@ -529,8 +501,7 @@ def test_reports_incomplete_local_objects_without_trying_a_remote(tmp_path: Path
     source = tmp_path / "source"
     _init_repo(source)
     (source / ".gitmodules").write_text(
-        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n',
-        encoding="utf-8",
+        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = ssh://private/ip\n', encoding="utf-8"
     )
     (source / "vendor").mkdir()
     _git(source / "vendor", "clone", str(historical), "ip")

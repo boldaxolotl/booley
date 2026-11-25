@@ -12,11 +12,7 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import session_admission, session_runtime
-from tests.harness.session_docker_fake import (
-    SessionDockerFake,
-    route_session_commands,
-    run_cli,
-)
+from tests.harness.session_docker_fake import SessionDockerFake, route_session_commands, run_cli
 
 
 def install_docker_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SessionDockerFake:

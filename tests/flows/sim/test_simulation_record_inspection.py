@@ -15,10 +15,7 @@ from booley.flows.sim.record import (
     authenticate_work_item,
     collect_pre_sim_firings,
 )
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
 from booley.flows.sim.record.planning import manifest_digest
 from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.simulation_record_test_support import (

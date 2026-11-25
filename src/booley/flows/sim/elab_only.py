@@ -11,9 +11,7 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from booley.config.project_config import (
-    lookup_target_section,
-)
+from booley.config.project_config import lookup_target_section
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
@@ -33,11 +31,7 @@ from booley.flows.progress_lifecycle import (
     progress_document,
 )
 from booley.flows.run_log import RUN_LOG_NAME, write_run_log
-from booley.flows.sim.live_progress import (
-    attempt_scope,
-    observe_stage,
-    publish_checkpoint,
-)
+from booley.flows.sim.live_progress import attempt_scope, observe_stage, publish_checkpoint
 from booley.flows.sim.record_reports import target_report_directory
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.fusesoc import fusesoc_registry
@@ -52,9 +46,7 @@ from booley.runtime.filesystem_utils import make_directories, replace_file
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import (
-    TargetHandle,
-)
+from booley.targets.domain import TargetHandle
 
 from .. import edam as edam_layer
 from .build import (
@@ -196,19 +188,14 @@ class ElabOnlyMixin:
             for name, value in self._target_sim_env(target).items()
         ]
 
-    def _redact_plan_environment(
-        self,
-        target: str,
-        command: tuple[str, ...],
-    ) -> tuple[str, ...]:
+    def _redact_plan_environment(self, target: str, command: tuple[str, ...]) -> tuple[str, ...]:
         """Retain configured variable names while excluding their values."""
         if len(command) != 3 or command[:2] != ("sh", "-c"):
             return command
         script = command[2]
         for name, value in self._target_sim_env(target).items():
             script = script.replace(
-                f"export {name}={shlex.quote(value)}",
-                f"export {name}=<configured>",
+                f"export {name}={shlex.quote(value)}", f"export {name}=<configured>"
             )
         return (*command[:2], script)
 
@@ -287,8 +274,7 @@ class ElabOnlyMixin:
             binary = find_missing_executable(result.outcome.output)
             if binary is not None:
                 return result.target, MissingExecutableError(
-                    binary,
-                    context=result.project_paths.project_text(result.outcome.output),
+                    binary, context=result.project_paths.project_text(result.outcome.output)
                 )
         return None
 
@@ -376,8 +362,7 @@ class ElabOnlyMixin:
             commands=(
                 CommandPlan(
                     normalize_plan_argv(
-                        self._redact_plan_environment(target, command),
-                        self.args.work_dir,
+                        self._redact_plan_environment(target, command), self.args.work_dir
                     ),
                     cwd=".",
                     template=True,
@@ -389,8 +374,7 @@ class ElabOnlyMixin:
         )
 
     def _planned_standalone_unit(
-        self,
-        targets: list[str],
+        self, targets: list[str]
     ) -> tuple[WorkUnitPlan | None, str | None]:
         """Plan the optional standalone sweep and preserve its execution recipe."""
         if not self._standalone_requested():
@@ -403,9 +387,7 @@ class ElabOnlyMixin:
         return self._standalone_work_unit(targets, standalone), None
 
     def _standalone_work_unit(
-        self,
-        targets: list[str],
-        standalone: _StandalonePlanRecipe,
+        self, targets: list[str], standalone: _StandalonePlanRecipe
     ) -> WorkUnitPlan:
         modules = tuple(module for module, _path in standalone.modules)
         sources = tuple(
@@ -441,30 +423,19 @@ class ElabOnlyMixin:
                 "shared_sources": list(standalone.shared),
             },
             commands=tuple(
-                CommandPlan(
-                    normalize_plan_argv(command, self.args.work_dir),
-                    cwd=".",
-                )
+                CommandPlan(normalize_plan_argv(command, self.args.work_dir), cwd=".")
                 for command in standalone.commands
             ),
             expected_artifacts=(
                 normalize_plan_path(
-                    work_root_for(
-                        self.args.work_dir,
-                        "sim",
-                        "standalone",
-                        variant="sweep",
-                    )
+                    work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep")
                     / RUN_LOG_NAME,
                     self.args.work_dir,
                 ),
             ),
         )
 
-    def _run_elab_only_simulation_record(
-        self,
-        targets: list[str],
-    ) -> list[ElabOnlyTargetResult]:
+    def _run_elab_only_simulation_record(self, targets: list[str]) -> list[ElabOnlyTargetResult]:
         """Run and checkpoint each requested build-only Target."""
         self.reserve_invocation_dir()
         results = self._elab_progress_results
@@ -478,9 +449,7 @@ class ElabOnlyMixin:
         return results
 
     def _run_optional_standalone(
-        self,
-        targets: list[str],
-        results: list[ElabOnlyTargetResult],
+        self, targets: list[str], results: list[ElabOnlyTargetResult]
     ) -> tuple[int, _StandaloneOutcome | None]:
         """Merge the optional module sweep into the record exit status."""
         exit_code = self._elab_only_exit_code(results)
@@ -488,8 +457,7 @@ class ElabOnlyMixin:
             return exit_code, None
         with attempt_scope(targets[0], operation="standalone"):
             standalone = self._run_standalone_check(
-                targets,
-                primary_ok=all(result.outcome.passed for result in results),
+                targets, primary_ok=all(result.outcome.passed for result in results)
             )
         if standalone.eda_tool_failed:
             exit_code = EXIT_ERROR
@@ -573,18 +541,12 @@ class ElabOnlyMixin:
                 return result
         except SimulationBuildSlotError as exc:
             outcome = setup_failure_outcome(
-                f"Simulation build slot failed: {exc}",
-                elapsed_s=monotonic() - started,
+                f"Simulation build slot failed: {exc}", elapsed_s=monotonic() - started
             )
             return ElabOnlyTargetResult(target=target, outcome=outcome)
 
     def _prepare_elab_only_target(
-        self,
-        target: str,
-        started: float,
-        *,
-        handle: TargetHandle,
-        build_root: Path,
+        self, target: str, started: float, *, handle: TargetHandle, build_root: Path
     ) -> PreparedSimulationBuild | ElabOnlyTargetResult:
         """Prepare one Target or return its expected setup-error result."""
         try:
@@ -601,34 +563,23 @@ class ElabOnlyMixin:
         except SimulationBuildPreparationError as exc:
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
             outcome = setup_failure_outcome(
-                f"setup failed: {exc}",
-                elapsed_s=monotonic() - started,
+                f"setup failed: {exc}", elapsed_s=monotonic() - started
             )
             result = ElabOnlyTargetResult(target=target, outcome=outcome)
             result.log_path = self._persist_elab_only_log(target, outcome.output)
             return result
 
-    def _register_prepared_build(
-        self,
-        target: str,
-        prepared: PreparedSimulationBuild,
-    ) -> None:
+    def _register_prepared_build(self, target: str, prepared: PreparedSimulationBuild) -> None:
         """Register prepared Target state used by reports and optional sweeps."""
         self._open_run_log(target, Path(prepared.build_root), temporary=True)
         self._record_eda_tool(target, prepared.eda_tool)
 
     def _execute_elab_only_build(
-        self,
-        target: str,
-        prepared: PreparedSimulationBuild,
+        self, target: str, prepared: PreparedSimulationBuild
     ) -> ElabOnlyTargetResult:
         """Execute and classify one already-prepared build-only Target."""
         token = new_attempt_token()
-        command = [
-            "sh",
-            "-c",
-            simulation_build_script(prepared, token),
-        ]
+        command = ["sh", "-c", simulation_build_script(prepared, token)]
         from booley.flows.terminal_progress import announce_unit, observe_source_names
 
         paths = ProjectSourcePaths.for_target(self._target_handle(target), prepared.resolved)
@@ -748,9 +699,7 @@ class ElabOnlyMixin:
             targets=targets,
             completed_targets=completed,
             detail={result.target: self._elab_only_detail(result) for result in results},
-            extra={
-                "mode": self._mode.value,
-            },
+            extra={"mode": self._mode.value},
         )
         if complete != bool(payload["complete"]):
             raise ValueError("elaboration progress complete and phase disagree")
@@ -764,14 +713,8 @@ class ElabOnlyMixin:
         try:
             handle = self._target_handle(target)
             build_root = preview_generation_root(handle)
-            setup = simulation_setup_command(
-                handle,
-                build_root=build_root,
-            )
-        except (
-            fusesoc_registry.TargetResolutionError,
-            SimulationBuildPreparationError,
-        ) as exc:
+            setup = simulation_setup_command(handle, build_root=build_root)
+        except (fusesoc_registry.TargetResolutionError, SimulationBuildPreparationError) as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         parts = [
@@ -782,9 +725,7 @@ class ElabOnlyMixin:
         return ["sh", "-c", " && ".join(parts)]
 
     def _missing_executable_result(
-        self,
-        exc: MissingExecutableError,
-        target: str,
+        self, exc: MissingExecutableError, target: str
     ) -> EndpointOutcome:
         """Grade an absent EDA binary as a Flow error (exit 2), not a failure.
 

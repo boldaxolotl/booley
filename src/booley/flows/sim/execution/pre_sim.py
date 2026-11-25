@@ -23,11 +23,7 @@ from booley.flows.test_runs import TestRun
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import OOM_STOPPED_MESSAGE, job_stopped_after_oom
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
-from booley.runtime.platform_paths import (
-    bash_bin,
-    kill_process_tree,
-    popen_new_group_kwargs,
-)
+from booley.runtime.platform_paths import bash_bin, kill_process_tree, popen_new_group_kwargs
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle

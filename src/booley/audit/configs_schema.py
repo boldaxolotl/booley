@@ -46,8 +46,7 @@ def audit_configs_toml(raw: Mapping[str, Any]) -> ConfigsTomlAudit:
         return ConfigsTomlAudit(None, (ConfigIssue(str(exc), "fix configs.toml"),))
     if not normalized:
         issue = ConfigIssue(
-            "configs.toml has no config sections",
-            "add [default] with defines = []",
+            "configs.toml has no config sections", "add [default] with defines = []"
         )
         return ConfigsTomlAudit(None, (issue,))
 
@@ -76,18 +75,12 @@ def _section_issues(name: str, section: Mapping[str, Any]) -> list[ConfigIssue]:
         value = section.get(key)
         if value is not None and as_str(value) is None:
             issues.append(
-                ConfigIssue(
-                    f"configs.toml [{name}].{key} must be a string",
-                    f"fix [{name}].{key}",
-                )
+                ConfigIssue(f"configs.toml [{name}].{key} must be a string", f"fix [{name}].{key}")
             )
     tests = section.get("tests")
     if tests is not None and not is_str_list(tests):
         issues.append(
-            ConfigIssue(
-                f"configs.toml [{name}].tests must be list[str]",
-                f"fix [{name}].tests",
-            )
+            ConfigIssue(f"configs.toml [{name}].tests must be list[str]", f"fix [{name}].tests")
         )
     issues.extend(_parameter_issues(name, section.get("parameters")))
     return issues
@@ -110,10 +103,7 @@ def _parameter_issues(config_name: str, value: Any) -> list[ConfigIssue]:
         name = as_str(parameter_name)
         if name is None or not name.strip():
             issues.append(
-                ConfigIssue(
-                    f"{label} name must be non-empty",
-                    f"fix [{config_name}.parameters]",
-                )
+                ConfigIssue(f"{label} name must be non-empty", f"fix [{config_name}.parameters]")
             )
             continue
         issue = _parameter_value_issue(label, parameter_value)
@@ -127,15 +117,13 @@ def _parameter_value_issue(label: str, value: Any) -> ConfigIssue | None:
         return None
     if as_str(value) is not None:
         return ConfigIssue(
-            f"{label} plain strings are not allowed",
-            'use { expr = "..." } or { string = "..." }',
+            f"{label} plain strings are not allowed", 'use { expr = "..." } or { string = "..." }'
         )
     table = as_dict(value)
     if table is not None:
         return _parameter_table_issue(label, table)
     return ConfigIssue(
-        f'{label} must be bool, int, {{ expr = "..." }}, or {{ string = "..." }}',
-        f"fix {label}",
+        f'{label} must be bool, int, {{ expr = "..." }}, or {{ string = "..." }}', f"fix {label}"
     )
 
 
@@ -167,6 +155,5 @@ def _parameter_table_issue(label: str, value: Mapping[str, Any]) -> ConfigIssue 
             return None
         return ConfigIssue(f"{label}.string must be a string", f"fix {label}")
     return ConfigIssue(
-        f"{label} table must contain exactly one key: expr or string",
-        f"fix {label}",
+        f"{label} table must contain exactly one key: expr or string", f"fix {label}"
     )

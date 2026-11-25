@@ -488,10 +488,7 @@ def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path,
 
 def test_unreadable_configuration_means_no_configured_booley_directory(tmp_path):
     """A retired-layout ``[project].dir`` raises on selection; discovery treats it as no match."""
-    from booley.runtime.project_discovery import (
-        _is_configured_booley_dir,
-        _session_owner,
-    )
+    from booley.runtime.project_discovery import _is_configured_booley_dir, _session_owner
 
     outer = tmp_path / "checkout"
     outer.mkdir()

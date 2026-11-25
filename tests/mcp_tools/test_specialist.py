@@ -421,10 +421,7 @@ def test_model_list_refusal_moves_on_and_is_remembered(
     ]
     fallback = second.detail["specialist_model"]["fallback"]
     assert fallback["skipped"] == [
-        {
-            "model": "claude-opus-5-5",
-            "reason": "refused by the provider earlier in this process",
-        }
+        {"model": "claude-opus-5-5", "reason": "refused by the provider earlier in this process"}
     ]
 
 

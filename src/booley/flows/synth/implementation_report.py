@@ -110,8 +110,7 @@ def build_synth_implementation_report(
 ) -> ImplementationReport:
     """Normalize synthesis evidence and build its canonical v1 report."""
     policy = MetricPolicy(
-        delta_metrics=_SYNTH_DELTA_METRICS,
-        required_comparison_metrics=("area_kge",),
+        delta_metrics=_SYNTH_DELTA_METRICS, required_comparison_metrics=("area_kge",)
     )
     return build_implementation_report(
         context,

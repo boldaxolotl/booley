@@ -118,11 +118,7 @@ class TestRunLogProgress:
     def test_progress_shows_a_live_tail_and_keeps_the_header(self, tmp_path):
         run_log.begin_run_log(tmp_path, flow="sim", target="sim_float", run="run-9")
         run_log.write_run_log_progress(
-            tmp_path,
-            "cycle 100\ncycle 200\n",
-            elapsed_s=42.0,
-            line_count=2,
-            idle_s=3.0,
+            tmp_path, "cycle 100\ncycle 200\n", elapsed_s=42.0, line_count=2, idle_s=3.0
         )
         content = (tmp_path / "run.log").read_text(encoding="utf-8")
         assert content.splitlines()[0].startswith(run_log.RUN_LOG_HEADER_PREFIX)

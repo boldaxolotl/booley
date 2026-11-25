@@ -27,9 +27,7 @@ def build_parser(
     flow: BuiltinFlow, *, human: bool = False, project: Path | None = None
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog=flow.name,
-        description=flow.description,
-        allow_abbrev=False,
+        prog=flow.name, description=flow.description, allow_abbrev=False
     )
     target_help = flow.target_help
     if flow.name == "sim":
@@ -134,10 +132,7 @@ def execute_cli(flow: BuiltinFlow, argv: list[str] | None = None) -> ExecutionRe
     from booley.flows.terminal_progress import TerminalProgress
 
     observer = TerminalProgress(
-        flow.name,
-        request.target or "(selection)",
-        request.work_dir,
-        stream=sys.stderr,
+        flow.name, request.target or "(selection)", request.work_dir, stream=sys.stderr
     )
     flow.terminal_progress = observer
     try:

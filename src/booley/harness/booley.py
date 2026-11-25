@@ -38,12 +38,7 @@ from booley.config.feature_flags import FeatureConfigError, enabled_features, fe
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
-from booley.harness import (
-    cheatsheet,
-    coverage_cli,
-    resources_cli,
-    upgrade_cli,
-)
+from booley.harness import cheatsheet, coverage_cli, resources_cli, upgrade_cli
 from booley.harness.setup import cleanup_cli
 from booley.harness.terminal_status import MAX_WIDTH, section_header
 from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
@@ -200,10 +195,9 @@ class _RetiredEdaToolOptionAction(argparse.Action):
     """Reject retired scaffold flags with their canonical EDA-tool spelling."""
 
     def __call__(self, parser, namespace, values, option_string=None) -> None:
-        replacement = {
-            "--sim-tool": "--sim-eda-tool",
-            "--lint-tool": "--lint-eda-tool",
-        }[str(option_string)]
+        replacement = {"--sim-tool": "--sim-eda-tool", "--lint-tool": "--lint-eda-tool"}[
+            str(option_string)
+        ]
         parser.error(f"{option_string} is retired; use {replacement}")
 
 
@@ -304,10 +298,7 @@ def _baked_identity() -> tuple[str, str]:
         from booley import _build_commit  # type: ignore[attr-defined]
     except ImportError:
         return "", ""
-    return (
-        getattr(_build_commit, "COMMIT", ""),
-        getattr(_build_commit, "COMMIT_TIME", ""),
-    )
+    return (getattr(_build_commit, "COMMIT", ""), getattr(_build_commit, "COMMIT_TIME", ""))
 
 
 def _code_identity() -> tuple[str, str]:
@@ -892,8 +883,7 @@ def _add_bootstrap_subparser(sub) -> None:
 def _add_flow_subparser(sub) -> None:
     """Add direct Flow execution."""
     flow_p = sub.add_parser(
-        "flow",
-        help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)",
+        "flow", help="Run a Booley Flow directly (e.g. `booley flow lint --target lint_soc`)"
     )
     flow_p.add_argument(
         "endpoint_name",
@@ -939,9 +929,7 @@ def _add_measure_subparser(sub) -> None:
         help="The commit to measure (default: HEAD); uncommitted work is never measured",
     )
     parser.add_argument(
-        "--base",
-        metavar="<sha>",
-        help="Compare with this commit instead of the default Base",
+        "--base", metavar="<sha>", help="Compare with this commit instead of the default Base"
     )
     parser.add_argument(
         "--all",
@@ -982,9 +970,7 @@ def _add_review_subparser(sub) -> None:
         help="The commit to review (default: HEAD); uncommitted work is never reviewed",
     )
     parser.add_argument(
-        "--base",
-        metavar="<sha>",
-        help="Compare with this commit instead of the default Base",
+        "--base", metavar="<sha>", help="Compare with this commit instead of the default Base"
     )
     parser.add_argument(
         "--target",
@@ -1029,25 +1015,19 @@ def _add_session_subparser(sub) -> None:
 
     root_opt = _project_root_parent("_cli_project_session_down")
     session_p = sub.add_parser(
-        "session",
-        help="Start/enter/stop the Sandbox container without VS Code",
+        "session", help="Start/enter/stop the Sandbox container without VS Code"
     )
     session_sub = session_p.add_subparsers(
-        dest="session_command",
-        metavar="{up,enter,down,status,validate,refresh}",
+        dest="session_command", metavar="{up,enter,down,status,validate,refresh}"
     )
-    up_p = session_sub.add_parser(
-        "up",
-        help="Create or start the Sandbox (default subcommand)",
-    )
+    up_p = session_sub.add_parser("up", help="Create or start the Sandbox (default subcommand)")
     up_p.add_argument(
         "--rebuild",
         action="store_true",
         help="Remove an existing container first, then recreate it",
     )
     enter_p = session_sub.add_parser(
-        "enter",
-        help="Open a shell in the Sandbox, or run `-- <cmd>` in it",
+        "enter", help="Open a shell in the Sandbox, or run `-- <cmd>` in it"
     )
     enter_p.add_argument(
         "exec_cmd",
@@ -1058,10 +1038,7 @@ def _add_session_subparser(sub) -> None:
     session_sub.add_parser(
         "status", help="Print running/stopped/absent, or a pending start/recovery"
     )
-    session_sub.add_parser(
-        "validate",
-        help="Validate the host-issued Sandbox specification",
-    )
+    session_sub.add_parser("validate", help="Validate the host-issued Sandbox specification")
     prepare_p = session_sub.add_parser("prepare")
     add_project_root_alias(prepare_p, "_cli_project_session_prepare")
     session_sub.add_parser(
@@ -1208,8 +1185,7 @@ def _add_targets_subparser(sub) -> None:
     # The positional does double duty: a glob (contains * ? [) filters the
     # listing, anything else selects one Target for the resolved detail view.
     targets_p = sub.add_parser(
-        "targets",
-        help="List or filter .core Targets; full detail resolution requires the Sandbox",
+        "targets", help="List or filter .core Targets; full detail resolution requires the Sandbox"
     )
     targets_p.add_argument(
         "selector",
@@ -1273,10 +1249,7 @@ def _normalize_args(
     return args
 
 
-def _validate_doctor_args(
-    parser: argparse.ArgumentParser,
-    args: argparse.Namespace,
-) -> None:
+def _validate_doctor_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Reject incomplete Doctor automation profiles at the CLI boundary."""
     if (
         args.command == "doctor"
@@ -1565,10 +1538,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
 
     verbose = getattr(args, "verbose", False)
     result = refresh(project_root, verbose=verbose)
-    _report_session_health(
-        project_root,
-        startup_due_reason=health.due_reason(project_root),
-    )
+    _report_session_health(project_root, startup_due_reason=health.due_reason(project_root))
     print(result.message)
     return 0
 
@@ -1968,9 +1938,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
     except FileNotFoundError:
         project_tools = None
     endpoints = discover_mcp_tools(
-        project_mcp_tools_dir=project_tools,
-        specialist_config=config,
-        flow_config=flows,
+        project_mcp_tools_dir=project_tools, specialist_config=config, flow_config=flows
     )
     info = _select_endpoint(args, endpoints, "specialist")
     return (

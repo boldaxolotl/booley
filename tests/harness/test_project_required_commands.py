@@ -319,8 +319,7 @@ def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, ca
 
 
 @pytest.mark.parametrize(
-    ("command", "inside"),
-    [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
+    ("command", "inside"), [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)]
 )
 def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["booley", command])

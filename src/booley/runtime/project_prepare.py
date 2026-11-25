@@ -212,9 +212,7 @@ def prepare_project(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[:500]
         return PreparationResult(
-            False,
-            hook,
-            f"post-setup hook failed (rc={result.returncode}): {detail}",
+            False, hook, f"post-setup hook failed (rc={result.returncode}): {detail}"
         )
 
     logger.info("post-setup hook OK")

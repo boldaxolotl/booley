@@ -20,11 +20,7 @@ from booley.flows.sim.record.scheduler import (
     SimulationRecordSchedulingError,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.runtime.execution_records import (
-    ExecutionId,
-    execution_paths,
-    read_json,
-)
+from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
     QUEUED,
@@ -415,8 +411,7 @@ def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path)
         execute, timeout_seconds=scaled(0.05), cancellation=cancelled.is_set
     )
     trigger = threading.Thread(
-        target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()),
-        daemon=True,
+        target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()), daemon=True
     )
     trigger.start()
     competitors: list = []

@@ -197,8 +197,7 @@ def test_reported_clock_without_a_value_is_error() -> None:
 def test_per_test_metric_reads_its_test_run() -> None:
     module = _verdicts()
     rules = _rules(
-        "sim",
-        (_bound("smoke.cycle_count_max", "cycle_count", "max", 50, "smoke", "smoke@1"),),
+        "sim", (_bound("smoke.cycle_count_max", "cycle_count", "max", 50, "smoke", "smoke@1"),)
     )
     (met,) = module.evaluate_table(
         rules, _flow_values(_values(per_test={"cycle_count": {"smoke@1": 40}}))

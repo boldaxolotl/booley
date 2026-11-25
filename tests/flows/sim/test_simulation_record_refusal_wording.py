@@ -206,9 +206,7 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
 
     assert "projection owner disagrees" in refusal({"simulation_record_id": "x"}, {})
     monkeypatch.setattr(
-        coverage_analysis_input,
-        "resolve_artifact_reference",
-        lambda *_args, **_kwargs: artifact,
+        coverage_analysis_input, "resolve_artifact_reference", lambda *_args, **_kwargs: artifact
     )
     assert "projection pointers disagree" in refusal(
         {"simulation_record_id": "owner"}, {"target": 1}
@@ -223,8 +221,7 @@ def test_reference_projection_refusals(tmp_path: Path, monkeypatch: pytest.Monke
         ),
     )
     assert "manifest disagrees with reference" in refusal(
-        {"simulation_record_id": "owner"},
-        {"target": {}, "simulation_record_id": "other"},
+        {"simulation_record_id": "owner"}, {"target": {}, "simulation_record_id": "other"}
     )
 
 

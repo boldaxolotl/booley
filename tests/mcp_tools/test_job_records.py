@@ -121,10 +121,7 @@ class TestRecordRoundTrip:
         for i in (1, 2):
             jobrec.write_record(
                 jobrec.JobRecord(
-                    run_id=f"simulate-x-{i}",
-                    endpoint="sim",
-                    started_at="t",
-                    timeout_s=60,
+                    run_id=f"simulate-x-{i}", endpoint="sim", started_at="t", timeout_s=60
                 ),
                 root=_jobs_env,
             )
@@ -158,12 +155,7 @@ class TestRecordRoundTrip:
     def test_overwrite_is_atomic_and_leaves_no_tmp(self, _jobs_env):
         # write_record goes through tmp + os.replace so a cross-process reader
         # can never observe a half-written record; the tmp must not linger.
-        rec = jobrec.JobRecord(
-            run_id="simulate-x-1",
-            endpoint="sim",
-            started_at="t",
-            timeout_s=60,
-        )
+        rec = jobrec.JobRecord(run_id="simulate-x-1", endpoint="sim", started_at="t", timeout_s=60)
         jobrec.write_record(rec, root=_jobs_env)
         rec.status = jobrec.STATUS_DONE
         rec.exit_code = 0
@@ -175,12 +167,7 @@ class TestRecordRoundTrip:
         assert not list(root.glob("*.tmp"))
 
     def test_delete_record_removes_synchronous_activity(self, _jobs_env):
-        rec = jobrec.JobRecord(
-            run_id="lint-sync-1",
-            endpoint="lint",
-            started_at="t",
-            timeout_s=60,
-        )
+        rec = jobrec.JobRecord(run_id="lint-sync-1", endpoint="lint", started_at="t", timeout_s=60)
         jobrec.write_record(rec, root=_jobs_env)
 
         jobrec.delete_record(rec.run_id, root=_jobs_env)
@@ -231,9 +218,7 @@ class TestDeriveStatus:
         assert started is not None
         rec = self._rec(pid=None, started_at=stamp)
         assert not jobrec.is_active(
-            rec,
-            lambda _pid: False,
-            now=started + jobrec.SPAWN_GRACE_SECONDS + 1,
+            rec, lambda _pid: False, now=started + jobrec.SPAWN_GRACE_SECONDS + 1
         )
 
     def test_terminal_record_is_authoritative(self):
@@ -271,40 +256,19 @@ class TestDeriveStatus:
             status=jobrec.STATUS_RUNNING, pid=1234, started_at=self._STARTED, timeout_s=60
         )
         late = self._epoch() + 60 + jobrec.DEADLINE_SLACK_SECONDS + 1
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=late,
-            )
-            == jobrec.STATUS_FAILED
-        )
+        assert jobrec.derive_status(rec, lambda _pid: True, now=late) == jobrec.STATUS_FAILED
 
     def test_running_within_deadline_stays_running(self):
         rec = self._rec(
             status=jobrec.STATUS_RUNNING, pid=1234, started_at=self._STARTED, timeout_s=60
         )
         early = self._epoch() + 60 + jobrec.DEADLINE_SLACK_SECONDS - 1
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=early,
-            )
-            == jobrec.STATUS_RUNNING
-        )
+        assert jobrec.derive_status(rec, lambda _pid: True, now=early) == jobrec.STATUS_RUNNING
 
     def test_unparseable_started_at_skips_deadline(self):
         # Best-effort: a garbage stamp must not crash or fail a live job.
         rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, started_at="t")
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=9e18,
-            )
-            == jobrec.STATUS_RUNNING
-        )
+        assert jobrec.derive_status(rec, lambda _pid: True, now=9e18) == jobrec.STATUS_RUNNING
 
     # -- identity guard: the PID must still be OUR process ---------------------
 
@@ -316,9 +280,7 @@ class TestDeriveStatus:
         rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
         assert (
             jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: ["sleep", "3600"],
+                rec, lambda _pid: True, read_cmdline=lambda _pid: ["sleep", "3600"]
             )
             == jobrec.STATUS_FAILED
         )
@@ -327,9 +289,7 @@ class TestDeriveStatus:
         rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
         assert (
             jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: list(self._ARGV),
+                rec, lambda _pid: True, read_cmdline=lambda _pid: list(self._ARGV)
             )
             == jobrec.STATUS_RUNNING
         )
@@ -339,11 +299,7 @@ class TestDeriveStatus:
         # not be treated as a mismatch or live jobs die on non-Linux hosts.
         rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
         assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: None,
-            )
+            jobrec.derive_status(rec, lambda _pid: True, read_cmdline=lambda _pid: None)
             == jobrec.STATUS_RUNNING
         )
 
@@ -424,13 +380,7 @@ def test_run_id_has_random_eight_hex_suffix() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [
-        ("work_dir", 17),
-        ("session_key", []),
-        ("schema", False),
-        ("schema", 0),
-        ("schema", "2"),
-    ],
+    [("work_dir", 17), ("session_key", []), ("schema", False), ("schema", 0), ("schema", "2")],
 )
 def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
     import json

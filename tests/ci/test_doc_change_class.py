@@ -101,8 +101,7 @@ def _run(
 ) -> tuple[int, dict[str, object], str]:
     repo, base, head = _repository(tmp_path, changes)
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--base", base, "--head", head, *extra],
-        cwd=repo,
+        [sys.executable, str(_SCRIPT), "--base", base, "--head", head, *extra], cwd=repo
     )
     payload: dict[str, object] = json.loads(result.stdout) if result.stdout.strip() else {}
     return result.returncode, payload, result.stderr
@@ -130,10 +129,7 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
         _append("GLOSSARY-MAP.md", "x\n"),
         {"GLOSSARY-MAP.md": ("premerge", "glossary")},
     ),
-    "root-glossary": (
-        {"GLOSSARY.md": "# Glossary\n"},
-        {"GLOSSARY.md": ("premerge", "glossary")},
-    ),
+    "root-glossary": ({"GLOSSARY.md": "# Glossary\n"}, {"GLOSSARY.md": ("premerge", "glossary")}),
     "adr": (_append("docs/adr/0001-x.md", "x\n"), {"docs/adr/0001-x.md": ("premerge", "adr")}),
     "page-added": (
         {"docs/user/NEW.md": "# New\n"},

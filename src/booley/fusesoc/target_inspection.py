@@ -57,11 +57,7 @@ def _inspect_tool_options(core: Any, flags: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _inspect_inputs(
-    root: Path,
-    cores: list[Any],
-    flags: Mapping[str, Any],
-    *,
-    tb_paths: Collection[str],
+    root: Path, cores: list[Any], flags: Mapping[str, Any], *, tb_paths: Collection[str]
 ) -> tuple[TargetInput, ...]:
     inputs: list[TargetInput] = []
     canonical_tb_paths = {fusesoc_registry.canonical_project_path(root, path) for path in tb_paths}
@@ -109,11 +105,7 @@ def _config_filters(root: Path) -> list[str]:
 
 
 def _inspect_setup_inputs(
-    root: Path,
-    cores: list[Any],
-    flags: Mapping[str, Any],
-    *,
-    tb_paths: Collection[str],
+    root: Path, cores: list[Any], flags: Mapping[str, Any], *, tb_paths: Collection[str]
 ) -> tuple[TargetInput, ...] | None:
     """Return the sources setup lists, or None when a generator or filter may change them."""
     if _config_filters(root):
@@ -190,8 +182,7 @@ class _TargetSourceInspector:
                 zip(plan.roots, plan.ignored_dirs, strict=True)
             ):
                 manager.add_library(
-                    Library(f"project-{index}", str(library_root)),
-                    ignored_dirs=set(ignored_dirs),
+                    Library(f"project-{index}", str(library_root)), ignored_dirs=set(ignored_dirs)
                 )
             documents = {
                 core_file.resolve(): fusesoc_registry.read_core(core_file)
@@ -223,28 +214,13 @@ class _TargetSourceInspector:
         targets = document.get("targets")
         declaration = targets.get(ref.name) if isinstance(targets, Mapping) else None
         declaration_key = json.dumps(
-            declaration,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
+            declaration, sort_keys=True, separators=(",", ":"), default=str
         )
         conditioned_name = ref.name if ref.name in self._conditioned_targets else None
-        return (
-            core_file,
-            ref.vlnv,
-            ref.flow,
-            ref.eda_tool,
-            conditioned_name,
-            declaration_key,
-        )
+        return (core_file, ref.vlnv, ref.flow, ref.eda_tool, conditioned_name, declaration_key)
 
     def _cores(
-        self,
-        *,
-        identity: str,
-        vlnv: str,
-        core_file: Path,
-        flags: dict[str, Any],
+        self, *, identity: str, vlnv: str, core_file: Path, flags: dict[str, Any]
     ) -> list[Any]:
         plan, manager = self._prepare()
         try:
@@ -271,11 +247,7 @@ class _TargetSourceInspector:
 
     @staticmethod
     def _get_core(
-        manager: CoreManager,
-        vlnv: str,
-        identity: str,
-        core_file: Path,
-        selected_core: Path,
+        manager: CoreManager, vlnv: str, identity: str, core_file: Path, selected_core: Path
     ) -> Any:
         """Fetch the Target's core, explaining a core FuseSoC ignored at scan time.
 
@@ -314,10 +286,7 @@ class _TargetSourceInspector:
             self.root, source_ref, include_dependencies=True
         ).tb_files
         cores = self._cores(
-            identity=handle.identity,
-            vlnv=handle.vlnv,
-            core_file=handle.core_file,
-            flags=flags,
+            identity=handle.identity, vlnv=handle.vlnv, core_file=handle.core_file, flags=flags
         )
         core = cores[-1]
         try:

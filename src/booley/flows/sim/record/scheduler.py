@@ -246,11 +246,7 @@ class BoundedSimulationRecordScheduler:
                     f"record workers exceeded bounded shutdown: {alive}"
                 )
 
-    def _lane(
-        self,
-        ready: queue.Queue[Mapping[str, object]],
-        outer: bool,
-    ) -> None:
+    def _lane(self, ready: queue.Queue[Mapping[str, object]], outer: bool) -> None:
         """Run ready items until the queue drains or the record stops."""
         try:
             if self._turn is not None:

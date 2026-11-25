@@ -88,10 +88,7 @@ def git_full_sha(ref: str, cwd: Path) -> str | None:
 
 @contextmanager
 def baseline_worktree(
-    project_root: Path,
-    ref: str,
-    *,
-    paired_project: PairedProjectBaseline | None = None,
+    project_root: Path, ref: str, *, paired_project: PairedProjectBaseline | None = None
 ) -> Iterator[Path]:
     """Yield a fully materialized detached worktree for *ref*, then remove it."""
     project_root = Path(project_root)
@@ -99,9 +96,7 @@ def baseline_worktree(
     paired_baseline: Path | None = None
     try:
         paired_baseline = _install_paired_project_baseline(
-            project_root,
-            wt_dir,
-            paired_project or PairedProjectBaseline.standalone(),
+            project_root, wt_dir, paired_project or PairedProjectBaseline.standalone()
         )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         dangling = (
@@ -191,9 +186,7 @@ def _cleanup_baseline_worktree(
 
 
 def _install_paired_project_baseline(
-    project_root: Path,
-    wt_dir: Path,
-    policy: PairedProjectBaseline,
+    project_root: Path, wt_dir: Path, policy: PairedProjectBaseline
 ) -> Path | None:
     """Check out the Paired Checkout at its pinned revision or fork point."""
     repository = paired_project_repository(project_root)
@@ -299,14 +292,7 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
     if repository is None:
         logger.warning("Paired Checkout disappeared before baseline cleanup")
         return
-    result = _git(
-        repository.worktree,
-        "worktree",
-        "remove",
-        "--force",
-        str(baseline),
-        timeout=60,
-    )
+    result = _git(repository.worktree, "worktree", "remove", "--force", str(baseline), timeout=60)
     if result.returncode != 0:
         logger.warning(
             "Paired Checkout baseline cleanup failed for %s: %s",
@@ -579,10 +565,5 @@ def _repoint(link: Path, target: Path, *, as_directory: bool | None = None) -> N
 def _git(cwd: Path, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
     """Run a git subcommand under *cwd*, never raising on non-zero exit."""
     return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+        ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
     )

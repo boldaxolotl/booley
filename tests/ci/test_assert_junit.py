@@ -71,10 +71,7 @@ def test_valid_junit_file_prints_summary_and_passes(
 def test_missing_junit_file_fails_with_one_line(tmp_path: Path) -> None:
     missing = tmp_path / "junit.xml"
 
-    result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), str(missing)],
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, str(_SCRIPT), str(missing)], check=False)
 
     assert result.returncode == 1
     assert result.stdout == ""

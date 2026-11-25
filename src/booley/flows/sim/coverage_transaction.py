@@ -303,11 +303,7 @@ def _transaction_error(
     if coverage_record_published and coverage_record is not None:
         detail["coverage_metrics"] = coverage_metrics(coverage_record)
     return CoverageTargetOutcome(
-        plan.handle.selector,
-        2,
-        root / "coverage.json",
-        freeze_coverage_mapping(detail),
-        True,
+        plan.handle.selector, 2, root / "coverage.json", freeze_coverage_mapping(detail), True
     )
 
 

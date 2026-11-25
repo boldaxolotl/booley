@@ -28,10 +28,7 @@ def _handle(root: Path) -> TargetHandle:
         'run_cwd = "util/sim"\n',
         encoding="utf-8",
     )
-    return cast(
-        TargetHandle,
-        SimpleNamespace(project_root=root.resolve(), selector="lite"),
-    )
+    return cast(TargetHandle, SimpleNamespace(project_root=root.resolve(), selector="lite"))
 
 
 class _HookProcess:
@@ -95,9 +92,7 @@ def _fire_with(
         return run_pre_sim_commands(handle, **options), spawn, kill, record
 
 
-def test_single_test_environment_is_project_scoped_and_reserved_values_win(
-    tmp_path: Path,
-) -> None:
+def test_single_test_environment_is_project_scoped_and_reserved_values_win(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     build_root = tmp_path / "build" / "lite"
 
@@ -138,9 +133,7 @@ def _write_pre_run_commands(root: Path, value: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "value",
-    ['"make -C tests build"', '["make", 3]'],
-    ids=["bare-string", "non-string-entry"],
+    "value", ['"make -C tests build"', '["make", 3]'], ids=["bare-string", "non-string-entry"]
 )
 def test_invalid_pre_run_commands_spawn_nothing(tmp_path: Path, value: str) -> None:
     """Only a list of strings is a command list; anything else runs nothing."""
@@ -182,10 +175,7 @@ def test_uninitialized_checkout_uses_build_cache_fallback(
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
-    handle = cast(
-        TargetHandle,
-        SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
-    )
+    handle = cast(TargetHandle, SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"))
     build_root = tmp_path / "build" / "lite"
 
     evidence, run = _fire(handle, commands=("true",))
@@ -505,9 +495,7 @@ def test_each_firing_gets_a_private_tmpdir_removed_afterwards(tmp_path: Path) ->
     assert private.name and not private.exists()
 
 
-def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(
-    tmp_path: Path,
-) -> None:
+def test_an_escaped_descendant_holding_the_pipes_cannot_hang_the_timeout(tmp_path: Path) -> None:
     """The drain after the tree kill is bounded; the pipes are dropped and the firing recorded."""
     hook = _HookProcess(-9, timeout=subprocess.TimeoutExpired("bash", 5))
     hook._answers.insert(0, subprocess.TimeoutExpired("bash", 5))  # the drain times out too
@@ -562,10 +550,7 @@ def test_a_firing_records_the_peak_of_a_child_that_exited_between_samples(
 
     with patch("booley.flows.sim.execution.pre_sim.record_command") as record:
         evidence = run_pre_sim_commands(
-            cast(
-                TargetHandle,
-                SimpleNamespace(project_root=tmp_path.resolve(), selector="lite"),
-            ),
+            cast(TargetHandle, SimpleNamespace(project_root=tmp_path.resolve(), selector="lite")),
             test_names=("smoke",),
             build_root=tmp_path / "build",
             eda_tool="icarus",

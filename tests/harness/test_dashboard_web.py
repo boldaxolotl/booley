@@ -634,14 +634,7 @@ def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypat
         live=True,
     )
     _job(
-        world,
-        "run-r",
-        world.wt,
-        target="t_run",
-        status="running",
-        ended=None,
-        pid=7001,
-        live=True,
+        world, "run-r", world.wt, target="t_run", status="running", ended=None, pid=7001, live=True
     )
     _job(
         world,
@@ -916,9 +909,7 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
         _job(world, "run-new", world.wt, target="t_new", ended="2026-10-08T10:00:10Z")
         second = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client),
-            {"search": _search(world.wt), "responses": [first, second]},
-            tmp_path,
+            _page_js(client), {"search": _search(world.wt), "responses": [first, second]}, tmp_path
         )
 
     assert len(probe["fetches"]) == 2
@@ -993,9 +984,7 @@ def test_unchanged_results_are_not_rewritten(world, monkeypatch, tmp_path):
         monkeypatch.setattr(_snapshot_module(), "wall_clock", lambda: NOW + 5)
         second = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client),
-            {"search": _search(world.wt), "responses": [first, second]},
-            tmp_path,
+            _page_js(client), {"search": _search(world.wt), "responses": [first, second]}, tmp_path
         )
 
     assert first["body"]["results"] == second["body"]["results"]
@@ -1010,9 +999,7 @@ def test_empty_worktree_says_no_jobs_have_run(world, monkeypatch, tmp_path):
     with _client(world, monkeypatch) as client:
         reply = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client),
-            {"search": _search(world.wt), "responses": [reply]},
-            tmp_path,
+            _page_js(client), {"search": _search(world.wt), "responses": [reply]}, tmp_path
         )
 
     assert reply["body"]["header"]["resources"]["memory_limit_bytes"] is None

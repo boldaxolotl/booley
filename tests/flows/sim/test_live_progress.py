@@ -88,10 +88,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
             ),
         )
         outcome = run_prepared_group(
-            execution,
-            handle,
-            attempt_root=handle.project_root / "attempt",
-            copy_build_root=True,
+            execution, handle, attempt_root=handle.project_root / "attempt", copy_build_root=True
         )
     assert outcome.passed
     assert len(observations) == 2
@@ -532,8 +529,7 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
 
 
 def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
 
     project = tmp_path / "project"

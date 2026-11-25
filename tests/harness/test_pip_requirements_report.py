@@ -113,10 +113,7 @@ def test_session_refresh_converge_reports_left_out_lines(
     "shape", ["clean", "external-image", "hand-written-dockerfile", "hand-edited-requirements"]
 )
 def test_no_new_output_without_left_out_lines(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    shape: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], shape: str
 ) -> None:
     # Private seam: init's image step needs a whole Project and host install, so call it directly.
     if shape == "clean":

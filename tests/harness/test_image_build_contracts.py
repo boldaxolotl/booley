@@ -65,18 +65,10 @@ def test_source_contract_rejects_missing_and_symlinked_inputs(tmp_path: Path) ->
 
 @pytest.mark.parametrize(
     "runtime,standard",
-    [
-        ("a" * 63, "b" * 64),
-        ("A" * 64, "b" * 64),
-        ("a" * 64, "computed"),
-        ("a" * 64, None),
-    ],
+    [("a" * 63, "b" * 64), ("A" * 64, "b" * 64), ("a" * 64, "computed"), ("a" * 64, None)],
 )
 def test_embedded_contracts_reject_noncanonical_values(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime: str,
-    standard: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: str, standard: str | None
 ) -> None:
     stamp = tmp_path / "_build_commit.py"
     lines = [f"RUNTIME_BASE_CONTRACT = {runtime!r}"]
@@ -104,11 +96,7 @@ def test_embedded_contracts_reject_dynamic_expressions(
 
 
 @pytest.mark.parametrize(
-    ("content", "message"),
-    [
-        (b"RUNTIME_BASE_CONTRACT = (\n", "invalid"),
-        (b"\xff\xfe", "lacks"),
-    ],
+    ("content", "message"), [(b"RUNTIME_BASE_CONTRACT = (\n", "invalid"), (b"\xff\xfe", "lacks")]
 )
 def test_embedded_contracts_reject_unparseable_or_undecodable_stamp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, message: str
@@ -257,22 +245,14 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     config = project / ".booley" / "booley.toml"
     config.parent.mkdir(parents=True)
     (project / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
-    config.write_text(
-        '[sandbox]\npip_requirements = ["requirements.txt"]\n',
-        encoding="utf-8",
-    )
+    config.write_text('[sandbox]\npip_requirements = ["requirements.txt"]\n', encoding="utf-8")
     driver = tmp_path / "driver.py"
     driver.write_text(_INSTALLED_WHEEL_DRIVER, encoding="utf-8")
     environment = os.environ.copy()
     for name in tuple(environment):
         if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
             environment.pop(name)
-    environment.update(
-        {
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONPATH": str(installed),
-        }
-    )
+    environment.update({"PYTHONNOUSERSITE": "1", "PYTHONPATH": str(installed)})
     completed = run_bounded_child(
         [build_python, "-P", str(driver), str(project), str(SOURCE_ROOT)],
         cwd=tmp_path,

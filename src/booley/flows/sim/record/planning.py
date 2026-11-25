@@ -343,10 +343,7 @@ def _project_suite(projection: _Projection) -> None:
         return
     old, new = (document["required_suite"] for document in projection.documents)
     if "target_tests" in old:
-        lines = [
-            *_suite_name_changes(old["names"], new["names"]),
-            *_target_test_changes(old, new),
-        ]
+        lines = [*_suite_name_changes(old["names"], new["names"]), *_target_test_changes(old, new)]
         lines = list(dict.fromkeys(lines))
     else:
         lines = _legacy_suite_changes(old, new)
@@ -506,10 +503,7 @@ def derive_runtime_input_declarations(
                 f"duplicate runtime input destination {normalized!r}"
             )
         seen.add(normalized)
-        identity = {
-            "source_artifact_path": normalized,
-            "destination": normalized,
-        }
+        identity = {"source_artifact_path": normalized, "destination": normalized}
         declarations.append({"declaration_id": document_digest(identity), **identity})
     return tuple(declarations)
 
@@ -581,8 +575,7 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
 
 
 def compare_manifests(
-    expected: SimulationRecordManifest,
-    current: SimulationRecordManifest,
+    expected: SimulationRecordManifest, current: SimulationRecordManifest
 ) -> tuple[WorkloadMismatch, ...]:
     """Return all workload-identity mismatches in deterministic pointer order."""
     suite = cast("Mapping[str, Any]", expected.document["required_suite"])
@@ -595,10 +588,7 @@ def compare_manifests(
     return tuple(findings)
 
 
-def verify_workload(
-    expected: SimulationRecordManifest,
-    current: SimulationRecordManifest,
-) -> None:
+def verify_workload(expected: SimulationRecordManifest, current: SimulationRecordManifest) -> None:
     """Reject resume with one stable complete mismatch report."""
     findings = compare_manifests(expected, current)
     if findings:
@@ -613,10 +603,7 @@ def manifest_digest(manifest: SimulationRecordManifest) -> str:
 
 
 def _identity_document(
-    manifest: SimulationRecordManifest,
-    *,
-    legacy: bool,
-    recorded: Mapping[str, Any],
+    manifest: SimulationRecordManifest, *, legacy: bool, recorded: Mapping[str, Any]
 ) -> Mapping[str, object]:
     document = manifest.document
     identity: dict[str, object] = {
@@ -656,10 +643,7 @@ def _registered_tests(suite: Mapping[str, Any]) -> list[str]:
 
 
 def _compare_value(
-    expected: object,
-    actual: object,
-    pointer: str,
-    findings: list[WorkloadMismatch],
+    expected: object, actual: object, pointer: str, findings: list[WorkloadMismatch]
 ) -> None:
     if isinstance(expected, Mapping) and isinstance(actual, Mapping):
         for key in sorted(set(expected) | set(actual)):

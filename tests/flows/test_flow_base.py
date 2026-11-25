@@ -52,10 +52,7 @@ class EchoFlow(BooleyFlow):
         if result.timed_out:
             return McpToolResult(exit_code=EXIT_ERROR, report_text="Timed out")
         if result.returncode == 0:
-            return McpToolResult(
-                exit_code=EXIT_SUCCESS,
-                detail={"output": result.stdout.strip()},
-            )
+            return McpToolResult(exit_code=EXIT_SUCCESS, detail={"output": result.stdout.strip()})
         return McpToolResult(exit_code=EXIT_FAILURE)
 
 
@@ -80,11 +77,7 @@ class CommandFlow(EchoFlow):
 
 
 def _run_command(
-    root: Path,
-    command: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    booley_dir: bool = True,
+    root: Path, command: list[str], monkeypatch: pytest.MonkeyPatch, *, booley_dir: bool = True
 ) -> tuple[ExecutionResult, list[SubprocessResult]]:
     """Run *command* as a Custom Flow through its public CLI entry point."""
     if booley_dir:
@@ -148,10 +141,7 @@ class TestResourceEvidence:
         reset_cache()
 
         result, _seen = _run_command(
-            session_runtime,
-            [sys.executable, "-c", "print('ok')"],
-            monkeypatch,
-            booley_dir=False,
+            session_runtime, [sys.executable, "-c", "print('ok')"], monkeypatch, booley_dir=False
         )
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text

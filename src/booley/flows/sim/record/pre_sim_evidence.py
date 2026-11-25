@@ -17,11 +17,7 @@ from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime, utc_now_rfc3339
 
-from .codec import (
-    MANIFEST_MAX_BYTES,
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from .codec import MANIFEST_MAX_BYTES, SimulationRecordIntegrityError, canonical_json_bytes
 from .model import FrozenJson, SimulationRecordDocument, frozen_pre_sim_commands
 from .planning import manifest_digest
 

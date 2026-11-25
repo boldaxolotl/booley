@@ -65,9 +65,7 @@ def test_default_base_falls_back_to_local_main_without_origin_head(tmp_path: Pat
     assert (base.commit, base.choice) == (fork, BaseChoice.LOCAL_MAIN)
 
 
-def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(
-    tmp_path: Path,
-) -> None:
+def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(tmp_path: Path) -> None:
     from booley.measurement.base import BaseChoice, resolve_base, resolve_rules_base
 
     def build(name: str, origin: str) -> tuple[Path, dict[str, str]]:
@@ -148,9 +146,7 @@ def test_no_default_branch_means_no_base_and_says_why(tmp_path: Path) -> None:
     assert base.no_base == "neither origin/HEAD nor local main exists"
 
 
-def test_default_branch_without_shared_history_means_no_base_and_says_why(
-    tmp_path: Path,
-) -> None:
+def test_default_branch_without_shared_history_means_no_base_and_says_why(tmp_path: Path) -> None:
     from booley.measurement.base import resolve_base
 
     repo = new_repository(tmp_path / "repo")

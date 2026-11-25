@@ -61,12 +61,7 @@ from booley.runtime.execution_records import (
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
-from booley.runtime.job_slots import (
-    CLASS_MEMORY,
-    ClaimAbortedError,
-    ClaimLostError,
-    SlotRecovery,
-)
+from booley.runtime.job_slots import CLASS_MEMORY, ClaimAbortedError, ClaimLostError, SlotRecovery
 from tests.flows.sim.simulation_record_test_support import _named_manifest
 from tests.job_slot_steps import (
     FIRST_ACTOR_PID,
@@ -785,9 +780,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
     assert reaper.oserror is None
 
 
-def test_lock_waiters_let_the_holder_run(
-    build_machine: Callable[[], LaneStepMachine],
-) -> None:
+def test_lock_waiters_let_the_holder_run(build_machine: Callable[[], LaneStepMachine]) -> None:
     machine = build_machine()
     lane = machine.start_lane()
     assert lane.worker is not None

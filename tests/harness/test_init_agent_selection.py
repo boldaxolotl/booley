@@ -138,9 +138,7 @@ def _stub_nested_init_services(tmp_path, monkeypatch, image=_CURRENT):
 
     monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda _purpose: nullcontext())
     monkeypatch.setattr(
-        issuance_invalidation,
-        "shared_recovery_blocks_command",
-        lambda *, read_only: False,
+        issuance_invalidation, "shared_recovery_blocks_command", lambda *, read_only: False
     )
     return sandbox_calls, docker_cli_absent(monkeypatch)
 
@@ -200,11 +198,7 @@ def test_check_only_predicts_the_link_policy_only_from_a_known_git(
     # Private seam: the host Git version is the real `git --version`; no run_init input sets it.
     monkeypatch.setattr(git_hooks, "_host_git_version", lambda: host_git)
     args = argparse.Namespace(
-        seed=False,
-        check_only=True,
-        provider="claude",
-        auth="subscription",
-        skip_credentials=True,
+        seed=False, check_only=True, provider="claude", auth="subscription", skip_credentials=True
     )
 
     assert init_cmd.run_init(args, tmp_path) == 1

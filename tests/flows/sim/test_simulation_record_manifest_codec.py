@@ -19,19 +19,9 @@ from booley.flows.sim.record.codec import (
     decode_simulation_record_manifest,
     encode_simulation_record_manifest,
 )
-from booley.flows.sim.record.coordinator import (
-    SimulationRecord,
-    SimulationRecordRecoveryStatus,
-)
-from booley.flows.sim.record.model import (
-    SimulationRecordPlan,
-    create_simulation_record_plan,
-)
-from booley.flows.sim.record.planning import (
-    compare_manifests,
-    finalize_manifest,
-    manifest_digest,
-)
+from booley.flows.sim.record.coordinator import SimulationRecord, SimulationRecordRecoveryStatus
+from booley.flows.sim.record.model import SimulationRecordPlan, create_simulation_record_plan
+from booley.flows.sim.record.planning import compare_manifests, finalize_manifest, manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
     ValidatedResumeManifest,
@@ -103,12 +93,7 @@ def _manifest_components():
         "role": "candidate",
         "display_name": "sim",
     }
-    source_recipe = {
-        "sources": [],
-        "parameters": [],
-        "defines": [],
-        "pre_sim_commands": [],
-    }
+    source_recipe = {"sources": [], "parameters": [], "defines": [], "pre_sim_commands": []}
     build_recipe = {
         "eda_tool": "icarus",
         "toplevel": "tb",
@@ -554,9 +539,7 @@ def test_resume_rejects_stale_candidate_revision_with_source_equal(
         def select(self, selector: str, *, for_flow: str):
             assert (selector, for_flow) == ("sim", "sim")
             return SimpleNamespace(
-                identity="acme:lib:dut:1#sim",
-                selector=selector,
-                project_root=root,
+                identity="acme:lib:dut:1#sim", selector=selector, project_root=root
             )
 
     monkeypatch.setattr(TargetCatalog, "build", lambda _root: Catalog())
@@ -611,11 +594,7 @@ def test_resume_of_a_non_coverage_record_with_an_interrupted_item_is_not_refused
 
 def test_serial_result_classifies_simulator_crash_as_design_failure() -> None:
     test = SimulationTestOutcome(
-        name="smoke",
-        verdict="crash",
-        passed=False,
-        crashed=True,
-        reason="terminated by signal 11",
+        name="smoke", verdict="crash", passed=False, crashed=True, reason="terminated by signal 11"
     )
     observation = serial_execution.observation_document(test)
     assert serial_execution.settled_state([observation]) == "crash"
@@ -772,11 +751,7 @@ def _sources(*paths: str, size: int = 1) -> list[dict[str, object]]:
     [
         (_sources("a.sv"), _sources("head.sv", "a.sv"), ("source added: head.sv",)),
         (_sources("a.sv", "b.sv"), _sources("b.sv"), ("source removed: a.sv",)),
-        (
-            _sources("a.sv"),
-            _sources("b.sv"),
-            ("source removed: a.sv", "source added: b.sv"),
-        ),
+        (_sources("a.sv"), _sources("b.sv"), ("source removed: a.sv", "source added: b.sv")),
         (_sources("a.sv", "b.sv"), _sources("b.sv", "a.sv"), ("source order changed",)),
         # Control characters in a path are escaped in the label.
         (_sources("a\n.sv"), _sources("a\n.sv", size=2), ('source changed: "a\\n.sv"',)),

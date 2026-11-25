@@ -22,11 +22,7 @@ from booley.runtime._codex_backend import (
     _codex_run_subprocess,
 )
 from booley.runtime.agent import announce_agent_dispatch, call_agent, extract_json
-from booley.runtime.agent_errors import (
-    AgentProviderError,
-    AgentTimeoutError,
-    UsageLimitError,
-)
+from booley.runtime.agent_errors import AgentProviderError, AgentTimeoutError, UsageLimitError
 from tests.claude_cli_fake import replay_sdk_stream, sdk_message, sdk_result
 from tests.codex_cli_fake import replay_codex_run
 from tests.path_tool_fake import PathToolFake
@@ -215,12 +211,7 @@ class TestCodexBackend:
 
     @pytest.mark.asyncio
     async def test_wall_clock_deadline_raises_agent_timeout(self, tmp_path: Path):
-        params = AgentCallParams(
-            prompt="task",
-            model="gpt-5",
-            cwd=tmp_path,
-            timeout_seconds=7200,
-        )
+        params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, timeout_seconds=7200)
         process = MagicMock()
         process.returncode = None
         process.wait = AsyncMock(return_value=-9)
@@ -413,10 +404,7 @@ def _assistant(**fields):
 
 def _rate_limit(status: str, resets_at=None, utilization=None):
     info = SimpleNamespace(
-        status=status,
-        resets_at=resets_at,
-        rate_limit_type="seven_day",
-        utilization=utilization,
+        status=status, resets_at=resets_at, rate_limit_type="seven_day", utilization=utilization
     )
     return sdk_message("RateLimitEvent", rate_limit_info=info)
 
@@ -434,8 +422,7 @@ class TestCallAgent:
         from booley.runtime.agent_config import BackendConfig, set_backend_config
 
         cfg = BackendConfig(
-            settings=AgentSettings(),
-            active_backend=ClaudeSDKBackend(auth_mode="visitor"),
+            settings=AgentSettings(), active_backend=ClaudeSDKBackend(auth_mode="visitor")
         )
         set_backend_config(cfg)
         yield

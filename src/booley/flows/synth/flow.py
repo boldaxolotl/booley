@@ -81,12 +81,7 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.reservation_phases import report_phase_end
-from booley.flows.result_table import (
-    MISSING,
-    TARGET_WIDTH,
-    note_line,
-    status_cell,
-)
+from booley.flows.result_table import MISSING, TARGET_WIDTH, note_line, status_cell
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth import openroad_reuse
 from booley.flows.synth.backends.pipeline import (
@@ -118,11 +113,7 @@ from booley.flows.terminal_progress import ProgressText, observe_source_names
 from booley.flows.tool_runs import setup_runner
 from booley.fusesoc import fusesoc_registry
 from booley.presentation.terminal_table import render_table
-from booley.runtime.endpoint_execution import (
-    EXIT_ERROR,
-    EXIT_FAILURE,
-    EXIT_SUCCESS,
-)
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import (
@@ -137,11 +128,7 @@ from booley.targets.flow_names import config_section
 
 from .. import artifacts, edam
 from ..base import SubprocessResult
-from ..baseline_worktree import (
-    BaselineWorktreeError,
-    baseline_worktree,
-    git_full_sha,
-)
+from ..baseline_worktree import BaselineWorktreeError, baseline_worktree, git_full_sha
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
@@ -149,24 +136,18 @@ from ..implementation_comparison import (
     resolve_target_execution_ref,
 )
 from ..implementation_flow import ImplementationFlow
-from ..implementation_publication import (
-    target_report_slug,
-)
+from ..implementation_publication import target_report_slug
 from ..implementation_report import (
     ImplementationAggregate,
     ImplementationContext,
     ImplementationReport,
 )
 from ..invocation import resolve_timeout_ms
-from ..run_evidence import (
-    build_flow_run_evidence,
-)
+from ..run_evidence import build_flow_run_evidence
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
 from ..target_parameters import vlogparam_specs
-from .implementation_report import (
-    build_synth_implementation_report,
-)
+from .implementation_report import build_synth_implementation_report
 from .recipe import (
     resolve_synth_mode,
     synthesis_recipe_args,
@@ -232,10 +213,7 @@ def _load_flow_config(work_dir: Path) -> dict[str, Any]:
     return config_section(flows, "synth") if isinstance(flows, dict) else {}
 
 
-def _resolve_synth_timeout_ms(
-    work_dir: Path | None,
-    requested: Any = None,
-) -> int:
+def _resolve_synth_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
     """Resolve the per-target synthesis budget for MCP and Flow callers."""
     return resolve_timeout_ms("synth", work_dir, requested)
 
@@ -419,11 +397,7 @@ class SynthMetrics:
         """Return this run's typed values for :data:`SYNTH_METRIC_DECLARATIONS`."""
         return metric_values(
             SYNTH_METRIC_DECLARATIONS,
-            plain={
-                "area_um2": self.area_um2,
-                "area_kge": self.area_kge,
-                "cell_count": self.cells,
-            },
+            plain={"area_um2": self.area_um2, "area_kge": self.area_kge, "cell_count": self.cells},
             per_clock=self.per_clock,
         )
 
@@ -487,11 +461,7 @@ class SynthMetrics:
     @property
     def has_timing_evidence(self) -> bool:
         """Whether OpenROAD surfaced at least one numeric timing result."""
-        scalar_evidence = (
-            self.wns_ns,
-            self.reg2reg_slack_ns,
-            self.reg2reg_fmax_mhz,
-        )
+        scalar_evidence = (self.wns_ns, self.reg2reg_slack_ns, self.reg2reg_fmax_mhz)
         if any(value is not None for value in scalar_evidence):
             return True
         return any(
@@ -786,9 +756,7 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
 
 
 def _parse_synth_output(
-    output: str,
-    elapsed_s: float,
-    synth_mode: SynthMode | str = SynthMode.LOGICAL,
+    output: str, elapsed_s: float, synth_mode: SynthMode | str = SynthMode.LOGICAL
 ) -> SynthMetrics:
     """Parse all metrics from combined synthesis stdout/stderr."""
     mode = SynthMode(synth_mode)
@@ -918,8 +886,7 @@ def _result_line(
 
 
 def _first_valid_display(
-    targets: list[str],
-    current_results: dict[str, SynthMetrics],
+    targets: list[str], current_results: dict[str, SynthMetrics]
 ) -> list[str]:
     """Build concise display line from the first target with valid metrics."""
     for tgt in targets:
@@ -976,13 +943,7 @@ def _select_present(detail: dict[str, Any], fields: tuple[str, ...]) -> dict[str
 def _report_qor_detail(metrics: SynthMetrics) -> dict[str, Any]:
     """Return canonical QoR fields with absent optional timing values omitted."""
     detail = _select_present(metrics.qor_detail(), _REPORT_QOR_FIELDS)
-    optional = {
-        "estimated_fmax_mhz",
-        "wns_ns",
-        "whs_ns",
-        "reg2reg_slack_ns",
-        "reg2reg_fmax_mhz",
-    }
+    optional = {"estimated_fmax_mhz", "wns_ns", "whs_ns", "reg2reg_slack_ns", "reg2reg_fmax_mhz"}
     return {
         name: value for name, value in detail.items() if name not in optional or value is not None
     }
@@ -998,16 +959,12 @@ def _baseline_report_detail(metrics: SynthMetrics, baseline_ref: str) -> dict[st
 
 
 def _add_report_deltas(
-    report: dict[str, Any],
-    current: SynthMetrics,
-    baseline: SynthMetrics,
-    compute_delta: Any,
+    report: dict[str, Any], current: SynthMetrics, baseline: SynthMetrics, compute_delta: Any
 ) -> None:
     """Add meaningful area and timing deltas to a per-target report."""
     area_delta = compute_delta(current.area_kge, baseline.area_kge)
     timing_delta = compute_delta(
-        _worst_critical_path_ps(current),
-        _worst_critical_path_ps(baseline),
+        _worst_critical_path_ps(current), _worst_critical_path_ps(baseline)
     )
     if area_delta is not None:
         report["delta_pct"] = round(area_delta, 1)
@@ -1015,10 +972,7 @@ def _add_report_deltas(
         report["timing_delta_pct"] = round(timing_delta, 1)
 
 
-def _target_summary(
-    metrics: SynthMetrics,
-    baseline: SynthMetrics | None = None,
-) -> dict[str, Any]:
+def _target_summary(metrics: SynthMetrics, baseline: SynthMetrics | None = None) -> dict[str, Any]:
     """QoR + verdict for one target, as carried in the aggregate detail."""
     summary: dict[str, Any] = {
         **metrics.status_detail(),
@@ -1128,11 +1082,7 @@ def report_metric_values(
 
 
 def _publish_timing_dir(
-    invocation_dir: Path,
-    source_dir: Path,
-    components: tuple[str, ...],
-    root: Path,
-    label: str,
+    invocation_dir: Path, source_dir: Path, components: tuple[str, ...], root: Path, label: str
 ) -> str | None:
     """Copy every file under *source_dir* to ``invocation_dir/<components>``.
 
@@ -1386,10 +1336,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     # -- Command builder for a single config ----------------------------------
 
     def _append_rtl_source_args(
-        self,
-        cmd: list[str],
-        resolved: fusesoc_registry.ResolvedTarget,
-        work_dir: Path,
+        self, cmd: list[str], resolved: fusesoc_registry.ResolvedTarget, work_dir: Path
     ) -> str:
         """Append ``-t``/``--extra-rtl``/``--inc-dir`` flags; return the top module."""
         # Top comes from the resolved Target (decision 12).
@@ -1443,11 +1390,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
 
     def _append_typed_param_args(
-        self,
-        cmd: list[str],
-        resolved: fusesoc_registry.ResolvedTarget,
-        target: str,
-        top: str,
+        self, cmd: list[str], resolved: fusesoc_registry.ResolvedTarget, target: str, top: str
     ) -> None:
         """Append ``-d``/``-p`` typed-param flags and warn on likely sim Targets."""
         # FuseSoC owns build-time defines. ``vlogdefine`` parameters on this
@@ -1471,10 +1414,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
     def _resolve_synth_target(
-        self,
-        target: str,
-        *,
-        build_root: Path | None = None,
+        self, target: str, *, build_root: Path | None = None
     ) -> fusesoc_registry.ResolvedTarget:
         """Clean and resolve one FuseSoC Target into its isolated build root."""
         selected_root = build_root or self._synth_work_root(target)
@@ -1509,10 +1449,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
     def _resolve_synth_recipe(
-        self,
-        target: str,
-        *,
-        build_root: Path | None = None,
+        self, target: str, *, build_root: Path | None = None
     ) -> _PlannedSynthRecipe:
         """Resolve *target* and build its validated run_yosys_syn spec argv.
 
@@ -1585,9 +1522,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
         args = run_yosys_syn.parse_configure_argv(cmd)
         spec = run_yosys_syn.resolve_spec(
-            args,
-            project_root=Path(self.args.work_dir),
-            require_liberty=True,
+            args, project_root=Path(self.args.work_dir), require_liberty=True
         )
         return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
 
@@ -1607,10 +1542,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     # -- Single-target run ----------------------------------------------------
 
-    def _run_single_config(
-        self,
-        target: str,
-    ) -> tuple[SynthMetrics, str]:
+    def _run_single_config(self, target: str) -> tuple[SynthMetrics, str]:
         """Run synthesis for one target."""
         return self._synthesize_target(target)
 
@@ -1660,10 +1592,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         """Forget the tool phases an earlier invocation planned."""
         self._planned_tool_phases: dict[str, tuple[str, ...]] = {}
 
-    def _synthesize_target(
-        self,
-        target: str,
-    ) -> tuple[SynthMetrics, str]:
+    def _synthesize_target(self, target: str) -> tuple[SynthMetrics, str]:
         """Run synthesis for one target. Returns (metrics, raw_output).
 
         Baseline runs are isolated by their separate worktree.
@@ -1889,11 +1818,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         return outcome, output
 
     def _apply_boundary_completion(
-        self,
-        metrics: SynthMetrics,
-        outcome: Any,
-        result: SubprocessResult,
-        output: str,
+        self, metrics: SynthMetrics, outcome: Any, result: SubprocessResult, output: str
     ) -> EdaFailure | None:
         """Apply terminal and mode-specific completeness policy; return the failure it read."""
         metrics.expected_latches = expected_count("synth", self.args.work_dir, "expected_latches")
@@ -2025,11 +1950,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             ) + failure.diagnostic
 
     @staticmethod
-    def _apply_structural_completion(
-        metrics: SynthMetrics,
-        outcome: Any,
-        stdout: str,
-    ) -> None:
+    def _apply_structural_completion(metrics: SynthMetrics, outcome: Any, stdout: str) -> None:
         """Apply authoritative pre-mapping and final check evidence or legacy inline evidence."""
         structural = outcome.diagnostics.structural
         legacy_inline = (
@@ -2180,10 +2101,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         dirs: dict[str, Path | str | None] = {"build": build_dir}
         if synth_mode is not None and synth_mode.runs_openroad:
             dirs["timing"] = build_dir / "reports" / "timing"
-        return artifacts.artifacts_block(
-            self.args.work_dir,
-            dirs=dirs,
-        ).get("dirs", {})  # type: ignore[return-value]
+        return artifacts.artifacts_block(self.args.work_dir, dirs=dirs).get("dirs", {})  # type: ignore[return-value]
 
     def _persist_synth_log(self, target: str, output: str) -> str:
         """Write *target*'s full synth output to its Edalize work dir.
@@ -2210,12 +2128,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             return ""
         return posix_relpath(log_path, self.args.work_dir)
 
-    def _persist_baseline_log(
-        self,
-        target: str,
-        output: str,
-        project_root: Path,
-    ) -> str:
+    def _persist_baseline_log(self, target: str, output: str, project_root: Path) -> str:
         """Persist a baseline run's output to the *real* project runtime.
 
         The baseline run executes inside a throwaway worktree that is destroyed
@@ -2262,10 +2175,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         return f"(delta {sign}{pct:.1f}%)"
 
     @staticmethod
-    def _compute_delta_pct(
-        current: float | None,
-        baseline: float | None,
-    ) -> float | None:
+    def _compute_delta_pct(current: float | None, baseline: float | None) -> float | None:
         if current is None or baseline is None or baseline == 0.0:
             return None
         return ((current - baseline) / baseline) * 100.0
@@ -2273,10 +2183,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
     # -- Report writing -------------------------------------------------------
 
     def _build_implementation_report(
-        self,
-        context: ImplementationContext,
-        current: SynthMetrics,
-        baseline: SynthMetrics | None,
+        self, context: ImplementationContext, current: SynthMetrics, baseline: SynthMetrics | None
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
         return build_synth_implementation_report(
@@ -2508,13 +2415,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         make_commands = [(*make, "yosys"), (*make, "openroad")] if physical else [make]
         handle = self._target_handle(target)
         return WorkUnitPlan(
-            unit_id=stable_unit_id(
-                "synth",
-                target,
-                (target,),
-                role=role,
-                revision=revision,
-            ),
+            unit_id=stable_unit_id("synth", target, (target,), role=role, revision=revision),
             role=role,
             revision=revision,
             selector=target,
@@ -2528,9 +2429,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             recipe=plan_recipe,
             commands=(
                 CommandPlan(
-                    self._normalized_synth_plan_command(planned, root),
-                    cwd=".",
-                    template=True,
+                    self._normalized_synth_plan_command(planned, root), cwd=".", template=True
                 ),
                 *(CommandPlan(command, cwd=".", template=True) for command in make_commands),
             ),
@@ -2541,8 +2440,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     @staticmethod
     def _normalized_synth_plan_command(
-        planned: _PlannedSynthRecipe,
-        root: Path,
+        planned: _PlannedSynthRecipe, root: Path
     ) -> tuple[str, ...]:
         """Replace disposable staged paths with their Target-owned names."""
         replacements = {
@@ -2566,10 +2464,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         )
 
     def _plan_candidate_unit(
-        self,
-        target: str,
-        revision: str | None,
-        recipes: dict[str, _PlannedSynthRecipe],
+        self, target: str, revision: str | None, recipes: dict[str, _PlannedSynthRecipe]
     ) -> WorkUnitPlan:
         """Plan one candidate Target: in scratch for a dry run, else under its lease."""
         if self.args.dry_run:
@@ -2623,10 +2518,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             ),
         )
 
-    def _plan_synth_baselines(
-        self,
-        baseline_ref: str,
-    ) -> tuple[list[WorkUnitPlan], list[str]]:
+    def _plan_synth_baselines(self, baseline_ref: str) -> tuple[list[WorkUnitPlan], list[str]]:
         """Resolve each unique baseline Target in a disposable checkout."""
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
@@ -2637,14 +2529,11 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         candidate_evidence = dict(getattr(self, "_recipe_evidence", {}))
         try:
             with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
+                project_root, baseline_ref, paired_project=self._paired_project_baseline
             ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
-                    self._target_pairs,
-                    worktree,
+                    self._target_pairs, worktree
                 )
                 seen: set[str] = set()
                 for pair in self._target_pairs:
@@ -2656,10 +2545,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                         planned = self._resolve_synth_recipe(target)
                         units.append(
                             self._synth_work_unit(
-                                target,
-                                planned,
-                                role="baseline",
-                                revision=revision,
+                                target, planned, role="baseline", revision=revision
                             )
                         )
                     except (
@@ -2783,9 +2669,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         return f"{tgt}: {', '.join(timing_violations)}" if timing_violations else None
 
     def _emit_target_block(
-        self,
-        tgt: str,
-        cur: SynthMetrics,
+        self, tgt: str, cur: SynthMetrics
     ) -> tuple[list[str], str | None, str | None]:
         """Return note lines, timing violation, and failure summary for one target."""
         failure = None if cur.passed else self._format_failure_summary(tgt, cur)
@@ -2809,8 +2693,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
 
     @staticmethod
     def _eda_warning_headlines(
-        targets: list[str],
-        current_results: dict[str, SynthMetrics],
+        targets: list[str], current_results: dict[str, SynthMetrics]
     ) -> list[str]:
         """Return concise actionable-warning summaries for the result headline."""
         return [
@@ -2821,9 +2704,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         ]
 
     def _aggregate_prefix(
-        self,
-        baseline_results: dict[str, SynthMetrics],
-        reports: dict[str, ImplementationReport],
+        self, baseline_results: dict[str, SynthMetrics], reports: dict[str, ImplementationReport]
     ) -> tuple[list[str], list[str], str | None]:
         """Return the run-level notes, failures and self-compare message."""
         lines, failures = self._baseline_error_notes(baseline_results, reports)
@@ -2852,11 +2733,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
                 failures.append(failure)
         return violated
 
-    def _append_fatal_timing_failure(
-        self,
-        failures: list[str],
-        violated: list[str],
-    ) -> None:
+    def _append_fatal_timing_failure(self, failures: list[str], violated: list[str]) -> None:
         if violated and getattr(self, "_timing_violation_is_fatal", False):
             failures.append(
                 f"timing VIOLATED ({'; '.join(violated)}) "
@@ -2864,12 +2741,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
 
     def _format_config_line(
-        self,
-        tgt: str,
-        cur: SynthMetrics,
-        base: SynthMetrics | None,
-        *,
-        human: bool = False,
+        self, tgt: str, cur: SynthMetrics, base: SynthMetrics | None, *, human: bool = False
     ) -> str:
         """Format one target's area/timing/elapsed line."""
         area_str = self._fmt_area(cur.area_kge)
@@ -2882,8 +2754,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         if base:
             area_delta = self._compute_delta_pct(cur.area_kge, base.area_kge)
             timing_delta = self._compute_delta_pct(
-                _worst_critical_path_ps(cur),
-                _worst_critical_path_ps(base),
+                _worst_critical_path_ps(cur), _worst_critical_path_ps(base)
             )
             line = (
                 f"[synth] {tgt:<10}"
@@ -3002,13 +2873,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             )
         return [*cells, fmax, slack, f"{cur.elapsed_s:.1f}s", status_cell(status)]
 
-    def _run_status(
-        self,
-        target: str,
-        cur: SynthMetrics,
-        *,
-        baseline_not_meaningful: bool,
-    ) -> str:
+    def _run_status(self, target: str, cur: SynthMetrics, *, baseline_not_meaningful: bool) -> str:
         """Status of a Target whose run passed, agreeing with the ``RESULT:`` line.
 
         ``FAIL (timing)`` for a fatal timing violation, ``WARN (<reasons>)``

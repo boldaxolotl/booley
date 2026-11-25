@@ -18,9 +18,7 @@ import pytest
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
 from booley.harness import sandbox_stop_warning
-from booley.runtime import (
-    booley_dir as booley_dir_module,
-)
+from booley.runtime import booley_dir as booley_dir_module
 from booley.runtime import host_docker, runtime_attachment, session_admission, session_runtime
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"

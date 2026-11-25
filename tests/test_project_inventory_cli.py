@@ -255,8 +255,7 @@ def test_forget_explains_unrecorded_leftovers(
     printed = capsys.readouterr().out
     if output == "human":
         table = render_table(
-            ["Kind", "Name", "Size", "Reason", "Tags"],
-            [["image", image, "1GB", "unrecorded", ""]],
+            ["Kind", "Name", "Size", "Reason", "Tags"], [["image", image, "1GB", "unrecorded", ""]]
         )
         assert "\n".join(table) + "\n" + _UNRECORDED_LINE + "\n" in printed
     else:

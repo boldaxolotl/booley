@@ -61,9 +61,7 @@ class TestParseSimVerdict:
         out = "ALL TESTS PASSED.\nERROR!\n"
         assert (
             sr.parse_sim_verdict(
-                out,
-                pass_sentinels=["ALL TESTS PASSED."],
-                fail_sentinels=["ERROR!"],
+                out, pass_sentinels=["ALL TESTS PASSED."], fail_sentinels=["ERROR!"]
             )
             is False
         )
@@ -116,10 +114,7 @@ class TestExtractVrfcWarnings:
         assert sr.extract_vrfc_warnings("clean output\nno issues") == []
 
     def test_multiple_warnings(self):
-        lines = [
-            "WARNING: [VRFC 10-3380] issue A",
-            "WARNING: [VRFC 10-3380] issue B",
-        ]
+        lines = ["WARNING: [VRFC 10-3380] issue A", "WARNING: [VRFC 10-3380] issue B"]
         output = "header\n" + "\n".join(lines) + "\nfooter"
         assert sr.extract_vrfc_warnings(output) == lines
 

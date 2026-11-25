@@ -122,9 +122,7 @@ def _live_roots(endpoint: EndpointState) -> list[Path]:
     return [root for root in endpoint._run_roots or () if root is not None]
 
 
-def prepare_execution(
-    endpoint: EndpointState,
-) -> PreparedExecution | EndpointOutcome:
+def prepare_execution(endpoint: EndpointState) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
     endpoint.reset_report_metadata()
     endpoint._requeue_cleanup_errors.clear()
@@ -158,8 +156,7 @@ def _prepared_execution(
 ) -> PreparedExecution:
     """Carry the prepared invocation once all preparation gates have succeeded."""
     return PreparedExecution(
-        non_persisting_dry_run=endpoint._is_non_persisting_dry_run(),
-        invocation=invocation,
+        non_persisting_dry_run=endpoint._is_non_persisting_dry_run(), invocation=invocation
     )
 
 
@@ -174,9 +171,7 @@ def _transcript_diagnostic_path(endpoint: EndpointState) -> Path | None:
 
 
 def _exception_outcome(
-    endpoint: EndpointState,
-    prepared: PreparedExecution,
-    exc: Exception,
+    endpoint: EndpointState, prepared: PreparedExecution, exc: Exception
 ) -> EndpointOutcome:
     logger.debug("Endpoint %s failed with exception", endpoint.name, exc_info=True)
     persist = not prepared.non_persisting_dry_run
@@ -242,9 +237,7 @@ def _attach_memory_warning(result: EndpointOutcome, admission: object | None) ->
 
 
 def finish_execution(
-    endpoint: EndpointState,
-    prepared: PreparedExecution,
-    outcome: EndpointOutcome,
+    endpoint: EndpointState, prepared: PreparedExecution, outcome: EndpointOutcome
 ) -> ExecutionResult:
     """Publish completion: refresh the report, then the console report."""
     for cleanup_error in endpoint._requeue_cleanup_errors:

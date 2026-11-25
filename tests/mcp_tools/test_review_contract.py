@@ -15,10 +15,7 @@ def test_rtl_scope_needs_only_hdl_files() -> None:
 
 
 def test_tb_scope_classifies_mixed_hdl_and_cocotb_files() -> None:
-    contract = resolve_review_scope(
-        ["tb/test_uart.py", "tb/uart_tb.sv"],
-        category="tb",
-    )
+    contract = resolve_review_scope(["tb/test_uart.py", "tb/uart_tb.sv"], category="tb")
 
     assert contract.cocotb_files == frozenset({"tb/test_uart.py"})
     assert contract.hdl_files == frozenset({"tb/uart_tb.sv"})
@@ -27,8 +24,7 @@ def test_tb_scope_classifies_mixed_hdl_and_cocotb_files() -> None:
 
 
 @pytest.mark.parametrize(
-    "path, category, kind",
-    [("tb/vectors.json", "tb", "TB"), ("rtl/model.py", "rtl", "RTL")],
+    "path, category, kind", [("tb/vectors.json", "tb", "TB"), ("rtl/model.py", "rtl", "RTL")]
 )
 def test_scope_rejects_unsupported_file_kinds(path: str, category: str, kind: str) -> None:
     with pytest.raises(ReviewContractError, match=f"Unsupported {kind} source kind"):

@@ -25,9 +25,7 @@ from booley.flows.sim.record.codec import (
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.targets.catalog import TargetCatalog
-from tests.flows.sim.simulation_record_test_support import (
-    _retained_invocation,
-)
+from tests.flows.sim.simulation_record_test_support import _retained_invocation
 from tests.flows.sim.test_simulation_record_manifest_codec import (
     _linked_simulation_record_stores,
     _manifest,
@@ -157,9 +155,7 @@ def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
 
     with pytest.raises(ValueError) as excinfo:
         validate_resume_manifest(
-            candidate_store.manifest_path,
-            project_root=root,
-            revision_root=lambda _target: root,
+            candidate_store.manifest_path, project_root=root, revision_root=lambda _target: root
         )
 
     _assert_unsupported_type(excinfo.value)
@@ -187,10 +183,7 @@ _PREVIOUS_BUNDLE = "booley.simulator-bundle/v2"
 
 @pytest.mark.parametrize(
     ("schema", "decode"),
-    [
-        (_PREVIOUS_BUNDLE, decode_simulator_bundle),
-        (_SNAPSHOT_V2, "refuse_retired_document"),
-    ],
+    [(_PREVIOUS_BUNDLE, decode_simulator_bundle), (_SNAPSHOT_V2, "refuse_retired_document")],
 )
 def test_previous_version_documents_are_refused(schema: str, decode) -> None:
     if isinstance(decode, str):

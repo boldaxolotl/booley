@@ -75,8 +75,7 @@ def _convert(success: bool):
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(MINIMAL_FST_BYTES)
         return waveform_store.ConversionResult(
-            destination,
-            inspection=waveform_store.inspect_store(destination, probe_reader=False),
+            destination, inspection=waveform_store.inspect_store(destination, probe_reader=False)
         )
 
     return convert
@@ -248,8 +247,7 @@ def test_two_fresh_declared_stores_give_named_incident(adapter, run):
 def test_fresh_undeclared_fst_is_not_adopted(adapter, run):
     """AC7: a store nobody declared is not evidence about this run."""
     out = run(
-        adapter,
-        produce=lambda dirs: (dirs.work / "extra.fst").write_bytes(MINIMAL_FST_BYTES),
+        adapter, produce=lambda dirs: (dirs.work / "extra.fst").write_bytes(MINIMAL_FST_BYTES)
     )
 
     assert "TRACE_OK" not in out

@@ -108,9 +108,7 @@ def _simulate(root: Path) -> str:
 
     def invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
         result = run_bounded_child(
-            command,
-            cwd=cwd or root,
-            timeout=min(timeout + 4 * hang_guard_s(), _TOOL_TIMEOUT_S),
+            command, cwd=cwd or root, timeout=min(timeout + 4 * hang_guard_s(), _TOOL_TIMEOUT_S)
         )
         outputs.append(result.stdout + result.stderr)
         return SubprocessResult(
@@ -162,10 +160,7 @@ def _cached_build(root: Path, revision: int, cache_dir: Path) -> str:
     build_root = root / "obj_dir"
     policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache_dir)})
     managed = compose_environment(policy, {}, ambient=os.environ, build_root=build_root)
-    environment = {
-        **os.environ,
-        **execution_environment(policy, managed, ambient=os.environ),
-    }
+    environment = {**os.environ, **execution_environment(policy, managed, ambient=os.environ)}
     assert environment["OBJCACHE"] == "ccache"
     run_bounded_child(
         [

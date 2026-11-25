@@ -51,9 +51,7 @@ def sync_packaged_changelog(root: Path = _REPOSITORY_ROOT) -> list[str]:
 
 
 def main(
-    argv: list[str] | None = None,
-    root: Path = _REPOSITORY_ROOT,
-    sync_command: str = _SYNC_COMMAND,
+    argv: list[str] | None = None, root: Path = _REPOSITORY_ROOT, sync_command: str = _SYNC_COMMAND
 ) -> int:
     """Synchronize the packaged CHANGELOG mirror, or check it without writing.
 
@@ -61,9 +59,7 @@ def main(
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--check",
-        action="store_true",
-        help="fail when the packaged CHANGELOG mirror is stale",
+        "--check", action="store_true", help="fail when the packaged CHANGELOG mirror is stale"
     )
     args = parser.parse_args(argv)
     if args.check:

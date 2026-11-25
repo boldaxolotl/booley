@@ -54,9 +54,7 @@ def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:
     reject_retired_path(path.absolute())
     make_directories(path.parent)
     descriptor, raw_temporary = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
     temporary = Path(raw_temporary)
     try:

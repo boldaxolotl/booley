@@ -44,19 +44,14 @@ _YOSYS_WARNING_RE = re.compile(r"^(?:Warning:|ABC:\s+Warning:)", re.IGNORECASE)
 # (read_verilog, slang on Yosys 0.70) or `path:line:col: warning: body`
 # (slang on Yosys 0.69).
 _LOCATED_WARNING_RE = re.compile(
-    r"^([^\s:][^:]*):(\d+)(?::\d+)?:\s+warning:\s*(.*)$",
-    re.IGNORECASE,
+    r"^([^\s:][^:]*):(\d+)(?::\d+)?:\s+warning:\s*(.*)$", re.IGNORECASE
 )
 _SLANG_CODE_RE = re.compile(r"\[(-W[\w-]+)\]$")
 _OPENROAD_WARNING_RE = re.compile(
-    r"^\[WARNING(?:\s+([A-Z][A-Z0-9_]*-\d+))?\]\s*(.*)$",
-    re.IGNORECASE,
+    r"^\[WARNING(?:\s+([A-Z][A-Z0-9_]*-\d+))?\]\s*(.*)$", re.IGNORECASE
 )
 _PLAIN_WARNING_RE = re.compile(r"^WARNING:\s*", re.IGNORECASE)
-_YOSYS_CHECK_COMPLETE_RE = re.compile(
-    r"^Found and reported \d+ problems?\.$",
-    re.MULTILINE,
-)
+_YOSYS_CHECK_COMPLETE_RE = re.compile(r"^Found and reported \d+ problems?\.$", re.MULTILINE)
 _BENIGN_STA_0503_RE = re.compile(
     r"^\[WARNING STA-0503\]\s*find_timing_paths -group_count is deprecated\. "
     r"Use -group_path_count instead\.$",
@@ -197,15 +192,7 @@ def _warning_record(
 ) -> _WarningRecord:
     excerpt, digest, original_bytes, truncated = _message_excerpt(message)
     return _WarningRecord(
-        tool,
-        code,
-        category,
-        disposition,
-        excerpt,
-        digest,
-        original_bytes,
-        truncated,
-        rationale,
+        tool, code, category, disposition, excerpt, digest, original_bytes, truncated, rationale
     )
 
 
@@ -338,9 +325,7 @@ def _removed_rationale(category: str, seen: int, expected_comb_loops: int) -> st
 
 
 def _annotate_removed(
-    records: list[_WarningRecord],
-    structural: StructuralConditions,
-    expected_comb_loops: int,
+    records: list[_WarningRecord], structural: StructuralConditions, expected_comb_loops: int
 ) -> list[_WarningRecord]:
     """Mark earlier-pass loop and driver warnings the completed checks no longer find.
 

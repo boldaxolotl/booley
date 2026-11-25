@@ -1357,10 +1357,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
-    with (
-        flow.publication_resources,
-        pytest.raises(OSError, match="No space left") as raised,
-    ):
+    with flow.publication_resources, pytest.raises(OSError, match="No space left") as raised:
         flow.reserve_invocation_dir()
 
     # The retained traceback keeps the reservation frame alive, so only an

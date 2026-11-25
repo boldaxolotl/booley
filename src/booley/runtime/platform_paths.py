@@ -348,9 +348,7 @@ class _DeadlineKiller:
         return self._expired
 
 
-def drain_killed_tree(
-    proc: subprocess.Popen[AnyStr],
-) -> tuple[AnyStr | None, AnyStr | None]:
+def drain_killed_tree(proc: subprocess.Popen[AnyStr]) -> tuple[AnyStr | None, AnyStr | None]:
     """Read what *proc*'s killed tree wrote, waiting at most ``_KILL_DRAIN_TIMEOUT_S``.
 
     A descendant that escaped the kill and still holds a pipe forfeits the
