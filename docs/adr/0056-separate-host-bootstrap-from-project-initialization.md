@@ -4,7 +4,8 @@ status: accepted
 
 # Separate Host Bootstrap from Project Initialization
 
-Amended by [ADR 0085](0085-run-project-initialization-anywhere.md).
+Amended by [ADR 0085](0085-run-project-initialization-anywhere.md) and
+[ADR 0096](0096-one-booley-install-per-docker-daemon.md).
 
 `booley init` historically interleaved Project-independent host preparation with
 Project mutation and Session Runtime issuance. Booley exposes an idempotent
@@ -47,7 +48,8 @@ Project scopes, and host-side Doctor consumes the same structured readiness.
 ## Consequences
 
 Host policy applies uniformly across Projects: the idle timeout and session cap
-cover every Interactive Mode Session Runtime on the Docker daemon, and added
+cover every Interactive Mode Session Runtime on the Docker daemon (one
+canonical install per daemon, ADR 0096), and added
 egress domains are reachable from every Project. Bootstrap validates but does
 not install external applications, select an agent provider, edit host policy,
 or read or write Project state.

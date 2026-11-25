@@ -1,13 +1,13 @@
-# QA host runbook
+# QA Host runbook
 
-This runbook is for a QA agent or the maintainer who needs to run a candidate
+This runbook is for the Operator or the maintainer who needs to run a candidate
 Booley build's host commands (`booley bootstrap`, `booley init`,
 `booley session up`) without replacing the canonical host install. Use it for
 a QA Run or GUI check of an unreleased build. Don't use it to test the
 canonical install itself, or for a Codespace check
 ([codespaces/RUNBOOK.md](../codespaces/RUNBOOK.md)).
 
-The QA host is a privileged Docker-in-Docker container with its own Docker
+The QA Host is a privileged Docker-in-Docker container with its own Docker
 daemon, its own `HOME` (`/home/qa`), and its own config home. Booley's base
 Sandbox Image, `booley-proxy`, `booley-reaper`, and egress networks have fixed
 names, but each name is local to one daemon. So the candidate gets its own
@@ -26,9 +26,9 @@ runs.
 
 ## Rules
 
-- **Get the maintainer's approval before step 1.** The QA host is a
+- **Get the maintainer's approval before step 1.** The QA Host is a
   privileged container, and a cold build uses about 20 GiB.
-- **Treat the QA host as root on the outer host.** `--privileged` gives it
+- **Treat the QA Host as root on the outer host.** `--privileged` gives it
   every capability and device. A Sandbox inside it keeps its own Sandbox
   Policy against the inner daemon, but an escape from that Sandbox lands in a
   privileged container, not in an unprivileged host user. Run only candidate
@@ -36,7 +36,7 @@ runs.
   the QA Run needs.
 - **Never change Booley resources on the outer host.** Everything named
   `booley-*` there belongs to the canonical install or to other runs. Inside
-  the QA host, Booley's resources are the candidate's.
+  the QA Host, Booley's resources are the candidate's.
 - **Run Booley as `qa` (uid 1000), never as root.** The Sandbox's user is uid
   1000, and Session Issuance refuses bind sources it doesn't own.
 - **Keep the pairing link out of logs and findings.** It holds a token.
@@ -97,7 +97,7 @@ runs.
 
 ## 2. Reuse
 
-`docker rm -f qa-host` and the `docker run` above bring the QA host back with
+`docker rm -f qa-host` and the `docker run` above bring the QA Host back with
 its images, install, and Projects. To test a new candidate, repeat step 1.3,
 then run `qa$ booley bootstrap --update` (plain Bootstrap refuses a changed
 install). It rebuilds only the layers that changed and replaces the inner
@@ -116,12 +116,12 @@ sidecars. A Sandbox stopped by the container's removal comes back with
 
 ## Workarounds in the image
 
-Each is a Booley behavior that the QA host works around:
+Each is a Booley behavior that the QA Host works around:
 
 - **`/.dockerenv`:** Booley treats any process that sees it as inside a
   Sandbox and refuses host commands, so the entrypoint deletes it (#5584).
 - **VS Code:** Host Bootstrap requires a VS Code CLI and the Dev Containers
-  extension. `code-stub.sh` answers the two commands Bootstrap runs.
+  extension. `code-stub.sh` answers the two commands Bootstrap runs (#5603).
 - **`python3-venv`:** a development wheel builds itself in a venv while
   building the Sandbox Image; without `ensurepip` Bootstrap fails only after
   building the runtime base (#5585).
@@ -139,7 +139,7 @@ from `t3`):
 
 | What | Value |
 |---|---|
-| QA host image build | 35 s, 0.86 GB |
+| QA Host image build | 35 s, 0.86 GB |
 | Cold `booley bootstrap` | 19 min 28 s: 18 min 00 s for the runtime base and Nangate45, 1 min 28 s for the base Sandbox Image and sidecars |
 | `booley init` + first `booley session up` | 14 s + 6 s |
 | `qa-host-docker` volume after a cold build | 19.4 GB (6.8 GB images, 15.5 GB build cache, partly shared) |
