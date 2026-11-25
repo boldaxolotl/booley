@@ -84,8 +84,9 @@ A boundary with several fakes links the issue that merges them.
 ## Booley port stand-ins
 
 These replace a Booley function or object (a seam) rather than an external
-program. [Principle 14](CODING_PRINCIPLES.md#14-tests-prove-behavior) asks to patch a Booley name only where it is the boundary,
-so each row here is a place to simplify, not to copy.
+program. [Principle 14](CODING_PRINCIPLES.md#14-tests-prove-behavior) asks to
+patch a Booley name only where it is the boundary, so each row here is a place
+to simplify, not to copy.
 
 | Seam | Stand-in | Entry point | Interception | Notes |
 |---|---|---|---|---|
