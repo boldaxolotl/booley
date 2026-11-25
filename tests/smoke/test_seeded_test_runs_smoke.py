@@ -114,8 +114,8 @@ def verilator_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return work / "obj" / "Vtb"
 
 
-@pytest.mark.parametrize(("template", "tag"), [(None, "NATIVE"), ("+seed={seed}", "TEMPLATE")])
-def test_verilator_seed_decides_the_draws(verilator_binary: Path, template, tag) -> None:
+@pytest.mark.parametrize("template", [None, "+seed={seed}"], ids=["native", "template"])
+def test_verilator_seed_decides_the_draws(verilator_binary: Path, template) -> None:
     plan = _plan("verilator", **({"seed": template} if template else {}))
 
     def draw_at(seed: int) -> str:

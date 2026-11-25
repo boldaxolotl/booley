@@ -12,13 +12,17 @@ Flow launches is a fake on ``PATH``.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
 import pytest
 
-from booley.flows.synth.backends import pipeline as syn_make
+from booley.flows.implementation_comparison import selected_target_handle
+from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.synth.flow import AsicSynthesizeFlow
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.targets.catalog import TargetCatalog
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
 from tests.path_tool_fake import PathToolFake
 
@@ -50,12 +54,28 @@ targets:
 """
 
 
+_PARAMETERS = "WIDTH, SYNTHESIS"
+
+
+def _write_project(project: Path, recipe: str = "", parameters: str = _PARAMETERS) -> None:
+    """Write the golden core and its fixture sources under *project*."""
+    (project / "golden.core").write_text(_CORE % (recipe, parameters), encoding="utf-8")
+    (project / ".booley").mkdir()
+    for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv"):
+        (project / name).parent.mkdir(parents=True, exist_ok=True)
+        (project / name).write_text("// golden fixture\n", encoding="utf-8")
+    (project / "constraints").mkdir()
+    (project / "constraints" / "dut.sdc").write_text(
+        "create_clock -name clk -period 4.0 [get_ports clk]\n", encoding="utf-8"
+    )
+
+
 def _synth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     recipe: str,
     *argv: str,
-    parameters: str = "WIDTH, SYNTHESIS",
+    parameters: str = _PARAMETERS,
 ):
     """Run the Flow's CLI on Target ``lite`` with extra *recipe* flow options and *parameters*."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")  # the in-process CLI runs only in the Sandbox
@@ -68,22 +88,12 @@ def _synth(
         liberty.parent.mkdir(parents=True)
         liberty.write_text("library(cells) {}\n", encoding="utf-8")
         monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
-    # The Makefile carries the run's random attempt token.
-    monkeypatch.setattr(syn_make, "new_attempt_token", lambda: "0123456789abcdef" * 2)
     # FuseSoC, a declared dependency, runs from the test interpreter's environment.
     monkeypatch.setenv(
         "PATH", os.pathsep.join((str(Path(sys.executable).parent), os.environ["PATH"]))
     )
     PathToolFake.install(tmp_path / "bin", "make", monkeypatch).answer("-C")
-    (tmp_path / "golden.core").write_text(_CORE % (recipe, parameters), encoding="utf-8")
-    (tmp_path / ".booley").mkdir()
-    for name in ("rtl/include/defs.svh", "rtl/pkg.sv", "rtl/dut.sv", "tb/tb_dut.sv"):
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text("// golden fixture\n", encoding="utf-8")
-    (tmp_path / "constraints").mkdir()
-    (tmp_path / "constraints" / "dut.sdc").write_text(
-        "create_clock -name clk -period 4.0 [get_ports clk]\n", encoding="utf-8"
-    )
+    _write_project(tmp_path, recipe, parameters)
     return (
         AsicSynthesizeFlow()
         .execute_cli(["--target", "lite", "--project", str(tmp_path), *argv])
@@ -111,18 +121,18 @@ def test_synth_planned_commands_golden(
 
 
 @pytest.mark.parametrize(
-    ("file_name", "golden_name", "recipe", "argv"),
+    ("file_name", "golden_name", "recipe", "argv", "parameters"),
     [
         # A dropped stage, a lost BOOLEY_STAGE marker or a Booley/python recipe dependency.
-        ("Makefile", "makefile_logical.txt", "", ()),
+        ("Makefile", "makefile_logical.txt", "", (), _PARAMETERS),
         # sv2v frontend, `synth -flatten`, chparam, balanced ABC, netlist/stat emission.
-        ("synth.ys", "synth_ys_logical.txt", "", ()),
+        ("synth.ys", "synth_ys_logical.txt", "", (), _PARAMETERS),
         # Unflattened `synth`, no parameters to set, the bare liberty mapping.
-        ("synth.ys", "synth_ys_bare.txt", ", flatten: false", ("--abc-recipe", "default")),
+        ("synth.ys", "synth_ys_bare.txt", ", flatten: false", ("--abc-recipe", "default"), ""),
         # read_slang with -I/-D/-G and chformal instead of sv2v and chparam.
-        ("synth.ys", "synth_ys_slang.txt", ", frontend: slang", ()),
+        ("synth.ys", "synth_ys_slang.txt", ", frontend: slang", (), _PARAMETERS),
         # read_slang with no define or parameter to pass.
-        ("synth.ys", "synth_ys_slang_bare.txt", ", frontend: slang, flatten: false", ()),
+        ("synth.ys", "synth_ys_slang_bare.txt", ", frontend: slang, flatten: false", (), ""),
     ],
 )
 def test_synth_configured_build_golden(
@@ -132,9 +142,9 @@ def test_synth_configured_build_golden(
     golden_name: str,
     recipe: str,
     argv: tuple[str, ...],
+    parameters: str,
 ) -> None:
     """Snapshot what the configure half writes for the ``make -C`` it launches (logical)."""
-    parameters = "" if golden_name.endswith("_bare.txt") else "WIDTH, SYNTHESIS"
     text = _configured(tmp_path, monkeypatch, file_name, recipe, *argv, parameters=parameters)
     assert_matches_golden(f"asic_synthesize/{golden_name}", text)
 
@@ -170,9 +180,54 @@ def _configured(
     file_name: str,
     recipe: str,
     *argv: str,
-    parameters: str = "WIDTH, SYNTHESIS",
+    parameters: str = _PARAMETERS,
 ) -> str:
     """Run a logical synthesis and return *file_name* from the configured build dir."""
     _synth(tmp_path, monkeypatch, f", synth_mode: logical{recipe}", *argv, parameters=parameters)
     build_dir = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "synth"
-    return normalize_work_dir((build_dir / file_name).read_text(encoding="utf-8"), tmp_path)
+    text = normalize_work_dir((build_dir / file_name).read_text(encoding="utf-8"), tmp_path)
+    # The Makefile carries the run's random attempt token: pin it for the snapshot.
+    return re.sub(r"token=[0-9a-f]{32}", "token=" + "0123456789abcdef" * 2, text)
+
+
+# ---- Project-path lookups the Flow-driven goldens no longer reach ----------
+
+
+def test_selected_target_handle_reselects_in_another_project(tmp_path: Path) -> None:
+    """A handle chosen in one Project is not reused for the same Target name in another."""
+    first, second = tmp_path / "first", tmp_path / "second"
+    for project in (first, second):
+        project.mkdir()
+        _write_project(project)
+    handle = TargetCatalog.build(first).select("lite", for_flow="synth")
+
+    assert selected_target_handle({"lite": handle}, first, "lite", flow="synth") is handle
+    reselected = selected_target_handle({"lite": handle}, second, "lite", flow="synth")
+    assert reselected.project_root == second.resolve()
+
+
+def test_project_source_paths_map_only_files_of_the_targets_cores(tmp_path: Path) -> None:
+    """Only a file of the Target's own cores maps to a Project path; other cores' files stay."""
+    _write_project(tmp_path)
+    handle = TargetCatalog.build(tmp_path).select("lite", for_flow="synth")
+    files = (
+        ResolvedFile(
+            name="src/syn_demo_0/rtl/dut.sv", file_type="systemVerilogSource", core="::syn_demo:0"
+        ),
+        ResolvedFile(name="generated.sv", file_type="systemVerilogSource"),
+        ResolvedFile(name="src/gen_0/rtl/dut.sv", file_type="systemVerilogSource", core="::gen:0"),
+    )
+    resolved = ResolvedTarget(
+        name="lite",
+        vlnv="::syn_demo:0",
+        toplevel="dut",
+        eda_tool="yosys",
+        files=files,
+        parameters={},
+        build_root=tmp_path / "build",
+        edam_path=tmp_path / "build" / "syn_demo_0.eda.yml",
+    )
+
+    assert ProjectSourcePaths.for_target(handle, resolved).by_name == {
+        "src/syn_demo_0/rtl/dut.sv": "rtl/dut.sv"
+    }
