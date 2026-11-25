@@ -103,12 +103,8 @@ class _Endpoint:
         self,
         prepared: object,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
         assert prepared == "prepared"
-        if not outcome.report_text.startswith(("admission refused", "unbound target")):
-            assert started is not None
         self.events.append(f"finish:{outcome.exit_code}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
 

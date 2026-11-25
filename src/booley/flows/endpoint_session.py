@@ -245,10 +245,8 @@ def finish_execution(
     endpoint: EndpointState,
     prepared: PreparedExecution,
     outcome: EndpointOutcome,
-    *,
-    started: float | None,
 ) -> ExecutionResult:
-    """Publish completion: the report refreshes its detail and the console report is published."""
+    """Publish completion: refresh the report, then the console report."""
     for cleanup_error in endpoint._requeue_cleanup_errors:
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()

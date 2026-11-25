@@ -4,7 +4,7 @@ The harness runs Booley endpoints in two contexts:
 
 * TOP_LEVEL: the outer harness Python process invokes a Flow directly
   (CLI: ``python -m booley.flows.sim``). Owns outer-harness durable-record
-  hygiene: ghost Job record cleanup and Session registry writes.
+  hygiene: ghost Job record cleanup, handle pruning and Session registry writes.
 * NESTED: the endpoint runs underneath an MCP server (either the
   developer's MCP server or a specialist sub-agent's nested MCP
   server). Outer-process bookkeeping is unsafe here — a parent's live Jobs
@@ -15,8 +15,7 @@ The harness signals NESTED by injecting ``BOOLEY_MCP_NESTED=1`` into
 the MCP server's environment (see ``harness.mcp_config``). Anything
 spawned underneath the MCP server inherits the flag.
 
-Use ``should_run_outer_bookkeeping()`` at the one or two bookkeeping
-sites instead of scattering inline env-var checks.
+Use ``should_run_outer_bookkeeping()`` at the bookkeeping sites instead of scattering inline env-var checks.
 """
 
 from __future__ import annotations

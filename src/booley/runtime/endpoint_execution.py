@@ -170,10 +170,8 @@ class ExecutableEndpoint(Protocol[Prepared_contra]):
         self,
         prepared: Prepared_contra,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
-        """Publish completion: the report refreshes its detail and the console report is published."""
+        """Publish completion: refresh the report, then the console report."""
         ...
 
 
@@ -379,7 +377,7 @@ def _attempt_endpoint(
     """Admit and run one attempt; ``None`` after releasing its claim to requeue the Job.
 
     Once admitted, the claim stays held through reporting. A first attempt that is
-    requeued reports nothing: its report and display end never happen, its directory
+    requeued reports nothing: its report never happens, its directory
     keeps the records its finished Targets published with its other partial artifacts,
     and its progress document is retired so no caller reads it for the Job.
     """
@@ -389,7 +387,7 @@ def _attempt_endpoint(
     except EndpointRejectedError as exc:
         if requeued:
             _name_requeue(exc.outcome, started_again=False)
-        return endpoint.finish_execution(request, exc.outcome, started=None)
+        return endpoint.finish_execution(request, exc.outcome)
     with admission:
         started = time.monotonic()
         # The requeued attempt is the last one: it is never armed.
@@ -403,7 +401,7 @@ def _attempt_endpoint(
         if requeued:
             _name_requeue(outcome, started_again=True)
         _name_final_oom_kills(outcome, attempt, requeued=requeued)
-        return endpoint.finish_execution(request, outcome, started=started)
+        return endpoint.finish_execution(request, outcome)
 
 
 def execute_endpoint(

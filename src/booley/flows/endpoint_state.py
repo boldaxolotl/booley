@@ -335,10 +335,8 @@ class EndpointState(ABC):
         self,
         prepared: PreparedExecution,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
-        return endpoint_session.finish_execution(self, prepared, outcome, started=started)
+        return endpoint_session.finish_execution(self, prepared, outcome)
 
     def _finish_main(
         self,

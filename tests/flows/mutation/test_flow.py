@@ -292,7 +292,7 @@ def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
     assert "source-size breakdown" not in result.report_text
 
 
-def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
+def test_auto_dry_run_with_long_scope_paths_succeeds(tmp_path, monkeypatch):
     paths = [f"rtl/module_{i:02d}_{'x' * 130}.sv" for i in range(20)]
     for path in paths:
         source = tmp_path / path

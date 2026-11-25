@@ -346,8 +346,6 @@ class SimulateFlow(
         self,
         prepared: PreparedExecution,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
         """Register the published Targets' bwave traces, then report: the attempt's final step.
 
@@ -357,7 +355,7 @@ class SimulateFlow(
         """
         if self._simulation_record_outcomes:
             register_trace_sessions(self._simulation_record_outcomes, Path(self.args.work_dir))
-        return super().finish_execution(prepared, outcome, started=started)
+        return super().finish_execution(prepared, outcome)
 
     def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None:
         if self.cycle_report_json is not None:
