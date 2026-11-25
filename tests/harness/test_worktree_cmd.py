@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.host_shell import quote_arg
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
 from booley.runtime import runtime_context, worktree_paths
@@ -2356,10 +2357,8 @@ def test_prepare_deletes_only_merged_paired_branches_whose_worktree_is_gone(
     assert [finding.subject for finding in warned] == (
         ["booley-worktree/t3-gone"] if own_commit else []
     )
-    assert all(
-        "branch -D booley-worktree/t3-gone" in w.fix and "merge booley-worktree/t3-gone" in w.fix
-        for w in warned
-    )
+    name = quote_arg("booley-worktree/t3-gone")
+    assert all(f"branch -D {name}" in w.fix and f"merge {name}" in w.fix for w in warned)
 
 
 def test_prepare_refuses_a_reused_name_over_an_unmerged_branch(
