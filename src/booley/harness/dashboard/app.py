@@ -1410,7 +1410,7 @@ class DashboardApp(App[None]):
         elif any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions):
             notices.append("WARNING shared worktree")
         checkout, branch = self._checkout_label(facts)
-        measurement, report = self._measurement(facts)
+        measurement, review, reports = self._measurement(facts)
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
@@ -1427,33 +1427,42 @@ class DashboardApp(App[None]):
             ),
             notices=tuple(notices),
             measurement=measurement,
-            report=report,
+            review=review,
+            report=reports[0] if reports else "",
         )
 
-    def _measurement(self, facts: Attribution) -> tuple[str, str]:
-        """The line under a session row and the report it opens; ``("", "")`` shows none."""
-        line = self.snapshot.measurements.get(checkout_of(facts))
-        if line is None:
-            return "", ""
-        job = line.measuring
-        if job is not None:
-            progress = job.record.progress
-            return measuring_text(
-                progress, job_elapsed_seconds(job, self.snapshot.observed_at)
-            ), ""
-        return line.text, line.report or ""
+    def _measurement(self, facts: Attribution) -> tuple[str, str, tuple[str, ...]]:
+        """The measurement and review parts of a session's line and the reports it opens."""
+        checkout = checkout_of(facts)
+        line = self.snapshot.measurements.get(checkout)
+        measurement = ""
+        reports: list[str] = []
+        if line is not None:
+            job = line.measuring
+            if job is not None:
+                progress = job.record.progress
+                measurement = measuring_text(
+                    progress, job_elapsed_seconds(job, self.snapshot.observed_at)
+                )
+            else:
+                measurement = line.text
+                reports.extend([line.report] if line.report else [])
+        part = self.snapshot.reviews.get(checkout)
+        if part is not None:
+            reports.extend([part.report] if part.report else [])
+        return measurement, part.text if part else "", tuple(reports)
 
-    def _selected_report(self) -> str | None:
-        """The report a selected measurement line opens, or None when the cursor is elsewhere."""
+    def _selected_reports(self) -> tuple[str, ...]:
+        """The reports a selected line opens; empty when the cursor is elsewhere."""
         if self.navigation.view != "overview":
-            return None
+            return ()
         if self.query_one(DataTable).cursor_row >= len(self.row_keys):
-            return None
+            return ()
         key = self._selected_key()
         if not key.startswith(sessions.MEASUREMENT_PREFIX):
-            return None
+            return ()
         row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
-        return (self._measurement(row.attribution)[1] or None) if row else None
+        return self._measurement(row.attribution)[2] if row else ()
 
     def _session_row_of(self, key: str) -> SessionRow | None:
         return next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
@@ -1661,10 +1670,13 @@ class DashboardApp(App[None]):
             )
             return (self._job_detail(job), job_paths(job)) if job else (Text(), ())
         row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
-        return (self._session_preview(row), ()) if row else (Text(), ())
+        if row is None:
+            return Text(), ()
+        _, review, reports = self._measurement(row.attribution)
+        return self._session_preview(row, reports if review else ()), reports
 
-    def _session_preview(self, row: SessionRow) -> Text:
-        """Labelled orientation lines, the unfinished Jobs of one session."""
+    def _session_preview(self, row: SessionRow, reports: tuple[str, ...] = ()) -> Text:
+        """Labelled orientation lines, the unfinished Jobs and the reports of one session."""
         facts = row.attribution
         info = self._orientation(row, connected=True)
         lines: list[tuple[str, str]] = [
@@ -1697,6 +1709,10 @@ class DashboardApp(App[None]):
             text.append(_ABSENT, style="dim")
         for job in jobs:
             text.append("\n" + self._job_line(job))
+        if reports:
+            text.append("\nReports:", style=_CHROME)
+            for report in reports:
+                text.append("\n" + report)
         return text
 
     def _render_detail(self) -> None:
@@ -1805,8 +1821,7 @@ class DashboardApp(App[None]):
             footer.update(
                 footer_hints(
                     top_bar=isinstance(self.focused, TopBar),
-                    enter_opens=self._enter_target() is not None
-                    or self._selected_report() is not None,
+                    enter_opens=self._enter_target() is not None or bool(self._selected_reports()),
                     jobs_list=self.navigation.view == "jobs",
                     targets_list=self.navigation.view == "targets",
                     nested=len(self.windows[self.window]) > 1
@@ -1841,7 +1856,7 @@ class DashboardApp(App[None]):
         nav = self.navigation
         target = None
         if nav.view == "overview" and key.startswith(sessions.MEASUREMENT_PREFIX):
-            return None  # the line opens its report, not a view (`_selected_report`)
+            return None  # the line opens its report, not a view (`_selected_reports`)
         if nav.view == "overview":
             target = (
                 Navigation("job", None, nav.job_filter, key.removeprefix("job:"))
@@ -1866,8 +1881,9 @@ class DashboardApp(App[None]):
         return None
 
     def _open_selected(self) -> None:
-        if (report := self._selected_report()) is not None:
-            self.action_open_path(report)
+        if reports := self._selected_reports():
+            for report in reports:
+                self.action_open_path(report)
             return
         target = self._enter_target()
         if target is None:
