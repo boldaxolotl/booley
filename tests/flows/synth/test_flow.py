@@ -4562,7 +4562,7 @@ class TestSummaryTable:
             target = row.split()[0]
             # Status is the last column; its text starts at PASS/WARN/FAIL/ERROR.
             marker = min(
-                (i for word in ("PASS", "WARN", "FAIL", "ERROR") if (i := row.find(word)) >= 0)
+                i for word in ("PASS", "WARN", "FAIL", "ERROR") if (i := row.find(word)) >= 0
             )
             statuses[target] = row[marker:].rstrip()
         return statuses
