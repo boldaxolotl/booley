@@ -22,7 +22,9 @@ class RunnerCall:
     kwargs: dict[str, Any]
 
 
-def install(monkeypatch: pytest.MonkeyPatch, answer: Any = (0, "ok", "", False)):
+def install(
+    monkeypatch: pytest.MonkeyPatch, answer: Any = (0, "ok", "", False)
+) -> list[RunnerCall]:
     """Replace the server's child-process runner; record each call; answer it.
 
     *answer* is a result tuple, an exception to raise, or an async callable

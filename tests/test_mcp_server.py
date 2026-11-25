@@ -495,15 +495,10 @@ def test_legacy_timeout_is_rejected_for_mcp(monkeypatch, tmp_path):
 def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
     # Private seam: dispatch always passes a resolved call context; this keeps the
     # context-free path `tests/mcp_tools/test_call_context.py` uses.
+    # The resolved-budget cases are the `mutation-*` cases of the timeout parametrization above.
     watchdog = server._mcp_tool_timeout_seconds
-    mutation_def = {"default_timeout": 1800}
-    project = {"work_dir": str(tmp_path)}
-    # No override: the run's 30-minute default, exactly the outer wait it always had.
-    assert watchdog("mutation", project, mutation_def) == 1800
-    # A larger budget (which also raises the --count auto cap) is not cut off at 30 minutes.
-    assert watchdog("mutation", {**project, "timeout_ms": 3_600_000}, mutation_def) == 3600
-    # A smaller one never shrinks the wait below the Flow's default.
-    assert watchdog("mutation", {**project, "timeout_ms": 60_000}, mutation_def) == 1800
+    project = {"work_dir": str(tmp_path), "timeout_ms": 3_600_000}
+    assert watchdog("mutation", project, {"default_timeout": 1800}) == 3600
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +698,8 @@ def test_bwave_definition_states_the_investigation_contract():
 
 class TestBooleyStatus:
     def test_status_mcp_tool_list_entry_is_appended(self, monkeypatch):
-        # Private patch: empties the B-Wave list, so the listing shows only meta tools and Flows.
+        # Private patch: empties the B-Wave list so the listing shows only meta tools and Flows;
+        # the list is module data with no public setter or environment switch.
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
@@ -792,7 +788,7 @@ class TestBooleyStatus:
             work_dir=str(repo),
             worktree_key="",
             branch="main",
-            process=ProcessIdentity(200, "pid:[17]", 7),
+            process=ProcessIdentity(4_194_306, "pid:[17]", 7),
         )
         if case not in ("no-attribution", "unrecorded"):
             SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
@@ -848,7 +844,8 @@ class TestBooleySleep:
         assert "booley_sleep" in [mcp_tool["name"] for mcp_tool in mcp_tools]
 
     def test_list_entry_appended_when_enabled(self, monkeypatch):
-        # Private patch: empties the B-Wave list, so the listing shows only meta tools and Flows.
+        # Private patch: empties the B-Wave list so the listing shows only meta tools and Flows;
+        # the list is module data with no public setter or environment switch.
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
@@ -1117,7 +1114,8 @@ def test_bwave_handler_declines_unknown_or_hidden_names(monkeypatch, name):
     # hidden or unknown name; the guard stops a catalog change between listing and dispatch
     # from running B-Wave.
     calls = fake.install(monkeypatch)
-    monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")
+    if name == "bwave":  # hidden by the allow-list; `bwave_nope` stays unknown with it unset
+        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")
 
     assert asyncio.run(server._dispatch_bwave(name, {"extra_args": ["markers"]})) is None
     assert calls == []
@@ -1278,6 +1276,7 @@ class TestMainProxySelfHeal:
 
         self.mcp_server.main()
 
+        # Private seam: the Sandbox proxy address has no public reader.
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert os.environ[var] == runtime_context._PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
