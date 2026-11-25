@@ -13,7 +13,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.time_budget import scaled
 
 from booley.core import host_shell
@@ -940,16 +945,17 @@ def test_vscode_inventory_inspects_a_renamed_known_container_again(tmp_path: Pat
 # ---------------------------------------------------------------------------
 
 
-def test_default_runner_timeout_kills_the_tree_and_returns_promptly(tmp_path: Path) -> None:
+def test_default_runner_timeout_kills_the_tree_and_returns_promptly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The default runner ends with ``TimeoutExpired`` soon and leaves no descendant running."""
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live")
-        start = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         with pytest.raises(subprocess.TimeoutExpired):
             session_admission._run(argv, timeout=scaled(2))
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - started[0]
         assert elapsed < scaled(25), f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
-        assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             "grandchild still running after the timeout"
         )
