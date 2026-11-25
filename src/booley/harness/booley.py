@@ -2,7 +2,7 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    worktree  Create, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
+    worktree  Create, prepare, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
     cheat     Print quick-reference cheatsheet
     coverage  List uncovered coverage points of a finished coverage run
     doctor    Run environment health checks
@@ -189,6 +189,9 @@ def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectB
     # `cheat --metrics` lists the selected Project's Targets, so it needs one.
     if command == "cheat" and getattr(args, "metrics", False) and not _cheat_lists_sections(args):
         return ProjectBinding.REQUIRED
+    # The path names the worktree, which may sit outside any Project (nothing to do then).
+    if command == "worktree" and getattr(args, "worktree_command", None) == "prepare":
+        return ProjectBinding.INDEPENDENT
     return command_project_bindings()[command]
 
 
@@ -1102,7 +1105,7 @@ def _normalize_project_options(parser, args) -> None:
     if args.command == "cleanup" and not hasattr(args, "project_root"):
         args.project_root = ""
     if hasattr(args, "_cli_selection") and (
-        command_project_bindings()[args.command] is ProjectBinding.INDEPENDENT
+        _command_project_binding(args.command, args) is ProjectBinding.INDEPENDENT
     ):
         parser.error(f"--project is unsupported for {args.command}")
     _extract_endpoint_selection(parser, args)

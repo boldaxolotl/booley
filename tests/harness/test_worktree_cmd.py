@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -52,7 +53,9 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
         tlr._build_parser().parse_args(["worktree"])
 
     assert exc.value.code == 2
-    assert "the following arguments are required: {new,list,rm,gc}" in capsys.readouterr().err
+    assert (
+        "the following arguments are required: {new,prepare,list,rm,gc}" in capsys.readouterr().err
+    )
 
 
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:
@@ -1911,7 +1914,7 @@ def _registrations(root: Path) -> list[Path]:
 
 def _bytes_of(directory: Path) -> dict[str, bytes]:
     return {
-        str(path.relative_to(directory)): path.read_bytes()
+        path.relative_to(directory).as_posix(): path.read_bytes()
         for path in sorted(directory.rglob("*"))
         if path.is_file()
     }
@@ -2058,3 +2061,258 @@ def test_new_refuses_a_malformed_mount_history_before_creating_anything(
 
     assert "cannot check worktree registrations" in capsys.readouterr().err
     assert not worktree_cmd.worktree_path(root, "x").exists()
+
+
+# ---------------------------------------------------------------------------
+# `booley worktree prepare`: a worktree made by Git or T3 Code
+# ---------------------------------------------------------------------------
+
+
+def _git_worktree(root: Path, folder: str) -> Path:
+    """A linked worktree made by plain Git beside *root*, as T3 Code makes one."""
+    worktree = root.parent / folder
+    assert _git(root, "worktree", "add", "-b", f"t3/{folder}", str(worktree)).returncode == 0
+    return worktree
+
+
+def _prepare(path: Path) -> int:
+    return worktree_cmd.run(argparse.Namespace(worktree_command="prepare", path=path), path)
+
+
+@pytest.mark.parametrize("git_repository", [False, True], ids=["plain-folder", "git-repository"])
+def test_prepare_outside_a_project_changes_nothing(
+    git_repository: bool, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    folder = tmp_path / "plain"
+    _write(folder / "file.txt", "x\n")
+    if git_repository:
+        assert _git(folder, "init").returncode == 0
+    before = _bytes_of(folder)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["booley", "worktree", "prepare", str(folder)])
+
+    assert tlr.main() == 0
+    assert "nothing to prepare" in capsys.readouterr().err
+    assert _bytes_of(folder) == before
+
+
+@pytest.mark.parametrize("case", ["main", "outside", "linked", "dirty-crlf", "missing"])
+def test_prepare_refuses_the_main_checkout_and_an_outside_booley_dir(
+    case: str, request, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    external = tmp_path / "external"
+    external.mkdir()
+    if case == "outside":
+        root = _configured_project(tmp_path, monkeypatch, external.as_posix())
+    else:
+        root = request.getfixturevalue("project")
+    if case == "dirty-crlf":
+        assert _git(root, "config", "core.autocrlf", "true").returncode == 0
+    target = root if case == "main" else tmp_path / "absent"
+    if case not in ("main", "missing"):
+        target = _git_worktree(root, "t3-refused")
+    if case == "linked":
+        if os.name == "nt":
+            pytest.skip("needs symlinks")
+        (target / ".booley").symlink_to(root / ".booley", target_is_directory=True)
+    if case == "dirty-crlf":
+        _write(target / "README.md", "edited\n")
+
+    assert _prepare(target) == 1
+
+    message = {
+        "main": "linked worktree",
+        "outside": "relative [project].dir",
+        "linked": "link out of the worktree",
+        "dirty-crlf": "uncommitted changes",
+        "missing": "not a directory",
+    }[case]
+    assert message in capsys.readouterr().err
+    assert list(external.iterdir()) == []
+    if case == "dirty-crlf":
+        assert (target / "README.md").read_text(encoding="utf-8") == "edited\n"
+
+
+@pytest.mark.parametrize("layout", ["tracked", "snapshot", "versioned"])
+def test_prepare_gives_the_worktree_its_booley_directory(layout: str, request, capsys) -> None:
+    if layout == "versioned":
+        root = request.getfixturevalue("versioned_project")
+        source = root / ".booley"
+        _write(source / "cores/top.core", "changed after the last commit\n")
+    else:
+        root = request.getfixturevalue("project")
+    if layout == "tracked":
+        assert _git(root, "add", ".booley/booley.toml").returncode == 0
+        assert _git(root, "commit", "-m", "track").returncode == 0
+    worktree = _git_worktree(root, "t3-one")
+    nested = worktree / ".booley"
+    if layout == "versioned":
+        # A stale registration at the very path the Paired Checkout needs.
+        assert _git(source, "worktree", "add", "--detach", str(nested)).returncode == 0
+        shutil.rmtree(nested)
+
+    assert _prepare(worktree) == 0
+
+    err = capsys.readouterr().err
+    files = _bytes_of(nested)
+    if layout == "tracked":
+        assert list(files) == ["booley.toml"]
+        assert _git(worktree, "status", "--porcelain").stdout == ""
+    elif layout == "snapshot":
+        assert (
+            "cores/runtime/local.core" in files and "runtime/sessions/s1/state.json" not in files
+        )
+    else:
+        assert _git(nested, "symbolic-ref", "--short", "HEAD").stdout.strip() == (
+            "booley-worktree/t3-one"
+        )
+        assert _git(nested, "rev-parse", "HEAD").stdout == _git(source, "rev-parse", "HEAD").stdout
+        assert files["cores/top.core"] != b"changed after the last commit\n"
+        assert "WARNING" in err and "cores/top.core" in err
+        assert _listed(source).count("worktree ") == 2
+
+
+@pytest.mark.parametrize("outcome", ["ok", "fails"])
+def test_prepare_runs_the_hook_and_rolls_back_its_failure(
+    outcome: str, versioned_project: Path, capsys
+) -> None:
+    root = versioned_project
+    _commit_hook(
+        root / ".booley", _HOOK_MARKER if outcome == "ok" else "import sys\nsys.exit(3)\n"
+    )
+    worktree = _git_worktree(root, "t3-hook")
+    nested = worktree / ".booley"
+
+    code = _prepare(worktree)
+
+    if outcome == "ok":
+        assert code == 0
+        cwd, hook_dir = (worktree / "hook-marker.txt").read_text(encoding="utf-8").splitlines()
+        assert Path(cwd).resolve() == worktree.resolve()
+        assert Path(hook_dir).resolve() == nested.resolve()
+        return
+    assert code == 1 and "rc=3" in capsys.readouterr().err
+    assert not nested.exists()
+    assert "booley-worktree/t3-hook" not in _git(root / ".booley", "branch", "--list").stdout
+    assert worktree.as_posix() in _listed(root)
+
+
+@pytest.mark.parametrize("layout", ["snapshot", "versioned"])
+def test_prepare_rerun_changes_nothing(layout: str, request) -> None:
+    root = request.getfixturevalue("versioned_project" if layout == "versioned" else "project")
+    tracked = "rtl.v" if layout == "versioned" else "README.md"
+    worktree = _git_worktree(root, "t3-again")
+    assert _prepare(worktree) == 0
+    _write(worktree / tracked, "edited\n")
+    _write(worktree / ".booley/booley.toml", "# edited\n")
+    before = (_listed(root), _git(worktree / ".booley", "rev-parse", "HEAD").stdout)
+
+    assert _prepare(worktree) == 0
+
+    assert (worktree / tracked).read_text(encoding="utf-8") == "edited\n"
+    assert (worktree / ".booley/booley.toml").read_text(encoding="utf-8") == "# edited\n"
+    assert (_listed(root), _git(worktree / ".booley", "rev-parse", "HEAD").stdout) == before
+
+
+def test_prepare_help_documents_the_command(capsys) -> None:
+    with pytest.raises(SystemExit):
+        tlr._build_parser().parse_args(["worktree", "prepare", "--help"])
+
+    help_text = " ".join(capsys.readouterr().out.split())
+    for text in ("PATH", "booley-worktree/<folder>", "post-setup", "Snapshot"):
+        assert text in help_text
+
+
+def test_prepare_turns_line_ending_conversion_off_in_a_clean_worktree(project: Path) -> None:
+    assert _git(project, "config", "core.autocrlf", "true").returncode == 0
+    worktree = _git_worktree(project, "t3-crlf")
+
+    assert _prepare(worktree) == 0
+    assert _git(worktree, "config", "--get", "core.autocrlf").stdout.strip() == "false"
+
+
+def test_prepare_refuses_before_it_writes_any_setting(project: Path, capsys) -> None:
+    if os.name == "nt":
+        pytest.skip("needs symlinks")
+    worktree = _git_worktree(project, "t3-early")
+    (worktree / ".booley").symlink_to(project / ".booley", target_is_directory=True)
+
+    assert _prepare(worktree) == 1
+
+    assert "link out of the worktree" in capsys.readouterr().err
+    assert _git(worktree, "config", "--get", "core.autocrlf").stdout == ""
+
+
+def test_prepare_refuses_a_folder_inside_a_booley_directory(
+    versioned_project: Path, capsys
+) -> None:
+    worktree = _git_worktree(versioned_project, "t3-inside")
+    assert _prepare(worktree) == 0
+    capsys.readouterr()
+
+    assert _prepare(worktree / ".booley") == 1
+
+    assert "is a Booley Directory" in capsys.readouterr().err
+    assert _git(versioned_project / ".booley", "status", "--porcelain").stdout == ""
+    assert not (worktree / ".booley/.booley").exists()
+
+
+def test_prepare_in_a_submodule_prepares_the_worktree(project: Path, tmp_path: Path) -> None:
+    library = tmp_path / "library"
+    library.mkdir()
+    for args in (
+        ("init",),
+        ("config", "user.name", "T"),
+        ("config", "user.email", "t@example.com"),
+    ):
+        assert _git(library, *args).returncode == 0
+    _write(library / "lib.v", "module lib; endmodule\n")
+    assert _git(library, "add", ".").returncode == 0
+    assert _git(library, "commit", "-m", "lib").returncode == 0
+    allow = ("-c", "protocol.file.allow=always")
+    assert _git(project, *allow, "submodule", "add", library.as_posix(), "lib").returncode == 0
+    assert _git(project, "commit", "-m", "add lib").returncode == 0
+    worktree = _git_worktree(project, "t3-sub")
+    assert _git(worktree, *allow, "submodule", "update", "--init").returncode == 0
+
+    assert _prepare(worktree / "lib") == 0
+
+    assert (worktree / ".booley/booley.toml").is_file()
+    assert not (worktree / "lib/.booley").exists()
+
+
+def test_prepare_keeps_the_root_fusesoc_marker_a_worktree_has(project: Path) -> None:
+    _write(project / "FUSESOC_IGNORE", "from main\n")
+    fresh = _git_worktree(project, "t3-fresh")
+    edited = _git_worktree(project, "t3-edited")
+    _write(edited / "FUSESOC_IGNORE", "mine\n")
+
+    assert _prepare(fresh) == 0
+    assert _prepare(edited) == 0
+
+    assert (fresh / "FUSESOC_IGNORE").read_text(encoding="utf-8") == "from main\n"
+    assert (edited / "FUSESOC_IGNORE").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_prepare_keeps_a_checkout_that_lost_its_git_file(versioned_project: Path, capsys) -> None:
+    cut_short = _git_worktree(versioned_project, "t3-cut")
+    assert _prepare(cut_short) == 0
+    (cut_short / ".booley/.git").unlink()
+    other = _git_worktree(versioned_project, "t3-other")
+    registered = _registrations(versioned_project)
+
+    assert _prepare(other) == 1
+
+    assert "lost its .git file" in capsys.readouterr().err
+    assert _registrations(versioned_project) == registered
+    assert not (other / ".booley").exists()
+
+
+def test_prepare_drops_a_killed_runs_snapshot_leftovers(project: Path) -> None:
+    worktree = _git_worktree(project, "t3-killed")
+    _write(worktree / f".booley.prepare-{os.getpid()}/stale.txt", "old\n")
+
+    assert _prepare(worktree) == 0
+
+    assert "stale.txt" not in _bytes_of(worktree / ".booley")
+    assert not (worktree / f".booley.prepare-{os.getpid()}").exists()
