@@ -27,6 +27,7 @@ from booley.harness.setup.guidance_links import (
 )
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.init_plan import Ownership
+from tests.conftest import symlink_or_skip
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -38,13 +39,6 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     canon = booley_dir / CANON_NAME
     canon.write_text("# AGENTS\n", encoding="utf-8")
     return project_root, booley_dir, canon
-
-
-def _dangling_link(link: Path, target: Path) -> None:
-    try:
-        link.symlink_to(target)
-    except OSError:
-        pytest.skip("symlink creation not permitted on this host")
 
 
 def test_creates_both_links_readable_from_the_host_and_reruns_as_current(tmp_path: Path):
@@ -59,7 +53,14 @@ def test_creates_both_links_readable_from_the_host_and_reruns_as_current(tmp_pat
             # Relative to the repo-local canon, so it survives a relocated checkout.
             assert link.readlink() == Path(".booley") / CANON_NAME
     rerun = plan_guidance_links(project_root, booley_dir)
-    assert {action.ownership for action in rerun.actions} == {Ownership.MANAGED_CURRENT}
+    # A host with neither symlinks nor hardlinks gets copies, which are stale by design.
+    expected = {
+        Ownership.MANAGED_CURRENT
+        if link.is_symlink() or link.stat().st_nlink > 1
+        else Ownership.MANAGED_STALE
+        for link in links
+    }
+    assert {action.ownership for action in rerun.actions} == expected
 
 
 @pytest.mark.parametrize("layout", ["repo-local", "sandbox-mount", "relocated", "outside"])
@@ -206,7 +207,7 @@ def test_repairs_a_dangling_link_through_a_recorded_former_mount(tmp_path: Path,
         spec.parent.mkdir(parents=True)
         spec.write_text(json.dumps({"remoteEnv": {"BOOLEY_DIR": "/former-mount"}}))
     link = project_root / "AGENTS.md"
-    _dangling_link(link, Path("..") / "former-mount" / CANON_NAME)
+    symlink_or_skip(link, Path("..") / "former-mount" / CANON_NAME)
 
     assert not link.exists()  # dangling, as seen from the host
     ensure_guidance_links(project_root, booley_dir)
@@ -223,10 +224,10 @@ def test_reports_an_unreadable_mount_history_as_an_os_error(tmp_path: Path):
         ensure_guidance_links(project_root, booley_dir)
 
 
-def test_preserves_an_unrelated_dangling_link(tmp_path: Path):
+def test_preserves_an_unrelatedsymlink_or_skip(tmp_path: Path):
     project_root, booley_dir, _canon = _make_project(tmp_path)
     link = project_root / "AGENTS.md"
-    _dangling_link(link, Path("..") / "temporarily-unmounted" / CANON_NAME)
+    symlink_or_skip(link, Path("..") / "temporarily-unmounted" / CANON_NAME)
     original = link.readlink()
 
     with pytest.raises(OSError, match="foreign untracked guidance entry"):

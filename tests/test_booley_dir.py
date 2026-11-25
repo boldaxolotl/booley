@@ -234,7 +234,7 @@ class TestContainment:
         root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
         for directory in (root, alias, outside):
             directory.mkdir()
-        (root / "escape").symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(root / "escape", outside, target_is_directory=True)
         (alias / "escape").mkdir()
         alias_roots(monkeypatch, root, alias)
         assert contains(alias / "escape" / "new", booley_dir=root) is None
@@ -247,13 +247,13 @@ class TestContainment:
         root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
         for directory in (root, alias / "input", alias / "target", outside, root / "real"):
             directory.mkdir(parents=True)
-        (root / "input").symlink_to(alias / "target", target_is_directory=True)
+        symlink_or_skip(root / "input", alias / "target", target_is_directory=True)
         expected = {"directory": root / "target", "escape": None, "internal": root / "real"}
         if target == "directory":
             (root / "target").mkdir()
         else:
             link = outside if target == "escape" else root / "real"
-            (root / "target").symlink_to(link, target_is_directory=True)
+            symlink_or_skip(root / "target", link, target_is_directory=True)
         alias_roots(monkeypatch, root, alias)
 
         assert contains(alias / "input", booley_dir=root) == expected[target]
@@ -267,9 +267,9 @@ class TestContainment:
         outside = tmp_path / "outside"
         outside.mkdir()
         alias = tmp_path / "alias"
-        alias.symlink_to(root, target_is_directory=True)
-        (root / "escape").symlink_to(outside, target_is_directory=True)
-        (root / "internal").symlink_to(inside.parent, target_is_directory=True)
+        symlink_or_skip(alias, root, target_is_directory=True)
+        symlink_or_skip(root / "escape", outside, target_is_directory=True)
+        symlink_or_skip(root / "internal", inside.parent, target_is_directory=True)
         hardlink = outside / "hardlink"
         hardlink.hardlink_to(inside)
         for candidate, expected in (
@@ -311,7 +311,7 @@ class TestContainment:
 
         monkeypatch.setattr(Path, "resolve", resolve)
         assert contains(root / "denied", booley_dir=root) is None
-        (root / "loop").symlink_to(root / "loop")
+        symlink_or_skip(root / "loop", root / "loop")
         assert contains(root / "loop", booley_dir=root) is None
         monkeypatch.setattr(
             Path, "samefile", lambda *args: (_ for _ in ()).throw(PermissionError("denied"))
