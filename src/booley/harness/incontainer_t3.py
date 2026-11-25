@@ -7,6 +7,7 @@ and ``pair <relay port>`` (T3 Code's pairing reply on stdout).
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 
@@ -15,17 +16,25 @@ from booley.harness import incontainer_register
 from booley.runtime import incontainer_setup
 
 
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="incontainer_t3")
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    verbs.add_parser("start")
+    verbs.add_parser("state")
+    verbs.add_parser("pair").add_argument("port", type=int)
+    return parser
+
+
 def main(argv: list[str]) -> int:
     """Run one verb; the pairing reply goes to stdout only, never to a log or stderr."""
-    verb, *rest = argv
-    if verb == "start":
+    args = _parser().parse_args(argv)
+    if args.verb == "start":
         print(incontainer_register.start_t3(agent.sandbox_agent_clis()))
-    elif verb == "state":
+    elif args.verb == "state":
         print("running" if incontainer_setup.t3_serving() else "off")
     else:
-        port = int(rest[0])
         pairing = incontainer_setup.create_t3_pairing(
-            incontainer_register.hook_start_directory(), f"http://127.0.0.1:{port}"
+            incontainer_register.hook_start_directory(), f"http://127.0.0.1:{args.port}"
         )
         if pairing.returncode:
             print(f"t3 auth pairing create failed (exit {pairing.returncode})", file=sys.stderr)

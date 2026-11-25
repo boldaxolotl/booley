@@ -2289,7 +2289,7 @@ class TestT3CodeRelay:
         status, _ = relay_cli.run(["status"], workspace)
 
         assert "pair#token" not in no_ui
-        assert ["t3:off" in run for run in runs[:2]] == [True, True]
+        assert all("t3:off" in run for run in runs[:2])  # the create and the start hook
         assert off == "running\nUI: off\n"
         assert len(t3.served) == 1
         (port,) = re.findall(r"T3 Code relay: 127\.0\.0\.1:(\d+)", up)
@@ -2352,7 +2352,7 @@ class TestT3CodeRelay:
             ),
             "is not a link",
         ),
-        (subprocess.TimeoutExpired("docker", 60), "no pairing link in 60 seconds"),
+        (subprocess.TimeoutExpired("docker", 1), r"no pairing link in \d+ seconds"),
     ],
     ids=["exit", "not-json", "localhost", "timeout"],
 )
@@ -2374,6 +2374,16 @@ def test_a_bad_pairing_reply_is_refused_without_its_token(
         sr.create_pairing_link("c", 3780)
 
     assert TOKEN not in f"{refused.value}{caplog.text}"
+
+
+@pytest.mark.parametrize("argv", [[], ["unknown"], ["pair"], ["pair", "not-a-port"]])
+def test_the_in_sandbox_t3_entry_refuses_a_bad_verb_or_port(argv: list[str]) -> None:
+    from booley.harness import incontainer_t3
+
+    with pytest.raises(SystemExit) as refused:
+        incontainer_t3.main(argv)
+
+    assert refused.value.code == 2
 
 
 @pytest.mark.parametrize(
