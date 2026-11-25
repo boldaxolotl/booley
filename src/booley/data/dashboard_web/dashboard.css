@@ -143,6 +143,10 @@ button.primary {
   font-weight: 600;
 }
 
+button.primary:disabled {
+  opacity: 0.5;
+}
+
 .run-form {
   margin-top: 1rem;
 }

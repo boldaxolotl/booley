@@ -668,6 +668,7 @@ def test_run_button_is_the_top_bar_primary_action_only_while_the_flag_is_on(
     assert re.search(top_bar + r"\s*<section id=\"run\".*?<main>", page, re.S)
     assert "<dialog" not in page
     assert re.search(r"button\.primary \{[^}]*var\(--primary\)", css)
+    assert re.search(r"button\.primary:disabled \{[^}]*opacity", css)  # Submit looks disabled
     loaded, *clicked = probe["views"]
     assert loaded["run-button"]["hidden"] is loaded["topbar"]["hidden"] is (case == "off")
     if case != "off":
