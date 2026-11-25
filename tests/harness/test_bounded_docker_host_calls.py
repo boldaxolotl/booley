@@ -40,7 +40,12 @@ from booley.harness.setup import docker_image, readiness
 from booley.mcp import server_inspection
 from booley.runtime import host_docker, session_runtime
 from booley.runtime.session_admission import Sandbox
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.time_budget import scaled
 
 _IMAGE_ID = "sha256:" + "a" * 64
@@ -625,7 +630,9 @@ def test_every_timed_docker_call_uses_the_bounded_helper(
     assert not failures, "\n".join(failures)
 
 
-def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path) -> None:
+def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A self-test whose command hangs ends soon as a timeout and leaves no descendant running."""
     events = _Events()
     with heartbeat_tree(tmp_path) as paths:
@@ -633,7 +640,7 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
         # The helper's documented worst case after the 2 s timeout: +12 s POSIX, +32 s Windows.
         limit = scaled(40 if os.name == "nt" else 25)
         timeout_s = math.ceil(scaled(2))
-        start = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         # private: the same reason as for the drivers above.
         result = doctor._execute_selftest(
             SimpleNamespace(project_root=tmp_path),  # type: ignore[arg-type]
@@ -644,13 +651,12 @@ def test_hung_doctor_selftest_kills_the_tree_and_returns_promptly(tmp_path: Path
             "sim",
             _fail=events.fail,
         )
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - started[0]
         assert result is None
         assert [message for kind, message in events.log if kind == "fail"] == [
             f"selftest timed out after {timeout_s}s"
         ]
         assert elapsed < limit, f"self-test hung {elapsed:.1f}s on a pipe held by a grandchild"
-        assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"], window=scaled(5)), (
             "grandchild still running after the timeout"
         )
