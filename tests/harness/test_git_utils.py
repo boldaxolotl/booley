@@ -420,7 +420,9 @@ def test_git_run_keeps_its_result_contract(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX fake powershell")
 @pytest.mark.parametrize(
-    ("script", "kept"), [("exec sleep 60", True), ("exit 1", True), ("", True), ("exit 0", False)]
+    ("script", "kept"),
+    [("exec sleep 60", True), ("exit 1", True), ("", True), ("exit 0", False)],
+    ids=["hung", "failed", "unlaunchable", "no-owner"],
 )
 def test_windows_git_process_check_decides_the_index_lock(
     wt: Path, tmp_path: Path, monkeypatch, caplog, script: str, kept: bool
