@@ -399,8 +399,8 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
     }
 
 
-# Canonical tool name -> the Feature Flag that hides it (ADR 0095). Empty in production.
-GATED_MCP_TOOLS: dict[str, str] = {}
+# Canonical tool name -> the Feature Flag that hides it (ADR 0095).
+GATED_MCP_TOOLS: dict[str, str] = {"booley_review": "reviewed-commits"}
 
 
 def gated_off(name: str, features: frozenset[str]) -> bool:
@@ -477,6 +477,19 @@ def _measure_mcp_tool_def() -> dict[str, Any]:
     return measure_tool_def()
 
 
+def review_visible(exposure: Exposure) -> bool:
+    """The Developer Agent's interactive server, or one naming ``booley_review``."""
+    from booley.mcp.review_tool import REVIEW_TOOL_NAME
+
+    return _interactive_utility_visible(REVIEW_TOOL_NAME, exposure)
+
+
+def _review_mcp_tool_def() -> dict[str, Any]:
+    from booley.mcp.review_tool import review_tool_def
+
+    return review_tool_def()
+
+
 def report_visible(exposure: Exposure) -> bool:
     return _interactive_utility_visible(_REPORT_MCP_TOOL_NAME, exposure)
 
@@ -532,6 +545,7 @@ def visible_definitions(
         (status_visible(exposure), _status_mcp_tool_def),
         (report_visible(exposure), _report_mcp_tool_def),
         (measure_visible(exposure), _measure_mcp_tool_def),
+        (review_visible(exposure), _review_mcp_tool_def),
         (utilities_visible(exposure), _poll_mcp_tool_def),
         (utilities_visible(exposure), _cancel_mcp_tool_def),
         (utilities_visible(exposure), _targets_mcp_tool_def),
