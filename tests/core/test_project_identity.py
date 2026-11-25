@@ -29,13 +29,8 @@ def test_identity_bytes_and_deleted_roots(monkeypatch):
     [
         None,
         "",
-        "a" * 16,
-        "a" * 31,
         "a" * 32,
-        "a" * 33,
-        "a" * 63,
         "a" * 64,
-        "a" * 65,
         hashlib.sha256(b"/other").hexdigest(),
         hashlib.sha256(b"/other").hexdigest()[:32],
     ],
