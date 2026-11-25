@@ -255,102 +255,74 @@ def test_zero_budget_admits_only_run_alone_claims(root, world):
     assert store.refresh(alone).state == HOLDING
 
 
-def _memory_field(value):
-    return lambda payload: payload.__setitem__("memory", value)
+LABEL = label("r", "sim", "a")
+GONE = object()  # the key is removed instead of set
 
-
-def _seats_field(value):
-    return lambda payload: payload["memory"].__setitem__("seats", value)
-
-
-def _job_field(value):
-    return lambda payload: payload.__setitem__("job", value)
-
-
-def _queue_reason(value):
-    return lambda payload: payload.__setitem__("queue_reason", value)
-
-
-# id: (claim, job label, edit of the entry, attribute read, value read back). A
-# foreign or old writer's entry reads as no claim, no label or no reason, never an error.
+# id: (claim, job label, path of the key to edit, its new value, what the field then reads as).
+# A foreign or old writer's entry reads as no claim, no label or no reason, never an error.
 MALFORMED_FIELDS = {
     "bad-budget": (
         claim(100),
         None,
-        _memory_field({"budget_mb": "lots", "reservation_mb": 1, "run_alone": False}),
-        "memory",
+        ("memory",),
+        {"budget_mb": "lots", "reservation_mb": 1, "run_alone": False},
         None,
     ),
-    "missing-budget": (claim(100), None, _memory_field({"reservation_mb": 1}), "memory", None),
+    "missing-budget": (claim(100), None, ("memory",), {"reservation_mb": 1}, None),
     "unconvertible-budget": (
         claim(100),
         None,
-        _memory_field({"budget_mb": 10**400, "reservation_mb": 1, "run_alone": False}),
-        "memory",
+        ("memory",),
+        {"budget_mb": 10**400, "reservation_mb": 1, "run_alone": False},
         None,
     ),
     "bad-wall": (
         claim(100),
         None,
-        _memory_field(
-            {"budget_mb": 10, "reservation_mb": 1, "run_alone": False, "wall_s": "slow"}
-        ),
-        "memory",
+        ("memory",),
+        {"budget_mb": 10, "reservation_mb": 1, "run_alone": False, "wall_s": "slow"},
         None,
     ),
-    "not-a-table": (claim(100), None, _memory_field("junk"), "memory", None),
+    "not-a-table": (claim(100), None, ("memory",), "junk", None),
     **{
-        f"seats-{value!r}": (seated(100, 2), None, _seats_field(value), "memory", None)
+        f"seats-{value!r}": (seated(100, 2), None, ("memory", "seats"), value, None)
         for value in ({"vivado": 0}, {"vivado": True}, {"vivado": "two"}, ["vivado"])
     },
-    "written-before-seats": (
-        seated(100, 2),
-        None,
-        lambda payload: payload["memory"].pop("seats"),
-        "memory",
-        claim(100),
-    ),
+    "written-before-seats": (seated(100, 2), None, ("memory", "seats"), GONE, claim(100)),
     **{
-        f"queue-reason-{value!r}": (claim(100), None, _queue_reason(value), "queue_reason", None)
+        f"queue-reason-{value!r}": (claim(100), None, ("queue_reason",), value, None)
         for value in (7, ["x"], {"a": 1}, True)
     },
-    "label-not-a-table": (claim(100), label("r", "sim", "a"), _job_field("run-1"), "job", None),
-    "label-bad-run-id": (
-        claim(100),
-        label("r", "sim", "a"),
-        _job_field({"run_id": 1, "flow": "sim", "target": "a"}),
-        "job",
-        None,
-    ),
-    "label-missing-fields": (
-        claim(100),
-        label("r", "sim", "a"),
-        _job_field({"run_id": "r"}),
-        "job",
-        None,
-    ),
-    "label-bad-work-item": (
-        claim(100),
-        label("r", "sim", "a"),
-        _job_field({"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"}),
-        "job",
-        None,
-    ),
+    **{
+        f"label-{name}": (claim(100), LABEL, ("job",), value, None)
+        for name, value in {
+            "not-a-table": "run-1",
+            "bad-run-id": {"run_id": 1, "flow": "sim", "target": "a"},
+            "missing-fields": {"run_id": "r"},
+            "bad-work-item": {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
+        }.items()
+    },
 }
 
 
 @pytest.mark.parametrize("row", sorted(MALFORMED_FIELDS))
 def test_a_malformed_entry_field_reads_as_absent(root, world, row):
-    memory, job, edit, attribute, expected = MALFORMED_FIELDS[row]
+    memory, job, path, value, expected = MALFORMED_FIELDS[row]
     store = make_store(root, world)
     holder = join(store, world, 101, memory, job=job)
     assert store.refresh(holder).state == HOLDING
     payload = json.loads(holder.path.read_text(encoding="utf-8"))
-    edit(payload)
+    table = payload
+    for key in path[:-1]:
+        table = table[key]
+    if value is GONE:
+        del table[path[-1]]
+    else:
+        table[path[-1]] = value
     holder.path.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert getattr(stored(store, holder), attribute) == expected
-    if attribute == "memory" and expected is None:
+    assert getattr(stored(store, holder), path[0]) == expected
+    if path[0] == "memory" and expected is None:
         waiter = join(store, world, 102, claim(100))
         assert store.refresh(waiter).state == QUEUED  # a holder with no readable claim blocks
 
