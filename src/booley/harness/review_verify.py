@@ -21,6 +21,7 @@ from typing import Any
 
 from booley.evidence.review_vocabulary import OPEN_STATUSES, STATUS_WAIVED
 from booley.harness.review_command import (
+    ReviewProgress,
     ReviewRefusedError,
     ReviewRequest,
     exported_commit,
@@ -198,6 +199,19 @@ def _verify_one(
     return VerifiedReview(review, ReviewResult(verdict, rows), _waivers(mine, rows, refused))
 
 
+def _verify_all(
+    discovery: dict[str, Any], run_path: str, checkout: Path, proposals: dict[str, str]
+) -> tuple[VerifiedReview, ...]:
+    """Re-check every review of *discovery* that has an open finding, one after another."""
+    stored = [discovery["reviews"][index] for index in open_finding_ids(discovery)]
+    progress = ReviewProgress(len(stored))
+    verified: list[VerifiedReview] = []
+    for review in stored:
+        with progress.running(review["role"], review["focus"]):
+            verified.append(_verify_one(review, run_path, checkout, proposals))
+    return tuple(verified)
+
+
 def _waivers(
     mine: dict[str, str],
     rows: tuple[dict[str, Any], ...] | None,
@@ -255,10 +269,7 @@ def verify_review(project_root: Path, request: ReviewRequest) -> int:
         _refuse_changed_declarations(discovery, planned, sha)
         rules_changed = review_rules_changes(project_root, keyed, base_commit)
         path = str(main / "reviews" / discovery["commit"] / f"{discovery['run_id']}.json")
-        reviews = tuple(
-            _verify_one(discovery["reviews"][index], path, checkout, proposals)
-            for index in open_finding_ids(discovery)
-        )
+        reviews = _verify_all(discovery, path, checkout, proposals)
     between = raw_git(project_root, "rev-list", "--reverse", f"{discovery['commit']}..{sha}")
     facts = VerifyFacts(
         run_id,

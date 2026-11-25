@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import signal
 import sys
 import tempfile
 import traceback
@@ -25,13 +26,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from booley.evidence.review_vocabulary import ORIGIN_PRE_EXISTING
+from booley.flows.cli_selection import CliInvocation
 from booley.flows.prepared_invocation import PreparedInvocation
 from booley.harness.checkout_flow import run_post_setup_hook
 from booley.harness.standalone_job import standalone_log_root
 from booley.measurement.base import Base, BaseError, ChangedFiles, changed_files, resolve_base
+from booley.measurement.mcp_job import REVIEW_ENDPOINT, McpCommandJob
 from booley.measurement.run_key import KeyedCommit, RulesNotVersionedError, resolve_measurement_key
 from booley.review.declared_reviews import ReviewsFileError, review_rules_changes
 from booley.review.review_report import markdown_report, terminal_report
@@ -62,6 +66,7 @@ from booley.targets.domain import FuseSocError
 
 _EXIT_REFUSED = 2
 _ERROR_LINE = 300  # characters of a Reviewer error kept in the Review Run
+_CANCEL_SIGNALS = ("SIGTERM", "SIGHUP")  # a cancel of the MCP Job, or a closed terminal
 
 
 @dataclass(frozen=True)
@@ -81,14 +86,58 @@ class ReviewRefusedError(Exception):
     """The review cannot run: exit 2, and nothing is stored."""
 
 
+class ReviewProgress:
+    """The reviews finished of the total, published while this process is an MCP ``review`` Job."""
+
+    def __init__(self, total: int) -> None:
+        self._job = McpCommandJob.find(REVIEW_ENDPOINT)
+        self._total = total
+        self._finished = 0
+
+    def _record(self, running: tuple[str, ...]) -> None:
+        if self._job is not None:
+            self._job.record_progress(self._finished, self._total, running)
+
+    @contextmanager
+    def running(self, role: str, focus: str) -> Iterator[None]:
+        """Publish ``<role> <focus>`` as running for the block, then count it finished."""
+        self._record((f"{role} {focus}",))
+        yield
+        self._finished += 1
+        self._record(())
+
+
+@contextmanager
+def _interrupts_on_cancel() -> Iterator[None]:
+    """Make SIGTERM and SIGHUP raise ``KeyboardInterrupt``, as Ctrl-C does, for the run.
+
+    The post-setup hook runs in a process group of its own that only an unwinding
+    exception stops; the default SIGTERM action would end this process and orphan it.
+    """
+
+    def interrupt(_signum: int, _frame: FrameType | None) -> None:
+        raise KeyboardInterrupt
+
+    previous: dict[int, Any] = {}
+    try:
+        for number in (getattr(signal, name, None) for name in _CANCEL_SIGNALS):
+            if number is not None:  # Windows has no SIGHUP
+                previous[number] = signal.signal(number, interrupt)
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, signal.SIG_DFL if handler is None else handler)
+
+
 def run_review(project_root: Path, request: ReviewRequest) -> int:
     """Review the commit *request* names; print the outcome and return the exit status.
 
     A refusal or an unexpected failure prints its error and exits 2. A
-    ``KeyboardInterrupt`` passes through.
+    ``KeyboardInterrupt``, also raised by SIGTERM and SIGHUP, passes through.
     """
     try:
-        return _dispatch(project_root, request)
+        with _interrupts_on_cancel():
+            return _dispatch(project_root, request)
     except ReviewRefusedError as refusal:
         print(f"ERROR: {refusal}", file=sys.stderr)
     except Exception as failure:  # noqa: BLE001 - the command boundary: infrastructure failures
@@ -205,18 +254,26 @@ class _Commit:
     submodules: tuple[str, ...]  # paths of the submodules whose pin moved
 
 
-def _run_reviewer(planned: PlannedReview, under: _Commit) -> ReviewResult:
+def _run_reviewer(
+    planned: PlannedReview, under: _Commit, progress: ReviewProgress
+) -> ReviewResult:
     """Run one planned review in the export; a failed run is an ``error`` result."""
     if not planned.needed:
         return ReviewResult(NOT_NEEDED)
-    try:
-        return _call_reviewer(planned, under)
-    except (OSError, ValueError) as exc:  # Git, evidence or snapshot failure of this review only
-        return ReviewResult(ERROR, error=" ".join(str(exc).split())[:_ERROR_LINE])
+    with progress.running(planned.role, planned.focus):
+        try:
+            return _call_reviewer(planned, under)
+        except (OSError, ValueError) as exc:  # Git, evidence or snapshot failure of this review
+            return ReviewResult(ERROR, error=" ".join(str(exc).split())[:_ERROR_LINE])
 
 
 def run_reviewer(reviewer: ReviewerSpecialist, argv: list[str]) -> EndpointOutcome:
-    """Run *reviewer* with *argv* in this process and return its outcome."""
+    """Run *reviewer* with *argv* in this process and return its outcome.
+
+    The Reviewer is parsed as a person's command, whatever started this process: an MCP
+    Job's transport origin would refuse the ``--project`` the export is selected with.
+    """
+    reviewer._cli_invocation = CliInvocation()
     reviewer.parse_args(argv)
     prepared = reviewer.prepare_endpoint_invocation()
     return prepared.run(None) if isinstance(prepared, PreparedInvocation) else prepared
@@ -305,10 +362,9 @@ def _review(project_root: Path, request: ReviewRequest) -> int:
             changed_files(project_root, base_commit, commit), checkout, declared
         )
         under = _Commit(project_root, checkout, base_commit, commit, changed, folders)
-        results = tuple(
-            (planned, _run_reviewer(planned, under))
-            for planned in plan_reviews(declared, changed, checkout)
-        )
+        plans = plan_reviews(declared, changed, checkout)
+        progress = ReviewProgress(sum(planned.needed for planned in plans))
+        results = tuple((planned, _run_reviewer(planned, under, progress)) for planned in plans)
         rules_changed = review_rules_changes(project_root, keyed, base_commit)
     facts = RunFacts(
         run_id,

@@ -58,7 +58,7 @@ from booley.harness.standalone_job import (
     standalone_log_root,
 )
 from booley.measurement.base import BaseError, resolve_base
-from booley.measurement.mcp_job import McpMeasureJob
+from booley.measurement.mcp_job import MEASURE_ENDPOINT, McpCommandJob
 from booley.measurement.measuring_rules import exit_rule
 from booley.measurement.metrics_file import (
     METRICS_FILE,
@@ -181,7 +181,7 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     Under an MCP ``measure`` Job the process is that Job, and writes no record of its own.
     Otherwise the run is a Standalone Job of its own.
     """
-    mcp_job = McpMeasureJob.find()
+    mcp_job = McpCommandJob.find(MEASURE_ENDPOINT)
     if mcp_job is not None:
         hooks = _JobHooks(
             mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result, mcp_job.session_key

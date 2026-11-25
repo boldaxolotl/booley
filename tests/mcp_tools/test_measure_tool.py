@@ -12,6 +12,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -57,8 +58,11 @@ def measure_tool():
     return module
 
 
-def test_the_tool_is_offered_to_the_developer_agent_only() -> None:
-    name = measure_tool().MEASURE_TOOL_NAME
+@pytest.mark.parametrize(
+    "name", ["booley_measure", "booley_review"], ids=["booley_measure", "booley_review"]
+)
+def test_the_tool_is_offered_to_the_developer_agent_only(name: str) -> None:
+    visible = getattr(catalog, name.replace("booley_", "") + "_visible")
     developer = catalog.Exposure.from_mapping({"BOOLEY_MCP_DEVELOPER_AGENT": "1"})
     nested = catalog.Exposure.from_mapping(
         {
@@ -68,10 +72,12 @@ def test_the_tool_is_offered_to_the_developer_agent_only() -> None:
         }
     )
     named = catalog.Exposure.from_mapping({"BOOLEY_MCP_TOOLS": name})
+    on = frozenset({"reviewed-commits"})
+    developer, nested, named = (replace(e, features=on) for e in (developer, nested, named))
 
-    assert catalog.measure_visible(developer) and catalog.measure_visible(named)
-    assert not catalog.measure_visible(nested)
-    assert not catalog.measure_visible(catalog.Exposure.from_mapping({}))
+    assert visible(developer) and visible(named)
+    assert not visible(nested)
+    assert not visible(catalog.Exposure.from_mapping({}))
     assert name in [tool["name"] for tool in catalog.visible_definitions(developer, [])]
     assert name not in [tool["name"] for tool in catalog.visible_definitions(nested, [])]
 
@@ -79,6 +85,8 @@ def test_the_tool_is_offered_to_the_developer_agent_only() -> None:
 def test_measure_returns_its_run_id_at_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from booley.measurement.mcp_job import COMMAND_JOB_TIMEOUT_S
+
     tool = measure_tool()
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
@@ -139,7 +147,7 @@ def test_measure_returns_its_run_id_at_once(
         "--",
         "--validate",
     ]
-    assert timeout == tool.MEASURE_TIMEOUT_S
+    assert timeout == COMMAND_JOB_TIMEOUT_S
     assert kwargs["stop_grace"] == endpoint_process.MEASURE_STOP_GRACE_SECONDS
     record = jobrec.read_record(run_id, session_jobs_dir())
     assert record is not None and record.endpoint == "measure"
@@ -246,17 +254,19 @@ def test_an_unsupplied_option_adds_nothing_to_the_command() -> None:
     assert argv == [sys.executable, "-m", "booley.harness.booley", "measure"]
 
 
-def mcp_job_environment(monkeypatch: pytest.MonkeyPatch, **record: Any) -> None:
-    """The process of the ``measure`` Job the server recorded: its record, run id and origin."""
+def mcp_job_environment(
+    monkeypatch: pytest.MonkeyPatch, run_id: str = RUN_ID, endpoint: str = "measure", **record: Any
+) -> None:
+    """The process of the *endpoint* Job the server recorded: its record, run id and origin."""
     _write(
-        RUN_ID,
+        run_id,
         owner=_caller().owner,
         status=jobrec.STATUS_RUNNING,
-        endpoint="measure",
+        endpoint=endpoint,
         exit_code=None,
         **record,
     )
-    monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
+    monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")
 
 
@@ -379,7 +389,7 @@ def test_the_result_is_published_before_the_report_is_printed_to_a_gone_server(
 def test_a_server_that_lost_the_measurement_recovers_its_exit_code_and_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.measurement.mcp_job import McpMeasureJob
+    from booley.measurement.mcp_job import McpCommandJob
 
     jobs_root = session_jobs_dir()
     for exit_code, status in ((1, jobrec.STATUS_FAILED), (0, jobrec.STATUS_DONE)):
@@ -391,7 +401,9 @@ def test_a_server_that_lost_the_measurement_recovers_its_exit_code_and_summary(
             endpoint="measure",
             exit_code=None,
         )
-        McpMeasureJob(run_id, jobs_root / run_id).publish_result(exit_code, f"SUMMARY {exit_code}")
+        McpCommandJob(run_id, jobs_root / run_id, "measure").publish_result(
+            exit_code, f"SUMMARY {exit_code}"
+        )
         monkeypatch.setattr(mcp_server, "is_pid_alive", lambda _pid: False)
 
         restarted = _JobManager(_FakeLifetime())
@@ -432,6 +444,10 @@ def test_the_measure_stop_grace_outlasts_the_child_stop_window() -> None:
     from booley.harness import checkout_flow
 
     assert endpoint_process.stop_grace_seconds("measure") > checkout_flow.STOP_GRACE_S
+    assert (
+        endpoint_process.stop_grace_seconds("review")
+        == endpoint_process.MEASURE_STOP_GRACE_SECONDS
+    )
     assert endpoint_process.stop_grace_seconds("sim") is None
     assert endpoint_process.cancel_grace_seconds("sim") == endpoint_process.CANCEL_GRACE_SECONDS
 
@@ -439,12 +455,12 @@ def test_the_measure_stop_grace_outlasts_the_child_stop_window() -> None:
 def test_a_process_outside_an_mcp_measure_job_finds_no_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from booley.measurement.mcp_job import McpMeasureJob
+    from booley.measurement.mcp_job import McpCommandJob
 
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
     monkeypatch.setenv("_BOOLEY_CLI_INVOCATION_ORIGIN", "transport")
-    assert McpMeasureJob.find() is None  # no record
+    assert McpCommandJob.find("measure") is None  # no record
     _write(RUN_ID, owner=None, status=jobrec.STATUS_RUNNING, endpoint="sim", exit_code=None)
-    assert McpMeasureJob.find() is None  # another endpoint's record
+    assert McpCommandJob.find("measure") is None  # another endpoint's record
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN")
-    assert McpMeasureJob.find() is None  # not a transport child
+    assert McpCommandJob.find("measure") is None  # not a transport child
