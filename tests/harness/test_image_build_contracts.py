@@ -366,7 +366,7 @@ print(upgrade_review.acknowledge(booley_dir, "99.0.0", current_version="99.0.0")
 """
 
 
-_INSTALLED_WHEEL_DRIVER = r"""\\
+_INSTALLED_WHEEL_DRIVER = r"""\
 import json
 import sys
 from pathlib import Path
