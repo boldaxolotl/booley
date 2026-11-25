@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -17,20 +18,24 @@ from booley.config.sandbox import project_image_name, project_image_name_for_ide
 from booley.core.host_shell import quote_arg
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import Inspection
-from booley.harness import projects_view
+from booley.harness import booley, projects_view
 from booley.presentation.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
 from booley.runtime import (
     devcontainer,
+    host_install,
     image_lifecycle,
     issuance_invalidation,
     project_image,
+    runtime_context,
     session_admission,
     session_issuance,
+    session_runtime,
 )
 from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.lifecycle_lock import LifecycleLockError
+from booley.runtime.sandbox_apply import Attachment
 from booley.runtime.session_issuance import keeper_image
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
@@ -468,7 +473,8 @@ def test_prune_partial_failure_accounts_for_prior_releases(
     assert result["retained"] == [tags[1]] and result["errors"]
     docker.replies.clear()
     _, preview = _prune(capsys)
-    assert _prune(capsys, preview["digest"])[0] == 0
+    assert _cli("projects", "prune-keepers", "--confirm", preview["digest"]) == 0
+    assert f"Keeper tag released: {tags[1]}\n" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("stamp", ["runtime-issuance.json", "session-spec.json"])
@@ -641,8 +647,43 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
     assert session_issuance.stamp_is_absent(project)
     with pytest.raises(session_issuance.RuntimeSpecError, match="Sandbox issuance was withdrawn"):
         session_issuance.validate(project, prepared.spec, path)
+    # The Session takes the withdrawn-stamp path: an editor-owned Sandbox is told to rebuild
+    # from VS Code, which reissues the stamp that no longer exists.
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
+    assert session_runtime.sandbox_remedy(project) == (
+        "on the host run `booley init`, then use Dev Containers: Rebuild Container"
+    )
     session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
     assert session_issuance.validate(project, prepared.spec, path).image_id == _A
+
+
+def test_main_wires_the_keeper_service_into_forget_and_prune(
+    tmp_path: Path,
+    docker: DockerImageCli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`booley.main` hands the keeper operations to `projects`; a missing one refuses (#1112)."""
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(host_install, "host_install_error", lambda _directory: None)
+    project = _remember(tmp_path)
+    own, orphan = keeper_image(project), keeper_image(tmp_path / "orphan")
+    docker.images.update({own: _A, orphan: _B})
+
+    def invoke(*argv: str) -> Any:
+        monkeypatch.setattr(sys, "argv", ["booley", *argv])
+        assert booley.main() == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert invoke("projects", "forget", str(project), "--json")["keeper"]["status"] == "released"
+    preview = invoke("projects", "prune-keepers", "--json")
+    assert preview["released"] == [] and orphan in docker.images
+    assert invoke("projects", "prune-keepers", "--json", "--confirm", preview["digest"])[
+        "released"
+    ] == [orphan]
+    assert own not in docker.images and orphan not in docker.images
 
 
 @pytest.mark.parametrize("failure", ["invalid-image", "invalid-container", "daemon"])
