@@ -1,4 +1,4 @@
-"""Unit tests for booley.core.boundary — shared boundary coercion/validation.
+"""Unit tests for booley.core.boundary: shared boundary coercion and validation.
 
 The regression-critical invariants: every numeric coercion rejects ``bool``
 (``isinstance(True, int)`` is ``True``) and rejects non-finite floats (NaN/inf),
@@ -6,6 +6,9 @@ and the two flavours differ only in failure mode (default vs. BoundaryError).
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -35,402 +38,216 @@ from booley.core.boundary import (
 
 NAN = float("nan")
 INF = float("inf")
-
-
-# ---------------------------------------------------------------------------
-# as_dict / require_dict
-# ---------------------------------------------------------------------------
-
-
-class TestDict:
-    def test_as_dict_passes_mapping(self):
-        assert as_dict({"a": 1}) == {"a": 1}
-
-    def test_as_dict_returns_new_dict(self):
-        src = {"a": 1}
-        out = as_dict(src)
-        out["b"] = 2
-        assert "b" not in src  # copied, not aliased
-
-    def test_as_dict_default_on_non_mapping(self):
-        assert as_dict([1, 2]) is None
-        assert as_dict("x") is None
-        assert as_dict(None) is None
-        assert as_dict(5, default={}) == {}
-
-    def test_require_dict_passes_mapping(self):
-        assert require_dict({"k": "v"}) == {"k": "v"}
-
-    def test_require_dict_raises_on_non_mapping(self):
-        with pytest.raises(BoundaryError):
-            require_dict([1, 2])
-        with pytest.raises(BoundaryError):
-            require_dict(None)
-
-    def test_require_dict_field_in_message(self):
-        with pytest.raises(BoundaryError, match="tools"):
-            require_dict("nope", field="tools")
-
-
-class TestList:
-    def test_require_list_passes_list(self):
-        value = ["a", 1]
-        assert require_list(value) is value
-
-    def test_require_list_rejects_other_sequences_with_field(self):
-        with pytest.raises(BoundaryError, match="bindings"):
-            require_list(("a",), field="bindings")
-
-
-# ---------------------------------------------------------------------------
-# as_str / require_str
-# ---------------------------------------------------------------------------
-
-
-class TestStr:
-    def test_as_str_passes_string(self):
-        assert as_str("hi") == "hi"
-        assert as_str("") == ""
-
-    def test_as_str_default_on_non_string(self):
-        assert as_str(5) is None
-        assert as_str(None, "x") == "x"
-        # bool must not be treated as / stringified to a value
-        assert as_str(True) is None
-
-    def test_require_str_passes_non_empty(self):
-        assert require_str({"name": "foo"}, "name") == "foo"
-
-    def test_require_str_raises_on_missing(self):
-        with pytest.raises(BoundaryError):
-            require_str({}, "name")
-
-    def test_require_str_raises_on_empty(self):
-        with pytest.raises(BoundaryError):
-            require_str({"name": ""}, "name")
-
-    def test_require_str_raises_on_wrong_type(self):
-        with pytest.raises(BoundaryError):
-            require_str({"name": 5}, "name")
-        with pytest.raises(BoundaryError):
-            require_str({"name": True}, "name")
-
-    def test_require_str_value_controls_empty_strings(self):
-        assert require_str_value("", allow_empty=True) == ""
-        assert require_str_value("name") == "name"
-        with pytest.raises(BoundaryError):
-            require_str_value(1)
-        with pytest.raises(BoundaryError):
-            require_str_value("")
-
-    def test_require_sha256_digest_is_canonical(self):
-        digest = "sha256:" + "a" * 64
-        assert require_sha256_digest(digest) == digest
-        for invalid in ("a" * 64, "sha256:" + "A" * 64, "sha256:abc", 1):
-            with pytest.raises(BoundaryError):
-                require_sha256_digest(invalid)
-
-    def test_require_uuid4_is_lowercase_version_four(self):
-        value = "01234567-89ab-4def-8123-456789abcdef"
-        assert require_uuid4(value) == value
-        for invalid in (
-            "01234567-89ab-1def-8123-456789abcdef",
-            value.upper(),
-            "not-a-uuid",
-            1,
-        ):
-            with pytest.raises(BoundaryError):
-                require_uuid4(invalid)
-
-
-class TestRequireOptStr:
-    """Optional-config-knob shape: absent → None, present must be non-empty str."""
-
-    def test_absent_and_none_return_none(self):
-        assert require_opt_str({}, "engine") is None
-        assert require_opt_str({"engine": None}, "engine") is None
-
-    def test_non_empty_string_passes(self):
-        assert require_opt_str({"engine": "opensta"}, "engine") == "opensta"
-
-    def test_raises_on_bool(self):
-        # The argv-leak class: TOML `true` must never stringify into "True".
-        with pytest.raises(BoundaryError, match="engine"):
-            require_opt_str({"engine": True}, "engine")
-
-    def test_raises_on_empty_and_non_string(self):
-        with pytest.raises(BoundaryError):
-            require_opt_str({"engine": ""}, "engine")
-        with pytest.raises(BoundaryError):
-            require_opt_str({"engine": 5}, "engine")
-
-    def test_field_overrides_key_in_message(self):
-        with pytest.raises(BoundaryError, match=r"\[flows\.x\] 'engine'"):
-            require_opt_str({"engine": 5}, "engine", field="[flows.x] 'engine'")
-
-
-# ---------------------------------------------------------------------------
-# require_bool
-# ---------------------------------------------------------------------------
-
-
-class TestRequireBool:
-    def test_absent_returns_default(self):
-        assert require_bool({}, "flatten") is False
-        assert require_bool({}, "flatten", default=True) is True
-
-    def test_bool_passes(self):
-        assert require_bool({"flatten": True}, "flatten") is True
-        assert require_bool({"flatten": False}, "flatten", default=True) is False
-
-    def test_raises_on_truthy_string(self):
-        # bool("false") is True — the truthiness surprise this helper kills.
-        with pytest.raises(BoundaryError, match="flatten"):
-            require_bool({"flatten": "false"}, "flatten")
-
-    def test_raises_on_int_and_none(self):
-        with pytest.raises(BoundaryError):
-            require_bool({"flatten": 1}, "flatten")
-        with pytest.raises(BoundaryError):
-            require_bool({"flatten": None}, "flatten")
-
-    def test_field_overrides_key_in_message(self):
-        with pytest.raises(BoundaryError, match=r"\[flows\.x\] 'ooc'"):
-            require_bool({"ooc": 1}, "ooc", field="[flows.x] 'ooc'")
-
-    def test_require_bool_value_is_strict(self):
-        assert require_bool_value(True) is True
-        with pytest.raises(BoundaryError, match="flag"):
-            require_bool_value(1, field="flag")
-
-
-# ---------------------------------------------------------------------------
-# as_str_list — the duplicated _is_string_list / as_str_list / _string_list shape
-# ---------------------------------------------------------------------------
-
-
-class TestIsStrList:
-    """Strict predicate mirroring the migrated _is_string_list."""
-
-    def test_all_string_list_true(self):
-        assert is_str_list(["a", "b"]) is True
-        assert is_str_list([]) is True  # empty list is trivially all-string
-
-    def test_bare_string_is_false(self):
-        assert is_str_list("rtl") is False
-
-    def test_non_string_element_false(self):
-        assert is_str_list(["a", 1]) is False
-        assert is_str_list([None]) is False
-
-    def test_non_list_false(self):
-        assert is_str_list(None) is False
-        assert is_str_list({"a": 1}) is False
-
-
-class TestStrList:
-    def test_bare_string_becomes_single_element(self):
-        assert as_str_list("rtl") == ["rtl"]
-
-    def test_all_string_list_passes(self):
-        assert as_str_list(["a", "b"]) == ["a", "b"]
-
-    def test_non_string_elements_filtered(self):
-        assert as_str_list(["a", 1, None, "b"]) == ["a", "b"]
-
-    def test_list_filtering_empty_falls_back_to_default(self):
-        assert as_str_list([1, 2, 3], default=["fallback"]) == ["fallback"]
-
-    def test_empty_list_falls_back_to_default(self):
-        assert as_str_list([], default=["d"]) == ["d"]
-
-    def test_empty_list_no_default_is_empty(self):
-        assert as_str_list([]) == []
-
-    def test_non_list_non_string_falls_back(self):
-        assert as_str_list(5, default=["x"]) == ["x"]
-        assert as_str_list(None) == []
-        assert as_str_list({"a": 1}) == []
-
-    def test_default_is_copied_not_aliased(self):
-        default = ["d"]
-        out = as_str_list(5, default=default)
-        out.append("mutated")
-        assert default == ["d"]
-
-
-# ---------------------------------------------------------------------------
-# as_int — bool + NaN/inf rejection is regression-critical
-# ---------------------------------------------------------------------------
-
-
-class TestAsInt:
-    def test_int_passes(self):
-        assert as_int(7) == 7
-
-    def test_float_truncates(self):
-        assert as_int(3.9) == 3
-
-    def test_numeric_string_coerced(self):
-        assert as_int("12") == 12
-        assert as_int("3.0") == 3
-
-    def test_bool_rejected(self):
-        # True is an int subclass — must NOT become 1
-        assert as_int(True, default=-1) == -1
-        assert as_int(False, default=-1) == -1
-
-    def test_nan_and_inf_rejected(self):
-        assert as_int(NAN, default=-1) == -1
-        assert as_int(INF, default=-1) == -1
-
-    def test_nan_inf_strings_rejected(self):
-        assert as_int("nan", default=-1) == -1
-        assert as_int("inf", default=-1) == -1
-
-    def test_garbage_string_default(self):
-        assert as_int("abc", default=0) == 0
-        assert as_int("", default=0) == 0
-
-    def test_none_and_containers_default(self):
-        assert as_int(None) is None
-        assert as_int([1], default=0) == 0
-        assert as_int({}, default=0) == 0
-
-
-class TestRequireInt:
-    def test_int_passes_without_coercion(self):
-        assert require_int(7) == 7
-
-    @pytest.mark.parametrize("value", [True, 1.0, "1", None])
-    def test_non_int_values_are_rejected(self, value):
-        with pytest.raises(BoundaryError):
-            require_int(value, field="parameter")
-
-    def test_field_is_named_in_error(self):
-        with pytest.raises(BoundaryError, match="parameter"):
-            require_int("1", field="parameter")
-
-
-class TestRequirePositiveInt:
-    def test_positive_int_is_returned(self):
-        assert require_positive_int(3) == 3
-
-    @pytest.mark.parametrize("value", [0, -1, True, 1.0, "1", None])
-    def test_other_values_are_rejected(self, value):
-        with pytest.raises(BoundaryError, match="revision"):
-            require_positive_int(value, field="revision")
-
-
-# ---------------------------------------------------------------------------
-# as_float — same invariants as as_int
-# ---------------------------------------------------------------------------
-
-
-class TestAsFloat:
-    def test_int_passes_as_float(self):
-        assert as_float(7) == 7.0
-        assert isinstance(as_float(7), float)
-
-    def test_float_passes(self):
-        assert as_float(3.5) == 3.5
-
-    def test_numeric_string_coerced(self):
-        assert as_float("2.5") == 2.5
-        assert as_float("4") == 4.0
-
-    def test_bool_rejected(self):
-        assert as_float(True, default=-1.0) == -1.0
-        assert as_float(False, default=-1.0) == -1.0
-
-    def test_nan_and_inf_rejected(self):
-        assert as_float(NAN, default=-1.0) == -1.0
-        assert as_float(INF, default=-1.0) == -1.0
-        assert as_float(-INF, default=-1.0) == -1.0
-
-    def test_nan_inf_strings_rejected(self):
-        assert as_float("nan", default=-1.0) == -1.0
-        assert as_float("Infinity", default=-1.0) == -1.0
-
-    def test_garbage_string_default(self):
-        assert as_float("abc", default=0.0) == 0.0
-
-    def test_none_default(self):
-        assert as_float(None) is None
-        assert as_float(None, 9.0) == 9.0
-
-
-# ---------------------------------------------------------------------------
-# require_finite_number — strict metric parsing, no string coercion
-# ---------------------------------------------------------------------------
-
-
-class TestRequireFiniteNumber:
-    def test_int_and_float_pass_as_float(self):
-        assert require_finite_number(5, field="wns") == 5.0
-        assert require_finite_number(2.5, field="wns") == 2.5
-        assert isinstance(require_finite_number(5, field="wns"), float)
-
-    def test_bool_rejected(self):
-        with pytest.raises(BoundaryError):
-            require_finite_number(True, field="wns")
-
-    def test_nan_inf_rejected(self):
-        with pytest.raises(BoundaryError):
-            require_finite_number(NAN, field="wns")
-        with pytest.raises(BoundaryError):
-            require_finite_number(INF, field="wns")
-
-    def test_string_not_coerced(self):
-        # strict: a numeric string is still a contract violation here
-        with pytest.raises(BoundaryError):
-            require_finite_number("3.0", field="wns")
-
-    def test_field_in_message(self):
-        with pytest.raises(BoundaryError, match="slack"):
-            require_finite_number(None, field="slack")
-
-
-class TestRequireFiniteNumberValue:
-    def test_preserves_arbitrarily_large_int(self):
-        value = 10**1000
-
-        assert require_finite_number_value(value, field="threshold") == value
-
-    @pytest.mark.parametrize("value", [True, NAN, INF, "3.0"])
-    def test_rejects_nonfinite_or_nonnumeric_values(self, value: object):
-        with pytest.raises(BoundaryError, match="threshold"):
-            require_finite_number_value(value, field="threshold")
-
-
-# ---------------------------------------------------------------------------
-# as_positive_int — mirrors _coerce_positive_int
-# ---------------------------------------------------------------------------
-
-
-class TestAsPositiveInt:
-    def test_positive_passes(self):
-        assert as_positive_int(30, default=10) == 30
-
-    def test_zero_and_negative_default(self):
-        assert as_positive_int(0, default=10) == 10
-        assert as_positive_int(-5, default=10) == 10
-
-    def test_bool_rejected(self):
-        assert as_positive_int(True, default=10) == 10
-        assert as_positive_int(False, default=10) == 10
-
-    def test_non_int_default(self):
-        assert as_positive_int("30", default=10) == 10  # no string coercion
-        assert as_positive_int(3.0, default=10) == 10
-        assert as_positive_int(None, default=10) == 10
-
-    def test_field_kw_accepted(self):
-        assert as_positive_int(5, default=1, field="max_sessions") == 5
-        assert as_positive_int(-1, default=1, field="max_sessions") == 1
-
-
-def test_numeric_helpers_reject_every_non_finite_float():
-    for bad in (NAN, INF, -INF):
-        assert as_int(bad, default=None) is None
-        assert as_float(bad, default=None) is None
+_DIGEST = "sha256:" + "a" * 64
+_UUID = "01234567-89ab-4def-8123-456789abcdef"
+
+# (id, call, expected): the result must match in value and in type, so an int
+# leaking out of a float helper (or the reverse) fails.
+_ACCEPTED: list[tuple[str, Callable[[], Any], Any]] = [
+    ("as_dict", lambda: as_dict({"a": 1}), {"a": 1}),
+    ("as_str", lambda: as_str("hi"), "hi"),
+    ("as_str-empty", lambda: as_str(""), ""),
+    ("is_str_list", lambda: is_str_list(["a", "b"]), True),
+    ("is_str_list-empty", lambda: is_str_list([]), True),
+    ("as_str_list-bare-string", lambda: as_str_list("rtl"), ["rtl"]),
+    ("as_str_list-list", lambda: as_str_list(["a", "b"]), ["a", "b"]),
+    ("as_str_list-filters", lambda: as_str_list(["a", 1, None, "b"]), ["a", "b"]),
+    (
+        "as_str_list-filtered-empty",
+        lambda: as_str_list([1, 2, 3], default=["fallback"]),
+        ["fallback"],
+    ),
+    ("as_str_list-empty-default", lambda: as_str_list([], default=["d"]), ["d"]),
+    ("as_str_list-empty", lambda: as_str_list([]), []),
+    ("as_str_list-non-list-default", lambda: as_str_list(5, default=["x"]), ["x"]),
+    ("as_str_list-none", lambda: as_str_list(None), []),
+    ("as_str_list-mapping", lambda: as_str_list({"a": 1}), []),
+    ("as_int", lambda: as_int(7), 7),
+    ("as_int-truncates", lambda: as_int(3.9), 3),
+    ("as_int-string", lambda: as_int("12"), 12),
+    ("as_int-float-string", lambda: as_int("3.0"), 3),
+    ("as_float-int", lambda: as_float(7), 7.0),
+    ("as_float-string", lambda: as_float("2.5"), 2.5),
+    ("as_float-int-string", lambda: as_float("4"), 4.0),
+    ("as_float", lambda: as_float(3.5), 3.5),
+    ("as_positive_int", lambda: as_positive_int(30, default=10), 30),
+    ("as_positive_int-field", lambda: as_positive_int(-1, default=1, field="max_sessions"), 1),
+    ("require_opt_str-absent", lambda: require_opt_str({}, "engine"), None),
+    ("require_opt_str-none", lambda: require_opt_str({"engine": None}, "engine"), None),
+    ("require_opt_str", lambda: require_opt_str({"engine": "opensta"}, "engine"), "opensta"),
+    ("require_bool-absent", lambda: require_bool({}, "flatten"), False),
+    ("require_bool-absent-default", lambda: require_bool({}, "flatten", default=True), True),
+    (
+        "require_bool-false",
+        lambda: require_bool({"flatten": False}, "flatten", default=True),
+        False,
+    ),
+    ("require_bool_value", lambda: require_bool_value(True), True),
+    ("require_str", lambda: require_str({"name": "foo"}, "name"), "foo"),
+    ("require_str_value-empty", lambda: require_str_value("", allow_empty=True), ""),
+    ("require_str_value", lambda: require_str_value("name"), "name"),
+    ("require_int", lambda: require_int(7), 7),
+    ("require_positive_int", lambda: require_positive_int(3), 3),
+    ("require_finite_number-int", lambda: require_finite_number(5, field="wns"), 5.0),
+    ("require_finite_number-float", lambda: require_finite_number(2.5, field="wns"), 2.5),
+    ("require_sha256_digest", lambda: require_sha256_digest(_DIGEST), _DIGEST),
+    ("require_uuid4", lambda: require_uuid4(_UUID), _UUID),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [pytest.param(call, expected, id=name) for name, call, expected in _ACCEPTED],
+)
+def test_lenient_coercers_accept(call: Callable[[], Any], expected: Any):
+    result = call()
+
+    assert result == expected
+    assert type(result) is type(expected)
+
+
+_DEGRADED_NUMERIC = [True, False, NAN, INF, -INF, "nan", "Infinity", "abc", "", None, [1], {}]
+_DEGRADED: list[tuple[Callable[..., Any], Any]] = [
+    *((func, value) for func in (as_int, as_float) for value in _DEGRADED_NUMERIC),
+    *((as_positive_int, value) for value in (0, -5, True, False, "30", 3.0, None)),
+    *((as_dict, value) for value in ([1, 2], "x", None)),
+    *((as_str, value) for value in (5, True, None)),
+]
+
+
+@pytest.mark.parametrize(
+    ("func", "value"), _DEGRADED, ids=lambda item: getattr(item, "__name__", repr(item))
+)
+def test_lenient_coercers_degrade_to_default(func: Callable[..., Any], value: Any):
+    default = object()
+
+    assert func(value, default=default) is default
+
+
+@pytest.mark.parametrize("value", ["rtl", ["a", 1], [None], None, {"a": 1}], ids=repr)
+def test_is_str_list_rejects(value: Any):
+    assert is_str_list(value) is False
+
+
+_REJECTED: list[tuple[str, Callable[[], Any], str | None]] = [
+    ("require_dict-list", lambda: require_dict([1, 2]), None),
+    ("require_dict-none", lambda: require_dict(None), None),
+    ("require_dict-field", lambda: require_dict("nope", field="tools"), "tools"),
+    ("require_list-tuple", lambda: require_list(("a",), field="bindings"), "bindings"),
+    ("require_str-missing", lambda: require_str({}, "name"), None),
+    ("require_str-empty", lambda: require_str({"name": ""}, "name"), None),
+    ("require_str-int", lambda: require_str({"name": 5}, "name"), None),
+    ("require_str-bool", lambda: require_str({"name": True}, "name"), None),
+    ("require_str_value-int", lambda: require_str_value(1), None),
+    ("require_str_value-empty", lambda: require_str_value(""), None),
+    ("require_sha256_digest-bare", lambda: require_sha256_digest("a" * 64), None),
+    ("require_sha256_digest-upper", lambda: require_sha256_digest("sha256:" + "A" * 64), None),
+    ("require_sha256_digest-short", lambda: require_sha256_digest("sha256:abc"), None),
+    ("require_sha256_digest-int", lambda: require_sha256_digest(1), None),
+    ("require_uuid4-version", lambda: require_uuid4("01234567-89ab-1def-8123-456789abcdef"), None),
+    ("require_uuid4-upper", lambda: require_uuid4(_UUID.upper()), None),
+    ("require_uuid4-garbage", lambda: require_uuid4("not-a-uuid"), None),
+    ("require_uuid4-int", lambda: require_uuid4(1), None),
+    # The argv-leak class: TOML `true` must never stringify into "True".
+    ("require_opt_str-bool", lambda: require_opt_str({"engine": True}, "engine"), "engine"),
+    ("require_opt_str-empty", lambda: require_opt_str({"engine": ""}, "engine"), None),
+    ("require_opt_str-int", lambda: require_opt_str({"engine": 5}, "engine"), None),
+    (
+        "require_opt_str-field",
+        lambda: require_opt_str({"engine": 5}, "engine", field="[flows.x] 'engine'"),
+        r"\[flows\.x\] 'engine'",
+    ),
+    # bool("false") is True: the truthiness surprise this helper kills.
+    ("require_bool-string", lambda: require_bool({"flatten": "false"}, "flatten"), "flatten"),
+    ("require_bool-int", lambda: require_bool({"flatten": 1}, "flatten"), None),
+    ("require_bool-none", lambda: require_bool({"flatten": None}, "flatten"), None),
+    (
+        "require_bool-field",
+        lambda: require_bool({"ooc": 1}, "ooc", field="[flows.x] 'ooc'"),
+        r"\[flows\.x\] 'ooc'",
+    ),
+    ("require_bool_value-int", lambda: require_bool_value(1, field="flag"), "flag"),
+    *(
+        (
+            f"require_int-{name}",
+            lambda value=value: require_int(value, field="parameter"),
+            "parameter",
+        )
+        for name, value in (("bool", True), ("float", 1.0), ("string", "1"), ("none", None))
+    ),
+    *(
+        (
+            f"require_positive_int-{name}",
+            lambda value=value: require_positive_int(value, field="revision"),
+            "revision",
+        )
+        for name, value in (
+            ("zero", 0),
+            ("negative", -1),
+            ("bool", True),
+            ("float", 1.0),
+            ("string", "1"),
+            ("none", None),
+        )
+    ),
+    *(
+        (
+            f"require_finite_number-{name}",
+            lambda value=value: require_finite_number(value, field="slack"),
+            "slack",
+        )
+        for name, value in (
+            ("bool", True),
+            ("nan", NAN),
+            ("inf", INF),
+            ("string", "3.0"),
+            ("none", None),
+        )
+    ),
+    *(
+        (
+            f"require_finite_number_value-{name}",
+            lambda value=value: require_finite_number_value(value, field="threshold"),
+            "threshold",
+        )
+        for name, value in (("bool", True), ("nan", NAN), ("inf", INF), ("string", "3.0"))
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [pytest.param(call, match, id=name) for name, call, match in _REJECTED],
+)
+def test_strict_validators_reject(call: Callable[[], Any], match: str | None):
+    with pytest.raises(BoundaryError, match=match):
+        call()
+
+
+def test_as_dict_returns_a_copy():
+    src = {"a": 1}
+    out = as_dict(src)
+    assert out is not None
+    out["b"] = 2
+
+    assert "b" not in src
+
+
+def test_as_str_list_default_is_copied():
+    default = ["d"]
+    out = as_str_list(5, default=default)
+    out.append("mutated")
+
+    assert default == ["d"]
+
+
+def test_require_list_returns_the_same_list():
+    value = ["a", 1]
+
+    assert require_list(value) is value
+
+
+def test_require_finite_number_value_keeps_large_int():
+    value = 10**1000
+
+    assert require_finite_number_value(value, field="threshold") == value
