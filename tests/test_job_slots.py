@@ -155,12 +155,29 @@ def wait_until(predicate) -> None:
     assert predicate()
 
 
+def _link_gate(tmp: Path, gate: Path) -> bool:
+    try:
+        os.link(tmp, gate)
+    except FileExistsError:
+        return False
+    return True
+
+
 @contextlib.contextmanager
 def held_gate(gate: Path, pid: int, identity: ProcessIdentity | None):
     """Another process's gate on disk, as that process publishes it, until the block ends."""
     owner = {"pid": pid, "owner_identity": identity.to_payload() if identity else None}
     gate.parent.mkdir(parents=True, exist_ok=True)
-    gate.write_bytes(json.dumps(owner).encode("utf-8") + b"\n")
+    tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_bytes(json.dumps(owner).encode("utf-8") + b"\n")
+    try:
+        # Taken exclusively, like production: never over a gate a live thread holds.
+        deadline = time.monotonic() + hang_guard_s()
+        while not _link_gate(tmp, gate):
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+    finally:
+        tmp.unlink(missing_ok=True)
     try:
         yield
     finally:
@@ -829,6 +846,7 @@ def test_racing_claims_admit_one_and_the_loser_follows(root, world):
         (tok_a, tok_b, a, b) if a.refresh(tok_a).state == HOLDING else (tok_b, tok_a, b, a)
     )
     assert loser_store.refresh(loser).state == QUEUED
+    assert winner_store.refresh(winner).state == HOLDING
     winner_store.release(winner)
     winner_store.release(winner)  # idempotent
     assert loser_store.refresh(loser).state == HOLDING
@@ -1093,6 +1111,7 @@ class TestGhostReaping:
         # Ancestry holds for every case but the owner that is no descendant.
         verified_inheritance(monkeypatch, world, set() if case == "non-ancestor" else {(100, 50)})
         if case == "project-unresolvable":
+            # No file-level setup makes project resolution fail; the patch is the only route.
 
             def fail_project_resolution():
                 raise RuntimeError("project unavailable")
