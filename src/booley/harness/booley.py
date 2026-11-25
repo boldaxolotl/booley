@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     # of the import path of every `booley` invocation.
     from booley.mcp.registry import McpToolInfo
     from booley.runtime.session_admission import Sandbox
+    from booley.runtime.session_runtime import PairingLink
     from booley.runtime.t3_relay import RelayStart
     from booley.targets.target_surface import TargetDetailPayload
 
@@ -979,7 +980,7 @@ def _add_session_subparser(sub) -> None:
     )
     session_sub = session_p.add_subparsers(
         dest="session_command",
-        metavar="{up,enter,down,status,validate,refresh}",
+        metavar="{up,enter,pair,down,status,validate,refresh}",
     )
     up_p = session_sub.add_parser(
         "up",
@@ -990,6 +991,12 @@ def _add_session_subparser(sub) -> None:
         action="store_true",
         help="Remove an existing container first, then recreate it",
     )
+    up_p.add_argument(
+        "--no-ui",
+        action="store_true",
+        help="Start the Sandbox without T3 Code, its relay and a pairing link",
+    )
+    session_sub.add_parser("pair", help="Print a new T3 Code pairing link for the running Sandbox")
     enter_p = session_sub.add_parser(
         "enter",
         help="Open a shell in the Sandbox, or run `-- <cmd>` in it",
@@ -1470,7 +1477,11 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 
     _report_upgrade_before_session(project_root)
     startup_due_reason = health.due_reason(project_root)
-    result = sr.ensure(project_root, rebuild=getattr(args, "rebuild", False))
+    result = sr.ensure(
+        project_root,
+        rebuild=getattr(args, "rebuild", False),
+        ui=not getattr(args, "no_ui", False),
+    )
     name = result.name
     if result.vscode:
         print(f"Reusing Sandbox owned by VS Code: {name}")
@@ -1483,8 +1494,26 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     print(f"Sandbox ready: {name}")
     if result.relay is not None:
         _report_relay(result.relay)
+        _report_pairing(name, result.relay.port)
     print("  enter it with: booley session enter")
     return 0
+
+
+def _print_pairing(link: PairingLink) -> None:
+    """Print a pairing link, which holds a one-time token."""
+    from booley.runtime.incontainer_setup import PAIRING_TTL
+
+    print(f"  pair a browser (link valid {PAIRING_TTL}): {link.url}")
+
+
+def _report_pairing(name: str, port: int) -> None:
+    """Print a pairing link; the Sandbox is up either way, so a failure only warns."""
+    from booley.runtime import session_runtime as sr
+
+    try:
+        _print_pairing(sr.create_pairing_link(name, port))
+    except sr.SessionError as exc:
+        print(f"warning: no T3 Code pairing link: {exc}", file=sys.stderr)
 
 
 def _report_relay(relay: RelayStart) -> None:
@@ -1583,6 +1612,16 @@ def _session_status(_args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
     print(sr.status(project_root))
+    ui = sr.ui_status(project_root)
+    if ui is not None:
+        print(ui)
+    return 0
+
+
+def _session_pair(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.runtime import session_runtime as sr
+
+    _print_pairing(sr.pairing_link(project_root))
     return 0
 
 
@@ -1608,6 +1647,7 @@ def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
     handlers: dict[str, Callable[[argparse.Namespace, Path], int]] = {
         "up": _session_up,
         "enter": _session_enter,
+        "pair": _session_pair,
         "down": _session_down,
         "status": _session_status,
         "validate": _session_validate,

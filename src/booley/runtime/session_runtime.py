@@ -31,9 +31,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config import gateway
+from booley.core.boundary import require_dict, require_str
 from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
-from booley.runtime import auth_token, image_identity, project_image
+from booley.runtime import auth_token, image_identity, incontainer_setup, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import host_docker as idk
 from booley.runtime.filesystem_utils import read_file_bytes
@@ -70,6 +71,9 @@ KEEPALIVE_CMD = ("sleep", "infinity")
 # Shell used to run the devcontainer lifecycle hooks. They are `;`-joined shell
 # strings (see devcontainer.build_devcontainer_spec), not argv, so they need one.
 _HOOK_SHELL = ("bash", "-lc")
+
+# The in-Sandbox entry of the T3 Code controls, followed by a verb.
+_T3_ENTRY = "python -m booley.harness.incontainer_t3 "
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
@@ -388,14 +392,22 @@ def docker_run_argv(
     return argv
 
 
-def hook_argv(name: str, hook: str) -> list[str]:
+def hook_argv(name: str, hook: str, env: Mapping[str, str] | None = None) -> list[str]:
     """``docker exec`` argv running a devcontainer lifecycle *hook* in *name*.
 
     ``docker exec`` inherits the container's configured user and env, so the hook
     sees exactly what ``docker run --user/-e`` established — the same environment
-    the Dev Containers CLI gives it.
+    the Dev Containers CLI gives it, plus *env* for this run.
     """
-    return ["docker", "exec", name, *_HOOK_SHELL, hook]
+    pairs = [f"{key}={value}" for key, value in (env or {}).items()]
+    return [
+        "docker",
+        "exec",
+        *(arg for pair in pairs for arg in ("-e", pair)),
+        name,
+        *_HOOK_SHELL,
+        hook,
+    ]
 
 
 def exec_argv(
@@ -741,6 +753,7 @@ class UpRequest:
     name: str
     labels: tuple[str, ...]
     relay: Any
+    ui: bool = True
 
 
 def _validate_up_request(workspace: Path) -> UpRequest:
@@ -807,10 +820,11 @@ def _create_or_resume_session(
         )
     else:
         _start_session_container(request.name)
+    env = None if request.ui else {incontainer_setup.NO_UI_ENV: "1"}
     if created and request.spec.get("postCreateCommand"):
-        _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand")
+        _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand", env)
     if request.spec.get("postStartCommand"):
-        _run_hook(request.name, str(request.spec["postStartCommand"]), "postStartCommand")
+        _run_hook(request.name, str(request.spec["postStartCommand"]), "postStartCommand", env)
     return relay_created
 
 
@@ -901,17 +915,22 @@ def _up_unlocked(
     ).name
 
 
-def ensure(workspace: Path, *, rebuild: bool = False) -> EnsureResult:
-    """Ensure a Sandbox and expose startup metadata to the CLI."""
+def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> EnsureResult:
+    """Ensure a Sandbox and expose startup metadata to the CLI.
+
+    Without *ui* nothing starts T3 Code or its relay; a Sandbox that already runs keeps them.
+    """
     from booley.runtime import t3_relay
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
         _recover_before_lifecycle("booley session up")
-        result = _ensure_unlocked(workspace, rebuild=rebuild)
+        result = _ensure_unlocked(workspace, rebuild=rebuild, ui=ui)
         # A VS Code-owned Sandbox is not stopped by `session down`, so it gets no relay.
-        if result.vscode:
+        if result.vscode or not ui:
             return result
+        if not result.started:  # a Sandbox left running by `up --no-ui` has no T3 Code yet
+            _run_hook(result.name, _T3_ENTRY + "start", "T3 Code start")
         return replace(result, relay=t3_relay.start(workspace, result.name))
 
 
@@ -922,9 +941,10 @@ def _ensure_unlocked(
     expected_image_id: str | None = None,
     expected_wheel_source_fingerprint: str | None = None,
     expected_wheel_sha256: str | None = None,
+    ui: bool = True,
 ) -> EnsureResult:
     """Reuse the selected Sandbox, or run the headless startup transaction."""
-    request = _validate_up_request(workspace)
+    request = replace(_validate_up_request(workspace), ui=ui)
     selected = resolve_running_sandbox(workspace)
     if rebuild:
         _refuse_editor(selected, "rebuild from the CLI")
@@ -2232,7 +2252,7 @@ def _remove_license_relay(relay) -> None:
         raise SessionError(f"could not clean up license relay: {exc}") from exc
 
 
-def _run_hook(name: str, hook: str, label: str) -> None:
+def _run_hook(name: str, hook: str, label: str, env: Mapping[str, str] | None = None) -> None:
     """Run a lifecycle hook, warning (not failing) when it errors.
 
     The hooks are best-effort by construction — the seed steps already end in
@@ -2241,7 +2261,7 @@ def _run_hook(name: str, hook: str, label: str) -> None:
     container with no MCP endpoint, which is worth a loud warning but not a
     teardown: the user can re-run `booley session up` once the cause is fixed.
     """
-    result = _run(hook_argv(name, hook))
+    result = _run(hook_argv(name, hook, env))
     if result.returncode != 0:
         logger.warning(
             "%s failed (exit %d): %s",
@@ -2585,6 +2605,82 @@ def status(workspace: Path) -> str:
     if not idk.container_exists(name):
         return "absent"
     return "running" if idk.container_running(name) else "stopped"
+
+
+_PAIRING_TIMEOUT_S = 60
+
+
+def _last_line(text: str) -> str:
+    """The last non-empty line: a login shell's profile may print before the entry's reply."""
+    return next((line for line in reversed(text.splitlines()) if line.strip()), "")
+
+
+@dataclass(frozen=True, slots=True)
+class PairingLink:
+    """A T3 Code pairing link: it holds a token, so print it only to the user."""
+
+    url: str
+
+
+def create_pairing_link(container: str, port: int) -> PairingLink:
+    """Ask T3 Code in *container* for a pairing link on the host relay at *port*.
+
+    A refusal names the exit status or the problem, never the Sandbox's output, which holds
+    the token.
+    """
+    prefix = f"http://127.0.0.1:{port}/"
+    try:
+        result = _run(hook_argv(container, f"{_T3_ENTRY}pair {port}"), timeout=_PAIRING_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise SessionError(
+            f"T3 Code gave no pairing link in {_PAIRING_TIMEOUT_S} seconds"
+        ) from None
+    if result.returncode:
+        raise SessionError(f"t3 auth pairing create failed (exit {result.returncode})")
+    try:
+        url = require_str(require_dict(json.loads(_last_line(result.stdout))), "pairUrl")
+    except ValueError:
+        url = ""
+    if not url.startswith(prefix):
+        raise SessionError(f"T3 Code's pairing reply is not a link on {prefix}")
+    return PairingLink(url)
+
+
+def pairing_link(workspace: Path) -> PairingLink:
+    """A new pairing link for the Project's running Sandbox, through its relay."""
+    from booley.runtime import t3_relay
+
+    selected = resolve_running_sandbox(workspace)
+    if selected is None:
+        raise SessionError("no running Sandbox; run `booley session up`")
+    if selected.vscode:
+        raise SessionError("VS Code owns the Sandbox, and it has no T3 Code relay")
+    port = t3_relay.running_port(workspace, selected.name)
+    if port is None:
+        raise SessionError("the UI is off; run `booley session up` to start T3 Code and its relay")
+    return create_pairing_link(selected.name, port)
+
+
+def ui_status(workspace: Path) -> str | None:
+    """The T3 Code and relay lines of `session status`; ``None`` when no Sandbox runs."""
+    from booley.runtime import t3_relay
+
+    selected = resolve_running_sandbox(workspace)
+    if selected is None:
+        return None
+    try:
+        state = _run(hook_argv(selected.name, f"{_T3_ENTRY}state"), timeout=_PAIRING_TIMEOUT_S)
+        t3_state = _last_line(state.stdout) if state.returncode == 0 else "unknown"
+    except subprocess.TimeoutExpired:
+        t3_state = "unknown"
+    try:
+        port = t3_relay.running_port(workspace, selected.name)
+        relay = "off" if port is None else f"127.0.0.1:{port}"
+    except t3_relay.T3RelayError:
+        relay = "unknown"
+    if t3_state == "off" and relay == "off":
+        return "UI: off"
+    return f"T3 Code: {t3_state}\nT3 Code relay: {relay}"
 
 
 def _project_data_alias_capable(image_id: str) -> bool:

@@ -187,7 +187,7 @@ def test_main_repairs_worktree_pointers_before_the_server(monkeypatch, capsys, r
         "repair_mount_registrations",
         lambda root: events.append(f"repair:{root}") or result,
     )
-    monkeypatch.setattr(entry, "_hook_start_directory", lambda: Path("start"))
+    monkeypatch.setattr(entry, "hook_start_directory", lambda: Path("start"))
     monkeypatch.setattr(reg, "ensure_http_server", lambda: events.append("server") or "started")
     monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")

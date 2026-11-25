@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import itertools
 import json
 import os
 import subprocess
@@ -373,14 +374,28 @@ def run_registrar_on_post_start(
     runs: list[str] = []
 
     def reply(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        if "booley.harness.incontainer_register" not in argv[-1]:
+        registrar = "booley.harness.incontainer_register" in argv[-1]
+        if not registrar and "booley.harness.incontainer_t3" not in argv[-1]:
             return completed()
         booley_dir.reset_cache()
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            incontainer_register.main()
-        runs.append(err.getvalue())
-        return completed(stderr=runs[-1])
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            monkeypatch.context() as scope,
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            for flag, pair in itertools.pairwise(argv):
+                if flag == "-e":  # the exec's own environment
+                    scope.setenv(*pair.split("=", 1))
+            code = 0
+            if registrar:
+                incontainer_register.main()
+                runs.append(err.getvalue())
+            else:
+                from booley.harness import incontainer_t3
+
+                code = incontainer_t3.main(argv[-1].split()[3:])
+        return completed(code, out.getvalue(), err.getvalue())
 
     docker.exec_reply = reply
     return runs

@@ -241,7 +241,8 @@ clients, and development dependencies. It backs the per-folder Sandbox
 | `booley init` | Set up project; on the host also pull or build the image |
 | `booley init --force` | Refresh Booley-managed resources; keep caches and user files |
 | `booley doctor` | Verify image + container EDA tools |
-| `booley session up` | Start the Sandbox headlessly (no VS Code) |
+| `booley session up [--no-ui]` | Start the Sandbox headlessly (no VS Code); print a T3 Code pairing link, or start no UI |
+| `booley session pair` | Print a new T3 Code pairing link for the running Sandbox |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
 | `booley` / `booley chat` | Launch the default `claude` or `codex` command inside the Sandbox; `--cli <name>` picks another allowed one |

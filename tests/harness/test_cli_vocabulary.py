@@ -147,7 +147,7 @@ def test_recursive_command_inventory():
             assert_controls(parser)
     # New nested routes require an explicit ownership/compatibility decision.
     nested = {
-        "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
+        "session": {"up", "enter", "pair", "down", "status", "validate", "prepare", "refresh"},
         "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
         "worktree": {"new", "list", "rm", "gc"},

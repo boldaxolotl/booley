@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import socket
 import subprocess
 import threading
@@ -22,13 +23,14 @@ ADDED = (0, "Added project 1 (p) at /p.")
 
 @dataclass
 class T3CodeFake:
-    """Record `t3 serve` and `t3 project add`; print the pairing token on stdout as T3 Code does."""
+    """Record `t3 serve`, `t3 project add` and `t3 auth pairing create`; print the pairing token on stdout as T3 Code does."""
 
     running: bool = False
     add_replies: list[tuple[int, str] | OSError] = field(default_factory=list)
     spawn_error: OSError | None = None
     served: list[list[str]] = field(default_factory=list)
     added: list[list[str]] = field(default_factory=list)
+    paired: list[list[str]] = field(default_factory=list)
     sinks: list[str] = field(default_factory=list)
     serve_stdouts: list[object] = field(default_factory=list)
 
@@ -48,6 +50,10 @@ class T3CodeFake:
         return SimpleNamespace(poll=lambda: None)
 
     def run(self, cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[1:3] == ["auth", "pairing"]:
+            self.paired.append(cmd)
+            url = f"{cmd[cmd.index('--base-url') + 1]}/pair#token={TOKEN}-{len(self.paired)}"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"pairUrl": url}, indent=2), "")
         self.added.append(cmd)
         if not self.running:  # `t3 project add` talks to a running server
             return subprocess.CompletedProcess(cmd, 78, "no server", "")
