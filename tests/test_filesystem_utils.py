@@ -245,9 +245,11 @@ def test_does_not_retry_posix_permission_errors(
     method, path, run, _ = _operation(op, tmp_path, delays)
     calls = _fail_first(monkeypatch, method, path, [PermissionError(13, "Permission denied")])
 
-    with monkeypatch.context() as posix_host:
-        # On Windows a bare EACCES is a transient C-runtime sharing error.
-        use_sys_platform(posix_host, windows=False)
+    with monkeypatch.context() as host:
+        if op == "read":
+            # Only the read path treats a bare EACCES as a transient C-runtime sharing error
+            # on Windows; replace and unlink run on the real host.
+            use_sys_platform(host, windows=False)
         with pytest.raises(PermissionError):
             run()
     assert len(calls) == 1

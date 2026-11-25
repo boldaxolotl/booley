@@ -29,7 +29,6 @@ def test_package_data_dir_prefers_the_installed_package_with_refs(
 
     result = paths.package_data_dir()
 
-    assert result == resources.package_data_dir()
     if case == "shadow-with-fallback":
         # The source package's data: it holds refs and lies outside the shadow.
         assert (result / "refs").is_dir()

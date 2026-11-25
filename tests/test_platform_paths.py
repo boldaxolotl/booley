@@ -98,7 +98,8 @@ def test_windows_docker_source_becomes_a_native_path_when_addressable(
     monkeypatch: pytest.MonkeyPatch, source: str, native: str | None
 ):
     use_windows_paths(monkeypatch, windows=True)
-    # PureWindowsPath keeps the drive-letter spelling checkable on a POSIX host.
+    # PureWindowsPath keeps the drive-letter spelling checkable on a POSIX host; a POSIX Path
+    # cannot parse a drive letter, so no public input reaches this behavior there.
     monkeypatch.setattr(platform_paths, "Path", PureWindowsPath)
     result = host_path_from_docker_mount(source)
     assert (None if result is None else result.as_posix()) == native

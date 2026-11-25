@@ -110,10 +110,14 @@ class TestEnsureProxyEnv:
         with pytest.raises(runtime_context.EgressModeError, match=r"`proxy`.*`unproxied`"):
             runtime_context.ensure_proxy_env()
 
-    def test_noop_in_foreign_container(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "marker_file", [None, "/.dockerenv"], ids=["host", "foreign-container"]
+    )
+    def test_noop_outside_the_sandbox(self, monkeypatch, marker_file):
         """/.dockerenv alone is NOT enough — a foreign container has no
-        booley-proxy, and forcing a dead proxy on it would break egress."""
-        _pin_runtime(monkeypatch, env=None, marker_file="/.dockerenv")
+        booley-proxy, and forcing a dead proxy on it would break egress; the host
+        has none either."""
+        _pin_runtime(monkeypatch, env=None, marker_file=marker_file)
         assert runtime_context.ensure_proxy_env() is False
         assert "HTTPS_PROXY" not in os.environ
 
@@ -173,7 +177,7 @@ class TestAgentSessionApp:
             runtime_context.container_only_error,
             "1",
             None,
-            ("Reopen in Container", "booley session enter -- booley flow"),
+            ("Reopen in Container", "booley session enter -- bwave"),
         ),
         (runtime_context.host_only_error, None, "1", ("HOST terminal",)),
     ],
@@ -187,12 +191,12 @@ def test_venue_guard_refuses_only_on_the_wrong_side(
     fixes: tuple[str, ...],
 ):
     _pin_runtime(monkeypatch, env=own_side)
-    assert guard("booley flow") is None
+    assert guard("bwave") is None
 
     _pin_runtime(monkeypatch, env=other_side)
-    message = guard("booley flow")
+    message = guard("bwave")
     assert message is not None
-    assert message.startswith("ERROR: `booley flow` ")
+    assert message.startswith("ERROR: `bwave` ")
     for fix in fixes:
         assert fix in message
     assert "`booley --help`" in message
