@@ -15,6 +15,7 @@ import pytest
 from booley.config.agent import AgentSettings, set_agent_settings
 from booley.config.settings import BackendConfigError
 from booley.core.models import AgentCallParams
+from booley.runtime._retry import MAX_API_RETRIES
 from booley.runtime.agent_backend import ClaudeSDKBackend, CodexBackend
 from booley.runtime.agent_config import (
     BackendConfig,
@@ -499,8 +500,29 @@ async def test_codex_agent_text_cannot_identify_a_usage_limit(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["stderr", "stdout", "turn.failed"])
-async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatch, source):
-    detail = "Codex could not start: configuration was rejected."
+@pytest.mark.parametrize(
+    ("detail", "retried"),
+    [
+        pytest.param("Codex could not start: configuration was rejected.", False, id="rejected"),
+        pytest.param("Request too large: 1500 bytes", False, id="1500-bytes"),
+        pytest.param("max_tokens 2500 exceeds the model limit", False, id="max-tokens-2500"),
+        pytest.param("request req_015003 failed validation", False, id="request-id-500"),
+        pytest.param("Invalid max_tokens: 500.5; expected an integer", False, id="decimal-500"),
+        pytest.param("Invalid connection string in config", False, id="connection-string"),
+        pytest.param('unexpected status 503: {"error":"upstream"}', True, id="status-only-503"),
+        pytest.param("API Error: 500 internal server error", True, id="api-500"),
+        pytest.param("502 Bad Gateway", True, id="bad-gateway"),
+        pytest.param("503 Service Unavailable", True, id="service-unavailable"),
+        pytest.param("529 overloaded", True, id="overloaded"),
+        pytest.param("ECONNRESET", True, id="econnreset"),
+        pytest.param("ETIMEDOUT", True, id="etimedout"),
+        pytest.param("connection reset by peer", True, id="connection-reset"),
+        pytest.param("stream disconnected before completion", True, id="stream-disconnected"),
+    ],
+)
+async def test_codex_no_output_provider_failure_retries_only_transient_text(
+    tmp_path, monkeypatch, source, detail, retried
+):
     launches = replay_codex_run(
         monkeypatch,
         events=_codex_events(source=source, detail=detail),
@@ -508,12 +530,17 @@ async def test_codex_no_output_provider_failure_is_terminal(tmp_path, monkeypatc
         stderr=detail if source == "stderr" else "",
         returncode=1,
     )
+    sleep = AsyncMock()
+    monkeypatch.setattr(anyio, "sleep", sleep)
 
-    with pytest.raises(AgentProviderError, match="configuration was rejected") as raised:
+    with pytest.raises(TransientAPIError if retried else AgentProviderError) as raised:
         await CodexBackend().call(AgentCallParams(prompt="work", model="test", cwd=tmp_path))
 
-    assert raised.value.provider == "codex"
-    assert len(launches) == 1
+    assert detail in str(raised.value)
+    assert len(launches) == (MAX_API_RETRIES if retried else 1)
+    assert sleep.await_count == len(launches) - 1
+    if not retried:
+        assert raised.value.provider == "codex"
 
 
 @pytest.mark.asyncio

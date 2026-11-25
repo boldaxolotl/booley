@@ -489,6 +489,18 @@ class TestCallAgent:
         [
             (ConnectionError("ECONNRESET"), True),
             (RuntimeError('API Error: 500 {"type":"error","error":{"type":"api_error"}}'), True),
+            (RuntimeError("API Error: 500 internal server error"), True),
+            (RuntimeError("[Errno 104] Connection reset by peer"), True),
+            (RuntimeError("Remote end closed connection without response"), True),
+            (RuntimeError("An existing connection was forcibly closed by the remote host"), True),
+            (RuntimeError("Network connection lost"), True),
+            (RuntimeError("All connection attempts failed"), True),
+            (RuntimeError("Connection to api.example.com timed out. (connect timeout=10)"), True),
+            (RuntimeError("Connection broken: IncompleteRead(100 bytes read)"), True),
+            (RuntimeError("Failed to establish a new connection: [Errno 111]"), True),
+            (RuntimeError("No connection could be made: the target machine refused it"), True),
+            (RuntimeError("Server closed the connection unexpectedly"), True),
+            (RuntimeError("Connection timed out after 30s"), True),
             (RuntimeError("502 Bad Gateway"), True),
             (RuntimeError("503 Service Unavailable"), True),
             (RuntimeError("529 overloaded"), True),
@@ -503,10 +515,29 @@ class TestCallAgent:
             ),
             (RuntimeError("Error: authentication failed"), False),
             (ValueError("Invalid JSON in agent output"), False),
+            (RuntimeError("Request too large: 1500 bytes"), False),
+            (RuntimeError("max_tokens 2500 exceeds the model limit"), False),
+            (RuntimeError("request req_015003 failed validation"), False),
+            (RuntimeError("Invalid max_tokens: 500.5; expected an integer"), False),
+            (RuntimeError("Invalid connection string in config"), False),
+            (RuntimeError("Invalid connection string: error parsing host"), False),
+            (RuntimeError("Step 3 reported: Command failed with exit code 2"), False),
         ],
         ids=[
             "connection-reset",
             "api-500",
+            "api-500-phrase",
+            "connection-reset-by-peer",
+            "remote-end-closed",
+            "forcibly-closed",
+            "connection-lost",
+            "attempts-failed",
+            "host-timed-out",
+            "connection-broken",
+            "new-connection-failed",
+            "winerror-refused",
+            "server-closed",
+            "connection-timeout",
             "bad-gateway",
             "service-unavailable",
             "overloaded",
@@ -515,6 +546,13 @@ class TestCallAgent:
             "sdk-command-failed",
             "authentication-failed",
             "invalid-json",
+            "1500-bytes",
+            "max-tokens-2500",
+            "request-id-500",
+            "decimal-500",
+            "connection-string",
+            "connection-string-error",
+            "quoted-exit-phrase",
         ],
     )
     async def test_retries_only_transient_failures(self, monkeypatch, no_backoff, error, retried):
@@ -528,6 +566,7 @@ class TestCallAgent:
             with pytest.raises(type(error)):
                 await call_agent(_params())
             assert len(attempts) == 1
+            no_backoff.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("structured_output", [None, {}])
