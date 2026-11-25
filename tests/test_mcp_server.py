@@ -1,4 +1,4 @@
-"""Tests for mcp_server: parameter conversion, subprocess dispatch, result formatting."""
+"""Tests for the MCP server: tool calls, lifetime policy, result text, Jobs, and entry path."""
 
 from __future__ import annotations
 
@@ -6,203 +6,114 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-# Import the real server first: the per-class `mcp` stubs below cannot satisfy
-# `mcp.server.context`, so an isolated run of one class would fail at setup.
-import booley.mcp.server  # noqa: F401
-from booley.mcp import (
-    catalog,
-    endpoint_process,
-    job_results,
-    report_encoding,
-)
-from booley.runtime import health_presentation
+import tests.mcp_runner_fake as fake
+from booley.mcp import catalog, endpoint_process, job_results, report_encoding, server
+from booley.mcp.application import McpRequestContext
+from booley.mcp.report_encoding import ReportEncoder
+from booley.runtime.booley_dir import reset_cache
+from tests.target_test_support import write_sim_preview_project
 from tests.time_budget import hang_guard_s, scaled
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+def test_option_like_values_keep_their_flag(monkeypatch, tmp_path):
+    """F-12: as the next argv item, argparse would read a selector as a new option and drop it.
+
+    The `=` form keeps it attached to its flag.
+    """
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
+
+    fake.call(app, "sim", {"target": "--meminit=ram,firmware.elf", "test": ["-DFOO", "BAR"]})
+
+    assert calls[0].cmd[3:] == [
+        "--target=--meminit=ram,firmware.elf",
+        "--test=-DFOO",
+        "--test",
+        "BAR",
+    ]
 
 
-# We can test the pure helpers without importing the full MCP stack.
-# Import selectively to avoid needing the `mcp` package installed.
+# id: (idle timeout, max age, steps, expected: "" keeps serving, else the exit reason's fragment)
+_LIFETIMES = {
+    "idle": (10, None, ["check", 111.0, "check"], ["", "idle"]),
+    "in-flight": (10, None, ["start", 200.0, "check", "end", "check"], ["", ""]),
+    "max-age-after-in-flight": (
+        None,
+        10,
+        ["start", 200.0, "check", "end", "check"],
+        ["", "older"],
+    ),
+}
 
 
-# ---------------------------------------------------------------------------
-# _params_to_argv
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("idle", "max_age", "steps", "expected"), _LIFETIMES.values(), ids=list(_LIFETIMES)
+)
+def test_lifetime_exit_policy(idle, max_age, steps, expected):
+    # Private seam: the lifetime decides only when `main()`'s stdio server stops serving;
+    # no public call returns its decision.
+    clock = [100.0]
+    lifetime = server._McpLifetime(idle, max_age, now=lambda: clock[0])
+    decisions = []
+    for step in steps:
+        if isinstance(step, float):
+            clock[0] = step
+        elif step == "check":
+            decisions.append(lifetime.should_exit())
+        else:
+            getattr(lifetime, f"mark_mcp_endpoint_{step}")()
+    for (should_exit, reason), fragment in zip(decisions, expected, strict=True):
+        assert should_exit is bool(fragment)
+        assert fragment in reason
 
 
-class TestParamsToArgv:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        # Stub mcp.server and mcp.types to avoid import errors
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _params_to_argv
-
-            self._params_to_argv = _params_to_argv
-
-    def test_option_like_value_uses_eq_form(self):
-        # F-12: as the next argv item, argparse would read the selector as a
-        # new option and drop it; the `=` form keeps it attached to its flag.
-        result = self._params_to_argv({"test": "--meminit=ram,firmware.elf"})
-        assert result == ["--test=--meminit=ram,firmware.elf"]
-
-    def test_option_like_list_items_use_eq_form(self):
-        result = self._params_to_argv({"defines": ["-DFOO", "BAR"]})
-        assert result == ["--defines=-DFOO", "--defines", "BAR"]
+# id: (developer exposure, self_exit, idle timeout env, idle timeout set, max age set)
+_FROM_ENV = {
+    "client-owned": (False, True, None, False, False),
+    "http": (True, False, None, False, False),
+    "developer-stdio": (True, True, None, True, True),
+    "developer-zero-idle": (True, True, "0", False, True),
+}
 
 
-# ---------------------------------------------------------------------------
-# _McpLifetime
-# ---------------------------------------------------------------------------
-
-
-class TestMcpLifetime:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _env_timeout_seconds, _McpLifetime
-
-            self._McpLifetime = _McpLifetime
-            self._env_timeout_seconds = _env_timeout_seconds
-
-    def test_idle_timeout_requests_exit(self):
-        now = 100.0
-        lifetime = self._McpLifetime(
-            idle_timeout_seconds=10,
-            max_age_seconds=None,
-            now=lambda: now,
-        )
-
-        should_exit, reason = lifetime.should_exit()
-        assert not should_exit
-        assert reason == ""
-
-        now = 111.0
-        should_exit, reason = lifetime.should_exit()
-        assert should_exit
-        assert "idle" in reason
-
-    def test_in_flight_mcp_tool_suppresses_exit(self):
-        now = 100.0
-        lifetime = self._McpLifetime(
-            idle_timeout_seconds=10,
-            max_age_seconds=None,
-            now=lambda: now,
-        )
-        lifetime.mark_mcp_endpoint_start()
-
-        now = 200.0
-        should_exit, reason = lifetime.should_exit()
-        assert not should_exit
-        assert reason == ""
-
-        lifetime.mark_mcp_endpoint_end()
-        should_exit, reason = lifetime.should_exit()
-        assert not should_exit
-
-    def test_max_age_exits_after_in_flight_mcp_tool_finishes(self):
-        now = 100.0
-        lifetime = self._McpLifetime(
-            idle_timeout_seconds=None,
-            max_age_seconds=10,
-            now=lambda: now,
-        )
-        lifetime.mark_mcp_endpoint_start()
-
-        now = 200.0
-        should_exit, reason = lifetime.should_exit()
-        assert not should_exit
-
-        lifetime.mark_mcp_endpoint_end()
-        should_exit, reason = lifetime.should_exit()
-        assert should_exit
-        assert "older" in reason
-
-    def test_env_timeout_zero_disables(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BOOLEY_TEST_TIMEOUT", "0")
-        assert self._env_timeout_seconds("BOOLEY_TEST_TIMEOUT", 5) is None
-
-    def test_heartbeat_written_for_reaper(self, tmp_path):
-        # ADR 0018 WS4: wall-clock heartbeat for the external reaper.
-        hb = tmp_path / "hb"
-        lifetime = self._McpLifetime(
-            idle_timeout_seconds=10,
-            max_age_seconds=None,
-            heartbeat_path=str(hb),
-        )
-        assert hb.exists()  # written at construction
-        first = hb.read_text(encoding="utf-8")
-        lifetime.mark_activity()
-        assert hb.read_text(encoding="utf-8")  # refreshed on activity
-        # Value is epoch seconds (wall clock), not the injected monotonic now.
-        assert float(first.strip()) > 1_000_000_000
-
-    def test_from_env_ticket_stdio_writes_heartbeat(self, tmp_path, monkeypatch):
-        # ADR 0028 Decision 11: Ticket Mode stdio servers share the Session
-        # Runtime container, so their MCP tool activity must feed the reaper
-        # heartbeat too — an active ticket never reads as idle. No self-exit:
-        # the spawning client owns the process lifetime.
-        import booley.mcp.server as mod
-
-        hb = tmp_path / "hb"
-        monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
-        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
-        lifetime = mod._McpLifetime.from_env()
-        assert lifetime.idle_timeout_seconds is None
-        assert lifetime.max_age_seconds is None
-        assert hb.exists()  # heartbeat written at construction
-
-    def test_from_env_http_disables_self_exit_keeps_heartbeat(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        # ADR 0023: the HTTP server must never self-exit (clients reconnect to
-        # its URL for the container's whole life), but the reaper heartbeat
-        # stays so idle containers are still stopped at the container level.
-        # Use the module's own class: the fixture's import can be a different,
-        # orphaned module instance (patch.dict removes it from sys.modules).
-        import booley.mcp.server as mod
-
-        hb = tmp_path / "hb"
-        monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
+@pytest.mark.parametrize(
+    ("developer", "self_exit", "idle_env", "idle_set", "max_age_set"),
+    _FROM_ENV.values(),
+    ids=list(_FROM_ENV),
+)
+def test_lifetime_from_env(
+    monkeypatch, tmp_path, developer, self_exit, idle_env, idle_set, max_age_set
+):
+    # Private seam: the lifetime decides only when `main()`'s stdio server stops serving;
+    # the reaper heartbeat is a file no public call reads.
+    heartbeat = tmp_path / "hb"
+    monkeypatch.setattr(server, "_MCP_HEARTBEAT_PATH", str(heartbeat))
+    monkeypatch.delenv("BOOLEY_MCP_IDLE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
+    if developer:
         monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-        lifetime = mod._McpLifetime.from_env(self_exit=False)
-        assert lifetime.idle_timeout_seconds is None
-        assert lifetime.max_age_seconds is None
-        assert hb.exists()  # heartbeat written at construction
+    if idle_env is not None:
+        monkeypatch.setenv("BOOLEY_MCP_IDLE_TIMEOUT_SECONDS", idle_env)
 
-    def test_from_env_stdio_keeps_self_exit(self, tmp_path, monkeypatch):
-        import booley.mcp.server as mod
+    lifetime = server._McpLifetime.from_env(self_exit=self_exit)
 
-        monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(tmp_path / "hb"))
-        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-        lifetime = mod._McpLifetime.from_env()
-        assert lifetime.idle_timeout_seconds is not None
-        assert lifetime.max_age_seconds is not None
+    assert (lifetime.idle_timeout_seconds is not None) is idle_set
+    assert (lifetime.max_age_seconds is not None) is max_age_set
+    # ADR 0018 WS4: wall-clock heartbeat for the external reaper, written at construction
+    # and refreshed on activity; ADR 0023: the HTTP server keeps it while never self-exiting.
+    assert float(heartbeat.read_text(encoding="utf-8").strip()) > 1_000_000_000
+    heartbeat.unlink()
+    lifetime.mark_activity()
+    assert heartbeat.read_text(encoding="utf-8")
 
 
 class TestHttpPort:
@@ -227,27 +138,7 @@ class TestHttpPort:
         assert http_port() == DEFAULT_HTTP_PORT
 
 
-# ---------------------------------------------------------------------------
-# _format_mcp_tool_result
-# ---------------------------------------------------------------------------
-
-
 class TestFormatMcpToolResult:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _format_mcp_tool_result
-
-            self._format_mcp_tool_result = _format_mcp_tool_result
-
     def test_with_report(self):
         report = {
             "status": "pass",
@@ -256,7 +147,7 @@ class TestFormatMcpToolResult:
             "report_text": "RESULT: PASS",
             "detail": {"reason": "done", "error": "none"},
         }
-        result = self._format_mcp_tool_result(0, "output", "", report)
+        result = ReportEncoder().text_result(0, "output", "", report)
         assert "status: pass" in result
         assert "summary: all good" in result
         assert "report_text: RESULT: PASS" in result
@@ -264,62 +155,40 @@ class TestFormatMcpToolResult:
         assert "detail.error: none" in result
 
     @pytest.mark.parametrize(
-        ("stdout", "stderr"),
-        [("RESULT: PASS\n", ""), ("", "RESULT: PASS\n")],
-    )
-    def test_report_text_already_displayed_as_whole_lines_is_not_repeated(
-        self, stdout: str, stderr: str
-    ) -> None:
-        result = self._format_mcp_tool_result(
-            0,
-            stdout,
-            stderr,
-            {"report_text": "RESULT: PASS"},
-        )
-
-        assert result.count("RESULT: PASS") == 1
-        assert "report_text:" not in result
-
-    @pytest.mark.parametrize(
-        ("stdout", "stderr"),
+        ("stdout", "stderr", "limit", "repeated"),
         [
-            ("progress mentions RESULT: PASS but keeps going\n", ""),
-            ("", "progress mentions RESULT: PASS but keeps going\n"),
+            pytest.param("RESULT: PASS\n", "", None, False, id="shown-in-stdout"),
+            pytest.param("", "RESULT: PASS\n", None, False, id="shown-in-stderr"),
+            pytest.param(
+                "progress mentions RESULT: PASS ok\n", "", None, True, id="inside-stdout-line"
+            ),
+            pytest.param(
+                "", "progress mentions RESULT: PASS ok\n", None, True, id="inside-stderr-line"
+            ),
+            pytest.param(
+                "RESULT: PASS\n" + "x" * 20,
+                "RESULT: PASS\n" + "y" * 20,
+                "12",
+                True,
+                id="truncated",
+            ),
         ],
     )
-    def test_report_text_mentioned_inside_a_log_line_is_retained(
-        self, stdout: str, stderr: str
-    ) -> None:
-        result = self._format_mcp_tool_result(
-            0,
-            stdout,
-            stderr,
-            {"report_text": "RESULT: PASS"},
-        )
+    def test_report_text_shown_once(self, monkeypatch, stdout, stderr, limit, repeated):
+        """A verdict printed twice, or dropped when only mentioned or truncated, is the 324ad230d bug."""
+        if limit:
+            monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", limit)
+            monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", limit)
 
-        assert "report_text: RESULT: PASS" in result
+        result = ReportEncoder().text_result(0, stdout, stderr, {"report_text": "RESULT: PASS"})
 
-    def test_report_text_truncated_out_of_displayed_streams_is_retained(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("BOOLEY_MCP_MAX_STDOUT_BYTES", "12")
-        monkeypatch.setenv("BOOLEY_MCP_MAX_STDERR_BYTES", "12")
+        assert ("report_text: RESULT: PASS" in result) is repeated
+        if not repeated:
+            assert result.count("RESULT: PASS") == 1
 
-        result = self._format_mcp_tool_result(
-            1,
-            "RESULT: FAIL\n" + "x" * 20,
-            "RESULT: FAIL\n" + "y" * 20,
-            {"report_text": "RESULT: FAIL"},
-        )
-
-        assert "report_text: RESULT: FAIL" in result
-
-    def test_unrelated_stderr_and_report_are_both_retained(self) -> None:
-        result = self._format_mcp_tool_result(
-            1,
-            "",
-            "compiler warning\n",
-            {"report_text": "RESULT: FAIL"},
+    def test_unrelated_stderr_and_report_are_both_retained(self):
+        result = ReportEncoder().text_result(
+            1, "", "compiler warning\n", {"report_text": "RESULT: FAIL"}
         )
 
         assert "compiler warning" in result
@@ -331,38 +200,25 @@ class TestFormatMcpToolResult:
 # ---------------------------------------------------------------------------
 
 
+def _child(cmd, **kwargs):
+    # Private seam: process supervision (timeout, process group, output cap) of the one function
+    # that starts an endpoint child; no MCP tool call exposes it apart from a real endpoint.
+    return server._run_subprocess(cmd, **kwargs)
+
+
 class TestRunSubprocess:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _run_subprocess
-
-            self._run_subprocess = _run_subprocess
-
     def test_successful_run(self):
         # Real subprocess via asyncio — `python -c` is portable on Win/Linux.
-        import asyncio
-
         code, out, _err, timed_out = asyncio.run(
-            self._run_subprocess([sys.executable, "-c", "print('ok')"]),
+            _child([sys.executable, "-c", "print('ok')"]),
         )
         assert code == 0
         assert "ok" in out
         assert timed_out is False
 
     def test_timeout(self):
-        import asyncio
-
         code, _out, err, timed_out = asyncio.run(
-            self._run_subprocess(
+            _child(
                 [sys.executable, "-c", "import time; time.sleep(5)"],
                 timeout=scaled(1),
             ),
@@ -372,10 +228,8 @@ class TestRunSubprocess:
         assert timed_out is True
 
     def test_os_error(self):
-        import asyncio
-
         code, _out, err, timed_out = asyncio.run(
-            self._run_subprocess(["__definitely_not_a_real_binary__"]),
+            _child(["__definitely_not_a_real_binary__"]),
         )
         assert code == 2
         assert err  # message describes the launch failure
@@ -387,8 +241,6 @@ class TestRunSubprocess:
         group must be reaped so an interrupted `simulate` can't leave an
         orphaned simulator holding the sim lock.
         """
-        import asyncio
-
         started = tmp_path / "started"
         # A grandchild in the same session writes this only if it outlives the
         # kill. Its absence proves the group (not just the direct child) died.
@@ -404,7 +256,7 @@ class TestRunSubprocess:
 
         async def drive():
             task = asyncio.create_task(
-                self._run_subprocess([sys.executable, "-c", script], timeout=hang_guard_s())
+                _child([sys.executable, "-c", script], timeout=hang_guard_s())
             )
             child_deadline = time.monotonic() + hang_guard_s()
             while time.monotonic() < child_deadline:  # wait for the child to come up
@@ -424,8 +276,7 @@ class TestRunSubprocess:
 
     def test_stdout_tail_cap(self):
         """Output larger than cap is truncated to the tail."""
-        import asyncio
-
+        # Private seam: the tail cap is read from the environment per call; no public reader.
         cap = endpoint_process._stdout_cap_bytes()
         # Print 2x the cap; verify we keep only the tail (ends with last marker).
         script = (
@@ -435,656 +286,377 @@ class TestRunSubprocess:
             "sys.stdout.write('END_MARKER')\n"
         )
         code, out, _err, _timed_out = asyncio.run(
-            self._run_subprocess([sys.executable, "-c", script]),
+            _child([sys.executable, "-c", script]),
         )
         assert code == 0
         assert out.endswith("END_MARKER")
         assert len(out.encode("utf-8")) <= cap
 
 
-def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
-    mcp_stubs = {
-        "mcp": MagicMock(),
-        "mcp.server": MagicMock(),
-        "mcp.server.models": MagicMock(),
-        "mcp.server.request_state": MagicMock(),
-        "mcp.server.stdio": MagicMock(),
-        "mcp.types": MagicMock(),
-    }
-    with patch.dict(sys.modules, mcp_stubs):
-        from booley.mcp.server import _mcp_tool_timeout_seconds as watchdog
-
-    mutation_def = {"default_timeout": 1800}
-    project = {"work_dir": str(tmp_path)}
-    # No override: the run's 30-minute default, exactly the outer wait it always had.
-    assert watchdog("mutation", project, mutation_def) == 1800
-    # A larger budget (which also raises the --count auto cap) is not cut off at 30 minutes.
-    assert watchdog("mutation", {**project, "timeout_ms": 3_600_000}, mutation_def) == 3600
-    # A smaller one never shrinks the wait below the Flow's default.
-    assert watchdog("mutation", {**project, "timeout_ms": 60_000}, mutation_def) == 1800
-
-
-class TestMcpToolTimeoutSeconds:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _mcp_tool_timeout_seconds
-
-            self._mcp_tool_timeout_seconds = _mcp_tool_timeout_seconds
-
-    def test_simulate_trace_timeout_gets_cleanup_margin(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"timeout_ms": 10_000, "trace": True},
-            {"default_timeout": 600},
-        )
-        assert timeout == 4330 + 1800  # plus the default conversion budget
-
-    def test_simulate_non_trace_timeout_gets_small_margin(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"timeout_ms": 10_000, "trace": False},
-            {"default_timeout": 600},
-        )
-        assert timeout == 4240
-
-    def test_simulate_configured_default_gets_small_margin(self, tmp_path):
-        with patch(
-            "booley.flows.sim.config.resolve_sim_timeout_ms",
-            return_value=900_000,
-        ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {"work_dir": str(tmp_path), "trace": False},
-                {"default_timeout": 600},
-            )
-        assert timeout == 5130
-
-    def test_simulate_simulation_record_budget_scales_by_work_units(self):
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=4,
-        ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {"target": "a,b", "timeout_ms": 600_000, "trace": False},
-                {"default_timeout": 1290},
-            )
-        assert timeout == 2 * 3600 + 4 * (600 + 600) + 30
-
-    def test_simulate_trace_margin_scales_by_work_units(self):
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=3,
-        ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {"target": "a,b,c", "timeout_ms": 600_000, "trace": True},
-                {"default_timeout": 1290},
-            )
-        assert timeout == 3 * (3600 + 600 + 600) + 3 * (1800 + 90) + 30
-
-    def test_coverage_trace_budget_adds_conversion_per_unit(self):
-        def coverage_timeout(trace: bool) -> int:
-            with patch(
-                "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-                return_value=2,
-            ):
-                return self._mcp_tool_timeout_seconds(
-                    "sim",
-                    {"target": "a", "timeout_ms": 10_000, "coverage": True, "trace": trace},
-                    {"default_timeout": 1},
-                )
-
-        assert coverage_timeout(True) - coverage_timeout(False) == 2 * 1800
-
-    def test_elab_only_standalone_budget_counts_targets_and_one_sweep(self):
-        from booley.flows.sim.mode import SimulationMode
-
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=3,
-        ) as resolve_units:
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {
-                    "target": "a,b",
-                    "mode": "elab_only_standalone",
-                    "timeout_ms": 10_000,
-                },
-                {"default_timeout": 1},
-            )
-        assert timeout == 2 * 3600 + 10 + 30
-        assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
-
-    def test_watchdog_sizing_sees_the_requested_seed(self):
-        """``--seed random`` splits Cocotb batches, so sizing must know about it."""
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=3,
-        ) as resolve_units:
-            self._mcp_tool_timeout_seconds(
-                "sim",
-                {"target": "a", "seed": "random", "test": ["x", "y"], "timeout_ms": 10_000},
-                {"default_timeout": 1},
-            )
-        assert resolve_units.call_args.kwargs == {"seed": "random"}
-        assert resolve_units.call_args.args[2] == ["x", "y"]
-
-    def test_elab_only_budget_counts_only_target_builds(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"target": "a,b", "mode": "elab_only", "timeout_ms": 10_000},
-            {"default_timeout": 1},
-        )
-
-        assert timeout == 2 * 3600 + 30
-
-    @pytest.mark.parametrize(
-        ("tool", "criterion", "arguments", "default", "expected"),
-        [
-            ("synth", "synthesis_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
-            ("fpga", "fpga_impl_ok_core", {"target": "core", "timeout_ms": 4_000_000}, 600, 4180),
-            ("sim", "cycle_count_core", {"target": "core", "timeout_ms": 10_000}, 1, 4240),
-        ],
-        ids=["synth", "fpga", "sim"],
+def sim_project(root: Path, toml: str = "") -> Path:
+    """A Project whose Test registry gives `a` and `b` two Tests and `coco` (Cocotb) three."""
+    data = write_sim_preview_project(
+        root,
+        {"a": ["first", "second"], "b": ["first", "second"], "coco": ["reset", "stress", "idle"]},
     )
-    def test_criterion_baseline_ref_never_changes_the_budget(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        tool: str,
-        criterion: str,
-        arguments: dict[str, Any],
-        default: int,
-        expected: int,
-    ):
-        """A baseline revision pinned by a state-file Criterion does not double the budget."""
-        state = tmp_path / "state.json"
-        state.write_text(
-            json.dumps({"criteria": {criterion: {"params": {"_baseline_ref": "a" * 40}}}}),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=1,
-        ):
-            timeout = self._mcp_tool_timeout_seconds(tool, arguments, {"default_timeout": default})
+    (root / "coco.core").write_text(
+        "CAPI=2:\nname: ::coco:0\ntargets:\n  coco:\n    flow: sim\n"
+        "    flow_options: {tool: verilator, cocotb_module: test_dut}\n    toplevel: tb\n",
+        encoding="utf-8",
+    )
+    (data / "booley.toml").write_text(toml or "[project]\n", encoding="utf-8")
+    return root
 
-        assert timeout == expected
 
-    def test_lint_short_timeout_uses_outer_floor(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "lint",
-            {"timeout_ms": 10_000, "trace": True},
-            {"default_timeout": 120},
-        )
-        assert timeout == 120
+_BUILD_7S = "[flows.sim]\nbuild_timeout_ms = 7000\n"
+_NINE = ",".join(f"asic_{idx}" for idx in range(9))
+# id: (tool, arguments, booley.toml text, a Project with Tests, expected kill timer in seconds)
+_BUDGETS: dict[str, tuple[str, dict[str, Any], str | None, bool, int]] = {
+    "sim-trace": ("sim", {"timeout_ms": 10_000, "trace": True}, None, False, 6130),
+    "sim-no-trace": ("sim", {"timeout_ms": 10_000}, None, False, 4240),
+    "sim-config-knob": (
+        "sim",
+        {"work_dir": True},
+        "[flows.sim]\ntimeout_ms = 1800000\n",
+        False,
+        6030,
+    ),
+    "sim-default": ("sim", {"work_dir": True}, None, False, 4830),
+    "sim-build-timeout-exact": (
+        "sim",
+        {"target": "a,b", "timeout_ms": 10_000},
+        _BUILD_7S,
+        True,
+        2484,
+    ),
+    "sim-coverage-exact": (
+        "sim",
+        {"target": "a,b", "timeout_ms": 10_000, "coverage": True},
+        _BUILD_7S,
+        True,
+        4104,
+    ),
+    "sim-coverage-trace-per-unit": (
+        "sim",
+        {"target": "a", "timeout_ms": 10_000, "coverage": True, "trace": True},
+        None,
+        True,
+        9260,
+    ),
+    "sim-units": ("sim", {"target": "a,b", "timeout_ms": 600_000}, None, True, 12030),
+    "sim-trace-units": (
+        "sim",
+        {"target": "a", "test": ["first@x3"], "timeout_ms": 600_000, "trace": True},
+        None,
+        True,
+        12900,
+    ),
+    "sim-elab-only": (
+        "sim",
+        {"target": "a,b", "mode": "elab_only", "timeout_ms": 10_000},
+        None,
+        False,
+        7230,
+    ),
+    "sim-elab-only-standalone": (
+        "sim",
+        {"target": "a,b", "mode": "elab_only_standalone", "timeout_ms": 10_000},
+        None,
+        False,
+        7240,
+    ),
+    "sim-seed": (
+        "sim",
+        {"target": "coco", "seed": "random", "timeout_ms": 10_000},
+        None,
+        True,
+        5460,
+    ),
+    "lint-floor": ("lint", {"target": "x", "timeout_ms": 10_000}, None, False, 600),
+    "lint-matrix": ("lint", {"target": "a,b,c,d,e", "timeout_ms": 120_000}, None, False, 630),
+    "lint-cwd-config": (
+        "lint",
+        {"target": "x"},
+        "[flows.lint]\ntimeout_ms = 900000\n",
+        False,
+        930,
+    ),
+    "synth-call-timeout": (
+        "synth",
+        {"target": "core", "timeout_ms": 8_000_000},
+        None,
+        False,
+        8180,
+    ),
+    "synth-matrix": ("synth", {"target": _NINE, "timeout_ms": 1_800_000}, None, False, 16860),
+    "synth-baseline": (
+        "synth",
+        {"target": "a,b", "timeout_ms": 4_000_000, "baseline": "main"},
+        None,
+        False,
+        16360,
+    ),
+    "mutation-default": ("mutation", {"target": "core"}, None, False, 1800),
+    "mutation-raised": (
+        "mutation",
+        {"target": "core", "timeout_ms": 3_600_000},
+        None,
+        False,
+        3600,
+    ),
+    "mutation-smaller": ("mutation", {"target": "core", "timeout_ms": 60_000}, None, False, 1800),
+}
 
-    def test_lint_matrix_scales_after_default_floor(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "lint",
-            {"target": "a,b,c,d,e", "timeout_ms": 120_000},
-            {"default_timeout": 600},
-        )
-        assert timeout == 5 * 120 + 30
 
-    def test_canonical_timeout_wins_for_implementation(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "synth",
-            {"target": "core", "timeout_ms": 4_000_000},
-            {"default_timeout": 600},
-        )
-        assert timeout == 4000 + 60 + 120
+@pytest.mark.parametrize(
+    ("tool", "arguments", "config", "project", "expected"), _BUDGETS.values(), ids=list(_BUDGETS)
+)
+def test_tool_call_kill_timer_follows_the_flow_budget(
+    monkeypatch, tmp_path, tool, arguments, config, project, expected
+):
+    """The outer kill timer covers every stage the Flow budgets, and never cuts a larger budget."""
+    if project:
+        sim_project(tmp_path, config or "")
+    elif config:
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(config, encoding="utf-8")
+    reset_cache()
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
+    if arguments.get("work_dir") is True or project:
+        arguments = {**arguments, "work_dir": str(tmp_path)}
 
-    def test_legacy_timeout_is_rejected_for_mcp(self):
-        with pytest.raises(ValueError, match="removed; use timeout_ms"):
-            self._mcp_tool_timeout_seconds(
-                "lint",
-                {"target": "core", "timeout": 2000},
-                {"default_timeout": 600},
-            )
+    payload = fake.call(app, tool, arguments)
 
-    def test_synth_matrix_budget_scales_per_target(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "synth",
-            {
-                "target": ",".join(f"asic_{idx}" for idx in range(9)),
-                "timeout_ms": 1_800_000,
-            },
-            {"default_timeout": 7200},
-        )
-        assert timeout == 9 * 1800 + 9 * 60 + 120
+    assert not payload.is_error, payload.content[0].text
+    assert calls[-1].kwargs["timeout"] == expected
 
-    def test_synth_baseline_budgets_both_passes(self):
-        timeout = self._mcp_tool_timeout_seconds(
-            "synth",
-            {
-                "target": "asic_small,asic_full",
-                "timeout_ms": 4_000_000,
-                "baseline": "main",
-            },
-            {"default_timeout": 600},
-        )
-        assert timeout == 4 * 4000 + 4 * 60 + 120
 
-    def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
-        """F4: without a call override, the watchdog honors [flows.sim].timeout_ms.
+@pytest.mark.parametrize(
+    ("tool", "criterion", "arguments", "expected"),
+    [
+        ("synth", "synthesis_ok_core", {"target": "core", "timeout_ms": 8_000_000}, 8180),
+        ("fpga", "fpga_impl_ok_core", {"target": "core", "timeout_ms": 8_000_000}, 8180),
+        ("sim", "cycle_count_core", {"target": "core", "timeout_ms": 10_000}, 4240),
+    ],
+    ids=["synth", "fpga", "sim"],
+)
+def test_criterion_baseline_ref_never_changes_the_budget(
+    monkeypatch, tmp_path, tool, criterion, arguments, expected
+):
+    """A baseline revision pinned by a state-file Criterion does not double the budget."""
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({"criteria": {criterion: {"params": {"_baseline_ref": "a" * 40}}}}),
+        encoding="utf-8",
+    )
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
 
-        Otherwise a config-only raise would be silently killed by the outer cap.
-        """
-        from booley.runtime.booley_dir import reset_cache
+    fake.call(app, tool, arguments)
 
-        reset_cache()
-        proj = tmp_path / ".booley"
-        proj.mkdir()
-        (proj / "booley.toml").write_text(
-            "[flows.sim]\ntimeout_ms = 1800000\n",
-            encoding="utf-8",
-        )
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"work_dir": str(tmp_path), "trace": False},
-            {"default_timeout": 600},
-        )
-        assert timeout == 3600 + 600 + 1800 + 30
+    assert calls[-1].kwargs["timeout"] == expected
 
-    def test_lint_no_work_dir_honors_current_workspace_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        from booley.runtime.booley_dir import reset_cache
 
-        project = tmp_path / ".booley"
-        project.mkdir()
-        (project / "booley.toml").write_text(
-            "[flows.lint]\ntimeout_ms = 900000\n",
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(tmp_path)
-        reset_cache()
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "7000"])
+def test_invalid_build_timeout_is_refused_before_spawn(monkeypatch, tmp_path, value):
+    rendered = "true" if value is True else repr(value)
+    sim_project(tmp_path, f"[flows.sim]\nbuild_timeout_ms = {rendered}\n")
+    reset_cache()
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
 
-        timeout = self._mcp_tool_timeout_seconds(
-            "lint",
-            {},
-            {"default_timeout": 600},
-        )
+    payload = fake.call(app, "sim", {"target": "a", "work_dir": str(tmp_path)})
 
-        assert timeout == 930
+    assert payload.is_error
+    assert payload.content[0].text.startswith("ERROR: invalid Flow timeout:")
+    assert "build_timeout_ms" in payload.content[0].text
+    assert calls == []
 
-    def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
-        """No call override or config knob -> the wrapper default budget stands."""
-        from booley.runtime.booley_dir import reset_cache
 
-        reset_cache()
-        # The wrapper default and builtin sim budget are both 600s, then the
-        # outer watchdog adds time for report persistence and process cleanup.
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"work_dir": str(tmp_path), "trace": False},
-            {"default_timeout": 600},
-        )
-        assert timeout == 4830
+def test_legacy_timeout_is_rejected_for_mcp(monkeypatch, tmp_path):
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
 
-    def test_simulate_custom_build_timeout_is_included_exactly(self, tmp_path: Path):
-        from booley.runtime.booley_dir import reset_cache
+    payload = fake.call(app, "lint", {"target": "core", "timeout": 2000})
 
-        reset_cache()
-        project = tmp_path / ".booley"
-        project.mkdir()
-        (project / "booley.toml").write_text(
-            "[flows.sim]\nbuild_timeout_ms = 7000\n",
-            encoding="utf-8",
-        )
-
-        timeout = self._mcp_tool_timeout_seconds(
-            "sim",
-            {"work_dir": str(tmp_path), "timeout_ms": 10_000},
-            {"default_timeout": 1},
-        )
-
-        assert timeout == 7 + 600 + 10 + 30
-
-    def test_coverage_budget_counts_run_and_target_work_exactly(self, tmp_path: Path):
-        project = tmp_path / ".booley"
-        project.mkdir()
-        (project / "booley.toml").write_text(
-            "[flows.sim]\nbuild_timeout_ms = 7000\n",
-            encoding="utf-8",
-        )
-        with patch(
-            "booley.flows.sim.watchdog_sizing.resolve_simulation_record_work_units",
-            return_value=3,
-        ):
-            timeout = self._mcp_tool_timeout_seconds(
-                "sim",
-                {
-                    "work_dir": str(tmp_path),
-                    "target": "a,b",
-                    "timeout_ms": 10_000,
-                    "coverage": True,
-                },
-                {"default_timeout": 1},
-            )
-
-        assert timeout == 3 * (10 + 600 + 90) + 2 * (7 + 30 + 600) + 30
-
-    @pytest.mark.parametrize("value", [True, 0, -1, 1.5, "7000"])
-    def test_invalid_build_timeout_fails_before_spawn_budgeting(
-        self,
-        tmp_path: Path,
-        value: object,
-    ):
-        project = tmp_path / ".booley"
-        project.mkdir()
-        rendered = "true" if value is True else repr(value)
-        (project / "booley.toml").write_text(
-            f"[flows.sim]\nbuild_timeout_ms = {rendered}\n",
-            encoding="utf-8",
+    assert payload.is_error
+    assert "timeout" in payload.content[0].text
+    assert calls == []
+    # Private seam: the advertised schema rejects `timeout` before dispatch, so only a direct
+    # call reaches the budget planner's own refusal.
+    with pytest.raises(ValueError, match="removed; use timeout_ms"):
+        server._mcp_tool_timeout_seconds(
+            "lint", {"target": "core", "timeout": 2000}, {"default_timeout": 600}
         )
 
-        with pytest.raises(ValueError, match="build_timeout_ms"):
-            self._mcp_tool_timeout_seconds(
-                "sim",
-                {"work_dir": str(tmp_path)},
-                {"default_timeout": 1},
-            )
+
+def test_mutation_watchdog_follows_resolved_timeout(tmp_path):
+    # Private seam: dispatch always passes a resolved call context; this keeps the
+    # context-free path `tests/mcp_tools/test_call_context.py` uses.
+    # The resolved-budget cases are the `mutation-*` cases of the timeout parametrization above.
+    watchdog = server._mcp_tool_timeout_seconds
+    project = {"work_dir": str(tmp_path), "timeout_ms": 3_600_000}
+    assert watchdog("mutation", project, {"default_timeout": 1800}) == 3600
 
 
 # ---------------------------------------------------------------------------
-# _try_read_report
+# Inline calls and Jobs: the report a call shows
 # ---------------------------------------------------------------------------
 
-
-class TestTryReadReport:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-            self._try_read_report = mcp_server._try_read_report
-
-    def test_no_env_var(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        assert self._try_read_report() is None
-
-    def test_nonexistent_dir(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "nope"))
-        assert self._try_read_report() is None
-
-    def test_valid_report(self, tmp_path: Path, monkeypatch):
-        import json
-
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-        step_dir = tmp_path / ".runtime" / "flow-reports" / "sim" / "1"
-        step_dir.mkdir(parents=True)
-        report = {"status": "pass", "summary": "ok"}
-        (step_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
-        result = self._try_read_report()
-        assert result["status"] == "pass"
-
-    def test_malformed_json(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-        step_dir = tmp_path / ".runtime" / "flow-reports" / "sim" / "1"
-        step_dir.mkdir(parents=True)
-        (step_dir / "report.json").write_text("NOT JSON", encoding="utf-8")
-        assert self._try_read_report() is None
-
-    def test_non_persisting_dry_run_does_not_attach_stale_report(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-
-        async def fake_run(_cmd, timeout=600, env=None):
-            del timeout, env
-            return (
-                2,
-                '{"flow": "lint", "schema_version": 1}',
-                "Dry-run planning failed: invalid target",
-                False,
-            )
-
-        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
-        monkeypatch.setattr(
-            self.mcp_server,
-            "_try_read_report",
-            lambda: pytest.fail("dry-run must not read a historical verdict"),
-        )
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
-        )
-        result = asyncio.run(
-            self.mcp_server._dispatch_booley_mcp_tool(
-                "lint",
-                {"dry_run": True, "target": "lint_demo"},
-                {
-                    "module": "lint",
-                    "default_timeout": 600,
-                    "non_persisting_dry_run": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "dry_run": {"type": "boolean"},
-                            "target": {"type": "string"},
-                        },
-                    },
-                },
-                {},
-                MagicMock(),
-            )
-        )
-
-        assert isinstance(result, self.mcp_server.McpDispatchResult)
-        assert result.is_error is True
-        assert '"flow": "lint"' in result.value[0].text
-        assert "Dry-run planning failed: invalid target" in result.value[0].text
+_INLINE_LINT = {
+    "name": "lint",
+    "module": "lint",
+    "description": "Lint",
+    "default_timeout": 600,
+    "non_persisting_dry_run": True,
+    "schema": {
+        "type": "object",
+        "properties": {"dry_run": {"type": "boolean"}, "target": {"type": "string"}},
+    },
+}
 
 
-class TestJobManagerResultText:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-
-    def test_captured_stderr_and_fresh_report_render_one_verdict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        manager = object.__new__(self.mcp_server._JobManager)
-        manager._job_roots = {"run-1": tmp_path}
-        manager._results = {"run-1": (1, "", "RESULT: FAIL\n", False)}
-        read_roots: list[Path] = []
-        monkeypatch.setattr(
-            self.mcp_server.jobrec,
-            "read_record",
-            lambda _run_id, root: read_roots.append(root) or SimpleNamespace(),
-        )
-        monkeypatch.setattr(
-            self.mcp_server,
-            "_job_report",
-            lambda _record: ({"report_text": "RESULT: FAIL"}, True),
-        )
-
-        result = manager.result_text("run-1")
-
-        assert result.count("RESULT: FAIL") == 1
-        assert "report_text:" not in result
-        assert read_roots == [tmp_path]
+_PASS = '{"status": "pass", "summary": "ok"}'
+_RUN = {"target": "x"}
+# id: (report.json text, unset the runtime and logs directories, arguments, report attached)
+_INLINE_REPORTS = {
+    "report": (_PASS, False, _RUN, True),
+    "malformed": ("NOT JSON", False, _RUN, False),
+    "no-logs-dir": (_PASS, True, _RUN, False),
+    "non-persisting-dry-run": (_PASS, False, {**_RUN, "dry_run": True}, False),
+}
 
 
-# ---------------------------------------------------------------------------
-# _resolve_transcript_dir
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("report", "unset_env", "arguments", "attached"),
+    _INLINE_REPORTS.values(),
+    ids=list(_INLINE_REPORTS),
+)
+def test_inline_call_attaches_latest_readable_report(
+    monkeypatch, tmp_path, report, unset_env, arguments, attached
+):
+    """A dry run that persists nothing shows no historical verdict (e71b16253)."""
+    fake.install(monkeypatch, (2, '{"flow": "lint"}', "Dry-run planning failed", False))
+    app = fake.application(monkeypatch, tmp_path, definitions=[_INLINE_LINT])
+    step = tmp_path / "runtime" / "flow-reports" / "sim" / "1"
+    step.mkdir(parents=True)
+    (step / "report.json").write_text(report, encoding="utf-8")
+    if unset_env:
+        monkeypatch.delenv("BOOLEY_RUNTIME_DIR")
+        monkeypatch.delenv("BOOLEY_LOGS_DIR")
+
+    payload = fake.call(app, "lint", arguments)
+
+    text = payload.content[0].text
+    assert payload.is_error
+    assert "Dry-run planning failed" in text
+    assert ("status: pass" in text) is attached
+    assert (payload.structured_content is not None) is attached
 
 
-class TestResolveTranscriptDir:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from collections import defaultdict
+def test_job_result_shows_a_captured_verdict_once(monkeypatch, tmp_path):
+    """The stderr verdict and the fresh report render one verdict (324ad230d)."""
 
-            from booley.mcp.server import _resolve_transcript_dir
+    async def child(cmd, *, env, **_kwargs):
+        step = tmp_path / "runtime" / "flow-reports" / "lint" / "1"
+        step.mkdir(parents=True, exist_ok=True)
+        report = {"flow": "lint", "run_id": env["BOOLEY_RUN_ID"], "report_text": "RESULT: FAIL"}
+        (step / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        return 1, "", "RESULT: FAIL\n", False
 
-            self._resolve = _resolve_transcript_dir
-            self._new_counts = lambda: defaultdict(int)
+    fake.install(monkeypatch, child)
+    app = fake.application(monkeypatch, tmp_path)
 
-    def test_creates_dir_under_logs(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-        counts = self._new_counts()
-        result = self._resolve("reviewer", counts)
-        assert result == tmp_path / ".runtime" / "transcripts" / "reviewer" / "1"
-        assert result.is_dir()
+    payload = fake.call(app, "lint", {"target": "x"})
 
-    def test_sequential_numbering(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-        counts = self._new_counts()
-        r1 = self._resolve("reviewer", counts)
-        r2 = self._resolve("reviewer", counts)
-        assert r1.name == "1"
-        assert r2.name == "2"
+    text = payload.content[0].text
+    assert text.count("RESULT: FAIL") == 1
+    assert "report_text:" not in text
+    assert payload.structured_content is not None
+    # Private seam: `result_text` renders a terminal Job for standalone callers (tests/mcp_tools);
+    # a call reaches only the card it builds. It must also show the verdict once.
+    run_id = payload.structured_content["reports"][0]["run_id"]
+    standalone = server._JobManager(server._McpLifetime(None, None))
+    assert standalone.result_text(run_id).count("RESULT: FAIL") == 1
 
-    def test_fallback_when_env_unset(self, monkeypatch):
-        """Must still return a valid dir (not None) even without BOOLEY_LOGS_DIR."""
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        counts = self._new_counts()
-        result = self._resolve("reviewer", counts)
-        assert result.is_dir()
-        assert "transcripts" in str(result)
+
+def test_specialist_calls_get_numbered_transcript_dirs(monkeypatch, tmp_path):
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
+
+    def transcript_dir() -> Path:
+        fake.call(app, "reviewer", {"scope": "a.sv"})
+        argv = calls[-1].cmd
+        return Path(argv[argv.index("--transcript-dir") + 1])
+
+    first, second = transcript_dir(), transcript_dir()
+
+    runtime = tmp_path / "runtime"
+    assert first == runtime / "transcripts" / "reviewer" / "1"
+    assert second == runtime / "transcripts" / "reviewer" / "2"
+    assert first.is_dir() and second.is_dir()
+    # With only a logs directory the transcripts live under its runtime directory.
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR")
+    assert transcript_dir() == tmp_path / "logs" / ".runtime" / "transcripts" / "reviewer" / "3"
+    # Without a configured runtime or logs directory the call still gets a directory.
+    monkeypatch.delenv("BOOLEY_LOGS_DIR")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    fallback = transcript_dir()
+    assert fallback.is_dir()
+    assert "transcripts" in str(fallback)
 
 
 # ---------------------------------------------------------------------------
 # MCP exposure filtering
 # ---------------------------------------------------------------------------
 
+_DEV = {"BOOLEY_MCP_DEVELOPER_AGENT": "1"}
 
-class TestMcpExposureFiltering:
-    def test_default_mode_exposes_autonomous_tools(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("submit_run_report", catalog.Exposure.from_mapping(os.environ))
+_NESTED = {
+    "BOOLEY_NESTED_AGENT": "1",
+    "BOOLEY_NESTED_MCP_TOOLS": "sim",
+    "BOOLEY_MCP_TOOLS": "reviewer",
+}
+# id: (environment, visible tools, hidden tools, status tool visible)
+_EXPOSURES = {
+    "default": ({}, ["mutation", "reviewer", "sim", "submit_run_report"], [], False),
+    "interactive": (_DEV, ["sim", "mutation", "reviewer"], [], True),
+    "allowlist": (
+        {**_DEV, "BOOLEY_MCP_TOOLS": "reviewer,bwave,sim"},
+        ["reviewer", "sim", "bwave"],
+        ["lint"],
+        True,
+    ),
+    "nested": (_NESTED, ["sim"], ["reviewer"], False),
+}
 
-    def test_interactive_mode_keeps_interactive_tools(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
 
-        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("mutation", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
-        bwave_tools = [
-            tool
-            for tool in catalog._BWAVE_MCP_TOOLS
-            if catalog.tool_visible(tool["name"], catalog.Exposure.from_mapping(os.environ))
-        ]
-        assert {t["name"] for t in bwave_tools} == {"bwave"}
-        by_name = {t["name"]: t for t in bwave_tools}
-        description = by_name["bwave"]["description"]
-        assert "RTL debug helper" in description
-        # Investigation contract: trace before hypothesizing, walk backwards from
-        # the wrong value, and check that a passing reproducer really triggered.
-        assert "rerun `sim` with `trace: true`" in description
-        assert "before acting on an RTL hypothesis" in description
-        assert "backwards cycle by cycle" in description
-        assert "suspected trigger actually occurred" in description
-        assert "before editing RTL" in description
-        # Detailed syntax and presentation guidance are discovered through these entry points.
-        assert 'extra_args=["skill"]' in by_name["bwave"]["description"]
-        assert 'extra_args=["--help"]' in by_name["bwave"]["description"]
+@pytest.mark.parametrize(
+    ("mapping", "visible", "hidden", "status"), _EXPOSURES.values(), ids=list(_EXPOSURES)
+)
+def test_exposure_selects_visible_tools(mapping, visible, hidden, status):
+    exposure = catalog.Exposure.from_mapping(mapping)
 
-    def test_explicit_allowlist_overrides_interactive_defaults(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,sim")
-
-        assert catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
-        assert not catalog.tool_visible("lint", catalog.Exposure.from_mapping(os.environ))
-        assert {
-            t["name"]
-            for t in [
-                tool
-                for tool in catalog._BWAVE_MCP_TOOLS
-                if catalog.tool_visible(tool["name"], catalog.Exposure.from_mapping(os.environ))
-            ]
-        } == {
-            "bwave",
-        }
-
-    def test_nested_allowlist_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "sim")
-        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer")
-
-        assert catalog.tool_visible("sim", catalog.Exposure.from_mapping(os.environ))
-        assert not catalog.tool_visible("reviewer", catalog.Exposure.from_mapping(os.environ))
-        assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
+    assert all(catalog.tool_visible(name, exposure) for name in visible)
+    assert not any(catalog.tool_visible(name, exposure) for name in hidden)
+    assert catalog.status_visible(exposure) is status
 
 
 class TestCoverageEvidenceTool:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
+    def test_bound_nested_server_exposes_only_coverage_evidence(self):
+        exposure = catalog.Exposure.from_mapping(
+            {
+                "BOOLEY_NESTED_AGENT": "1",
+                "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence",
+                "BOOLEY_COVERAGE_RECORD": "/reports/coverage.json",
+                "BOOLEY_COVERAGE_PROJECT": "/project",
+            }
+        )
 
-            self.mcp_server = mcp_server
-
-    def test_bound_nested_server_exposes_only_coverage_evidence(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.setenv("BOOLEY_COVERAGE_RECORD", "/reports/coverage.json")
-        monkeypatch.setenv("BOOLEY_COVERAGE_PROJECT", "/project")
-
-        tools = catalog.visible_definitions(catalog.Exposure.from_mapping(os.environ), [])
+        tools = catalog.visible_definitions(exposure, [])
 
         assert [tool["name"] for tool in tools] == ["coverage_evidence"]
         assert tools[0]["schema"]["additionalProperties"] is False
@@ -1093,139 +665,41 @@ class TestCoverageEvidenceTool:
         assert "point_refs" in tools[0]["description"]
         assert "point_ids" not in tools[0]["description"]
 
-    def test_coverage_evidence_is_hidden_without_bound_simulation_record(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "coverage_evidence")
-        monkeypatch.delenv("BOOLEY_COVERAGE_RECORD", raising=False)
-        monkeypatch.delenv("BOOLEY_COVERAGE_PROJECT", raising=False)
+    def test_nested_servers_keep_utilities_and_hide_unbound_coverage(self):
+        exposure = catalog.Exposure.from_mapping(
+            {**_NESTED, "BOOLEY_NESTED_MCP_TOOLS": "coverage_evidence"}
+        )
 
-        assert not catalog.coverage_visible(catalog.Exposure.from_mapping(os.environ))
+        assert catalog.utilities_visible(exposure)
+        assert not catalog.coverage_visible(exposure)
+
+
+def test_bwave_definition_states_the_investigation_contract():
+    definitions = catalog.visible_definitions(catalog.Exposure.from_mapping(_DEV), [])
+    description = next(tool for tool in definitions if tool["name"] == "bwave")["description"]
+
+    assert "RTL debug helper" in description
+    # Investigation contract: trace before hypothesizing, walk backwards from
+    # the wrong value, and check that a passing reproducer really triggered.
+    assert "rerun `sim` with `trace: true`" in description
+    assert "before acting on an RTL hypothesis" in description
+    assert "backwards cycle by cycle" in description
+    assert "suspected trigger actually occurred" in description
+    assert "before editing RTL" in description
+    # Detailed syntax and presentation guidance are discovered through these entry points.
+    assert 'extra_args=["skill"]' in description
+    assert 'extra_args=["--help"]' in description
+
+
+# ---------------------------------------------------------------------------
+# booley_status, health warnings, booley_sleep, booley_targets
+# ---------------------------------------------------------------------------
 
 
 class TestBooleyStatus:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-
-    @pytest.mark.parametrize(
-        ("case", "identity"),
-        [
-            (
-                "no-attribution",
-                "Session: unknown (Booley could not attribute this call)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            (
-                "unrecorded",
-                "Session: unknown (Booley has not recorded this session)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            (
-                "state-error",
-                "Session: unknown (Booley could not read its session state)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            (
-                "no-handle",
-                "Session: unknown\nBranch: main\nCheckout: {repo} (main checkout)\n",
-            ),
-            (
-                "unreadable-checkout",
-                "Session: S1\nBranch: main\nCheckout: {repo} (checkout kind unknown)\n",
-            ),
-            (
-                "recorded",
-                "Session: S1\nBranch: main\nCheckout: {repo} (main checkout)\n",
-            ),
-        ],
-        ids=[
-            "no-attribution",
-            "unrecorded",
-            "state-error",
-            "no-handle",
-            "unreadable-checkout",
-            "recorded",
-        ],
-    )
-    def test_format_status_card(self, monkeypatch, tmp_path, case, identity):
-        from booley.mcp.session_registry import Attribution, SessionRegistry
-        from booley.runtime.handles import HandleStore
-        from booley.runtime.pid import ProcessIdentity
-        from tests.git_support import git
-
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        if case == "unreadable-checkout":
-            (repo / ".git").write_bytes(b"garbage")
-        else:
-            git(repo, "init", "-q", "-b", "main")
-            git(repo, "commit", "-q", "--allow-empty", "-m", "base")
-        repo = repo.resolve()
-        booley = tmp_path / "booley"
-        booley.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(booley))
-        monkeypatch.setattr(self.mcp_server.socket, "gethostname", lambda: "4f3c2a1b")
-        monkeypatch.setattr(health_presentation, "current_summary", lambda _root: "clean")
-        monkeypatch.setattr(
-            self.mcp_server,
-            "format_status_line",
-            lambda: "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.",
-        )
-        attribution = Attribution(
-            key="process:x",
-            kind="process",
-            work_dir=str(repo),
-            worktree_key="",
-            branch="main",
-            process=ProcessIdentity(200, "pid:[17]", 7),
-        )
-        if case not in ("no-attribution", "unrecorded"):
-            SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
-        if case == "no-handle":
-            HandleStore(booley).path.unlink()
-        if case == "state-error":
-
-            def unreadable(_registry):
-                raise RuntimeError("unreadable")
-
-            monkeypatch.setattr(SessionRegistry, "snapshot", unreadable)
-
-        card = self.mcp_server._format_status_card(
-            ["sim", "lint"], None if case == "no-attribution" else attribution
-        )
-
-        assert card == (
-            "```text\n"
-            "Booley ready. Sandbox container 4f3c2a1b is running.\n"
-            + identity.format(repo=repo)
-            + "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.\n"
-            "Available MCP tools: sim, lint.\n"
-            "Health: clean\n"
-            "```"
-        )
-
-    def test_status_mcp_tool_def_only_interactive_by_default(self, monkeypatch):
-        monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
-        monkeypatch.delenv("BOOLEY_MCP_DEVELOPER_AGENT", raising=False)
-
-        assert not catalog.status_visible(catalog.Exposure.from_mapping(os.environ))
-
     def test_status_mcp_tool_list_entry_is_appended(self, monkeypatch):
+        # Private patch: empties the B-Wave list so the listing shows only meta tools and Flows;
+        # the list is module data with no public setter or environment switch.
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
@@ -1252,71 +726,104 @@ class TestBooleyStatus:
             "sim",
         ]
 
-    def test_first_mcp_tool_result_gets_changed_health_warning(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("case", "identity"),
+        [
+            (
+                "no-attribution",
+                "Session: unknown (Booley could not attribute this call)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            (
+                "unrecorded",
+                "Session: unknown (Booley has not recorded this session)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            (
+                "state-error",
+                "Session: unknown (Booley could not read its session state)\n"
+                "Branch: unknown\n"
+                "Checkout: unknown\n",
+            ),
+            ("no-handle", "Session: unknown\nBranch: main\nCheckout: {repo} (main checkout)\n"),
+            (
+                "unreadable-checkout",
+                "Session: S1\nBranch: main\nCheckout: {repo} (checkout kind unknown)\n",
+            ),
+            ("recorded", "Session: S1\nBranch: main\nCheckout: {repo} (main checkout)\n"),
+        ],
+        ids=[
+            "no-attribution",
+            "unrecorded",
+            "state-error",
+            "no-handle",
+            "unreadable-checkout",
+            "recorded",
+        ],
+    )
+    def test_format_status_card(self, monkeypatch, tmp_path, case, identity):
+        from booley.mcp.session_registry import Attribution, SessionRegistry
+        from booley.runtime.handles import HandleStore
+        from booley.runtime.pid import ProcessIdentity
+        from tests.git_support import git
 
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
-
-        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
-        monkeypatch.setattr(
-            health_presentation,
-            "consume_changed_summary",
-            lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
+        app = fake.application(monkeypatch, tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        if case == "unreadable-checkout":
+            (repo / ".git").write_bytes(b"garbage")
+        else:
+            git(repo, "init", "-q", "-b", "main")
+            git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+        repo = repo.resolve()
+        booley = tmp_path / "booley"
+        booley.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(booley))
+        monkeypatch.setattr(server.socket, "gethostname", lambda: "4f3c2a1b")
+        attribution = Attribution(
+            key="process:x",
+            kind="process",
+            work_dir=str(repo),
+            worktree_key="",
+            branch="main",
+            process=ProcessIdentity(4_194_306, "pid:[17]", 7),
         )
-        content = [fake_text_content(type="text", text="MCP tool result")]
+        if case not in ("no-attribution", "unrecorded"):
+            SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
+        if case == "no-handle":
+            HandleStore(booley).path.unlink()
+        if case == "state-error":
+            # No on-disk state makes the snapshot raise; the card must survive an unexpected
+            # registry error.
+            def unreadable(_registry):
+                raise RuntimeError("unreadable")
 
-        result = self.mcp_server._prepend_changed_health_alert(content)
+            monkeypatch.setattr(SessionRegistry, "snapshot", unreadable)
 
-        assert result[0].text.startswith("HEALTH WARNING:")
-        assert result[1].text == "MCP tool result"
-
-    def test_health_warning_preserves_error_disposition(self, monkeypatch):
-
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
-
-        monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
-        monkeypatch.setattr(
-            health_presentation,
-            "consume_changed_summary",
-            lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
-        )
-        content = self.mcp_server.McpDispatchResult(
-            value=[fake_text_content(type="text", text="EXIT_CODE: 2")],
-            is_error=True,
+        payload = fake.call(
+            app,
+            "booley_status",
+            {},
+            request_context=McpRequestContext(
+                attribution=None if case == "no-attribution" else attribution
+            ),
         )
 
-        result = self.mcp_server._prepend_changed_health_alert(content)
-
-        assert result.is_error is True
-        assert result.value[0].text.startswith("HEALTH WARNING:")
-        assert result.value[1].text == "EXIT_CODE: 2"
-
-    def test_health_warning_rejects_invalid_content_shape(self):
-        block = SimpleNamespace(type="text", text="HEALTH WARNING")
-
-        with pytest.raises(TypeError, match="content that is not a list"):
-            self.mcp_server._prepend_health_block(object(), block)
+        head = "```text\nBooley ready. Sandbox container 4f3c2a1b is running.\n" + identity.format(
+            repo=repo
+        )
+        card = payload.content[0].text
+        assert card.startswith(head)
+        version, tools, health, closing = card[len(head) :].split("\n")
+        assert version.startswith("Booley: ")
+        assert tools.startswith("Available MCP tools: ") and "sim" in tools
+        assert health.startswith("Health: ")
+        assert closing == "```"
 
 
 class TestBooleySleep:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-
     def test_hidden_by_default(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_MCP_DEBUG_TOOLS", raising=False)
 
@@ -1337,6 +844,8 @@ class TestBooleySleep:
         assert "booley_sleep" in [mcp_tool["name"] for mcp_tool in mcp_tools]
 
     def test_list_entry_appended_when_enabled(self, monkeypatch):
+        # Private patch: empties the B-Wave list so the listing shows only meta tools and Flows;
+        # the list is module data with no public setter or environment switch.
         monkeypatch.setattr(catalog, "_BWAVE_MCP_TOOLS", [])
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
@@ -1365,47 +874,70 @@ class TestBooleySleep:
             "sim",
         ]
 
-    def test_dispatch_rejects_bad_seconds(self, monkeypatch):
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
 
-        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
+@pytest.mark.parametrize(
+    ("tool", "answer", "exit_code"),
+    [("bwave", (0, "ok", "", False), 0), ("lint", (2, "", "boom", False), 2)],
+    ids=["bwave-ok", "flow-error"],
+)
+def test_changed_health_warning_leads_the_result(monkeypatch, tmp_path, tool, answer, exit_code):
+    """A health warning keeps the call's error disposition (687c5ba87)."""
+    from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+    from booley.runtime import health
 
-        for arguments in ({}, {"seconds": True}, {"seconds": -1}, {"seconds": "5"}):
-            result = asyncio.run(self.mcp_server._dispatch_sleep(arguments))
-            assert "non-negative number" in result[0].text
+    booley = tmp_path / ".booley"
+    booley.mkdir()
+    (booley / "booley.toml").write_text('[project]\nname = "health-test"\n', encoding="utf-8")
+    reset_cache()
+    fake.install(monkeypatch, answer)
+    app = fake.application(monkeypatch, tmp_path, definitions=[_INLINE_LINT])
+    failing = DiagnosticFinding(Severity.FAIL, "probe unavailable", "reviewed", "test.health", "x")
+    health.publish_result(
+        tmp_path,
+        trigger="test",
+        duration_s=0,
+        diagnostics=DiagnosticReport((failing,)),
+        transcript="probe text\n",
+    )
 
-    def test_dispatch_sleeps_and_reports(self, monkeypatch):
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
+    payload = fake.call(
+        app, tool, {"extra_args": ["--help"]} if tool == "bwave" else {"target": "x"}
+    )
 
-        monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
+    assert payload.content[0].text.startswith("HEALTH WARNING:")
+    assert payload.content[1].text.startswith(f"EXIT_CODE: {exit_code}")
+    assert payload.is_error is (exit_code != 0)
+    reset_cache()
 
-        result = asyncio.run(self.mcp_server._dispatch_sleep({"seconds": 0}))
 
-        assert result[0].type == "text"
-        assert result[0].text.startswith("SLEEP_COMPLETE: requested=0.0s")
+def test_health_warning_rejects_invalid_content_shape():
+    # Private seam: only a Flow or bwave call carries content, and the application always
+    # builds a list or a tuple; this guards the type no public call produces.
+    block = SimpleNamespace(type="text", text="HEALTH WARNING")
+
+    with pytest.raises(TypeError, match="content that is not a list"):
+        server._prepend_health_block(object(), block)
+
+
+_SLEEPS = {
+    "nan-rejected": ({"seconds": float("nan")}, "Provide 'seconds' as a non-negative number."),
+    "zero-completes": ({"seconds": 0}, "SLEEP_COMPLETE: requested=0.0s"),
+}
+
+
+@pytest.mark.parametrize(("arguments", "start"), _SLEEPS.values(), ids=list(_SLEEPS))
+def test_sleep_tool(monkeypatch, tmp_path, arguments, start):
+    app = fake.application(monkeypatch, tmp_path)
+
+    payload = fake.call(app, "booley_sleep", arguments)
+
+    assert payload.content[0].text.startswith(start)
 
 
 class TestBooleyTargets:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-
     @staticmethod
-    def _project(tmp_path: Path) -> Path:
-        (tmp_path / "alpha.core").write_text(
+    def targets_project(root: Path) -> Path:
+        (root / "alpha.core").write_text(
             "CAPI=2:\n"
             "name: acme:ip:alpha:1.0\n"
             "filesets:\n"
@@ -1429,196 +961,127 @@ class TestBooleyTargets:
             "    filesets: [rtl]\n",
             encoding="utf-8",
         )
-        return tmp_path
+        return root
 
-    def _patch_text_content(self, monkeypatch):
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
-        )
+    @pytest.mark.parametrize("case", ["all", "synth", "fpga-axis", "bad-work-dir"])
+    def test_targets_tool(self, monkeypatch, tmp_path, case):
+        app = fake.application(monkeypatch, tmp_path)
+        self.targets_project(tmp_path)
+        arguments = {
+            "all": {},
+            "synth": {"for_flow": "synth"},
+            "fpga-axis": {"for_flow": "fpga"},
+            "bad-work-dir": {"work_dir": str(tmp_path / "not-a-worktree")},
+        }[case]
 
-    def test_visible_in_every_mode(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
-        monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "lint")
-        assert catalog.utilities_visible(catalog.Exposure.from_mapping(os.environ)) is True
+        payload = fake.call(app, "booley_targets", arguments)
 
-    def test_dispatch_returns_json_surface(self, tmp_path, monkeypatch):
-        import json
+        text = payload.content[0].text
+        if case == "bad-work-dir":
+            assert text.startswith("ERROR: work_dir")
+            return
+        targets = [t for core in json.loads(text)["cores"] for t in core["targets"]]
+        if case == "all":
+            assert sorted(t["name"] for t in targets) == ["fpga_core", "sim", "synth"]
+            synth = next(t for t in targets if t["name"] == "synth")
+            assert synth["synth_mode"] == "physical"
+            assert synth["eda_tools"] == ["sv2v", "yosys", "openroad"]
+        elif case == "synth":
+            assert [t["name"] for t in targets] == ["synth"]
+        else:
+            assert [t["name"] for t in targets] == ["fpga_core"]
+            assert targets[0]["eda_tool"] == "verilator"
+            assert targets[0]["drivable_by"] == ["fpga"]
 
-        self._patch_text_content(monkeypatch)
-        monkeypatch.chdir(self._project(tmp_path))
+    def test_dispatch_rejects_bad_for_flow(self, monkeypatch, tmp_path):
+        # Private seam: the advertised schema enum blocks an unknown `for_flow`, so no
+        # application call reaches the handler's own error answer.
+        monkeypatch.chdir(self.targets_project(tmp_path))
 
-        result = self.mcp_server._dispatch_targets({})
-
-        payload = json.loads(result[0].text)
-        names = [t["name"] for c in payload["cores"] for t in c["targets"]]
-        assert sorted(names) == ["fpga_core", "sim", "synth"]
-        synth = next(t for c in payload["cores"] for t in c["targets"] if t["name"] == "synth")
-        assert synth["synth_mode"] == "physical"
-        assert synth["eda_tools"] == ["sv2v", "yosys", "openroad"]
-
-    def test_dispatch_applies_filters(self, tmp_path, monkeypatch):
-        import json
-
-        self._patch_text_content(monkeypatch)
-        monkeypatch.chdir(self._project(tmp_path))
-
-        result = self.mcp_server._dispatch_targets({"for_flow": "synth"})
-
-        payload = json.loads(result[0].text)
-        names = [t["name"] for c in payload["cores"] for t in c["targets"]]
-        assert names == ["synth"]
-
-    def test_dispatch_fpga_filter_uses_target_axis(self, tmp_path, monkeypatch):
-        import json
-
-        self._patch_text_content(monkeypatch)
-        monkeypatch.chdir(self._project(tmp_path))
-
-        result = self.mcp_server._dispatch_targets({"for_flow": "fpga"})
-
-        payload = json.loads(result[0].text)
-        targets = [target for core in payload["cores"] for target in core["targets"]]
-        assert [target["name"] for target in targets] == ["fpga_core"]
-        assert targets[0]["eda_tool"] == "verilator"
-        assert targets[0]["drivable_by"] == ["fpga"]
-
-    def test_dispatch_rejects_bad_for_flow(self, tmp_path, monkeypatch):
-        self._patch_text_content(monkeypatch)
-        monkeypatch.chdir(self._project(tmp_path))
-
-        result = self.mcp_server._dispatch_targets({"for_flow": "reviewer"})
+        result = server._dispatch_targets({"for_flow": "reviewer"})
 
         assert result[0].text.startswith("ERROR:")
         assert "not a target-aware Booley Flow" in result[0].text
 
-    def test_dispatch_validates_work_dir(self, tmp_path, monkeypatch):
-        self._patch_text_content(monkeypatch)
 
-        result = self.mcp_server._dispatch_targets({"work_dir": str(tmp_path / "not-a-worktree")})
+# ---------------------------------------------------------------------------
+# bwave dispatch
+# ---------------------------------------------------------------------------
 
-        assert result[0].text.startswith("ERROR: work_dir")
+
+def test_tool_calls_route_to_their_command(monkeypatch, tmp_path):
+    """`bwave` runs the B-Wave CLI and a Flow runs its module: neither reaches the other."""
+    calls = fake.install(monkeypatch)
+    app = fake.application(monkeypatch, tmp_path)
+
+    wave = fake.call(app, "bwave", {"extra_args": ["register", "sim/work", "--as", "dut"]})
+    fake.call(app, "sim", {"target": "smoke"})
+
+    assert "EXIT_CODE: 0" in wave.content[0].text
+    assert [call.cmd for call in calls] == [
+        [sys.executable, "-m", "booley.bwave.cli", "register", "sim/work", "--as", "dut"],
+        ["python", "-m", "booley.flows.sim.flow", "--target", "smoke"],
+    ]
+
+
+def test_dispatch_without_a_server_identity_runs_the_tool(monkeypatch, tmp_path):
+    # Private seam: `_build_mcp_application` always resolves a server identity, so only a
+    # direct call reaches the identity-less arm.
+    fake.install(monkeypatch)
+    fake.application(monkeypatch, tmp_path)
+    jobs = server._JobManager(server._McpLifetime(None, None))
+    arguments = {"extra_args": ["--help"]}
+
+    result = asyncio.run(
+        server._dispatch_application_tool(
+            "bwave", arguments, {}, jobs=jobs, status_mcp_tool_names=[], mcp_tool_call_counts={}
+        )
+    )
+
+    assert "EXIT_CODE: 0" in result[0].text
+
+
+def _display_events(tmp_path: Path) -> list[dict[str, Any]]:
+    lines = (tmp_path / "runtime" / "display.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+@pytest.mark.parametrize(
+    ("answer", "exit_code"),
+    [
+        pytest.param((0, "ok", "", False), 0, id="ok"),
+        pytest.param((9, "", "bad virtual signal", False), 9, id="nonzero-exit"),
+        pytest.param(OSError("spawn failed"), 2, id="spawn-error"),
+    ],
+)
+def test_bwave_call_brackets_console_activity(monkeypatch, tmp_path, answer, exit_code):
+    """A spawn failure still closes the console activity it opened (d8c107aa2)."""
+    fake.install(monkeypatch, answer)
+    app = fake.application(monkeypatch, tmp_path)
+    arguments = {"extra_args": ["@dut", "wave", "-t", "start:done"]}
+
+    if isinstance(answer, OSError):
+        with pytest.raises(OSError, match="spawn failed"):
+            fake.call(app, "bwave", arguments)
+    else:
+        text = fake.call(app, "bwave", arguments).content[0].text
+        assert f"EXIT_CODE: {exit_code}" in text
+        assert answer[2] in text
+
+    events = _display_events(tmp_path)
+    assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
+    assert [event["endpoint"] for event in events] == ["bwave", "bwave"]
+    assert [event["display_label"] for event in events] == ["@dut wave -t start:done"] * 2
+    assert events[1]["exit_code"] == exit_code
+    assert events[1]["duration_s"] >= 0
 
 
 class TestBwaveDispatch:
-    @pytest.fixture(autouse=True)
-    def _import(self):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
-            self._dispatch_bwave = mcp_server._dispatch_bwave
-
-    def _patch_dispatch(self, monkeypatch):
-        calls = []
-
-        async def fake_run(cmd, **_kwargs):
-            calls.append(cmd)
-            return 0, "ok", "", False
-
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
-
-        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            fake_text_content,
-        )
-        return calls
-
-    def test_register_subcommand_shape(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-        result = asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["register", "sim/work", "--as", "dut"]},
-            )
-        )
-
-        assert result and "EXIT_CODE: 0" in result[0].text
-        assert calls == [
-            [
-                sys.executable,
-                "-m",
-                "booley.bwave.cli",
-                "register",
-                "sim/work",
-                "--as",
-                "dut",
-            ]
-        ]
-
-    def test_bwave_query_emits_console_activity(self, tmp_path, monkeypatch):
-        self._patch_dispatch(monkeypatch)
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-
-        asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["@dut", "wave", "-t", "start:done"]},
-            )
-        )
-
-        events = [
-            json.loads(line)
-            for line in (tmp_path / "display.jsonl").read_text(encoding="utf-8").splitlines()
-        ]
-        assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
-        assert [event["endpoint"] for event in events] == ["bwave", "bwave"]
-        assert [event["display_label"] for event in events] == [
-            "@dut wave -t start:done",
-            "@dut wave -t start:done",
-        ]
-        assert events[1]["exit_code"] == 0
-        assert events[1]["duration_s"] >= 0
-
-    def test_bwave_nonzero_exit_and_stderr_are_preserved(self, tmp_path, monkeypatch):
-        async def fake_run(cmd, **_kwargs):
-            return 9, "", "bad virtual signal", False
-
-        def fake_text_content(**kwargs):
-            return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
-
-        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fake_run)
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            fake_text_content,
-        )
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-
-        result = asyncio.run(
-            self._dispatch_bwave(
-                "bwave",
-                {"extra_args": ["@dut", "wave", "--virtual", "bad = *nope["]},
-            )
-        )
-
-        assert result is not None
-        assert "EXIT_CODE: 9" in result[0].text
-        assert "bad virtual signal" in result[0].text
-        events = [
-            json.loads(line)
-            for line in (tmp_path / "display.jsonl").read_text(encoding="utf-8").splitlines()
-        ]
-        assert events[-1]["type"] == "endpoint_end"
-        assert events[-1]["exit_code"] == 9
-
     def test_routed_call_reads_the_worktree_store(self, tmp_path, monkeypatch):
         """A routed bwave call resolves `@<alias>` from the caller's checkout store (#3483)."""
         import booley
-        from booley.mcp.application import McpRequestContext
 
+        app = fake.application(monkeypatch, tmp_path)
         main = tmp_path / "main"
         worktree = tmp_path / "worktree"
         for checkout, marker in ((main, "main_mark"), (worktree, "tree_mark")):
@@ -1630,83 +1093,36 @@ class TestBwaveDispatch:
         for name in ("TMPDIR", "TEMP", "TMP"):
             monkeypatch.setenv(name, str(tmp_path / "private-tmp"))
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
         monkeypatch.setenv("PYTHONPATH", str(Path(booley.__file__).resolve().parents[1]))
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
         monkeypatch.chdir(main)
-        monkeypatch.setattr(
-            self.mcp_server,
-            "TextContent",
-            lambda **kwargs: SimpleNamespace(type=kwargs["type"], text=kwargs["text"]),
-        )
 
         def call(request_context):
-            result = asyncio.run(
-                self.mcp_server._dispatch_application_tool(
-                    "bwave",
-                    {"extra_args": ["markers", "@dut", "list"]},
-                    {},
-                    jobs=MagicMock(),
-                    status_mcp_tool_names=[],
-                    mcp_tool_call_counts={},
-                    request_context=request_context,
-                )
-            )
-            return result[0].text
+            arguments = {"extra_args": ["markers", "@dut", "list"]}
+            return fake.call(app, "bwave", arguments, request_context=request_context)
 
-        routed = call(McpRequestContext(checkout=worktree))
-        unrouted = call(None)
+        routed = call(McpRequestContext(checkout=worktree)).content[0].text
+        unrouted = call(None).content[0].text
 
         assert "tree_mark" in routed and "main_mark" not in routed
         assert "main_mark" in unrouted and "tree_mark" not in unrouted
 
-    def test_bwave_spawn_error_still_closes_console_activity(self, tmp_path, monkeypatch):
-        async def fail_to_spawn(cmd, **_kwargs):
-            raise OSError("spawn failed")
 
-        monkeypatch.setattr(self.mcp_server, "_run_subprocess", fail_to_spawn)
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-
-        with pytest.raises(OSError, match="spawn failed"):
-            asyncio.run(
-                self._dispatch_bwave(
-                    "bwave",
-                    {"extra_args": ["@dut", "stats", "clk"]},
-                )
-            )
-
-        events = [
-            json.loads(line)
-            for line in (tmp_path / "display.jsonl").read_text(encoding="utf-8").splitlines()
-        ]
-        assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
-        assert events[-1]["exit_code"] == 2
-
-    def test_unknown_bwave_name_returns_none(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
-
-        assert asyncio.run(self._dispatch_bwave("bwave_nope", {})) is None
-        assert calls == []
-
-    def test_hidden_bwave_mcp_tool_does_not_dispatch(self, monkeypatch):
-        calls = self._patch_dispatch(monkeypatch)
+@pytest.mark.parametrize("name", ["bwave_nope", "bwave"])
+def test_bwave_handler_declines_unknown_or_hidden_names(monkeypatch, name):
+    # Private seam: the application lists only visible tools, so no public call reaches a
+    # hidden or unknown name; the guard stops a catalog change between listing and dispatch
+    # from running B-Wave.
+    calls = fake.install(monkeypatch)
+    if name == "bwave":  # hidden by the allow-list; `bwave_nope` stays unknown with it unset
         monkeypatch.setenv("BOOLEY_MCP_TOOLS", "sim")
 
-        assert (
-            asyncio.run(
-                self._dispatch_bwave(
-                    "bwave",
-                    {"extra_args": ["markers", "@dut", "list"]},
-                )
-            )
-            is None
-        )
-        assert calls == []
+    assert asyncio.run(server._dispatch_bwave(name, {"extra_args": ["markers"]})) is None
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------
-# _load_agent_settings_from_toml (the Sandbox honors [agent] in booley.toml)
+# The Sandbox honors [agent] in booley.toml
 # ---------------------------------------------------------------------------
 
 
@@ -1717,30 +1133,20 @@ class TestLoadAgentSettingsFromToml:
     the Project selected another provider.
     """
 
+    # Private seams: `main()` runs this loader at startup before it serves, and the tests read
+    # back the process-wide backend config it fills; no MCP call returns either.
+    _load = staticmethod(server._load_agent_settings_from_toml)
+
     @pytest.fixture(autouse=True)
-    def _import(self):
+    def _clean_backend_config(self):
         from booley.runtime.agent_config import get_backend_config, set_backend_config
 
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp.server import _load_agent_settings_from_toml
-
-            self._load = _load_agent_settings_from_toml
-            self._get = get_backend_config
-            self._set = set_backend_config
-            # Start from a clean global so we exercise the real load path.
+        self._get, self._set = get_backend_config, set_backend_config
+        self._set(None)  # start from a clean global so the real load path runs
+        try:
+            yield
+        finally:
             self._set(None)
-            try:
-                yield
-            finally:
-                self._set(None)
 
     def _write_project(self, tmp_path: Path, body: str) -> Path:
         bp = tmp_path / ".booley"
@@ -1795,33 +1201,11 @@ class TestLoadAgentSettingsFromToml:
 
 
 # ---------------------------------------------------------------------------
-# _discover_builtin_mcp_tools AST gate
+# Built-in discovery
 # ---------------------------------------------------------------------------
 
 
 class TestBuiltinDiscoveryGate:
-    """The registry gives the importer only AST-validated MCP endpoints."""
-
-    @pytest.fixture(autouse=True)
-    def _import(self, monkeypatch):
-        # MCP visibility filters must not leak in from the invoking shell.
-        for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_DEVELOPER_AGENT"):
-            monkeypatch.delenv(var, raising=False)
-
-    def test_helper_module_skipped_without_import(self, tmp_path, monkeypatch):
-        # The registry excludes support modules before the import stage.
-        (tmp_path / "some_helper.py").write_text(
-            'raise RuntimeError("helper must never be imported by discovery")\n',
-            encoding="utf-8",
-        )
-
-        results, errors = catalog.discover_builtin_definitions(
-            [], catalog.Exposure.from_mapping(os.environ)
-        )
-
-        assert results == []
-        assert errors == []
-
     def test_mcp_endpoint_reaches_import_stage(self):
         from booley.mcp.registry import McpToolInfo
 
@@ -1831,7 +1215,7 @@ class TestBuiltinDiscoveryGate:
             path="mcp_tools/shiny_mcp_tool.py",
         )
         results, errors = catalog.discover_builtin_definitions(
-            [info], catalog.Exposure.from_mapping(os.environ)
+            [info], catalog.Exposure.from_mapping({})
         )
 
         assert results == []
@@ -1839,33 +1223,27 @@ class TestBuiltinDiscoveryGate:
         assert "IMPORT FAILED" in errors[0]
 
     def test_real_endpoint_dirs_discover_cleanly(self):
-        # Golden: over the real Flow/MCP packages the import scan must agree
-        # with the AST scan and produce zero errors — no current or future
-        # helper module may surface as NO MCP ENDPOINT CLASS FOUND.
+        # Golden: over the real Flow/MCP packages the import scan must agree with the AST scan and
+        # produce zero errors, so no current or future helper module surfaces as NO MCP ENDPOINT
+        # CLASS FOUND. Synth and FPGA derive from ImplementationFlow, not BuiltinFlow directly:
+        # the import-free scan must still list them, or their CLI and MCP tools vanish.
         from booley.mcp.registry import discover_mcp_tools
 
         discovered = discover_mcp_tools()
 
         results, errors = catalog.discover_builtin_definitions(
-            discovered, catalog.Exposure.from_mapping(os.environ)
+            discovered, catalog.Exposure.from_mapping({})
         )
 
         assert errors == []
         assert {r["name"] for r in results} == {endpoint.name for endpoint in discovered}
-
-    def test_implementation_flows_are_discovered_as_flows(self):
-        # Synth and FPGA derive from ImplementationFlow, not BuiltinFlow directly:
-        # the import-free scan must still list them, or their CLI and MCP tools vanish.
-        from booley.mcp.registry import discover_mcp_tools
-
-        kinds = {info.name: info.kind for info in discover_mcp_tools()}
-
+        kinds = {info.name: info.kind for info in discovered}
         assert kinds["synth"] == "flow"
         assert kinds["fpga"] == "flow"
 
 
 # ---------------------------------------------------------------------------
-# main() — proxy env self-heal
+# main(): proxy env self-heal and scratch sweep
 # ---------------------------------------------------------------------------
 
 
@@ -1877,18 +1255,7 @@ class TestMainProxySelfHeal:
 
     @pytest.fixture(autouse=True)
     def _import(self, monkeypatch):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
-
-            self.mcp_server = mcp_server
+        self.mcp_server = server
         # Sandbox venue with a clean (Codex-replaced) env: marker present,
         # no proxy vars delivered.
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -1902,13 +1269,14 @@ class TestMainProxySelfHeal:
 
         from booley.runtime import runtime_context
 
-        # Neuter the server itself — only the entry path is under test.
+        # Private patch: neuters the server itself; only the entry path is under test.
         monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
         monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
         monkeypatch.setattr(sys, "argv", ["booley-mcp"])
 
         self.mcp_server.main()
 
+        # Private seam: the Sandbox proxy address has no public reader.
         for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert os.environ[var] == runtime_context._PROXY_URL
         assert os.environ["NO_PROXY"] == "localhost,127.0.0.1"
@@ -1917,6 +1285,7 @@ class TestMainProxySelfHeal:
         import os
 
         monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+        # Private patch: neuters the server itself; only the entry path is under test.
         monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
         monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
         monkeypatch.setattr(sys, "argv", ["booley-mcp"])
@@ -1929,6 +1298,7 @@ class TestMainProxySelfHeal:
 
     def test_main_refuses_invalid_egress_mode(self, monkeypatch, capsys):
         monkeypatch.setenv("BOOLEY_EGRESS", "bogus")
+        # Private patch: neuters the server itself; only the entry path is under test.
         monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
         monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
         monkeypatch.setattr(sys, "argv", ["booley-mcp"])
@@ -1944,6 +1314,7 @@ class TestMainProxySelfHeal:
         import os
 
         monkeypatch.setenv("HTTPS_PROXY", "http://corp-proxy:3128")
+        # Private patch: neuters the server itself; only the entry path is under test.
         monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
         monkeypatch.setattr(self.mcp_server, "asyncio", MagicMock())
         monkeypatch.setattr(sys, "argv", ["booley-mcp"])
@@ -1955,14 +1326,12 @@ class TestMainProxySelfHeal:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox MCP server: honest answer for a deliberately hidden MCP tool (F-38)
+# Report transport and live checkpoints
 # ---------------------------------------------------------------------------
 
 
 def test_simulation_count_transport_omits_only_full_mapping():
     from copy import deepcopy
-
-    from booley.mcp.server import _structured_from_report
 
     report = {
         "$schema": "booley.simulation-report/v3",
@@ -1981,23 +1350,22 @@ def test_simulation_count_transport_omits_only_full_mapping():
         },
     }
     before = deepcopy(report)
-    result = _structured_from_report(report)
+    result = ReportEncoder.structured_report(report)
     assert report == before
     expected = {key: value for key, value in report.items() if key != "cycle_counts"}
     assert result["reports"] == [expected]
     report["flow"] = "synth"
-    assert _structured_from_report(report)["truncated"] is True
+    assert ReportEncoder.structured_report(report)["truncated"] is True
 
 
 @pytest.mark.parametrize("completion_error", [False, True])
 def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
     tmp_path, monkeypatch, completion_error
 ):
-    from types import SimpleNamespace
-
+    # Private seam: the card's line builder has no public entry that returns it before the
+    # transport appends the completion error, which is the boundary under test.
     from booley.flows.sim.record_presentation import _simulation_record_report_lines
     from booley.flows.test_runs import build_test_run
-    from booley.mcp.server import _format_mcp_tool_result
     from booley.runtime.endpoint_execution import EndpointOutcome, normalize_completion_error
     from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 
@@ -2022,22 +1390,28 @@ def test_cycle_card_fits_exact_stream_boundary_until_completion_append(
     if completion_error:
         normalize_completion_error(result, OSError("y" * 200), "publish")
     stderr = "earlier output\n" * 300 + "\n" + result.report_text + "\n"
-    rendered = _format_mcp_tool_result(
+    rendered = ReportEncoder().text_result(
         result.exit_code, "", stderr, {"report_text": result.report_text}
     )
     assert rendered.count("sim: FAIL") == 1
     assert ("--- report ---" in rendered) is completion_error
 
 
-def test_fetched_simulation_card_never_expands_top_level_counts():
-    from booley.mcp.server import _format_report_card
-
+def test_fetched_simulation_card_never_expands_top_level_counts(monkeypatch, tmp_path):
+    app = fake.application(monkeypatch, tmp_path)
+    reports = tmp_path / "runtime" / "flow-reports"
+    reports.mkdir(parents=True)
     report = {
         "flow": "sim",
         "detail": {"records": {}},
         "cycle_counts": {"sim": [{"test": "hidden-full-row", "cycle_count": 7}]},
     }
-    assert "hidden-full-row" not in _format_report_card(report, "sim")
+    (reports / "sim.json").write_text(json.dumps(report), encoding="utf-8")
+
+    card = fake.call(app, "booley_report", {"endpoint": "sim"}).content[0].text
+
+    assert "flow: sim" in card
+    assert "hidden-full-row" not in card
 
 
 @pytest.mark.parametrize("response_kind", ["handoff", "attach", "poll", "adopted_poll"])
@@ -2045,11 +1419,15 @@ def test_live_sim_checkpoint_survives_mcp_background_responses(
     tmp_path, monkeypatch, response_kind
 ):
     """A gated real Job keeps its current checkpoint through every MCP handoff."""
+    # Private seams below: attaching needs a live child whose `/proc` argv matches the Job
+    # record, and the stand-in child runs in this process, so the Job manager, the dispatch and
+    # the Job root are driven directly; the shared runner fake supplies the gated child.
     from booley.mcp import server
     from booley.mcp.call_context import CallContext
 
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
 
+    # Private patch: this process's real health state must not prefix the Job responses.
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
     context = CallContext(tmp_path, tmp_path / "jobs", None, tmp_path, {}, None)
     monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
@@ -2094,7 +1472,7 @@ async def _live_checkpoint_scenario(server, context, tmp_path, monkeypatch, resp
         await asyncio.wait_for(release.wait(), timeout=hang_guard_s())
         return 0, "", "", False
 
-    monkeypatch.setattr(server, "_run_subprocess", gated_child)
+    fake.install(monkeypatch, gated_child)
     jobs = server._JobManager(server._McpLifetime(None, None))
     # Yield inside the real inline-wait boundary until the child published.
     original_wait = jobs.wait
@@ -2163,11 +1541,11 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from booley.mcp import server
     from booley.runtime.timefmt import utc_now_rfc3339
     from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
 
     run_id = "gated-record-sim"
+    application = fake.application(monkeypatch, tmp_path)
     monkeypatch.setenv("BOOLEY_RUN_ID", run_id)
     entered, release = Event(), Event()
 
@@ -2176,8 +1554,24 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
         assert release.wait(hang_guard_s()), "test failed to release simulator launch"
         return PASS_PROCESS
 
-    def submit(pool):
-        return pool.submit(
+    server.jobrec.write_record(
+        server.jobrec.JobRecord(
+            run_id=run_id,
+            endpoint="sim",
+            started_at=utc_now_rfc3339(),
+            timeout_s=60,
+            pid=os.getpid(),
+            argv=[],
+        ),
+        root=tmp_path / "runtime/jobs",
+    )
+    # Private seam: the Flow under test writes its reports to the directory the test gives it;
+    # the record points the Job at that directory, which no Job record field carries.
+    monkeypatch.setattr(
+        job_results, "_endpoint_report_dirs", lambda *_args, **_kwargs: (tmp_path / "reports",)
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
             run_simulation_record_sim,
             tmp_path,
             monkeypatch,
@@ -2185,54 +1579,10 @@ def test_registered_poll_observes_blocked_simulation_record(tmp_path, monkeypatc
             blocked_launch,
             target="sim",
         )
-
-    _poll_blocked_flow(
-        server,
-        tmp_path,
-        run_id,
-        submit,
-        entered,
-        release,
-        monkeypatch,
-        utc_now_rfc3339,
-        ThreadPoolExecutor,
-    )
-
-
-def _poll_blocked_flow(
-    server, root, run_id, submit, entered, release, monkeypatch, now, pool_type
-):
-    jobs_root = root / "runtime/jobs"
-    server.jobrec.write_record(
-        server.jobrec.JobRecord(
-            run_id=run_id,
-            endpoint="sim",
-            started_at=now(),
-            timeout_s=60,
-            pid=os.getpid(),
-            argv=[],
-        ),
-        root=jobs_root,
-    )
-    monkeypatch.setattr(server, "job_roots", lambda: [jobs_root])
-    monkeypatch.setattr(
-        job_results, "_endpoint_report_dirs", lambda *_args, **_kwargs: (root / "reports",)
-    )
-
-    monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
-    with pool_type(max_workers=1) as pool:
-        future = submit(pool)
         try:
             assert entered.wait(hang_guard_s()), "simulator launch was not reached"
-            application = server._build_mcp_application([], [], server._McpLifetime(None, None))
             payload = asyncio.run(
-                application.call_tool(
-                    "booley_poll",
-                    {
-                        "run_id": run_id,
-                        "wait_seconds": 0,
-                    },
-                )
+                application.call_tool("booley_poll", {"run_id": run_id, "wait_seconds": 0})
             )
             report = payload.structured_content["reports"][0]
             assert report["run_id"] == run_id
@@ -2253,8 +1603,7 @@ def _poll_blocked_flow(
 
 
 def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
-    from booley.mcp import server
-
+    # Private seam: the transport's size bound is a module limit with no public reader.
     active = {
         "target": "sim",
         "stage": "executing",
@@ -2270,7 +1619,7 @@ def test_oversized_live_checkpoint_preserves_owned_active_log_pointer():
         "active": [active],
         "detail": {"completed": "large diagnostic" * report_encoding._MAX_STRUCTURED_REPORT_BYTES},
     }
-    payload = server._structured_from_report(report)
+    payload = ReportEncoder.structured_report(report)
     assert payload["truncated"] is True
     assert payload["reports"] == []
     checkpoint = payload
@@ -2291,16 +1640,7 @@ class TestMainSweepsStaleScratch:
 
         from tests.owned_scratch_support import kill_child_with_scratch, make_repo
 
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp import server as mcp_server
+        mcp_server = server
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
         monkeypatch.delenv("BOOLEY_MCP_TRANSPORT", raising=False)
@@ -2309,6 +1649,7 @@ class TestMainSweepsStaleScratch:
         monkeypatch.setattr(tempfile, "tempdir", str(scratch))
         repo = make_repo(tmp_path / "repo")
         killed = kill_child_with_scratch(repo, scratch, tmp_path / "home")
+        # Private patch: neuters the server itself; only the entry path is under test.
         monkeypatch.setattr(mcp_server, "_main", MagicMock())
         monkeypatch.setattr(mcp_server, "asyncio", MagicMock())
         monkeypatch.setattr(sys, "argv", ["booley-mcp"])
