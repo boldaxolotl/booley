@@ -3,7 +3,7 @@
 A Job handle lives while its Job runs and for 24 h after it ends. A Session handle
 lives while a registry row names it (or one of its aliases), while a live Job
 names it as owner, while its worktree ``worktrees/s<N>`` exists in the Main Booley
-Directory, or, for a ``booley chat`` tab, while its process is not proven dead.
+Directory, or, for a process-keyed Session, while its process is not proven dead.
 Everything else goes; a map left empty restarts numbering at 1, and allocation
 then skips every number a worktree or branch still occupies.
 """

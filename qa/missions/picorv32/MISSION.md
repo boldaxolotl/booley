@@ -80,22 +80,16 @@ Try:
 - Allow both: `[agent] clis = ["claude", "codex"]`, with `auth` set per CLI.
   `booley auth --status`, then `booley auth --cli codex` and
   `booley auth --cli claude`.
-- `booley chat --cli codex` and `booley chat --cli claude` each open the
-  named CLI with Booley's MCP tools; `--cli` with a CLI not in `clis` is
-  refused with the fix.
+- `codex` and `claude` each get Booley's MCP tools; a CLI not in `clis` gets
+  none.
 - A `[models]` entry that runs one Specialist on the non-default CLI; the
   Specialist runs there, and a model that account can't run fails naming the
   entry.
 - Doctor checks every CLI in `clis`: a missing credential fails for the
   default CLI and for one a `[models]` entry needs, and warns for any other.
   Missing or `"auto"` `auth` fails naming the value `booley init` would record.
-- Concurrent sessions: a second `booley chat` while the first runs lands in
-  worktree `s<N>` with the banner; tab title, Dashboard row and worktree name
-  match. `--here` and `--new-worktree` behave as documented.
-  `booley chat --name <label>` shows `S<N> · <label>` in the tab and on the
-  Dashboard, and an invalid label is refused. Repeat with each CLI.
 Look for: the wrong CLI or login used, billing on a credential `auth` didn't
-pick, stale locks after exit, and a label or handle that drifts.
+pick, and a handle that drifts.
 
 ### 4. sim-record — Simulation Records (~40 min)
 Intent: the Simulation Record names and contracts hold on a small Icarus

@@ -377,6 +377,17 @@ def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
                 subject="jobs.max_tickets",
             )
         )
+    worktree = as_dict(data.get("worktree"))
+    if worktree is not None and "chat" in worktree:
+        findings.append(
+            ConfigFinding(
+                ConfigFindingSeverity.WARN,
+                "booley.toml [worktree].chat was removed and is ignored",
+                "delete chat from [worktree] in booley.toml",
+                check_id="config.ignored-key",
+                subject="worktree.chat",
+            )
+        )
     return ConfigTableAudit(tuple(findings))
 
 
@@ -403,8 +414,8 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate ``[worktree]``: the ``chat`` placement mode and the ``gc_older_than`` age."""
-    from booley.config.worktree import parse_chat_mode, parse_gc_older_than
+    """Validate ``[worktree]``: the ``gc_older_than`` age."""
+    from booley.config.worktree import parse_gc_older_than
 
     try:
         require_dict(data.get("worktree", {}), field="[worktree]")
@@ -417,14 +428,6 @@ def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         findings.append(
             fail_finding(
                 f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
-            )
-        )
-    try:
-        parse_chat_mode(data)
-    except ValueError as exc:
-        findings.append(
-            fail_finding(
-                f"booley.toml {exc}", 'set [worktree].chat to "auto", "always" or "never"'
             )
         )
     return ConfigTableAudit(tuple(findings))

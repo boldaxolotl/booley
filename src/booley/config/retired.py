@@ -1,9 +1,9 @@
 """The one refusal for ``booley.toml`` configuration that no longer exists.
 
 A retired ``[jobs]`` key or a ``[goals]`` section (Goal Mode was removed) makes
-every Project command except ``booley doctor``, ``booley upgrade``,
-``booley session`` and ``booley chat`` (the route to booley-heal) refuse with a
-single message that names each problem, its line and the fix; Flow and
+every Project command except ``booley doctor``, ``booley upgrade``
+and ``booley session`` (the route to booley-heal) refuse with a single
+message that names each problem, its line and the fix; Flow and
 Specialist MCP tools refuse too. Only the Main Booley Directory's ``booley.toml`` is read, the
 file admission reads: a linked worktree's or a measured commit's copy never is,
 so exported checkouts stay measurable.

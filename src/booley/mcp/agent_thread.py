@@ -35,8 +35,7 @@ async def resolve_agent_thread(
 ) -> AgentThread | None:
     """The caller's client and thread, or ``None`` for a client that is neither Claude nor Codex.
 
-    Codex names its thread in ``_meta``, read here rather than from *attribution*
-    because a ``booley chat`` tab's attribution carries its launch process instead.
+    Codex names its thread in ``_meta``, read here rather than from *attribution*.
     A Claude caller's T3 Code thread is in the environment of its own process, read off
     the event loop.
     """

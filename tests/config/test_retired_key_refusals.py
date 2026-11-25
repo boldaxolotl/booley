@@ -566,6 +566,13 @@ CASES: list[Refusal] = [
         lambda _env: _audit(project_schema.audit_ignored_settings({"jobs": {"max_tickets": 1}})),
     ),
     Refusal(
+        "ignored-worktree-chat",
+        (f"{_PROJECT_SCHEMA}::audit_ignored_settings",),
+        "[worktree].chat",
+        None,
+        lambda _env: _audit(project_schema.audit_ignored_settings({"worktree": {"chat": "auto"}})),
+    ),
+    Refusal(
         "agent-primary",
         ("src/booley/audit/agent_schema.py::audit_agent_table",),
         "primary",

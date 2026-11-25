@@ -15,7 +15,6 @@ from typing import Any, Literal
 
 from booley.core.boundary import require_dict, require_str, require_str_value, require_uuid4
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import (
     HandleStore,
@@ -379,20 +378,6 @@ class SessionRegistry:
             else attribution
         )
 
-    def chat_attribution(self, facts: Attribution) -> Attribution:
-        """All conversations in one explicitly isolated Codex tab share its session."""
-        if facts.kind != "thread" or facts.process is None:
-            return facts
-        try:
-            owner = codex_chat_owner(self.booley_dir, facts.process, proc_root=self.proc_root)
-        except (OSError, ValueError, RuntimeError):
-            return facts  # Advisory naming failures never discard thread identity.
-        return (
-            replace(facts, key=process_session_key(owner), kind="process", process=owner)
-            if owner is not None
-            else facts
-        )
-
     def _predecessors(
         self, facts: Attribution, keys: tuple[str, ...] = ()
     ) -> list[tuple[Path, SessionRow]]:
@@ -422,7 +407,7 @@ class SessionRegistry:
     ) -> None:
         """Preserve first presence and migrate path fallbacks under the same writer lock.
 
-        Callers pass the resolved attribution; the observer resolves chat ownership.
+        Callers pass the resolved attribution.
         A call_id already in the row's history updates that call's entry in place.
         An older call ending after a newer one started keeps the stored attribution,
         which carries the newest start's facts.

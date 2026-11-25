@@ -19,7 +19,7 @@ _WORKFLOW = _ROOT / ".github/workflows/doc-change-class.yml"
 _USAGE = "# Usage\n\n## Install\n\nText\n\n### Detail\n\n```bash\n# not a heading\n```\n"
 _CLI = (
     "# CLI\n\n| Command | Use |\n|---|---|\n| `chat`, `dashboard` | start |\n\n"
-    "```bash\nbooley chat --model x  # comment\n```\n"
+    "```bash\nbooley flow --model x  # comment\n```\n"
 )
 _CONFIG = (
     '# Config\n\n```toml\n[models]\n# reviewer = "x"\n```\n\n'
@@ -214,12 +214,12 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
     ),
     "cli-new-option": (
         _edit(
-            "docs/user/CLI-REFERENCE.md", "booley chat --model x", "booley chat --model x --fast"
+            "docs/user/CLI-REFERENCE.md", "booley flow --model x", "booley flow --model x --fast"
         ),
         {"docs/user/CLI-REFERENCE.md": ("premerge", "cli-reference-entry")},
     ),
     "cli-optional-flag": (
-        _edit("docs/user/CLI-REFERENCE.md", "booley chat --model x", "booley chat [--fast] x"),
+        _edit("docs/user/CLI-REFERENCE.md", "booley flow --model x", "booley flow [--fast] x"),
         {"docs/user/CLI-REFERENCE.md": ("premerge", "cli-reference-entry")},
     ),
     "cli-table-command": (

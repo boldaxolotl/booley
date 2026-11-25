@@ -9,9 +9,10 @@ rules and adds its own details per area.
   `metrics.toml` fixture into the Booley Directory's `metrics.toml` (in
   Stealth Mode, commit it in the Booley Directory's own repository with
   `git -C .booley commit`), then run `booley measure --validate`: no error.
-- Start the child from the host with
-  `booley session enter -- booley chat --cli codex --name <area> --new-worktree`
-  (Claude: `--cli claude`), note the `s<N>` worktree it reports, and send the
+- Create the area's worktree from the host with
+  `booley session enter -- booley worktree new <area>`, and note its path and
+  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start a Developer
+  Agent (Codex or Claude) in a T3 Code thread on that worktree, and send the
   area's prompt verbatim; it ends with "give me a Measured Commit". The
   operator never does the child's design work.
 - The child follows the measuring rules (`booley cheat --metrics`). The
@@ -31,9 +32,9 @@ rules and adds its own details per area.
 - From the host, run container commands as
   `booley session enter -- booley ...`; a Sandbox command written without that
   prefix is meant for the child's terminal inside the container.
-- Integration: merge the worktree's branch (`booley/s<N>`; in Stealth Mode
-  `wt/s<N>` and `booley-worktree/s<N>`) into its run-owned destination, record
-  in `resources.md` only the branches actually created, then remove the
-  worktree with `booley session enter -- booley worktree rm s<N>`, which keeps
+- Integration: merge the worktree's branch (`booley/<area>`; in Stealth Mode
+  `wt/<area>` and `booley-worktree/<area>`) into its run-owned destination,
+  record in `resources.md` only the branches actually created, then remove the
+  worktree with `booley session enter -- booley worktree rm <area>`, which keeps
   evidence and branches. Leave every participating destination clean before
   the next worktree.

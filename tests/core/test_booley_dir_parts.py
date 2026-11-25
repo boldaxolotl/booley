@@ -100,7 +100,6 @@ WRITTEN_PATH_SAMPLES = {
     "runtime/doctor/x": "common",
     "runtime/developer_probe.json": "common",
     "runtime/synth_probe.json": "common",
-    "runtime/chat-main.lock": "common",
     ".runtime/sandbox-mounts.json": "common",
     "tmp/doctor/x": "checkout",
     "runtime/doctor/core-resolve/x": "checkout",
