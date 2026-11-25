@@ -16,9 +16,7 @@ def git_stdout(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def fake_powershell(
-    directory: Path, monkeypatch: pytest.MonkeyPatch, script: str, mode: int = 0o755
-) -> None:
+def fake_powershell(directory: Path, monkeypatch: pytest.MonkeyPatch, script: str, mode: int = 0o755) -> None:
     """Put a ``powershell`` shell script running *script* first on PATH."""
     fake = directory / "powershell"
     fake.parent.mkdir()

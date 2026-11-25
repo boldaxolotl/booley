@@ -424,17 +424,15 @@ def test_git_run_keeps_its_result_contract(
 @pytest.mark.parametrize(
     ("script", "mode", "kept"),
     [
-        ("exec sleep 60", 0o755, True),  # hangs past the check's 5 s bound
+        ("exec sleep 60", 0o755, True),
         ("exit 1", 0o755, True),
-        ("exit 0", 0o644, True),  # not executable: the check cannot launch
-        ("exit 0", 0o755, False),  # ran and listed no Git process
+        ("exit 0", 0o644, True),
+        ("exit 0", 0o755, False),
     ],
-    ids=["hung", "failed", "unlaunchable", "no-owner"],
 )
 def test_windows_git_process_check_decides_the_index_lock(
     wt: Path, tmp_path: Path, monkeypatch, caplog, script: str, mode: int, kept: bool
 ) -> None:
-    """Only a Windows check that ran and found no Git owner lets a stale lock go."""
     (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
     lock_path = Path(git_stdout(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
     lock_path.write_text("", encoding="utf-8")
@@ -454,7 +452,6 @@ def test_windows_git_process_check_decides_the_index_lock(
     sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
 )
 def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch) -> None:
-    # private: the elapsed bound times the check alone, without git_run's own Git calls.
     from booley.runtime.git import _GitProcessCheckError, _iter_git_process_cmdlines_windows
 
     with heartbeat_tree(tmp_path) as paths:
