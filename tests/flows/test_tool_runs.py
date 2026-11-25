@@ -10,11 +10,17 @@ from pathlib import Path
 import pytest
 
 from booley.flows.base import SubprocessResult
-from booley.flows.job_resources import JobResourceMonitor, ResourceLabel
+from booley.flows.job_resources import JobResourceMonitor, MeasuredPopen, ResourceLabel
 from booley.flows.tool_runs import run_tool
 from booley.runtime import resource_history
 from tests.canned_process_support import canned_command
 from tests.oom_events_support import rising_oom_events
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    wait_for_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.time_budget import hang_guard_s, scaled
 
 _LABEL = ResourceLabel("default", "sim_build")
@@ -117,3 +123,96 @@ def test_a_tool_the_oom_killer_took_names_which_kill_it_was(
     assert done.oom_kill == kill
     [record] = resource_history.load_records(tmp_path)
     assert record["outcome"] == outcome
+
+
+def _start_monitor_after_tree_start(
+    monkeypatch: pytest.MonkeyPatch, paths: dict[str, Path]
+) -> None:
+    """Hold the run's wait until the tool's child exists, so no deadline beats it."""
+    real_start = JobResourceMonitor.start
+
+    def start(self: JobResourceMonitor, pid: int) -> None:
+        real_start(self, pid)
+        wait_for_tree_start(paths)
+
+    monkeypatch.setattr(JobResourceMonitor, "start", start)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("live-until-stop", id="tool-running"),
+        pytest.param("exit", id="tool-exited"),
+    ],
+)
+def test_a_timed_out_tool_leaves_none_of_its_tree_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    with heartbeat_tree(tmp_path) as paths:
+        _start_monitor_after_tree_start(monkeypatch, paths)
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_tool(
+                parent_argv(tmp_path, sys.executable, paths, mode),
+                flow="mutation",
+                label=_LABEL,
+                cwd=tmp_path,
+                env=os.environ,
+                timeout=scaled(1),
+            )
+
+        assert not paths["done"].exists(), "the run waited for the tool's child to end"
+        # taskkill /T cannot reach a child whose tool already exited: Windows has no group.
+        if not (mode == "exit" and os.name == "nt"):
+            assert wait_until_heartbeat_stops(paths["heartbeat"]), (
+                "the tool's child was left running"
+            )
+
+
+def test_an_interrupted_tool_leaves_none_of_its_tree_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_communicate = MeasuredPopen.communicate
+    first_timeouts: list[float | None] = []
+
+    def communicate(self: MeasuredPopen, *args: object, **kwargs: float | None) -> tuple[str, str]:
+        if first_timeouts:  # the drain after the stop
+            return real_communicate(self, *args, **kwargs)  # type: ignore[arg-type]
+        first_timeouts.append(kwargs.get("timeout"))
+        wait_for_tree_start(paths)
+        with pytest.raises(subprocess.TimeoutExpired):
+            real_communicate(self, timeout=0.05)
+        raise KeyboardInterrupt
+
+    with heartbeat_tree(tmp_path) as paths:
+        monkeypatch.setattr(MeasuredPopen, "communicate", communicate)
+
+        with pytest.raises(KeyboardInterrupt):
+            run_tool(
+                parent_argv(tmp_path, sys.executable, paths, "live-until-stop"),
+                flow="mutation",
+                label=_LABEL,
+                cwd=tmp_path,
+                env=os.environ,
+            )
+
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the tool's child was left running"
+    [first] = first_timeouts
+    assert first is not None and first <= 1, "an untimed wait cannot be interrupted"
+
+
+def test_a_tool_killed_mid_character_still_times_out_and_is_recorded(tmp_path: Path) -> None:
+    writer = [
+        sys.executable,
+        "-c",
+        f"import sys, time; sys.stdout.buffer.write(b'\\xe2'); sys.stdout.flush(); "
+        f"time.sleep({hang_guard_s()})",
+    ]
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_tool(
+            writer, flow="mutation", label=_LABEL, cwd=tmp_path, env=os.environ, timeout=scaled(1)
+        )
+
+    [record] = resource_history.load_records(tmp_path)
+    assert record["outcome"] == "timeout"
