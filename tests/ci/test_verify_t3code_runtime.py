@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ from tests.t3_cli_fake import write_t3_server_cli
 from tests.time_budget import scaled
 
 _ROOT = Path(__file__).parents[2]
+sys.path.insert(0, str(_ROOT / ".github/scripts"))
 _SCRIPT = _ROOT / ".github/scripts/verify_t3code_runtime.py"
 _LIMITS = json.loads(
     (_ROOT / "src/booley/data/docker/t3code-policy.json").read_text(encoding="utf-8")
@@ -118,7 +121,7 @@ def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str
             {
                 "organization": "Booley",
                 "limits": _LIMITS,
-                "settings": {"worktreesDirectory": "/tmp/wt"},
+                "settings": {"worktreesDirectory": {"value": "/tmp/wt", "locked": True}},
             }
         ),
         encoding="utf-8",
@@ -147,3 +150,55 @@ def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str
     if fake.get("serve") == "hang":
         with pytest.raises(ProcessLookupError):
             os.kill(int((bin_dir / "serve.pid").read_text(encoding="utf-8")), 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the T3 Code harness imports pwd")
+@pytest.mark.parametrize(
+    ("offered", "problems"),
+    [
+        pytest.param({"schedule_task", "html_render"}, [], id="exact"),
+        pytest.param(
+            {"schedule_task", "html_render", "new_tool"},
+            ["new_tool: offered but neither denied nor kept"],
+            id="unknown-tool",
+        ),
+        pytest.param(
+            {"html_render"}, ["schedule_task: denied but no longer offered"], id="vanished-denied"
+        ),
+        pytest.param(
+            {"schedule_task"}, ["html_render: kept but no longer offered"], id="vanished-kept"
+        ),
+    ],
+)
+def test_claude_tool_list_comparison(offered: set[str], problems: list[str]) -> None:
+    compare = importlib.import_module("verify_t3code_claude_tools").compare_tool_lists
+
+    assert compare(offered, denied={"schedule_task"}, kept={"html_render"}) == problems
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the T3 Code harness imports pwd")
+def test_claude_shim_exits_with_claude_while_its_stdin_stays_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_shim = importlib.import_module("verify_t3code_claude_tools")._write_claude_shim
+    real, bin_dir, capture = tmp_path / "real", tmp_path / "bin", tmp_path / "capture.jsonl"
+    real.mkdir()
+    bin_dir.mkdir()
+    (real / "claude").write_bytes(
+        f"#!{sys.executable}\nimport sys\nsys.stdin.readline()\nsys.exit(7)\n".encode()
+    )
+    (real / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", str(real))
+    write_shim(bin_dir, capture)
+
+    with subprocess.Popen([str(bin_dir / "claude")], stdin=subprocess.PIPE) as shim:
+        assert shim.stdin is not None
+        shim.stdin.write(b'{"mcp_set_servers": 1}\nignored\n')
+        shim.stdin.flush()
+        try:
+            status = shim.wait(timeout=scaled(10))
+        finally:
+            shim.kill()
+
+    assert status == 7
+    assert capture.read_bytes() == b'{"mcp_set_servers": 1}\n'

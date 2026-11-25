@@ -157,8 +157,7 @@ def test_job_slot_store_is_in_main(worktree, monkeypatch):
     assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
 
 
-def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
-    from booley.harness import chat_cmd
+def test_dashboard_handles_use_main(worktree, monkeypatch):
     from booley.harness.dashboard import command
 
     main, tree = worktree
@@ -167,13 +166,6 @@ def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
     monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     command.attach_policy(tree)
     assert blockers == [main]
-
-    reserved: list[Path] = []
-    monkeypatch.setattr(
-        chat_cmd, "reserve_session_handle", lambda d, _key, **_kw: reserved.append(d) or "handle"
-    )
-    chat_cmd._claude_command(tree, [], strict=False)
-    assert reserved == [main]
 
 
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):

@@ -104,38 +104,12 @@ Don't continue until `booley doctor` shows no failures or warnings.
    No VS Code (for example, over SSH)? See
    [Entering the Sandbox without VS Code](SANDBOX.md#entering-the-sandbox-without-vs-code).
 
-3. Open **Terminal → New Terminal**. This is a **container terminal**. Start
-   the Developer Agent:
+3. Start a Developer Agent, Claude or Codex, in a T3 Code thread.
 
-    ```bash
-    booley
-    ```
-
-    `booley` (or `booley chat`) just starts the Developer Agent chosen by
-    `[agent] default` (or its older name `provider`) in `.booley/booley.toml`:
-
-    | Provider | Same as running |
-    | --- | --- |
-    | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
-    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
-
-    From then on you are using that CLI's own chat. To run several sessions,
-    open more container terminals and run `booley` in each. While one session
-    is working in the main checkout, the next one starts in its own worktree;
-    see [Several agents at once](#several-agents-at-once).
-
-    `booley chat --cli codex` opens another Agent CLI instead, as long as it is
-    listed in `[agent] clis`; otherwise it stops and lists the allowed ones.
-    In the Sandbox, every listed CLI gets Booley's tools and skills and the
-    sign-in its `[agent.auth]` policy allows; an unlisted one gets none. See
+    Every Agent CLI listed in `[agent] clis` in `.booley/booley.toml` gets
+    Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;
+    an unlisted one gets none. See
     [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
-
-    Arguments after `booley chat` and its own options (`--cli`, `-C`,
-    `--new-worktree`, `--here`, `--name`) go to the
-    CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
-    `booley chat resume --last` (Codex); a conversation that ran in a worktree
-    reopens there (see [Several agents at once](#several-agents-at-once)).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -314,155 +288,15 @@ the first row to reach the top bar with the tabs, filters, Run, and Help; the
 footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle, except a conversation resumed in its worktree, which keeps its handle.
-
-`booley chat --name uart-fix` labels a session: the terminal tab, the Claude
-session name and the Dashboard's session list, header and worktree picker show
-`S3 · uart-fix`. The Codex tab shows the label on Linux only; elsewhere Booley
-prints a note and the Dashboard still shows it. The label is a display aid only;
-the worktree and branch keep the handle (`s3`, `booley/s3`). A conversation
-resumed in its worktree keeps its handle and label, and `--name` on a resume sets
-a new label. The allowed characters are in the
-[CLI reference](CLI-REFERENCE.md#work-in-the-sandbox--container). Pass Claude's own `--name` as
-`booley chat -- --name <name>`.
+`J-SIM25` or `J-SYN34`.
 
 ### Several agents at once
 
-Agents that share a checkout overwrite each other's edits, so `booley chat`
-keeps them apart. The first session runs in the main checkout. While it is
-running, the next `booley chat` creates a worktree `s<N>` on branch
-`booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
-there. When the worktree is ready it prints:
-
-```text
-Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
-```
-
-The reason is `the main checkout is in use by another booley chat`,
-`Session S2 is working in the main checkout`, `--new-worktree`, or
-`[worktree] chat = "always"`. A lone session runs in the main checkout and
-prints no such line.
-
-Ask an agent for Booley's status to see its session's handle, branch and
-checkout, and whether that checkout is the main checkout or a worktree.
-
-The worktree starts at the main checkout's last commit, so commit first what
-the new session needs: uncommitted changes to the Project's files are not
-copied. Booley also fills the Git submodules and runs the Project's post-setup
-hook before the agent starts, which can take minutes on a large Project; if a
-step fails, it removes the worktree and starts no agent.
-The worktree gets your current Booley configuration.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-The worktree's branch is `wt/s<N>`, so the line above and the exit messages
-below name `wt/s3` instead of `booley/s3`.
-
-One warning names the uncommitted Booley Directory files left out of the new
-worktree.
-See [Stealth Mode](STEALTH.md).
-
-</details>
-
-- `booley chat --new-worktree` always starts in a new worktree.
-- `booley chat --here` always starts in the main checkout, for example to
-  read code alongside another session.
-- `[worktree] chat = "auto" | "always" | "never"` in `.booley/booley.toml` sets
-  the default; see [Worktree settings](CONFIG.md#worktree-settings-worktree).
-- Run from inside an existing linked worktree, `booley chat` starts there and
-  creates nothing.
-
-When the agent of a worktree session exits and you are still at the terminal,
-`booley chat` asks whether to keep or discard the worktree. The question lists
-the work that is not in the main checkout yet: uncommitted changes in the
-worktree and in its Paired Checkout, and the number of commits on each of its
-branches that main lacks (Git-ignored files are not counted):
-
-```text
-Session S3 has ended. Worktree s3: <path>
-Work not in main yet:
-  - 2 uncommitted change(s) in the worktree
-  - 3 commit(s) on booley/s3 not in main
-Discard deletes the uncommitted changes and keeps the branches. Booley never
-merges: merge what you need first.
-Keep or discard worktree s3? [K/d]
-```
-
-Enter keeps it. Discard removes the worktree, the same as
-`booley worktree rm s3`, and keeps its branches, so committed work stays
-reachable. Booley never merges anything for you. If the removal is refused, for
-example because the agent is still running somewhere,
-Booley shows why and asks a second time before it removes the worktree anyway.
-A session in the main checkout gets no question.
-
-Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
-when nobody can answer: output goes to a pipe or a file, the terminal was
-closed, or the agent was stopped by a signal. A kept worktree is normal.
-
-Manage worktrees from a container terminal:
-
-- `booley worktree list` shows each worktree's branch, unmerged work, and
-  live sessions.
-- `booley worktree rm <name>` removes one and keeps its branches. It refuses
-  while a session runs there or work would be lost.
-- `booley worktree gc` removes worktrees idle longer than `[worktree]
-  gc_older_than` (default `7d`). `booley chat` runs it at every launch.
-
-See [Worktrees](WORKTREES.md).
-
-#### Resuming a conversation
-
-Claude Code and Codex keep a conversation with the directory it ran in, so
-a conversation that ran in worktree `s3` cannot be resumed from the main
-checkout. Booley therefore sends a resume to the worktree the conversation ran
-in and keeps its handle (`S3` stays `S3`). It prints
-
-```text
-Booley session S3 resumes conversation <id> in worktree <path>.
-```
-
-- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
-  Claude, `booley chat resume <id>` or `booley chat exec resume <id>` for Codex
-  (Codex options may come before `resume` and between `resume` and the id).
-- The latest conversation: Claude's `-c`/`--continue` and Codex's
-  `resume --last` (also after `exec`) continue the most recent conversation
-  (by the agent CLI's own last-update time) among the main checkout and the
-  worktrees whose session is not running; a main checkout in use is skipped
-  too. Booley then resumes that conversation by its id. If
-  Booley cannot tell which is newest, the agent CLI picks from the main
-  checkout, as before. `resume --last --all`, and a Codex resume that chooses
-  its own directory (`-C`/`--cd`, `--worktree`), are left to Codex.
-- A conversation that ran in the main checkout resumes in the main checkout.
-  So does one Booley has no record of; for Codex, a `NOTE` says so.
-- If the worktree has since been removed, the conversation resumes in the main
-  checkout after a `NOTE`.
-- Resuming refuses a checkout that is in use, except the main checkout under
-  `[worktree] chat = "never"`, which is shared. A conversation whose worktree
-  has a running session (a Codex started by hand counts) is refused with exit 2
-  (end that session first). A conversation that belongs in the main checkout
-  while it is in use is refused too; run `booley chat --here ...` to resume it
-  beside that session.
-- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
-  linked worktree stays there: none of them is redirected by a resume. The
-  `[worktree] chat` setting decides where new sessions start, not where a
-  resume goes.
-- A conversation you started by hand inside a worktree (not through
-  `booley chat`) reopens in that worktree, but may get a new handle once its
-  earlier session has ended.
-
-Put both options before any arguments meant for the agent CLI. Claude Code's
-own `--worktree` still goes to the agent.
-
-The check is best effort for agents that did not start through Booley. A plain
-`claude` tab or a VS Code panel does not hold the main checkout, so Booley only
-notices it once it has made a Booley tool call. To keep such a session apart,
-start it with `booley chat --new-worktree` from a container terminal. Asking a
-running agent to create a worktree is not enough: its Booley tool calls still
-run on the main checkout. Start Codex with `booley chat` too. Read-only
-sessions, such as one that only explains code or runs reviews, can share the
-main checkout.
+Agents that share a checkout overwrite each other's edits. Start each parallel
+task as its own T3 Code thread, which works in its own worktree; its Booley
+tool calls run in that worktree. Read-only sessions, such as one that only
+explains code or runs reviews, can share the main checkout. To create a
+worktree yourself, see [Worktrees](WORKTREES.md).
 
 ### What the Developer Agent is allowed to do
 

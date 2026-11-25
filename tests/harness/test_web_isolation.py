@@ -1,4 +1,4 @@
-"""Shipped managed agent policies: web-tool isolation and no CLI self-update."""
+"""Shipped managed agent policies: web-tool isolation, no CLI self-update, no risky T3 Code tools."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import booley
 from booley.core.models import AgentCallParams
 from booley.harness import web_isolation
 from booley.runtime import _claude_backend, _codex_backend, mcp_config
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
 def _docker_data() -> Path:
@@ -23,6 +24,40 @@ def test_shipped_managed_policies_disable_provider_web_tools() -> None:
 
     assert codex["allowed_web_search_modes"] == []
     assert set(claude["permissions"]["deny"]) >= web_isolation.CLAUDE_WEB_CAPABILITIES
+
+
+def test_shipped_claude_policy_denies_riskier_t3code_tools() -> None:
+    # The maintainer's decision on #4782: a Claude thread started by T3 Code cannot schedule
+    # tasks, link machines, transfer threads, manage T3 Code projects, use devices or ask for secrets.
+    claude = json.loads(
+        (_docker_data() / "claude-managed-settings.json").read_text(encoding="utf-8")
+    )
+    prefix = "mcp__t3-code__"
+
+    denied = {
+        rule.removeprefix(prefix)
+        for rule in claude["permissions"]["deny"]
+        if rule.startswith(prefix)
+    }
+
+    assert denied == {
+        "schedule_task",
+        "delete_scheduled_task",
+        "list_scheduled_tasks",
+        "run_scheduled_task_now",
+        "t3_environment_link",
+        "t3_environment_links",
+        "t3_environment_unlink",
+        "t3_thread_transfer",
+        "t3_project_create",
+        "t3_project_delete",
+        "t3_project_clone",
+        "device_open",
+        "device_close",
+        "device_list",
+        "device_screenshot",
+        "request_secret",
+    }
 
 
 def test_shipped_managed_policies_disable_agent_cli_self_update() -> None:
@@ -45,6 +80,24 @@ def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() ->
         "updates": {"mode": "off"},
         "providers": {"allowedDrivers": ["claudeAgent", "codex"]},
     }
+
+
+def test_shipped_t3code_policy_locks_worktrees_and_their_prepare_script() -> None:
+    # T3 Code's managed policy format fixes the shape; ADR 0082 fixes the values.
+    settings = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))[
+        "settings"
+    ]
+
+    assert settings["worktreesDirectory"] == {
+        "value": f"{BOOLEY_DIR_TARGET}/t3-worktrees",
+        "locked": True,
+    }
+    assert settings["defaultProjectScripts"]["locked"] is True
+    assert [
+        (script["command"], script["async"])
+        for script in settings["defaultProjectScripts"]["value"]
+        if script["runOnWorktreeCreate"]
+    ] == [("booley worktree prepare", False)]
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:

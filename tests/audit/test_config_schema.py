@@ -517,38 +517,31 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
     assert "developer" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
 
 
-def test_jobs_max_tickets_is_ignored_with_warning():
-    audit = project_schema.audit_ignored_settings({"jobs": {"max_tickets": 0}})
+@pytest.mark.parametrize(
+    ("data", "message", "fix"),
+    [
+        (
+            {"jobs": {"max_tickets": 0}},
+            "booley.toml [jobs].max_tickets is ignored",
+            "delete max_tickets from [jobs] in booley.toml",
+        ),
+        (
+            {"worktree": {"chat": "auto"}},
+            "booley.toml [worktree].chat was removed and is ignored",
+            "delete chat from [worktree] in booley.toml",
+        ),
+    ],
+)
+def test_ignored_setting_warns_with_its_fix(data, message, fix):
+    audit = project_schema.audit_ignored_settings(data)
     assert audit.is_valid
-    assert audit.findings[0].check_id == "config.ignored-key"
-    assert audit.findings[0].fix == "delete max_tickets from [jobs] in booley.toml"
-
-
-@pytest.mark.parametrize("mode", ["auto", "always", "never"])
-def test_worktree_chat_knob_accepts_its_three_modes(mode: str) -> None:
-    assert project_schema.audit_worktree_table({"worktree": {"chat": mode}}).is_valid
-    assert project_schema.audit_worktree_table({}).is_valid
-
-
-def test_worktree_chat_knob_must_be_auto_always_or_never() -> None:
-    # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
-    for data in ({"worktree": {"chat": "sometimes"}}, {"worktree": {"chat": 1}}):
-        audit = project_schema.audit_worktree_table(data)
-
-        assert not audit.is_valid
-        assert "[worktree].chat" in audit.findings[0].message
+    (finding,) = audit.findings
+    assert finding.severity is config_common.ConfigFindingSeverity.WARN
+    assert (finding.check_id, finding.message, finding.fix) == ("config.ignored-key", message, fix)
 
 
 def test_worktree_table_that_is_not_a_table_reports_once() -> None:
     assert len(project_schema.audit_worktree_table({"worktree": []}).findings) == 1
-
-
-def test_worktree_table_reports_both_bad_keys() -> None:
-    audit = project_schema.audit_worktree_table(
-        {"worktree": {"chat": "sometimes", "gc_older_than": "soon"}}
-    )
-
-    assert len(audit.findings) == 2
 
 
 def test_chat_table_is_an_unknown_table() -> None:

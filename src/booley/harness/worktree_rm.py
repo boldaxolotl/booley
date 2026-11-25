@@ -404,14 +404,6 @@ def _lock_reasons(component: _Component) -> list[str]:
     return [f"{subject} is locked by Git ({registration.locked or 'no reason given'})"]
 
 
-def _loss_reasons(target: _Target, component: _Component) -> list[str]:
-    """Work an intact component holds that removal would lose: changes, commits, submodules."""
-    upstream_repo = _upstream_repo(target, component)
-    return _work_reasons(target, component) + _submodule_reasons(
-        component.path, upstream_repo, _SUBJECT[component.label]
-    )
-
-
 def _intact_reasons(target: _Target, component: _Component) -> list[str]:
     """Uncommitted, unmerged, locked, and submodule-only work of an intact component."""
     submodules = _submodule_reasons(
@@ -430,12 +422,6 @@ def _broken_reasons(target: _Target, component: _Component) -> list[str]:
 def _component_reasons(target: _Target, component: _Component) -> list[str]:
     if component.state == "intact":
         return _intact_reasons(target, component)
-    return _broken_reasons(target, component)
-
-
-def _component_losses(target: _Target, component: _Component) -> list[str]:
-    if component.state == "intact":
-        return _loss_reasons(target, component)
     return _broken_reasons(target, component)
 
 
@@ -481,22 +467,6 @@ def _busy_reasons(target: _Target) -> list[str]:
     for component in (target.outer, target.paired):
         if component is not None:
             reasons += _component_reasons(target, component)
-    return reasons + _booley_dir_reasons(target)
-
-
-def discard_losses(project_root: Path, name: str) -> list[str]:
-    """What removing worktree *name* would lose, in the words of ``rm``'s refusal.
-
-    Read-only: it takes no layout lock and changes nothing. A live Session
-    and a Git lock are blockers, not losses; ``remove_worktree`` reports
-    them as its refusal. Raises the failures in :data:`REMOVAL_FAILURES`.
-    """
-    main = resolve_main_checkout_root(project_root)
-    target = _locate(project_root, main, name)
-    reasons: list[str] = []
-    for component in (target.outer, target.paired):
-        if component is not None:
-            reasons += _component_losses(target, component)
     return reasons + _booley_dir_reasons(target)
 
 

@@ -16,7 +16,6 @@ from tests.time_budget import hang_guard_s
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import handles, job_records
-from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.pid import ProcessIdentity
 
 STAMP = "2026-10-14T10:00:00Z"
@@ -350,7 +349,6 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
 
 
 def test_pre_reserved_process_handle_is_reused_by_registry(tmp_path, monkeypatch):
-    from booley.runtime.pid import ProcessIdentity
     from booley.runtime.session_activity import process_session_key
 
     reserve = handles.reserve_session_handle
@@ -559,7 +557,6 @@ def test_every_session_allocation_path_skips_taken_numbers(tmp_path, monkeypatch
 
     paths = {
         "codex:store": lambda: handles.reserve_session_handle(booley_dir, "codex:store"),
-        "codex:chat": lambda: reserve_codex_chat(booley_dir, ProcessIdentity(4242, "fixture", 7)),
         "codex:registry": allocate_with_registry,
     }
     for key, allocate in paths.items():
@@ -575,7 +572,7 @@ def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
     handles_map = handles.HandleMap()
     handles_map.reserve("pid:old", "S")
     handles_map.reserve("pid:new", "S", predecessors=("pid:old",))
-    handles_map.aliases["chat:codex:pid:new"] = "pid:new"
+    handles_map.aliases["alias:pid:new"] = "pid:new"
     handles_map.reserve("pid:other", "S")
 
     handles_map.drop({"pid:old"})
@@ -585,7 +582,7 @@ def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
 
 
 def test_session_name_is_kept_on_resume_and_replaced_by_a_new_name():
-    # Bug caught: resuming (a predecessor) dropped the label, or a new --name did not replace
+    # Bug caught: resuming (a predecessor) dropped the label, or a new name did not replace
     # it; the label must live on the entry every alias of the session resolves to.
     handles_map = handles.HandleMap()
     handles_map.reserve("pid:old", "S", name="uart-fix")
@@ -648,14 +645,3 @@ def test_non_string_names_are_diagnosed_and_never_reset(tmp_path):
     assert store.path.read_bytes() == before
     store.path.write_text(json.dumps({**data, "names": ["not", "a", "dict"]}))
     assert store.titled_snapshot()[2]
-
-
-def test_launched_title_reads_the_stored_label_and_falls_back_to_the_given_name(tmp_path):
-    # Bug caught: a resumed launch without --name showed the bare handle, or an unreadable
-    # map broke the launch instead of falling back.
-    handles.reserve_session_handle(tmp_path, "pid:old", name="uart-fix")
-    handles.reserve_session_handle(tmp_path, "pid:new", predecessors=("pid:old",))
-    assert handles.launched_session_title(tmp_path, "pid:new", "S1", None) == "S1 \u00b7 uart-fix"
-    handles.HandleStore(tmp_path).path.write_text("broken")
-    assert handles.launched_session_title(tmp_path, "pid:new", "S1", "x") == "S1 \u00b7 x"
-    assert handles.launched_session_title(tmp_path, "pid:new", "S1", None) == "S1"

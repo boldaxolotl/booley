@@ -384,16 +384,6 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
-def create_worktree(project_root: Path, name: str) -> Path | None:
-    """Create worktree *name* exactly as ``booley worktree new`` does; return its path.
-
-    ``None`` means the creation failed after its error was printed and everything it
-    made was rolled back. Nothing is written to stdout.
-    """
-    created = _create(project_root, name)
-    return None if created is None else created.worktree
-
-
 def _create(project_root: Path, name: str) -> _Created | None:
     """Create and set up a worktree atomically; ``None`` after a printed, rolled-back failure."""
     from booley.core.layout_lock import layout_gate

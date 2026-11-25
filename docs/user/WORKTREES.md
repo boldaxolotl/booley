@@ -2,10 +2,9 @@
 
 A **worktree** is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one for each task you
-run in parallel. `booley chat` creates one (`s<N>`, on branch `booley/s<N>`)
-when the main checkout is in use, and offers to remove it when its session
-ends; see [Several agents at once](USAGE.md#several-agents-at-once). Read this
-page to create a worktree by hand, see what each one holds, or remove one.
+run in parallel; see [Several agents at once](USAGE.md#several-agents-at-once).
+Read this page to create a worktree by hand, see what each one holds, or
+remove one.
 Run the commands in a container terminal.
 
 ## Creating a worktree
@@ -55,7 +54,7 @@ files are left out; one warning names them (the first 10, then a count). Commit
 them first if the worktree needs them. Booley refuses a repository with no
 commits or an existing branch of that name. Ignored files stay behind. Booley
 refuses to create a worktree from inside a Paired Checkout. The worktree's own
-branch is `wt/<name>` (`wt/s<N>` for `booley chat`) instead of `booley/<name>`,
+branch is `wt/<name>` instead of `booley/<name>`,
 so the product name stays out of branch names you may push. A branch named `wt`
 (or `wt/<name>/...`) blocks the name, like `booley` does outside Stealth Mode. A
 worktree keeps the branch it was created with, and `list`, `rm` and `gc` work
@@ -65,9 +64,10 @@ with either prefix.
 
 ## Preparing a worktree made with Git
 
-A worktree made with `git worktree add`, or by another tool such as T3 Code,
-has no Booley Directory of its own and uses the main checkout's configuration.
-In the new worktree, run:
+T3 Code in the Sandbox prepares each worktree it creates before the thread's
+first turn; if that fails, the thread does not start. A worktree made with
+`git worktree add` has no Booley Directory of its own and uses the main
+checkout's configuration. In the new worktree, run:
 
 ```bash
 booley worktree prepare [PATH]
@@ -112,7 +112,7 @@ under `.booley/worktrees/`, from the main checkout or from any worktree:
 | `UNCOMMITTED` | Changed and untracked entries (an untracked folder counts once), not counting untracked files in the worktree's own `.booley/`. A Paired Checkout reads `N, paired M`, `M` being the same count in its inner checkout |
 | `UNMERGED` | Commits not yet in the main checkout's branch. Commits whose change is already there count as merged, including a branch merged by squash. A Paired Checkout reads `N, paired M` |
 | `SESSION` | Handles of live sessions in the worktree |
-| `LAST USED` | When the worktree was created, a Booley tool call last ran there, `booley chat` was last launched inside it, or the session of a worktree that `booley chat` created ended (a resumed session counts through its tool calls); `never` for a worktree that predates the record |
+| `LAST USED` | When the worktree was created or a Booley tool call last ran there; `never` for a worktree that predates the record |
 
 A worktree whose directory is gone is not listed; a warning names it.
 
@@ -193,11 +193,6 @@ worktree list`) is older than `AGE`: days, hours, minutes, and seconds as `7d`,
 `gc_older_than` in the main checkout's `.booley/booley.toml`
 ([configuration](CONFIG.md#worktree-settings-worktree)). `--older-than` wins
 over the setting. Run it from the main checkout or another worktree.
-
-`booley chat` runs the same cleanup at the start of every launch, with the same
-age, and prints only the worktrees it removed: it stays silent about the ones it
-keeps and about a failed run (an invalid `gc_older_than`, for instance). Run
-`booley worktree gc` to see why a worktree was kept.
 
 Each idle worktree goes through `booley worktree rm` without `--force`, so
 everything `rm` refuses is kept: a live Session and unsaved work (see [Removing

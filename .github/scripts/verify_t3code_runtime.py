@@ -6,9 +6,10 @@ policy is rejected, the server does not become ready, ``t3 policy show`` does no
 report Booley's policy as in effect, or ``t3 auth pairing create`` stops returning a
 link under the base URL that ``booley session up`` will print. The file named by
 ``--policy`` holds the expected values: ``organization``, ``limits`` and optional
-``settings``, a mapping of setting name to the value Booley locks it to.
+``settings``, each a ``{"value", "locked"}`` entry as T3 Code's policy file writes it.
 
-Standard library only: the image's Python runs it without Booley installed.
+``verify_t3code_claude_tools.py`` reuses its helpers for the check of the tools T3 Code offers
+Claude. Standard library only: the image's Python runs it without Booley installed.
 """
 
 from __future__ import annotations
@@ -36,25 +37,25 @@ _SETTING = re.compile(r"\s+(?P<key>\w+) = (?P<value>.+?)(?P<locked> \(locked\))?
 _LOADED = re.compile(r"The running server \(.*\) loaded this policy\.")
 
 
-def _fail(step: str, output: str) -> NoReturn:
+def fail(step: str, output: str) -> NoReturn:
     raise SystemExit(f"{step}\n{output}")
 
 
-def _t3(*args: str) -> subprocess.CompletedProcess[str]:
+def run_t3(*args: str, timeout_s: float = _COMMAND_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["t3", *args],
         capture_output=True,
         text=True,
-        timeout=_COMMAND_TIMEOUT_S,
+        timeout=timeout_s,
         check=False,
     )
 
 
-def _output(result: subprocess.CompletedProcess[str]) -> str:
+def command_output(result: subprocess.CompletedProcess[str]) -> str:
     return f"exit status {result.returncode}\n{result.stdout}{result.stderr}"
 
 
-def _start_server(root: Path, log: Path) -> subprocess.Popen[bytes]:
+def start_server(root: Path, log: Path) -> subprocess.Popen[bytes]:
     command = ["t3", "serve", "--host", "127.0.0.1", "--port", "3773"]
     with log.open("wb") as sink:
         return subprocess.Popen(
@@ -65,20 +66,20 @@ def _start_server(root: Path, log: Path) -> subprocess.Popen[bytes]:
         )
 
 
-def _wait_until_ready(server: subprocess.Popen[bytes], log: Path, timeout_s: float) -> None:
+def wait_until_ready(server: subprocess.Popen[bytes], log: Path, timeout_s: float) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline and server.poll() is None:
         if _READY in log.read_text(encoding="utf-8", errors="replace"):
             return
         time.sleep(0.2)
     status = server.poll()
-    _fail(
+    fail(
         f"T3 Code did not become ready (exit status {status})",
         log.read_text(encoding="utf-8", errors="replace"),
     )
 
 
-def _stop_server(server: subprocess.Popen[bytes]) -> None:
+def stop_server(server: subprocess.Popen[bytes]) -> None:
     if server.poll() is None:
         os.killpg(server.pid, signal.SIGTERM)
         try:
@@ -93,7 +94,7 @@ def _parse_show(text: str) -> dict[str, Any]:
     header = _HEADER.fullmatch(lines[0]) if lines else None
     limits_text = text.partition("Limits:\n")[2]
     if header is None or not limits_text:
-        _fail("t3 policy show output is not in the form Booley reads", text)
+        fail("t3 policy show output is not in the form Booley reads", text)
     settings_block = text.partition("Settings:\n")[2].partition("\n\n")[0]
     settings = {
         found["key"]: [json.loads(found["value"]), bool(found["locked"])]
@@ -125,19 +126,22 @@ def _differences(prefix: str, expected: dict[str, Any], shown: dict[str, Any]) -
 
 
 def _check_policy_show(root: Path, policy: dict[str, Any]) -> dict[str, Any]:
-    result = _t3("policy", "show", "--base-dir", str(root / "home"))
+    result = run_t3("policy", "show", "--base-dir", str(root / "home"))
     if result.returncode:
-        _fail("t3 policy show failed", _output(result))
+        fail("t3 policy show failed", command_output(result))
     shown = _parse_show(result.stdout)
-    locked = {key: [value, True] for key, value in policy.get("settings", {}).items()}
-    problems = _differences("settings", locked, shown["settings"])
+    expected = {
+        key: [setting["value"], setting["locked"]]
+        for key, setting in policy.get("settings", {}).items()
+    }
+    problems = _differences("settings", expected, shown["settings"])
     problems += _differences("limits", policy["limits"], shown["limits"])
     if (shown["organization"], shown["path"]) != (policy["organization"], _INSTALLED_POLICY):
         problems.append(f"policy source: {shown['organization']} at {shown['path']}")
     if not _LOADED.fullmatch(shown["status"]):
         problems.append(f"the running server does not use the installed policy: {shown['status']}")
     if problems:
-        _fail("t3 policy show does not report Booley's policy in effect", "\n".join(problems))
+        fail("t3 policy show does not report Booley's policy in effect", "\n".join(problems))
     return shown
 
 
@@ -149,18 +153,18 @@ def _expires_in_future(value: object) -> bool:
 
 
 def _check_pairing(root: Path) -> dict[str, Any]:
-    result = _t3(
+    result = run_t3(
         *["auth", "pairing", "create", "--base-dir", str(root / "home"), "--ttl", "5m"],
         *["--base-url", _PAIRING_BASE_URL, "--json"],
     )
     if result.returncode:
-        _fail("t3 auth pairing create failed", _output(result))
+        fail("t3 auth pairing create failed", command_output(result))
     try:
         pairing = json.loads(result.stdout)
     except ValueError:
         pairing = None
     if not isinstance(pairing, dict):
-        _fail(
+        fail(
             "t3 auth pairing create did not print a JSON object",
             "(output withheld: it may hold a token)",
         )
@@ -171,7 +175,7 @@ def _check_pairing(root: Path) -> dict[str, Any]:
     if not _expires_in_future(pairing.get("expiresAt")):
         problems.append("expiresAt is not a time in the future")
     if problems:
-        _fail("t3 auth pairing create is not in the form session up reads", "\n".join(problems))
+        fail("t3 auth pairing create is not in the form session up reads", "\n".join(problems))
     return {"keys": sorted(pairing), "expiresAt": pairing["expiresAt"]}
 
 
@@ -183,25 +187,25 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
     policy = json.loads(args.policy.read_text(encoding="utf-8"))
-    check = _t3("policy", "check", _INSTALLED_POLICY)
+    check = run_t3("policy", "check", _INSTALLED_POLICY)
     if check.returncode:
-        _fail("t3 policy check rejected the installed policy", _output(check))
+        fail("t3 policy check rejected the installed policy", command_output(check))
     with tempfile.TemporaryDirectory(prefix="t3code-") as tmp:
         root = Path(tmp)
         (root / "project").mkdir()
         log = root / "serve.log"
-        server = _start_server(root, log)
+        server = start_server(root, log)
         try:
-            _wait_until_ready(server, log, args.ready_timeout)
+            wait_until_ready(server, log, args.ready_timeout)
             shown = _check_policy_show(root, policy)
             pairing = _check_pairing(root)
             if server.poll() is not None:
-                _fail(
+                fail(
                     f"T3 Code exited during the checks (exit status {server.poll()})",
                     log.read_text(encoding="utf-8", errors="replace"),
                 )
         finally:
-            _stop_server(server)
+            stop_server(server)
     evidence = {
         "user": pwd.getpwuid(os.geteuid()).pw_name,
         "interfaces": [name for _index, name in socket.if_nameindex()],

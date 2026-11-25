@@ -56,7 +56,7 @@ class HandleMap:
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     next_number: int = 1
-    # Optional ``booley chat --name`` labels, keyed like ``entries`` (the entry key).
+    # Optional Session labels, keyed like ``entries``.
     names: dict[str, str] = field(default_factory=dict)
     # Session maps only: numbers a worktree or branch occupies are never allocated.
     number_taken: Callable[[int], bool] | None = field(default=None, compare=False, repr=False)
@@ -336,15 +336,6 @@ def reserve_session_handle(
     return HandleStore(booley_dir).reserve(
         key, "S", wait_s=wait_s, predecessors=predecessors, name=name
     )
-
-
-def launched_session_title(booley_dir: Path, key: str, handle: str, name: str | None) -> str:
-    """The title a just-reserved Session shows, including a label stored by an earlier launch.
-
-    Read-only second map read; if it fails the title falls back to *handle* and *name*.
-    """
-    _handles, titles, _diagnostics = HandleStore(booley_dir).titled_snapshot()
-    return titles.get(key) or session_title(handle, name)
 
 
 def register_job(

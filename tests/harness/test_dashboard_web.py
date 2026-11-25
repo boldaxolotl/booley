@@ -900,9 +900,12 @@ class _References(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.urls: list[str] = []
+        self.hidden: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         self.urls.extend(value for name, value in attrs if name in {"src", "href"} and value)
+        if ("hidden", None) in attrs:
+            self.hidden.extend(value for name, value in attrs if name == "id" and value)
 
 
 def _page_js(client: TestClient) -> str:
@@ -976,13 +979,14 @@ def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
     assert page.status_code == 200
     assert page.headers["content-type"].startswith("text/html")
     assert page.headers["content-security-policy"] == "default-src 'self'"
-    assert sorted(references.urls) == ["/assets/dashboard.css", "/assets/dashboard.js"]
+    assert references.urls == ["/assets/dashboard.css", "/assets/dashboard.js", "/assets/run.js"]
     for url, response in assets.items():
         assert response.status_code == 200, url
         assert "http://" not in response.text
         assert "https://" not in response.text
     assert assets["/assets/dashboard.css"].headers["content-type"].startswith("text/css")
     assert "javascript" in assets["/assets/dashboard.js"].headers["content-type"]
+    assert "javascript" in assets["/assets/run.js"].headers["content-type"]
     css = assets["/assets/dashboard.css"].text
     assert "url(" not in css
     assert "@import" not in css

@@ -14,7 +14,6 @@ import pytest
 from booley.mcp import server
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import handles, job_records, platform_paths
-from booley.runtime.chat_sessions import reserve_codex_chat
 from booley.runtime.pid import (
     ProcessIdentity,
     ProcessObservation,
@@ -123,39 +122,25 @@ PROCESS = ProcessIdentity(4242, "fixture", 7)
 
 
 @pytest.mark.parametrize(
-    ("state", "codex", "kept"),
+    ("state", "kept"),
     [
-        (ProcessState.RUNNING, False, True),
-        (ProcessState.UNKNOWN, False, True),
-        (ProcessState.DEAD, False, False),
-        (ProcessState.REUSED, False, False),
-        (ProcessState.ZOMBIE, False, False),
-        (ProcessState.RUNNING, True, True),
-        (ProcessState.DEAD, True, False),
-    ],
-    ids=[
-        "running",
-        "unknown",
-        "dead",
-        "reused",
-        "zombie",
-        "codex-alias-running",
-        "codex-alias-dead",
+        (ProcessState.RUNNING, True),
+        (ProcessState.UNKNOWN, True),
+        (ProcessState.DEAD, False),
+        (ProcessState.REUSED, False),
+        (ProcessState.ZOMBIE, False),
     ],
 )
 def test_rowless_process_session_lives_until_its_process_is_proven_dead(
-    tmp_path, monkeypatch, state, codex, kept
+    tmp_path, monkeypatch, state, kept
 ):
     key = process_session_key(PROCESS)
-    if codex:
-        reserve_codex_chat(tmp_path, PROCESS)
-    else:
-        handles.reserve_session_handle(tmp_path, key)
+    handles.reserve_session_handle(tmp_path, key)
     monkeypatch.setattr(pruning(), "observe_process", lambda identity: ProcessObservation(state))
     prune(tmp_path)
     loaded = session_map(tmp_path)
     assert (key in loaded.entries) is kept
-    assert bool(loaded.aliases) is (kept and codex)
+    assert not loaded.aliases
 
 
 def test_own_process_session_key_survives_pruning(tmp_path):

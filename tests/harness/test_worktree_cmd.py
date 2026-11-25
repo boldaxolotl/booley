@@ -1935,7 +1935,6 @@ def test_new_after_mount_change_repairs_surviving_registrations(
     versioned_project: Path, monkeypatch, tmp_path: Path, relative: bool
 ) -> None:
     from booley.flows.baseline_worktree import baseline_worktree
-    from booley.runtime.conversation_records import ConversationRecord, is_live
     from booley.runtime.worktree_identity import resolve_worktree_identity
     from tests.mount_change_support import respell_registration, simulate_mount_change
 
@@ -1967,7 +1966,6 @@ def test_new_after_mount_change_repairs_surviving_registrations(
         for admin in _registrations(root):
             respell_registration(admin, current, former, relative=relative)
         respelled = _registrations(root)
-        stamp = (ticket / ".git").stat().st_mtime_ns
 
         assert _new("second", root) == 0
 
@@ -1992,8 +1990,6 @@ def test_new_after_mount_change_repairs_surviving_registrations(
                 text = pointer.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
                 assert Path(text).is_absolute() is not relative
                 assert str(former) not in text
-        record = ConversationRecord("c", "x", str(ticket), "first", None, None, stamp)
-        assert is_live(root / ".booley", record)
 
 
 @_real_script
