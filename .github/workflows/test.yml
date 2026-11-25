@@ -1468,14 +1468,16 @@ jobs:
               booley-test python /work/.github/scripts/verify_t3code_runtime.py
               --evidence /validation-tmp/t3code.json
 
+          # The container name must not extend another probe's prefix: that probe's cleanup
+          # removes every container whose name starts with its prefix, this one included.
           - name: Run T3 Code Claude tool probe
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/t3code-tools
             run: >-
               .github/scripts/run_with_container_cleanup.sh
-              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-t3code-tools
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-claude-tools
               docker run --rm --init --network none --user agent
-              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-t3code-tools
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-claude-tools
               --tmpfs /home/agent:uid=1000,gid=1000,mode=700
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
