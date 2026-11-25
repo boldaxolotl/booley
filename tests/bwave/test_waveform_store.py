@@ -590,6 +590,54 @@ def test_streaming_conversion_fake_process_covers_lifecycle(tmp_path: Path, monk
     assert not fifo.exists()
 
 
+def _descriptors_on(identity: tuple[int, int]) -> list[int]:
+    """Descriptors of this process that refer to the file with *identity* (device, inode)."""
+    found: list[int] = []
+    for name in os.listdir("/dev/fd"):
+        try:
+            status = os.fstat(int(name))
+        except OSError:
+            continue
+        if (status.st_dev, status.st_ino) == identity:
+            found.append(int(name))
+    return found
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
+def test_backlog_counts_unread_bytes_through_a_read_only_descriptor(
+    tmp_path: Path, fake_bwave, monkeypatch
+) -> None:
+    """macOS answers FIONREAD on a read-write FIFO descriptor with 0: ask a read-only one."""
+    import fcntl
+
+    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fifo = tmp_path / "pipe.vcd"
+    conversion = stores.start_streaming_conversion(
+        fifo, tmp_path / "s.fst", stderr_path=tmp_path / "e"
+    )
+    assert conversion is not None
+    modes: list[int] = []
+    real_ioctl = fcntl.ioctl
+
+    def spy(fd: int, *args):
+        modes.append(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE)
+        return real_ioctl(fd, *args)
+
+    monkeypatch.setattr(fcntl, "ioctl", spy)
+    try:
+        writer = os.open(str(fifo), os.O_WRONLY | os.O_NONBLOCK)
+        try:
+            assert os.write(writer, b"x" * 100) == 100
+        finally:
+            os.close(writer)
+        assert conversion.backlog() == 100
+        assert modes == [os.O_RDONLY]
+    finally:
+        conversion.kill()
+        conversion.finish(timeout_s=hang_guard_s())
+    assert _descriptors_on(conversion.fifo_identity) == []
+
+
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
 def test_streaming_start_unavailable_and_popen_failure(tmp_path: Path, monkeypatch) -> None:
     fifo = tmp_path / "trace.fifo"
@@ -601,13 +649,17 @@ def test_streaming_start_unavailable_and_popen_failure(tmp_path: Path, monkeypat
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: None)
     assert stores.start_streaming_conversion(fifo, store, stderr_path=stderr) is None
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
-    monkeypatch.setattr(
-        stores.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("spawn failed")),
-    )
+    seen: list[tuple[int, int]] = []
+
+    def failing_popen(*_args, stdin: int, **_kwargs):
+        status = os.fstat(stdin)
+        seen.append((status.st_dev, status.st_ino))
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(stores.subprocess, "Popen", failing_popen)
     assert stores.start_streaming_conversion(fifo, store, stderr_path=stderr) is None
     assert not fifo.exists()
+    assert _descriptors_on(seen[0]) == []
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
@@ -666,6 +718,7 @@ def test_streaming_failure_does_not_report_success(tmp_path: Path, monkeypatch) 
     )
     conversion = stores.StreamingConversion(
         FailedProcess(),  # type: ignore[arg-type]
+        -1,
         -1,
         tmp_path / "trace.fifo",
         tmp_path / "trace.fst",
