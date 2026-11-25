@@ -1,170 +1,55 @@
-"""Public worktree-relocation boundary behavior."""
+"""Directory migration moves only worktrees whose submodules can move with them."""
 
+import argparse
 import os
-import subprocess
-from pathlib import Path
 
 import pytest
 
-from booley.runtime import platform_paths, worktree_relocation
-from booley.runtime.worktree_relocation import (
-    WorktreeMove,
-    WorktreeRelocationError,
-    preflight_worktree_moves,
-    refresh_relative_worktree_config,
-    relocate_worktree,
+from booley.harness.init_cmd import run_init
+from tests.fake_docker_executable import install_fake_docker
+from tests.git_support import git
+
+_WINDOWS_DOCKER = pytest.mark.skipif(
+    os.name == "nt",
+    reason="the fake docker is docker.cmd, which a bare `docker` spawn cannot find on Windows: "
+    "the runner's own docker.exe, with no daemon, answers the Sandbox inventory instead",
 )
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 
-def _git(repository: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    return result.stdout.strip()
-
-
-def _linked_worktree(tmp_path: Path, *, relative: bool = False) -> tuple[Path, Path, str]:
-    repository = tmp_path / "r"
-    repository.mkdir()
-    _git(repository, "init", "-b", "main")
-    _git(repository, "config", "user.name", "Test")
-    _git(repository, "config", "user.email", "test@example.invalid")
-    (repository / "tracked").write_text("value\n", encoding="utf-8")
-    _git(repository, "add", "tracked")
-    _git(repository, "commit", "-m", "initial")
-    if relative:
-        _git(repository, "config", "worktree.useRelativePaths", "true")
-    source = tmp_path / "w"
-    _git(repository, "worktree", "add", "-b", "ticket", str(source))
-    return repository, source, "refs/heads/ticket"
-
-
-def test_preflight_rejects_occupied_destination(tmp_path: Path) -> None:
-    repository, source, ref = _linked_worktree(tmp_path)
-    destination = tmp_path / "d"
-    destination.mkdir()
-
-    with pytest.raises(WorktreeRelocationError, match="destination already exists"):
-        preflight_worktree_moves((WorktreeMove(repository, ref, source, destination),))
-
-    assert source.is_dir()
-
-
-def test_relocation_replay_is_idempotent(tmp_path: Path) -> None:
-    repository, source, ref = _linked_worktree(tmp_path)
-    destination = tmp_path / "nested/d"
-
-    preflight_worktree_moves((WorktreeMove(repository, ref, source, source),))
-    relocate_worktree(repository, ref, source, destination)
-    relocate_worktree(repository, ref, source, destination)
-
-    assert _git(destination, "branch", "--show-current") == "ticket"
-
-
-@pytest.mark.skipif(
-    tuple(
-        int(part)
-        for part in subprocess.run(["git", "version"], capture_output=True, text=True, check=True)
-        .stdout.split()[2]
-        .split(".")[:3]
-    )
-    < (2, 48, 0),
-    reason="relative worktree links require Git 2.48 or newer",
+@pytest.mark.parametrize(
+    "layout", ["native", pytest.param("standalone", marks=_WINDOWS_DOCKER), "broken"]
 )
-def test_relocation_preserves_relative_registration(tmp_path: Path) -> None:
-    repository, source, ref = _linked_worktree(tmp_path, relative=True)
-    administration = Path(_git(source, "rev-parse", "--git-dir"))
-    _git(source, "config", "extensions.worktreeConfig", "true")
-    _git(
-        source,
-        "config",
-        "--worktree",
-        "core.worktree",
-        os.path.relpath(source, administration),
-    )
-    _git(
-        source,
-        "config",
-        "--worktree",
-        "core.hooksPath",
-        os.path.relpath(administration / "hooks", source),
-    )
-    destination = tmp_path / "nested/d"
+def test_init_check_moves_only_worktrees_with_standalone_submodules(
+    tmp_path, monkeypatch, capsys, layout
+):
+    install_fake_docker(
+        tmp_path / "bin", monkeypatch, {}
+    )  # no live Sandboxes, whatever the host runs
+    dependency, root = tmp_path / "dependency", tmp_path / "root"
+    for repository in (dependency, root):
+        repository.mkdir()
+        git(repository, "init", "-q", "-b", "main")
+        git(repository, "commit", "-q", "--allow-empty", "-m", "base")
+    git(root, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "ip")
+    git(root, "commit", "-qm", "submodule")
+    worktree = root / ".booley_project" / "worktrees" / "one"
+    git(root, "worktree", "add", "--detach", str(worktree))
+    if layout == "native":
+        git(worktree, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+    else:  # a standalone repository, as Booley materializes submodules
+        git(worktree / "ip", "clone", "-q", str(dependency), ".")
+    if layout == "broken":
+        with (worktree / "ip/.git/config").open("a", encoding="utf-8") as config:
+            config.write("[broken\n")
 
-    relocate_worktree(repository, ref, source, destination)
+    assert run_init(argparse.Namespace(check_only=True), root) == 2
 
-    pointer = (destination / ".git").read_text(encoding="utf-8").removeprefix("gitdir: ").strip()
-    administration = (destination / pointer).resolve()
-    reverse = (administration / "gitdir").read_text(encoding="utf-8").strip()
-    assert not Path(pointer).is_absolute()
-    assert not Path(reverse).is_absolute()
-    assert _git(destination, "status", "--short") == ""
-    assert _git(destination, "config", "--worktree", "--get", "core.worktree") == os.path.relpath(
-        destination, administration
-    ).replace(os.sep, "/")
-    assert _git(destination, "config", "--worktree", "--get", "core.hooksPath") == os.path.relpath(
-        administration / "hooks", destination
-    ).replace(os.sep, "/")
-
-
-def test_relocation_rejects_missing_state(tmp_path: Path) -> None:
-    repository, source, ref = _linked_worktree(tmp_path)
-    source.rename(tmp_path / "lost")
-    move = WorktreeMove(repository, ref, source, tmp_path / "d")
-
-    with pytest.raises(WorktreeRelocationError, match="source is unavailable"):
-        preflight_worktree_moves((move,))
-    with pytest.raises(WorktreeRelocationError, match="both unavailable"):
-        relocate_worktree(repository, ref, source, move.destination)
-
-
-def test_relocation_rejects_unregistered_ref(tmp_path: Path) -> None:
-    repository, source, _ref = _linked_worktree(tmp_path)
-    move = WorktreeMove(repository, "refs/heads/missing", source, tmp_path / "d")
-
-    with pytest.raises(WorktreeRelocationError, match="is not registered"):
-        preflight_worktree_moves((move,))
-    with pytest.raises(WorktreeRelocationError, match="is not registered"):
-        relocate_worktree(repository, move.ref, source, move.destination)
-
-
-def test_relocation_rejects_nonrepository(tmp_path: Path) -> None:
-    with pytest.raises(WorktreeRelocationError, match="git worktree list --porcelain failed"):
-        relocate_worktree(tmp_path, "refs/heads/ticket", tmp_path / "w", tmp_path / "d")
-
-
-def test_refresh_relative_config_handles_missing_registration_and_config(tmp_path: Path) -> None:
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    with pytest.raises(WorktreeRelocationError, match="could not read worktree registration"):
-        refresh_relative_worktree_config(worktree)
-
-    administration = tmp_path / "admin"
-    administration.mkdir()
-    (worktree / ".git").write_text(
-        f"gitdir: {os.path.relpath(administration, worktree)}\n", encoding="utf-8"
-    )
-    refresh_relative_worktree_config(worktree)
-
-
-def test_refresh_relative_config_reports_git_config_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        platform_paths,
-        "run_captured_bounded",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ["git"], 1, stdout="", stderr="injected failure"
-        ),
-    )
-
-    with pytest.raises(WorktreeRelocationError, match=r"could not refresh core\.worktree"):
-        worktree_relocation._set_worktree_config(
-            tmp_path / "config.worktree", "core.worktree", "../worktree"
-        )
+    out = capsys.readouterr().out
+    if layout == "native":
+        assert "worktree contains native Git submodule 'ip'" in out
+        assert "`git submodule deinit --all`" in out
+        assert "deinit -f" not in out
+    elif layout == "broken":
+        assert "git rev-parse --show-toplevel failed" in out
+    else:
+        assert "Would rename the Booley Directory and repair linked worktrees" in out

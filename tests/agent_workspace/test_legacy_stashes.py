@@ -5,25 +5,38 @@ from __future__ import annotations
 import json
 import os
 import stat
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from booley.agent_workspace.legacy_stashes import legacy_stash_manifests
+
+# private: `booley doctor` reaches this check only behind the shared Doctor host
+# fixture, which stubs unrelated Booley checks (issuance, Sandbox startup); calling
+# the check alone keeps every Booley name real.
 from booley.harness.doctor import _check_legacy_source_stashes
 from tests.conftest import symlink_or_skip
 
 
-def test_doctor_warns_without_changing_legacy_stash(tmp_path, monkeypatch):
+@pytest.fixture
+def temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The host temporary directory, where older Booley versions left their stashes."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
     monkeypatch.setattr(
-        "booley.agent_workspace.legacy_stashes.tempfile.gettempdir", lambda: str(tmp_path)
+        "booley.agent_workspace.legacy_stashes.tempfile.gettempdir", lambda: str(temp)
     )
+    return temp
+
+
+def test_doctor_warns_without_changing_legacy_stash(tmp_path, temp):
     project = tmp_path / "project"
     project.mkdir()
-    stash = tmp_path / "booley_isolation_old"
+    stash = temp / "booley_isolation_old"
     stash.mkdir()
     (stash / "source.sv").write_text("uncommitted work\n")
-    manifest = tmp_path / "booley_isolation_old.manifest.json"
+    manifest = temp / "booley_isolation_old.manifest.json"
     content = json.dumps(
         {
             "work_dir": str(project),
@@ -52,41 +65,32 @@ def test_doctor_warns_without_changing_legacy_stash(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("suffix", [".manifest.json", ".manifest.json.retired"])
-def test_matching_retired_and_file_stash_records_are_reported(tmp_path, monkeypatch, suffix):
-    monkeypatch.setattr(
-        "booley.agent_workspace.legacy_stashes.tempfile.gettempdir", lambda: str(tmp_path)
-    )
-    manifest = tmp_path / ("booley_hide_files_old" + suffix)
+def test_matching_retired_and_file_stash_records_are_reported(tmp_path, temp, suffix):
+    manifest = temp / ("booley_hide_files_old" + suffix)
     manifest.write_text(json.dumps({"work_dir": str(tmp_path)}))
     assert legacy_stash_manifests(tmp_path) == [manifest]
 
 
-def test_foreign_malformed_and_symlink_records_are_ignored(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.agent_workspace.legacy_stashes.tempfile.gettempdir", lambda: str(tmp_path)
-    )
+def test_foreign_malformed_and_symlink_records_are_ignored(tmp_path, temp):
     for name, content in [
         ("foreign", json.dumps({"work_dir": "/other"})),
         ("malformed", "{"),
         ("array", "[]"),
         ("encoding", "\udcff"),
     ]:
-        (tmp_path / f"booley_isolation_{name}.manifest.json").write_bytes(
+        (temp / f"booley_isolation_{name}.manifest.json").write_bytes(
             content.encode("utf-8", errors="surrogateescape")
         )
     target = tmp_path / "record.json"
     target.write_text(json.dumps({"work_dir": str(tmp_path)}))
-    symlink_or_skip(tmp_path / "booley_isolation_link.manifest.json", target)
+    symlink_or_skip(temp / "booley_isolation_link.manifest.json", target)
     assert legacy_stash_manifests(tmp_path) == []
     assert target.exists()
 
 
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="UID ownership unavailable")
-def test_other_uid_record_is_ignored(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.agent_workspace.legacy_stashes.tempfile.gettempdir", lambda: str(tmp_path)
-    )
-    manifest = tmp_path / "booley_isolation_other_uid.manifest.json"
+def test_other_uid_record_is_ignored(tmp_path, temp, monkeypatch):
+    manifest = temp / "booley_isolation_other_uid.manifest.json"
     manifest.write_text(json.dumps({"work_dir": str(tmp_path)}))
     monkeypatch.setattr(
         "booley.agent_workspace.legacy_stashes.os.getuid", lambda: manifest.stat().st_uid + 1
