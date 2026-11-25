@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from booley.runtime import auth_token, host_docker, project_image, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from tests.devcontainer_spec_support import build_spec
@@ -29,6 +30,7 @@ def install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
+    # private: the trusted install prefixes are host locations no test may write.
     monkeypatch.setattr(
         runtime_spec,
         "_validator_prefix_anchors",
@@ -44,6 +46,7 @@ def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
     guard refuses, so without these stubs a refusal is replaced by a Docker error.
     Patching the test's own ``monkeypatch`` lets a test override a stub later.
     """
+    # private: the Docker CLI seam of `host_docker`, the shared fake of that boundary.
     monkeypatch.setattr("booley.runtime.host_docker._run_docker", _docker_without_images)
     monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *_args: None)
     monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", lambda _image: None)
@@ -97,6 +100,7 @@ def damaged(
     """
     spec = copy.deepcopy(prepared.spec)
     mutate(spec)
+    # private: the seal a tampered spec must carry; `preview` would refuse the tampering.
     digest = runtime_spec._spec_digest(spec)
     prospective = replace(
         prepared.prospective_issuance, spec_sha256=digest, **prospective_overrides
@@ -104,13 +108,86 @@ def damaged(
     assert runtime_spec.spec_project_data_layout(spec) == prospective.project_data_layout, (
         "pass the new project_data_layout: revalidation would refuse it before the guard under test"
     )
-    run_args: list[str] = []
-    for item in spec["runArgs"]:
-        if run_args and run_args[-1] == "--label" and runtime_spec._is_issuance_label(item):
-            run_args.pop()
-        elif not runtime_spec._is_issuance_label(item):
-            run_args.append(item)
+    spec["runArgs"] = runtime_spec.without_issuance_labels(spec)["runArgs"]
     for label in runtime_spec.labels(prospective):
-        run_args += ["--label", label]
-    spec["runArgs"] = run_args
+        spec["runArgs"] += ["--label", label]
     return replace(prepared, spec=spec, digest=digest, prospective_issuance=prospective)
+
+
+SANDBOX_IMAGE_ID = "sha256:" + "a" * 64
+
+
+class HostDocker:
+    """The Docker CLI of a host that holds the Sandbox Image and no container or network.
+
+    ``image`` is the ID every ``image inspect`` reports (``None``: no such image);
+    ``containers`` maps a container-name prefix to its ``inspect`` document and
+    ``networks`` holds network-name prefixes that exist; ``calls`` lists every argument
+    list, without the leading ``docker``. A container listing (``ps``) is empty.
+    """
+
+    def __init__(self) -> None:
+        self.image: str | None = SANDBOX_IMAGE_ID
+        self.containers: dict[str, str] = {}
+        self.networks: set[str] = set()
+        self.calls: list[list[str]] = []
+
+    def answer(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.calls.append(args)
+        verb = " ".join(args[:2])
+        if verb == "image inspect":
+            found, out = self.image is not None, self.image or ""
+        elif args[0] == "run":  # the Sandbox Image's Booley Directory layout probe
+            found, out = True, "directory"
+        elif verb == "container inspect":
+            docs = [doc for name, doc in self.containers.items() if args[2].startswith(name)]
+            found, out = bool(docs), docs[0] if docs else ""
+        elif verb == "network inspect":
+            found, out = any(args[2].startswith(name) for name in self.networks), "[]"
+        elif args[0] == "ps" or verb in ("image tag", "image rm"):
+            found, out = True, ""
+        else:
+            return _answer(args, 1, "", "unexpected Docker call")
+        if found:
+            return _answer(args, 0, out)
+        return _answer(args, 1, "", f"Error: No such {args[0]}: {args[2]}")
+
+    @property
+    def mutations(self) -> list[list[str]]:
+        """Calls that would change Docker state: tags, removals and stops."""
+        return [args for args in self.calls if {"tag", "rm", "stop", "kill"} & set(args[:2])]
+
+
+def _answer(
+    args: list[str], code: int, out: str, err: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["docker", *args], code, out, err)
+
+
+def serve_host_docker(home: Path, monkeypatch: pytest.MonkeyPatch) -> HostDocker:
+    """Run Sandbox Issuance on this host: Docker answered in process, ``booley`` installed.
+
+    The shared fake of the Docker CLI boundary for Sandbox Issuance and ``booley init``'s
+    Sandbox step: it replaces the three runners those Docker calls go through. A
+    ``docker`` program on ``PATH`` cannot stand in on Windows, where the runners cannot
+    start a ``.cmd``. The trusted ``booley`` launcher goes in *home*'s ``.local/bin``,
+    first on ``PATH``.
+    """
+    docker = HostDocker()
+    # Issuance stamps live in a private store: the host's config folder is private.
+    auth_token.config_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    auth_token.config_dir().chmod(0o700)
+    auth_token.config_dir().parent.chmod(0o700)
+    launcher = home / ".local" / "bin" / ("booley.exe" if os.name == "nt" else "booley")
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(launcher.parent), os.environ["PATH"])))
+    # private: `host_docker`'s Docker CLI seam.
+    monkeypatch.setattr(host_docker, "_run_docker", lambda args, **_kw: docker.answer(args))
+    # private: the Docker runner of `session_runtime`, which `_run_docker` does not serve.
+    monkeypatch.setattr(session_runtime, "_run", lambda argv, **_kw: docker.answer(argv[1:]))
+    monkeypatch.setattr(
+        project_image, "run_captured_bounded", lambda argv, **_kw: docker.answer(argv[1:])
+    )
+    return docker

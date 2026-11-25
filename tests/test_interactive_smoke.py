@@ -4,10 +4,7 @@ These tests exercise Booley Flows and MCP server entry points from a "no ticket"
 context: no ``BOOLEY_SLUG``, no ``BOOLEY_STATE_FILE``, no development
 state file on disk.  They protect the Developer Agent session happy path from
 regressions caused by future state-file assumptions slipping into Flow
-code paths.
-
-Real simulator subprocesses are mocked out (``--dry-run`` for ``simulate``)
-so the tests run in milliseconds and need no EDA tooling installed.
+code paths, and ``booley init``'s Sandbox step that seeds such a session.
 """
 
 from __future__ import annotations
@@ -15,22 +12,29 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.config.host_config import host_config_path
 from booley.core.booley_dir import reset_cache
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
+from booley.harness import init_cmd
+from booley.harness.nangate_pdk import CONTAINER_ROOT
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.runtime import auth_token, devcontainer
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
-from tests.bwave.session_store_support import use_store
 from tests.conftest import symlink_or_skip
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.docker_cli_guard import docker_cli_absent
+from tests.git_support import git, repository
+from tests.harness.init_agent_support import empty_host, seed_init, stub_host_images
+from tests.harness.session_docker_fake import headless_session_entry
+from tests.path_tool_fake import PathToolFake
+from tests.session_issuance_support import SANDBOX_IMAGE_ID, HostDocker, serve_host_docker
 from tests.target_test_support import write_sim_preview_project
 
 _BOOLEY_ENV_VARS = (
@@ -50,11 +54,10 @@ def _clear_ticket_env() -> None:
     their presence would silently re-enable state-file gating and defeat the test.
 
     Uses a manual save/restore (rather than ``monkeypatch.delenv``) because
-    a couple of the tests below intentionally mutate ``os.environ`` via
-    ``_maybe_configure_job_logs_dir``, and ``monkeypatch`` does not
-    track direct ``os.environ`` writes — without this fixture they leaked
-    into adjacent test modules and corrupted ``reviewer``'s session-file
-    persistence path.
+    the job-logs test below mutates ``os.environ`` through the MCP server, and
+    ``monkeypatch`` does not track direct ``os.environ`` writes — without this
+    fixture they leaked into adjacent test modules and corrupted ``reviewer``'s
+    session-file persistence path.
     """
     saved = {k: os.environ.get(k) for k in _BOOLEY_ENV_VARS}
     for k in _BOOLEY_ENV_VARS:
@@ -74,10 +77,7 @@ def _clear_ticket_env() -> None:
 def _project_with_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: dict[str, list[str]]
 ) -> None:
-    """Create a no-ticket Project with the sim *targets* and chdir into it.
-
-    No state file, no ``BOOLEY_SLUG``/``BOOLEY_STATE_FILE`` env vars.
-    """
+    """Create a no-ticket Project with the sim *targets* and chdir into it."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.chdir(tmp_path)
     write_sim_preview_project(tmp_path, targets)
@@ -90,1021 +90,414 @@ def _execute(tmp_path: Path, **request: Any) -> ExecutionResult:
     )
 
 
-# ---------------------------------------------------------------------------
-# Validation: missing args produce clean errors, not AttributeError
-# ---------------------------------------------------------------------------
+def test_simulate_without_a_target_names_the_eligible_ones(tmp_path, monkeypatch) -> None:
+    _project_with_targets(tmp_path, monkeypatch, {"lite": [], "full": []})
+    result = _execute(tmp_path)
+    assert result.exit_code == EXIT_ERROR
+    assert "--target is required" in result.outcome.report_text
+    assert "Eligible Targets: full, lite" in result.outcome.report_text
 
 
-class TestRequiredArgsValidation:
-    """``simulate`` must reject missing required args with a useful message
-    instead of crashing with ``AttributeError`` deep in the call chain."""
+def test_dry_run_succeeds_without_state_file(tmp_path, monkeypatch) -> None:
+    _project_with_targets(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]})
+    result = _execute(tmp_path, target="lite", dry_run=True)
 
-    def test_missing_config_returns_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _project_with_targets(tmp_path, monkeypatch, {"lite": [], "full": []})
-        result = _execute(tmp_path)
-        assert result.exit_code == EXIT_ERROR
-        assert "--target is required" in result.outcome.report_text
-        assert "Eligible Targets: full, lite" in result.outcome.report_text
+    assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
+    assert result.outcome.report_text == "lite: 2 pending work item(s)"  # one per Test
+    assert result.outcome.detail["mutated"] is False
+    assert not (tmp_path / "reports/sim/1").exists()
 
 
-# ---------------------------------------------------------------------------
-# Happy path: dry-run sim completes from a no-ticket context
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("layout", ["project", "configured", "no-project"])
+def test_server_start_keeps_job_logs_in_the_booley_directory(tmp_path, monkeypatch, layout):
+    from booley.mcp import server as mcp_server
 
-
-class TestNoTicketDryRun:
-    """End-to-end smoke: a fresh CWD with no state file can still drive
-    ``simulate --dry-run`` to a clean exit."""
-
-    def test_dry_run_succeeds_without_state_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _project_with_targets(tmp_path, monkeypatch, {"lite": ["smoke", "stress"]})
-        result = _execute(tmp_path, target="lite", dry_run=True)
-
-        assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text
-        assert result.outcome.report_text == "lite: 2 pending work item(s)"  # one per Test
-        assert result.outcome.detail["mutated"] is False
-        assert not (tmp_path / "reports/sim/1").exists()
-
-
-# ---------------------------------------------------------------------------
-# MCP server: BOOLEY_LOGS_DIR setup
-# ---------------------------------------------------------------------------
-
-
-class TestJobLogsDir:
-    """The MCP server promotes ``.booley/job_logs/<id>/``
-    to ``BOOLEY_LOGS_DIR`` when (a) the env var is unset and (b) a
-    ``.booley/`` is present in CWD."""
-
-    def test_sets_logs_dir_when_project_present(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.mcp import server as mcp_server
-
+    if layout != "no-project":
         (tmp_path / ".booley").mkdir()
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    configured = tmp_path / "ticket_logs"
+    if layout == "configured":
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(configured))
+    monkeypatch.chdir(tmp_path)
 
-        mcp_server._maybe_configure_job_logs_dir()
+    # private: the server's only entry point, `main()`, then serves MCP on stdio until EOF.
+    mcp_server._maybe_configure_job_logs_dir()
 
-        logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-        assert logs_dir, "BOOLEY_LOGS_DIR should have been set"
-        logs_path = Path(logs_dir)
-        assert logs_path.is_dir()
-        assert "job_logs" in logs_path.parts
-        assert logs_path.parent.name == "job_logs"
-        assert logs_path.parent.parent.name == ".booley"
-
-    def test_noop_when_logs_dir_already_set(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.mcp import server as mcp_server
-
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.chdir(tmp_path)
-        existing = tmp_path / "ticket_logs"
-        existing.mkdir()
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(existing))
-
-        mcp_server._maybe_configure_job_logs_dir()
-
-        assert os.environ["BOOLEY_LOGS_DIR"] == str(existing)
-
-    def test_noop_when_no_booley_dir(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.mcp import server as mcp_server
-
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-
-        mcp_server._maybe_configure_job_logs_dir()
-
-        assert not os.environ.get("BOOLEY_LOGS_DIR")
-
-    def test_unresolvable_booley_dir_yields_no_location(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.mcp import server as mcp_server
-
-        def fail() -> Path:
-            raise OSError("unreadable")
-
-        monkeypatch.setattr(mcp_server, "resolve_booley_dir", fail)
-
-        assert mcp_server._job_logs_dir() is None
-
-    def test_missing_main_booley_dir_yields_no_location(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.mcp import server as mcp_server
-
-        monkeypatch.setattr(mcp_server, "resolve_booley_dir", lambda: tmp_path / "gone")
-        monkeypatch.setattr(mcp_server, "resolve_common_booley_dir", lambda: tmp_path / "gone")
-
-        assert mcp_server._job_logs_dir() is None
-
-    def test_empty_location_is_not_writable(self) -> None:
-        from booley.mcp import server as mcp_server
-
-        assert mcp_server._logs_dir_writable("") is False
+    logs = os.environ.get("BOOLEY_LOGS_DIR")
+    if layout == "project":
+        assert Path(logs).is_dir()
+        assert Path(logs).parent == (tmp_path / ".booley" / "job_logs").resolve()
+    else:
+        assert logs == (str(configured) if layout == "configured" else None)
 
 
-# ---------------------------------------------------------------------------
-# asic_synthesize: --baseline works in a Developer Agent session
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("layout", ["no-project", "missing-main", "unresolvable"])
+def test_probe_reports_no_log_location_without_a_usable_booley_directory(
+    tmp_path, monkeypatch, request, layout
+):
+    from booley.config.agent import set_agent_settings
+    from booley.mcp import server as mcp_server
+
+    request.addfinalizer(lambda: set_agent_settings(None))
+    monkeypatch.chdir(tmp_path)
+    if layout == "missing-main":
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "gone"))
+    elif layout == "unresolvable":
+        # An unreadable Booley Directory also stops the catalog build: only the lookup fails.
+        monkeypatch.setattr(mcp_server, "resolve_booley_dir", Mock(side_effect=OSError("denied")))
+
+    payload = mcp_server.build_mcp_probe_payload()
+
+    assert (payload["logs_dir"], payload["logs_dir_writable"]) == ("", False)
 
 
-class TestAsicSynthesizeBaselineInteractive:
-    """`--baseline` compares against a past git ref. It materializes that ref in
-    a throwaway ``git worktree`` (never an in-place checkout), so it works in
-    a Developer Agent session (no ``BOOLEY_SLUG``) WITHOUT disturbing the user's tree."""
+def test_baseline_uses_worktree_and_leaves_tree_untouched(tmp_path: Path) -> None:
+    """`--baseline` synthesizes a past ref in a throwaway ``git worktree``, so it works in a
+    Developer Agent session (no ``BOOLEY_SLUG``) without disturbing the user's tree."""
+    from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
+    from booley.runtime.endpoint_execution import EndpointOutcome
 
-    def test_baseline_uses_worktree_and_leaves_tree_untouched(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import subprocess
+    repo = repository(tmp_path / "repo")
+    marker = repo / "rtl.v"
+    marker.write_text("// baseline version\n", encoding="utf-8")
+    cores_dir = repo / ".booley" / "cores"
+    cores_dir.mkdir(parents=True)
+    (cores_dir / "interactive.core").write_text(
+        "CAPI=2:\nname: ::interactive:0\ntargets:\n  synth_default:\n"
+        "    flow: generic\n    flow_options: {tool: yosys}\n    toplevel: dut\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "baseline")
+    marker.write_text("// current version\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "current")
+    # An UNCOMMITTED working-tree edit that an in-place checkout would clobber.
+    marker.write_text("// uncommitted edits — MUST survive\n", encoding="utf-8")
+    before = marker.read_text(encoding="utf-8")
 
-        from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
-        from booley.runtime.endpoint_execution import EndpointOutcome
+    tool = AsicSynthesizeFlow()
+    tool.parse_args(["--work-dir", str(repo), "--target", "synth_default", "--baseline", "HEAD~1"])
+    seen_work_dirs: list[Path] = []
 
-        monkeypatch.delenv("BOOLEY_SLUG", raising=False)
+    def fake_single(target: str, *, baseline: bool = False):
+        # Capture the tree the baseline run reads from (the worktree, not repo).
+        seen_work_dirs.append(Path(tool.args.work_dir))
+        return SynthMetrics(returncode=0), "baseline output"
 
-        # Real git repo with two commits so HEAD~1 resolves to a distinct ref.
-        repo = tmp_path
+    # private: the public `execute` runs Yosys for both refs; only the baseline step, which
+    # owns the worktree, is driven here, with the Yosys run replaced.
+    with patch.object(tool, "_run_single_config", side_effect=fake_single):
+        handle = TargetCatalog.build(repo).select("synth_default", for_flow="synth")
+        plans = target_pair_plans_for_handles((handle,), flow="synth")
+        tool._target_pairs = plans
+        results, short_sha = tool._run_baseline_configs(plans)
 
-        def git(*a: str) -> None:
-            subprocess.run(
-                ["git", *a],
-                cwd=repo,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=SUBPROCESS_TIMEOUT_S,
-            )
+    assert not isinstance(results, EndpointOutcome), results.report_text
+    assert "synth_default" in results
+    assert short_sha  # HEAD~1 resolved to a short sha
+    assert seen_work_dirs and ".baseline-wt-" in str(seen_work_dirs[0])
+    assert marker.read_text(encoding="utf-8") == before
+    assert Path(tool.args.work_dir) == repo
+    assert not seen_work_dirs[0].exists()
 
-        git("init", "-q")
-        git("config", "user.email", "t@example.com")
-        git("config", "user.name", "Test")
-        marker = repo / "rtl.v"
-        marker.write_text("// baseline version\n", encoding="utf-8")
-        cores_dir = repo / ".booley" / "cores"
-        cores_dir.mkdir(parents=True)
-        (cores_dir / "interactive.core").write_text(
-            """CAPI=2:
-name: ::interactive:0
-targets:
-  synth_default:
-    flow: generic
-    flow_options: {tool: yosys}
-    toplevel: dut
-""",
-            encoding="utf-8",
+
+# booley init: the Sandbox step (ADR 0018), with Sandbox Issuance run for real against
+# the shared in-process Docker host of `tests/session_issuance_support.py`.
+
+
+@pytest.fixture
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HostDocker:
+    """An empty host whose Docker holds the Sandbox Image and no container or network."""
+    return serve_host_docker(empty_host(tmp_path, monkeypatch), monkeypatch)
+
+
+@pytest.fixture
+def project(host: HostDocker, tmp_path: Path) -> Path:
+    """A Git checkout with its Booley Directory."""
+    root = repository(tmp_path / "project")
+    (root / ".booley").mkdir()
+    return root
+
+
+def _sandbox(project: Path, *, check_only: bool = False, **options: Any) -> init_cmd.StepResult:
+    """Run ``booley init``'s Sandbox step once and return what it recorded."""
+    ctx = init_cmd.InitContext(project_root=project, check_only=check_only, interactive=False)
+    # private: `run_init` reaches this step only behind Host Bootstrap, the Sandbox Image
+    # and the agent-selection write, reports it only as printed lines, and passes full init's
+    # `init_will_create_booley_dir` only on a full run; the two `run_init` tests below
+    # drive it whole.
+    init_cmd._step_sandbox(ctx, **options)
+    return ctx.results[-1]
+
+
+def _spec(project: Path) -> dict[str, Any]:
+    return json.loads(devcontainer.devcontainer_path(project).read_text(encoding="utf-8"))
+
+
+def _tree(root: Path) -> dict[Path, tuple[bytes, int, int] | None]:
+    """Every file (content, mode, mtime) and directory under *root*."""
+    tree: dict[Path, tuple[bytes, int, int] | None] = {}
+    for path in root.rglob("*"):
+        info = path.stat()
+        tree[path] = (
+            (path.read_bytes(), info.st_mode, info.st_mtime_ns) if path.is_file() else None
         )
-        git("add", "-A")
-        git("commit", "-qm", "baseline")
-        marker.write_text("// current version\n", encoding="utf-8")
-        git("add", "-A")
-        git("commit", "-qm", "current")
-        # An UNCOMMITTED working-tree edit that an in-place checkout would clobber.
-        marker.write_text("// uncommitted edits — MUST survive\n", encoding="utf-8")
-        before = marker.read_text(encoding="utf-8")
-
-        tool = AsicSynthesizeFlow()
-        tool.parse_args(
-            [
-                "--work-dir",
-                str(repo),
-                "--target",
-                "synth_default",
-                "--baseline",
-                "HEAD~1",
-            ]
-        )
-
-        seen_work_dirs: list[Path] = []
-
-        def fake_single(target: str, *, baseline: bool = False):
-            # Capture the tree the baseline run reads from (the worktree, not repo).
-            seen_work_dirs.append(Path(tool.args.work_dir))
-            return SynthMetrics(returncode=0), "baseline output"
-
-        with patch.object(tool, "_run_single_config", side_effect=fake_single):
-            handle = TargetCatalog.build(repo).select("synth_default", for_flow="synth")
-            plans = target_pair_plans_for_handles((handle,), flow="synth")
-            tool._target_pairs = plans
-            results, short_sha = tool._run_baseline_configs(plans)
-
-        # It succeeded and resolved the baseline ref; retain actionable failures.
-        assert not isinstance(results, EndpointOutcome), results.report_text
-        assert "synth_default" in results
-        assert short_sha  # HEAD~1 resolved to a short sha
-
-        # The baseline ran inside a throwaway worktree, not the Project Root.
-        assert seen_work_dirs and seen_work_dirs[0] != repo
-        assert ".baseline-wt-" in str(seen_work_dirs[0])
-
-        # The user's uncommitted working-tree edit is intact...
-        assert marker.read_text(encoding="utf-8") == before
-        # ...work_dir was restored, and the worktree was cleaned up.
-        assert Path(tool.args.work_dir) == repo
-        assert not seen_work_dirs[0].exists()
+    return tree
 
 
-# ---------------------------------------------------------------------------
-# bwave: register → query --list round-trip
-# ---------------------------------------------------------------------------
+def test_spec_is_untracked_and_excluded(project: Path, monkeypatch) -> None:
+    # Stealth must be explicit for the Booley Directory to join the exclusions.
+    (project / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    # Only the host's `booley` launcher stays on PATH: neither Docker nor Git.
+    monkeypatch.setenv("PATH", os.environ["PATH"].split(os.pathsep)[0])
+
+    result = _sandbox(project)
+
+    assert (result.status, result.detail) == ("ok", "app=none")
+    assert _spec(project)["remoteUser"] == "agent"
+    assert not (project / ".gitignore").exists()
+    exclude = (project / ".git" / "info" / "exclude").read_text(encoding="utf-8").split()
+    assert {"/.devcontainer", "/.booley", "/.claude"} <= set(exclude)
+    assert not (project / ".mcp.json").exists()
 
 
-class TestBwaveRoundTrip:
-    """bwave is genuinely standalone — its session file lives under the
-    user cache, not the ticket state.  These tests confirm that property
-    holds: register from a fresh CWD, then query observes the registration."""
+def test_spec_mounts_the_setup_pdk_cache_read_only(project: Path, tmp_path: Path) -> None:
+    pdk = tmp_path / "host-cache" / "pdk"
+    pdk.mkdir(parents=True)
 
-    def test_register_persists_into_session_file(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.bwave import cli as bwave
+    _sandbox(project, nangate_pdk_root=pdk)
 
-        # Redirect the session file to tmp_path so the test doesn't pollute
-        # the user's real cache.
-        session_file = tmp_path / "bwave_sessions.json"
-        use_store(monkeypatch, session_file)
-
-        fake_trace = tmp_path / "test.fst"
-        fake_trace.write_bytes(b"")
-
-        alias = bwave.register_trace(fake_trace, alias="smoke")
-
-        assert alias == "smoke"
-        sessions = bwave._load_sessions()
-        assert "smoke" in sessions
-        assert sessions["smoke"]["trace"] == str(fake_trace.resolve())
-        # _last alias mirror is part of the contract
-        assert "_last" in sessions
-        assert sessions["_last"]["trace"] == str(fake_trace.resolve())
-
-    def test_query_resolves_registered_alias(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """After register, `query @alias --list` should resolve the alias to
-        the registered trace path. We mock the bwave subprocess so the test
-        doesn't need the binary, but verify the command shape."""
-        from booley.bwave import cli as bwave
-
-        session_file = tmp_path / "bwave_sessions.json"
-        use_store(monkeypatch, session_file)
-
-        fake_trace = tmp_path / "test.fst"
-        fake_trace.write_bytes(b"")
-        bwave.register_trace(fake_trace, alias="smoke")
-
-        captured: list[list[str]] = []
-        monkeypatch.setattr(bwave, "_run", lambda cmd: captured.append(cmd) or 0)
-        monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave"])
-
-        # Simulate `bwave query @smoke --list`. cmd_query propagates the
-        # subprocess exit code via sys.exit(), so catch SystemExit(0).
-        import argparse
-
-        args = argparse.Namespace(extra=["@smoke", "--list"])
-        with pytest.raises(SystemExit) as exc_info:
-            bwave.cmd_query(args)
-        assert exc_info.value.code == 0
-
-        assert len(captured) == 1
-        cmd = captured[0]
-        assert "bwave" in cmd
-        # v0.2: legacy `--list` is rewritten to the `list` subcommand.
-        assert "list" in cmd
-        # The resolved trace path must appear in the command
-        assert str(fake_trace.resolve()) in cmd
+    mount = f"source={init_cmd.docker_mount_path(pdk)},target={CONTAINER_ROOT},type=bind,readonly"
+    assert mount in _spec(project)["mounts"]
 
 
-# ---------------------------------------------------------------------------
-# booley init: Sandbox devcontainer seeding (ADR 0018)
-# ---------------------------------------------------------------------------
+def test_spec_applies_the_host_egress_mode(project: Path) -> None:
+    host_config_path().parent.mkdir(parents=True, exist_ok=True)
+    host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
+
+    _sandbox(project)
+
+    spec = _spec(project)
+    assert devcontainer.UNPROXIED_NETWORK in spec["runArgs"]
+    assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
+    assert "HTTP_PROXY" not in spec["remoteEnv"]
 
 
-def _fake_runtime_preview(project, build_spec, *, expected_image_id=None):
-    from booley.runtime import session_issuance as runtime_spec
+def test_mask_paths_become_read_only_empty_binds(project: Path) -> None:
+    # Each entry hides its /work view, and the /booley view of a .booley subtree; init
+    # creates the empty source dir (docker --mount refuses a missing bind source).
+    (project / ".booley" / "booley.toml").write_text(
+        '[sandbox]\nmask_paths = ["secret/oracle", ".booley/lanes/b"]\n', encoding="utf-8"
+    )
 
-    project = project.resolve()
-    inputs = runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None)
-    spec = build_spec(inputs)
-    del expected_image_id
-    spec["image"] = "sha256:" + "a" * 64
-    prospective = SimpleNamespace(license_profile=None)
-    return runtime_spec.PreparedSessionSpec(spec, "test-spec-digest", inputs, prospective)
+    _sandbox(project)
 
-
-def _fake_runtime_issue(project, prepared, *, force_dependencies=False):
-    from booley.runtime import dashboard_tasks, devcontainer
-
-    del force_dependencies
-    devcontainer.write_devcontainer(project, prepared.spec)
-    dashboard_tasks.reconcile(project, prepared.inputs.project_data_source)
-    return SimpleNamespace(license_profile=None)
+    empty = auth_token.config_dir() / "empty-mask"
+    assert empty.is_dir() and not any(empty.iterdir())
+    source = init_cmd.docker_mount_path(empty)
+    for target in ("/work/secret/oracle", "/work/.booley/lanes/b", "/booley/lanes/b"):
+        assert f"source={source},target={target},type=bind,readonly" in _spec(project)["mounts"]
 
 
-def _fake_runtime_inspect(project, prepared):
-    from booley.runtime import devcontainer
-    from booley.runtime import session_issuance as runtime_spec
+def test_invalid_mask_paths_reported_and_ignored(project: Path, capsys) -> None:
+    # Whole-knob rejection (mirrors passthrough_env): a partially applied
+    # mask list would leave the user believing a path is hidden.
+    (project / ".booley" / "booley.toml").write_text(
+        '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n', encoding="utf-8"
+    )
 
-    path = devcontainer.devcontainer_path(project)
-    expected = devcontainer.render_devcontainer_json(prepared.spec)
-    if not path.is_file() or path.read_text(encoding="utf-8") != expected:
-        raise runtime_spec.RuntimeSpecError("spec is not current")
-    return SimpleNamespace(license_profile=None)
+    _sandbox(project)
 
-
-def _init_git_project(project_root: Path) -> None:
-    run_bounded_child(["git", "init", str(project_root)], check=True)
-
-
-def _stub_full_init_dependencies(
-    init_cmd: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    project_root: Path,
-) -> None:
-    for name in (
-        "_step_core_projections",
-        "_step_auth",
-        "_step_git_hooks",
-        "_step_project_git_hooks",
-        "_step_worktree_prune_guard",
-        "_step_line_endings",
-        "_step_guidance_links",
-        "_step_project_inventory",
-        "_step_advisories",
-    ):
-        monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
-    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: project_root / "pdk")
-    monkeypatch.setattr(init_cmd, "_reconcile_initialized_image", lambda *_args: None)
+    out = capsys.readouterr().out
+    assert "mask_paths" in out and "no paths will be masked" in out
+    assert not any("empty-mask" in mount for mount in _spec(project)["mounts"])
 
 
-class TestInitInteractive:
-    """`_step_sandbox` writes the untracked devcontainer spec, excludes
-    Booley files, and (when docker is present) creates the long-lived objects.
-    Host MCP registration (ADR 0012) was removed."""
+@pytest.mark.parametrize("check_only", [False, True])
+def test_refuses_tracked_devcontainer(project: Path, check_only: bool) -> None:
+    (project / ".devcontainer").mkdir()
+    (project / ".devcontainer" / "devcontainer.json").write_text("{}", encoding="utf-8")
+    git(project, "add", ".devcontainer")
 
-    @pytest.fixture(autouse=True)
-    def _isolate_runtime_issuance(self, monkeypatch):
-        """Exercise init's issuance boundary without host Docker or a CLI install."""
-        from booley.harness.setup import interactive as interactive_init
-        from booley.runtime import session_issuance as runtime_spec
+    assert _sandbox(project, check_only=check_only).status == "err"
 
-        monkeypatch.setattr(runtime_spec, "preview", _fake_runtime_preview)
-        monkeypatch.setattr(runtime_spec, "issue_prepared", _fake_runtime_issue)
-        monkeypatch.setattr(runtime_spec, "inspect_prepared", _fake_runtime_inspect)
+
+def _remove_spec(project: Path, _docker: HostDocker) -> None:
+    devcontainer.devcontainer_path(project).unlink()
+
+
+def _stale_spec(project: Path, _docker: HostDocker) -> None:
+    devcontainer.devcontainer_path(project).write_bytes(b"{}\n")
+
+
+def _drop_exclusion(project: Path, _docker: HostDocker) -> None:
+    exclude = project / ".git" / "info" / "exclude"
+    exclude.write_text(exclude.read_text(encoding="utf-8").replace("/.claude\n", ""))
+
+
+def _stopped_runtime(project: Path, docker: HostDocker) -> None:
+    stopped = headless_session_entry("stopped", project, running=False)
+    docker.containers["booley-session-"] = json.dumps(stopped)
+
+
+def _orphaned_relay(_project: Path, docker: HostDocker) -> None:
+    docker.networks.add("booley-license-private-")
+
+
+@pytest.mark.parametrize(
+    ("issued", "damage", "check_only", "status", "detail"),
+    [
+        (True, None, False, "current", "current"),
+        (True, None, True, "current", "current"),
+        (False, None, True, "warn", "specification/issuance"),
+        (True, _remove_spec, True, "warn", "specification/issuance"),
+        (True, _stale_spec, True, "warn", "specification/issuance"),
+        (True, _drop_exclusion, True, "warn", "Git exclusions"),
+        (True, _stopped_runtime, True, "warn", "stopped Sandbox resources"),
+        (True, _orphaned_relay, True, "warn", "orphaned license relay"),
+    ],
+    ids=["rerun", "current", "never-issued", "no-spec", "stale", "exclusion", "runtime", "relay"],
+)
+def test_rerun_reports_pending_work_and_check_only_does_none_of_it(
+    host, project, tmp_path, monkeypatch, issued, damage, check_only, status, detail
+):
+    (project / ".booley" / "booley.toml").write_text('[sandbox]\nmask_paths = ["secret"]\n')
+    if issued:
+        _sandbox(project)
+    if damage is not None:
+        damage(project, host)
+    PathToolFake.install(tmp_path / "bin", "docker", monkeypatch)  # the relay is looked for
+    for path in tmp_path.rglob("*"):  # an old timestamp, so any rewrite shows
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    before, host.calls[:] = _tree(tmp_path), []
+
+    result = _sandbox(project, check_only=check_only)
+
+    assert result.status == status and detail in result.detail
+    assert _tree(tmp_path) == before
+    assert host.mutations == []
+
+
+@pytest.mark.parametrize(
+    ("entry", "override", "creates", "owned"),
+    [
+        (None, None, True, True),
+        (None, "<own>", True, True),
+        (None, "", True, True),
+        (None, None, False, False),
+        (None, "relative/project-data", True, False),
+        (None, "/external/project-data", True, False),
+        ("file", "<own>", True, False),
+        ("symlink", "<own>", True, False),
+        ("unreadable", "<own>", True, False),
+        ("dir", "<own>", True, False),
+    ],
+)
+def test_missing_project_data_is_pending_only_when_full_init_creates_it(
+    host, tmp_path, monkeypatch, entry, override, creates, owned
+):
+    project = repository(tmp_path / "project")
+    target = init_cmd.booley_dir_for_init(project)
+    if override is not None:
+        monkeypatch.setenv("BOOLEY_DIR", str(target) if override == "<own>" else override)
+    if entry == "file":
+        target.write_text("not a directory", encoding="utf-8")
+    elif entry == "symlink":
+        (tmp_path / "project-data").mkdir()
+        symlink_or_skip(target, tmp_path / "project-data", target_is_directory=True)
+    elif entry == "dir":
+        target.mkdir()
+        host.image = None  # the preview fails: no Sandbox Image to pin
+    elif entry == "unreadable":
+        real_lstat = Path.lstat
         monkeypatch.setattr(
-            interactive_init.session_runtime,
-            "reconcile_stopped_headless_runtime",
-            lambda *_args: False,
-        )
-        monkeypatch.setattr(
-            interactive_init.session_runtime,
-            "plan_stopped_headless_runtime_reconciliation",
-            lambda *_args: SimpleNamespace(pending=False),
-        )
-        # No Unlicensed relay exists; do not ask the Docker CLI.
-        monkeypatch.setattr(interactive_init.host_docker, "container_exists", lambda _n: False)
-        monkeypatch.setattr(interactive_init.host_docker, "network_exists", lambda *_a: False)
-
-    def _ctx(self, root):
-        from booley.harness import init_cmd
-
-        return init_cmd.InitContext(
-            project_root=root, check_only=False, force=False, verbose=False, interactive=False
+            Path, "lstat", lambda path: _deny(path) if path == target else real_lstat(path)
         )
 
-    def test_writes_untracked_spec_and_excludes(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        # Stealth must be explicit for the Booley Directory to join the exclusions.
-        (tmp_path / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
-
-        # No docker; isolate from host app detection / creds.
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-
-        ctx = self._ctx(tmp_path)
-        init_cmd._step_sandbox(ctx)
-
-        spec = tmp_path / ".devcontainer" / "devcontainer.json"
-        assert spec.is_file()
-        data = json.loads(spec.read_text(encoding="utf-8"))
-        assert data["remoteUser"] == "agent"
-        # Excluded via git info/exclude, not .gitignore.
-        assert not (tmp_path / ".gitignore").exists()
-        exclude = (tmp_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-        assert "/.devcontainer" in exclude and "/.booley" in exclude
-        assert "/.claude" in exclude
-        # No host MCP artifacts.
-        assert not (tmp_path / ".mcp.json").exists()
-        statuses = {r.name: r.status for r in ctx.results}
-        assert statuses.get("interactive") in {"ok", "warn"}
-
-    def test_mounts_setup_pdk_cache_read_only(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-        from booley.harness.nangate_pdk import CONTAINER_ROOT
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        pdk = tmp_path / "host-cache" / "pdk"
-        pdk.mkdir(parents=True)
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-
-        init_cmd._step_sandbox(self._ctx(tmp_path), nangate_pdk_root=pdk)
-
-        spec = json.loads(
-            (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
-        )
-        assert (
-            f"source={init_cmd.docker_mount_path(pdk)},target={CONTAINER_ROOT},"
-            "type=bind,readonly" in spec["mounts"]
-        )
-
-    def test_spec_builder_applies_input_egress_mode(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-        from booley.runtime import devcontainer as dc
-        from booley.runtime import session_issuance as runtime_spec
-
-        def preview(project, build_spec, *, expected_image_id=None):
-            del expected_image_id
-            inputs = runtime_spec.SessionSpecInputs(
-                project.resolve() / ".booley", (), (), None, None, egress="unproxied"
-            )
-            spec = build_spec(inputs)
-            return runtime_spec.PreparedSessionSpec(
-                spec, "test-spec-digest", inputs, SimpleNamespace(license_profile=None)
-            )
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-        monkeypatch.setattr(runtime_spec, "preview", preview)
-
-        init_cmd._step_sandbox(self._ctx(tmp_path))
-
-        spec = json.loads(
-            (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
-        )
-        assert dc.UNPROXIED_NETWORK in spec["runArgs"]
-        assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
-        assert "HTTP_PROXY" not in spec["remoteEnv"]
-
-    def test_session_spec_reissue_reuses_bootstrap_pdk(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        pdk = tmp_path / "host-cache" / "pdk"
-        pdk.mkdir(parents=True)
-        seen: list[Path | object | None] = []
-        monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
-        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
-        monkeypatch.setattr(
-            init_cmd,
-            "_step_sandbox",
-            lambda _ctx, *, nangate_pdk_root, runtime_image_id=None: seen.append(
-                (nangate_pdk_root, runtime_image_id)
-            ),
-        )
-
-        init_cmd.reissue_session_spec(tmp_path, "sha256:fresh")
-
-        assert seen == [(pdk, "sha256:fresh")]
-
-    def test_seeds_mask_mounts_from_sandbox_knob(self, tmp_path, monkeypatch):
-        # [sandbox].mask_paths: each entry becomes a read-only empty bind over
-        # its /work view — and over the /booley view for a
-        # .booley subtree — and init creates the empty source dir the
-        # binds need (docker --mount refuses a missing bind source).
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        pd = tmp_path / ".booley"
-        pd.mkdir()
-        (pd / "booley.toml").write_text(
-            '[sandbox]\nmask_paths = ["secret/oracle", ".booley/lanes/b"]\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-
-        init_cmd._step_sandbox(self._ctx(tmp_path))
-
-        empty = tmp_path / "xdg" / "booley" / "empty-mask"
-        assert empty.is_dir() and not any(empty.iterdir())
-        spec = json.loads(
-            (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
-        )
-        source = init_cmd.docker_mount_path(empty)
-        assert f"source={source},target=/work/secret/oracle,type=bind,readonly" in spec["mounts"]
-        assert f"source={source},target=/work/.booley/lanes/b,type=bind,readonly" in spec["mounts"]
-        assert f"source={source},target=/booley/lanes/b,type=bind,readonly" in spec["mounts"]
-
-    def test_invalid_mask_paths_reported_and_ignored(self, tmp_path, monkeypatch, capsys):
-        # Whole-knob rejection (mirrors passthrough_env): a partially applied
-        # mask list would leave the user believing a path is hidden.
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        pd = tmp_path / ".booley"
-        pd.mkdir()
-        (pd / "booley.toml").write_text(
-            '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-
-        init_cmd._step_sandbox(self._ctx(tmp_path))
-
-        out = capsys.readouterr().out
-        assert "mask_paths" in out and "no paths will be masked" in out
-        spec = json.loads(
-            (tmp_path / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
-        )
-        # Nothing masked — including the valid-looking entry.
-        assert not any("empty-mask" in m for m in spec["mounts"])
-
-    @pytest.mark.parametrize("check_only", [False, True])
-    def test_refuses_tracked_devcontainer(self, tmp_path, monkeypatch, check_only):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "user.email", "t@t"],
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "config", "user.name", "t"],
-            capture_output=True,
-            check=True,
-        )
-        dc = tmp_path / ".devcontainer"
-        dc.mkdir()
-        (dc / "devcontainer.json").write_text("{}", encoding="utf-8")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", ".devcontainer"], capture_output=True, check=True
-        )
-
-        ctx = self._ctx(tmp_path)
-        ctx.check_only = check_only
-        init_cmd._step_sandbox(ctx)
-        statuses = {r.name: r.status for r in ctx.results}
-        assert statuses.get("interactive") == "err"
-
-    def test_normal_rerun_skips_current_spec_without_reissuing(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-        from booley.runtime import session_issuance as runtime_spec
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
-        monkeypatch.setattr(
-            runtime_spec,
-            "issue_prepared",
-            lambda *_args, **_kwargs: pytest.fail("current spec was reissued"),
-        )
-
-        ctx = self._ctx(tmp_path)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "current"
-        assert ctx.results[-1].detail == "current"
-
-    def test_check_only_writes_nothing(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        _init_git_project(tmp_path)
-        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
-        booley_dir.mkdir()
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-        ctx = init_cmd.InitContext(
-            project_root=tmp_path, check_only=True, force=False, verbose=False, interactive=False
-        )
-        init_cmd._step_sandbox(ctx)
-        assert not (tmp_path / ".devcontainer").exists()
-        statuses = {r.name: r.status for r in ctx.results}
-        assert statuses.get("interactive") == "warn"
-
-    def test_full_init_check_only_reports_missing_owned_project_data_as_pending(
-        self, tmp_path, monkeypatch
-    ):
-        import argparse
-
-        from booley.harness import init_cmd
-        from booley.runtime import session_issuance as runtime_spec
-
-        _init_git_project(tmp_path)
-        monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        _stub_full_init_dependencies(init_cmd, monkeypatch, tmp_path)
-        monkeypatch.setattr(
-            runtime_spec,
-            "preview",
-            lambda *_args, **_kwargs: pytest.fail("mount inspection should not run"),
-        )
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        args = argparse.Namespace(seed=False, scaffold=None, skip_credentials=False)
-        selection = init_cmd.AgentSelection("codex", "subscription")
-
-        with init_cmd.init_booley_dir_scope(tmp_path):
-            rc = init_cmd._run_project_init_steps(
-                ctx,
-                args,
-                selection,
-                tmp_path / ".booley" / "booley.toml",
-                None,
-            )
-
-        results = {result.name: result for result in ctx.results}
-        assert rc == 1
-        assert results["booley_dir"].status == "warn"
-        assert results["interactive"].status == "warn"
-        assert results["interactive"].detail == "Booley Directory would be created first"
-        assert not (tmp_path / ".booley").exists()
-        assert not (tmp_path / ".devcontainer").exists()
-
-    @pytest.mark.parametrize("explicit_override", [False, True])
-    def test_seed_check_only_fails_without_project_data(
-        self, tmp_path, monkeypatch, explicit_override
-    ):
-        from booley.harness import init_cmd
-        from booley.runtime import session_issuance as runtime_spec
-
-        _init_git_project(tmp_path)
-        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
-        if explicit_override:
-            monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        else:
-            monkeypatch.delenv("BOOLEY_DIR", raising=False)
-        monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
-        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
-
-        def strict_preview(project, *_args, **_kwargs):
-            runtime_spec.authorized_project_data_source(project)
-            pytest.fail("missing Booley Directory unexpectedly passed validation")
-
-        monkeypatch.setattr(runtime_spec, "preview", strict_preview)
-        current_image = init_cmd.LifecycleResult(
-            selected_reference=init_cmd.pi.project_image_name(tmp_path),
-            selected_id="sha256:" + "a" * 64,
-            status=init_cmd.ImageLifecycleStatus.CURRENT,
-        )
-        monkeypatch.setattr(
-            init_cmd.image_lifecycle, "reconcile_planned", lambda *_args, **_kwargs: current_image
-        )
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-
-        rc = init_cmd._run_seed(ctx, init_cmd.AgentSelection("codex", "subscription"))
-
-        assert rc == 2
-        assert ctx.results[-1].name == "interactive"
-        assert ctx.results[-1].status == "err"
-        assert not booley_dir.exists()
-        assert not (tmp_path / ".devcontainer").exists()
-
-    def test_missing_init_owned_project_data_classification(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        _init_git_project(tmp_path)
-        target = init_cmd.booley_dir_for_init(tmp_path)
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        monkeypatch.setenv("BOOLEY_DIR", str(target))
-
-        assert init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
-        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=False)
-
-        monkeypatch.setenv("BOOLEY_DIR", "")
-        assert init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
-
-    @pytest.mark.parametrize("override", ["relative/project-data", "/external/project-data"])
-    def test_nonlocal_project_data_is_not_init_owned(self, tmp_path, monkeypatch, override):
-        from booley.harness import init_cmd
-
-        _init_git_project(tmp_path)
-        monkeypatch.setenv("BOOLEY_DIR", override)
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-
-        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
-
-    @pytest.mark.parametrize("entry_kind", ["file", "symlink"])
-    def test_existing_project_data_entry_is_not_missing(self, tmp_path, monkeypatch, entry_kind):
-        from booley.harness import init_cmd
-
-        _init_git_project(tmp_path)
-        target = init_cmd.booley_dir_for_init(tmp_path)
-        if entry_kind == "file":
-            target.write_text("not a directory", encoding="utf-8")
-        else:
-            destination = tmp_path / "project-data"
-            destination.mkdir()
-            symlink_or_skip(target, destination, target_is_directory=True)
-        monkeypatch.setenv("BOOLEY_DIR", str(target))
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-
-        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
-
-    def test_project_data_inspection_error_is_not_treated_as_missing(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        _init_git_project(tmp_path)
-        target = init_cmd.booley_dir_for_init(tmp_path)
-        monkeypatch.setenv("BOOLEY_DIR", str(target))
-        original_lstat = Path.lstat
-
-        def denied_lstat(path):
-            if path == target:
-                raise PermissionError("denied")
-            return original_lstat(path)
-
-        monkeypatch.setattr(Path, "lstat", denied_lstat)
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-
-        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
-
-    def test_existing_project_data_preview_failure_remains_error(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-        from booley.runtime import session_issuance as runtime_spec
-
-        _init_git_project(tmp_path)
-        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
-        booley_dir.mkdir()
+    result = _sandbox(
+        project,
+        check_only=True,
+        nangate_pdk_root=tmp_path / "pdk",
+        init_will_create_booley_dir=creates,
+    )
+
+    pending = (result.status, result.detail) == ("warn", "Booley Directory would be created first")
+    assert pending is owned
+    assert entry != "dir" or result.status == "err"
+
+
+def _deny(_path: Path) -> os.stat_result:
+    raise PermissionError("denied")
+
+
+def _current_image(project: Path) -> init_cmd.LifecycleResult:
+    return init_cmd.LifecycleResult(
+        selected_reference=init_cmd.pi.project_image_name(project),
+        selected_id=SANDBOX_IMAGE_ID,
+        status=init_cmd.ImageLifecycleStatus.CURRENT,
+    )
+
+
+@pytest.mark.parametrize(
+    ("seed", "image", "rc", "verdict"),
+    [
+        (False, True, 1, "pending or unresolved"),
+        (False, False, 2, "failed"),
+        (True, None, 2, None),
+    ],
+    ids=["check-only", "check-only-without-image", "seed-on-a-refused-host"],
+)
+def test_init_on_a_fresh_checkout_writes_nothing(
+    tmp_path, monkeypatch, capsys, seed, image, rc, verdict
+):
+    """Check-only reports the Sandbox as pending on the Directory; a refused seed stops.
+
+    The seed row keeps the real Host Bootstrap, which refuses this host (a source
+    checkout without Docker) before any write.
+    """
+    empty_host(tmp_path, monkeypatch)
+    docker_cli_absent(monkeypatch)
+    project = repository(tmp_path / "project")
+    if image is not None:
+        stub_host_images(monkeypatch, _current_image(project) if image else None)
+
+    assert seed_init(project, seed=seed, check_only=not seed, provider="codex") == rc
+
+    assert [path.name for path in project.iterdir()] == [".git"]
+    out = capsys.readouterr().out
+    if verdict is not None:
+        assert "interactive — Booley Directory would be created first" in out
+        assert f"Checked initialization: {verdict}" in out
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+@pytest.mark.parametrize("explicit_override", [False, True])
+def test_seed_without_project_data_fails_closed(
+    host, tmp_path, monkeypatch, capsys, explicit_override, check_only
+):
+    project = repository(tmp_path / "project")
+    booley_dir = init_cmd.booley_dir_for_init(project)
+    if explicit_override:
         monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        monkeypatch.setattr(
-            runtime_spec,
-            "preview",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                runtime_spec.RuntimeSpecError("Booley Directory mount source is unavailable")
-            ),
-        )
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
+    stub_host_images(monkeypatch, _current_image(project))
 
-        init_cmd._step_sandbox(
-            ctx,
-            nangate_pdk_root=tmp_path / "pdk",
-            init_will_create_booley_dir=True,
-        )
+    assert seed_init(project, check_only=check_only, provider="codex") == 2
+    failed = "interactive — " if check_only else "agent_config — Booley Directory missing"
+    assert f"✗  {failed}" in capsys.readouterr().out
+    assert not booley_dir.exists()
+    assert not devcontainer.devcontainer_path(project).exists()
 
-        assert ctx.results[-1].name == "interactive"
-        assert ctx.results[-1].status == "err"
 
-    def test_check_only_reports_current_initialized_state_without_mutation(
-        self, tmp_path, monkeypatch
-    ):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-        init_cmd._step_sandbox(self._ctx(tmp_path))
-        before = {
-            path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)
-            for path in tmp_path.rglob("*")
-            if path.is_file()
-        }
-
-        ctx = init_cmd.InitContext(
-            project_root=tmp_path,
-            check_only=True,
-            force=False,
-            verbose=False,
-            interactive=False,
-        )
-        init_cmd._step_sandbox(ctx)
-
-        assert ctx.results[-1].status == "current"
-        assert ctx.results[-1].detail == "current"
-        assert {
-            path.relative_to(tmp_path): (path.read_bytes(), path.stat().st_mode)
-            for path in tmp_path.rglob("*")
-            if path.is_file()
-        } == before
-
-    @pytest.mark.parametrize("state", ["missing", "stale"])
-    def test_check_only_reports_noncurrent_spec_without_rewriting_it(
-        self, tmp_path, monkeypatch, state
-    ):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
-        spec = tmp_path / ".devcontainer" / "devcontainer.json"
-        if state == "missing":
-            spec.unlink()
-            expected = None
-        else:
-            spec.write_bytes(b"{}\n")
-            expected = b"{}\n"
-
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "warn"
-        assert "specification/issuance" in ctx.results[-1].detail
-        assert (spec.read_bytes() if spec.exists() else None) == expected
-
-    def test_check_only_reports_missing_exclusion_without_restoring_it(
-        self, tmp_path, monkeypatch
-    ):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
-        exclude = tmp_path / ".git" / "info" / "exclude"
-        body = exclude.read_text(encoding="utf-8").replace("/.claude\n", "")
-        exclude.write_text(body, encoding="utf-8")
-
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "warn"
-        assert "Git exclusions" in ctx.results[-1].detail
-        assert exclude.read_text(encoding="utf-8") == body
-
-    def test_check_only_reports_runtime_cleanup_without_calling_reconciler(
-        self, tmp_path, monkeypatch
-    ):
-        import subprocess
-
-        from booley.harness import init_cmd
-        from booley.harness.setup import interactive as interactive_init
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
-        monkeypatch.setattr(
-            interactive_init.session_runtime,
-            "plan_stopped_headless_runtime_reconciliation",
-            lambda *_: SimpleNamespace(pending=True),
-        )
-        reconciled = []
-        monkeypatch.setattr(
-            interactive_init.session_runtime,
-            "reconcile_stopped_headless_runtime",
-            lambda *_: reconciled.append(True) or True,
+@pytest.mark.parametrize("provider", [None, "codex"])
+def test_sandbox_app_is_the_declared_provider_never_an_installed_cli(
+    project, tmp_path, monkeypatch, provider
+):
+    for cli in ("claude", "codex"):
+        PathToolFake.install(tmp_path / "bin", cli, monkeypatch)
+    if provider is not None:
+        (project / ".booley" / "booley.toml").write_text(
+            f'[agent]\nprovider = "{provider}"\nauth = "subscription"\n', encoding="utf-8"
         )
 
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "warn"
-        assert "stopped Sandbox resources" in ctx.results[-1].detail
-        assert not reconciled
-
-    def test_check_only_reports_orphaned_relay_without_removing_it(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-        from booley.harness.setup import interactive as interactive_init
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley").mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        init_cmd._step_sandbox(self._ctx(tmp_path), agent_app="none")
-        monkeypatch.setattr(
-            init_cmd.shutil, "which", lambda name: "/bin/docker" if name == "docker" else None
-        )
-        monkeypatch.setattr(interactive_init, "_unlicensed_relay_pending", lambda *_: True)
-        monkeypatch.setattr(
-            interactive_init,
-            "_remove_unlicensed_relay",
-            lambda *_: pytest.fail("check-only removed relay state"),
-        )
-
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "warn"
-        assert "orphaned license relay" in ctx.results[-1].detail
-
-    def test_check_only_does_not_create_mask_source(self, tmp_path, monkeypatch):
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            '[sandbox]\nmask_paths = ["secret/oracle"]\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-
-        ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        init_cmd._step_sandbox(ctx, agent_app="none")
-
-        assert ctx.results[-1].status == "warn"
-        assert not (tmp_path / "xdg" / "booley" / "empty-mask").exists()
-
-    def test_app_selection_never_infers_from_installed_clis(self, monkeypatch):
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
-        assert init_cmd._select_agent_app() == "none"
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
-        assert init_cmd._select_agent_app() == "none"
-
-    def test_app_selection_honors_project_provider(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            '[agent]\nprovider = "codex"\nauth = "subscription"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/bin/{name}")
-
-        assert init_cmd._select_agent_app(tmp_path) == "codex"
-
-    def test_seed_only_fails_closed_without_private_project_state(self, tmp_path, monkeypatch):
-        """`--seed` cannot invent the writable host Booley Directory authority."""
-        import argparse
-        import subprocess
-
-        from booley.harness import init_cmd
-
-        subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_select_agent_app", lambda *_: "none")
-
-        args = argparse.Namespace(
-            seed=True,
-            check_only=False,
-            force=False,
-            verbose=False,
-            provider="claude",
-            auth="subscription",
-        )
-        rc = init_cmd.run_init(args, tmp_path)
-
-        assert rc == 2
-        assert not (tmp_path / ".devcontainer" / "devcontainer.json").exists()
-        assert not (tmp_path / ".booley").exists()
+    assert _sandbox(project).detail == f"app={provider or 'none'}"
