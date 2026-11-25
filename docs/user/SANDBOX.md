@@ -375,6 +375,27 @@ CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
 to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
 edits before you apply them.
 
+## T3 Code tools turned off for Claude
+
+T3 Code gives every agent thread a set of tools of its own: starting threads,
+delegating, rendering HTML, the preview browser, and more. In the Sandbox,
+Claude threads that T3 Code starts cannot use the following tools. If Claude
+reports `No such tool available` for one of them, this is why:
+
+- **Scheduled tasks:** `schedule_task`, `delete_scheduled_task`,
+  `list_scheduled_tasks`, `run_scheduled_task_now`.
+- **Linking machines:** `t3_environment_link`, `t3_environment_links`,
+  `t3_environment_unlink`.
+- **Moving a thread:** `t3_thread_transfer`.
+- **Managing T3 Code projects:** `t3_project_create`, `t3_project_delete`,
+  `t3_project_clone`.
+- **Devices:** `device_open`, `device_close`, `device_list`,
+  `device_screenshot`.
+- **Secrets:** `request_secret`. Booley
+  [forwards your agent logins](#agent-cli-logins-in-the-sandbox) itself.
+
+Codex threads keep every T3 Code tool.
+
 ## Editor credential forwarding
 
 Opening the Sandbox in VS Code can forward your host Git credentials into it,
