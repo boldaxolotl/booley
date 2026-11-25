@@ -98,6 +98,14 @@ def test_installation_grant_lifecycle_output(
         f"Registered vivado EDA installation 'vivado' from {release.resolve()}.\n",
     )
     code, out, _ = _eda(
+        capsys, *("grant", "add", str(project), "--kind", "vivado", "--installation", "vivado")
+    )
+    assert (code, out) == (
+        0,
+        f"Granted vivado EDA access to {project} using installation 'vivado'.\n",
+    )
+    _eda(capsys, "grant", "revoke", str(project), "--kind", "vivado")
+    code, out, _ = _eda(
         capsys,
         *("grant", "add", str(project), "--kind", "vivado"),
         *("--installation", "vivado", "--license-profile", "site"),
