@@ -593,13 +593,13 @@ def test_streaming_conversion_fake_process_covers_lifecycle(tmp_path: Path, monk
 def _descriptors_on(identity: tuple[int, int]) -> list[int]:
     """Descriptors of this process that refer to the file with *identity* (device, inode)."""
     found: list[int] = []
-    for name in os.listdir("/dev/fd"):
+    for entry in Path("/dev/fd").iterdir():
         try:
-            status = os.fstat(int(name))
+            status = os.fstat(int(entry.name))
         except OSError:
             continue
         if (status.st_dev, status.st_ino) == identity:
-            found.append(int(name))
+            found.append(int(entry.name))
     return found
 
 
