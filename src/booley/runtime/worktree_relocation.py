@@ -1,9 +1,7 @@
-"""Crash-recoverable relocation for linked Git worktrees."""
+"""Native-submodule checks for a linked worktree that a directory migration moves."""
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime import platform_paths
@@ -11,7 +9,6 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     submodule_paths,
 )
-from booley.runtime.worktrees import parse_worktree_porcelain
 
 _TIMEOUT_S = 30
 
@@ -20,169 +17,8 @@ class WorktreeRelocationError(RuntimeError):
     """A linked worktree cannot be safely relocated or recovered."""
 
 
-@dataclass(frozen=True)
-class WorktreeMove:
-    """One source and destination pair in a larger relocation."""
-
-    repository: Path
-    ref: str
-    source: Path
-    destination: Path
-
-
-def preflight_worktree_moves(
-    moves: tuple[WorktreeMove, ...],
-    *,
-    occupied_destinations: frozenset[Path] = frozenset(),
-) -> None:
-    """Validate a complete relocation plan before its first mutation."""
-    normalized = tuple(
-        WorktreeMove(
-            move.repository.resolve(),
-            move.ref,
-            move.source.resolve(),
-            move.destination.resolve(),
-        )
-        for move in moves
-    )
-    allowed = {path.resolve() for path in occupied_destinations}
-    sources = {(move.repository, move.source) for move in normalized}
-    registrations: dict[Path, dict[Path, str]] = {}
-    for move in normalized:
-        registered = registrations.get(move.repository)
-        if registered is None:
-            registered = _registered_worktrees(move.repository)
-            registrations[move.repository] = registered
-        _validate_registration(move, registered)
-        if move.source == move.destination:
-            continue
-        interrupted = not move.source.exists() and move.destination.is_dir()
-        inspected = move.destination if interrupted else move.source
-        _validate_source(inspected)
-        _require_one_filesystem(inspected, move.destination)
-        if (move.destination.exists() or move.destination.is_symlink()) and (
-            (move.repository, move.destination) not in sources
-            and move.destination not in allowed
-            and not interrupted
-        ):
-            raise WorktreeRelocationError(
-                f"worktree destination already exists: {move.destination}"
-            )
-
-
-def relocate_worktree(
-    repository: Path,
-    ref: str,
-    source: Path,
-    destination: Path,
-    *,
-    relative_paths: bool | None = None,
-) -> None:
-    """Atomically move one linked worktree and repair its registration.
-
-    Standalone submodule repositories move with the worktree. Native Git
-    submodules use path-coupled administrative state and are rejected before
-    mutation. Repeating the call repairs an interruption after the rename.
-    """
-    repository = repository.resolve()
-    source = source.resolve()
-    destination = destination.resolve()
-    registered = _registered_worktrees(repository)
-    if registered.get(destination) == ref:
-        refresh_relative_worktree_config(destination)
-        _validate_destination(destination)
-        return
-    if registered.get(source) != ref:
-        raise WorktreeRelocationError(f"worktree for {ref} is not registered at {source}")
-    if source.exists():
-        preflight_worktree_moves((WorktreeMove(repository, ref, source, destination),))
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            source.rename(destination)
-        except OSError as exc:
-            raise WorktreeRelocationError(
-                f"could not relocate worktree {source} to {destination}: {exc}"
-            ) from exc
-    elif not destination.exists():
-        raise WorktreeRelocationError(
-            f"registered worktree and relocation destination are both unavailable: {source}"
-        )
-    _repair_registration(repository, ref, destination, relative_paths=relative_paths)
-    refresh_relative_worktree_config(destination)
-    _validate_destination(destination)
-
-
-def refresh_relative_worktree_config(worktree: Path) -> None:
-    """Refresh path-valued worktree config after a relative worktree moves."""
-    pointer_file = worktree / ".git"
-    try:
-        pointer = pointer_file.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
-    except OSError as exc:
-        raise WorktreeRelocationError(f"could not read worktree registration: {exc}") from exc
-    if Path(pointer).is_absolute():
-        return
-    administration = (worktree / pointer).resolve()
-    config = administration / "config.worktree"
-    if not config.is_file():
-        return
-    core_worktree = os.path.relpath(worktree.resolve(), administration).replace(os.sep, "/")
-    _set_worktree_config(config, "core.worktree", core_worktree)
-    if _read_worktree_config(config, "core.hooksPath") is not None:
-        hooks = os.path.relpath(administration / "hooks", worktree.resolve()).replace(os.sep, "/")
-        _set_worktree_config(config, "core.hooksPath", hooks)
-
-
-def _read_worktree_config(config: Path, key: str) -> str | None:
-    result = platform_paths.run_captured_bounded(
-        ["git", "config", "--file", str(config), "--get", key], timeout=_TIMEOUT_S, errors="strict"
-    )
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
-
-
-def _set_worktree_config(config: Path, key: str, value: str) -> None:
-    result = platform_paths.run_captured_bounded(
-        ["git", "config", "--file", str(config), key, value], timeout=_TIMEOUT_S, errors="strict"
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise WorktreeRelocationError(f"could not refresh {key}: {detail}")
-
-
-def _validate_registration(move: WorktreeMove, registered: dict[Path, str]) -> None:
-    source_ref = registered.get(move.source)
-    destination_ref = registered.get(move.destination)
-    if move.ref in {source_ref, destination_ref}:
-        return
-    raise WorktreeRelocationError(
-        f"worktree for {move.ref} is not registered at {move.source} or {move.destination}"
-    )
-
-
 def _validate_source(source: Path) -> None:
-    if not source.is_dir() or source.is_symlink():
-        raise WorktreeRelocationError(f"worktree source is unavailable: {source}")
     _validate_submodule_layout(source, source)
-
-
-def _require_one_filesystem(source: Path, destination: Path) -> None:
-    existing_parent = _nearest_existing_parent(destination.parent)
-    if source.stat().st_dev != existing_parent.stat().st_dev:
-        raise WorktreeRelocationError(
-            f"worktree relocation must stay on one filesystem: {source} -> {destination}"
-        )
-
-
-def _nearest_existing_parent(path: Path) -> Path:
-    current = path
-    while not current.exists():
-        parent = current.parent
-        if parent == current:
-            raise WorktreeRelocationError(f"worktree destination has no existing parent: {path}")
-        current = parent
-    if not current.is_dir() or current.is_symlink():
-        raise WorktreeRelocationError(f"worktree destination parent is unsafe: {current}")
-    return current
 
 
 def _validate_submodule_layout(repository: Path, worktree_root: Path) -> None:
@@ -217,40 +53,6 @@ def _validate_submodule_layout(repository: Path, worktree_root: Path) -> None:
                 f"standalone submodule identity changed: expected {submodule}, got {top}"
             )
         _validate_submodule_layout(submodule, worktree_root)
-
-
-def _repair_registration(
-    repository: Path, ref: str, destination: Path, *, relative_paths: bool | None = None
-) -> None:
-    from booley.runtime.worktree_repair import _metadata_flag
-
-    flags = () if relative_paths is None else _metadata_flag(relative_paths)
-    _git(repository, "worktree", "repair", *flags, str(destination))
-    if _registered_worktrees(repository).get(destination) != ref:
-        raise WorktreeRelocationError(
-            f"Git did not register relocated worktree for {ref} at {destination}"
-        )
-
-
-def _validate_destination(destination: Path) -> None:
-    top = Path(_git(destination, "rev-parse", "--show-toplevel")).resolve()
-    if top != destination:
-        raise WorktreeRelocationError(
-            f"relocated worktree identity changed: expected {destination}, got {top}"
-        )
-    _validate_submodule_layout(destination, destination)
-
-
-def _registered_worktrees(repository: Path) -> dict[Path, str]:
-    """Map each resolved worktree path that has a branch checked out to its ref."""
-    paths: dict[Path, str] = {}
-    for entry in parse_worktree_porcelain(_git(repository, "worktree", "list", "--porcelain")):
-        # Resolve every record, branch or not: the pre-parser code did, so a
-        # record whose path cannot be resolved still raises here.
-        resolved = entry.path.resolve()
-        if entry.branch is not None:
-            paths[resolved] = entry.branch
-    return paths
 
 
 def _git(repository: Path, *args: str) -> str:
