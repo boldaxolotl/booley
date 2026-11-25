@@ -321,6 +321,26 @@ def test_a_cancelled_review_stops_its_post_setup_hook(
     assert list((tmp_path / "scratch-root").iterdir()) == []  # the export is removed
 
 
+def test_an_interrupted_review_reports_its_cancel_and_prints_no_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    from booley.harness import booley as booley_cli
+    from booley.harness import review_command
+
+    def interrupted(_root: Path, _request: object) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(review_command, "run_review", interrupted)
+    args = argparse.Namespace(
+        revision="HEAD", base=None, target=None, json=False, verify=False, status=False, waive=[]
+    )
+    with pytest.raises(booley_cli._CancelledRun):
+        booley_cli._cmd_review(args, tmp_path)
+    assert "interrupted; review cancelled" in capsys.readouterr().err
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)

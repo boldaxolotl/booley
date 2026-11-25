@@ -2091,18 +2091,20 @@ def _cmd_review(args: argparse.Namespace, project_root: Path) -> int:
     """`booley review`: run the Declared Reviews of a commit and store the Review Run."""
     from booley.harness.review_command import ReviewRequest, run_review
 
-    return run_review(
-        project_root,
-        ReviewRequest(
-            args.revision,
-            args.base,
-            args.target,
-            args.json,
-            args.verify,
-            args.status,
-            tuple((finding_id, reason) for finding_id, reason in args.waive),
-        ),
+    request = ReviewRequest(
+        args.revision,
+        args.base,
+        args.target,
+        args.json,
+        args.verify,
+        args.status,
+        tuple((finding_id, reason) for finding_id, reason in args.waive),
     )
+    try:
+        return run_review(project_root, request)
+    except KeyboardInterrupt:  # Ctrl-C, or SIGTERM and SIGHUP turned into one
+        print("interrupted; review cancelled", file=sys.stderr)
+        raise _CancelledRun from None
 
 
 def _cmd_measure(args: argparse.Namespace, project_root: Path) -> int:
