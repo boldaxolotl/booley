@@ -60,11 +60,14 @@ def _synth(
     """Run the Flow's CLI on Target ``lite`` with extra *recipe* flow options and *parameters*."""
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")  # the in-process CLI runs only in the Sandbox
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-    # The liberty the Sandbox provides, so the configure half finds it on any host.
-    liberty = tmp_path / "pdk" / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
-    liberty.parent.mkdir(parents=True)
-    liberty.write_text("library(cells) {}\n", encoding="utf-8")
-    monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
+    if "--dry-run" in argv:
+        monkeypatch.delenv("PRJ_LIB_DIR", raising=False)  # planning needs no liberty
+    else:
+        # The liberty the Sandbox provides, so the configure half finds it on any host.
+        liberty = tmp_path / "pdk" / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
+        liberty.parent.mkdir(parents=True)
+        liberty.write_text("library(cells) {}\n", encoding="utf-8")
+        monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
     # The Makefile carries the run's random attempt token.
     monkeypatch.setattr(syn_make, "new_attempt_token", lambda: "0123456789abcdef" * 2)
     # FuseSoC, a declared dependency, runs from the test interpreter's environment.

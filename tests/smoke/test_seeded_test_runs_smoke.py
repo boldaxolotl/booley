@@ -145,6 +145,11 @@ def test_icarus_seed_template_decides_the_testbench_draw(tmp_path: Path) -> None
     _assert_seed_decides(draw_at)
 
 
+def test_icarus_without_a_template_is_unseeded() -> None:
+    plan = _plan("icarus")
+    assert plan.launch((plan.run("draw"),)).arguments == ("+test_id=0",)
+
+
 def test_cocotb_seed_decides_python_random(tmp_path: Path) -> None:
     _require("iverilog", "vvp", "cocotb-config")
     (tmp_path / "tb.sv").write_text("module tb; reg clk = 0; endmodule\n", encoding="utf-8")
