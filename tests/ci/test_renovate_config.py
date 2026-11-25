@@ -47,7 +47,7 @@ def _runner_step(workflow: dict[Any, Any]) -> dict[str, Any]:
 
 def _docker_arguments(command: str) -> tuple[list[str], list[str]]:
     """Names passed as ``--env NAME`` (no value) and ``-v`` mounts of a ``docker run`` command."""
-    tokens = shlex.split(command.split("&&")[-1])
+    tokens = shlex.split(command.rsplit("&&", maxsplit=1)[-1])
     assert tokens[:3] == ["docker", "run", "--rm"], tokens[:3]
     names: list[str] = []
     mounts: list[str] = []
