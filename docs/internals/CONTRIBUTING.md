@@ -88,11 +88,10 @@ purpose, install it in a persistent environment and run
 `booley bootstrap --update` from it.
 
 Host Bootstrap from a development wheel builds the wheel again with that
-environment's Python. `python -m build` creates its build environment with
-`virtualenv` when installed, otherwise with `venv`, which needs `ensurepip`.
+environment's Python, which needs `ensurepip` or `virtualenv` importable.
 Debian and Ubuntu ship `ensurepip` separately: install `pythonX.Y-venv` for
-that Python's version, or use a uv-managed Python. Host Bootstrap checks this
-before it builds any image.
+that Python's version, or reinstall Booley on a uv-managed Python. Host
+Bootstrap checks this before it builds any image.
 
 ### Agent source-development checks
 
