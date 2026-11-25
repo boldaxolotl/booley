@@ -63,6 +63,13 @@ def _web():
     return web
 
 
+def _registered(world: World) -> set[Path]:
+    """The checkouts Git registers for the Project, read as the Dashboard reads them."""
+    from booley.harness.dashboard.git_worktrees import worktree_registrations
+
+    return {entry.path.resolve() for entry in worktree_registrations(world.main)}
+
+
 def _snapshot_module():
     from booley.harness.dashboard import web_snapshot
 
@@ -338,6 +345,7 @@ def test_linked_worktree_snapshot_lists_only_its_jobs(world, monkeypatch):
     assert body["now"] == []
     assert body["header"]["worktree"] == str(world.wt.resolve())
     assert body["header"]["branch"] == "booley/wt"
+    assert world.wt.resolve() in _registered(world)
 
 
 def test_worktree_named_through_a_symlink_is_the_same_worktree(world, tmp_path, monkeypatch):
@@ -362,6 +370,7 @@ def test_main_checkout_is_a_worktree_with_only_its_jobs(world, monkeypatch):
     assert _targets(body["results"]["jobs"]) == ["t_main"]
     assert body["header"]["worktree"] == str(world.main.resolve())
     assert body["header"]["branch"] == "main"
+    assert world.main.resolve() in _registered(world)
 
 
 def test_detached_worktree_has_no_branch(world, tmp_path, monkeypatch):
@@ -435,12 +444,12 @@ def test_a_sessions_key_without_a_handle_reads_as_its_process():
 
 
 def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):
-    from booley.harness.worktree_list import WorktreeListError
+    from booley.harness.dashboard.git_worktrees import WorktreeGitError
 
     web = _web()
 
     def refuse(_repository):
-        raise WorktreeListError("git worktree failed")
+        raise WorktreeGitError("git worktree failed")
 
     monkeypatch.setattr(web, "worktree_registrations", refuse)
     _job(world, "run-wt", world.wt, target="leak")

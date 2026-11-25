@@ -530,6 +530,11 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
             "booley.toml [worktree].chat was removed and is ignored",
             "delete chat from [worktree] in booley.toml",
         ),
+        (
+            {"worktree": {"gc_older_than": "7d"}},
+            "booley.toml [worktree].gc_older_than was removed and is ignored",
+            "delete gc_older_than from [worktree] in booley.toml",
+        ),
     ],
 )
 def test_ignored_setting_warns_with_its_fix(data, message, fix):
