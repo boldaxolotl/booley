@@ -34,7 +34,7 @@ def install(directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Answer ``cmd /c mklink /J`` from *directory* for the rest of the test."""
     directory.mkdir(parents=True, exist_ok=True)
     launcher = directory / "cmd"
-    launcher.write_text(f"#!{sys.executable}\n{_CMD}", encoding="utf-8")
+    launcher.write_bytes(f"#!{sys.executable}\n{_CMD}".encode())
     launcher.chmod(0o755)
     monkeypatch.setenv("PATH", os.pathsep.join((str(directory), os.environ.get("PATH", ""))))
 
