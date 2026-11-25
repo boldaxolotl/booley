@@ -139,11 +139,13 @@ def test_pinned_release_identity_is_immutable() -> None:
     assert f"Verilator source revision: {VERILATOR_REF}" in provenance
 
 
-def test_nested_shift_compiler_correctness_regression(tmp_path: Path) -> None:
-    source = tmp_path / "shiftl_shiftl.sv"
-    source.write_text(
-        """
-module shiftl_shiftl;
+@pytest.mark.parametrize(
+    ("name", "body", "expected"),
+    [
+        # Compiler correctness regression: Verilator once miscompiled a shift of a shift.
+        (
+            "shiftl_shiftl",
+            """
   logic [31:0] a;
   logic [5:0] b, c;
   logic [31:0] middle, got, expected;
@@ -157,23 +159,12 @@ module shiftl_shiftl;
     if (got !== expected) $fatal(1, "nested shift miscompiled");
     $display("PASS nested shifts");
     $finish;
-  end
-endmodule
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    result = _run([str(_compile_binary(source, tmp_path / "build"))], tmp_path)
-
-    assert "PASS nested shifts" in result.stdout
-
-
-def test_forceable_unpacked_array_elaborates_and_runs(tmp_path: Path) -> None:
-    source = tmp_path / "force_unpacked.sv"
-    source.write_text(
-        """
-module force_unpacked;
+  end""",
+            "PASS nested shifts",
+        ),
+        (
+            "force_unpacked",
+            """
   logic var_en [0:1] /*verilator forceable*/;
   logic sig;
   initial begin var_en[0] = 1'b0; var_en[1] = 1'b0; end
@@ -185,16 +176,21 @@ module force_unpacked;
     if (var_en[0] !== 1'b1 || var_en[1] !== 1'b0) $fatal(1, "bad force result");
     $display("PASS unpacked force");
     $finish;
-  end
-endmodule
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
+  end""",
+            "PASS unpacked force",
+        ),
+    ],
+    ids=["nested-shift", "forceable-unpacked-array"],
+)
+def test_pinned_release_compiles_and_runs(
+    tmp_path: Path, name: str, body: str, expected: str
+) -> None:
+    source = tmp_path / f"{name}.sv"
+    source.write_text(f"module {name};{body}\nendmodule\n", encoding="utf-8")
 
     result = _run([str(_compile_binary(source, tmp_path / "build"))], tmp_path)
 
-    assert "PASS unpacked force" in result.stdout
+    assert expected in result.stdout
 
 
 def test_generated_main_native_coverage_is_per_instance_and_mergeable(
