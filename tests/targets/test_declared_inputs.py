@@ -8,273 +8,114 @@ from tests.conftest import symlink_or_skip
 from booley.targets.declared_inputs import core_program_paths, project_config_program_paths
 
 
-def test_core_program_paths_ignore_verilator_timescale(tmp_path: Path) -> None:
-    core = tmp_path / "toy.core"
-    document = {
-        "targets": {
-            "sim": {
-                "flow": "sim",
-                "flow_options": {
-                    "tool": "verilator",
-                    "verilator_options": ["--timing", "--timescale", "1ns/1ns"],
-                },
-            }
-        }
-    }
-
-    assert core_program_paths(document, core_file=core, project_root=tmp_path, strict=True) == ()
+def _core_paths(root: Path, document: dict, **options) -> tuple[Path, ...]:
+    return core_program_paths(document, core_file=root / "toy.core", project_root=root, **options)
 
 
-def test_core_program_paths_ignore_slash_bearing_tool_arguments(tmp_path: Path) -> None:
-    (tmp_path / "rtl" / "include").mkdir(parents=True)
-    document = {
-        "targets": {
-            "sim": {
-                "flow_options": {
-                    "tool": "verilator",
-                    "verilator_options": ["-Irtl/include"],
-                    "output_dir": "generated/results",
-                }
-            }
-        }
-    }
-
-    assert (
-        core_program_paths(
-            document,
-            core_file=tmp_path / "toy.core",
-            project_root=tmp_path,
-            strict=True,
-        )
-        == ()
-    )
+def _write(root: Path, *relative: str) -> tuple[Path, ...]:
+    paths = tuple(root / name for name in relative)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"exit 0\n")
+    return paths
 
 
-def test_core_program_paths_include_explicit_target_pre_run_program(tmp_path: Path) -> None:
-    script = tmp_path / "hooks" / "prepare.py"
-    script.parent.mkdir()
-    script.write_text("print('prepare')\n", encoding="utf-8")
-    document = {
-        "targets": {
-            "sim": {
-                "flow_options": {
-                    "tool": "verilator",
-                    "pre_run": "python3 hooks/prepare.py --ratio 1ns/1ns",
-                    "verilator_options": ["--timescale", "1ns/1ns"],
-                }
-            }
-        }
-    }
-
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (script,)
-
-
-def test_core_program_paths_include_interpreter_script(tmp_path: Path) -> None:
-    script = tmp_path / "hooks" / "seed file.py"
-    script.parent.mkdir()
-    script.write_text("print('seed')\n", encoding="utf-8")
-    document = {"scripts": {"seed": {"cmd": ["python3", "hooks/seed file.py"]}}}
-
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (script,)
-
-
-def test_core_program_paths_include_cmd_append_script(tmp_path: Path) -> None:
-    script = tmp_path / "hooks" / "prepare.py"
-    script.parent.mkdir()
-    script.write_text("print('prepare')\n", encoding="utf-8")
-    document = {
-        "scripts": {
-            "prepare": {
-                "cmd": ["python3"],
-                "cmd_append": ["hooks/prepare.py"],
-            }
-        }
-    }
-
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (script,)
-
-
-def test_core_program_paths_reject_missing_cmd_append_script(tmp_path: Path) -> None:
-    document = {
-        "scripts": {
-            "prepare": {
-                "cmd": ["python3"],
-                "cmd_append": ["hooks/missing.py"],
-            }
-        }
-    }
-
-    with pytest.raises(ValueError, match=r"referenced program is unavailable: hooks/missing\.py"):
-        core_program_paths(
-            document,
-            core_file=tmp_path / "toy.core",
-            project_root=tmp_path,
-            strict=True,
-        )
-
-
-def test_core_program_paths_include_generator_command(tmp_path: Path) -> None:
-    generator = tmp_path / "generators" / "build.py"
-    generator.parent.mkdir()
-    generator.write_text("print('build')\n", encoding="utf-8")
-    document = {
-        "generators": {"build": {"interpreter": "python3", "command": "generators/build.py"}}
-    }
-
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (generator,)
-
-
-def test_project_config_program_paths_include_only_pre_run_program(tmp_path: Path) -> None:
-    script = tmp_path / "hooks" / "build.py"
-    script.parent.mkdir()
-    script.write_text("print('build')\n", encoding="utf-8")
-    output = tmp_path / "generated" / "report.py"
-    output.parent.mkdir()
-    output.write_text("result\n", encoding="utf-8")
-    config = {
-        "flows": {
-            "sim": {
-                "pre_run_commands": ["python3 hooks/build.py --output generated/report.py"],
-                "run_cwd": "tests/work",
-            }
-        }
-    }
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
-
-
-def test_project_config_program_paths_support_safe_interpreter_flags(tmp_path: Path) -> None:
-    script = tmp_path / "hooks" / "build.py"
-    script.parent.mkdir()
-    script.write_text("print('build')\n", encoding="utf-8")
-    config = {"flows": {"sim": {"pre_run_commands": ["python3 -u hooks/build.py"]}}}
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
-
-
-@pytest.mark.parametrize("option", ["-X dev", "-Xdev"])
-def test_project_config_program_paths_support_interpreter_options_with_values(
-    tmp_path: Path, option: str
-) -> None:
-    script = tmp_path / "hooks" / "build.py"
-    script.parent.mkdir()
-    script.write_text("print('build')\n", encoding="utf-8")
-    config = {"flows": {"sim": {"pre_run_commands": [f"python3 {option} hooks/build.py"]}}}
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
-
-
-def test_project_config_program_paths_reject_malformed_command_in_strict_mode(
-    tmp_path: Path,
-) -> None:
-    config = {"flows": {"sim": {"pre_run_commands": ['python3 "hooks/build.py']}}}
-
-    with pytest.raises(ValueError, match="invalid executable command syntax"):
-        project_config_program_paths(config, project_root=tmp_path, strict=True)
-
-
-def test_project_config_program_paths_ignore_malformed_command_when_not_strict(
-    tmp_path: Path,
-) -> None:
-    config = {"flows": {"sim": {"pre_run_commands": ['python3 "hooks/build.py']}}}
-
-    assert project_config_program_paths(config, project_root=tmp_path) == ()
+def _sim_hook(command: str) -> dict:
+    return {"flows": {"sim": {"pre_run_commands": [command]}}}
 
 
 @pytest.mark.parametrize(
-    ("command", "filename"),
-    [("node build.js", "build.js"), ("bash build.bash", "build.bash")],
-)
-def test_project_config_program_paths_support_interpreter_script_suffixes(
-    tmp_path: Path, command: str, filename: str
-) -> None:
-    script = tmp_path / filename
-    script.write_text("script\n", encoding="utf-8")
-    config = {"flows": {"sim": {"pre_run_commands": [command]}}}
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (script,)
-
-
-def test_project_config_program_paths_find_separated_commands_after_assignments(
-    tmp_path: Path,
-) -> None:
-    scripts = tuple(tmp_path / "hooks" / name for name in ("one", "two.py", "three.sh"))
-    scripts[0].parent.mkdir()
-    for script in scripts:
-        script.write_text("exit 0\n", encoding="utf-8")
-    config = {
-        "flows": {
-            "sim": {
-                "pre_run_commands": [
-                    "MODE=fast ./hooks/one && python3 hooks/two.py | bash hooks/three.sh"
-                ]
-            }
-        }
-    }
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == tuple(
-        sorted(scripts)
-    )
-
-
-@pytest.mark.parametrize(
-    "arguments",
+    ("document", "files", "expected"),
     [
-        "-f build/Simulation.mk",
-        "-fbuild/Simulation.mk",
-        "--file build/Simulation.mk",
-        "--file=build/Simulation.mk",
-        "--makefile build/Simulation.mk",
-        "--makefile=build/Simulation.mk",
+        (
+            {
+                "targets": {
+                    "sim": {
+                        "flow_options": {
+                            "tool": "verilator",
+                            "verilator_options": ["--timing", "--timescale", "1ns/1ns"],
+                        }
+                    }
+                }
+            },
+            (),
+            (),
+        ),
+        (
+            {
+                "targets": {
+                    "sim": {
+                        "flow_options": {
+                            "tool": "verilator",
+                            "verilator_options": ["-Irtl/include"],
+                            "output_dir": "generated/results",
+                        }
+                    }
+                }
+            },
+            ("rtl/include/x.svh",),
+            (),
+        ),
+        (
+            {
+                "targets": {
+                    "sim": {
+                        "flow_options": {
+                            "tool": "verilator",
+                            "pre_run": "python3 hooks/prepare.py --ratio 1ns/1ns",
+                            "verilator_options": ["--timescale", "1ns/1ns"],
+                        }
+                    }
+                }
+            },
+            ("hooks/prepare.py",),
+            ("hooks/prepare.py",),
+        ),
+        (
+            {"scripts": {"seed": {"cmd": ["python3", "hooks/seed file.py"]}}},
+            ("hooks/seed file.py",),
+            ("hooks/seed file.py",),
+        ),
+        (
+            {"scripts": {"prepare": {"cmd": ["python3"], "cmd_append": ["hooks/prepare.py"]}}},
+            ("hooks/prepare.py",),
+            ("hooks/prepare.py",),
+        ),
+        (
+            {
+                "generators": {
+                    "build": {"interpreter": "python3", "command": "generators/build.py"}
+                }
+            },
+            ("generators/build.py",),
+            ("generators/build.py",),
+        ),
+        (
+            {
+                "generators": {
+                    "build": {"interpreter": "tools/python3", "command": "generators/build.py"}
+                }
+            },
+            ("tools/python3", "generators/build.py"),
+            ("generators/build.py",),
+        ),
+    ],
+    ids=[
+        "verilator-timescale",
+        "slash-bearing-tool-arguments",
+        "target-pre-run",
+        "interpreter-script",
+        "cmd-append-script",
+        "generator-command",
+        "generator-interpreter-path",
     ],
 )
-def test_project_config_program_paths_include_explicit_makefile(
-    tmp_path: Path, arguments: str
+def test_core_program_paths_keep_only_declared_programs(
+    tmp_path: Path, document: dict, files: tuple[str, ...], expected: tuple[str, ...]
 ) -> None:
-    makefile = tmp_path / "build" / "Simulation.mk"
-    makefile.parent.mkdir()
-    makefile.write_text("all:\n\t@true\n", encoding="utf-8")
-    config = {"flows": {"sim": {"pre_run_commands": [f"make {arguments} all"]}}}
+    _write(tmp_path, *files)
 
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == (makefile,)
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        'python3 -c "print("a/b")"',
-        "python3 -m package/path",
-        'bash -c "echo a/b"',
-        'perl -e "print q{a/b}"',
-        'node --eval "console.log("a/b")"',
-    ],
-)
-def test_project_config_program_paths_ignore_interpreter_non_script_modes(
-    tmp_path: Path, command: str
-) -> None:
-    config = {"flows": {"sim": {"pre_run_commands": [command]}}}
-
-    assert project_config_program_paths(config, project_root=tmp_path, strict=True) == ()
+    assert _core_paths(tmp_path, document, strict=True) == tuple(tmp_path / p for p in expected)
 
 
 @pytest.mark.parametrize(
@@ -282,6 +123,7 @@ def test_project_config_program_paths_ignore_interpreter_non_script_modes(
     [
         {"scripts": {"run": {"cmd": ["python3", "hooks/missing.py"]}}},
         {"scripts": {"run": {"cmd": ["hooks/missing"]}}},
+        {"scripts": {"run": {"cmd": ["python3"], "cmd_append": ["hooks/missing.py"]}}},
         {"generators": {"run": {"command": "hooks/missing.py"}}},
     ],
 )
@@ -289,126 +131,114 @@ def test_core_program_paths_reject_missing_programs(
     tmp_path: Path, document: dict[str, object]
 ) -> None:
     with pytest.raises(ValueError, match="referenced program is unavailable: hooks/missing"):
-        core_program_paths(
-            document,
-            core_file=tmp_path / "toy.core",
-            project_root=tmp_path,
-            strict=True,
-        )
+        _core_paths(tmp_path, document, strict=True)
+    assert _core_paths(tmp_path, document) == ()
 
 
 def test_core_program_paths_reject_program_outside_project(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    outside = tmp_path / "outside.py"
-    outside.write_text("print('outside')\n", encoding="utf-8")
-    document = {"generators": {"run": {"command": "../outside.py"}}}
+    _write(tmp_path, "outside.py")
 
     with pytest.raises(ValueError, match="cannot be mapped to the Project"):
-        core_program_paths(
-            document,
-            core_file=project / "toy.core",
-            project_root=project,
-            strict=True,
-        )
+        _core_paths(project, {"generators": {"run": {"command": "../outside.py"}}}, strict=True)
 
 
 def test_core_program_paths_include_redirecting_entries(tmp_path: Path) -> None:
-    real = tmp_path / "real-hooks"
-    real.mkdir()
-    script = real / "run.py"
-    script.write_text("print('run')\n", encoding="utf-8")
+    (script,) = _write(tmp_path, "real-hooks/run.py")
     link = tmp_path / "hooks"
-    link.symlink_to(real, target_is_directory=True)
+    symlink_or_skip(link, script.parent, target_is_directory=True)
     document = {"scripts": {"run": {"cmd": ["python3", "hooks/run.py"]}}}
 
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (link, script)
+    assert _core_paths(tmp_path, document, strict=True) == (link, script)
 
 
 def test_core_program_paths_include_nested_repository_entry(tmp_path: Path) -> None:
-    nested = tmp_path / "vendor" / "generator"
-    nested.mkdir(parents=True)
-    (nested / ".git").mkdir()
-    script = nested / "run.py"
-    script.write_text("print('run')\n", encoding="utf-8")
+    (script,) = _write(tmp_path, "vendor/generator/run.py")
+    (script.parent / ".git").mkdir()
     document = {"generators": {"run": {"command": "vendor/generator/run.py"}}}
 
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (nested, script)
+    assert _core_paths(tmp_path, document, strict=True) == (script.parent, script)
 
 
-def test_core_program_paths_ignore_generator_interpreter_path(tmp_path: Path) -> None:
-    interpreter = tmp_path / "tools" / "python3"
-    interpreter.parent.mkdir()
-    interpreter.write_text("#!/bin/sh\n", encoding="utf-8")
-    generator = tmp_path / "generators" / "build.py"
-    generator.parent.mkdir()
-    generator.write_text("print('build')\n", encoding="utf-8")
-    document = {
-        "generators": {
-            "build": {
-                "interpreter": "tools/python3",
-                "command": "generators/build.py",
-            }
-        }
-    }
+@pytest.mark.parametrize(
+    ("command", "files", "expected"),
+    [
+        (
+            "python3 hooks/build.py --output generated/report.py",
+            ("hooks/build.py", "generated/report.py"),
+            ("hooks/build.py",),
+        ),
+        ("python3 -u hooks/build.py", ("hooks/build.py",), ("hooks/build.py",)),
+        ("python3 -X dev hooks/build.py", ("hooks/build.py",), ("hooks/build.py",)),
+        ("python3 -Xdev hooks/build.py", ("hooks/build.py",), ("hooks/build.py",)),
+        ("node build.js", ("build.js",), ("build.js",)),
+        ("bash build.bash", ("build.bash",), ("build.bash",)),
+        (
+            "MODE=fast ./hooks/one && python3 hooks/two.py | bash hooks/three.sh",
+            ("hooks/one", "hooks/two.py", "hooks/three.sh"),
+            ("hooks/one", "hooks/three.sh", "hooks/two.py"),
+        ),
+        *(
+            (f"make {arguments} all", ("build/Simulation.mk",), ("build/Simulation.mk",))
+            for arguments in (
+                "-f build/Simulation.mk",
+                "-fbuild/Simulation.mk",
+                "--file build/Simulation.mk",
+                "--file=build/Simulation.mk",
+                "--makefile build/Simulation.mk",
+                "--makefile=build/Simulation.mk",
+            )
+        ),
+        ('python3 -c "print("a/b")"', (), ()),
+        ("python3 -m package/path", (), ()),
+        ('bash -c "echo a/b"', (), ()),
+        ('perl -e "print q{a/b}"', (), ()),
+        ('node --eval "console.log("a/b")"', (), ()),
+    ],
+)
+def test_project_config_program_paths_find_pre_sim_programs(
+    tmp_path: Path, command: str, files: tuple[str, ...], expected: tuple[str, ...]
+) -> None:
+    _write(tmp_path, *files)
 
-    assert core_program_paths(
-        document,
-        core_file=tmp_path / "toy.core",
-        project_root=tmp_path,
-        strict=True,
-    ) == (generator,)
+    paths = project_config_program_paths(_sim_hook(command), project_root=tmp_path, strict=True)
+
+    assert paths == tuple(tmp_path / p for p in expected)
 
 
-def test_core_program_paths_omit_missing_program_when_not_strict(tmp_path: Path) -> None:
-    document = {"generators": {"run": {"command": "hooks/missing.py"}}}
+def test_project_config_program_paths_reject_malformed_command_only_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    config = _sim_hook('python3 "hooks/build.py')
 
-    assert (
-        core_program_paths(
-            document,
-            core_file=tmp_path / "toy.core",
-            project_root=tmp_path,
-        )
-        == ()
-    )
+    with pytest.raises(ValueError, match="invalid executable command syntax"):
+        project_config_program_paths(config, project_root=tmp_path, strict=True)
+    assert project_config_program_paths(config, project_root=tmp_path) == ()
 
 
 @pytest.mark.parametrize("program", ["./missing", "missing.py"])
 def test_missing_declared_program_opt_in_preserves_default_and_strict(tmp_path, program):
-    path = tmp_path / program
     document = {"scripts": {"run": {"cmd": [program]}}}
-    options = {"core_file": tmp_path / "top.core", "project_root": tmp_path}
-    assert core_program_paths(document, **options) == ()
-    assert core_program_paths(document, **options, include_missing=True) == (path.resolve(),)
+    assert _core_paths(tmp_path, document) == ()
+    assert _core_paths(tmp_path, document, include_missing=True) == (
+        (tmp_path / program).resolve(),
+    )
     with pytest.raises(ValueError, match="unavailable"):
-        core_program_paths(document, **options, strict=True, include_missing=True)
+        _core_paths(tmp_path, document, strict=True, include_missing=True)
 
 
-def test_missing_generator_bare_program_is_protected(tmp_path):
-    document = {"generators": {"gen": {"command": "missing"}}}
-    assert core_program_paths(
-        document, core_file=tmp_path / "top.core", project_root=tmp_path, include_missing=True
-    ) == (tmp_path / "missing",)
-
-
-def test_missing_program_keeps_redirecting_parent(tmp_path):
-    nested = tmp_path / "nested"
-    nested.mkdir()
-    (nested / ".git").mkdir()
-    document = {"generators": {"gen": {"command": "nested/missing"}}}
-    assert core_program_paths(
-        document, core_file=tmp_path / "top.core", project_root=tmp_path, include_missing=True
-    ) == (nested, nested / "missing")
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [("missing", ("missing",)), ("nested/missing", ("nested", "nested/missing"))],
+    ids=["bare-generator-program", "redirecting-parent"],
+)
+def test_missing_generator_program_is_protected(tmp_path, command, expected):
+    (tmp_path / "nested" / ".git").mkdir(parents=True)
+    document = {"generators": {"gen": {"command": command}}}
+    assert _core_paths(tmp_path, document, include_missing=True) == tuple(
+        tmp_path / p for p in expected
+    )
 
 
 def _pre_sim_project(tmp_path: Path, *, linked: bool) -> tuple[Path, Path]:
@@ -420,8 +250,7 @@ def _pre_sim_project(tmp_path: Path, *, linked: bool) -> tuple[Path, Path]:
     project = tmp_path / "project"
     project.mkdir()
     data = tmp_path / "booley-data" if linked else project / ".booley"
-    (data / "hooks").mkdir(parents=True)
-    (data / "hooks" / "x.sh").write_text("echo hook\n", encoding="utf-8")
+    _write(data, "hooks/x.sh")
     # A Versioned Booley Directory is a nested repository in the plain layout too.
     (data / ".git").mkdir()
     if linked:
@@ -429,15 +258,14 @@ def _pre_sim_project(tmp_path: Path, *, linked: bool) -> tuple[Path, Path]:
     return project, data
 
 
-_HOOK_CONFIG = {"flows": {"sim": {"pre_run_commands": ["bash .booley/hooks/x.sh"]}}}
-
-
 @pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
 def test_pre_sim_program_under_booley_dir_entry_is_kept(tmp_path: Path, linked: bool) -> None:
     """A linked ``.booley`` entry yields the same labels as a plain directory (#2250)."""
     project, _data = _pre_sim_project(tmp_path, linked=linked)
 
-    paths = project_config_program_paths(_HOOK_CONFIG, project_root=project, strict=True)
+    paths = project_config_program_paths(
+        _sim_hook("bash .booley/hooks/x.sh"), project_root=project, strict=True
+    )
 
     assert [path.relative_to(project).as_posix() for path in paths] == [
         ".booley",
@@ -445,28 +273,19 @@ def test_pre_sim_program_under_booley_dir_entry_is_kept(tmp_path: Path, linked: 
     ]
 
 
-def test_link_below_linked_entry_leading_outside_stays_excluded(tmp_path: Path) -> None:
-    """Only the exact entry is followed; a link below it out of the Project is not."""
+@pytest.mark.parametrize("through", ["below-linked-entry", "above-entry-spelling"])
+def test_link_out_of_the_project_stays_excluded(tmp_path: Path, through: str) -> None:
+    """Only the exact ``.booley`` entry is followed, not a link below it or above it."""
     project, data = _pre_sim_project(tmp_path, linked=True)
     elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "y.sh").write_text("echo outside\n", encoding="utf-8")
-    symlink_or_skip(data / "escape", elsewhere, target_is_directory=True)
-    config = {"flows": {"sim": {"pre_run_commands": ["bash .booley/escape/y.sh"]}}}
-
-    assert project_config_program_paths(config, project_root=project) == ()
-    with pytest.raises(ValueError, match="cannot be mapped to the Project"):
-        project_config_program_paths(config, project_root=project, strict=True)
-
-
-def test_link_above_an_entry_spelling_stays_excluded(tmp_path: Path) -> None:
-    """A ``.booley`` reached through another link is not the Project's entry."""
-    project, _data = _pre_sim_project(tmp_path, linked=True)
-    elsewhere = tmp_path / "elsewhere"
-    (elsewhere / ".booley" / "hooks").mkdir(parents=True)
-    (elsewhere / ".booley" / "hooks" / "z.sh").write_text("echo outside\n", encoding="utf-8")
-    symlink_or_skip(project / "vendor", elsewhere, target_is_directory=True)
-    config = {"flows": {"sim": {"pre_run_commands": ["bash vendor/.booley/hooks/z.sh"]}}}
+    if through == "below-linked-entry":
+        _write(elsewhere, "y.sh")
+        symlink_or_skip(data / "escape", elsewhere, target_is_directory=True)
+        config = _sim_hook("bash .booley/escape/y.sh")
+    else:
+        _write(elsewhere, ".booley/hooks/z.sh")
+        symlink_or_skip(project / "vendor", elsewhere, target_is_directory=True)
+        config = _sim_hook("bash vendor/.booley/hooks/z.sh")
 
     assert project_config_program_paths(config, project_root=project) == ()
     with pytest.raises(ValueError, match="cannot be mapped to the Project"):
