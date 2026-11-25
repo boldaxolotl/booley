@@ -292,7 +292,7 @@ def _write_project(
     for name, items in (extras or {}).items():
         lines += [f"{name} = [" + ", ".join(f'"{item}"' for item in items) + "]"]
     lines += ["[tool.booley]", "source_checkout = true"]
-    (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "pyproject.toml").write_bytes(("\n".join(lines) + "\n").encode())
 
 
 def _write_pinned(root: Path) -> None:
