@@ -23,6 +23,8 @@ from booley.flows.lint.flow import (
 )
 from booley.flows.sim import flow as sim
 from booley.flows.sim import record_presentation
+
+# private: standalone recipe types, as above.
 from booley.flows.sim.standalone import (
     StandaloneMixin,
     _StandalonePlanRecipe,
@@ -232,6 +234,8 @@ def test_completion_records_preserve_legacy_stage_bytes(tmp_path, monkeypatch):
         )
         progress.started = 0
         progress.log = io.BytesIO()
+        # private: emit_completion reads the endpoint's _display_identity; only a live
+        # flow endpoint sets it, so this stand-in carries the unset value.
         endpoint = SimpleNamespace(name=flow, terminal_progress=progress, _display_identity=None)
         expected_records, expected_log = [], []
         for elapsed in (61.1, 61.9):

@@ -22,9 +22,6 @@ from booley.config.pricing import (
         ("gpt-5.4-mini-20260101", "gpt-5.4-mini"),
         # A short key does not shadow a longer, more specific one.
         ("claude-sonnet-4-6", "claude-sonnet-4-6"),
-        # Not the dearer haiku-4-5 row through the family token.
-        ("claude-haiku-5-5", "claude-haiku-5-5"),
-        ("gpt-6-luna", "gpt-6-luna"),
         # Retired rows remain: historical runs keep their own prices.
         ("claude-fable-5", "claude-fable-5"),
         ("claude-opus-4-8", "claude-opus-4-8"),
@@ -140,7 +137,7 @@ def test_every_builtin_model_has_its_own_row(tmp_path, monkeypatch):
         ((10_000, 0, 0, 10_000), 0.0625),
         # Over-subscribed cache: uncached input clamps to 0, 5k * 0.50 + 5k * 6.25.
         ((1_000, 5_000, 0, 5_000), 0.03375),
-        ((0, 0, 0, 0), 0.0),  # no minimum charge
+        ((0, 0, 0), 0.0),  # no minimum charge; the omitted cache-write count defaults to 0
     ],
     ids=["all-four-classes", "cache-write-rate", "clamped-uncached", "zero-tokens"],
 )

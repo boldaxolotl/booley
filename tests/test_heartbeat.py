@@ -34,14 +34,17 @@ class TestHeartbeat:
         def render(*row):
             rows.append(row)
             fired.set()
+            time.sleep(0.05)  # still rendering when stop() is called
 
         timer = Heartbeat("build", render=render, interval=0.01)
+        threads_before = set(threading.enumerate())
         clock = iter([1_000_000.0])  # start(); every tick then reads 3661 s later
         monkeypatch.setattr(heartbeat, "monotonic", lambda: next(clock, 1_003_661.0))
         # The suite's thread-leak guard fails this test if leaving the block keeps ticking.
         with timer:
             assert fired.wait(timeout=hang_guard_s())
 
+        assert set(threading.enumerate()) <= threads_before  # stop() waited for the render
         assert rows[0] == ("build", "1h 01m", "")
         assert len(touches) >= 2  # start, then every tick
 

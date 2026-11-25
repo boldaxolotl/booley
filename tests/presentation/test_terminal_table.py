@@ -104,7 +104,7 @@ def test_columns_and_cuts_count_terminal_cells(plain):
 
     cut = render_table(("H", "N"), rows, max_widths={0: 5})
     assert cut[2] == "  日本…   x"
-    assert colors.len_visible("é") == 1  # combining mark takes no cell
+    assert colors.len_visible("e\u0301") == 1  # combining mark takes no cell
 
 
 @pytest.mark.parametrize(
