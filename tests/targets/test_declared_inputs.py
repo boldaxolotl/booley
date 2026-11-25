@@ -16,7 +16,7 @@ def _write(root: Path, *relative: str) -> tuple[Path, ...]:
     paths = tuple(root / name for name in relative)
     for path in paths:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("exit 0\n", encoding="utf-8")
+        path.write_bytes(b"exit 0\n")
     return paths
 
 
@@ -147,7 +147,7 @@ def test_core_program_paths_reject_program_outside_project(tmp_path: Path) -> No
 def test_core_program_paths_include_redirecting_entries(tmp_path: Path) -> None:
     (script,) = _write(tmp_path, "real-hooks/run.py")
     link = tmp_path / "hooks"
-    link.symlink_to(script.parent, target_is_directory=True)
+    symlink_or_skip(link, script.parent, target_is_directory=True)
     document = {"scripts": {"run": {"cmd": ["python3", "hooks/run.py"]}}}
 
     assert _core_paths(tmp_path, document, strict=True) == (link, script)
