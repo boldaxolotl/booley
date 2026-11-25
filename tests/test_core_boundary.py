@@ -65,6 +65,7 @@ _ACCEPTED: list[tuple[str, Callable[[], Any], Any]] = [
     ("as_str_list-mapping", lambda: as_str_list({"a": 1}), []),
     ("as_int", lambda: as_int(7), 7),
     ("as_int-truncates", lambda: as_int(3.9), 3),
+    ("as_int-none", lambda: as_int(None), None),
     ("as_int-string", lambda: as_int("12"), 12),
     ("as_int-float-string", lambda: as_int("3.0"), 3),
     ("as_float-int", lambda: as_float(7), 7.0),
@@ -76,6 +77,7 @@ _ACCEPTED: list[tuple[str, Callable[[], Any], Any]] = [
     ("require_opt_str-absent", lambda: require_opt_str({}, "engine"), None),
     ("require_opt_str-none", lambda: require_opt_str({"engine": None}, "engine"), None),
     ("require_opt_str", lambda: require_opt_str({"engine": "opensta"}, "engine"), "opensta"),
+    ("require_bool-true", lambda: require_bool({"flatten": True}, "flatten"), True),
     ("require_bool-absent", lambda: require_bool({}, "flatten"), False),
     ("require_bool-absent-default", lambda: require_bool({}, "flatten", default=True), True),
     (

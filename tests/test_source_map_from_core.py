@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources, source_dirs_from_core
+from tests.conftest import symlink_or_skip
 
 
 def _write_core(path: Path, body: str) -> None:
@@ -179,7 +180,7 @@ def test_core_source_symlink_normalizes_to_tracked_repo_path(tmp_path: Path):
     (tmp_path / "src" / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
     core_dir = tmp_path / ".booley" / "cores"
     core_dir.mkdir(parents=True)
-    (core_dir / "src").symlink_to(tmp_path / "src", target_is_directory=True)
+    symlink_or_skip(core_dir / "src", tmp_path / "src", target_is_directory=True)
     _write_core(
         core_dir / "dut.core",
         """\
