@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+# private: `booley init`, the public route to the ignore file, also writes config
+# skeletons and a Booley Directory repository; the callers
+# (for example tests/runtime/test_project_runtime_gitignore.py) need a repository with only the ignore file.
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
 from tests.subprocess_budget import run_bounded_child
 
