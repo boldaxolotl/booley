@@ -276,6 +276,18 @@ def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkey
     assert authority.load_state().grants == (grant,)
 
 
+@pytest.mark.parametrize("action", ["add", "revoke"])
+def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys, action):
+    def unreadable(project):
+        raise PermissionError(f"Project Root is unreadable: {project}")
+
+    monkeypatch.setattr(cli, "require_project_checkout", unreadable)
+    code, _, err = _eda(capsys, "grant", action, str(tmp_path), "--kind", "vivado")
+    assert code == 2
+    assert "Project Root is unreadable" in err
+    assert authority.load_state().grants == ()
+
+
 def test_project_binding_cleanup_permission_error_propagates(tmp_path, capsys):
     project = _project(tmp_path / "project")
     (project / ".booley").mkdir()

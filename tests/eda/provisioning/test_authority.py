@@ -159,13 +159,19 @@ def test_grant_is_stored_by_canonical_project_identity(
         alias.symlink_to(project, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks unavailable")
-    copied = tmp_path / "copied"
-    (copied / ".git").mkdir(parents=True)
 
     grant = eda_grant_support.add_grant(alias, "vivado", installation="vivado_2025_2")
 
     assert grant.project_root == str(project.resolve())
     assert authority.resolve_grant(project, "vivado") == grant
+
+
+def test_grant_does_not_apply_to_a_copied_project(tmp_path: Path, private_state: Path) -> None:
+    project, _ = _registered(tmp_path)
+    eda_grant_support.add_grant(project, "vivado", installation="vivado_2025_2")
+    copied = tmp_path / "copied"
+    (copied / ".git").mkdir(parents=True)
+
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(copied, "vivado")
 

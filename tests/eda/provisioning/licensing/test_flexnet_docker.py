@@ -242,6 +242,8 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
             "(?s)image identity.*state_image sha256:a+ -> sha256:b+.*"
             "config_image sha256:a+ -> sha256:c+",
         ),
+        ({"state_overrides": {"Image": "sha256:" + "b" * 64}}, "image identity"),
+        ({"config_overrides": {"Image": "sha256:" + "c" * 64}}, "image identity"),
         ({"config_overrides": {"User": "0:0"}}, "user"),
         ({"state_overrides": {"Mounts": [{"Destination": "/host"}]}}, "mounts"),
         ({"PortBindings": {"2100/tcp": [{"HostPort": "2100"}]}}, "port publication"),
