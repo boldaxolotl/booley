@@ -49,6 +49,7 @@ def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() ->
 
 
 def test_shipped_t3code_policy_locks_worktrees_and_their_prepare_script() -> None:
+    # T3 Code's managed policy format fixes the shape; ADR 0082 fixes the values.
     settings = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))[
         "settings"
     ]
