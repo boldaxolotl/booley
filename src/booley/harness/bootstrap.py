@@ -22,6 +22,7 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
+from booley.harness.setup.docker_image import wheel_build_environment_error
 from booley.harness.setup.skills import (
     HostSkillReconciliation,
     reconcile_host_qa_skills,
@@ -226,6 +227,11 @@ def _inspect_bootstrap_images(
         return BootstrapResult(Intent.CHECK, tuple(findings), policy)
     base, finding = _reconcile_base_image(Intent.CHECK, verbose=verbose)
     findings.append(finding)
+    if finding.state is BootstrapState.PENDING:
+        try:
+            findings.extend(_wheel_build_findings(Intent.ENSURE))
+        except (ImageLifecycleError, OSError, ValueError) as exc:
+            findings.append(BootstrapFinding("image-capacity", BootstrapState.ERROR, str(exc)))
     sidecars = host_sidecars.inspect_sidecars(policy)
     findings.extend(_sidecar_finding(item) for item in sidecars.findings)
     return BootstrapResult(Intent.CHECK, tuple(findings), policy, base)
@@ -289,6 +295,14 @@ def _load_bootstrap_policy(findings: list[BootstrapFinding]) -> SandboxHostPolic
     return load_host_policy(on_deprecation=record_deprecation)
 
 
+def _wheel_build_findings(intent: Intent) -> tuple[BootstrapFinding, ...]:
+    """Report a Python that cannot build the wheel a planned local build needs."""
+    error = wheel_build_environment_error()
+    if error is None or not host_capacity_requests(intent):
+        return ()
+    return (BootstrapFinding("python-venv", BootstrapState.ERROR, error, remedy=""),)
+
+
 def _reconcile_bootstrap_images(
     intent: Intent,
     findings: list[BootstrapFinding],
@@ -300,6 +314,9 @@ def _reconcile_bootstrap_images(
     plan = None
     if intent is not Intent.CHECK:
         try:
+            if blocked := _wheel_build_findings(intent):
+                findings.extend(blocked)
+                return BootstrapResult(intent, tuple(findings), policy)
             requests = (
                 *host_capacity_requests(intent),
                 *host_sidecars.plan_image_builds(intent, egress=policy.egress),

@@ -87,6 +87,12 @@ packages under the system temporary directory, `.worktrees`, `.runtime`, or
 purpose, install it in a persistent environment and run
 `booley bootstrap --update` from it.
 
+Host Bootstrap from a development wheel builds the wheel again with that
+environment's Python, which needs `ensurepip` or `virtualenv` importable.
+Debian and Ubuntu ship `ensurepip` separately: install `pythonX.Y-venv` for
+that Python's version, or reinstall Booley on a uv-managed Python. Host
+Bootstrap checks this before it builds any image.
+
 ### Agent source-development checks
 
 Agents don't use the `.venv` workflow above. They run the read-only Agent
