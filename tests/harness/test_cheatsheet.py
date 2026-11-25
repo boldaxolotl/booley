@@ -417,6 +417,7 @@ def test_skills_table_lists_every_packaged_skill():
     packaged = {path.name for path in skills_dir().iterdir() if (path / "SKILL.md").is_file()}
     assert packaged, "no packaged skills found; skills_dir() is wrong"
     assert listed == packaged - withheld_skills(frozenset())
+    assert "booley-reviewed-commit" not in listed
 
 
 def test_init_force_row_matches_its_help():

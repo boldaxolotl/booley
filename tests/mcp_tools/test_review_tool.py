@@ -363,10 +363,11 @@ def test_reviewed_commit_skill_drives_booley_review() -> None:
     for phrase in (
         "Commit the work",
         "Run review discovery",
-        "at or above `resolve`",
+        "Resolve each introduced finding",
         "justification",
         "run verify once",
         "booley measure",
+        "is not reviewed",
         "Review Report",
         "waivers first",
         "Never run discovery again after verify",

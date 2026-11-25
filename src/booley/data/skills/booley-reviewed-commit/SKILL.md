@@ -14,9 +14,10 @@ when the user asks for a reviewed commit or a reviewed and measured commit.
 
 Every review goes through the `booley_review` MCP tool. It returns a `run_id`
 at once; poll it with `booley_poll` until the result carries its exit status.
-Exit 0: no finding is open. Exit 1: a finding the commit introduced is open.
-Exit 2: a Reviewer failed or the options were refused: report the error to
-the user and stop. From a linked worktree, pass its root as `work_dir`.
+Exit 0: no finding is open. Exit 1: a finding is open (in discovery, one the
+commit introduced). Exit 2: a Reviewer failed or the options were refused:
+report the error to the user and stop. From a linked worktree, pass its root
+as `work_dir`.
 
 ## Steps
 
@@ -31,6 +32,8 @@ the user and stop. From a linked worktree, pass its root as `work_dir`.
    `verify` set and `waive` listing each waiver.
 5. **Measure, when asked.** When the user also asked for a measured commit,
    run `booley measure` on the final commit (the `booley_measure` MCP tool).
+   A commit the measurement forces after verify is not reviewed: say so in
+   the report.
 6. **Report.** Give the user the Review Report path:
    `reviews/<commit>/<run id>.md` in the Main Booley Directory, where
    `<commit>` and `<run id>` are those of the last Review Run (verify, or
