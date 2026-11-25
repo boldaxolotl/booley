@@ -637,14 +637,14 @@ def parse_models_section(
     return pins
 
 
-def settings_from_data(
+def resolve_agent_clis(
     data: Mapping[str, Any], *, lazy: bool, keep_retired_auth: bool = False
-) -> AgentSettings:
-    """Build and validate settings from a parsed booley.toml, shared by every loader.
+) -> tuple[str, tuple[str, ...], dict[str, str]]:
+    """The default Agent CLI, the allowed Agent CLIs and each one's auth policy.
 
-    *lazy* is the Specialist-subprocess path: it honors every ``BOOLEY_PRIMARY_AUTH``
-    hand-off and refuses to guess an unresolved CLI inside a Sandbox. *keep_retired_auth*
-    is :func:`parse_agent_section`'s flag, for Doctor's audits.
+    The ``[agent]`` half of :func:`settings_from_data` (same arguments, same
+    ``BackendConfigError``), without ``[models]`` or the gateway pin, so Doctor
+    audits what the runtime resolves.
     """
     agent = data.get("agent", {})
     declared = parse_agent_section(
@@ -659,7 +659,21 @@ def settings_from_data(
         raise BackendConfigError(
             f"{source} names {default_cli!r}, which is not in booley.toml [agent] clis."
         )
-    policies = _auth_policies(declared, clis, default_cli, lazy=lazy)
+    return default_cli, clis, _auth_policies(declared, clis, default_cli, lazy=lazy)
+
+
+def settings_from_data(
+    data: Mapping[str, Any], *, lazy: bool, keep_retired_auth: bool = False
+) -> AgentSettings:
+    """Build and validate settings from a parsed booley.toml, shared by every loader.
+
+    *lazy* is the Specialist-subprocess path: it honors every ``BOOLEY_PRIMARY_AUTH``
+    hand-off and refuses to guess an unresolved CLI inside a Sandbox. *keep_retired_auth*
+    is :func:`parse_agent_section`'s flag, for Doctor's audits.
+    """
+    default_cli, clis, policies = resolve_agent_clis(
+        data, lazy=lazy, keep_retired_auth=keep_retired_auth
+    )
     models = data.get("models", {})
     if not isinstance(models, dict):
         logger.warning("booley.toml [models] is not a table; ignoring")

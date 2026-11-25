@@ -360,3 +360,55 @@ def test_auth_check_accepts_visitor_only_in_a_hand_written_sandbox(
         f"{cli}: booley.toml [agent] auth {state}; detected: subscription" for cli in failed
     ]
     assert not [f for f in findings if "visitor mode" in f.message]
+
+
+_BOTH = ["claude", "codex"]
+_CODEX_GATEWAY = {"clis": ["codex"], "auth": {"codex": "gateway"}}
+
+
+@pytest.mark.parametrize(
+    ("agent", "inside", "handoff", "codex_policy"),
+    [
+        pytest.param({"default": "codex"}, False, None, "subscription", id="declared-default"),
+        pytest.param({"clis": _BOTH, "default": "codex"}, False, None, "subscription", id="clis"),
+        pytest.param(
+            {"clis": _BOTH, "auth": {"claude": "api_key", "codex": "api_key"}},
+            False,
+            None,
+            "api_key",
+            id="auth-table",
+        ),
+        pytest.param(_CODEX_GATEWAY, False, None, "subscription", id="gateway-on-host"),
+        pytest.param(_CODEX_GATEWAY, True, None, "gateway", id="gateway-in-sandbox"),
+        pytest.param({"clis": _BOTH}, True, "gateway", "gateway", id="gateway-handoff"),
+    ],
+)
+def test_doctor_audits_what_the_runtime_resolves(
+    tmp_path, monkeypatch, agent, inside, handoff, codex_policy
+):
+    from booley.config.agent import settings_from_data
+    from booley.harness import doctor
+
+    for name in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_AGENT_APP", "BOOLEY_AGENT_CLIS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    if handoff:
+        monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", handoff)
+    pin_venue(monkeypatch, inside=inside)
+    project = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, {}, "")
+
+    # private: a whole run shows the audit only through each CLI's rows.
+    audit = doctor._agent_audit(project, None)
+
+    runtime = settings_from_data({"agent": agent}, lazy=False, keep_retired_auth=True)
+    assert (
+        audit.default_cli,
+        sorted(audit.allowed),
+        {c: audit.policy(c) for c in audit.allowed},
+    ) == (
+        runtime.default_cli,
+        sorted(runtime.clis),
+        dict(runtime.auth),
+    )
+    if "codex" in audit.allowed:
+        assert audit.policy("codex") == codex_policy
