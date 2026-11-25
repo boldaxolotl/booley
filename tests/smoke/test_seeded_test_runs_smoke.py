@@ -14,7 +14,6 @@ line and environment live in ``tests/flows/sim/test_test_run_launch.py`` and
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import textwrap
@@ -24,9 +23,9 @@ import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 
 from booley.config.project_config import normalize_tests_toml
-from booley.flows.sim.backends import cocotb as cocotb_backend
-from booley.flows.sim.backends import icarus as icarus_backend
-from booley.flows.sim.backends import verilator as verilator_backend
+from booley.flows.sim.backends.cocotb import run_cocotb_sim
+from booley.flows.sim.backends.icarus import run_icarus_image
+from booley.flows.sim.backends.verilator import run_verilated_binary
 from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
 from booley.flows.test_runs import MAX_SEED
 
@@ -115,30 +114,17 @@ def verilator_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return work / "obj" / "Vtb"
 
 
-def test_verilator_native_seed_decides_urandom(verilator_binary: Path) -> None:
-    plan = _plan("verilator")
+@pytest.mark.parametrize("template", [None, "+seed={seed}"], ids=["native", "template"])
+def test_verilator_seed_decides_the_draws(verilator_binary: Path, template) -> None:
+    plan = _plan("verilator", **({"seed": template} if template else {}))
 
     def draw_at(seed: int) -> str:
-        command, env = verilator_backend._build_run_cmd(
-            verilator_binary, verilator_binary.parent, _plusargs(plan, seed)
+        run = run_verilated_binary(
+            top_module="tb", bin_dir=verilator_binary.parent, plusargs=_plusargs(plan, seed)
         )
-        assert f"+verilator+seed+{seed}" in command
-        return _line(_run(command, verilator_binary.parent, env), "NATIVE")
-
-    _assert_seed_decides(draw_at)
-
-
-def test_verilator_target_with_template_gets_both_from_one_seed(verilator_binary: Path) -> None:
-    plan = _plan("verilator", seed="+seed={seed}")
-
-    def draw_at(seed: int) -> str:
-        command, env = verilator_backend._build_run_cmd(
-            verilator_binary, verilator_binary.parent, _plusargs(plan, seed)
-        )
-        output = _run(command, verilator_binary.parent, env)
-        template = _line(output, "TEMPLATE")
-        assert template.split()[0] == str(seed), "the testbench must read the same seed"
-        return _line(output, "NATIVE") + " | " + template
+        if template:
+            assert _line(run.output, "TEMPLATE").split()[0] == str(seed)
+        return _line(run.output, "NATIVE") + " | " + _line(run.output, "TEMPLATE")
 
     _assert_seed_decides(draw_at)
 
@@ -146,49 +132,43 @@ def test_verilator_target_with_template_gets_both_from_one_seed(verilator_binary
 def test_icarus_seed_template_decides_the_testbench_draw(tmp_path: Path) -> None:
     _require("iverilog", "vvp")
     (tmp_path / "tb.sv").write_text(_HDL_BENCH, encoding="utf-8")
-    _run(["iverilog", "-g2012", "-o", "tb.vvp", "tb.sv"], tmp_path)
+    _run(["iverilog", "-g2012", "-o", "tb", "tb.sv"], tmp_path)
+    (tmp_path / "tb.scr").write_text("", encoding="utf-8")  # Edalize's image marker
     plan = _plan("icarus", seed="+seed={seed}")
 
     def draw_at(seed: int) -> str:
-        command = icarus_backend._build_vvp_cmd(
-            icarus_backend._find_vvp(), tmp_path, "tb.vvp", _plusargs(plan, seed)
-        )
-        template = _line(_run(command, tmp_path), "TEMPLATE")
+        run = run_icarus_image(build_dir=tmp_path, plusargs=_plusargs(plan, seed))
+        template = _line(run.output, "TEMPLATE")
         assert template.split()[0] == str(seed)
         return template
 
     _assert_seed_decides(draw_at)
 
 
-def test_icarus_without_a_template_is_unseeded_and_gets_no_seed_argument() -> None:
+def test_icarus_without_a_template_is_unseeded() -> None:
     plan = _plan("icarus")
-    run = plan.run("draw")
-    assert run.name == "draw"
-    assert plan.launch((run,)).arguments == ("+test_id=0",)
+    assert plan.launch((plan.run("draw"),)).arguments == ("+test_id=0",)
 
 
-def test_cocotb_seed_variable_decides_python_random(tmp_path: Path) -> None:
+def test_cocotb_seed_decides_python_random(tmp_path: Path) -> None:
     _require("iverilog", "vvp", "cocotb-config")
-    version = cocotb_backend._probe_cocotb_version()
-    assert version is not None, "cocotb-config --version must report the installed version"
     (tmp_path / "tb.sv").write_text("module tb; reg clk = 0; endmodule\n", encoding="utf-8")
     (tmp_path / "test_draw_module.py").write_text(_COCOTB_MODULE, encoding="utf-8")
     _run(["iverilog", "-g2012", "-s", "tb", "-o", "tb", "tb.sv"], tmp_path)
-    # The adapter finds the image through its Edalize ``.scr`` sibling.
-    (tmp_path / "tb.scr").write_text("", encoding="utf-8")
-    command = cocotb_backend._build_run_cmd(
-        eda_tool="icarus", build_dir=tmp_path, plusargs=[], vcd=False
-    )
-    assert command is not None
-    expected_variable = "RANDOM_SEED" if version[0] < 2 else "COCOTB_RANDOM_SEED"
+    (tmp_path / "tb.scr").write_text("", encoding="utf-8")  # Edalize's image marker
 
     def draw_at(seed: int) -> str:
-        results = tmp_path / f"results-{seed}.xml"
-        env = cocotb_backend._build_cocotb_env(
-            tmp_path, "test_draw_module", ["test_draw"], results, seed
+        work = tmp_path / f"run-{seed}-{len(list(tmp_path.glob('run-*')))}"
+        exit_code = run_cocotb_sim(
+            build_dir=tmp_path,
+            eda_tool="icarus",
+            cocotb_module="test_draw_module",
+            tests=["test_draw"],
+            work_dir=work,
+            seed=seed,
         )
-        assert env[expected_variable] == str(seed)
-        env.setdefault("PATH", os.environ.get("PATH", ""))
-        return _line(_run(command, tmp_path, env), "DRAW")
+        output = (work / "run.log").read_text(encoding="utf-8")
+        assert exit_code == 0, output
+        return _line(output, "DRAW")
 
     _assert_seed_decides(draw_at)

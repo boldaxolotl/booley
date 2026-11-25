@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from booley.flows.edam import EdamFile
 from booley.flows.fpga.backends.vivado.edam import build_fpga_edam
 from booley.flows.fpga.profiles import VIVADO_PROFILES
@@ -65,14 +67,14 @@ def _build(extra_eda_tool_options: dict | None = None) -> str:
     return json.dumps(edam, indent=2, sort_keys=True)
 
 
-def test_fpga_edam_default_golden() -> None:
-    """Snapshot the default EDAM: part-only EDA-tool options, typed files/params."""
-    assert_matches_golden("fpga/edam_default.json", _build())
-
-
-def test_fpga_edam_extra_eda_tool_options_golden() -> None:
-    """Snapshot an EDAM with extra *whitelisted* vivado flow options merged in."""
-    assert_matches_golden(
-        "fpga/edam_extra_eda_tool_options.json",
-        _build(extra_eda_tool_options={"jobs": 8, "synth": "Flow_PerfOptimized_high"}),
-    )
+@pytest.mark.parametrize(
+    ("golden_name", "extra_eda_tool_options"),
+    [
+        # Part-only EDA-tool options, typed files and parameters.
+        ("edam_default.json", None),
+        # Extra *whitelisted* vivado flow options merged in.
+        ("edam_extra_eda_tool_options.json", {"jobs": 8, "synth": "Flow_PerfOptimized_high"}),
+    ],
+)
+def test_fpga_edam_golden(golden_name: str, extra_eda_tool_options: dict | None) -> None:
+    assert_matches_golden(f"fpga/{golden_name}", _build(extra_eda_tool_options))
