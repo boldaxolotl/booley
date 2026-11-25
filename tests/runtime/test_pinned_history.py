@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from tests.git_support import git, hostile, repository
 
-from booley.runtime.pinned_history import FileCommitError, raw_git, validate_pin
+from booley.runtime.pinned_history import FileCommitError, raw_git, tree_rows, validate_pin
 
 
 def _repository(root: Path, algorithm: str = "sha1") -> Path:
@@ -55,6 +55,8 @@ def test_validate_pin_accepts_only_a_full_canonical_existing_commit(tmp_path, al
             validate_pin(root, pin)
     with pytest.raises(FileCommitError, match="existing commit"):
         validate_pin(root, git(root, "rev-parse", "HEAD^{tree}"))
+    with pytest.raises(FileCommitError):
+        validate_pin(root, "0" * len(head))
 
 
 def test_raw_git_ignores_inherited_repository_selection(repo, tmp_path, monkeypatch):
@@ -112,3 +114,14 @@ def test_explicit_index_and_object_directory_override_inherited_values(
     )
     assert (objects / oid[:2] / oid[2:]).is_file()
     assert not (tmp_path / "poison-index").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a carriage return is not a Windows file name")
+def test_tree_rows_keep_every_path_byte(repo):
+    odd = b"odd\rname"
+    (repo / os.fsdecode(odd)).write_bytes(b"x\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "odd name")
+    rows = tree_rows(repo, "HEAD")
+    assert set(rows) == {b"README", odd}
+    assert rows[odd].startswith(b"100644 blob ")
