@@ -147,7 +147,7 @@ def test_codex_incompatible_editor_fails_before_any_write(
 
     assert "repair this file" not in str(error.value)
     assert _files(tmp_path) == ([] if existing is None else [path])
-    assert existing is None or path.read_text() == existing
+    assert existing is None or path.read_text(encoding="utf-8") == existing
 
 
 def test_codex_registration_accepts_a_suffixed_editor_version(tmp_path, monkeypatch):
@@ -199,7 +199,7 @@ def test_hook_repairs_worktree_pointers_first_and_never_stops_on_them(
     if isinstance(outcome, str):
         history = first_run.booley_dir / mount_history.MOUNT_HISTORY
         history.parent.mkdir()
-        history.write_text(outcome)
+        history.write_text(outcome, encoding="utf-8")
     repairs = []
     real_repair = worktree_mount_repair.repair_mount_registrations
 
@@ -410,7 +410,7 @@ def test_stored_credential_is_applied_unless_one_is_exported(tmp_path, monkeypat
     assert reg.apply_stored_credential(app, tmp_path) == "current"
 
     path = _credential_file(tmp_path, app)
-    written = json.loads(path.read_text())
+    written = json.loads(path.read_text(encoding="utf-8"))
     expected = {_CREDENTIAL_VARS[app]: exported or "SYNTHETIC_STORED"}
     assert (written["env"] if app == "claude" else written) == expected
     # The file holds a secret: owner-only, like the host store.
@@ -435,12 +435,12 @@ def test_stored_credential_is_applied_unless_one_is_exported(tmp_path, monkeypat
 def test_stored_credential_lands_in_the_existing_file(tmp_path, app, existing, expected):
     path = _credential_file(tmp_path, app)
     path.parent.mkdir()
-    path.write_text(json.dumps(existing))
+    path.write_text(json.dumps(existing), encoding="utf-8")
     _store_credential(tmp_path, app)
 
     reg.apply_stored_credential(app, tmp_path)
 
-    assert json.loads(path.read_text()) == expected
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
 
 
 @pytest.mark.parametrize(
@@ -470,25 +470,27 @@ def test_without_a_credential_only_booleys_entry_is_removed(tmp_path, app, exist
     path = _credential_file(tmp_path, app)
     if existing is not None:
         path.parent.mkdir()
-        path.write_text(json.dumps(existing))
+        path.write_text(json.dumps(existing), encoding="utf-8")
 
     assert reg.apply_stored_credential(app, tmp_path) == status
 
     assert _files(tmp_path) == ([] if kept is None else [path])
-    assert kept is None or json.loads(path.read_text()) == kept
+    assert kept is None or json.loads(path.read_text(encoding="utf-8")) == kept
 
 
 @pytest.mark.parametrize("app", ["claude", "codex"])
 def test_policy_switch_clears_only_managed_credential_entries(tmp_path, monkeypatch, app):
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
     sidecar = tmp_path / auth_token.TOKEN_SEED_BASENAME[app]
-    sidecar.write_text("SYNTHETIC")
+    sidecar.write_text("SYNTHETIC", encoding="utf-8")
     assert reg.apply_stored_credential(app, tmp_path) == "written"
     policy = "api_key" if app == "claude" else "subscription"
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
     reg.apply_stored_credential(app, tmp_path)
     if app == "claude":
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in reg.claude_settings_path(tmp_path).read_text()
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in reg.claude_settings_path(tmp_path).read_text(
+            encoding="utf-8"
+        )
     else:
         assert not reg.codex_auth_path(tmp_path).exists()
 
@@ -497,10 +499,12 @@ def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
     login = tmp_path / ".claude" / ".credentials.json"
     login.parent.mkdir()
-    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}')
+    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}', encoding="utf-8")
     before = login.read_bytes()
     settings = reg.claude_settings_path(tmp_path)
-    settings.write_text('{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}')
+    settings.write_text(
+        '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}', encoding="utf-8"
+    )
     settings_before = settings.read_bytes()
     with pytest.raises(ValueError, match="conflicts") as caught:
         reg.apply_stored_credential("claude", tmp_path)
@@ -530,12 +534,12 @@ def test_claude_sessions_launch_in_bypass_mode_beside_the_credential(tmp_path, s
     path = reg.claude_settings_path(tmp_path)
     if settings is not None:
         path.parent.mkdir()
-        path.write_text(json.dumps(settings))
+        path.write_text(json.dumps(settings), encoding="utf-8")
 
     assert "claude:written" in (first := reg.register("claude", home=tmp_path))
     assert "cred:written perm:written" in first
 
-    written = json.loads(path.read_text())
+    written = json.loads(path.read_text(encoding="utf-8"))
     # Both writers rewrite settings.json wholesale: neither may drop the other's keys.
     assert written["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "SYNTHETIC_STORED"
     assert written["permissions"]["defaultMode"] == "bypassPermissions"
@@ -685,7 +689,7 @@ def test_codex_registration_parses_config_once(tmp_path, monkeypatch):
     with count_parses(monkeypatch, source) as parses:
         reg.register("codex", home=tmp_path)
         assert parses() == 1
-    parsed = tomli.loads(reg.codex_config_path(tmp_path).read_text())
+    parsed = tomli.loads(reg.codex_config_path(tmp_path).read_text(encoding="utf-8"))
     assert parsed["notice"] == {"other": True, "hide_full_access_warning": True}
     assert parsed["other"] == tomli.loads(source)["other"]
 
@@ -729,7 +733,7 @@ def test_codex_atomic_publication_preserves_symlink_and_permissions(tmp_path):
 
     reg.register("codex", home=tmp_path)
 
-    parsed = tomllib.loads(target.read_text())
+    parsed = tomllib.loads(target.read_text(encoding="utf-8"))
     assert (parsed["suppress_unstable_features_warning"], parsed["approval_policy"]) == (
         True,
         "never",
@@ -751,7 +755,7 @@ def test_codex_editor_failure_during_an_edit_is_a_named_error(tmp_path, monkeypa
         reg.register("codex", home=tmp_path)
 
     assert "no fit" in str(error.value) and "repair this file and retry" in str(error.value)
-    assert _files(tmp_path) == [path] and path.read_text() == 'model="existing"\n'
+    assert _files(tmp_path) == [path] and path.read_text(encoding="utf-8") == 'model="existing"\n'
 
 
 def test_codex_unusable_mcp_migration_is_refused_before_any_write(tmp_path, monkeypatch):
@@ -763,25 +767,25 @@ def test_codex_unusable_mcp_migration_is_refused_before_any_write(tmp_path, monk
     with pytest.raises(ValueError, match="did not produce current settings"):
         reg.register("codex", home=tmp_path)
 
-    assert _files(tmp_path) == [path] and path.read_text() == 'model="existing"\n'
+    assert _files(tmp_path) == [path] and path.read_text(encoding="utf-8") == 'model="existing"\n'
 
 
 def test_codex_credential_failure_does_not_publish_permissions(tmp_path, monkeypatch):
     path = _seed_codex(tmp_path, 'approval_policy="on-request"\n')
     login = reg.codex_auth_path(tmp_path)
-    login.write_text('{"tokens": {"access_token": "SYNTHETIC"}}')
+    login.write_text('{"tokens": {"access_token": "SYNTHETIC"}}', encoding="utf-8")
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
 
     with pytest.raises(ValueError, match="Codex login conflicts with API-key policy"):
         reg.register("codex", home=tmp_path)
-    failed = tomllib.loads(path.read_text())
+    failed = tomllib.loads(path.read_text(encoding="utf-8"))
     assert failed["approval_policy"] == "on-request"
     assert failed["mcp_servers"]["booley"]["url"] == reg.http_url()
 
     login.unlink()
     assert "perm:written" in reg.register("codex", home=tmp_path)
 
-    healed = tomllib.loads(path.read_text())
+    healed = tomllib.loads(path.read_text(encoding="utf-8"))
     assert healed["approval_policy"] == "never"
     assert healed["mcp_servers"] == failed["mcp_servers"]
 
@@ -790,12 +794,12 @@ def test_codex_publish_refuses_invalid_text_by_default(tmp_path):
     """The gateway removal path relies on this check; the other writers validate their own text."""
     path = reg.codex_config_path(tmp_path)
     path.parent.mkdir()
-    path.write_text('model="existing"\n')
+    path.write_bytes(b'model="existing"\n')
     # private: the removal path only ever produces valid text, so no public call can hand
     # the publisher an invalid one.
     with pytest.raises(ValueError, match=re.escape(str(path))):
         reg._publish_codex_config(path, "notice=true\n")
-    assert path.read_text() == 'model="existing"\n'
+    assert path.read_text(encoding="utf-8") == 'model="existing"\n'
 
 
 # ===========================================================================
@@ -835,7 +839,9 @@ def test_claude_first_run_prompts_are_skipped_only_with_a_credential(
     elif credential == "login":
         login = first_run.home / ".claude" / ".credentials.json"
         login.parent.mkdir()
-        login.write_text(json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC"}}))
+        login.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "SYNTHETIC"}}), encoding="utf-8"
+        )
 
     reg.register("claude", home=first_run.home, trust_paths=first_run.keys)
 
@@ -1030,7 +1036,7 @@ def test_codex_trust_layouts(first_run, capsys, existing, trusted):
 
     status = reg.register("codex", home=first_run.home, trust_paths=first_run.keys)
 
-    body = path.read_text()
+    body = path.read_text(encoding="utf-8")
     projects = tomllib.loads(body)["projects"]
     expected = {"both": first_run.keys, "booley": (first_run.booley,), "none": ()}[trusted]
     assert [k for k in first_run.keys if projects.get(k, {}).get("trust_level") == "trusted"] == [
@@ -1047,7 +1053,7 @@ def test_codex_trust_layouts(first_run, capsys, existing, trusted):
     assert "first-run:current" in reg.register(
         "codex", home=first_run.home, trust_paths=first_run.keys
     )
-    assert path.read_text() == body
+    assert path.read_text(encoding="utf-8") == body
 
 
 def test_codex_trust_skips_a_path_whose_edit_fails(first_run, monkeypatch, capsys):
@@ -1063,7 +1069,7 @@ def test_codex_trust_skips_a_path_whose_edit_fails(first_run, monkeypatch, capsy
 
     assert "first-run:written" in status
 
-    projects = tomllib.loads(path.read_text())["projects"]
+    projects = tomllib.loads(path.read_text(encoding="utf-8"))["projects"]
     assert projects[first_run.root] == {"other": 1}
     assert projects[first_run.booley] == {"trust_level": "trusted"}
     warnings = capsys.readouterr().err
