@@ -761,7 +761,7 @@ class _Texts:
                     self.seen[case.id] = case.trigger(Env(self._factory.mktemp(case.id), mp))
                 finally:
                     booley_dir_module.reset_cache()
-                    agent_config.set_agent_settings(None)
+                    agent_config.set_agent_settings(None)  # settings a trigger installed
         return self.seen[case.id]
 
 

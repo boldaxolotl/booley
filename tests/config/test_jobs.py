@@ -105,7 +105,8 @@ def test_retired_jobs_keys_are_named_with_their_lines(tmp_path: Path) -> None:
         (
             b'[jobs]\nmemory_budget = "24g"\n',
             (("memory_budget", 2),),
-            "set [sandbox].memory instead",
+            "delete [jobs].memory_budget (line 2); "
+            "the Memory Budget is computed from [sandbox].memory: set [sandbox].memory instead",
             ("memory_budget (line 2: ", "set [sandbox].memory instead"),
             "memory admission replaced it",
         ),
@@ -132,7 +133,7 @@ def test_retired_keys_carry_their_own_reason_and_fix(
     keys = retired_jobs_keys(path)
     assert keys == tuple(RetiredKey(name, line) for name, line in found)
 
-    assert retired_jobs_keys_fix(keys[-1]).endswith(fix)
+    assert retired_jobs_keys_fix(keys[-1]) == fix
     message = retired_jobs_keys_message(path, keys)
     for fragment in fragments:
         assert fragment in message

@@ -94,7 +94,7 @@ class TestTestsTomlNameRules:
                 "tests": ["reset", "basic", "Default", "x5"],
                 "skip": ["basic"],
                 "select": "+test={name}",
-                "env": {"FLAVOR": "small"},
+                "env": {"FLAVOR": "small", "BOOLEYISH": "b"},
             },
             "sim_fast": {"test_list": "smoke"},
             "lib:ip:port#sim": {"tests": ["reset"]},
