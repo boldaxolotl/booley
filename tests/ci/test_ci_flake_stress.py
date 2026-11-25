@@ -73,16 +73,33 @@ def test_only_ordinary_pull_requests_are_stressed(
     assert stress_enabled(event_name, head_ref) is expected
 
 
-def test_cheap_modules_get_the_full_count() -> None:
-    plan = plan_stress({"tests/test_a.py": True, "tests/test_b.py": False}, {})
-
-    assert plan == StressPlan(("tests/test_a.py", "tests/test_b.py"), MAX_COUNT, ())
-
-
-def test_count_shrinks_to_fit_a_slow_module() -> None:
-    plan = plan_stress({"tests/test_slow.py": False}, {"tests/test_slow.py": 568.0})
-
-    assert plan == StressPlan(("tests/test_slow.py",), 4, ())
+@pytest.mark.parametrize(
+    ("modules", "costs", "expected"),
+    [
+        pytest.param(
+            {"tests/test_a.py": True, "tests/test_b.py": False},
+            {},
+            StressPlan(("tests/test_a.py", "tests/test_b.py"), MAX_COUNT, ()),
+            id="cheap-modules-get-the-full-count",
+        ),
+        pytest.param(
+            {"tests/test_slow.py": False},
+            {"tests/test_slow.py": 568.0},
+            StressPlan(("tests/test_slow.py",), 4, ()),
+            id="count-shrinks-to-fit-a-slow-module",
+        ),
+        pytest.param(
+            {"tests/test_huge.py": True},
+            {"tests/test_huge.py": 2400.0},
+            StressPlan((), 0, ("tests/test_huge.py",)),
+            id="unaffordable-change-stresses-nothing",
+        ),
+    ],
+)
+def test_plan_stress(
+    modules: dict[str, bool], costs: dict[str, float], expected: StressPlan
+) -> None:
+    assert plan_stress(modules, costs) == expected
 
 
 def test_broad_change_falls_back_to_added_modules() -> None:
@@ -94,12 +111,6 @@ def test_broad_change_falls_back_to_added_modules() -> None:
     assert plan.modules == ("tests/test_new.py",)
     assert plan.count == MAX_COUNT
     assert plan.unstressed == tuple(sorted(modified))
-
-
-def test_unaffordable_change_stresses_nothing_and_reports_it() -> None:
-    plan = plan_stress({"tests/test_huge.py": True}, {"tests/test_huge.py": 2400.0})
-
-    assert plan == StressPlan((), 0, ("tests/test_huge.py",))
 
 
 def test_cost_charges_recorded_time_and_the_default_per_unrecorded_function(
