@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, warn
@@ -844,6 +845,20 @@ def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     if not isinstance(commit, str) or not commit:
         raise OSError("verified development build commit is missing")
     return contextlib.nullcontext(commit)
+
+
+def wheel_build_environment_error() -> str | None:
+    """Name the fix when this Python cannot create the wheel build's environment."""
+    # pypa build makes its isolated environment with virtualenv when importable,
+    # otherwise with venv, which needs ensurepip (pythonX.Y-venv on Debian/Ubuntu).
+    if find_spec("virtualenv") is not None or find_spec("ensurepip") is not None:
+        return None
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return (
+        f"Python {version} ({sys.executable}) cannot build the Booley wheel: neither "
+        f"ensurepip nor virtualenv is importable; run `sudo apt install "
+        f"python{version}-venv`, or reinstall Booley on a uv-managed Python, then retry"
+    )
 
 
 def _docker_build_wheel(
