@@ -276,13 +276,14 @@ def main() -> None:
     worktrees = _repair_worktrees()
     clis = agent.sandbox_agent_clis()
     server = incontainer_setup.ensure_http_server() if clis else "skipped"
+    t3 = incontainer_setup.ensure_t3_server(_hook_start_directory()) if clis else "skipped"
     trust = sandbox_trust_paths(_hook_start_directory()) if clis else ()
     status = _hide_issued_gateway(_register_clis(clis, trust))
     status = _drop_unchosen_gateway(status, choice)
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
     print(
-        f"booley incontainer-register: worktrees:{worktrees} server:{server} upgrade:{upgrade} health:{doctor_launch} "
+        f"booley incontainer-register: worktrees:{worktrees} server:{server} t3:{t3} upgrade:{upgrade} health:{doctor_launch} "
         f"{status}{_auto_suffix(choice)}{invalidation}",
         file=sys.stderr,
     )

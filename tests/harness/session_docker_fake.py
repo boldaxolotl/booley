@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Container
@@ -15,7 +18,16 @@ import pytest
 
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
-from booley.runtime import host_docker, runtime_attachment, session_admission, session_runtime
+from booley.harness import incontainer_register
+from booley.runtime import (
+    booley_dir,
+    host_docker,
+    incontainer_setup,
+    runtime_attachment,
+    session_admission,
+    session_runtime,
+    worktree_mount_repair,
+)
 
 
 def completed(
@@ -313,6 +325,65 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
         host_docker, "_run_docker", lambda args, **_kw: docker.run(["docker", *args])
     )
     return docker
+
+
+def sandbox_exec_on_path(
+    monkeypatch: pytest.MonkeyPatch, bin_dir: Path, target_port: int, container: str
+) -> None:
+    """Put a `docker` script first on PATH whose `exec -i <container> python3 ...` is a local run.
+
+    The in-Sandbox command runs on this host with its last argument, the T3 Code port,
+    replaced by *target_port*: a Sandbox whose loopback is the host's. Other calls fail.
+    """
+    bin_dir.mkdir()
+    script = bin_dir / "docker"
+    script.write_bytes(
+        f"""#!{sys.executable}
+import os, sys
+args = sys.argv[1:]
+if args[:3] != ["exec", "-i", {container!r}] or args[3] != "python3" or args[-1] != "{incontainer_setup.T3_PORT}":
+    sys.exit(1)
+os.execv({sys.executable!r}, [{sys.executable!r}, *args[4:-1], "{target_port}"])
+""".encode()
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def run_registrar_on_post_start(
+    docker: SandboxDocker, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Run the registrar in-process for each `docker exec` of it; return its stderr per run."""
+    # The advisory upgrade and health steps spawn a worker and read host install state.
+    monkeypatch.setattr(incontainer_register, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(incontainer_register, "launch_auto_doctor", lambda: "started")
+    monkeypatch.setattr(
+        worktree_mount_repair,
+        "repair_mount_registrations",
+        lambda _root: worktree_mount_repair.MountRepair(),
+    )
+    for name, value in {
+        "HOME": str(workspace / "home"),
+        "PWD": str(workspace),
+        "BOOLEY_AGENT_APP": "claude",
+        "BOOLEY_DIR": str(workspace / ".booley"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(workspace)
+    runs: list[str] = []
+
+    def reply(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        if "booley.harness.incontainer_register" not in argv[-1]:
+            return completed()
+        booley_dir.reset_cache()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            incontainer_register.main()
+        runs.append(err.getvalue())
+        return completed(stderr=runs[-1])
+
+    docker.exec_reply = reply
+    return runs
 
 
 def attach_commands(

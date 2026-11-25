@@ -25,6 +25,8 @@ from booley.runtime.session_activity import (
 )
 from booley.runtime.timefmt import format_duration, parse_timestamp
 
+#: The mode of every connected session, as an overview row and the Run review name it.
+SESSION_MODE = "Interactive"
 NEEDS_YOU = "NEEDS YOU"
 WORKING_GROUP = "WORKING"
 UNKNOWN_GROUP = "UNKNOWN"
@@ -61,7 +63,7 @@ class SessionFacts:
     handle: str
     #: What the row shows: ``S3 · uart-fix`` for a named session, else the handle.
     title: str
-    #: The session mode; always ``Interactive``.
+    #: The session mode: ``SESSION_MODE``.
     mode: str
     branch: str
     work_dir: str
