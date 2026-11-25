@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from time import perf_counter
 
 import pytest
 import yaml
+from tests.path_tool_fake import PathToolFake
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.time_budget import scaled
 
@@ -106,225 +108,150 @@ def _existing_topic_with_destination_main(
     return _DestinationScenario(repo, origin, remote_topic, destination_main, head)
 
 
-def _encoded_config() -> str:
-    document = f'''[guard]
-allowed_authors = ["{SAFE_IDENT}"]
-
-[private]
-words = ["{SENTINEL}"]
-'''
-    return base64.b64encode(document.encode()).decode()
-
-
-def _sealed_fixture(repo: Path, config: str) -> dict[str, str]:
-    """Seal a private fixture with a key isolated in this temporary Git directory."""
-    env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys")}
-    (repo / ".github").mkdir(exist_ok=True)
-    (repo / ".git/booley-leak-guard.toml").write_bytes(base64.b64decode(config))
-    result = run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "seal-config"],
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    return env
-
-
+KEY_DIR = "BOOLEY_LEAK_GUARD_KEY_DIR"
+TERM_TEXT = f"contains {SENTINEL}\n"
 _PROMPT_SCAN_S = scaled(3.0)
+_NEW_REF = "0" * 40
+_GH_BY_NAME = pytest.mark.skipif(
+    os.name == "nt", reason="the guard runs gh by name, so Windows finds no .cmd launcher"
+)
 
 
-def _scan(
-    repo: Path,
-    base: str,
-    head: str,
-    *,
-    config: str | None,
-    destination: tuple[str, Path] | None = None,
+def _change(repo: Path, message: str, files: dict[str, str], **identity: str) -> str:
+    for name, text in files.items():
+        (repo / name).write_bytes(text.encode())
+    return _commit(repo, message, **identity)
+
+
+def _config(vocabulary: str | None = None) -> str:
+    """Guard configuration text; the default vocabulary holds only the sentinel term."""
+    vocabulary = vocabulary or _words(SENTINEL)
+    return f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n\n{vocabulary}'
+
+
+def _words(*terms: str) -> str:
+    return f"[private]\nwords = {json.dumps(list(terms))}\n"
+
+
+def _guard(
+    repo: Path, *args: str, stdin: str = "", env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    record = f"refs/heads/topic {head} refs/heads/main {base}\n"
-    return _scan_records(repo, record, config=config, destination=destination)
-
-
-def _scan_records(
-    repo: Path,
-    records: str,
-    *,
-    config: str | None,
-    destination: tuple[str, Path] | None = None,
-    extra_args: tuple[str, ...] = (),
-) -> subprocess.CompletedProcess[str]:
-    env = _sealed_fixture(repo, config) if config is not None else os.environ.copy()
-    command = [sys.executable, str(SCANNER), "--repo", str(repo), "pre-push"]
-    if destination is not None:
-        command.extend((destination[0], str(destination[1])))
-    command.extend(extra_args)
-    # Kept on subprocess.run: feeds the push records on stdin.
+    """Run the guard CLI in `repo`; its key directory is isolated unless `env` names another."""
+    # subprocess.run rather than run_bounded_child: the guard reads its input on stdin.
     return subprocess.run(
-        command,
-        input=records,
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-
-
-def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[str]:
-    event_path = repo / "event.json"
-    event_path.write_text(json.dumps(event), encoding="utf-8")
-    env = _sealed_fixture(repo, _encoded_config())
-    return run_bounded_child(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "pull-request",
-            "--event",
-            str(event_path),
-        ],
-        check=False,
-        env=env,
-    )
-
-
-def _scan_pr_text(
-    repo: Path,
-    *,
-    files: tuple[Path, ...] = (),
-    stdin: str | None = None,
-    config: str | None = None,
-    env_config: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    env = _sealed_fixture(repo, config) if config is not None else os.environ.copy()
-    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = str(repo / ".git/guard-keys")
-    if env_config is not None:
-        env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = env_config
-    command = [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text"]
-    for path in files:
-        command.extend(("--file", str(path)))
-    if stdin is not None:
-        command.append("--stdin")
-    # Kept on subprocess.run: feeds the PR text on stdin.
-    return subprocess.run(
-        command,
+        [sys.executable, str(SCANNER), "--repo", str(repo), *args],
         input=stdin,
         capture_output=True,
         check=False,
-        env=env,
+        env=os.environ | {KEY_DIR: str(repo / ".git/guard-keys")} | (env or {}),
         text=True,
         encoding="utf-8",
         timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 
-def _sync_ci_key(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "sync-ci-key"],
-        check=False,
-        env=env,
-    )
-
-
-def _publish_pr(
-    repo: Path, args: list[str], env: dict[str, str]
-) -> subprocess.CompletedProcess[str]:
-    return run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "publish-pr", *args],
-        check=False,
-        env=env,
-    )
-
-
-def _recording_gh(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(
-        '#!/bin/sh\ntest -z "${GH_REPO+x}" || exit 2\n'
-        'printf "%s\\n" "$@" > "$CAPTURE_ARGS"\ncat > "$CAPTURE_STDIN"\n',
-        encoding="utf-8",
-    )
-    fake_gh.chmod(0o755)
-    captured_args = tmp_path / "gh-args"
-    captured_stdin = tmp_path / "gh-stdin"
-    env = os.environ | {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "GH_REPO": "somewhere/else",
-        "CAPTURE_ARGS": str(captured_args),
-        "CAPTURE_STDIN": str(captured_stdin),
-    }
-    return env, captured_args, captured_stdin
-
-
-def test_clean_commit_passes(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
-    (repo / "clean.txt").write_text("ordinary public content\n", encoding="utf-8")
-    head = _commit(repo, "add public fixture")
-
-    result = _scan(repo, base, head, config=_encoded_config())
-
+def _seal(repo: Path, vocabulary: str | None = None) -> dict[str, str]:
+    """Seal the guard configuration with a key kept in this repository's Git directory."""
+    (repo / ".github").mkdir(exist_ok=True)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(_config(vocabulary).encode())
+    result = _guard(repo, "seal-config")
     assert result.returncode == 0, result.stderr
+    return os.environ | {KEY_DIR: str(repo / ".git/guard-keys")}
+
+
+def _update(head: str, base: str) -> str:
+    return f"refs/heads/topic {head} refs/heads/main {base}\n"
+
+
+def _push(
+    repo: Path,
+    records: str,
+    *extra: str,
+    vocabulary: str | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    _seal(repo, vocabulary)
+    return _guard(repo, "pre-push", *extra, stdin=records, env=env)
+
+
+def _audit(
+    repo: Path,
+    revs: tuple[str, ...] = ("HEAD",),
+    *,
+    owner: str | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run `audit` over `revs`, optionally with --repository-owner."""
+    args = [arg for rev in revs for arg in ("--rev", rev)]
+    if owner is not None:
+        args += ["--repository-owner", owner]
+    _seal(repo)
+    return _guard(repo, "audit", *args, env=env)
+
+
+def _write_event(repo: Path, event: dict) -> Path:
+    path = repo.parent / "event.json"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    return path
+
+
+def _meta(title: str = "public", body: str = "public") -> dict:
+    return {"pull_request": {"title": title, "body": body, "head": {"ref": "topic"}}}
+
+
+def _verify(
+    repo: Path, rev: str, base: str, event: dict, *extra: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    event_path = str(_write_event(repo, event))
+    args = ["verify-candidate", "--rev", rev, "--base", base, "--event", event_path, *extra]
+    return _guard(repo, *args, env=env)
+
+
+def _expect_exit(result: subprocess.CompletedProcess[str], expected: int) -> None:
+    assert result.returncode == expected, (
+        f"expected exit {expected}, got {result.returncode}: {result.stderr[-400:]}"
+    )
+
+
+def _blocked(
+    result: subprocess.CompletedProcess[str], *fragments: str, hidden: str = SENTINEL
+) -> None:
+    """The guard exited 1, said each fragment on stderr, and printed no plaintext term."""
+    _expect_exit(result, 1)
+    for fragment in fragments:
+        assert fragment in result.stderr
+    assert hidden not in result.stdout + result.stderr
 
 
 def test_new_ref_does_not_rescan_history_already_on_destination(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
     origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
-    (repo / "historical.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    _commit(repo, "add historical fixture")
+    _change(repo, "add historical fixture", {"historical.txt": TERM_TEXT})
     (repo / "historical.txt").unlink()
     destination_head = _commit(repo, "remove historical fixture")
     _git(repo, "push", "origin", f"{destination_head}:refs/heads/main")
-    (repo / "README.md").write_text("documentation only\n", encoding="utf-8")
-    head = _commit(repo, "docs only")
+    head = _change(repo, "docs only", {"README.md": "documentation only\n"})
 
-    result = _scan(
-        repo,
-        "0" * 40,
-        head,
-        config=_encoded_config(),
-        destination=("origin", origin),
-    )
+    result = _push(repo, _update(head, _NEW_REF), "origin", str(origin))
 
-    assert result.returncode == 0, result.stderr
-
-
-def test_existing_ref_does_not_rescan_other_destination_ref(tmp_path: Path) -> None:
-    scenario = _existing_topic_with_destination_main(tmp_path)
-    records = f"refs/heads/topic {scenario.head} refs/heads/topic {scenario.remote_topic}\n"
-
-    result = _scan_records(
-        scenario.repo,
-        records,
-        config=_encoded_config(),
-        destination=("origin", scenario.origin),
-    )
-
-    assert result.returncode == 0, result.stderr
+    _expect_exit(result, 0)
 
 
 def test_existing_ref_still_scans_commit_absent_from_destination(tmp_path: Path) -> None:
     scenario = _existing_topic_with_destination_main(tmp_path)
-    (scenario.repo / "local-only.txt").write_text("not on destination\n", encoding="utf-8")
-    local_only = _commit(
+    local_only = _change(
         scenario.repo,
         "add local-only change",
+        {"local-only.txt": "not on destination\n"},
         name="Local User",
         email="local@example.test",
     )
     records = f"refs/heads/topic {local_only} refs/heads/topic {scenario.remote_topic}\n"
 
-    result = _scan_records(
-        scenario.repo,
-        records,
-        config=_encoded_config(),
-        destination=("origin", scenario.origin),
-    )
+    result = _push(scenario.repo, records, "origin", str(scenario.origin))
 
-    assert result.returncode == 1
-    assert f"commit {local_only[:12]} author identity" in result.stderr
+    _blocked(result, f"commit {local_only[:12]} author identity")
     assert scenario.destination_main[:12] not in result.stderr
 
 
@@ -332,105 +259,76 @@ def test_mixed_new_and_existing_updates_apply_destination_exclusions_to_both(
     tmp_path: Path,
 ) -> None:
     scenario = _existing_topic_with_destination_main(tmp_path)
-    zero = "0" * 40
     records = (
         f"refs/heads/topic {scenario.head} refs/heads/topic {scenario.remote_topic}\n"
-        f"refs/heads/review {scenario.head} refs/heads/review {zero}\n"
+        f"refs/heads/review {scenario.head} refs/heads/review {_NEW_REF}\n"
     )
 
-    result = _scan_records(
-        scenario.repo,
-        records,
-        config=_encoded_config(),
-        destination=("origin", scenario.origin),
-    )
+    result = _push(scenario.repo, records, "origin", str(scenario.origin))
 
-    assert result.returncode == 0, result.stderr
+    _expect_exit(result, 0)
 
 
 def test_existing_ref_destination_lookup_failure_uses_remote_sha_fallback(
     tmp_path: Path,
 ) -> None:
     repo, _initial = _repository(tmp_path)
-    (repo / "destination.txt").write_text("destination history\n", encoding="utf-8")
-    remote_topic = _commit(
+    remote_topic = _change(
         repo,
         "add destination change",
+        {"destination.txt": "destination history\n"},
         name="Destination User",
         email="destination@example.test",
     )
-    (repo / "README.md").write_text("safe child\n", encoding="utf-8")
-    head = _commit(repo, "update documentation")
+    head = _change(repo, "update documentation", {"README.md": "safe child\n"})
     records = f"refs/heads/topic {head} refs/heads/topic {remote_topic}\n"
 
-    result = _scan_records(
-        repo,
-        records,
-        config=_encoded_config(),
-        destination=("origin", tmp_path / "missing.git"),
-    )
+    result = _push(repo, records, "origin", str(tmp_path / "missing.git"))
 
-    assert result.returncode == 0, result.stderr
+    _expect_exit(result, 0)
 
 
 def test_new_ref_destination_lookup_failure_scans_full_ancestry(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / "historical.txt").write_text("not on destination\n", encoding="utf-8")
-    bad_ancestor = _commit(
+    bad_ancestor = _change(
         repo,
         "add local-only ancestor",
+        {"historical.txt": "not on destination\n"},
         name="Local User",
         email="local@example.test",
     )
-    (repo / "README.md").write_text("safe tip\n", encoding="utf-8")
-    head = _commit(repo, "update documentation")
+    head = _change(repo, "update documentation", {"README.md": "safe tip\n"})
 
-    result = _scan(
-        repo,
-        "0" * 40,
-        head,
-        config=_encoded_config(),
-        destination=("origin", tmp_path / "missing.git"),
-    )
+    result = _push(repo, _update(head, _NEW_REF), "origin", str(tmp_path / "missing.git"))
 
-    assert result.returncode == 1
-    assert f"commit {bad_ancestor[:12]} author identity" in result.stderr
+    _blocked(result, f"commit {bad_ancestor[:12]} author identity")
 
 
 def test_docs_commit_does_not_rescan_unchanged_baseline_blob(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
     (repo / "baseline.gz").write_bytes(b"\x1f\x8bnot-a-valid-gzip-stream")
     base = _commit(repo, "add destination baseline")
-    (repo / "README.md").write_text("documentation only\n", encoding="utf-8")
-    head = _commit(repo, "docs only")
+    head = _change(repo, "docs only", {"README.md": "documentation only\n"})
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 0, result.stderr
+    _expect_exit(_push(repo, _update(head, base)), 0)
 
 
 def test_pre_push_rejects_revision_option_instead_of_changing_scan_scope(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
 
-    result = _scan(repo, "0" * 40, "--all", config=_encoded_config())
+    result = _push(repo, _update("--all", _NEW_REF))
 
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    _blocked(result, "could not complete")
     assert "--all" not in result.stderr
 
 
 def test_blob_added_then_deleted_in_outgoing_history_is_blocked(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    (repo / "temporary.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    _commit(repo, "add temporary fixture")
+    _change(repo, "add temporary fixture", {"temporary.txt": TERM_TEXT})
     (repo / "temporary.txt").unlink()
     head = _commit(repo, "remove temporary fixture")
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(_push(repo, _update(head, base)), "confidential term")
 
 
 def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(
@@ -440,70 +338,31 @@ def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(
     origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
     _git(repo, "push", "origin", f"{origin_head}:refs/heads/main")
-    (repo / "private.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    private_head = _commit(repo, "add private fixture")
+    private_head = _change(repo, "add private fixture", {"private.txt": TERM_TEXT})
     _git(repo, "update-ref", "refs/remotes/private/topic", private_head)
-    (repo / "README.md").write_text("documentation only\n", encoding="utf-8")
-    head = _commit(repo, "docs only")
+    head = _change(repo, "docs only", {"README.md": "documentation only\n"})
 
-    result = _scan(
-        repo,
-        "0" * 40,
-        head,
-        config=_encoded_config(),
-        destination=("origin", origin),
-    )
+    result = _push(repo, _update(head, _NEW_REF), "origin", str(origin))
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(result, "confidential term")
 
 
 def test_new_ref_to_empty_destination_scans_full_history(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    origin = _bare_remote(tmp_path)
-    (repo / "payload.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    head = _commit(repo, "add fixture")
+    head = _change(repo, "add fixture", {"payload.txt": TERM_TEXT})
 
-    result = _scan(
-        repo,
-        "0" * 40,
-        head,
-        config=_encoded_config(),
-        destination=("origin", origin),
-    )
+    result = _push(repo, _update(head, _NEW_REF), "origin", str(_bare_remote(tmp_path)))
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
+    _blocked(result, "confidential term")
 
 
 def test_audit_finds_blob_deleted_later_in_history(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    (repo / "temporary.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    _commit(repo, "add temporary fixture")
+    _change(repo, "add temporary fixture", {"temporary.txt": TERM_TEXT})
     (repo / "temporary.txt").unlink()
     head = _commit(repo, "remove temporary fixture")
-    env = _sealed_fixture(repo, _encoded_config())
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "audit",
-            "--rev",
-            head,
-        ],
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-    )
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(_audit(repo, (head,)), "confidential term")
 
 
 @pytest.mark.parametrize(
@@ -520,775 +379,468 @@ def test_audit_checks_mergify_merge_commit_identities(
     repo, _base = _repository(tmp_path)
     (repo / "bot.txt").write_text("clean bot-authored content\n", encoding="utf-8")
     _git(repo, "add", ".")
+    bot = "37929162+mergify[bot]@users.noreply.github.com"
     _git(
         repo,
         "commit",
         "-m",
         "add bot-authored fixture",
-        env=(
-            _identity_env("Mergify", "37929162+mergify[bot]@users.noreply.github.com")
-            | {"GIT_COMMITTER_EMAIL": committer_email}
-        ),
+        env=_identity_env("Mergify", bot) | {"GIT_COMMITTER_EMAIL": committer_email},
     )
-    head = _git(repo, "rev-parse", "HEAD")
-    env = _sealed_fixture(repo, _encoded_config()) | {
-        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": (
-            "37929162+mergify[[]bot[]]@users.noreply.github.com\ncommit-signer@mergify.com"
-        ),
-    }
+    allowed = "37929162+mergify[[]bot[]]@users.noreply.github.com\ncommit-signer@mergify.com"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "audit",
-            "--rev",
-            head,
-        ],
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-    )
+    result = _audit(repo, env={"BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": allowed})
 
     if committer_email == "untrusted@mergify.com":
-        assert result.returncode == 1
-        assert "committer identity" in result.stderr
+        _blocked(result, "committer identity")
     else:
-        assert result.returncode == 0, result.stderr
+        _expect_exit(result, 0)
 
 
 def test_merge_introduced_blob_deleted_later_is_blocked(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _git(repo, "checkout", "-b", "side")
-    (repo / "side.txt").write_text("clean side\n", encoding="utf-8")
-    _commit(repo, "add clean side")
+    _change(repo, "add clean side", {"side.txt": "clean side\n"})
     _git(repo, "checkout", "main")
-    (repo / "main.txt").write_text("clean main\n", encoding="utf-8")
-    _commit(repo, "add clean main")
+    _change(repo, "add clean main", {"main.txt": "clean main\n"})
     _git(repo, "merge", "--no-ff", "--no-commit", "side", env=_identity_env())
-    (repo / "merge-only.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    _commit(repo, "merge side with fixture")
+    _change(repo, "merge side with fixture", {"merge-only.txt": TERM_TEXT})
     (repo / "merge-only.txt").unlink()
     head = _commit(repo, "remove merge fixture")
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
+    _blocked(_push(repo, _update(head, base)), "confidential term")
 
 
 def test_gitlink_update_scans_path_without_reading_commit_as_blob(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    linked_commit = _git(repo, "rev-parse", "HEAD")
-    _git(
-        repo,
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        f"160000,{linked_commit},vendor/example",
-    )
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},vendor/example")
     head = _commit_index(repo, "add submodule entry")
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 0, result.stderr
+    _expect_exit(_push(repo, _update(head, base)), 0)
 
 
 def test_confidential_root_commit_is_blocked(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
-    (repo / "payload.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    head = _commit(repo, "root fixture")
+    head = _change(repo, "root fixture", {"payload.txt": TERM_TEXT})
 
-    result = _scan(repo, "0" * 40, head, config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
+    _blocked(_push(repo, _update(head, _NEW_REF)), "confidential term")
 
 
 def test_renamed_blob_is_inspected_at_its_new_path(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
+    repo, _base = _repository(tmp_path)
     (repo / "baseline.gz").write_bytes(b"\x1f\x8bnot-a-valid-gzip-stream")
     base = _commit(repo, "add baseline fixture")
     (repo / "baseline.gz").rename(repo / "renamed.gz")
     head = _commit(repo, "rename fixture")
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    _blocked(_push(repo, _update(head, base)), "could not complete")
 
 
 def test_regular_file_changed_to_symlink_is_inspected(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
     path = repo / "link"
-    path.write_text("ordinary content\n", encoding="utf-8")
-    base = _commit(repo, "add ordinary file")
+    base = _change(repo, "add ordinary file", {"link": "ordinary content\n"})
     path.unlink()
     path.symlink_to(SENTINEL)
     head = _commit(repo, "change file to symlink")
 
-    result = _scan(repo, base, head, config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(_push(repo, _update(head, base)), "confidential term")
 
 
 def test_multiple_updates_are_scanned_and_deletions_are_skipped(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    (repo / "clean.txt").write_text("ordinary public content\n", encoding="utf-8")
-    head = _commit(repo, "add public fixture")
-    zero = "0" * 40
+    head = _change(repo, "add public fixture", {"clean.txt": "ordinary public content\n"})
     records = (
         f"refs/heads/topic {head} refs/heads/topic {base}\n"
         f"refs/heads/second {head} refs/heads/second {base}\n"
-        f"(delete) {zero} refs/heads/old {base}\n"
+        f"(delete) {_NEW_REF} refs/heads/old {base}\n"
     )
 
-    result = _scan_records(repo, records, config=_encoded_config())
-
-    assert result.returncode == 0, result.stderr
+    _expect_exit(_push(repo, records), 0)
 
 
 def test_term_and_unapproved_identity_are_blocked_without_echoing_term(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    (repo / "payload.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
-    head = _commit(repo, "add fixture", name="Unexpected User", email="unexpected@example.test")
+    head = _change(
+        repo, "add fixture", {"payload.txt": TERM_TEXT}, name="Unexpected User", email="u@e.test"
+    )
 
-    result = _scan(repo, base, head, config=_encoded_config())
+    result = _push(repo, _update(head, base))
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert "identity not allowed" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(result, "confidential term", "identity not allowed")
 
 
 def test_missing_secret_fails_closed(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
-    (repo / "clean.txt").write_text("ordinary public content\n", encoding="utf-8")
-    head = _commit(repo, "add public fixture")
+    head = _change(repo, "add public fixture", {"clean.txt": "ordinary public content\n"})
 
-    result = _scan(repo, base, head, config=None)
+    result = _guard(repo, "pre-push", stdin=_update(head, base))
 
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    _blocked(result, "could not complete")
 
 
 def test_clone_recovers_vocabulary_with_separately_restored_key(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    env = _sealed_fixture(repo, _encoded_config())
-    encrypted = repo / ".github/confidential-vocabulary.enc"
-    assert SENTINEL.encode() not in encrypted.read_bytes()
+    source_keys = Path(_seal(repo)[KEY_DIR])
+    assert SENTINEL.encode() not in (repo / ".github/confidential-vocabulary.enc").read_bytes()
     _commit(repo, "track encrypted vocabulary")
-
     clone = tmp_path / "restored"
-    cloned = run_bounded_child(["git", "clone", "--quiet", str(repo), str(clone)])
-    assert cloned.returncode == 0, cloned.stderr
+    _git(tmp_path, "clone", "--quiet", str(repo), str(clone))
     restored_keys = tmp_path / "restored-keys"
-    restored_env = os.environ | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(restored_keys)}
-    key_path = run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(clone), "key-path"],
-        check=False,
-        env=restored_env,
-    )
+    restored = {KEY_DIR: str(restored_keys)}
+    key_path = _guard(clone, "key-path", env=restored)
     assert key_path.returncode == 0, key_path.stderr
-    # Kept on subprocess.run: feeds the PR text on stdin.
-    missing = subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
-        input="public title",
-        capture_output=True,
-        check=False,
-        env=restored_env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    assert missing.returncode == 1
+    assert _guard(clone, "pr-text", "--stdin", stdin="public title", env=restored).returncode == 1
 
-    source_keys = Path(env["BOOLEY_LEAK_GUARD_KEY_DIR"])
     restored_keys.mkdir()
-    shutil.copyfile(next(source_keys.glob("*.key")), Path(key_path.stdout.strip()))
-    Path(key_path.stdout.strip()).chmod(0o600)
-    # Kept on subprocess.run: feeds the PR text on stdin.
-    detected = subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(clone), "pr-text", "--stdin"],
-        input=SENTINEL,
-        capture_output=True,
-        check=False,
-        env=restored_env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    assert detected.returncode == 1
-    assert "confidential term" in detected.stderr
-    assert SENTINEL not in detected.stderr
-    restored = run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(clone), "restore-draft"],
-        check=False,
-        env=restored_env,
-    )
-    assert restored.returncode == 0, restored.stderr
-    draft = clone / ".git/booley-leak-guard.toml"
-    assert draft.read_bytes() == base64.b64decode(_encoded_config())
-    assert SENTINEL not in restored.stdout + restored.stderr
+    key_file = Path(key_path.stdout.strip())
+    shutil.copyfile(next(source_keys.glob("*.key")), key_file)
+    key_file.chmod(0o600)
+    detected = _guard(clone, "pr-text", "--stdin", stdin=SENTINEL, env=restored)
+    _blocked(detected, "confidential term")
+    draft = _guard(clone, "restore-draft", env=restored)
+    assert draft.returncode == 0, draft.stderr
+    assert (clone / ".git/booley-leak-guard.toml").read_bytes() == _config().encode()
+    assert SENTINEL not in draft.stdout + draft.stderr
 
 
 def test_restore_draft_refuses_plaintext_inside_worktree(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    env = _sealed_fixture(repo, _encoded_config()) | {
-        "BOOLEY_LEAK_GUARD_CONFIG": "private.toml",
-    }
-    result = run_bounded_child(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "restore-draft"],
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 1
+    _seal(repo)
+
+    result = _guard(repo, "restore-draft", env={"BOOLEY_LEAK_GUARD_CONFIG": "private.toml"})
+
+    _blocked(result)
     assert not (repo / "private.toml").exists()
-    assert SENTINEL not in result.stderr
 
 
 def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
     tmp_path: Path,
 ) -> None:
     repo, _initial = _repository(tmp_path)
-    env = _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     trusted = _commit(repo, "add valid encrypted vocabulary")
-    event_path = tmp_path / "event.json"
-    event_path.write_text(
-        json.dumps(
-            {"pull_request": {"title": "public", "body": "public", "head": {"ref": "topic"}}}
-        ),
-        encoding="utf-8",
-    )
-    valid = run_bounded_child(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "verify-candidate",
-            "--rev",
-            trusted,
-            "--base",
-            trusted,
-            "--event",
-            str(event_path),
-        ],
-        check=False,
-        env=env,
-    )
-    assert valid.returncode == 0, valid.stderr
+    _expect_exit(_verify(repo, trusted, trusted, _meta()), 0)
 
-    encrypted = repo / ".github/confidential-vocabulary.enc"
-    encrypted.write_bytes(b"corrupt\n")
+    (repo / ".github/confidential-vocabulary.enc").write_bytes(b"corrupt\n")
     broken = _commit(repo, "corrupt encrypted vocabulary")
     _git(repo, "checkout", trusted)
-    invalid = run_bounded_child(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "verify-candidate",
-            "--rev",
-            broken,
-            "--base",
-            trusted,
-            "--event",
-            str(event_path),
-        ],
-        check=False,
-        env=env,
-    )
-    assert invalid.returncode == 1
-    assert "could not complete" in invalid.stderr
+
+    _blocked(_verify(repo, broken, trusted, _meta()), "could not complete")
 
 
 def test_candidate_scan_blocks_new_term_in_same_pr(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
-    env = _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     trusted = _commit(repo, "add initial encrypted vocabulary")
     new_term = "new-secret-654"
-    changed_config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
-        f'[private]\nwords = ["{SENTINEL}", "{new_term}"]\n'.encode()
-    ).decode()
-    _sealed_fixture(repo, changed_config)
+    _seal(repo, _words(SENTINEL, new_term))
     candidate = _commit(repo, "add new vocabulary term")
     _git(repo, "checkout", trusted)
-    event_path = tmp_path / "event.json"
-    event_path.write_text(
-        json.dumps(
-            {"pull_request": {"title": "public", "body": new_term, "head": {"ref": "topic"}}}
-        ),
-        encoding="utf-8",
-    )
-    result = run_bounded_child(
-        [
-            sys.executable,
-            str(SCANNER),
-            "--repo",
-            str(repo),
-            "verify-candidate",
-            "--rev",
-            candidate,
-            "--base",
-            trusted,
-            "--event",
-            str(event_path),
-        ],
-        check=False,
-        env=env,
-    )
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert new_term not in result.stderr
+
+    result = _verify(repo, candidate, trusted, _meta(body=new_term))
+
+    _blocked(result, "confidential term", hidden=new_term)
 
 
-def test_tampered_encrypted_vocabulary_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("body", "blocked"), [(f"private context: {SENTINEL}", True), ("ordinary description", False)]
+)
+def test_pull_request_metadata_blocks_only_confidential_text(
+    tmp_path: Path, body: str, blocked: bool
+) -> None:
     repo, _base = _repository(tmp_path)
-    env = _sealed_fixture(repo, _encoded_config())
-    encrypted = repo / ".github/confidential-vocabulary.enc"
-    header, locator, encoded = encrypted.read_bytes().splitlines()
-    payload = bytearray(base64.b64decode(encoded, validate=True))
-    payload[-1] ^= 1
-    encrypted.write_bytes(b"\n".join((header, locator, base64.b64encode(payload), b"")))
+    _seal(repo)
+    event = _write_event(repo, _meta("ordinary title", body))
 
-    # Kept on subprocess.run: feeds the PR text on stdin.
-    result = subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
-        input="public title",
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    result = _guard(repo, "pull-request", "--event", str(event))
+
+    if blocked:
+        _blocked(result, "pull request body")
+    else:
+        _expect_exit(result, 0)
 
 
-def test_pull_request_metadata_is_blocked_without_echoing_term(tmp_path: Path) -> None:
+def test_pr_text_blocks_terms_and_accepts_clean_title_and_body(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    event = {
-        "pull_request": {
-            "title": "ordinary title",
-            "body": f"private context: {SENTINEL}",
-            "head": {"ref": "topic"},
-        }
-    }
-
-    result = _scan_pull_request(repo, event)
-
-    assert result.returncode == 1
-    assert "pull request body" in result.stderr
-    assert SENTINEL not in result.stderr
-
-
-def test_pull_request_metadata_clean_event_passes(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    event = {
-        "pull_request": {
-            "title": "ordinary title",
-            "body": "ordinary description",
-            "head": {"ref": "topic"},
-        }
-    }
-
-    result = _scan_pull_request(repo, event)
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_proposed_pr_text_blocks_file_and_stdin_without_echoing_terms(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
+    _seal(repo)
     draft = tmp_path / "body.md"
     draft.write_text(f"private detail: {SENTINEL}\n", encoding="utf-8")
 
-    file_result = _scan_pr_text(repo, files=(draft,), config=_encoded_config())
-    stdin_result = _scan_pr_text(repo, stdin=f"title {SENTINEL}", config=_encoded_config())
-
-    for result in (file_result, stdin_result):
-        assert result.returncode == 1
-        assert "confidential term" in result.stderr
-        assert SENTINEL not in result.stderr
-
-
-def test_proposed_pr_text_accepts_clean_title_and_body(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    draft = tmp_path / "body.md"
+    _blocked(_guard(repo, "pr-text", "--file", str(draft)), "confidential term")
+    _blocked(_guard(repo, "pr-text", "--stdin", stdin=f"title {SENTINEL}"), "confidential term")
     draft.write_text("public description\n", encoding="utf-8")
-
-    result = _scan_pr_text(repo, files=(draft,), stdin="public title", config=_encoded_config())
-
-    assert result.returncode == 0, result.stderr
+    result = _guard(repo, "pr-text", "--file", str(draft), "--stdin", stdin="public title")
+    _expect_exit(result, 0)
 
 
 @pytest.mark.parametrize("prefix", ["", "prefixsynthetic-term-000suffix"])
 def test_large_nonmatching_pr_text_scans_promptly(tmp_path: Path, prefix: str) -> None:
     repo, _base = _repository(tmp_path)
-    words = ", ".join(f'"synthetic-term-{index:03d}"' for index in range(128))
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = [{words}]\n'.encode()
-    ).decode()
-    env = _sealed_fixture(repo, config)
+    _seal(repo, _words(*(f"synthetic-term-{index:03d}" for index in range(128))))
     start = perf_counter()
-    # Kept on subprocess.run: feeds the PR text on stdin.
-    result = subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(repo), "pr-text", "--stdin"],
-        input=prefix + "~" * 1_000_000,
-        capture_output=True,
-        check=False,
-        env=env,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
+
+    result = _guard(repo, "pr-text", "--stdin", stdin=prefix + "~" * 1_000_000)
+
     elapsed = perf_counter() - start
-
-    assert result.returncode == 0, result.stderr
+    _expect_exit(result, 0)
     assert elapsed < _PROMPT_SCAN_S, f"nonmatching scan took {elapsed:.2f} seconds"
-
-
-@pytest.mark.parametrize("text", ["f\u0130le", "f\u0131le", "\u017fecret", "\u212aey"])
-def test_ascii_prefilter_preserves_unicode_ignorecase_matches(tmp_path: Path, text: str) -> None:
-    repo, _base = _repository(tmp_path)
-    draft = tmp_path / "unicode-pr-text.txt"
-    draft.write_text(text, encoding="utf-8")
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
-        '[private]\nwords = ["file", "secret", "key"]\n'.encode()
-    ).decode()
-
-    result = _scan_pr_text(repo, files=(draft,), config=config)
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert text not in result.stderr
 
 
 def test_prefilter_detects_term_across_large_blob_chunk_boundary(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     marker = "boundary-marker-321"
     boundary = 1024 * 1024
-    (repo / "large.txt").write_text("~" * (boundary - 3) + marker, encoding="utf-8")
-    head = _commit(repo, "add large fixture")
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["{marker}"]\n'.encode()
-    ).decode()
+    head = _change(repo, "add large fixture", {"large.txt": "~" * (boundary - 3) + marker})
 
-    result = _scan(repo, base, head, config=config)
+    result = _push(repo, _update(head, base), vocabulary=_words(marker))
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert marker not in result.stderr
+    _blocked(result, "confidential term", hidden=marker)
 
 
-def test_non_ascii_vocabulary_still_uses_full_unicode_matching(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["caf\u00e9"]\n'.encode()
-    ).decode()
-
-    result = _scan_pr_text(repo, stdin="CAF\u00c9", config=config)
-
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
+_FILE_TERMS = _words("file", "secret", "key")
+_STEALTH = (
+    '[stealth]\nwords = ["quokka"]\nbanned_words = ["narwhal__"]\nbanned_substrings = ["booley"]\n'
+)
 
 
-def test_proposed_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("vocabulary", "text", "blocked"),
+    [
+        (_FILE_TERMS, "f\u0130le", True),  # the ASCII prefilter keeps Unicode case folding
+        (_FILE_TERMS, "f\u0131le", True),
+        (_FILE_TERMS, "\u017fecret", True),
+        (_FILE_TERMS, "\u212aey", True),
+        (_words("caf\u00e9"), "CAF\u00c9", True),  # a non-ASCII term uses full Unicode matching
+        (_words("generated"), "ordinary generated prose", True),
+        (_words("Acme", "AcmeCloud", "abc", "abc-def"), "AcmeCloud", True),  # overlapping terms
+        (_words("Acme", "AcmeCloud", "abc", "abc-def"), "abc-defg", True),
+        (_STEALTH, "path/quokka_file", True),  # a word is bounded by non-alphanumerics
+        (_STEALTH, "myquokkafile QuokkaRunner", False),
+        (_STEALTH, "narwhal__private_suffix", True),  # a `__` suffix makes the term a prefix
+        (_STEALTH, "narwhal__", False),
+        (_STEALTH, "booley here", False),  # banned_substrings are not vocabulary
+    ],
+)
+def test_pr_text_matches_vocabulary(
+    tmp_path: Path, vocabulary: str, text: str, blocked: bool
 ) -> None:
     repo, _base = _repository(tmp_path)
-    _sealed_fixture(repo, _encoded_config())
-    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
-    stale_config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["other"]\n'.encode()
-    ).decode()
+    _seal(repo, vocabulary)
 
-    result = _scan_pr_text(repo, stdin=SENTINEL, env_config=stale_config)
+    result = _guard(repo, "pr-text", "--stdin", stdin=text)
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
+    _expect_exit(result, 1 if blocked else 0)
+    assert ("confidential term" in result.stderr) is blocked
+    shown = result.stdout + result.stderr
+    assert text not in shown
+    assert "quokka" not in shown
+    assert "narwhal__" not in shown
 
 
-def test_proposed_pr_text_fails_closed_for_missing_input_or_config(tmp_path: Path) -> None:
+def test_prefix_term_redacts_the_whole_identifier_in_a_path(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    head = _change(repo, "add prefixed path", {"narwhal__private_suffix.txt": "clean\n"})
+
+    result = _push(repo, _update(head, base), vocabulary=_words("narwhal__"))
+
+    _blocked(result, "[redacted].txt", hidden="narwhal__")
+    assert "private_suffix" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("missing-config", "could not complete"),
+        ("old-ci-env", "could not complete"),
+        ("missing-input", "could not complete"),
+        ("unreadable-draft", "could not complete"),
+        ("too-large", "exceeds the inspection size limit"),
+        ("tampered", "could not complete"),
+    ],
+)
+def test_pr_text_fails_closed(tmp_path: Path, case: str, message: str) -> None:
     repo, _base = _repository(tmp_path)
+    draft = tmp_path / "body.md"
+    args, stdin, env = ["--stdin"], "public title", {}
+    if case not in {"missing-config", "old-ci-env"}:
+        _seal(repo)
+    if case == "old-ci-env":
+        env = {"BOOLEY_LEAK_GUARD_CONFIG_B64": base64.b64encode(_config().encode()).decode()}
+    if case == "missing-input":
+        args, stdin = [], ""
+    if case == "unreadable-draft":
+        args = ["--file", str(tmp_path / "missing.md")]
+    if case == "too-large":
+        draft.write_bytes(b"x" * (1024 * 1024 + 1))
+        args = ["--file", str(draft)]
+    if case == "tampered":
+        encrypted = repo / ".github/confidential-vocabulary.enc"
+        header, locator, encoded = encrypted.read_bytes().splitlines()
+        payload = bytearray(base64.b64decode(encoded, validate=True))
+        payload[-1] ^= 1
+        encrypted.write_bytes(b"\n".join((header, locator, base64.b64encode(payload), b"")))
 
-    missing_config = _scan_pr_text(repo, stdin="public title")
-    missing_input = _scan_pr_text(repo, config=_encoded_config())
+    result = _guard(repo, "pr-text", *args, stdin=stdin, env=env)
 
-    assert missing_input.returncode == 1
-    assert "could not complete" in missing_input.stderr
-    assert missing_config.returncode == 1
-    assert "could not complete" in missing_config.stderr
+    _blocked(result, message)
+    assert "missing.md" not in result.stderr
 
 
-def test_proposed_pr_text_requires_sealed_file_even_with_old_ci_env(tmp_path: Path) -> None:
+def test_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
+    _seal(repo)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(b"[private]\nwords = ['other']\n")
+    stale = base64.b64encode(_config(_words("other")).encode()).decode()
 
-    result = _scan_pr_text(repo, stdin="public title", env_config=_encoded_config())
+    result = _guard(
+        repo, "pr-text", "--stdin", stdin=SENTINEL, env={"BOOLEY_LEAK_GUARD_CONFIG_B64": stale}
+    )
 
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    _blocked(result, "confidential term")
 
 
-def test_overlapping_banned_terms_are_detected(tmp_path: Path) -> None:
+@_GH_BY_NAME
+@pytest.mark.parametrize(
+    ("arguments", "gh_args", "stdin"),
+    [
+        (
+            "create --base main --head topic --title-file {title} --body-file {body} --repo owner/repo",
+            "pr create --base main --head topic --title {name} --body-file - --repo owner/repo",
+            "Public description\n",
+        ),
+        ("edit --pr 123 --title-file {title}", "pr edit 123 --title {name}", ""),
+        (
+            "comment --pr 123 --body-file {body} --edit-last",
+            "pr comment 123 --edit-last --body-file -",
+            "Public description\n",
+        ),
+        (
+            "review --pr 123 --verdict request-changes --body-file {body}",
+            "pr review 123 --request-changes --body-file -",
+            "Public description\n",
+        ),
+    ],
+)
+def test_publish_pr_sends_exact_drafts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: str,
+    gh_args: str,
+    stdin: str,
+) -> None:
     repo, _base = _repository(tmp_path)
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n'
-        '[private]\nwords = ["Acme", "AcmeCloud", "abc", "abc-def"]\n'.encode()
-    ).decode()
-
-    for text in ("AcmeCloud", "abc-defg"):
-        result = _scan_pr_text(repo, stdin=text, config=config)
-        assert result.returncode == 1
-        assert "confidential term" in result.stderr
-        assert text not in result.stderr
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
-def test_publish_pr_create_scans_then_sends_exact_drafts(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
-    title = tmp_path / "title.txt"
-    body = tmp_path / "body.md"
+    _seal(repo)
+    title, body = tmp_path / "title.txt", tmp_path / "body.md"
     title.write_text("Public title\n", encoding="utf-8")
     body.write_text("Public description\n", encoding="utf-8")
-    env, captured_args, captured_stdin = _recording_gh(tmp_path)
-    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("pr", reads_input=True)
+    command = [word.format(title=title, body=body) for word in arguments.split()]
 
-    result = _publish_pr(
-        repo,
-        [
-            "create",
-            "--base",
-            "main",
-            "--head",
-            "topic",
-            "--title-file",
-            str(title),
-            "--body-file",
-            str(body),
-            "--repo",
-            "owner/repo",
-        ],
-        env,
-    )
+    result = _guard(repo, "publish-pr", *command, env={"GH_REPO": "somewhere/else"})
 
-    assert result.returncode == 0, result.stderr
-    assert captured_args.read_text(encoding="utf-8").splitlines() == [
-        "pr",
-        "create",
-        "--base",
-        "main",
-        "--head",
-        "topic",
-        "--title",
-        "Public title",
-        "--body-file",
-        "-",
-        "--repo",
-        "owner/repo",
-    ]
-    assert captured_stdin.read_text(encoding="utf-8") == body.read_text(encoding="utf-8")
+    _expect_exit(result, 0)
+    (call,) = gh.calls()
+    assert call.args == [word.format(name="Public title") for word in gh_args.split()]
+    assert call.input == stdin
+    assert "GH_REPO" not in call.env
 
 
-def test_publish_pr_blocks_confidential_drafts_before_gh(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [("confidential", "confidential term"), ("old-ci-env", "could not complete")],
+)
+@_GH_BY_NAME
+def test_publish_pr_stops_before_gh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, message: str
+) -> None:
     repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
-    title = tmp_path / "title.txt"
-    body = tmp_path / "body.md"
+    title, body = tmp_path / "title.txt", tmp_path / "body.md"
     title.write_text("Public title", encoding="utf-8")
     body.write_text(f"Sensitive context: {SENTINEL}", encoding="utf-8")
-    env, captured_args, _captured_stdin = _recording_gh(tmp_path)
-    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
+    env = {}
+    if case == "confidential":
+        _seal(repo)
+    else:
+        env = {"BOOLEY_LEAK_GUARD_CONFIG_B64": base64.b64encode(_config().encode()).decode()}
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("pr", reads_input=True)
+    args = ["create", "--base", "main", "--head", "topic", "--title-file", str(title)]
 
-    result = _publish_pr(
-        repo,
-        [
-            "create",
-            "--base",
-            "main",
-            "--head",
-            "topic",
-            "--title-file",
-            str(title),
-            "--body-file",
-            str(body),
-        ],
-        env,
-    )
+    result = _guard(repo, "publish-pr", *args, "--body-file", str(body), env=env)
 
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-    assert SENTINEL not in result.stderr
-    assert not captured_args.exists()
+    _blocked(result, message)
+    assert gh.calls() == []
 
 
-def test_publish_pr_requires_sealed_file_even_with_old_ci_env(tmp_path: Path) -> None:
+@_GH_BY_NAME
+def test_publish_pr_reports_only_the_created_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo, _base = _repository(tmp_path)
-    body = tmp_path / "body.md"
-    body.write_text("Public comment", encoding="utf-8")
-    env, captured_args, _captured_stdin = _recording_gh(tmp_path)
-    env["BOOLEY_LEAK_GUARD_CONFIG_B64"] = _encoded_config()
-
-    result = _publish_pr(repo, ["comment", "--pr", "123", "--body-file", str(body)], env)
-
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
-    assert not captured_args.exists()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
-def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
-    title = tmp_path / "title.txt"
-    body = tmp_path / "body.md"
-    title.write_text("Updated title", encoding="utf-8")
-    body.write_text("Public response", encoding="utf-8")
-    env, captured_args, captured_stdin = _recording_gh(tmp_path)
-    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
-    cases = (
-        (
-            ["edit", "--pr", "123", "--title-file", str(title)],
-            ["pr", "edit", "123", "--title", "Updated title"],
-            "",
-        ),
-        (
-            ["comment", "--pr", "123", "--body-file", str(body), "--edit-last"],
-            ["pr", "comment", "123", "--edit-last", "--body-file", "-"],
-            "Public response",
-        ),
-        (
-            ["review", "--pr", "123", "--verdict", "request-changes", "--body-file", str(body)],
-            ["pr", "review", "123", "--request-changes", "--body-file", "-"],
-            "Public response",
-        ),
-    )
-
-    for arguments, expected_args, expected_stdin in cases:
-        result = _publish_pr(repo, arguments, env)
-        assert result.returncode == 0, result.stderr
-        assert captured_args.read_text(encoding="utf-8").splitlines() == expected_args
-        assert captured_stdin.read_text(encoding="utf-8") == expected_stdin
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
-def test_publish_pr_reports_only_the_created_reference(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     body = tmp_path / "body.md"
     body.write_text("Public response", encoding="utf-8")
-    env, _captured_args, _captured_stdin = _recording_gh(tmp_path)
-    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
     reference = "https://github.com/owner/name/pull/123#issuecomment-4567"
-    fake_gh = tmp_path / "bin" / "gh"
-    fake_gh.write_text(
-        f"#!/bin/sh\ncat > /dev/null\necho 'unrelated {SENTINEL} output'\necho '{reference}'\n",
-        encoding="utf-8",
-    )
-    arguments = ["comment", "--pr", "123", "--body-file", str(body)]
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("pr", stdout=f"unrelated {SENTINEL} output\n{reference}\n", reads_input=True)
+    gh.answer("pr", stdout="no reference here\n", reads_input=True)
+    arguments = ["publish-pr", "comment", "--pr", "123", "--body-file", str(body)]
 
-    reported = _publish_pr(repo, arguments, env)
-    fake_gh.write_text("#!/bin/sh\ncat > /dev/null\necho 'no reference here'\n", encoding="utf-8")
-    silent = _publish_pr(repo, arguments, env)
+    reported = _guard(repo, *arguments)
+    silent = _guard(repo, *arguments)
 
-    assert reported.returncode == 0, reported.stderr
+    _expect_exit(reported, 0)
     assert f"GitHub reference: {reference}" in reported.stdout.splitlines()
     assert SENTINEL not in reported.stdout + reported.stderr
-    assert silent.returncode == 0, silent.stderr
+    _expect_exit(silent, 0)
     assert "GitHub reference" not in silent.stdout
 
 
-def test_proposed_pr_text_fails_closed_when_draft_cannot_be_read(tmp_path: Path) -> None:
+@_GH_BY_NAME
+def test_sync_ci_key_uses_sealed_vocabulary_and_not_stale_ci_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo, _base = _repository(tmp_path)
-    missing = tmp_path / "missing.md"
+    _seal(repo)
+    (repo / ".git/booley-leak-guard.toml").write_bytes(b"[private]\nwords = ['other']\n")
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("secret", reads_input=True)
+    stale = {"BOOLEY_LEAK_GUARD_KEY_B64": base64.b64encode(b"stale key").decode()}
 
-    result = _scan_pr_text(repo, files=(missing,), config=_encoded_config())
+    result = _guard(repo, "sync-ci-key", env=stale | {"GH_REPO": "somewhere/else"})
 
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
-    assert str(missing) not in result.stderr
-
-
-def test_proposed_pr_text_fails_closed_when_draft_is_too_large(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    draft = tmp_path / "body.md"
-    draft.write_bytes(b"x" * (1024 * 1024 + 1))
-
-    result = _scan_pr_text(repo, files=(draft,), config=_encoded_config())
-
-    assert result.returncode == 1
-    assert "exceeds the inspection size limit" in result.stderr
-
-
-@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
-def test_sync_ci_key_uses_sealed_vocabulary_and_not_stale_ci_env(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
-    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(
-        '#!/bin/sh\ntest -z "${BOOLEY_LEAK_GUARD_KEY_B64+x}" || exit 2\n'
-        'test -z "${GH_REPO+x}" || exit 3\n'
-        'printf "%s\\n" "$*" > "$CAPTURE_ARGS"\ncat > "$CAPTURE_STDIN"\n',
-        encoding="utf-8",
-    )
-    fake_gh.chmod(0o755)
-    captured_args = tmp_path / "args"
-    captured_stdin = tmp_path / "stdin"
-    env = sealed_env | {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        "BOOLEY_LEAK_GUARD_KEY_B64": base64.b64encode(b"stale key").decode(),
-        "GH_REPO": "somewhere/else",
-        "CAPTURE_ARGS": str(captured_args),
-        "CAPTURE_STDIN": str(captured_stdin),
-    }
-
-    result = _sync_ci_key(repo, env)
-
-    assert result.returncode == 0, result.stderr
-    assert captured_args.read_text(encoding="utf-8").strip() == (
-        "secret set BOOLEY_LEAK_GUARD_KEY_B64 --app actions"
-    )
-    assert len(base64.b64decode(captured_stdin.read_bytes())) == 32
+    _expect_exit(result, 0)
+    (call,) = gh.calls()
+    assert call.args == ["secret", "set", "BOOLEY_LEAK_GUARD_KEY_B64", "--app", "actions"]
+    assert call.input is not None
+    assert len(base64.b64decode(call.input)) == 32
+    assert not {"GH_REPO", "BOOLEY_LEAK_GUARD_KEY_B64"} & set(call.env)
     assert SENTINEL not in result.stdout + result.stderr
 
 
 def test_sync_ci_key_fails_when_sealed_file_is_missing(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
+    stale = base64.b64encode(_config().encode()).decode()
 
-    result = _sync_ci_key(repo, env)
+    result = _guard(repo, "sync-ci-key", env={"BOOLEY_LEAK_GUARD_CONFIG_B64": stale})
 
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
+    _blocked(result, "could not complete")
 
 
-@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
-def test_sync_ci_key_does_not_echo_gh_failure_output(tmp_path: Path) -> None:
+@_GH_BY_NAME
+def test_sync_ci_key_does_not_echo_gh_failure_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo, _base = _repository(tmp_path)
-    sealed_env = _sealed_fixture(repo, _encoded_config())
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(f'#!/bin/sh\necho "{SENTINEL}" >&2\nexit 1\n', encoding="utf-8")
-    fake_gh.chmod(0o755)
-    env = sealed_env | {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    _seal(repo)
+    gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("secret", stderr=SENTINEL, returncode=1, reads_input=True)
 
-    result = _sync_ci_key(repo, env)
-
-    assert result.returncode == 1
-    assert "could not complete" in result.stderr
-    assert SENTINEL not in result.stderr
+    _blocked(_guard(repo, "sync-ci-key"), "could not complete")
 
 
 def test_workflow_scans_metadata_on_pr_edits() -> None:
@@ -1373,7 +925,7 @@ def test_workflow_trusts_only_the_exact_renovate_app_identity(
         env=_identity_env("booley-renovate[bot]", author_email),
     )
     head = _git(repo, "rev-parse", "HEAD")
-    env = _sealed_fixture(repo, _encoded_config()) | {
+    env = _seal(repo) | {
         "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": _workflow_allowed_authors(step_name, next_step_name),
     }
 
@@ -1392,35 +944,14 @@ def test_workflow_trusts_only_the_exact_renovate_app_identity(
         assert "author identity" in result.stderr
 
 
-def test_source_guard_synthetic_generic_vocabulary_remains_independent(tmp_path: Path) -> None:
-    repo, _base = _repository(tmp_path)
-    config = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["generated"]\n'.encode()
-    ).decode()
-    result = _scan_pr_text(repo, stdin="ordinary generated prose", config=config)
-    assert result.returncode == 1
-    assert "confidential term" in result.stderr
-
-
-def test_source_guard_synthetic_vocabulary_contract(monkeypatch):
-    import runpy
-
+def test_loading_the_guard_module_defines_main_without_running_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.syspath_prepend(str(SCANNER.parent))
-    guard = runpy.run_path(str(SCANNER))
-    words, authors, ignored = guard["_config_lists"](
-        {
-            "guard": {"words": ["quokka"], "banned_words": ["narwhal__"]},
-            "stealth": {"banned_substrings": ["booley"]},
-        }
-    )
-    assert (words, authors, ignored) == (["quokka", "narwhal__"], [], [])
-    token = guard["_compile_term"]("quokka", b"0" * 32)
-    prefix = guard["_compile_term"]("narwhal__", b"0" * 32)
-    assert token.regex.search("path/quokka_file")
-    assert not token.regex.search("myquokkafile QuokkaRunner")
-    assert prefix.regex.search("narwhal__private_suffix").group() == "narwhal__private_suffix"
-    assert not prefix.regex.search("narwhal__")
-    assert "quokka" not in token.term_id
+
+    namespace = runpy.run_path(str(SCANNER))
+
+    assert callable(namespace["main"])
 
 
 def _self_test(*, pythonpath: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -1478,23 +1009,6 @@ SAFE = ("Safe User", "safe@example.test")
 OLD_DATE = "2020-01-01T00:00:00+0000"
 NEW_DATE = "2021-01-01T00:00:00+0000"
 REPOSITORY_OWNER = "boldaxolotl"
-TERM_TEXT = f"contains {SENTINEL}\n"
-
-
-def _audit(
-    repo: Path, revs: tuple[str, ...] = ("HEAD",), *, owner: str | None = None
-) -> subprocess.CompletedProcess[str]:
-    """Run `audit` over `revs`, optionally with --repository-owner."""
-    command = [sys.executable, str(SCANNER), "--repo", str(repo), "audit"]
-    for rev in revs:
-        command.extend(("--rev", rev))
-    if owner is not None:
-        command.extend(("--repository-owner", owner))
-    return run_bounded_child(
-        command,
-        check=False,
-        env=_sealed_fixture(repo, _encoded_config()),
-    )
 
 
 def _branch_commits(
@@ -1713,7 +1227,7 @@ def test_pre_push_merge_of_main_skips_inherited_outside_content(tmp_path: Path) 
     _git(repo, "merge", "--no-ff", "main", "-m", "merge main", env=_identity_env())
     head = _git(repo, "rev-parse", "HEAD")
 
-    result = _scan(repo, main_tip, head, config=_encoded_config())
+    result = _push(repo, _update(head, main_tip))
 
     assert result.returncode == 0, result.stderr
 
@@ -1729,7 +1243,7 @@ def test_pre_push_merge_still_reports_content_only_the_merge_introduces(tmp_path
     (repo / "merge-only.txt").write_bytes(TERM_TEXT.encode())
     head = _commit(repo, "evil merge")
 
-    result = _scan(repo, main_tip, head, config=_encoded_config())
+    result = _push(repo, _update(head, main_tip))
 
     assert result.returncode == 1
     assert "merge-only.txt" in result.stderr
@@ -1738,7 +1252,7 @@ def test_pre_push_merge_still_reports_content_only_the_merge_introduces(tmp_path
 def _trusted_tip_repository(tmp_path: Path) -> tuple[Path, str]:
     """main's tip holds outside content; `topic` branches from before it."""
     repo, _initial = _repository(tmp_path)
-    _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     vocabulary = _commit(repo, "add vocabulary")
     _git(repo, "branch", "topic", vocabulary)
     (repo / "outside.txt").write_bytes(TERM_TEXT.encode())
@@ -1751,41 +1265,12 @@ def _trusted_tip_repository(tmp_path: Path) -> tuple[Path, str]:
 def _pr_scan(
     repo: Path, command: str, *, head: str, base: str, trusted_base: str | None
 ) -> subprocess.CompletedProcess[str]:
-    """Run the CI PR scan for one command; verify-candidate also needs an event file."""
-    env = _sealed_fixture(repo, _encoded_config())
+    """Run the CI PR scan for one command; verify-candidate also needs an event."""
     trusted = ["--trusted-base", trusted_base] if trusted_base is not None else []
-    base_command = [sys.executable, str(SCANNER), "--repo", str(repo)]
     if command == "pre-push":
-        # Kept on subprocess.run: feeds the push record on stdin.
-        return subprocess.run(
-            [*base_command, "pre-push", *trusted],
-            input=f"refs/heads/topic {head} refs/heads/main {base}\n",
-            capture_output=True,
-            check=False,
-            env=env,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-    event = repo.parent / "event.json"
-    event.write_text(
-        json.dumps({"pull_request": {"title": "public", "body": "", "head": {"ref": "topic"}}}),
-        encoding="utf-8",
-    )
-    return run_bounded_child(
-        [
-            *base_command,
-            "verify-candidate",
-            "--rev",
-            head,
-            "--base",
-            base,
-            "--event",
-            str(event),
-            *trusted,
-        ],
-        check=False,
-        env=env,
-    )
+        return _push(repo, _update(head, base), *trusted)
+    _seal(repo)
+    return _verify(repo, head, base, _meta(body=""), *trusted)
 
 
 @pytest.mark.parametrize("command", ["pre-push", "verify-candidate"])
@@ -1927,12 +1412,7 @@ def test_same_repository_range_stays_enforced(tmp_path: Path, mode: str, case: s
     _same_repository_topic(repo, case)
     if mode == "pre-push":
         head = _git(repo, "rev-parse", "topic")
-        result = _scan_records(
-            repo,
-            f"refs/heads/topic {head} refs/heads/main {base}\n",
-            config=_encoded_config(),
-            extra_args=("--trusted-base", base),
-        )
+        result = _push(repo, _update(head, base), "--trusted-base", base)
     else:
         # A same-repository PR merge: the owner differs from the branch's only by case.
         _merge_pull_request(repo, "topic", owner="BoldAxolotl", number=9, title="topic")
@@ -1953,7 +1433,7 @@ def test_pre_push_scans_fork_head_advertised_under_refs_pull(tmp_path: Path) -> 
     (repo / "topic.txt").write_bytes(b"clean topic\n")
     head = _commit(repo, "topic work")
 
-    result = _scan(repo, "0" * 40, head, config=_encoded_config(), destination=("origin", origin))
+    result = _push(repo, _update(head, _NEW_REF), "origin", str(origin))
 
     assert result.returncode == 1
     assert "confidential term" in result.stderr
@@ -2143,12 +1623,6 @@ class _FakeGh:
         (self.state / "calls.jsonl").unlink(missing_ok=True)
 
 
-def _expect_exit(result: subprocess.CompletedProcess[str], expected: int) -> None:
-    assert result.returncode == expected, (
-        f"expected exit {expected}, got {result.returncode}: {result.stderr[-400:]}"
-    )
-
-
 def _pr_event(
     *,
     head: str,
@@ -2187,7 +1661,7 @@ def _pr_scenario(
 ) -> tuple[Path, str, str]:
     """A repository whose base commit holds the vocabulary; `commits` form the PR branch."""
     repo, _initial = _repository(tmp_path)
-    _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     base = _commit(repo, "add vocabulary")
     return repo, base, _branch_commits(repo, "topic", commits, start=base)
 
@@ -2489,62 +1963,17 @@ def test_pr_scan_step_posts_one_comment_per_finding_set(tmp_path: Path) -> None:
     assert len(gh.posts("/labels")) == len(gh.posts("/comments")) == 1
 
 
-def _write_event(repo: Path, event: dict) -> Path:
-    path = repo.parent / "event.json"
-    path.write_text(json.dumps(event), encoding="utf-8")
-    return path
-
-
-def _run_guard(
-    repo: Path, args: list[str], env: dict[str, str], stdin: str = ""
-) -> subprocess.CompletedProcess[str]:
-    # Kept on subprocess.run: feeds the guard input on stdin.
-    return subprocess.run(
-        [sys.executable, str(SCANNER), "--repo", str(repo), *args],
-        input=stdin,
-        capture_output=True,
-        check=False,
-        env=env | {"BOOLEY_LEAK_GUARD_KEY_DIR": str(repo / ".git/guard-keys")},
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-
-
 def _scan_with_event(
     repo: Path, command: str, event: dict, *, base: str, env: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     """Run `pre-push` or `verify-candidate` against a PR event, reporting advisories."""
-    event_path = _write_event(repo, event)
-    report = repo.parent / "report.jsonl"
+    report = ["--advisory-report", str(repo.parent / "report.jsonl")]
     head = event["pull_request"]["head"]["sha"]
     if command == "pre-push":
-        return _run_guard(
-            repo,
-            [
-                "pre-push",
-                "--pull-request-event",
-                str(event_path),
-                "--advisory-report",
-                str(report),
-            ],
-            env,
-            stdin=f"refs/heads/topic {head} refs/heads/main {base}\n",
-        )
-    return _run_guard(
-        repo,
-        [
-            "verify-candidate",
-            "--rev",
-            head,
-            "--base",
-            base,
-            "--event",
-            str(event_path),
-            "--advisory-report",
-            str(report),
-        ],
-        env,
-    )
+        event_path = str(_write_event(repo, event))
+        args = ["pre-push", "--pull-request-event", event_path, *report]
+        return _guard(repo, *args, stdin=_update(head, base), env=env)
+    return _verify(repo, head, base, event, *report, env=env)
 
 
 def _candidate_repository(
@@ -2561,7 +1990,7 @@ def _candidate_repository(
     Returns (repo, base, candidate head, branch tips by PR number).
     """
     repo, _initial = _repository(tmp_path)
-    _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     base = _commit(repo, "add vocabulary")
     identities = {"11": OUTSIDER, "12": maintainer}
     tips: dict[str, str] = {}
@@ -2738,7 +2167,7 @@ def test_candidate_metadata_is_advisory(tmp_path: Path) -> None:
     event_path = _write_event(repo, event)
     env = os.environ.copy()
 
-    candidate = _run_guard(repo, ["pull-request", "--event", str(event_path)], env)
+    candidate = _guard(repo, "pull-request", "--event", str(event_path), env=env)
 
     _expect_exit(candidate, 0)
     assert "WARNING" in candidate.stderr and "pull request title" in candidate.stderr
@@ -2767,7 +2196,7 @@ def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str
     _CANDIDATE_MARKER_EDITS[case](event)
     event_path = _write_event(repo, event)
 
-    result = _run_guard(repo, ["pull-request", "--event", str(event_path)], os.environ.copy())
+    result = _guard(repo, "pull-request", "--event", str(event_path))
 
     _expect_exit(result, 1)
     assert "ERROR" in result.stderr and "WARNING" not in result.stderr
@@ -2777,9 +2206,9 @@ def test_candidate_metadata_needs_every_mergify_marker(tmp_path: Path, case: str
 @POSIX_ONLY
 def test_outside_pr_enforced_finding_survives_advisory_cap(tmp_path: Path) -> None:
     gh = _FakeGh(tmp_path)  # answers the head-commit lookup
-    allowlisted_term = {"maintainer.txt": TERM_TEXT}
     many_paths = {f"{SENTINEL}-{index}.txt": "clean\n" for index in range(101)}
-    repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, many_paths), (SAFE, allowlisted_term)])
+    commits = [(OUTSIDER, many_paths), (SAFE, {"maintainer.txt": TERM_TEXT})]
+    repo, base, head = _pr_scenario(tmp_path, commits)
 
     result = _scan_with_event(
         repo, "pre-push", _pr_event(head=head, base=base), base=base, env=gh.env
@@ -2811,38 +2240,18 @@ def test_outside_pr_invalid_proposed_vocabulary_still_fails(tmp_path: Path) -> N
 def test_advisory_report_write_failure_fails_closed(tmp_path: Path) -> None:
     gh = _FakeGh(tmp_path)  # answers the head-commit lookup
     repo, base, head = _pr_scenario(tmp_path, [(OUTSIDER, _TERM_FILE)])
-    event_path = _write_event(repo, _pr_event(head=head, base=base))
+    unwritable = str(repo / "no/such/dir")
 
-    result = _run_guard(
-        repo,
-        [
-            "pull-request",
-            "--event",
-            str(event_path),
-            "--advisory-report",
-            str(repo / "no/such/dir"),
-        ],
-        gh.env,
-    )
+    for title, status in (("public", 0), (f"fix {SENTINEL}", 1)):
+        event_path = _write_event(repo, _pr_event(head=head, base=base, title=title))
+        args = ["pull-request", "--event", str(event_path), "--advisory-report", unwritable]
 
-    # A clean title and body write no report row, so the missing directory is never touched.
-    _expect_exit(result, 0)
-    event = _pr_event(head=head, base=base, title=f"fix {SENTINEL}")
-    event_path = _write_event(repo, event)
-    failed = _run_guard(
-        repo,
-        [
-            "pull-request",
-            "--event",
-            str(event_path),
-            "--advisory-report",
-            str(repo / "no/such/dir"),
-        ],
-        gh.env,
-    )
-    _expect_exit(failed, 1)
-    assert "the advisory report cannot be written" in failed.stderr
-    assert SENTINEL not in failed.stdout + failed.stderr
+        result = _guard(repo, *args, env=gh.env)
+
+        # A clean title and body write no report row, so the directory is touched only on 1.
+        _expect_exit(result, status)
+        assert SENTINEL not in result.stdout + result.stderr
+    assert "the advisory report cannot be written" in result.stderr
 
 
 @POSIX_ONLY
@@ -2875,24 +2284,16 @@ def test_no_plaintext_term_in_advisory_outputs(tmp_path: Path) -> None:
 
 def test_verify_candidate_redacts_with_trusted_vocabulary(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
-    _sealed_fixture(repo, _encoded_config())
+    _seal(repo)
     base = _commit(repo, "add vocabulary")
     # The proposal drops the trusted term, so only the trusted vocabulary can redact it.
     other = "other-term-xyz"
-    proposed = base64.b64encode(
-        f'[guard]\nallowed_authors = ["{SAFE_IDENT}"]\n[private]\nwords = ["{other}"]\n'.encode()
-    ).decode()
-    _sealed_fixture(repo, proposed)
+    _seal(repo, _words(other))
     (repo / f"{SENTINEL}-{other}.txt").write_bytes(b"clean\n")
     head = _commit(repo, "drop the trusted term")
     _git(repo, "checkout", base)
-    event_path = _write_event(repo, _pr_event(head=head, base=base, head_repo_id=1))
 
-    result = _run_guard(
-        repo,
-        ["verify-candidate", "--rev", head, "--base", base, "--event", str(event_path)],
-        os.environ.copy(),
-    )
+    result = _verify(repo, head, base, _pr_event(head=head, base=base, head_repo_id=1))
 
     _expect_exit(result, 1)
     assert "confidential term" in result.stderr
@@ -2908,8 +2309,8 @@ def _post_advisory(
         encoding="utf-8",
     )
     event_path = _write_event(repo, event or _pr_event(head="a" * 40, base="b" * 40))
-    return _run_guard(
-        repo, ["post-advisory", "--event", str(event_path), "--report", str(report)], gh.env
+    return _guard(
+        repo, "post-advisory", "--event", str(event_path), "--report", str(report), env=gh.env
     )
 
 

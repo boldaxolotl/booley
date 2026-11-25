@@ -18,15 +18,11 @@ sys.modules[_SPEC.name] = assert_junit
 _SPEC.loader.exec_module(assert_junit)
 
 
-def _write_junit(path: Path, body: str) -> None:
-    path.write_text(body, encoding="utf-8")
-
-
 def test_reads_pytest_testsuites_document(tmp_path: Path) -> None:
     junit = tmp_path / "junit.xml"
-    _write_junit(
-        junit,
+    junit.write_text(
         '<testsuites><testsuite tests="8" failures="1" errors="2" skipped="3"/></testsuites>',
+        encoding="utf-8",
     )
 
     counts = assert_junit.read_counts(junit)
@@ -34,20 +30,23 @@ def test_reads_pytest_testsuites_document(tmp_path: Path) -> None:
     assert counts == assert_junit.Counts(tests=8, failures=1, errors=2, skipped=3)
 
 
-def test_rejects_zero_test_required_suite(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("body", "min_tests", "max_skips", "message"),
+    [
+        ('<testsuite tests="0"/>', 1, None, "at least 1 tests"),
+        ('<testsuite tests="2" skipped="1"/>', 1, 0, "at most 0 skips"),
+    ],
+)
+def test_rejects_required_suite_without_tests_or_with_skips(
+    tmp_path: Path, body: str, min_tests: int, max_skips: int | None, message: str
+) -> None:
     junit = tmp_path / "junit.xml"
-    _write_junit(junit, '<testsuite tests="0"/>')
+    junit.write_text(body, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="at least 1 tests"):
-        assert_junit.validate(assert_junit.read_counts(junit), min_tests=1, max_skips=None)
-
-
-def test_rejects_required_suite_skip(tmp_path: Path) -> None:
-    junit = tmp_path / "junit.xml"
-    _write_junit(junit, '<testsuite tests="2" skipped="1"/>')
-
-    with pytest.raises(ValueError, match="at most 0 skips"):
-        assert_junit.validate(assert_junit.read_counts(junit), min_tests=1, max_skips=0)
+    with pytest.raises(ValueError, match=message):
+        assert_junit.validate(
+            assert_junit.read_counts(junit), min_tests=min_tests, max_skips=max_skips
+        )
 
 
 def test_valid_junit_file_prints_summary_and_passes(
@@ -55,7 +54,9 @@ def test_valid_junit_file_prints_summary_and_passes(
 ) -> None:
     junit = tmp_path / "junit.xml"
     summary = tmp_path / "summary.md"
-    _write_junit(junit, '<testsuite tests="4" failures="0" errors="0" skipped="1"/>')
+    junit.write_text(
+        '<testsuite tests="4" failures="0" errors="0" skipped="1"/>', encoding="utf-8"
+    )
     monkeypatch.setattr(
         sys, "argv", ["assert_junit.py", str(junit), "--label", "demo", "--summary", str(summary)]
     )
@@ -88,7 +89,7 @@ def test_malformed_junit_file_failure_names_the_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     junit = tmp_path / "junit.xml"
-    _write_junit(junit, "<testsuite")
+    junit.write_text("<testsuite", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["assert_junit.py", str(junit)])
 
     with pytest.raises(SystemExit) as excinfo:
