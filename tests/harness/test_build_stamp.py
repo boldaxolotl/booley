@@ -13,6 +13,7 @@ import hashlib
 import io
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,8 @@ from tests.subprocess_budget import run_bounded_child
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
+CHANGELOG_SOURCE = "CHANGELOG.md"
+PACKAGED_CHANGELOG = "src/booley/data/refs/CHANGELOG.md"
 
 
 def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
@@ -85,7 +88,8 @@ def _doc_source_text(source: str) -> bytes:
 
 
 def _write_doc_sources(root: Path) -> None:
-    """Write every shipped doc source under *root*; no packaged copy is written."""
+    """Write every shipped doc source and the changelog under *root*; no copy is written."""
+    (root / CHANGELOG_SOURCE).write_bytes(b"# Changelog\n")
     for source in SHIPPED_DOCS:
         path = root / source
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,9 +146,14 @@ def test_rendered_docs_are_untracked_and_ignored() -> None:
         ["git", "-C", str(SOURCE_ROOT), "ls-files", "--", PACKAGED_DOCS_RELATIVE_DIR], check=True
     )
     assert tracked.stdout == ""
+    changelog = run_bounded_child(
+        ["git", "-C", str(SOURCE_ROOT), "ls-files", "--", PACKAGED_CHANGELOG], check=True
+    )
+    assert changelog.stdout == ""
     paths = [
         f"{PACKAGED_DOCS_RELATIVE_DIR}/{posixpath.basename(source)}" for source in SHIPPED_DOCS
     ]
+    paths.append(PACKAGED_CHANGELOG)
     # Exit 1 means nothing matched, which the comparison below reports.
     ignored = run_bounded_child(["git", "-C", str(SOURCE_ROOT), "check-ignore", "--", *paths])
     assert sorted(ignored.stdout.split()) == sorted(paths)
@@ -205,8 +214,12 @@ class TestWriteBuildStamp:
         directory.mkdir(parents=True)
         (directory / "RETIRED.md").write_bytes(b"old\n")
 
+        # A renderer or text-mode copy would rewrite the link or the CRLF.
+        (repo / CHANGELOG_SOURCE).write_bytes(b"# Changelog\n[x](docs/user/SETUP.md)\r\n")
+
         write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
 
+        assert (repo / PACKAGED_CHANGELOG).read_bytes() == (repo / CHANGELOG_SOURCE).read_bytes()
         for source in SHIPPED_DOCS:
             assert _copy_path(repo, source).read_bytes() == _rendered(repo, source)
         assert _copy_path(repo, "docs/user/CONFIG.md").read_bytes() == (
@@ -215,10 +228,11 @@ class TestWriteBuildStamp:
         assert not (directory / "RETIRED.md").exists()
         assert len(list(directory.iterdir())) == len(SHIPPED_DOCS)
 
-    def test_missing_shipped_source_fails_naming_it(self, repo: Path):
-        (repo / "docs/user/TESTS.md").unlink()
+    @pytest.mark.parametrize("source", ["docs/user/TESTS.md", CHANGELOG_SOURCE])
+    def test_missing_shipped_source_fails_naming_it(self, repo: Path, source: str):
+        (repo / source).unlink()
 
-        with pytest.raises(ValueError, match=r"docs/user/TESTS\.md"):
+        with pytest.raises(ValueError, match=re.escape(source)):
             write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
 
         assert not stamp_path(repo).exists()
@@ -236,6 +250,7 @@ class TestWriteBuildStamp:
 
         with runtime_image_build_stamp(repo) as commit:
             assert (repo / PACKAGED_DOCS_RELATIVE_DIR / "CONFIG.md").is_file()
+            assert (repo / PACKAGED_CHANGELOG).is_file()
             assert commit != "" and not commit.endswith("+dirty")
 
         status = run_bounded_child(
@@ -264,9 +279,10 @@ class TestWriteBuildStamp:
         )
 
     def test_shipped_sources_enter_fingerprints_and_rendered_copies_do_not(self, repo: Path):
-        for source in SHIPPED_DOCS:
+        for source in (*SHIPPED_DOCS, CHANGELOG_SOURCE):
             before = (resolve_payload_fingerprint(repo), resolve_wheel_source_fingerprint(repo))
-            (repo / source).write_bytes(_doc_source_text(source) + b"edit\n")
+            with (repo / source).open("ab") as handle:
+                handle.write(b"edit\n")
             after = (resolve_payload_fingerprint(repo), resolve_wheel_source_fingerprint(repo))
             assert after[0] != before[0], source
             assert after[1] != before[1], source
@@ -275,11 +291,13 @@ class TestWriteBuildStamp:
         copy = _copy_path(repo, "docs/user/CONFIG.md")
         copy.parent.mkdir(parents=True, exist_ok=True)
         copy.write_bytes(b"rendered copy\n")
+        (repo / PACKAGED_CHANGELOG).write_bytes(b"rendered changelog\n")
         assert (
             resolve_payload_fingerprint(repo),
             resolve_wheel_source_fingerprint(repo),
         ) == baseline
         copy.unlink()
+        (repo / PACKAGED_CHANGELOG).unlink()
         assert (
             resolve_payload_fingerprint(repo),
             resolve_wheel_source_fingerprint(repo),
@@ -590,6 +608,9 @@ class TestDevelopmentBuildContext:
             assert resolve_payload_fingerprint(extracted) == namespace["PAYLOAD_FINGERPRINT"]
             assert stamp_path(extracted).is_file()
             assert development_context_path(extracted).is_file()
+            assert (extracted / PACKAGED_CHANGELOG).read_bytes() == (
+                root / CHANGELOG_SOURCE
+            ).read_bytes()
             for source in SHIPPED_DOCS:
                 assert (extracted / source).read_bytes() == (root / source).read_bytes()
                 assert _copy_path(extracted, source).read_bytes() == _rendered(root, source)

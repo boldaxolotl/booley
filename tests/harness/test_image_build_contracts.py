@@ -161,6 +161,9 @@ def test_unmet_build_requirement_is_named_not_fetched(tmp_path: Path) -> None:
     assert "pip" not in built.stderr
 
 
+_PROBE_RELEASE = "## Unreleased\n\n## 99.0.0 - 01 JAN 2099\n\n### Upgrade notes\n\n- Probe.\n"
+
+
 @pytest.fixture(scope="module")
 def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]:
     """Build the official sdist and the wheel built from it, as ``publish.yml`` does.
@@ -172,6 +175,10 @@ def official_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path
     base = tmp_path_factory.mktemp("official-wheel")
     checkout = base / "checkout"
     copy_source_checkout(SOURCE_ROOT, checkout)
+    # A probe release only a copy made at build time can hold.
+    changelog = checkout / "CHANGELOG.md"
+    text = changelog.read_text(encoding="utf-8")
+    changelog.write_bytes(text.replace("## Unreleased\n", _PROBE_RELEASE, 1).encode("utf-8"))
     write_build_stamp(checkout, profile=BuildProfile.OFFICIAL_RELEASE)
     dist = base / "dist"
     built = run_bounded_child(
@@ -192,6 +199,9 @@ def test_official_wheel_renders_shipped_docs_from_sources(
             source: archive.read(f"booley/data/docs/{posixpath.basename(source)}")
             for source in SHIPPED_DOCS
         }
+        changelog = archive.read("booley/data/refs/CHANGELOG.md")
+
+    assert changelog == (checkout / "CHANGELOG.md").read_bytes()
 
     for source, content in packed.items():
         expected = render_packaged_doc(source, (checkout / source).read_bytes().decode("utf-8"))
@@ -219,12 +229,17 @@ def test_official_sdist_contains_every_shipped_doc(
                 source, (checkout / source).read_bytes().decode("utf-8")
             )
             assert extracted.read() == expected.encode("utf-8"), source
+        member = packed.get("src/booley/data/refs/CHANGELOG.md")
+        assert member is not None, "sdist lacks the packaged changelog"
+        extracted = archive.extractfile(member)
+        assert extracted is not None
+        assert extracted.read() == (checkout / "CHANGELOG.md").read_bytes()
 
 
 def test_validator_names_shipped_docs_missing_from_the_wheel(
     official_build: tuple[Path, Path, Path],
 ) -> None:
-    _checkout, _sdist, wheel = official_build
+    checkout, _sdist, wheel = official_build
     spec = importlib.util.spec_from_file_location(
         "validate_installed_artifact_under_test",
         SOURCE_ROOT / ".github" / "scripts" / "validate_installed_artifact.py",
@@ -234,14 +249,21 @@ def test_validator_names_shipped_docs_missing_from_the_wheel(
     spec.loader.exec_module(validator)
     with zipfile.ZipFile(wheel) as archive:
         files = validator._package_files(set(archive.namelist()))
+        changelog = archive.read("booley/data/refs/CHANGELOG.md")
 
     validator._assert_resources(files)
+    assert changelog == (checkout / "CHANGELOG.md").read_bytes()
 
-    lacking = files - {"booley/data/docs/CONFIG.md", "booley/data/docs/TESTS.md"}
+    lacking = files - {
+        "booley/data/docs/CONFIG.md",
+        "booley/data/docs/TESTS.md",
+        "booley/data/refs/CHANGELOG.md",
+    }
     with pytest.raises(validator.ArtifactValidationError) as raised:
         validator._assert_resources(lacking)
     assert "booley/data/docs/CONFIG.md" in str(raised.value)
     assert "booley/data/docs/TESTS.md" in str(raised.value)
+    assert "booley/data/refs/CHANGELOG.md" in str(raised.value)
 
 
 def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access(
@@ -292,7 +314,59 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     assert observed["prepared"] == 2
 
 
-_INSTALLED_WHEEL_DRIVER = r"""\
+def test_installed_wheel_acknowledges_upgrade_from_its_packaged_changelog(
+    tmp_path: Path, official_build: tuple[Path, Path, Path]
+) -> None:
+    """The installed wheel acknowledges an upgrade from its own changelog copy (#4356)."""
+    checkout, _sdist, wheel = official_build
+    installed = tmp_path / "site-packages"
+    with zipfile.ZipFile(wheel) as archive:
+        archive.extractall(installed)
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
+            environment.pop(name)
+    environment.update({"PYTHONNOUSERSITE": "1", "PYTHONPATH": str(installed)})
+    completed = run_bounded_child(
+        [
+            sys.executable,
+            "-P",
+            "-c",
+            _ACKNOWLEDGE_DRIVER,
+            str(tmp_path / "booley"),
+            str(checkout),
+            str(SOURCE_ROOT),
+        ],
+        cwd=tmp_path,
+        env=environment,
+    )
+
+    assert completed.stdout.strip() == "current", completed.stderr
+
+
+_ACKNOWLEDGE_DRIVER = """\
+import sys
+from pathlib import Path
+
+forbidden = [Path(arg).resolve() for arg in sys.argv[2:]]
+def audit(event, args):
+    if event == "open" and args and isinstance(args[0], (str, bytes)):
+        path = Path(args[0]).resolve()
+        if any(path.is_relative_to(root) for root in forbidden):
+            raise RuntimeError(f"forbidden checkout read: {path}")
+sys.addaudithook(audit)
+
+from booley.harness import upgrade_review
+
+booley_dir = Path(sys.argv[1])
+(booley_dir / "runtime").mkdir(parents=True)
+upgrade_review.observe(booley_dir, current_version="0.5.1")
+upgrade_review.observe(booley_dir, current_version="99.0.0")
+print(upgrade_review.acknowledge(booley_dir, "99.0.0", current_version="99.0.0").condition.value)
+"""
+
+
+_INSTALLED_WHEEL_DRIVER = r"""\\
 import json
 import sys
 from pathlib import Path

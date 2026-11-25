@@ -51,6 +51,7 @@ CURRENT_WHEEL = "<current-wheel>"
 _CHECKOUT_FILES = (
     ".dockerignore",
     "VERSION",
+    "CHANGELOG.md",
     "pyproject.toml",
     "src/booley/data/docker",
     "src/booley/data/edalize/verible.py",

@@ -136,8 +136,6 @@ def test_documented_command_paths_are_registered_and_allowed() -> None:
     count = 0
     documents: dict[str, str] = {}
     for doc in source_checkout_files(ROOT, "src/booley/data", "docs/user"):
-        if doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
-            continue
         try:
             documents[doc.relative_to(ROOT).as_posix()] = doc.read_text(encoding="utf-8")
         except UnicodeDecodeError:

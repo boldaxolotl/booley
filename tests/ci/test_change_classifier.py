@@ -563,7 +563,6 @@ _NOT_SELECTED_BY_SOURCE = {
             for path in (
                 "setup.cfg",
                 "CHANGELOG.md",
-                "src/booley/data/refs/CHANGELOG.md",
                 "release-assets/x",
                 "unmapped/config.xyz",
             )
