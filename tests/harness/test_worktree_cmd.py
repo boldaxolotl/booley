@@ -509,7 +509,11 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
     error = capsys.readouterr().err
     assert "same Sandbox" in error and "Remove the Paired Checkout first" in error
     assert "Sandbox paths" in error and "WARNING" not in error
-    commands = [line.split(": ", 1)[1] for line in error.splitlines() if "git -C" in line]
+    commands = [
+        line.split(": ", 1)[1]
+        for line in error.splitlines()
+        if "git -C" in line and "ERROR" not in line
+    ]
     expected = [
         ["git", "-C", str(source), "worktree", "remove", str(paired)],
         ["git", "-C", str(root), "worktree", "remove", str(worktree)],
