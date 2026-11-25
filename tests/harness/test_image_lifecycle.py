@@ -25,6 +25,7 @@ from booley.runtime.version_attribution import VersionOrigin
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.docker_image_cli_fake import DockerImageCli, image_row, serve_docker_image_cli
+from tests.python_modules import set_importable
 from tests.subprocess_budget import run_bounded_child
 
 _ACTUAL_ALIAS_PROBE = lifecycle.project_image.project_data_alias_capable
@@ -685,6 +686,7 @@ def docker_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleName
     from booley.harness.setup import docker_image
 
     _set_source_installation(tmp_path, monkeypatch)
+    set_importable(monkeypatch, ensurepip=True)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     pin_image_inputs(monkeypatch, contracts=_BUILD_CONTRACTS)
@@ -749,6 +751,19 @@ def _requirements_project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def test_prepare_refuses_a_wheel_build_without_ensurepip_before_any_image_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, docker_builds: SimpleNamespace
+) -> None:
+    set_importable(monkeypatch, ensurepip=False, virtualenv=False)
+    planned = docker_builds.refresh_plan(_project(tmp_path))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=r"apt install python\d+\.\d+-venv"):
+        harness_lifecycle.prepare(planned)
+
+    assert docker_builds.specs == []
+    assert docker_builds.capacity == []
 
 
 def test_prepare_builds_each_role_from_its_parent_candidate(
