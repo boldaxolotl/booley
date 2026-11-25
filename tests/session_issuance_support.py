@@ -154,8 +154,13 @@ class HostDocker:
 
     @property
     def mutations(self) -> list[list[str]]:
-        """Calls that would change Docker state: tags, removals and stops."""
-        return [args for args in self.calls if {"tag", "rm", "stop", "kill"} & set(args[:2])]
+        """Calls that would change Docker state: tags, removals, stops and new containers."""
+        changing = {"tag", "rm", "stop", "kill", "create", "start", "connect"}
+        return [
+            args
+            for args in self.calls
+            if changing & set(args[:2]) or (args[0] == "run" and "--rm" not in args)
+        ]
 
 
 def _answer(

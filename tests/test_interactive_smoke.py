@@ -158,20 +158,21 @@ def test_baseline_uses_worktree_and_leaves_tree_untouched(tmp_path: Path) -> Non
 
     repo = repository(tmp_path / "repo")
     marker = repo / "rtl.v"
-    marker.write_text("// baseline version\n", encoding="utf-8")
+    marker.write_text("// baseline version\n", encoding="utf-8", newline="\n")
     cores_dir = repo / ".booley" / "cores"
     cores_dir.mkdir(parents=True)
     (cores_dir / "interactive.core").write_text(
         "CAPI=2:\nname: ::interactive:0\ntargets:\n  synth_default:\n"
         "    flow: generic\n    flow_options: {tool: yosys}\n    toplevel: dut\n",
         encoding="utf-8",
+        newline="\n",
     )
     git(repo, "add", "-A")
     git(repo, "commit", "-qm", "baseline")
-    marker.write_text("// current version\n", encoding="utf-8")
+    marker.write_text("// current version\n", encoding="utf-8", newline="\n")
     git(repo, "commit", "-qam", "current")
     # An UNCOMMITTED working-tree edit that an in-place checkout would clobber.
-    marker.write_text("// uncommitted edits — MUST survive\n", encoding="utf-8")
+    marker.write_text("// uncommitted edits — MUST survive\n", encoding="utf-8", newline="\n")
     before = marker.read_text(encoding="utf-8")
 
     tool = AsicSynthesizeFlow()
