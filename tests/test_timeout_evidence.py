@@ -197,7 +197,7 @@ def test_timeout_evidence_one_failing_child_keeps_its_pid(tmp_path: Path) -> Non
 
 
 def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_path: Path) -> None:
-    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(10)")
+    result, evidence = _run_pytest_case(tmp_path, 1, "@pytest.mark.timeout(10)", "time.sleep(2)")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
@@ -205,11 +205,11 @@ def test_integration_timeout_overrides_unit_budget_without_false_evidence(tmp_pa
 
 
 def _run_pytest_case(
-    tmp_path: Path, workers: int, marker: str, body: str = "time.sleep(2)"
+    tmp_path: Path, workers: int, marker: str, body: str = "threading.Event().wait()"
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     (tmp_path / "test_case.py").write_text(
-        f"import time\nimport pytest\n{marker}\ndef test_slow():\n    {body}\n",
+        f"import threading\nimport time\nimport pytest\n{marker}\ndef test_slow():\n    {body}\n",
         encoding="utf-8",
     )
     evidence = tmp_path / "evidence"
@@ -265,9 +265,8 @@ def _timeout_environment(evidence: Path) -> dict[str, str]:
 
 def test_failed_evidence_write_still_terminates_worker(tmp_path: Path) -> None:
     body = (
-        "import os; from pathlib import Path; "
-        "(Path(os.environ['BOOLEY_PYTEST_EVIDENCE_DIR']) / "
-        "f'timeout-gw0-{os.getpid()}.log').mkdir(); time.sleep(2)"
+        "import os; from pathlib import Path; (Path(os.environ['BOOLEY_PYTEST_EVIDENCE_DIR']) / "
+        "f'timeout-gw0-{os.getpid()}.log').mkdir(); threading.Event().wait()"
     )
     result, _evidence = _run_pytest_case(tmp_path, 1, "", body)
 
