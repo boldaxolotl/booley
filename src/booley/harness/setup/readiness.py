@@ -469,7 +469,7 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
     main = resolve_main_checkout_root(project.project_root)
     try:
         entries = list_worktrees(main)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError):
         return ()
     worktrees: list[Path] = []
     for entry in entries[1:]:
@@ -487,7 +487,18 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
 
 
 def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
-    for worktree in _live_worktree_paths(project):
+    try:
+        worktrees = _live_worktree_paths(project)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        report.warn(
+            f"cannot list worktrees: {detail}",
+            "fix the Git error and rerun Doctor",
+            check_id="git.worktree-portability",
+            subject=str(project.project_root),
+        )
+        return
+    for worktree in worktrees:
         problems = _worktree_metadata_problems(worktree)
         if problems:
             report.warn(

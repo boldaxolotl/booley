@@ -3045,8 +3045,10 @@ class TestWorktreePortability:
         else:
             assert any("host Git capability is unknown" in item.message for item in findings)
 
-    def test_unlistable_registry_lists_no_worktrees(self, tmp_path):
-        assert readiness._live_worktree_paths(self._project(tmp_path)) == ()
+    def test_unlistable_registry_warns_with_git_error(self, tmp_path):
+        report = readiness.Findings()
+        readiness._inspect_live_worktrees(self._project(tmp_path), report)
+        assert any("cannot list worktrees" in item.message for item in report.report().findings)
 
     @pytest.mark.parametrize(
         "row",
