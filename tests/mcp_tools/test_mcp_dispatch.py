@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -454,15 +455,18 @@ class TestReportFetch:
         assert result == (0, "ok", "", False)
         jobs.run_synchronous.assert_awaited_once_with("lint", ["lint"], 60, context=context)
 
-    def test_administrative_inline_timeout_closes_display(self, monkeypatch):
+    def test_administrative_inline_endpoint_runs_the_subprocess_under_the_given_invocation_id(
+        self, monkeypatch
+    ):
         import asyncio
 
-        async def timed_out(*_args, **_kwargs):
+        seen: dict[str, Any] = {}
+
+        async def run(_cmd, **kwargs):
+            seen.update(kwargs)
             return 124, "", "timeout", True
 
-        monkeypatch.setattr(mcp_server, "_run_subprocess", timed_out)
-        write_end = MagicMock()
-        monkeypatch.setattr(endpoint_process, "write_synthetic_endpoint_end", write_end)
+        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
 
         result = asyncio.run(
             mcp_server._run_inline_endpoint(
@@ -472,37 +476,13 @@ class TestReportFetch:
                 _JobManager(_FakeLifetime()),
                 context=_call_ctx(),
                 publish_activity=False,
+                invocation_id="given-id",
             )
         )
 
         assert result == (124, "", "timeout", True)
-        assert write_end.call_args.args[:2] == ("submit_run_report", 15)
-        assert write_end.call_args.kwargs["identity"].invocation_id
-
-    def test_administrative_inline_cancellation_closes_display(self, monkeypatch):
-        import asyncio
-
-        async def cancelled(*_args, **_kwargs):
-            raise asyncio.CancelledError
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", cancelled)
-        write_end = MagicMock()
-        monkeypatch.setattr(endpoint_process, "write_synthetic_endpoint_end", write_end)
-
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(
-                mcp_server._run_inline_endpoint(
-                    "submit_run_report",
-                    ["report"],
-                    15,
-                    _JobManager(_FakeLifetime()),
-                    context=_call_ctx(),
-                    publish_activity=False,
-                )
-            )
-
-        assert write_end.call_args.args[:2] == ("submit_run_report", 0)
-        assert write_end.call_args.kwargs["outcome"] == "aborted"
+        assert seen["timeout"] == 15
+        assert seen["env"]["BOOLEY_DISPLAY_INVOCATION_ID"] == "given-id"
 
     def test_latest_report_no_reports_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -1879,11 +1859,6 @@ class TestCancel:
             got = jobrec.read_record("simulate-c-2", root=session_jobs_dir())
             assert got is not None and got.status == jobrec.STATUS_CANCELLED
             assert got.exit_code == 130
-            terminal = json.loads(
-                (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-            )
-            assert terminal["invocation_id"] == "simulate-c-2"
-            assert terminal["outcome"] == "cancelled"
         finally:
             if child.poll() is None:
                 child.kill()
@@ -2010,14 +1985,7 @@ class TestCancel:
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_CANCELLED
         assert "CANCELLED" in jobs.result_text(run_id)
-        events = [
-            json.loads(line)
-            for line in (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()
-        ]
-        terminal = events[-1]
-        assert terminal["type"] == "endpoint_end"
-        assert terminal["invocation_id"] == run_id
-        assert terminal["outcome"] == "cancelled"
+        assert not list(_report_env.glob("*.jsonl"))
 
     def test_server_shutdown_cancellation_is_not_mislabeled_as_user_cancel(
         self,
@@ -2050,11 +2018,7 @@ class TestCancel:
         run_id = asyncio.run(scenario())
         record = jobrec.read_record(run_id, root=session_jobs_dir())
         assert record is not None and record.status == jobrec.STATUS_RUNNING
-        terminal = json.loads(
-            (_report_env / "display.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-        )
-        assert terminal["invocation_id"] == run_id
-        assert terminal["outcome"] == "aborted"
+        assert not list(_report_env.glob("*.jsonl"))
 
     def test_adopted_cancel_persists_only_after_process_stops(self, _report_env, monkeypatch):
         import asyncio
@@ -2121,7 +2085,6 @@ class TestCancel:
         assert phase == "finished"
         final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
         assert final is not None and final.status == jobrec.STATUS_DONE
-        assert not (_report_env / "display.jsonl").exists()
 
     def test_cancel_endpoint_visible_wherever_poll_is(self, monkeypatch):
         # Like poll, cancel must be reachable in Ticket-Mode too: any server

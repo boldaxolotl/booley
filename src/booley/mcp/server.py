@@ -26,7 +26,6 @@ import hashlib
 import json
 import logging
 import os
-import shlex
 import socket
 import sys
 import time
@@ -64,11 +63,6 @@ from booley.config.feature_flags import FeatureConfigError, enabled_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
-from booley.flows.endpoint_events import (
-    _endpoint_end_event,
-    _endpoint_start_event,
-    _write_display_event,
-)
 from booley.mcp import (
     call_context,
     catalog,
@@ -125,8 +119,7 @@ from booley.runtime.booley_dir import (
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.handles import HandleStore
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
@@ -934,39 +927,14 @@ async def _dispatch_bwave(
     if not catalog.tool_visible(name, _exposure()):
         return None
     cmd = builder(arguments)
-    extra_args = arguments.get("extra_args", [])
-    display_label = shlex.join(extra_args) if extra_args else None
-    identity = DisplayIdentity.current(uuid.uuid4().hex)
-    _write_display_event(
-        _endpoint_start_event(
-            name,
-            None,
-            display_label=display_label,
-            identity=identity,
-        ),
-    )
-    started = time.monotonic()
-    exit_code = 2
-    try:
-        checkout = request_context.checkout if request_context is not None else None
-        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
-        return [
-            TextContent(
-                type="text",
-                text=_format_mcp_tool_result(exit_code, stdout, stderr),
-            )
-        ]
-    finally:
-        _write_display_event(
-            _endpoint_end_event(
-                name,
-                None,
-                EndpointOutcome(exit_code=exit_code),
-                time.monotonic() - started,
-                display_label=display_label,
-                identity=identity,
-            ),
+    checkout = request_context.checkout if request_context is not None else None
+    exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
+    return [
+        TextContent(
+            type="text",
+            text=_format_mcp_tool_result(exit_code, stdout, stderr),
         )
+    ]
 
 
 def _job_inline_wait_seconds() -> float:
@@ -1155,10 +1123,6 @@ class _JobManager(JobLifecycle):
     @staticmethod
     async def _run_process(cmd: list[str], **kwargs: Any) -> tuple[int, str, str, bool]:
         return await _run_subprocess(cmd, **kwargs)
-
-    @staticmethod
-    def _write_end(name: str, duration_s: int, **kwargs: Any) -> None:
-        endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
     async def _cancel_process(pid: int, grace_seconds: float) -> None:
@@ -1532,25 +1496,15 @@ async def _run_inline_endpoint(
     """Run inline work, recording only user-visible endpoint activity."""
     if publish_activity:
         return await jobs.run_synchronous(name, cmd, timeout, context=context)
-    identity = DisplayIdentity.current(invocation_id or uuid.uuid4().hex)
-    try:
-        result = await _run_subprocess(
-            cmd,
-            timeout=timeout,
-            env=endpoint_process._endpoint_subprocess_env(
-                context,
-                pytest_scope=name,
-                BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id,
-            ),
-        )
-    except asyncio.CancelledError:
-        endpoint_process.write_synthetic_endpoint_end(
-            name, 0, identity=identity, outcome="aborted"
-        )
-        raise
-    if result[3]:
-        endpoint_process.write_synthetic_endpoint_end(name, timeout, identity=identity)
-    return result
+    return await _run_subprocess(
+        cmd,
+        timeout=timeout,
+        env=endpoint_process._endpoint_subprocess_env(
+            context,
+            pytest_scope=name,
+            BOOLEY_DISPLAY_INVOCATION_ID=invocation_id or uuid.uuid4().hex,
+        ),
+    )
 
 
 def _unroutable_endpoint_error(
@@ -2494,7 +2448,7 @@ def _job_logs_dir() -> Path | None:
 def _maybe_configure_job_logs_dir() -> None:
     """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
-    Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
+    Without this, transcripts from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.

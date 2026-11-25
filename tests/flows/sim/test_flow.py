@@ -53,62 +53,6 @@ def _canned_build_session():
         yield
 
 
-def _start_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets, **kwargs) -> str | None:
-    """The display label of the first ``endpoint_start`` event of a record-path run."""
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-    run_simulation_record_sim(tmp_path, monkeypatch, targets, PASS_PROCESS, **kwargs)
-    lines = (tmp_path / "runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
-    events = [json.loads(line) for line in lines]
-    return next(event["display_label"] for event in events if event["type"] == "endpoint_start")
-
-
-@pytest.mark.parametrize(
-    ("targets", "request_args", "expected"),
-    [
-        pytest.param(
-            {"sim_mul": ["smoke", "edge"]},
-            {"target": "sim_mul", "test": ("smoke",)},
-            "target sim_mul · test smoke",
-            id="one-requested-test",
-        ),
-        pytest.param(
-            {"sim_mul": ["mul_base", "mul_edge"]},
-            {"target": "sim_mul", "test": ("mul_base", "mul_edge")},
-            "target sim_mul · 2 tests",
-            id="distinct-exact-tests",
-        ),
-        pytest.param(
-            {"sim_mul": ["smoke", "edge"]},
-            {"target": "sim_mul", "skip": {"sim_mul": ["edge"]}},
-            "target sim_mul · test smoke",
-            id="configured-skip-applied",
-        ),
-        pytest.param(
-            {"sim_a": ["smoke"], "sim_b": ["smoke"]},
-            {"target": "sim_a,sim_b", "test": ("smoke",)},
-            "2 targets · test smoke",
-            id="same-test-across-targets",
-        ),
-        pytest.param(
-            {"sim_a": ["smoke"], "sim_b": []},
-            {"target": "sim_a,sim_b"},
-            "2 targets · tests",
-            id="undeclared-target",
-        ),
-        pytest.param(
-            {"sim_core": []},
-            {"target": "sim_core", "mode": "elab_only", "dry_run": True},
-            "target sim_core · elaboration",
-            id="elaboration-mode",
-        ),
-    ],
-)
-def test_display_label_names_the_requested_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets, request_args, expected: str
-):
-    assert _start_label(tmp_path, monkeypatch, targets, **request_args) == expected
-
-
 def test_a_request_outside_the_sandbox_is_refused(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     if runtime_context.inside_session_runtime():
@@ -120,36 +64,6 @@ def test_a_request_outside_the_sandbox_is_refused(tmp_path: Path, monkeypatch):
 
     assert result.exit_code == EXIT_ERROR
     assert "runs inside the Booley Sandbox" in result.outcome.report_text
-
-
-@pytest.mark.parametrize(
-    ("target", "names", "skips", "expected"),
-    [
-        ("::demo:core:0#sim_mul", RuntimeError("boom"), {}, "target sim_mul · tests"),
-        (
-            "sim_mul",
-            {"sim_mul": ["smoke", "edge"]},
-            {"sim_mul": ["edge"]},
-            "target sim_mul · test smoke",
-        ),
-        ("sim_a,sim_b", {"sim_a": ["smoke"]}, {}, "2 targets · tests"),
-    ],
-    ids=["discovery-failure", "skips-applied", "undeclared-target"],
-)
-def test_display_label_of_a_target_no_core_declares(
-    tmp_path: Path, target: str, names: Any, skips: dict[str, list[str]], expected: str
-):
-    flow = SimulateFlow()
-    flow.parse_args(["--work-dir", str(tmp_path), "--target", target])
-
-    # Private seam: the endpoint refuses a Target no core declares before it emits the label, so only
-    # a stubbed discovery reaches the label's registry-only fallback.
-    failure = {"side_effect": names} if isinstance(names, Exception) else {"return_value": names}
-    with (
-        patch("booley.flows.sim.flow._get_test_names", **failure),
-        patch("booley.flows.sim.test_selection._get_test_skips", return_value=skips),
-    ):
-        assert flow._resolve_display_label() == expected
 
 
 def test_simulation_record_work_units_are_summed_over_every_target(tmp_path: Path):

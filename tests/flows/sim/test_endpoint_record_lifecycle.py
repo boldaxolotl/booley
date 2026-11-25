@@ -742,7 +742,7 @@ def _public_cycle_flow(simulation_record, monkeypatch):
 
     flow = SimulateFlow()
     # Private seams kept: the run is stubbed at the prepared boundary, so the real
-    # state gate and display label have no Project to read.
+    # state gate has no Project to read.
     monkeypatch.setattr(flow, "_pre_state_gate", lambda: None)
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record_invocation import SimulationRecordInvocation
@@ -751,7 +751,6 @@ def _public_cycle_flow(simulation_record, monkeypatch):
     prepared = PreparedSimulationEndpoint((), None, (), {})
     prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared))
     monkeypatch.setattr(EndpointState, "admission", lambda *_args, **_kwargs: nullcontext(None))
-    monkeypatch.setattr(flow, "_resolve_display_label", lambda: None)
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",

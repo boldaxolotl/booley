@@ -775,9 +775,7 @@ time.sleep({2 * WAIT_TIMEOUT})
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux process-tree observation")
-def test_event_loop_shutdown_aborts_real_process_group(context, monkeypatch):
-    events = []
-    monkeypatch.setattr(endpoint_process, "_write_display_event", events.append)
+def test_event_loop_shutdown_aborts_real_process_group(context):
     activity = Activity()
     jobs = FastSupervisor(activity)
 
@@ -792,7 +790,6 @@ def test_event_loop_shutdown_aborts_real_process_group(context, monkeypatch):
     asyncio.run(wait_until(lambda: not is_pid_alive(rec.pid) and not is_pid_alive(descendant_pid)))
     assert rec.status == "running"  # Shutdown is recoverable, never user cancellation.
     assert activity.starts == activity.ends == 1
-    assert any(event["outcome"] == "aborted" for event in events)
     jobs.reconcile_orphaned()
     assert job_records.read_record(run_id, context.jobs_root).status == "failed"
 

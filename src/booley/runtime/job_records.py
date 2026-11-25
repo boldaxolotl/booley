@@ -81,8 +81,7 @@ class JobRecordError(RuntimeError):
 class JobRecord:
     """On-disk record of one detached endpoint run.
 
-    ``pid`` is the child subprocess PID — the same PID the child stamps into its
-    ``endpoint_start`` display event, so it is authoritative for liveness and lets a
+    ``pid`` is the child subprocess PID, so it is authoritative for liveness and lets a
     restarted server tell "still running" from "crashed" without the in-memory
     task.  It is ``None`` only in the sliver between record creation and process
     spawn (the record is written twice: once at submit, once the PID is known).
