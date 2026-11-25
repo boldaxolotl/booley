@@ -121,7 +121,7 @@ def _head_key(checkout: Path, head: str) -> str | None:
         return None
 
 
-def _walk(checkout: Path, head: str) -> list[tuple[str, str]]:
+def first_parent_history(checkout: Path, head: str) -> list[tuple[str, str]]:
     """``(commit, tree)`` of the first-parent history from *head* to the merge-base, included."""
     try:
         stop = resolve_base(checkout, head).commit or head
@@ -146,7 +146,7 @@ def _stored_line(checkout: Path) -> MeasurementLine | None:
     try:
         head = _text(checkout, "rev-parse", "--verify", "HEAD^{commit}")
         booley_tree = _head_key(checkout, head)
-        history = _walk(checkout, head)
+        history = first_parent_history(checkout, head)
         store = MeasurementStore(main_booley_dir_of(checkout))
     except (FileCommitError, OSError, ValueError, RuntimeError):
         return None
