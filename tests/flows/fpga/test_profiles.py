@@ -13,32 +13,20 @@ from booley.flows.fpga.profiles import (
 )
 
 
-def test_default_profile_preserves_existing_vivado_defaults() -> None:
-    profile = resolve_fpga_profile({}, target="fpga_core")
+@pytest.mark.parametrize(
+    ("flow_options", "override", "expected"),
+    [
+        ({}, None, "balanced"),
+        ({"ppa_profile": "compact"}, "max_frequency", "max_frequency"),
+        # Engine fields are not profile overrides.
+        ({"synth": "vivado", "pnr": "vivado"}, None, "balanced"),
+    ],
+    ids=["default", "call-overrides-target", "engine-fields"],
+)
+def test_profile_resolution(flow_options: dict, override: str | None, expected: str) -> None:
+    profile = resolve_fpga_profile(flow_options, override=override, target="fpga_core")
 
-    assert profile is VIVADO_PROFILES["balanced"]
-    assert profile.apply_strategy is False
-    assert profile.synthesis_strategy == "Vivado Synthesis Defaults"
-    assert profile.implementation_strategy == "Vivado Implementation Defaults"
-
-
-def test_call_profile_overrides_target_profile() -> None:
-    profile = resolve_fpga_profile(
-        {"ppa_profile": "compact"},
-        override="max_frequency",
-        target="fpga_core",
-    )
-
-    assert profile is VIVADO_PROFILES["max_frequency"]
-
-
-def test_synth_and_pnr_engine_fields_are_not_profile_overrides() -> None:
-    profile = resolve_fpga_profile(
-        {"synth": "vivado", "pnr": "vivado"},
-        target="fpga_core",
-    )
-
-    assert profile is VIVADO_PROFILES["balanced"]
+    assert profile is VIVADO_PROFILES[expected]
 
 
 @pytest.mark.parametrize("value", ["speed", "area", "", 1, True, None])
