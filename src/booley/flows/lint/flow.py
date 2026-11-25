@@ -939,9 +939,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             write_run_log(build_root, combined)
         except OSError:
             logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
-        invocation_dir = getattr(self, "_lint_invocation_dir", None)
-        if invocation_dir is None:
-            return ""
+        invocation_dir = self._lint_invocation_dir
         try:
             return artifacts.publish_bytes(
                 invocation_dir,
@@ -956,7 +954,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _run_lint_target(
         self,
         target: TargetHandle,
-        prepared: _PreparedLintTarget | None = None,
+        prepared: _PreparedLintTarget,
     ) -> LintConfigResult:
         """Run lint for a single Target via the Edalize lint flow, parse warnings.
 
@@ -975,8 +973,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
             selector,
             work_root_for(self.args.work_dir, "lint", selector),
         )
-        if prepared is None:
-            prepared = self._prepare_lint_targets((target,))[0][target.identity]
         result = prepared.result
         self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
@@ -1118,11 +1114,10 @@ class LintFlow(BuiltinFlow[LintRequest]):
         elapsed_s: float,
         errored: list[LintConfigResult] | None = None,
         target_results: list[LintConfigResult] | None = None,
-    ) -> Path | None:
+    ) -> Path:
         """Publish the numbered report, then refresh its flat latest alias."""
         report_dir = self.args.report_dir
-        if report_dir is None:
-            return None
+        assert report_dir is not None, "every Flow entry resolves a report directory"
         make_directories(report_dir)
 
         warning_details = _build_warning_details(unique_warnings)
@@ -1183,15 +1178,14 @@ class LintFlow(BuiltinFlow[LintRequest]):
     def _run_all_targets(
         self,
         targets: tuple[TargetHandle, ...],
-        prepared: dict[str, _PreparedLintTarget] | None = None,
+        prepared: dict[str, _PreparedLintTarget],
     ) -> tuple[list[LintConfigResult], list[LintWarning]]:
         """Run lint per Target sequentially, print per-Target summary."""
         all_warnings: list[LintWarning] = []
         target_results: list[LintConfigResult] = []
         for target in targets:
-            unit = prepared[target.identity] if prepared is not None else None
             with judged_commands() as commands:
-                cr = self._run_lint_target(target, unit)
+                cr = self._run_lint_target(target, prepared[target.identity])
                 commands.judge(not cr.error)
             target_results.append(cr)
             line = _target_summary_line(cr)
@@ -1226,10 +1220,8 @@ class LintFlow(BuiltinFlow[LintRequest]):
             summary = f"RESULT: WARN ({len(unique)} warnings)"
             if not warnings_as_errors:
                 summary += " — non-blocking ([flows.lint].warnings_as_errors=false)"
-            if report_path is not None:
-                summary += (
-                    f"\nSee {report_path} for the full warning list (rule/file:line/message)."
-                )
+            assert report_path is not None, "a run with warnings has written its report"
+            summary += f"\nSee {report_path} for the full warning list (rule/file:line/message)."
             return (EXIT_FAILURE if warnings_as_errors else EXIT_SUCCESS), summary
         return EXIT_SUCCESS, "RESULT: PASS"
 
@@ -1361,7 +1353,9 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 report_text="lint planning failed: " + "; ".join(plan.aggregate_errors),
                 detail={"plan": plan.as_dict()},
             )
-        self._lint_invocation_dir = self.reserve_invocation_dir()
+        invocation_dir = self.reserve_invocation_dir()
+        assert invocation_dir is not None, "every Flow entry resolves a report directory"
+        self._lint_invocation_dir = invocation_dir
         for target in targets:
             self._open_run_log(
                 target.selector,
@@ -1406,12 +1400,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         if self.args.scope:
             unique = filter_by_scope(unique, self.args.scope)
         print(f"[lint] {len(unique)} unique in-scope warning{'s' if len(unique) != 1 else ''}")
-        invocation_report = (
-            self._lint_invocation_dir / "lint_report.json"
-            if self._lint_invocation_dir is not None
-            else None
-        )
-        _echo_warnings(unique, invocation_report)
+        _echo_warnings(unique, invocation_dir / "lint_report.json")
 
         errored = [cr for cr in target_results if cr.error]
 

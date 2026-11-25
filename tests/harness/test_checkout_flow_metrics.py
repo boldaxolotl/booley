@@ -24,7 +24,8 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime import job_records
 from tests.flows.conftest import _flow_project_root, _set_booley_dir, _set_flow_project_root
-from tests.flows.lint.test_flow import _REAL_CATALOG_BUILD, _stub_resolved, _target_handle
+from tests.flows.lint.linter_run_fake import stub_resolved
+from tests.flows.lint.test_flow import _REAL_CATALOG_BUILD, _target_handle
 from tests.flows.sim.conftest import (
     bare_identity_for_targets_without_a_core,
     declared_trace_files_convert_after_the_run,
@@ -124,7 +125,7 @@ def lint_result(
     prepared = (
         {"side_effect": prepare_error}
         if prepare_error is not None
-        else {"return_value": (["verilator", "--lint-only"], _stub_resolved())}
+        else {"return_value": (["verilator", "--lint-only"], stub_resolved())}
     )
     with monkeypatch.context() as scoped:
         install_lenient_target_catalog(
