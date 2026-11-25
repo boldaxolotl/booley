@@ -21,17 +21,21 @@ from booley.harness import projects_view
 from booley.presentation.terminal_table import render_table
 from booley.projects import cli as project_inventory_cli
 from booley.projects import inventory as project_inventory
-from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime import (
+    devcontainer,
     image_lifecycle,
     issuance_invalidation,
+    project_image,
     session_admission,
     session_issuance,
 )
+from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.session_issuance import keeper_image
 from tests import eda_grant_support
+from tests.devcontainer_spec_support import build_spec
 from tests.docker_image_cli_fake import DockerImageCli, serve_docker_image_cli
+from tests.session_issuance_support import fixed, install_trusted_validator
 
 _A, _B, _C = ("sha256:" + digit * 64 for digit in "abc")
 _CONTAINER = "c" * 64
@@ -606,6 +610,39 @@ def test_forget_withdraws_issuance_stamp_and_admission_claim(
     assert _session_files_remain(str(bystander.resolve()))
     remembered = [entry.project_root for entry in project_inventory.project_inventory()]
     assert remembered == [str(bystander.resolve())]
+
+
+def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
+    tmp_path: Path,
+    docker: DockerImageCli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Forget retains a keeper a Session container uses, yet the Sandbox must be reissued (#1112)."""
+    validator = install_trusted_validator(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", str(validator.parent))
+    project = _remember(tmp_path)
+    spec = build_spec(
+        devcontainer.APP_NONE,
+        mcp_start_command=devcontainer.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    docker.images[spec["image"]] = _A
+    docker.answer("run", stdout="directory\n")  # the Booley Directory layout probe
+    project_image.project_data_alias_capable.cache_clear()
+    prepared = session_issuance.preview(project, fixed(spec))
+    path = devcontainer.devcontainer_path(project)
+    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    docker.containers[_CONTAINER] = _A
+
+    assert _cli("projects", "forget", str(project), "--json") == 0
+
+    assert json.loads(capsys.readouterr().out)["keeper"]["status"] == "retained-in-use"
+    assert session_issuance.stamp_is_absent(project)
+    with pytest.raises(session_issuance.RuntimeSpecError, match="Sandbox issuance was withdrawn"):
+        session_issuance.validate(project, prepared.spec, path)
+    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert session_issuance.validate(project, prepared.spec, path).image_id == _A
 
 
 @pytest.mark.parametrize("failure", ["invalid-image", "invalid-container", "daemon"])
