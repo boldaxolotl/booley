@@ -81,8 +81,8 @@ def _issued_mount_points(*, unreadable: bool) -> bool:
 def runtime_location() -> RuntimeLocation:
     """Classify the runtime as host, hand-written Sandbox or Booley-issued Sandbox.
 
-    Not cached, so long-lived processes see the current mounts. No environment or
-    platform variable takes part in the issued verdict.
+    Not cached, so long-lived processes see the current mounts. Only the
+    host/Sandbox split reads ``BOOLEY_CONTAINER``; the issued verdict reads mounts alone.
     """
     if not inside_session_runtime():
         return RuntimeLocation.HOST

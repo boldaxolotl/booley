@@ -19,9 +19,10 @@ In `containerEnv`, set `BOOLEY_AGENT_APP` to `claude`, `codex`, `none`, or
 nor `/run/.containerenv`. Never set `BOOLEY_CONTAINER=0` in a Sandbox spec: that
 value declares a container that is itself a Booley host (for example a
 Docker-in-Docker test host), so host commands such as `booley session up` run
-there. A Booley-issued Sandbox stays a Sandbox. Booley picks the agent app at
-Sandbox start, so the spec's `postStartCommand` (and `postCreateCommand`, if
-any) must run `python -m booley.harness.incontainer_register`.
+there. A Booley-issued Sandbox stays a Sandbox, because its mount points
+outrank the value. Booley picks the agent app at Sandbox start, so the spec's
+`postStartCommand` (and `postCreateCommand`, if any) must run
+`python -m booley.harness.incontainer_register`.
 
 ## Project setup in a hand-written spec (`booley init`)
 

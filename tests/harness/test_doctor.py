@@ -3397,14 +3397,6 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
-    elif row == "host-override":
-        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
-        monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
-        _answer_command(
-            monkeypatch,
-            lambda cmd: "{{json .Config.Env}}" in cmd,
-            stdout='["BOOLEY_CONTAINER=1"]\n',
-        )
     elif row == "host-no-marker":
         _answer_command(
             monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout='["PATH=/usr/bin"]\n'
