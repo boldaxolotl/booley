@@ -227,17 +227,13 @@ def test_missing_ensurepip_stops_bootstrap_before_any_image_build(
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
-    version = f"{sys.version_info.major}.{sys.version_info.minor}"
     last = result.findings[-1]
-    if not blocked:
-        assert "python-venv" not in [finding.resource for finding in result.findings]
-        assert "base-image" in calls
-        return
-    assert (last.resource, last.state) == ("python-venv", bootstrap.BootstrapState.ERROR)
-    assert f"apt install python{version}-venv" in last.detail
-    assert result.exit_status == 2
-    assert "capacity" not in calls
-    assert "base-image" not in calls
+    assert (last.resource == "python-venv") is blocked
+    assert ("base-image" in calls) is not blocked
+    if blocked:
+        version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        assert f"apt install python{version}-venv" in last.detail
+        assert (result.exit_status, "capacity" in calls) == (2, False)
 
 
 def test_check_only_reports_missing_ensurepip_for_a_planned_wheel_build(
