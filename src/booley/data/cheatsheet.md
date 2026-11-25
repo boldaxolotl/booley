@@ -7,8 +7,6 @@ and nested actions.
 
 #### Sandbox-only commands
 
-Bare `booley` prints help; on the host it adds a getting-started hint.
-
 | Command | Purpose |
 |---------|---------|
 | `booley dashboard` | Show sessions, Jobs, and Targets |

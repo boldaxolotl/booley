@@ -266,7 +266,7 @@ def test_lazy_dispatch_reaches_real_handler(monkeypatch, tmp_path):
             return 37
 
         monkeypatch.setattr(module, attribute, recorder)
-        args = cli.argparse.Namespace(command=command, agent_args=[], cli=None)
+        args = cli.argparse.Namespace(command=command)
 
         code = cli._EARLY_COMMANDS[command](args, tmp_path)
 

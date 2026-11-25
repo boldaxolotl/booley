@@ -112,8 +112,6 @@ Don't continue until `booley doctor` shows no failures or warnings.
     Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;
     an unlisted one gets none. See
     [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
-    To run several agents, see
-    [Several agents at once](#several-agents-at-once).
 
     If you see a login screen instead of a chat, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
@@ -292,8 +290,7 @@ the first row to reach the top bar with the tabs, filters, Run, and Help; the
 footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle.
+`J-SIM25` or `J-SYN34`.
 
 ### Several agents at once
 
@@ -302,17 +299,6 @@ task as its own T3 Code thread, which works in its own worktree; its Booley
 tool calls run in that worktree. Read-only sessions, such as one that only
 explains code or runs reviews, can share the main checkout. To create a
 worktree yourself, see [Worktrees](WORKTREES.md).
-
-Manage worktrees from a container terminal:
-
-- `booley worktree list` shows each worktree's branch, unmerged work, and
-  live sessions.
-- `booley worktree rm <name>` removes one and keeps its branches. It refuses
-  while a session runs there or work would be lost.
-- `booley worktree gc` removes worktrees idle longer than `[worktree]
-  gc_older_than` (default `7d`).
-
-See [Worktrees](WORKTREES.md).
 
 ### What the Developer Agent is allowed to do
 
