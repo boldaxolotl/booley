@@ -694,7 +694,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
     non_persisting_dry_run = True
 
     def _dry_run_result(self, plan: object) -> EndpointOutcome:
-        """Render and optionally persist one normalized built-in Flow plan."""
+        """Render and persist one normalized built-in Flow plan."""
         from booley.flows.plan import FlowPlan
 
         if not isinstance(plan, FlowPlan):
@@ -702,7 +702,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         payload = plan.as_dict()
         # Every Flow entry resolves a report directory before it plans.
         report_dir = self.args.report_dir
-        assert report_dir is not None
+        assert report_dir is not None, "every Flow entry resolves a report directory"
         report_path = Path(report_dir) / self.name / "flow_plan.json"
         make_directories(report_path.parent)
         serialized = json.dumps(payload, indent=2) + "\n"

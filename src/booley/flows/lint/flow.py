@@ -575,13 +575,12 @@ def _echoed_finding(w: LintWarning) -> str:
     return f"%Warning-{w.rule}: {w.file}:{w.line}:{w.col} {w.message}"
 
 
-def _echo_warnings(unique: list[LintWarning], report_path: Path | None = None) -> None:
+def _echo_warnings(unique: list[LintWarning], report_path: Path) -> None:
     """Print the first few warnings with file:line, each in its linter's form."""
     for w in unique[:_MAX_ECHOED_WARNINGS]:
         print(f"[lint]   {_echoed_finding(w)}")
     if len(unique) > _MAX_ECHOED_WARNINGS:
-        suffix = f" (see {report_path})" if report_path is not None else ""
-        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more{suffix}")
+        print(f"[lint]   ... and {len(unique) - _MAX_ECHOED_WARNINGS} more (see {report_path})")
 
 
 def _target_summary_line(result: LintConfigResult) -> str:

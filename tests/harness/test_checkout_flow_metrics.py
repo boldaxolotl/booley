@@ -133,7 +133,8 @@ def lint_result(
             real_catalog_build=_REAL_CATALOG_BUILD,
             fallback_handle=lambda root, token: _target_handle(token, project_root=root),
         )
-        # private: no Verilator on the host and no shared fake of Flow commands to reach these.
+        # private: this helper predates tests/flows/lint/linter_run_fake.py; moving it onto
+        # that fake is the follow-up #4692's review recorded (the two-tuple shim goes with it).
         with (
             patch.object(LintFlow, "_prepare_lint_command", **prepared),
             patch.object(LintFlow, "_execute", return_value=execution),
