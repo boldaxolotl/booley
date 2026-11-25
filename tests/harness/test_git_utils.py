@@ -420,21 +420,21 @@ def test_git_run_keeps_its_result_contract(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX fake powershell")
 @pytest.mark.parametrize(
-    ("script", "mode", "kept"),
+    ("script", "kept"),
     [
-        ("exec sleep 60", 0o755, True),
-        ("exit 1", 0o755, True),
-        ("exit 0", 0o644, True),
-        ("exit 0", 0o755, False),
+        ("exec sleep 60", True),
+        ("exit 1", True),
+        ("", True),
+        ("exit 0", False),
     ],
 )
 def test_windows_git_process_check_decides_the_index_lock(
-    wt: Path, tmp_path: Path, monkeypatch, caplog, script: str, mode: int, kept: bool
+    wt: Path, tmp_path: Path, monkeypatch, caplog, script: str, kept: bool
 ) -> None:
     (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
     lock_path = Path(git_stdout(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
     lock_path.write_text("", encoding="utf-8")
-    fake_powershell(tmp_path, monkeypatch, script, mode)
+    fake_powershell(tmp_path, monkeypatch, script)
     monkeypatch.setattr(sys, "platform", "win32")
     if kept:
         with pytest.raises(BlockingError, match="git add failed"):

@@ -16,12 +16,10 @@ def git_stdout(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def fake_powershell(
-    directory: Path, monkeypatch: pytest.MonkeyPatch, script: str, mode: int = 0o755
-) -> None:
-    """Put a ``powershell`` shell script running *script* first on PATH."""
+def fake_powershell(directory: Path, monkeypatch: pytest.MonkeyPatch, script: str) -> None:
+    """Put a ``powershell`` script running *script* first on PATH; an empty one is not executable."""
     fake = directory / "bin" / "powershell"
     fake.parent.mkdir()
     fake.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
-    fake.chmod(mode)
+    fake.chmod(0o755 if script else 0o644)
     monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
