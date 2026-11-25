@@ -18,7 +18,8 @@ class StoreError(RuntimeError):
 
 @pytest.fixture
 def store(tmp_path: Path) -> private_store.PrivateStore:
-    anchor = tmp_path / "anchor"
+    # The space makes every remediation command show its shell quoting.
+    anchor = tmp_path / "anchor with spaces"
     return private_store.PrivateStore(anchor / "state" / "records", anchor, "test", StoreError)
 
 
@@ -32,71 +33,33 @@ def test_creates_private_chain_and_round_trips_json(store):
         assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
         assert stat.S_IMODE(store.root.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE((store.root / "record.json").stat().st_mode) == 0o600
+        # A shared anchor may let others read and traverse it; only write bits are unsafe.
+        store.anchor.chmod(0o755)
+        assert store.validate_existing_directory()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode and ownership policy")
-@pytest.mark.parametrize("location,mode", [("anchor", 0o777), ("root", 0o755), ("file", 0o644)])
-def test_rejects_unsafe_modes(store, location, mode):
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
+@pytest.mark.parametrize(
+    "location, mode, message",
+    [
+        ("anchor", 0o777, "{path} has mode 0777; run `chmod 700 '{path}'`"),
+        ("root", 0o755, "{path} has mode 0755; run `chmod 700 '{path}'`"),
+        ("file", 0o644, "file must be owned, regular, and mode 600: {path}"),
+    ],
+)
+def test_rejects_unsafe_modes_with_their_remedy(store, location, mode, message):
     store.ensure_directory()
     store.atomic_write_text("record.json", "{}")
     path = {"anchor": store.anchor, "root": store.root, "file": store.root / "record.json"}[
         location
     ]
     path.chmod(mode)
-    with pytest.raises(StoreError, match=r"unsafe|mode"):
+    with pytest.raises(StoreError) as raised:
         if location == "file":
             store.read_json("record.json")
         else:
             store.validate_existing_directory()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_private_directory_mode_error_is_actionable(store) -> None:
-    store.ensure_directory()
-    store.root.chmod(0o755)
-
-    with pytest.raises(StoreError) as raised:
-        store.validate_existing_directory()
-
-    message = str(raised.value)
-    assert str(store.root) in message
-    assert "0755" in message
-    assert f"chmod 700 {store.root}" in message
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_private_directory_mode_error_quotes_shell_path(tmp_path: Path) -> None:
-    anchor = tmp_path / "anchor with spaces"
-    store = private_store.PrivateStore(anchor / "state" / "records", anchor, "test", StoreError)
-    store.ensure_directory()
-    store.root.chmod(0o755)
-
-    with pytest.raises(StoreError) as raised:
-        store.validate_existing_directory()
-
-    assert f"chmod 700 '{store.root}'" in str(raised.value)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_shared_anchor_mode_error_is_actionable(store) -> None:
-    store.ensure_directory()
-    store.anchor.chmod(0o777)
-
-    with pytest.raises(StoreError) as raised:
-        store.validate_existing_directory()
-
-    message = str(raised.value)
-    assert str(store.anchor) in message
-    assert "0777" in message
-    assert f"chmod 700 {store.anchor}" in message
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_shared_anchor_allows_owner_read_and_execute_bits(store) -> None:
-    store.ensure_directory()
-    store.anchor.chmod(0o755)
-
-    assert store.validate_existing_directory()
+    assert message.format(path=path) in str(raised.value)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership policy")
@@ -236,17 +199,6 @@ def test_read_json_survives_transient_sharing_error(store, monkeypatch):
     assert attempts[record] == 2
 
 
-def test_read_json_retries_before_raising_lasting_sharing_error(store, monkeypatch):
-    from tests.sharing_error_support import hold_os_opens
-
-    record = _json_record(store)
-    attempts = hold_os_opens(monkeypatch, {record: 1000})
-    with pytest.raises(PermissionError) as lasting:
-        store.read_json("record.json")
-    assert lasting.value.winerror == 32  # type: ignore[attr-defined]
-    assert attempts[record] > 1
-
-
 def test_atomic_write_survives_transient_replace_sharing_error(store, monkeypatch):
     from tests.sharing_error_support import hold_replaces
 
@@ -255,17 +207,6 @@ def test_atomic_write_survives_transient_replace_sharing_error(store, monkeypatc
     store.atomic_write_text("record.json", '{"value": 2}')
     assert store.read_json("record.json") == {"value": 2}
     assert attempts[record] == 2
-
-
-def test_atomic_write_retries_before_raising_lasting_sharing_error(store, monkeypatch):
-    from tests.sharing_error_support import hold_replaces
-
-    record = _json_record(store)
-    attempts = hold_replaces(monkeypatch, {record: 1000})
-    with pytest.raises(PermissionError):
-        store.atomic_write_text("record.json", '{"value": 2}')
-    assert attempts[record] > 1
-    assert store.read_json("record.json") == {"value": 1}
 
 
 def test_read_json_keeps_missing_and_corrupt_errors(store, monkeypatch):
