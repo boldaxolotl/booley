@@ -2303,6 +2303,16 @@ class TestT3CodeRelay:
         files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
         assert TOKEN not in "".join([caplog.text, *runs, *files])
 
+    def test_session_up_warns_and_succeeds_when_the_pairing_link_fails(
+        self, workspace: Path, up_docker: SandboxDocker, relay_cli: SimpleNamespace
+    ) -> None:
+        up_docker.exec_reply = lambda _argv: completed(1, TOKEN)
+
+        _, err = relay_cli.up(workspace)
+
+        assert "no T3 Code pairing link: t3 auth pairing create failed (exit 1)" in err
+        assert TOKEN not in err
+
     def test_status_and_pair_report_an_unobservable_relay(
         self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2364,6 +2374,23 @@ def test_a_bad_pairing_reply_is_refused_without_its_token(
         sr.create_pairing_link("c", 3780)
 
     assert TOKEN not in f"{refused.value}{caplog.text}"
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "problem"),
+    [(None, "no running Sandbox"), ("editor", "VS Code owns"), ("headless", "the UI is off")],
+)
+def test_pair_is_refused_without_a_headless_sandbox_and_relay(
+    workspace: Path, attached: SimpleNamespace, sandbox: str | None, problem: str
+) -> None:
+    if sandbox is not None:
+        name = sandbox if sandbox == "editor" else sr.session_container_name(workspace)
+        attached.docker.containers[name] = _sandbox_state(
+            workspace, vscode=sandbox == "editor", name=name
+        )
+
+    with pytest.raises(sr.SessionError, match=problem):
+        sr.pairing_link(workspace)
 
 
 class TestDownAndStatus:
