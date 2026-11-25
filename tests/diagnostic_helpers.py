@@ -33,15 +33,6 @@ def _record_report(report, *, passed=None, warned=None, skipped=None, failed=Non
             sink(message)
 
 
-def _record_audit(audit, **sinks):
-    findings = tuple(
-        DiagnosticFinding(Severity(f.severity), f.message, f.fix, f.check_id, f.subject)
-        for f in audit.findings
-    )
-    _record_report(DiagnosticReport(findings), **sinks)
-    return audit.is_valid
-
-
 def _record_environment(finding, **sinks):
     _record_report(
         DiagnosticReport(
@@ -53,11 +44,6 @@ def _record_environment(finding, **sinks):
         ),
         **sinks,
     )
-
-
-def _record_container(audit, **sinks):
-    _record_environment(audit.finding, **sinks)
-    return audit.executable
 
 
 def _inspection_request(project, docker_exe):
