@@ -21,7 +21,17 @@ from booley.runtime.job_slots import (
     SlotStore,
     TokenState,
 )
-from tests.test_job_slots import FakeWorld, make_store, spawn
+from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.sharing_error_support import hold_opens
+from tests.test_job_slots import (
+    PROMOTION_GATE,
+    FakeWorld,
+    held_gate,
+    interleave,
+    is_lease_gate,
+    make_store,
+    spawn,
+)
 
 BUDGET_MB = 1000.0
 
@@ -71,6 +81,19 @@ def join(
     """Start simulated process *pid* and submit its memory claim (with its *job* label)."""
     spawn(world, pid)
     return store.submit(job_slots.CLASS_MEMORY, pid=pid, memory=memory, role=role, job=job)
+
+
+def seated(reservation_mb: float, cap: int, tool: str = "vivado"):
+    """A claim that also holds one *tool* seat, judged against a Seat Cap of *cap*."""
+    return job_slots.MemoryClaim(
+        budget_mb=BUDGET_MB, reservation_mb=reservation_mb, seats=((tool, cap),)
+    )
+
+
+def stored(store: SlotStore, token: job_slots.SlotToken) -> job_slots.SlotToken:
+    """*token*'s entry as the store reads it from disk now."""
+    holders, waiters = store.snapshot(job_slots.CLASS_MEMORY)
+    return next(t for t in holders + waiters if t.lease_id == token.lease_id)
 
 
 def label(run_id: str, flow: str, target: str):
@@ -161,16 +184,16 @@ def test_promotion_rereads_holders_inside_the_gate(root, world, monkeypatch):
     store = make_store(root, world)
     rival = make_store(root, world)
     head = join(store, world, 101, claim(600), role=ROLE_BACKGROUND)
-    real_gate = store._promotion_gate
     winners = []
 
-    def gate_after_rival_promotes(token):
+    def rival_promotes():
         # Another process takes the budget between B's check and B's gate.
         rival_token = join(rival, world, 102, claim(600))
         winners.append(rival.refresh(rival_token))
-        return real_gate(token)
 
-    monkeypatch.setattr(store, "_promotion_gate", gate_after_rival_promotes)
+    interleave(
+        monkeypatch, "hardlink_to", lambda path: path.name == PROMOTION_GATE, rival_promotes
+    )
     assert store.refresh(head).state == QUEUED
     assert winners == [TokenState(HOLDING)]
     assert sorted(path.name[0] for path in (root / "memory").glob("*.json")) == ["h", "w"]
@@ -181,17 +204,10 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
     holder = join(store, world, 101, claim(100))
     assert store.refresh(holder).state == HOLDING
     waiter = join(store, world, 102, claim(100))
-    real_load = store._load_token
-    unreadable = True
-
-    def load(path):
-        if unreadable and path == holder.path:
-            raise OSError("sharing violation")
-        return real_load(path)
-
-    monkeypatch.setattr(store, "_load_token", load)
+    held = {holder.path: 10**6}
+    hold_opens(monkeypatch, held)
     assert store.refresh(waiter).state == QUEUED  # unknown reservation: fail closed
-    unreadable = False
+    held[holder.path] = 0
     assert store.refresh(waiter).state == HOLDING
 
 
@@ -210,6 +226,19 @@ def test_unreadable_holder_blocks_promotion(root, world, monkeypatch):
         ),
         pytest.param(lambda _store: claim(-1), id="negative-reservation"),
         pytest.param(lambda _store: claim(run_alone=cast(Any, 1)), id="non-bool-run-alone"),
+        pytest.param(
+            lambda store: store.submit("warp", pid=1, memory=claim(1)), id="unknown-class"
+        ),
+        pytest.param(
+            lambda _store: job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True),
+            id="companion-run-alone",
+        ),
+        *[
+            pytest.param(
+                lambda _store, cap=cap: seated(100, cast(Any, cap)), id=f"seat-cap-{cap!r}"
+            )
+            for cap in (0, -1, True, 1.5, "1")
+        ],
         pytest.param(lambda _store: claim(1, budget_mb=float("nan")), id="non-finite-budget"),
         pytest.param(lambda _store: claim(1, wall_s=-1.0), id="negative-wall"),
         pytest.param(lambda _store: claim(1, wall_s=float("inf")), id="non-finite-wall"),
@@ -226,28 +255,76 @@ def test_zero_budget_admits_only_run_alone_claims(root, world):
     assert store.refresh(alone).state == HOLDING
 
 
-@pytest.mark.parametrize(
-    "malformed",
-    [
+LABEL = label("r", "sim", "a")
+GONE = object()  # the key is removed instead of set
+
+# id: (claim, job label, path of the key to edit, its new value, what the field then reads as).
+# A foreign or old writer's entry reads as no claim, no label or no reason, never an error.
+MALFORMED_FIELDS = {
+    "bad-budget": (
+        claim(100),
+        None,
+        ("memory",),
         {"budget_mb": "lots", "reservation_mb": 1, "run_alone": False},
-        {"reservation_mb": 1},
+        None,
+    ),
+    "missing-budget": (claim(100), None, ("memory",), {"reservation_mb": 1}, None),
+    "unconvertible-budget": (
+        claim(100),
+        None,
+        ("memory",),
         {"budget_mb": 10**400, "reservation_mb": 1, "run_alone": False},
+        None,
+    ),
+    "bad-wall": (
+        claim(100),
+        None,
+        ("memory",),
         {"budget_mb": 10, "reservation_mb": 1, "run_alone": False, "wall_s": "slow"},
-        "junk",
-    ],
-    ids=["bad-budget", "missing-budget", "unconvertible-budget", "bad-wall", "not-a-table"],
-)
-def test_malformed_memory_field_is_read_as_no_claim(root, world, malformed):
+        None,
+    ),
+    "not-a-table": (claim(100), None, ("memory",), "junk", None),
+    **{
+        f"seats-{value!r}": (seated(100, 2), None, ("memory", "seats"), value, None)
+        for value in ({"vivado": 0}, {"vivado": True}, {"vivado": "two"}, ["vivado"])
+    },
+    "written-before-seats": (seated(100, 2), None, ("memory", "seats"), GONE, claim(100)),
+    **{
+        f"queue-reason-{value!r}": (claim(100), None, ("queue_reason",), value, None)
+        for value in (7, ["x"], {"a": 1}, True)
+    },
+    **{
+        f"label-{name}": (claim(100), LABEL, ("job",), value, None)
+        for name, value in {
+            "not-a-table": "run-1",
+            "bad-run-id": {"run_id": 1, "flow": "sim", "target": "a"},
+            "missing-fields": {"run_id": "r"},
+            "bad-work-item": {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
+        }.items()
+    },
+}
+
+
+@pytest.mark.parametrize("row", sorted(MALFORMED_FIELDS))
+def test_a_malformed_entry_field_reads_as_absent(root, world, row):
+    memory, job, path, value, expected = MALFORMED_FIELDS[row]
     store = make_store(root, world)
-    holder = join(store, world, 101, claim(100))
+    holder = join(store, world, 101, memory, job=job)
     assert store.refresh(holder).state == HOLDING
     payload = json.loads(holder.path.read_text(encoding="utf-8"))
-    payload["memory"] = malformed
+    table = payload
+    for key in path[:-1]:
+        table = table[key]
+    if value is GONE:
+        del table[path[-1]]
+    else:
+        table[path[-1]] = value
     holder.path.write_text(json.dumps(payload), encoding="utf-8")
-    reloaded = store._load_token(holder.path)
-    assert reloaded is not None and reloaded.memory is None
-    waiter = join(store, world, 102, claim(100))
-    assert store.refresh(waiter).state == QUEUED  # a holder with no readable claim blocks
+
+    assert getattr(stored(store, holder), path[0]) == expected
+    if path[0] == "memory" and expected is None:
+        waiter = join(store, world, 102, claim(100))
+        assert store.refresh(waiter).state == QUEUED  # a holder with no readable claim blocks
 
 
 def test_only_the_first_waiter_promotes(root, world):
@@ -268,14 +345,7 @@ def test_unreadable_waiter_blocks_the_claim_behind_it(root, world, monkeypatch):
     assert store.refresh(holder).state == HOLDING
     unreadable = join(store, world, 102, claim(100))
     behind = join(store, world, 103, claim(100))
-    real_load = store._load_token
-
-    def load(path):
-        if path == unreadable.path:
-            raise OSError("sharing violation")
-        return real_load(path)
-
-    monkeypatch.setattr(store, "_load_token", load)
+    hold_opens(monkeypatch, {unreadable.path: 10**6})
     assert store.refresh(behind) == TokenState(
         QUEUED, position=1
     )  # blocked: its waiter is unknown
@@ -285,6 +355,8 @@ def test_vanished_holder_does_not_hold_back_a_claim_that_fits(root, world, monke
     store = make_store(root, world)
     holder = join(store, world, 101, claim(1000))
     assert store.refresh(holder).state == HOLDING
+    # private: the holder must vanish between the ranking's listing and its read; reap reads the
+    # same entry first, so no file-level hook isolates that window.
     real_read = store._read_memory_entry
     released = False
 
@@ -301,13 +373,6 @@ def test_vanished_holder_does_not_hold_back_a_claim_that_fits(root, world, monke
 
 
 # --- Seat Caps for licensed EDA tools (#3244, ADR 0087) ------------------------------
-
-
-def seated(reservation_mb: float, cap: int, tool: str = "vivado"):
-    """A claim that also holds one *tool* seat, judged against a Seat Cap of *cap*."""
-    return job_slots.MemoryClaim(
-        budget_mb=BUDGET_MB, reservation_mb=reservation_mb, seats=((tool, cap),)
-    )
 
 
 def test_seat_cap_queues_a_claim_that_fits_memory_while_the_seats_are_taken(root, world):
@@ -340,24 +405,6 @@ def test_seat_cap_of_two_holds_two_claims_together(root, world):
     assert store.refresh(third).state == HOLDING
 
 
-def test_malformed_seats_field_is_read_as_no_claim(root, world):
-    store = make_store(root, world)
-    holder = join(store, world, 101, seated(100, 2))
-    assert store.refresh(holder).state == HOLDING
-    payload = json.loads(holder.path.read_text(encoding="utf-8"))
-    assert payload["memory"]["seats"] == {"vivado": 2}
-    for malformed in ({"vivado": 0}, {"vivado": True}, {"vivado": "two"}, ["vivado"]):
-        payload["memory"]["seats"] = malformed
-        holder.path.write_text(json.dumps(payload), encoding="utf-8")
-        reloaded = store._load_token(holder.path)
-        assert reloaded is not None and reloaded.memory is None, malformed
-    # An entry written before seats existed carries none.
-    del payload["memory"]["seats"]
-    holder.path.write_text(json.dumps(payload), encoding="utf-8")
-    reloaded = store._load_token(holder.path)
-    assert reloaded is not None and reloaded.memory == claim(100)
-
-
 def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_claim_jumps(
     root, world
 ):
@@ -372,12 +419,6 @@ def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_clai
     assert store.refresh(front) == TokenState(QUEUED, position=0)
     assert store.refresh(long).state == QUEUED
     assert store.refresh(short).state == HOLDING
-
-
-def test_seat_cap_shape_is_validated():
-    for cap in (0, -1, True, 1.5, "1"):
-        with pytest.raises(ValueError):
-            seated(100, cast(Any, cap))
 
 
 def _on_disk_reservation(token) -> float | None:
@@ -522,23 +563,8 @@ def hold(store: SlotStore, world: FakeWorld, pid: int, memory) -> job_slots.Slot
 def start_age(token: job_slots.SlotToken, world: FakeWorld, seconds: float) -> None:
     """Rewrite a holder's promotion stamp to *seconds* before now (the clock stays put)."""
     payload = json.loads(token.path.read_text(encoding="utf-8"))
-    payload["promoted_at"] = job_slots._utc_stamp(world.clock - seconds)
+    payload["promoted_at"] = rfc3339_from_epoch(world.clock - seconds)
     token.path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-def test_short_claim_jumps_a_blocked_front_claim(tmp_path):
-    cases = {
-        "3min-starts": (180.0, TokenState(HOLDING)),
-        "12min-waits": (720.0, TokenState(QUEUED, position=1)),
-    }
-    for name, (wall_s, expected) in cases.items():
-        world = FakeWorld()
-        store = make_store(tmp_path / name, world)
-        hold(store, world, 101, claim(800, wall_s=600.0))  # frees its memory in 10 min
-        front = join(store, world, 102, claim(400))
-        short = join(store, world, 103, claim(100, wall_s=wall_s))
-        assert store.refresh(front) == TokenState(QUEUED, position=0), name
-        assert store.refresh(short) == expected, name
 
 
 def test_jumpers_start_in_queue_order(root, world):
@@ -554,6 +580,19 @@ def test_jumpers_start_in_queue_order(root, world):
 
 
 JUMP_CASES = {
+    # A frees its 800 MiB at 10 min; the front (400) fits then, not now.
+    "short-starts": (
+        [(800, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 180.0},
+        HOLDING,
+    ),
+    "long-waits": (
+        [(800, 600.0)],
+        {"reservation_mb": 400},
+        {"reservation_mb": 100, "wall_s": 720.0},
+        QUEUED,
+    ),
     # A frees 300 MiB at 5 min, B 500 MiB at 10 min; the front (400) fits after A.
     "early": (
         [(300, 300.0), (500, 600.0)],
@@ -616,14 +655,16 @@ JUMP_CASES = {
 }
 
 
-def test_jump_never_delays_the_front_claim(tmp_path):
-    for name, (holders, front, jumper, state) in JUMP_CASES.items():
-        world = FakeWorld()
-        store = make_store(tmp_path / name, world)
-        for pid, (reservation_mb, wall_s) in enumerate(holders, start=101):
-            hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
-        assert store.refresh(join(store, world, 201, claim(**front))).state == QUEUED, name
-        assert store.refresh(join(store, world, 202, claim(**jumper))).state == state, name
+@pytest.mark.parametrize(
+    ("holders", "front", "jumper", "state"), JUMP_CASES.values(), ids=list(JUMP_CASES)
+)
+def test_jump_never_delays_the_front_claim(root, world, holders, front, jumper, state):
+    store = make_store(root, world)
+    for pid, (reservation_mb, wall_s) in enumerate(holders, start=101):
+        hold(store, world, pid, claim(reservation_mb, wall_s=wall_s))
+    assert store.refresh(join(store, world, 201, claim(**front))) == TokenState(QUEUED, position=0)
+    behind = TokenState(HOLDING) if state == HOLDING else TokenState(QUEUED, position=1)
+    assert store.refresh(join(store, world, 202, claim(**jumper))) == behind
 
 
 def test_jump_past_a_holder_overdue_by_its_estimate_waits(root, world):
@@ -641,16 +682,10 @@ def test_unreadable_waiter_behind_the_front_ends_jumping(root, world, monkeypatc
     join(store, world, 102, claim(400))
     unreadable = join(store, world, 103, claim(50, wall_s=60.0))
     behind = join(store, world, 104, claim(100, wall_s=60.0))
-    real_load = store._load_token
-
-    def load(path):
-        if path == unreadable.path:
-            raise OSError("sharing violation")
-        return real_load(path)
-
-    monkeypatch.setattr(store, "_load_token", load)
+    held = {unreadable.path: 10**6}
+    hold_opens(monkeypatch, held)
     assert store.refresh(behind).state == QUEUED
-    monkeypatch.setattr(store, "_load_token", real_load)
+    held[unreadable.path] = 0
     assert store.refresh(behind).state == QUEUED  # the claim ahead of it still has to start
 
 
@@ -658,8 +693,7 @@ def test_wall_clock_survives_the_entry_file(root, world):
     store = make_store(root, world)
     token = hold(store, world, 101, claim(100, wall_s=42.5))
     assert store.renew(token)
-    reloaded = store._load_token(token.path)
-    assert reloaded is not None and reloaded.memory == claim(100, wall_s=42.5)
+    assert stored(store, token).memory == claim(100, wall_s=42.5)
 
 
 def test_front_that_can_start_now_under_its_own_budget_is_not_jumped(root, world):
@@ -927,7 +961,7 @@ def test_holders_that_reserve_nothing_are_not_named_largest(root, world):
     )
 
 
-def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, world):
+def test_job_label_survives_promotion(root, world):
     store = make_store(root, world)
     token = join(store, world, 101, claim(100), job=label("run-1", "sim", "a"))
     assert store.refresh(token).state == HOLDING
@@ -945,21 +979,10 @@ def test_job_label_survives_promotion_and_a_malformed_label_reads_as_none(root, 
     (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
     assert holders[1].job == job_slots.JobLabel("run-1", "sim", "a", "t1,t2,t3,+1", True)
     assert job_slots.JobLabel.from_payload(holders[1].job.to_payload()) == holders[1].job
-    assert job_slots._holder_name(holders[1]) == "run-1 (sim, a, t1,t2,t3,+1)"
-
-    entry = token.path
-    payload = json.loads(entry.read_text(encoding="utf-8"))
-    malformed_labels = (
-        "run-1",
-        {"run_id": 1, "flow": "sim", "target": "a"},
-        {"run_id": "r"},
-        {"run_id": "r", "flow": "sim", "target": "a", "work_item": "yes"},
-    )
-    for malformed in malformed_labels:
-        payload["job"] = malformed
-        entry.write_text(json.dumps(payload), encoding="utf-8")
-        (holders, _waiters) = store.snapshot(job_slots.CLASS_MEMORY)
-        assert holders[0].job is None
+    waiting = join(store, world, 103, claim(900))
+    wait = store.memory_wait(103)
+    assert store.refresh(waiting).state == QUEUED
+    assert wait is not None and "run-1 (sim, a, t1,t2,t3,+1) 100 MiB" in wait.describe()
 
 
 SPECIALIST_MB = 452.5
@@ -1052,11 +1075,6 @@ def test_the_coordinator_does_not_reduce_how_many_specialists_fit(root, world):
     )
 
 
-def test_a_companion_claim_is_never_run_alone():
-    with pytest.raises(ValueError, match="never run-alone"):
-        job_slots.MemoryClaim(budget_mb=10, run_alone=True, companion=True)
-
-
 def test_entry_creation_exhaustion_names_the_memory_reservation(root, world, monkeypatch):
     spawn(world, 100)
     store = make_store(root, world)
@@ -1085,7 +1103,7 @@ def test_a_short_later_claim_still_jumps_a_successor_that_cannot_start(
     successor = take_over(store, flow, claim(800))
     assert store.refresh(successor) == TokenState(QUEUED, position=0)
     assert store.refresh(later).state == expected
-    assert store._load_token(flow.path).memory.reservation_mb == 0
+    assert stored(store, flow).memory.reservation_mb == 0
 
 
 def test_a_claim_takes_over_only_a_holder_that_still_reserves(root, world):
@@ -1110,17 +1128,18 @@ def test_no_waiter_ranks_while_a_claim_takes_over_a_holder(root, world, monkeypa
     rival = make_store(root, world)
     flow = hold(store, world, 101, claim(None, run_alone=True))
     later = join(rival, world, 102, claim(100))
-    real_shrink = store.shrink_reservation
-    gate_taken: list[bool] = []
-
-    def shrink_after_rival_tries_the_gate(token, reservation_mb):
-        with rival._promotion_gate(later) as acquired:
-            gate_taken.append(acquired)
-        return real_shrink(token, reservation_mb)
-
-    monkeypatch.setattr(store, "shrink_reservation", shrink_after_rival_tries_the_gate)
+    # The takeover shrinks the holder under the lease gate: a ranking may not start then.
+    seen: list[tuple[bool, str]] = []
+    interleave(
+        monkeypatch,
+        "hardlink_to",
+        is_lease_gate,
+        lambda: seen.append(
+            ((flow.path.parent / PROMOTION_GATE).exists(), rival.refresh(later).state)
+        ),
+    )
     successor = take_over(store, flow, claim(None, run_alone=True))
-    assert gate_taken == [False]  # no ranking can interleave with the takeover
+    assert seen == [(True, QUEUED)]
     assert rival.refresh(later).state == QUEUED
     assert store.refresh(successor).state == HOLDING
 
@@ -1129,9 +1148,8 @@ def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
     store = make_store(root, world)
     rival = make_store(root, world)
     flow = hold(store, world, 101, claim(None, run_alone=True))
-    later = join(rival, world, 102, claim(100))
-    with rival._promotion_gate(later) as acquired:
-        assert acquired
+    join(rival, world, 102, claim(100))
+    with held_gate(flow.path.parent / PROMOTION_GATE, 102, world.capture_identity(102)):
         with pytest.raises(job_slots.TakeoverBusyError):
             take_over(store, flow, claim(None, run_alone=True))
         with pytest.raises(job_slots.ClaimAbortedError):
@@ -1142,7 +1160,7 @@ def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
                 succeeds=flow,
                 should_abort=lambda: True,
             )
-    assert store._load_token(flow.path).memory.run_alone
+    assert stored(store, flow).memory.run_alone
     assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
     # Once the gate is free the takeover goes through at the holder's place.
     successor = store.acquire(

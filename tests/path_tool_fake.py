@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 _CHILD = """\
-import json, sys, time
+import json, os, sys, time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -40,7 +40,7 @@ sequence = [rule for rule in rules if rule["words"] == first["words"]]
 seen = sum(1 for entry in done if entry["words"] == first["words"])
 rule = sequence[min(seen, len(sequence) - 1)]
 text = sys.stdin.read() if rule["reads_input"] else None
-entry = {"args": args, "words": first["words"], "input": text}
+entry = {"args": args, "words": first["words"], "input": text, "env": sorted(os.environ)}
 if rule["hang_s"] is not None:
     with log.open("a", encoding="utf-8", newline="\\n") as handle:
         handle.write(json.dumps(entry) + "\\n")
@@ -60,6 +60,7 @@ raise SystemExit(rule["returncode"])
 class Call:
     args: list[str]
     input: str | None  # stdin, for answers that declare reads_input
+    env: list[str]  # names of the environment variables the tool saw
 
 
 class PathToolFake:
@@ -118,4 +119,4 @@ class PathToolFake:
         # A line still being appended has no newline yet, so it is not a call yet.
         lines = self.log_file.read_text(encoding="utf-8").split("\n")[:-1]
         entries: list[dict[str, Any]] = [json.loads(line) for line in lines]
-        return [Call(entry["args"], entry["input"]) for entry in entries]
+        return [Call(entry["args"], entry["input"], entry["env"]) for entry in entries]

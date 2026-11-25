@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.git_support import git, repository
 from tests.subprocess_budget import run_bounded_child
 
 from booley.dev_support import changed_line_coverage as gate
@@ -16,29 +17,19 @@ _CODE = "def check(value):\n    return value\n"
 _MESSAGE = 'MESSAGE = "Session Runtime unavailable"\n'
 
 
-def _git(repo: Path, *args: str) -> str:
-    return run_bounded_child(
-        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
-        cwd=repo,
-        check=True,
-    ).stdout.strip()
-
-
 def _commit(repo: Path, files: dict[str, str], message: str) -> str:
     for name, text in files.items():
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(text, encoding="utf-8")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", message)
-    return _git(repo, "rev-parse", "HEAD")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
 
 
 @pytest.fixture
 def repo(tmp_path: Path, isolated_git_attributes: None) -> Path:
     """A checkout whose branch changes one code file and renames one message."""
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
+    root = repository(tmp_path / "repo")
     script = ".github/scripts/terminology_diff_exclusions.py"
     _commit(
         root,
@@ -49,7 +40,7 @@ def repo(tmp_path: Path, isolated_git_attributes: None) -> Path:
         },
         "base",
     )
-    _git(root, "switch", "-q", "-c", "codex/feature")
+    git(root, "switch", "-q", "-c", "codex/feature")
     _commit(
         root,
         {
@@ -109,18 +100,18 @@ def test_stamp_refuses_missing_failed_and_stale_runs(repo, capsys):
 
 
 def test_merge_base_prefers_the_newest_main(repo):
-    first = _git(repo, "rev-parse", "main")
-    _git(repo, "switch", "-q", "main")
+    first = git(repo, "rev-parse", "main")
+    git(repo, "switch", "-q", "main")
     newer = _commit(repo, {"README": "x\n"}, "main moves")
-    _git(repo, "switch", "-q", "codex/feature")
-    _git(repo, "merge", "-q", "--no-edit", "main")
-    _git(repo, "update-ref", "refs/remotes/origin/main", first)  # stale fetch
+    git(repo, "switch", "-q", "codex/feature")
+    git(repo, "merge", "-q", "--no-edit", "main")
+    git(repo, "update-ref", "refs/remotes/origin/main", first)  # stale fetch
     assert gate.merge_base(repo) == newer
-    _git(repo, "update-ref", "refs/remotes/origin/main", newer)
-    _git(repo, "update-ref", "refs/heads/main", first)  # stale local main
+    git(repo, "update-ref", "refs/remotes/origin/main", newer)
+    git(repo, "update-ref", "refs/heads/main", first)  # stale local main
     assert gate.merge_base(repo) == newer
 
-    _git(repo, "switch", "-q", "--orphan", "codex/unrelated")
+    git(repo, "switch", "-q", "--orphan", "codex/unrelated")
     _commit(repo, {"other": "x\n"}, "unrelated")
     with pytest.raises(gate.CoverageGateError, match="no history"):
         gate.merge_base(repo)
