@@ -1410,7 +1410,7 @@ class DashboardApp(App[None]):
         elif any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions):
             notices.append("WARNING shared worktree")
         checkout, branch = self._checkout_label(facts)
-        measurement, reports = self._measurement(facts)
+        measurement, review, reports = self._measurement(facts)
         return sessions.SessionFacts(
             key=facts.key,
             handle=self._session_handle(facts.key),
@@ -1427,30 +1427,30 @@ class DashboardApp(App[None]):
             ),
             notices=tuple(notices),
             measurement=measurement,
+            review=review,
             report=reports[0] if reports else "",
         )
 
-    def _measurement(self, facts: Attribution) -> tuple[str, tuple[str, ...]]:
-        """The line under a session row and the reports it opens; ``("", ())`` shows none."""
+    def _measurement(self, facts: Attribution) -> tuple[str, str, tuple[str, ...]]:
+        """The measurement and review parts of a session's line and the reports it opens."""
         checkout = checkout_of(facts)
         line = self.snapshot.measurements.get(checkout)
-        texts: list[str] = []
+        measurement = ""
         reports: list[str] = []
         if line is not None:
             job = line.measuring
             if job is not None:
                 progress = job.record.progress
-                texts.append(
-                    measuring_text(progress, job_elapsed_seconds(job, self.snapshot.observed_at))
+                measurement = measuring_text(
+                    progress, job_elapsed_seconds(job, self.snapshot.observed_at)
                 )
             else:
-                texts.append(line.text)
+                measurement = line.text
                 reports.extend([line.report] if line.report else [])
         part = self.snapshot.reviews.get(checkout)
         if part is not None:
-            texts.append(part.text)
             reports.extend([part.report] if part.report else [])
-        return " · ".join(texts), tuple(reports)
+        return measurement, part.text if part else "", tuple(reports)
 
     def _selected_reports(self) -> tuple[str, ...]:
         """The reports a selected line opens; empty when the cursor is elsewhere."""
@@ -1462,7 +1462,7 @@ class DashboardApp(App[None]):
         if not key.startswith(sessions.MEASUREMENT_PREFIX):
             return ()
         row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
-        return self._measurement(row.attribution)[1] if row else ()
+        return self._measurement(row.attribution)[2] if row else ()
 
     def _session_row_of(self, key: str) -> SessionRow | None:
         return next((row for row in self.snapshot.sessions if row.attribution.key == key), None)
@@ -1672,8 +1672,8 @@ class DashboardApp(App[None]):
         row = self._session_row_of(key.removeprefix(sessions.MEASUREMENT_PREFIX))
         if row is None:
             return Text(), ()
-        reports = self._measurement(row.attribution)[1]
-        return self._session_preview(row, reports), reports
+        _, review, reports = self._measurement(row.attribution)
+        return self._session_preview(row, reports if review else ()), reports
 
     def _session_preview(self, row: SessionRow, reports: tuple[str, ...] = ()) -> Text:
         """Labelled orientation lines, the unfinished Jobs and the reports of one session."""

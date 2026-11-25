@@ -82,6 +82,7 @@ def test_the_reader_shows_the_newest_reviewed_commit_with_its_latest_report(
     review_run(repo, head, "20260104T000000Z", "open")
     state = tmp_path / "state"
     state.mkdir()
+    # The host namespace decides which sessions the reader may attribute to this machine.
     monkeypatch.setattr(model, "namespace", lambda: "pid:[17]")
     SessionRegistry(state).upsert(
         Attribution("codex:00", "thread", str(repo), "repo:w", namespace="pid:[17]"),
@@ -154,9 +155,6 @@ async def test_enter_and_the_preview_open_each_report_of_the_line() -> None:
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         assert app.row_keys[-1] == key
-        assert [row[0].plain for row in app._overview()[2]][-1].strip() == (
-            "Measured 1a2b3c4 · Reviewed 5d6e7f8"
-        )
         move_to(app, key)
         await pilot.pause()
         await pilot.press("enter")
@@ -188,6 +186,26 @@ async def test_enter_and_the_preview_open_each_report_of_the_line() -> None:
     async with unlinked.run_test(size=(100, 30)) as pilot:
         await pilot.pause()
         assert key not in unlinked.row_keys  # a report-less review part is no selectable line
+
+
+def test_a_narrow_list_cuts_the_measurement_part_and_keeps_the_review_part() -> None:
+    facts = sessions.SessionFacts(
+        "k", "S1", "S1", "Interactive", "main", "/work/a", "1m", sessions.Activity(),
+        measurement="last Measured 1a2b3c4 · latest 9f8e7d6: 1 unmet",
+        review="Reviewed 5d6e7f8",
+    )  # fmt: skip
+    line = sessions.build([facts], [], 0.0, 40).rows[-1].plain
+    assert line.endswith(" · Reviewed 5d6e7f8")
+    assert len(line) <= 40
+    assert "…" in line
+
+
+@pytest.mark.asyncio
+async def test_a_measurement_only_preview_has_no_reports_section() -> None:
+    measured = dataclasses.replace(lined(), reviews={})
+    async with DashboardApp(lambda: measured).run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+        assert "Reports:" not in str(pilot.app.query_one("#detail").render())
 
 
 @pytest.mark.asyncio
