@@ -246,7 +246,7 @@ def _tree(root: Path) -> dict[Path, tuple[bytes, int, int] | None]:
 
 def test_spec_is_untracked_and_excluded(project: Path, monkeypatch) -> None:
     # Stealth must be explicit for the Booley Directory to join the exclusions.
-    (project / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    (project / ".booley" / "booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
     # Only the host's `booley` launcher stays on PATH: neither Docker nor Git.
     monkeypatch.setenv("PATH", os.environ["PATH"].split(os.pathsep)[0])
 
@@ -272,7 +272,9 @@ def test_spec_mounts_the_setup_pdk_cache_read_only(project: Path, tmp_path: Path
 
 def test_spec_applies_the_host_egress_mode(project: Path) -> None:
     host_config_path().parent.mkdir(parents=True, exist_ok=True)
-    host_config_path().write_text('[sandbox]\negress = "unproxied"\n', encoding="utf-8")
+    host_config_path().write_text(
+        '[sandbox]\negress = "unproxied"\n', encoding="utf-8", newline="\n"
+    )
 
     _sandbox(project)
 
@@ -286,7 +288,9 @@ def test_mask_paths_become_read_only_empty_binds(project: Path) -> None:
     # Each entry hides its /work view, and the /booley view of a .booley subtree; init
     # creates the empty source dir (docker --mount refuses a missing bind source).
     (project / ".booley" / "booley.toml").write_text(
-        '[sandbox]\nmask_paths = ["secret/oracle", ".booley/lanes/b"]\n', encoding="utf-8"
+        '[sandbox]\nmask_paths = ["secret/oracle", ".booley/lanes/b"]\n',
+        encoding="utf-8",
+        newline="\n",
     )
 
     _sandbox(project)
@@ -302,7 +306,7 @@ def test_invalid_mask_paths_reported_and_ignored(project: Path, capsys) -> None:
     # Whole-knob rejection (mirrors passthrough_env): a partially applied
     # mask list would leave the user believing a path is hidden.
     (project / ".booley" / "booley.toml").write_text(
-        '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n', encoding="utf-8"
+        '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n', encoding="utf-8", newline="\n"
     )
 
     _sandbox(project)
@@ -331,7 +335,7 @@ def _stale_spec(project: Path, _docker: HostDocker) -> None:
 
 def _drop_exclusion(project: Path, _docker: HostDocker) -> None:
     exclude = project / ".git" / "info" / "exclude"
-    exclude.write_text(exclude.read_text(encoding="utf-8").replace("/.claude\n", ""))
+    exclude.write_bytes(exclude.read_bytes().replace(b"/.claude\n", b""))
 
 
 def _stopped_runtime(project: Path, docker: HostDocker) -> None:
@@ -360,7 +364,7 @@ def _orphaned_relay(_project: Path, docker: HostDocker) -> None:
 def test_rerun_reports_pending_work_and_check_only_does_none_of_it(
     host, project, tmp_path, monkeypatch, issued, damage, check_only, status, detail
 ):
-    (project / ".booley" / "booley.toml").write_text('[sandbox]\nmask_paths = ["secret"]\n')
+    (project / ".booley" / "booley.toml").write_bytes(b'[sandbox]\nmask_paths = ["secret"]\n')
     if issued:
         _sandbox(project)
     if damage is not None:
@@ -497,7 +501,9 @@ def test_sandbox_app_is_the_declared_provider_never_an_installed_cli(
         PathToolFake.install(tmp_path / "bin", cli, monkeypatch)
     if provider is not None:
         (project / ".booley" / "booley.toml").write_text(
-            f'[agent]\nprovider = "{provider}"\nauth = "subscription"\n', encoding="utf-8"
+            f'[agent]\nprovider = "{provider}"\nauth = "subscription"\n',
+            encoding="utf-8",
+            newline="\n",
         )
 
     assert _sandbox(project).detail == f"app={provider or 'none'}"

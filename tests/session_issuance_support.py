@@ -180,7 +180,7 @@ def serve_host_docker(home: Path, monkeypatch: pytest.MonkeyPatch) -> HostDocker
     auth_token.config_dir().parent.chmod(0o700)
     launcher = home / ".local" / "bin" / ("booley.exe" if os.name == "nt" else "booley")
     launcher.parent.mkdir(parents=True, exist_ok=True)
-    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.write_bytes(b"#!/bin/sh\nexit 0\n")
     launcher.chmod(0o755)
     monkeypatch.setenv("PATH", os.pathsep.join((str(launcher.parent), os.environ["PATH"])))
     # private: `host_docker`'s Docker CLI seam.
