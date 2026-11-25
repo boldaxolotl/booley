@@ -1010,6 +1010,7 @@ def _run_project_phase(
         reporter.diagnostics(readiness.check_guidance(project))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
+    _check_kept_worktree_branches(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(
@@ -1125,6 +1126,36 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
         "save any work in this worktree, then recreate it with `booley worktree new <name>` "
         f"from {primary}",
     )
+
+
+def _check_kept_worktree_branches(project_root: Path, reporter: _Reporter) -> None:
+    """Warn about each ``booley-worktree/*`` branch that has no worktree.
+
+    ``booley worktree prepare`` deletes such a branch once all its commits are on the
+    Booley Directory's branch, so one still listed may hold work to merge or discard.
+    """
+    from booley.core.booley_dir import resolve_main_checkout_root
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.project_worktree_pairing import (
+        ProjectPairingError,
+        kept_paired_branches,
+        project_pairing_source,
+    )
+
+    try:
+        source = project_pairing_source(resolve_main_checkout_root(project_root))
+        if source is None:
+            return
+        branches = kept_paired_branches(source)
+    except (ProjectPairingError, BooleyLayoutError, OSError):
+        return  # Git layout problems are reported by the Git state checks.
+    repository = f"git -C {quote_arg(str(source))}"
+    for branch in branches:
+        _warning_sink(reporter.warn_, "project-data.worktree-branch-kept", subject=branch)(
+            f"{branch} in {source} has no worktree",
+            f"merge it with `{repository} merge {quote_arg(branch)}` or delete it with "
+            f"`{repository} branch -D {quote_arg(branch)}`",
+        )
 
 
 _COMMON_STATE_CHECK_ID = "project-data.common-state-in-worktree"

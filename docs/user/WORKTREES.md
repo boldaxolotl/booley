@@ -88,6 +88,12 @@ With [Stealth Mode](STEALTH.md), the worktree gets a **Paired Checkout** on
 branch `booley-worktree/<folder>`, where `<folder>` is the worktree's folder
 name. Uncommitted files are left out, with a warning.
 
+Each run also deletes the `booley-worktree/*` branches whose worktree is gone
+and whose commits are all on the Booley Directory's branch. Doctor warns about
+the others (`project-data.worktree-branch-kept`) with the command that merges or
+deletes each. A reused folder name whose old branch holds commits of its own
+fails, naming the branch: merge or delete it, then run again.
+
 </details>
 
 Outside a Booley Project the command does nothing and exits 0. It refuses the

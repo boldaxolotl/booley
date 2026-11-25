@@ -80,7 +80,12 @@ def _require_base(source: Path, branch: str) -> str:
         raise ProjectPairingError("commit the Booley Directory's repository first")
     _require_git(source, "check-ref-format", "--branch", branch)
     if run_git(source, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
-        raise ProjectPairingError(f"Project branch {branch!r} already exists; choose another name")
+        repository = f"git -C {shlex.quote(str(source))}"
+        raise ProjectPairingError(
+            f"branch {shlex.quote(branch)} already exists in the Booley Directory's repository; "
+            f"merge it ({repository} merge {shlex.quote(branch)}) or delete it "
+            f"({repository} branch -D {shlex.quote(branch)}), then retry"
+        )
     return head.stdout.strip()
 
 
@@ -266,11 +271,39 @@ def rollback_project_pairing(source: Path, worktree: Path, name: str) -> None:
         run_git(source, "config", "--unset", key)
 
 
+def kept_paired_branches(source: Path) -> list[str]:
+    """Name each ``booley-worktree/*`` branch of *source* that no registered checkout has."""
+    return list(_paired_branches_without_checkout(source))
+
+
+def _paired_branches_without_checkout(source: Path) -> dict[str, bool]:
+    """Map each such branch to whether all its commits are on the branch *source* has checked out.
+
+    Every registration Git lists counts as a checkout, a prunable or locked one too;
+    an unreadable branch counts as unmerged, and so does every branch while *source*
+    is detached, because no branch then holds the commits.
+    """
+    listing = _require_git(source, "worktree", "list", "--porcelain")
+    registered = {line.removeprefix("branch ") for line in listing.split("\n")}
+    refs = _require_git(
+        source, "for-each-ref", "--format=%(refname)", "refs/heads/booley-worktree/"
+    )
+    attached = run_git(source, "symbolic-ref", "--quiet", "HEAD").returncode == 0
+    return {
+        ref.removeprefix("refs/heads/"): attached
+        and run_git(source, "merge-base", "--is-ancestor", ref, "HEAD").returncode == 0
+        for ref in refs.split("\n")
+        if ref and ref not in registered
+    }
+
+
 def prune_missing_checkouts(source: Path) -> None:
     """Drop *source*'s registrations whose folders are gone; Git keeps locked ones.
 
     An explicit prune ignores ``gc.worktreePruneExpire=never``, which pairing sets.
-    The checkouts' branches stay.
+    Then each ``booley-worktree/*`` branch no checkout has is deleted when all its
+    commits are on the branch checked out in *source*; ``git branch -d`` refuses
+    any other, and Doctor reports what stays.
 
     Raises:
         ProjectPairingError: a folder still exists but lost its ``.git`` pointer
@@ -287,6 +320,9 @@ def prune_missing_checkouts(source: Path) -> None:
                     "remove that folder or restore the file, then run prepare again"
                 )
         _require_git(source, "worktree", "prune")
+        for branch, merged in _paired_branches_without_checkout(source).items():
+            if merged:
+                run_git(source, "branch", "-d", branch)
 
 
 def detach_checkout(checkout: Path) -> None:
