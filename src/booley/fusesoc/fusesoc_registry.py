@@ -196,30 +196,6 @@ def core_target_flow(core_doc: Mapping[str, Any], name: str) -> str | None:
     return str(flow) if flow else None
 
 
-def core_target_uses_legacy_fusesoc_api(core_doc: Mapping[str, Any], name: str) -> bool:
-    """True when *name* uses the upstream pre-flow-API FuseSoC ``tools:`` field.
-
-    CAPI2 has two ways to say "run verilator on this Target": the modern flow API
-    (``flow: sim`` + ``flow_options: {tool: verilator}``) and the legacy pair
-    upstream ``default_tool:`` + ``tools:`` fields. Booley reads ``flow`` as the intent
-    discriminator — ``verilator`` backs both ``sim`` and ``lint``, so the EDA-tool
-    name alone cannot say whether a testbench is expected. A legacy Target
-    therefore enumerates as ``flow=None`` and is unclassifiable, which is common
-    in the wild (OpenCores, older FuseSoC cores) and reads as a Booley bug rather
-    than an authoring gap. Detect it so doctor can name the fix.
-    """
-    targets = core_doc.get("targets") or {}
-    if not isinstance(targets, Mapping):
-        return False
-    target = targets.get(name)
-    if not isinstance(target, Mapping):
-        return False
-    if target.get("flow"):
-        return False
-    # ``default_tool`` and ``tools`` are upstream FuseSoC CAPI2 field names.
-    return bool(target.get("default_tool")) or isinstance(target.get("tools"), Mapping)
-
-
 def core_target_toplevel(core_doc: Mapping[str, Any], name: str) -> str:
     """Return a Target's statically-declared ``toplevel``, read from ``.core`` YAML.
 
@@ -1205,29 +1181,6 @@ def _core_depend_entries(core_doc: Mapping[str, Any]) -> set[tuple[str, str]]:
             if isinstance(fileset, Mapping):
                 pairs |= _fileset_depend_entries(fileset)
     return pairs
-
-
-def depended_on_core_keys(project_root: Path | str) -> set[str]:
-    """Every core identity some *other* discovered ``.core`` names in a ``depend:``.
-
-    A core reached only as a dependency is built through its ``default`` Target
-    (FuseSoC's ``_get_target`` falls back to ``"default"`` for any core that is
-    not the toplevel) — and a dependency core with no ``default`` contributes
-    *zero* filesets, silently. So "this core has dependents" is exactly the
-    condition under which a ``default`` Target is load-bearing rather than dead
-    weight; doctor uses it to decide whether to flag one.
-
-    Unparseable cores are skipped: their depends are unknowable, and treating
-    that as "no dependents" would only ever produce a softer finding.
-    """
-    keys: set[str] = set()
-    for core_file in discover_cores(project_root):
-        try:
-            doc = read_core(core_file)
-        except FuseSocError:
-            continue
-        keys |= {key for key, _written in _core_depend_entries(doc)}
-    return keys
 
 
 def _index_core_documents(
