@@ -383,6 +383,7 @@ def test_windows_retarget_failure_keeps_one_working_link(
     link = target / "booley-setup"
     original_rename = Path.rename
     original_unlink = Path.unlink
+    original_rmdir = Path.rmdir
     installs = 0
 
     def fail_install(path: Path, destination: Path):
@@ -393,16 +394,19 @@ def test_windows_retarget_failure_keeps_one_working_link(
                 raise PermissionError("install denied")
         return original_rename(path, destination)
 
-    def fail_cleanup(path: Path, *args, **kwargs):
-        if path.parent == target and path != link:
-            raise PermissionError("backup busy")
-        return original_unlink(path, *args, **kwargs)
+    def failing_cleanup(original):
+        def fail_cleanup(path: Path, *args, **kwargs):
+            if path.parent == target and path != link:
+                raise PermissionError("backup busy")
+            return original(path, *args, **kwargs)
+
+        return fail_cleanup
 
     if fails == "install":
         monkeypatch.setattr(Path, "rename", fail_install)
     else:  # POSIX removes the emulated junction with unlink, Windows with rmdir
-        monkeypatch.setattr(Path, "unlink", fail_cleanup)
-        monkeypatch.setattr(Path, "rmdir", fail_cleanup)
+        monkeypatch.setattr(Path, "unlink", failing_cleanup(original_unlink))
+        monkeypatch.setattr(Path, "rmdir", failing_cleanup(original_rmdir))
 
     report = reconcile_skill_links(target, new_skill.parent, allow_retarget=True)
 
