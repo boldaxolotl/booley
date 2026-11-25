@@ -112,12 +112,9 @@ def test_container_runtime_reports_each_host_state(
         assert audit.finding.fix
 
 
-_REFERENCE = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-
-
 class _DateResponse:
     def __init__(self) -> None:
-        self.headers = {"Date": email.utils.format_datetime(_REFERENCE, usegmt=True)}
+        self.headers = {"Date": email.utils.format_datetime(datetime.now(UTC), usegmt=True)}
 
     def __enter__(self) -> "_DateResponse":
         return self
@@ -130,7 +127,7 @@ class _DateResponse:
     ("offset_hours", "online", "severity", "words"),
     [
         pytest.param(
-            0,
+            None,
             True,
             host_environment.EnvironmentSeverity.PASS,
             ["agrees with true UTC"],
@@ -145,7 +142,7 @@ class _DateResponse:
         ),
         pytest.param(-4, True, host_environment.EnvironmentSeverity.WARN, ["behind"], id="behind"),
         pytest.param(
-            0,
+            None,
             False,
             host_environment.EnvironmentSeverity.SKIP,
             ["no reference time reachable"],
@@ -155,7 +152,7 @@ class _DateResponse:
 )
 def test_host_clock_compares_with_an_http_date(
     monkeypatch: pytest.MonkeyPatch,
-    offset_hours: int,
+    offset_hours: int | None,
     online: bool,
     severity: host_environment.EnvironmentSeverity,
     words: list[str],
@@ -167,9 +164,12 @@ def test_host_clock_compares_with_an_http_date(
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
 
-    finding = host_environment.probe_host_clock(
-        now=lambda: _REFERENCE + timedelta(hours=offset_hours)
+    # No offset leaves the probe on its default clock, which the reference Date matches.
+    now = (
+        None if offset_hours is None else lambda: datetime.now(UTC) + timedelta(hours=offset_hours)
     )
+
+    finding = host_environment.probe_host_clock(now=now)
 
     assert finding.severity is severity
     text = f"{finding.message} {finding.fix or ''}"
