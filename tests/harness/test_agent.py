@@ -489,6 +489,8 @@ class TestCallAgent:
         [
             (ConnectionError("ECONNRESET"), True),
             (RuntimeError('API Error: 500 {"type":"error","error":{"type":"api_error"}}'), True),
+            (RuntimeError("API Error: 500 internal server error"), True),
+            (RuntimeError("[Errno 104] Connection reset by peer"), True),
             (RuntimeError("502 Bad Gateway"), True),
             (RuntimeError("503 Service Unavailable"), True),
             (RuntimeError("529 overloaded"), True),
@@ -503,10 +505,17 @@ class TestCallAgent:
             ),
             (RuntimeError("Error: authentication failed"), False),
             (ValueError("Invalid JSON in agent output"), False),
+            (RuntimeError("Request too large: 1500 bytes"), False),
+            (RuntimeError("max_tokens 2500 exceeds the model limit"), False),
+            (RuntimeError("request req_015003 failed validation"), False),
+            (RuntimeError("Invalid max_tokens: 500.5; expected an integer"), False),
+            (RuntimeError("Invalid connection string in config"), False),
         ],
         ids=[
             "connection-reset",
             "api-500",
+            "api-500-phrase",
+            "connection-reset-by-peer",
             "bad-gateway",
             "service-unavailable",
             "overloaded",
@@ -515,6 +524,11 @@ class TestCallAgent:
             "sdk-command-failed",
             "authentication-failed",
             "invalid-json",
+            "1500-bytes",
+            "max-tokens-2500",
+            "request-id-500",
+            "decimal-500",
+            "connection-string",
         ],
     )
     async def test_retries_only_transient_failures(self, monkeypatch, no_backoff, error, retried):
@@ -528,6 +542,7 @@ class TestCallAgent:
             with pytest.raises(type(error)):
                 await call_agent(_params())
             assert len(attempts) == 1
+            no_backoff.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("structured_output", [None, {}])
