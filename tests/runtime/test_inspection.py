@@ -18,6 +18,7 @@ from tests.docker_cli_guard import (
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.harness.session_docker_fake import SandboxDocker, completed, route_docker_commands
 from tests.sharing_error_support import hold_opens
+from tests.subprocess_budget import run_bounded_child
 
 from booley.config.eda import EdaConfig
 from booley.core.host_shell import quote_arg
@@ -25,6 +26,7 @@ from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
     resources_for_session,
 )
+from booley.harness import doctor
 from booley.runtime import (
     auth_token,
     inspection,
@@ -120,6 +122,10 @@ def live_sandbox(tmp_path, monkeypatch):
             "extra-security-option",
             lambda s: s["HostConfig"]["SecurityOpt"].append("label=disable"),
         ),
+        (
+            "unreported-state",
+            lambda s: (s.pop("State"), s["HostConfig"].update(Privileged=True)),
+        ),
     ],
 )
 def test_host_doctor_rejects_full_live_runtime_state_drift(live_sandbox, drift, mutate) -> None:
@@ -198,8 +204,11 @@ def retained_docker(tmp_path, monkeypatch):
     """Docker lists the Project's own state volume, an orphan volume and keeper images."""
     docker = route_docker_commands(monkeypatch, SandboxDocker())
 
-    def listing(volumes: list[str], images: list[str] | str):
-        docker.script(("volume", "ls"), completed(stdout="".join(f"{v}\n" for v in volumes)))
+    def listing(volumes: list[str] | None, images: list[str] | str):
+        if volumes is None:
+            docker.script(("volume", "ls"), completed(1, stderr="daemon unavailable"))
+        else:
+            docker.script(("volume", "ls"), completed(stdout="".join(f"{v}\n" for v in volumes)))
         if isinstance(images, str):
             docker.script(("image", "ls"), completed(1, stderr=images))
         else:
@@ -220,6 +229,32 @@ def test_retained_resources_report_nothing_retained(tmp_path, retained_docker) -
         "no persistent interactive state volumes",
         "no retained Sandbox Image keepers",
     ]
+
+
+def test_retained_resources_treat_an_unlistable_volume_inventory_as_empty(
+    tmp_path, retained_docker
+) -> None:
+    retained_docker(None, [])
+    report = inspection.inspect_retained_resources(tmp_path, "docker")
+    assert "no persistent interactive state volumes" in _messages(report, "pass")
+
+
+def test_verbose_doctor_lists_orphan_volumes(tmp_path, retained_docker, capsys) -> None:
+    retained_docker(["booley-codex-state-someoldproject"], [])
+    report = inspection.inspect_retained_resources(tmp_path, "docker")
+    # _Reporter: verbose detail rendering is reachable publicly only through a whole
+    # Doctor run over a Project.
+    doctor._Reporter.create(verbose=True).diagnostics(report)
+    assert "booley-codex-state-someoldproject" in capsys.readouterr().out
+
+
+def test_tracked_devcontainer_spec_fails(tmp_path) -> None:
+    _write_spec(tmp_path, {})
+    for args in (["init", "-q"], ["add", ".devcontainer"]):
+        run_bounded_child(["git", "-C", str(tmp_path), *args], check=True)
+    request = inspection.RuntimeInspectionRequest(tmp_path, "booley-sandbox", None)
+    (failure,) = _messages(inspection.inspect_runtime(request).configuration, "fail")
+    assert ".devcontainer/ is tracked by git" in failure
 
 
 def test_retained_resources_recognize_this_projects_resources(tmp_path, retained_docker) -> None:

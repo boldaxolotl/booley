@@ -183,7 +183,7 @@ class SandboxDocker:
         rows = []
         for name, state in self.containers.items():
             if not isinstance(state, dict) or not (
-                "-a" in args or state["State"].get("Running") is True
+                {"-a", "-aq"} & set(args) or state["State"].get("Running") is True
             ):
                 continue
             labels = state["Config"]["Labels"]
