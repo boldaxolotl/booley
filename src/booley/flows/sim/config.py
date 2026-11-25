@@ -8,13 +8,11 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Final
 
-from booley.audit.flow_schema import pre_run_commands_problem
+from booley.config import flow_knobs
 from booley.core.boundary import (
     BoundaryError,
-    is_str_list,
     require_bool,
     require_dict,
-    require_int,
     require_str_value,
 )
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
@@ -140,16 +138,10 @@ def resolve_pre_sim_commands(work_dir: Path | str | None = None) -> list[str]:
 
     Raises:
         BoundaryError: The value is anything else (a bare string, a table, a
-            number, or a list with a non-string entry).  The message is
-            Doctor's, so run time and Doctor agree and no command runs.
+            number, or a list with a non-string entry).  The message is the
+            shared validator's, so run time and Doctor agree and no command runs.
     """
-    value = _sim_config(work_dir).get("pre_run_commands")
-    if value is None:
-        return []
-    if not is_str_list(value) or not all(value):
-        message, fix = pre_run_commands_problem("sim")
-        raise BoundaryError(f"{message}; {fix}")
-    return list(value)
+    return flow_knobs.pre_run_commands("sim", _sim_config(work_dir))
 
 
 def resolve_pre_sim_build_access(work_dir: Path | str | None = None) -> str:
@@ -189,26 +181,14 @@ def resolve_sim_timeout_ms(work_dir: Path | str | None = None) -> int:
 
 def resolve_sim_build_timeout_ms(work_dir: Path | str | None = None) -> int:
     """Return the Project-owned simulator-image build timeout in milliseconds."""
-    field = "[flows.sim].build_timeout_ms"
-    configured = _sim_config(work_dir).get("build_timeout_ms")
-    if configured is None:
-        return DEFAULT_SIM_BUILD_TIMEOUT_MS
-    timeout_ms = require_int(configured, field=field)
-    if timeout_ms <= 0:
-        raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
-    return timeout_ms
+    configured = flow_knobs.timeout_ms("sim", _sim_config(work_dir), "build_timeout_ms")
+    return DEFAULT_SIM_BUILD_TIMEOUT_MS if configured is None else configured
 
 
 def resolve_sim_trace_convert_timeout_ms(work_dir: Path | str | None = None) -> int:
     """Return the Project-owned post-run trace conversion budget in milliseconds."""
-    field = "[flows.sim].trace_convert_timeout_ms"
-    configured = _sim_config(work_dir).get("trace_convert_timeout_ms")
-    if configured is None:
-        return DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS
-    timeout_ms = require_int(configured, field=field)
-    if timeout_ms <= 0:
-        raise BoundaryError(f"{field} must be a positive integer, got {timeout_ms!r}")
-    return timeout_ms
+    configured = flow_knobs.timeout_ms("sim", _sim_config(work_dir), "trace_convert_timeout_ms")
+    return DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_MS if configured is None else configured
 
 
 _CACHE_SIZE_RE = re.compile(r"[1-9][0-9]*(?:M|G|Mi|Gi)")

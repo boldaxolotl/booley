@@ -308,7 +308,6 @@ def test_doctor_deep_in_claude_session_skips_gateway_developer_probe(claude_sess
         project_root=claude_session,
         booley_dir=claude_session / ".booley",
         booley_toml={"agent": {"default": "codex", "clis": ["claude", "codex"]}},
-        configs_toml={},
         first_target="",
     )
 

@@ -38,7 +38,6 @@ def credential_findings(root: Path, booley_toml: dict[str, Any]) -> list[Diagnos
         project_root=root,
         booley_dir=root / ".booley",
         booley_toml=booley_toml,
-        configs_toml={},
         first_target="",
     )
     # private: run_doctor_result runs every host, Docker and Flow probe first; this is its

@@ -127,7 +127,6 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path, monkeypat
 def _write_project(
     root: Path,
     *,
-    configs_text: str | None = None,
     sandbox_image: str | None = None,
     seed_interactive: bool = True,
     write_tickets: bool = True,
@@ -156,23 +155,6 @@ auth = "subscription"
 """.lstrip().replace("{sandbox_section}", sandbox_section)
     (booley_dir / "booley.toml").write_text(
         booley_toml,
-        encoding="utf-8",
-    )
-    (booley_dir / "configs.toml").write_text(
-        configs_text
-        or """
-[fast]
-defines = []
-top_module = "dut"
-tb_top = "tb"
-tests = ["smoke", "full"]
-
-[slow]
-defines = ["SLOW"]
-top_module = "dut"
-tb_top = "tb"
-tests = ["full"]
-""".lstrip(),
         encoding="utf-8",
     )
     (booley_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
@@ -1046,12 +1028,12 @@ def _script_flow(monkeypatch, flow, answer):
 
 
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
-    # The first Target of configs.toml is not a sim Target, so the deep smoke takes `--test`
-    # from its tests list (the configs.toml fallback of the smoke pin).
-    configs = (
-        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\ntests = ["smoke", "full"]\n'
+    # A leftover configs.toml is ignored: it pins no `--test` for the deep smoke.
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "configs.toml").write_text(
+        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntests = ["smoke", "full"]\n',
+        encoding="utf-8",
     )
-    booley_dir = _write_project(tmp_path, configs_text=configs)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
     starts: list[Path] = []
@@ -1076,7 +1058,7 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     assert "--dry-run" in dry
     assert "--dry-run" not in deep
     assert deep[deep.index("--target") + 1] == "sim_fast"
-    assert deep[deep.index("--test") + 1] == "smoke"
+    assert "--test" not in deep
     assert "--tb-top" not in deep
     assert "--memory" not in deep
     assert f"{INVOCATION_ORIGIN_ENV}=transport" in deep
@@ -1857,19 +1839,12 @@ def test_doctor_fails_on_container_uid_mismatch(tmp_path, monkeypatch, capsys):
     assert "container agent uid 4242 !=" in output
 
 
-@pytest.mark.parametrize(
-    ("tb_top", "severity", "message", "exit_code"),
-    [
-        ("", Severity.SKIP, "sim dry-run [sim_fast] skipped - tb_top is resolved at runtime", 0),
-        ('tb_top = "tb"\n', Severity.FAIL, "sim dry-run [sim_fast] failed with exit 2", 1),
-    ],
-    ids=["tb-top-runtime", "tb-top-configured"],
-)
-def test_doctor_sim_dry_run_follows_tb_top_resolution(
-    tmp_path, monkeypatch, tb_top, severity, message, exit_code
-):
-    configs_text = f'[lint_fast]\ndefines = []\ntop_module = "dut"\n{tb_top}tests = ["smoke"]\n'
-    booley_dir = _write_project(tmp_path, configs_text=configs_text)
+def test_doctor_sim_dry_run_follows_tb_top_resolution(tmp_path, monkeypatch):
+    # No static tb_top source exists: a leftover configs.toml pinning one does not stop the skip.
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "configs.toml").write_text(
+        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\n', encoding="utf-8"
+    )
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _answer_command(
         monkeypatch,
@@ -1880,8 +1855,11 @@ def test_doctor_sim_dry_run_follows_tb_top_resolution(
 
     result = _doctor_run(tmp_path)
 
-    assert [f.severity for f in result.findings if f.message.startswith(message)] == [severity]
-    assert result.exit_code == exit_code
+    message = "sim dry-run [sim_fast] skipped - tb_top is resolved at runtime"
+    assert [f.severity for f in result.findings if f.message.startswith(message)] == [
+        Severity.SKIP
+    ]
+    assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2135,7 +2113,6 @@ class TestCoreAudit:
             project_root=tmp_path,
             booley_dir=tmp_path / ".booley",
             booley_toml={},
-            configs_toml={"x": {}},
             first_target="x",
         )
         original = doctor.TargetCatalog.inspect
@@ -2754,7 +2731,6 @@ class TestWorktreePortability:
             project_root=worktree,
             booley_dir=resolve_checkout_booley_dir(worktree),
             booley_toml={},
-            configs_toml={},
             first_target="",
         )
 
@@ -3118,7 +3094,6 @@ def _adr28_project(tmp_path: Path, *, booley_toml: dict | None = None) -> doctor
         project_root=tmp_path,
         booley_dir=pd,
         booley_toml=booley_toml or {},
-        configs_toml={},
         first_target="x",
     )
 
@@ -4868,7 +4843,7 @@ def test_project_checks_run_custom_endpoint_checks_and_no_criteria_check(tmp_pat
     ):
         monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
     reporter = doctor._Reporter.create()
-    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, {}, None), reporter)
+    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, None), reporter)
     findings = reporter.findings or []
     assert [f for f in findings if f.severity == "fail"] == []
     skipped = [f for f in findings if f.severity == "warn"]
@@ -4892,7 +4867,6 @@ def test_missing_pinned_credential_fails_even_without_cli(tmp_path, monkeypatch)
         project_root=tmp_path,
         booley_dir=tmp_path,
         booley_toml={"agent": {"provider": "claude", "auth": "api_key"}},
-        configs_toml={},
         first_target="",
     )
     # Private: a Project with no installed Agent CLI is not reachable through a whole run (see the stub above).
@@ -4910,7 +4884,6 @@ def test_seed_mount_policy_uses_same_project_policy_as_credential_report(tmp_pat
         project_root=tmp_path,
         booley_dir=tmp_path / ".booley",
         booley_toml={"agent": {"provider": "claude", "auth": "api_key"}},
-        configs_toml={},
         first_target="",
     )
     # Private: pins the audited policy name the credential report renders; not yet moved onto the public run.
@@ -5276,7 +5249,6 @@ class TestDoctorCommonStateFromWorktree:
             project_root=worktree,
             booley_dir=resolve_checkout_booley_dir(worktree),
             booley_toml={"sandbox": {"memory": "100g"}},
-            configs_toml={},
             first_target="",
         )
         return main / ".booley", project
@@ -5416,7 +5388,6 @@ def test_invalid_endpoint_config_is_left_to_the_endpoint_check(tmp_path):
         project_root=tmp_path,
         booley_dir=tmp_path / ".booley",
         booley_toml={"specialists": {"typo": {"enabled": False}}},
-        configs_toml={},
         first_target="",
     )
 
@@ -5652,49 +5623,29 @@ _VERIBLE_CONTAINER_ROW = "verible-verilog-lint (a .core lint Target selects veri
 
 
 @pytest.mark.parametrize(
-    ("configs", "rc", "reason"),
-    [
-        pytest.param(
-            '[bad]\ntop_module = "dut"\n',
-            1,
-            "defines must be present as list[str]",
-            id="no-defines",
-        ),
-        pytest.param(
-            '[fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\ntests = ["smoke"]\n\n'
-            '[fast.parameters]\nWIDTH = 32\nSECURE = true\nMODE = { expr = "pkg::ModeFast" }\n'
-            'INIT = { string = "rom.mem" }\n',
-            0,
-            "",
-            id="typed-parameters",
-        ),
-        pytest.param(
-            '[test_lists]\nrv_tests = ["smoke", "full"]\n\n[fast]\ndefines = []\n'
-            'top_module = "dut"\ntb_top = "tb"\ntest_list = "rv_tests"\n',
-            0,
-            "",
-            id="shared-test-lists",
-        ),
-        pytest.param(
-            '[bad]\ndefines = []\n\n[bad.parameters]\nMODE = "pkg::ModeFast"\n',
-            1,
-            "plain strings are not allowed",
-            id="plain-string-parameter",
-        ),
-    ],
+    "configs",
+    ['[fast]\ndefines = []\ntb_top = "tb"\ntests = ["smoke"]\n', "[broken"],
+    ids=["valid", "malformed"],
 )
-def test_doctor_validates_configs_toml(tmp_path, monkeypatch, capsys, configs, rc, reason):
-    booley_dir = _write_project(tmp_path, configs_text=configs)
+def test_doctor_warns_once_that_configs_toml_is_ignored(tmp_path, monkeypatch, configs):
+    booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
+    before = _doctor_run(tmp_path)
+    (booley_dir / "configs.toml").write_text(configs, encoding="utf-8")
 
-    code = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+    after = _doctor_run(tmp_path)
 
-    output = capsys.readouterr().out
-    assert code == rc
-    assert reason in output
-    # An invalid config leaves Doctor with no Project; the container tool checks still run, and
-    # none of them declares Verible.
-    assert (_VERIBLE_CONTAINER_ROW in output) is False
+    def other_rows(result):
+        return [
+            (f.severity, f.message) for f in result.findings if "configs.toml" not in f.message
+        ]
+
+    assert [f for f in before.findings if "configs.toml" in f.message] == []
+    mentions = [f for f in after.findings if "configs.toml" in f.message]
+    assert [(f.severity, f.check_id) for f in mentions] == [
+        (Severity.WARN, "config.configs-toml-ignored")
+    ]
+    assert other_rows(after) == other_rows(before)
 
 
 def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path, monkeypatch):
@@ -5716,7 +5667,7 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path, monkeypat
     messages = _messages(result)
     assert "sim dry-run [sim_fast] passed" in messages
     assert "sim dry-run [sim_full] passed" in messages
-    # No fallback to the first entry of configs.toml.
+    # No fallback to a first Target.
     assert not [m for m in messages if m.startswith("lint dry-run")]
     (missing,) = _rows(result, Severity.FAIL, "lint has no Doctor Target")
     assert missing.startswith("lint has no Doctor Target; available Targets: ")

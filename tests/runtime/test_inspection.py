@@ -64,7 +64,7 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
     (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -94,7 +94,7 @@ def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monk
         )
 
     monkeypatch.setattr(runtime_spec, "validate", missing_bind)
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -134,7 +134,7 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
 
     monkeypatch.setattr(subprocess, "run", _runtime_probe_subprocess(""))
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -202,7 +202,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -258,7 +258,7 @@ def test_host_doctor_names_rebuild_repair_for_running_old_vscode(
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -312,7 +312,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -448,7 +448,6 @@ class TestStateVolumeCheck:
             project_root=root,
             booley_dir=pd,
             booley_toml={},
-            configs_toml={"x": {}},
             first_target="x",
         )
 

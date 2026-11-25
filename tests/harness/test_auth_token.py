@@ -442,7 +442,7 @@ def test_doctor_provider_answers(
             monkeypatch.setenv(name, value)
         else:
             monkeypatch.delenv(name, raising=False)
-    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, {}, "")
+    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, "")
 
     # run_doctor_result reaches these only through its Docker and image phases.
     assert (doctor._configured_provider(audit), doctor._declared_provider(audit)) == (
@@ -466,7 +466,7 @@ class TestUnusedProviderIsSilent:
             lambda _provider: doctor.host_environment.AgentInstallation(True, None),
         )  # Both providers have installation state, but only the selected one is audited.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, {}, "")
+        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, "")
         # run_doctor_result reaches these only through its Docker and image phases.
         provider = doctor._configured_provider(audit)
 
