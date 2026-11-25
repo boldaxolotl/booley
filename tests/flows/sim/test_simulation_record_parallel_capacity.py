@@ -340,6 +340,7 @@ def test_child_permit_retries_a_busy_lease_gate_until_renewed_lost_or_cancelled(
         return False
 
     monkeypatch.setattr(store, "renew", renew_behind_a_held_gate)
+    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 3600.0)  # no tick
     with (
         capacity.outer_permit(),
         pytest.raises(error) if error else contextlib.nullcontext(),

@@ -30,7 +30,7 @@ from .model import SimulationRecordManifest
 
 _MAX_CHILD_ACQUIRE_POLL_SECONDS = 0.01
 _SHUTDOWN_POLL_SLICES = 10
-# A busy lease gate refuses renewal without losing the lease; retry well inside the 30 s lease.
+# A busy lease gate refuses renewal without losing the lease; retry well inside the lease.
 _LEASE_CONFIRM_RETRY_SECONDS = 0.05
 
 
