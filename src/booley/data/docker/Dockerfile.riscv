@@ -34,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # GPG-verified.
 RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
 
-# Retry transient apt and git failures (#4420), here and in the final stage.
+# Retry transient apt and git failures (#4420); the final stage sets only the apt retries.
 RUN printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/99-network-retries \
     && printf '%s\n' '#!/bin/sh' \
         '# Run "$@"; retry a failure up to 8 times, 30 s apart.' \

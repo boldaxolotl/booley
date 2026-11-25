@@ -516,7 +516,7 @@ jobs:
       - name: Provision pinned Nangate45 PDK
         id: nangate
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
       - name: Verify OpenROAD physical runtime
         env:
@@ -859,7 +859,7 @@ jobs:
       - name: Provision pinned Nangate45 PDK
         id: nangate
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:

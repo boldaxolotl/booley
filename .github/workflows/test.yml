@@ -1404,7 +1404,7 @@ jobs:
         id: nangate
         shell: bash
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare isolated validation temp directories

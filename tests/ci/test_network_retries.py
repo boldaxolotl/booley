@@ -46,6 +46,22 @@ def _units() -> Iterator[tuple[str, dict[str, Any], str, list[tuple[str, str]]]]
         yield path.name, {}, "script", [(path.name, path.read_text(encoding="utf-8"))]
 
 
+def _line_issues(line: str, kind: str) -> list[str]:
+    """Name each retry the command line lacks."""
+    issues: list[str] = []
+    if re.search(r"\bdocker pull\b|\bgit fetch\b", line) and "retry.sh" not in line:
+        issues.append("lacks retry.sh")
+    if "nangate_pdk" in line and "retry.sh" not in line:
+        issues.append("lacks retry.sh for the PDK download")
+    if re.search(r"\bcurl ", line) and not ("--retry 8" in line and "--retry-delay 30" in line):
+        issues.append("lacks curl retries")
+    if re.search(r"\bapt-get (update|install)", line) and "Acquire::Retries=" not in line:
+        issues.append("lacks Acquire::Retries")
+    if "pip install" in line and kind == "action" and "--retries" not in line:
+        issues.append("lacks --retries")
+    return issues
+
+
 def test_workflow_network_commands_retry() -> None:
     """Each download in a workflow, action, or script retries; each pull precedes its run."""
     problems: list[str] = []
@@ -57,19 +73,7 @@ def test_workflow_network_commands_retry() -> None:
         for step, text in runs:
             for line in _commands(text):
                 where = f"{name} [{step}]: {line.strip()[:70]}"
-                if re.search(r"\bdocker pull\b|\bgit fetch\b", line) and "retry.sh" not in line:
-                    problems.append(f"{where} lacks retry.sh")
-                if re.search(r"\bcurl ", line) and not (
-                    "--retry 8" in line and "--retry-delay 30" in line
-                ):
-                    problems.append(f"{where} lacks curl retries")
-                if (
-                    re.search(r"\bapt-get (update|install)", line)
-                    and "Acquire::Retries=" not in line
-                ):
-                    problems.append(f"{where} lacks Acquire::Retries")
-                if "pip install" in line and kind == "action" and "--retries" not in line:
-                    problems.append(f"{where} lacks --retries")
+                problems.extend(f"{where} {issue}" for issue in _line_issues(line, kind))
             joined_step = "\n".join(_commands(text))
             for match in _RUN.finditer(joined_step):
                 before = earlier + joined_step[: match.start()]
@@ -83,6 +87,9 @@ def test_workflow_network_commands_retry() -> None:
             problems.append(f"{name}: pip without PIP_RETRIES")
         if kind == "workflow" and re.search(r"\bcargo ", joined) and "CARGO_NET_RETRY" not in env:
             problems.append(f"{name}: cargo without CARGO_NET_RETRY")
+    smoke = (_GITHUB / "scripts" / "isolated_host_install_smoke.py").read_text(encoding="utf-8")
+    if "retry.sh" not in smoke or "Acquire::Retries" not in smoke:
+        problems.append("isolated_host_install_smoke.py lacks pull or apt retries")
     assert problems == []
 
 
