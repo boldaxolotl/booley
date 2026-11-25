@@ -1,1 +1,1 @@
-tee -o /work/syn_result/dut/log_abc_dut.txt abc -liberty /opt/pdk/NangateOpenCellLibrary_typical.lib -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats; opt
+tee -o ./log_abc_dut.txt abc -liberty <WORK>/pdk/cell/lib/NangateOpenCellLibrary_typical_ccs.lib -dont_use FA_X1 -dont_use HA_X1 -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;map;print_stats
