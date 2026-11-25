@@ -38,9 +38,16 @@ from booley.runtime.job_slots import (
     ROLE_INTERACTIVE,
     SlotStore,
 )
-from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
-from tests.sharing_error_support import hold_unlinks
-from tests.time_budget import hang_guard_s, scaled
+from booley.runtime.pid import (
+    DEAD,
+    REUSED,
+    RUNNING,
+    ProcessIdentity,
+    ProcessObservation,
+    capture_process_identity,
+)
+from tests.sharing_error_support import hold_opens, hold_unlinks
+from tests.time_budget import hang_guard_s
 
 
 class FakeWorld:
@@ -120,6 +127,98 @@ def deny_until(
     monkeypatch.setattr(Path, method, flaky)
 
 
+# Far past the store's age rule for unreadable entries and owner-less gates.
+OLD_S = 3600.0
+PROMOTION_GATE = ".promotion.lock"
+# A gate a dead process left behind: a bare PID, as gates were written before
+# they named their owner's identity. The PID is above the kernel limit.
+_DEAD_GATE_PID = 4_194_305
+
+
+def lease_gate(token: job_slots.SlotToken) -> Path:
+    """The file a process holds while it renews, releases or promotes *token*."""
+    return token.path.parent / f".{token.lease_id}.lease.lock"
+
+
+def is_lease_gate(path: Path) -> bool:
+    return path.name.endswith(".lease.lock")
+
+
+def is_rewrite_tmp(path: Path) -> bool:
+    return path.name.endswith(".rewrite.tmp")
+
+
+def wait_until(predicate) -> None:
+    deadline = time.monotonic() + hang_guard_s()
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert predicate()
+
+
+@contextlib.contextmanager
+def held_gate(gate: Path, pid: int, identity: ProcessIdentity | None):
+    """Another process's gate on disk, as that process publishes it, until the block ends."""
+    owner = {"pid": pid, "owner_identity": identity.to_payload() if identity else None}
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_bytes(json.dumps(owner).encode("utf-8") + b"\n")
+    try:
+        yield
+    finally:
+        gate.unlink(missing_ok=True)
+
+
+def interleave(monkeypatch, method: str, matches, action, *, after: bool = False) -> list[Path]:
+    """Run *action* once, around the first ``Path.<method>`` call on a path *matches* accepts.
+
+    The action runs before the call, or with ``after`` once it has returned or
+    raised. Returns the paths the action fired on.
+    """
+    original = getattr(Path, method)
+    fired: list[Path] = []
+
+    def hooked(path, *args, **kwargs):
+        if fired or not matches(path):
+            return original(path, *args, **kwargs)
+        fired.append(path)
+        if not after:
+            action()
+            return original(path, *args, **kwargs)
+        try:
+            return original(path, *args, **kwargs)
+        finally:
+            action()
+
+    monkeypatch.setattr(Path, method, hooked)
+    return fired
+
+
+def verified_inheritance(monkeypatch, world: FakeWorld, ancestors: set[tuple[int, int]]) -> None:
+    """Make the fake world's ancestry decide which owners inherit an execution ID.
+
+    Patched because the default verifier asks the host's real process ancestry,
+    which the fake world cannot reach.
+    """
+    monkeypatch.setattr(
+        job_slots,
+        "verify_inherited_execution_id",
+        lambda raw, *, booley_dir, owner_pid: execution_records.verify_inherited_execution_id(
+            raw,
+            booley_dir=booley_dir,
+            owner_pid=owner_pid,
+            observe_identity=world.observe_identity,
+            ancestor_check=lambda owner, ancestor: (owner, ancestor) in ancestors,
+        ),
+    )
+
+
+@pytest.fixture()
+def booley_dir_cache():
+    """A fresh Booley Directory resolution before and after the test."""
+    runtime_booley_dir.reset_cache()
+    yield
+    runtime_booley_dir.reset_cache()
+
+
 _ONE_MIB_CLAIM = job_slots.MemoryClaim(budget_mb=1024, reservation_mb=1)
 # One holder at a time: a second claim waits behind it.
 _ALONE = job_slots.MemoryClaim(budget_mb=1024, run_alone=True)
@@ -127,18 +226,28 @@ _ALONE = job_slots.MemoryClaim(budget_mb=1024, run_alone=True)
 _HALF = job_slots.MemoryClaim(budget_mb=2, reservation_mb=1)
 
 
-def make_store(root: Path, world: FakeWorld) -> SlotStore:
-    """A simulated process. Its lease gates name the real test process: a test that
-    holds a lease gate while another store looks at it spawns ``os.getpid()``."""
+def make_store(
+    root: Path,
+    world: FakeWorld,
+    *,
+    sleep=None,
+    capture_identity=None,
+    getpid=None,
+    recovery=None,
+) -> SlotStore:
+    """A simulated process. Its lease gates name the process *getpid* returns (the real
+    test process by default): a test that holds a lease gate while another store looks
+    at it names a live PID of the world."""
     return SlotStore(
         root,
         is_pid_alive=world.is_pid_alive,
         read_cmdline=world.read_cmdline,
         now=world.now,
-        sleep=lambda s: None,
-        capture_identity=world.capture_identity,
+        sleep=sleep or (lambda _seconds: None),
+        capture_identity=capture_identity or world.capture_identity,
         observe_identity=world.observe_identity,
-        recovery=job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
+        recovery=recovery or job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
+        getpid=getpid or os.getpid,
     )
 
 
@@ -149,6 +258,7 @@ def make_execution_store(
     execution_terminal,
     cancellations: list[str],
     inherited_execution_verifier=None,
+    sleep=None,
 ) -> SlotStore:
     kwargs = {}
     if inherited_execution_verifier is not None:
@@ -158,7 +268,7 @@ def make_execution_store(
         is_pid_alive=world.is_pid_alive,
         read_cmdline=world.read_cmdline,
         now=world.now,
-        sleep=lambda _seconds: None,
+        sleep=sleep or (lambda _seconds: None),
         capture_identity=world.capture_identity,
         observe_identity=world.observe_identity,
         recovery=job_slots.SlotRecovery(
@@ -197,6 +307,17 @@ def active_execution_record(supervisor: ProcessIdentity) -> dict:
     }
 
 
+GATE_ROWS = {  # gate, content, old, unreadable, recycled PID, state of the refresh
+    "lease-gate-live": ("lease", "live", False, False, False, QUEUED),
+    "promotion-gate-live": ("promotion", "live", False, False, False, QUEUED),
+    "promotion-gate-unreadable-live": ("promotion", "live", True, True, False, QUEUED),
+    "promotion-gate-recycled-pid": ("promotion", "live", False, False, True, HOLDING),
+    "junk-bytes-young": ("promotion", b"\xff\xfe junk\n", False, False, False, QUEUED),
+    "junk-bytes-old": ("promotion", b"\xff\xfe junk\n", True, False, False, HOLDING),
+    "junk-text-old": ("promotion", b"not json\n", True, False, False, HOLDING),
+}
+
+
 class TestSingleProcess:
     def test_first_claim_holds_immediately(self, root, world):
         spawn(world, 100)
@@ -205,42 +326,50 @@ class TestSingleProcess:
         assert store.refresh(tok).state == HOLDING
         assert tok.is_holder
 
-    def test_acquire_renews_production_lease_until_release(self, root, monkeypatch):
-        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", scaled(2.0))
+    def test_renewal_thread_renews_and_survives_a_missed_lease_gate(self, root, monkeypatch):
         monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
         store = SlotStore(root)
+        missed = threading.Event()
+        real_renew = store.renew
+
+        def observed_renew(token):
+            renewed = real_renew(token)
+            if not renewed:
+                missed.set()
+            return renewed
+
+        # Patched only to observe a whole refused renewal: the thread reports no miss.
+        monkeypatch.setattr(store, "renew", observed_renew)
         token = store.acquire(CLASS_MEMORY, memory=_ALONE, pid=os.getpid(), poll_interval=0.01)
         try:
-            deadline = time.monotonic() + hang_guard_s()
-            while token.lease_generation < 2 and time.monotonic() < deadline:
-                time.sleep(0.01)
+            wait_until(lambda: token.lease_generation >= 2)
             holder = store.snapshot(CLASS_MEMORY)[0][0]
             assert holder.lease_generation >= 2
             assert holder.lease_state == job_slots.LEASE_ACTIVE
+            me = os.getpid()
+            with held_gate(lease_gate(token), me, capture_process_identity(me)):
+                assert missed.wait(hang_guard_s())
+                generation = token.lease_generation
+            wait_until(lambda: token.lease_generation > generation)
+            assert not token.lease_health.lost.is_set()
         finally:
             store.release(token)
 
-    def test_renew_retries_transient_permission_error(self, root, world, monkeypatch):
+    @pytest.mark.parametrize(
+        ("seconds", "renewed"), [(0.5, True), (1000.0, False)], ids=["brief", "lasting"]
+    )
+    def test_renew_through_a_denied_rewrite(self, root, world, monkeypatch, seconds, renewed):
         spawn(world, 100)
-        store = make_store(root, world)
+        clock = BackoffClock()
+        store = make_store(root, world, sleep=clock.sleep)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_replace = Path.replace
-        attempts = 0
+        deny_until(monkeypatch, "replace", token.path, clock, seconds=seconds)
 
-        def flaky_replace(path, target):
-            nonlocal attempts
-            if target == token.path and attempts < 2:
-                attempts += 1
-                raise windows_sharing_error()
-            attempts += 1
-            return original_replace(path, target)
-
-        monkeypatch.setattr(Path, "replace", flaky_replace)
-
-        assert store.renew(token) is True
-        assert attempts == 3
-        assert store.snapshot(CLASS_MEMORY)[0][0].lease_generation == 1
+        assert store.renew(token) is renewed
+        assert token.lease_health.lost.is_set() is not renewed
+        if renewed:
+            assert store.snapshot(CLASS_MEMORY)[0][0].lease_generation == 1
 
     def test_renew_retries_transient_lease_gate_permission_error(self, root, world, monkeypatch):
         # Windows denies a new gate while the previous gate's delete is pending (#2024).
@@ -264,45 +393,17 @@ class TestSingleProcess:
         assert denials == 2
         assert not token.lease_health.lost.is_set()
 
-    def test_live_holder_survives_transient_read_permission_error(self, root, world, monkeypatch):
-        # A reader racing a rewrite on Windows must not see the lease as gone,
-        # or the run is reported cancelled (#2024).
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-        original_open = Path.open
-        denials = 0
-
-        def flaky_open(path, *args, **kwargs):
-            nonlocal denials
-            if path == token.path and denials < 2:
-                denials += 1
-                raise windows_sharing_error()
-            return original_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", flaky_open)
-
-        assert store.token_absent(token) is False
-        assert denials == 2
-
     def test_unreadable_live_entry_is_not_absent(self, root, world, monkeypatch):
         # A lock outlasting every retry still must not read as cancellation (#2024).
         spawn(world, 100)
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_open = Path.open
-
-        def locked_open(path, *args, **kwargs):
-            if path == token.path:
-                raise windows_sharing_error()
-            return original_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", locked_open)
+        held = {token.path: 10**6}
+        hold_opens(monkeypatch, held)
 
         assert store.token_absent(token) is False
-        monkeypatch.setattr(Path, "open", original_open)
+        held[token.path] = 0
         store.release(token)
         assert store.token_absent(token) is True
 
@@ -311,43 +412,15 @@ class TestSingleProcess:
     ):
         # Longer than the old private 0.2 s loop, inside the shared helper's budget (#1905).
         spawn(world, 100)
-        store = make_store(root, world)
+        clock = BackoffClock()
+        store = make_store(root, world, sleep=clock.sleep)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        clock = BackoffClock()
-        store._sleep = clock.sleep
         deny_until(monkeypatch, "open", token.path, clock, seconds=0.5)
 
         assert store.renew(token) is True
         assert not token.lease_health.lost.is_set()
         assert store.token_absent(token) is False
-
-    def test_renew_survives_windows_rewrite_sharing_error_within_budget(
-        self, root, world, monkeypatch
-    ):
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-        clock = BackoffClock()
-        store._sleep = clock.sleep
-        deny_until(monkeypatch, "replace", token.path, clock, seconds=0.5)
-
-        assert store.renew(token) is True
-        assert not token.lease_health.lost.is_set()
-        assert store.snapshot(CLASS_MEMORY)[0][0].lease_generation == 1
-
-    @staticmethod
-    def _lock_reads(monkeypatch, target: Path) -> None:
-        """Make *target* permanently unreadable (a scanner holds it)."""
-        original_open = Path.open
-
-        def locked_open(path, *args, **kwargs):
-            if path == target:
-                raise PermissionError(13, "held by a scanner")
-            return original_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", locked_open)
 
     def test_unreadable_entry_is_not_treated_as_a_live_lease(self, root, world, monkeypatch):
         spawn(world, 100)
@@ -355,109 +428,65 @@ class TestSingleProcess:
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         token.execution_id = "a" * 32  # recovery only claims execution-bound entries
-        self._lock_reads(monkeypatch, token.path)
+        hold_opens(monkeypatch, {token.path: 10**6})
 
         assert store.renew(token) is False  # unreadable past the budget: lease lost
         assert token.lease_health.lost.is_set()
-        assert store._begin_execution_recovery(token, request_cancel=False) is False
+        assert store.begin_token_recovery(token) is False
         store.release(token)  # still our own entry to release
         assert not token.path.exists()
-
-    def test_unreadable_waiter_is_not_withdrawn(self, root, world, monkeypatch):
-        spawn(world, 100)
-        store = make_store(root, world)
-        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        self._lock_reads(monkeypatch, waiter.path)
-
-        assert store.cancel_waiter_token(waiter) is False
-        assert waiter.path.exists()
 
     @staticmethod
     def _queued_waiter(root, world):
         """A store with a holder and one queued waiter whose backoff sleeps are simulated."""
         spawn(world, 100)
         spawn(world, 101)
-        store = make_store(root, world)
+        clock = BackoffClock()
+        store = make_store(root, world, sleep=clock.sleep)
         holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(holder).state == HOLDING  # so the next entry stays queued
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=101)
-        clock = BackoffClock()
-        store._sleep = clock.sleep
         return store, waiter, clock
 
-    @staticmethod
-    def _withdraw(store, waiter, withdraw: str) -> bool:
-        if withdraw == "pid":
-            return store.cancel_waiter(waiter.pid)
-        return store.cancel_waiter_token(waiter)
-
-    @pytest.mark.parametrize("withdraw", ["pid", "token"])
-    def test_withdrawal_retries_windows_sharing_error(self, root, world, monkeypatch, withdraw):
-        store, waiter, clock = self._queued_waiter(root, world)
-        deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=0.005)
-
-        assert self._withdraw(store, waiter, withdraw) is True
-        assert not waiter.path.exists()
-
-    @pytest.mark.parametrize("withdraw", ["pid", "token"])
-    def test_withdrawal_refused_when_sharing_error_persists(
-        self, root, world, monkeypatch, caplog, withdraw
+    @pytest.mark.parametrize(
+        ("withdraw", "fault", "withdrawn"),
+        [
+            ("pid", "brief", True),
+            ("token", "brief", True),
+            ("pid", "lasting", False),
+            ("token", "lasting", False),
+            ("token", "unreadable", False),
+        ],
+    )
+    def test_withdrawal_is_refused_or_retried(
+        self, root, world, monkeypatch, caplog, withdraw, fault, withdrawn
     ):
         store, waiter, clock = self._queued_waiter(root, world)
-        deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=1000.0)
+        if fault == "unreadable":
+            hold_opens(monkeypatch, {waiter.path: 10**6})
+        else:
+            seconds = 0.005 if fault == "brief" else 1000.0
+            deny_until(monkeypatch, "unlink", waiter.path, clock, seconds=seconds)
 
         with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
-            assert self._withdraw(store, waiter, withdraw) is False
-        assert waiter.path.exists()
-        assert [t.lease_id for t in store.snapshot(CLASS_MEMORY)[1]] == [waiter.lease_id]
-        assert "Refusing to withdraw" in caplog.text
-        assert waiter.path.name in caplog.text
+            if withdraw == "pid":
+                result = store.cancel_waiter(waiter.pid)
+            else:
+                result = store.cancel_waiter_token(waiter)
 
-    def test_renew_fails_when_rewrite_stays_denied(self, root, world, monkeypatch):
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-        clock = BackoffClock()
-        store._sleep = clock.sleep
-        deny_until(monkeypatch, "replace", token.path, clock, seconds=1000.0)
-
-        assert store.renew(token) is False
-        assert token.lease_health.lost.is_set()
-
-    def test_unreadable_old_waiter_is_not_reaped(self, root, world, monkeypatch):
-        # Unreadable is not missing: a live owner's entry survives the junk rule,
-        # a dead owner's does not (#1905).
-        spawn(world, 100)
-        store = make_store(root, world)
-        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        world.clock = waiter.path.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-        original_open = Path.open
-
-        def locked_open(path, *args, **kwargs):
-            if path == waiter.path:
-                raise PermissionError(13, "held by a scanner")
-            return original_open(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "open", locked_open)
-
-        assert store.reap(CLASS_MEMORY) == []
-        assert waiter.path.exists()
-        del world.alive[100]
-        assert store.reap(CLASS_MEMORY) == [waiter.path.name]
+        assert result is withdrawn
+        assert waiter.path.exists() is not withdrawn
+        if fault == "lasting":
+            assert [t.lease_id for t in store.snapshot(CLASS_MEMORY)[1]] == [waiter.lease_id]
+            assert "Refusing to withdraw" in caplog.text
+            assert waiter.path.name in caplog.text
 
     def test_renew_does_not_resurrect_a_deleted_holder(self, root, world, monkeypatch):
         spawn(world, 100)
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        original_rewrite = store._rewrite_token
-
-        def delete_before_rewrite(current):
-            current.path.unlink()
-            return original_rewrite(current)
-
-        monkeypatch.setattr(store, "_rewrite_token", delete_before_rewrite)
+        interleave(monkeypatch, "write_text", is_rewrite_tmp, token.path.unlink)
 
         assert store.renew(token) is False
         assert not token.path.exists()
@@ -482,14 +511,12 @@ class TestSingleProcess:
             assert store.refresh(blocker).state == HOLDING
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id=execution_id)
         cancelled: list[bool] = []
-        real_replace = job_slots.replace_file
-
-        def cancel_then_replace(src, dst, **kwargs):
-            if not cancelled:
-                cancelled.append(canceller.cancel_waiter_token(waiter))
-            return real_replace(src, dst, **kwargs)
-
-        monkeypatch.setattr(job_slots, "replace_file", cancel_then_replace)
+        interleave(
+            monkeypatch,
+            "replace",
+            is_rewrite_tmp,
+            lambda: cancelled.append(canceller.cancel_waiter_token(waiter)),
+        )
 
         if variant == "promotion":
             assert store.refresh(waiter).state == HOLDING
@@ -512,50 +539,59 @@ class TestSingleProcess:
         canceller = make_store(root, world)
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         cancelled: list[bool] = []
-        real_promote = store._promote
-
-        def cancel_then_promote(token):
-            cancelled.append(canceller.cancel_waiter_token(waiter))
-            return real_promote(token)
-
-        monkeypatch.setattr(store, "_promote", cancel_then_promote)
+        interleave(
+            monkeypatch,
+            "hardlink_to",
+            is_lease_gate,
+            lambda: cancelled.append(canceller.cancel_waiter_token(waiter)),
+        )
 
         assert store.refresh(waiter).state == LOST
         assert cancelled == [True]
         holders, waiters = store.observe(CLASS_MEMORY)
         assert [t for t in holders + waiters if t.lease_id == waiter.lease_id] == []
 
-    def test_promotion_is_refused_while_a_cancel_holds_the_gate(self, root, world):
+    @pytest.mark.parametrize("row", sorted(GATE_ROWS))
+    def test_promotion_waits_for_a_live_gate_and_breaks_a_stale_one(
+        self, root, world, monkeypatch, row
+    ):
+        kind, content, old, unreadable, recycled, expected = GATE_ROWS[row]
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the lease gates name
+        spawn(world, 300)
         store = make_store(root, world)
-        canceller = make_store(root, world)
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        gate = lease_gate(waiter) if kind == "lease" else waiter.path.parent / PROMOTION_GATE
+        if content == "live":
+            owner = {"pid": 300, "owner_identity": world.capture_identity(300).to_payload()}
+            content = json.dumps(owner).encode("utf-8") + b"\n"
+        gate.write_bytes(content)
+        if old:
+            world.clock = gate.stat().st_mtime + OLD_S + 1
+        if recycled:
+            world.alive[300] = ["another", "process"]  # PID 300 is live again, as a new process
+        if unreadable:
+            real_read = Path.read_bytes
 
-        with canceller._lease_gate(waiter) as held:
-            assert held
-            state = store.refresh(waiter)
+            def scanned(path, *args, **kwargs):
+                if path == gate:
+                    raise windows_sharing_error()  # a scanner holds the gate file
+                return real_read(path, *args, **kwargs)
 
-        assert state.state == QUEUED
-        assert not waiter.is_holder
-        holders, waiters = store.observe(CLASS_MEMORY)
-        assert holders == []
-        assert [t.lease_id for t in waiters] == [waiter.lease_id]
+            monkeypatch.setattr(Path, "read_bytes", scanned)
+
+        assert store.refresh(waiter).state == expected
+        if expected == QUEUED:
+            assert waiter.path.exists()
+            assert not waiter.is_holder
+            monkeypatch.undo()
+            gate.unlink()
+            assert store.refresh(waiter).state == HOLDING
 
     def test_promotion_of_an_unreadable_waiter_stays_queued(self, root, world, monkeypatch):
         spawn(world, 100)
         store = make_store(root, world)
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        real_promote = store._promote
-
-        def unreadable_promote(token):
-            def unreadable(_path):
-                raise PermissionError("entry is locked")
-
-            monkeypatch.setattr(store, "_load_token", unreadable)
-            return real_promote(token)
-
-        monkeypatch.setattr(store, "_promote", unreadable_promote)
+        hold_opens(monkeypatch, {waiter.path: 10**6})
 
         assert store.refresh(waiter).state == QUEUED
         assert waiter.path.exists()
@@ -593,17 +629,13 @@ class TestSingleProcess:
         owner = make_store(root, world)
         canceller = make_store(root, world)
         token = owner.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        real_gate = canceller._lease_gate
         promoted: list[bool] = []
-
-        @contextlib.contextmanager
-        def promote_while_waiting(tok):
-            if not promoted:
-                promoted.append(owner.refresh(token).state == HOLDING)
-            with real_gate(tok) as acquired:
-                yield acquired
-
-        monkeypatch.setattr(canceller, "_lease_gate", promote_while_waiting)
+        interleave(
+            monkeypatch,
+            "hardlink_to",
+            is_lease_gate,
+            lambda: promoted.append(owner.refresh(token).state == HOLDING),
+        )
 
         assert canceller.cancel_waiter_token(token) is False
         assert promoted == [True]
@@ -617,12 +649,7 @@ class TestSingleProcess:
 
     def test_release_retries_until_the_lease_gate_frees(self, root, world, caplog):
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the lease gates name
-        store = make_store(root, world)
-        other = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+        spawn(world, 300)
         gate_free = threading.Event()
         test_thread = threading.current_thread()
 
@@ -631,10 +658,12 @@ class TestSingleProcess:
                 gate_free.wait(timeout=2 * hang_guard_s())
                 time.sleep(0.01)  # a real backoff: Windows delays a freed gate's rmdir
 
-        store._sleep = sleep
+        store = make_store(root, world, sleep=sleep)
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
         try:
-            with other._lease_gate(token) as held:
-                assert held
+            with held_gate(lease_gate(token), 300, world.capture_identity(300)):
                 store.release(token)
                 assert token.path.exists()
         finally:
@@ -652,17 +681,13 @@ class TestSingleProcess:
 
     def test_release_logs_when_the_lease_gate_never_frees(self, root, world, caplog):
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the lease gates name
+        spawn(world, 300)
         store = make_store(root, world)
-        other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
-        sleeps: list[float] = []
-        store._sleep = sleeps.append
 
-        with other._lease_gate(token) as held:
-            assert held
+        with held_gate(lease_gate(token), 300, world.capture_identity(300)):
             store.release(token)
             for thread in self._release_threads(token):
                 thread.join(timeout=hang_guard_s())
@@ -673,13 +698,11 @@ class TestSingleProcess:
         assert any(
             "Could not release Memory Reservation" in m and token.path.name in m for m in messages
         )
-        assert sleeps.count(job_slots._RELEASE_RETRY_SECONDS) == job_slots._RELEASE_RETRY_ATTEMPTS
 
     def test_release_without_a_thread_logs_the_give_up(self, root, world, caplog, monkeypatch):
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the lease gates name
+        spawn(world, 300)
         store = make_store(root, world)
-        other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
@@ -688,7 +711,7 @@ class TestSingleProcess:
             raise RuntimeError("can't start new thread")
 
         monkeypatch.setattr(threading.Thread, "start", no_thread)
-        with other._lease_gate(token):
+        with held_gate(lease_gate(token), 300, world.capture_identity(300)):
             store.release(token)
 
         assert any(
@@ -697,157 +720,53 @@ class TestSingleProcess:
 
     def test_release_of_a_removed_entry_starts_no_retry(self, root, world, caplog):
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the lease gates name
+        spawn(world, 300)
         store = make_store(root, world)
-        other = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
 
-        with other._lease_gate(token):
+        with held_gate(lease_gate(token), 300, world.capture_identity(300)):
             token.path.unlink()
             store.release(token)
-            assert (token.path.parent / f".{token.lease_id}.lease.lock").exists()
+            assert lease_gate(token).exists()
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert self._release_threads(token) == []
 
-    def test_release_frees_the_slot(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world)
-        a = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(a).state == HOLDING
-        b = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(b).state == QUEUED
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.lease_id for token in holders] == [a.lease_id]
-        assert [token.lease_id for token in waiters] == [b.lease_id]
-        store.release(a)
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert holders == []
-        assert [token.lease_id for token in waiters] == [b.lease_id]
-        assert store.refresh(b).state == HOLDING
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.lease_id for token in holders] == [b.lease_id]
-        assert waiters == []
-
-    def test_release_is_idempotent(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world)
-        tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        store.release(tok)
-        store.release(tok)  # must not raise
-
-    def test_release_retries_transient_permission_error(self, root, world, monkeypatch):
-        spawn(world, 100)
-        store = make_store(root, world)
-        tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        original_unlink = Path.unlink
-        attempts = 0
-
-        def flaky_unlink(path, *args, **kwargs):
-            nonlocal attempts
-            if path == tok.path:
-                attempts += 1
-                if attempts < 3:
-                    raise PermissionError("file is temporarily in use")
-            return original_unlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "unlink", flaky_unlink)
-        store.release(tok)
-
-        assert attempts == 3
-        assert not tok.path.exists()
-
-    @staticmethod
-    def _spy_on_entry_io_retry(store, monkeypatch) -> list[dict]:
-        """Wrap the shared retry helper; record each invocation's callback, how
-        often that callback ran, the ``Path.rename``/``Path.unlink`` calls made
-        inside it, and its result."""
-        real_retry = store._retry_entry_io
-        invocations: list[dict] = []
-        current: list[dict] = []
-
-        def spy(operation, *, on_exhausted=None):
-            record = {
-                "on_exhausted": on_exhausted,
-                "exhausted_runs": 0,
-                "calls": [],
-                "result": None,
-            }
-
-            def counted_on_exhausted():
-                record["exhausted_runs"] += 1
-                on_exhausted()
-
-            invocations.append(record)
-            current.append(record)
-            try:
-                record["result"] = real_retry(
-                    operation,
-                    on_exhausted=None if on_exhausted is None else counted_on_exhausted,
-                )
-            finally:
-                current.pop()
-            return record["result"]
-
-        def recording(name):
-            original = getattr(Path, name)
-
-            def wrapper(path, *args, **kwargs):
-                if current:
-                    current[-1]["calls"].append((name, path))
-                return original(path, *args, **kwargs)
-
-            return wrapper
-
-        monkeypatch.setattr(store, "_retry_entry_io", spy)
-        monkeypatch.setattr(Path, "rename", recording("rename"))
-        monkeypatch.setattr(Path, "unlink", recording("unlink"))
-        return invocations
-
-    def test_rename_and_unlink_share_entry_io_retry(self, root, world, monkeypatch):
-        spawn(world, 100)
-        store = make_store(root, world)
-        invocations = self._spy_on_entry_io_retry(store, monkeypatch)
-        tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        waiter_path = tok.path
-        assert store.refresh(tok).state == HOLDING
-        holder_path = tok.path
-        store.release(tok)
-
-        renames = [i for i in invocations if ("rename", waiter_path) in i["calls"]]
-        unlinks = [i for i in invocations if ("unlink", holder_path) in i["calls"]]
-        assert len(renames) == 1
-        assert renames[0]["on_exhausted"] is None
-        assert len(unlinks) == 1
-        assert unlinks[0]["on_exhausted"] is not None
-
-    def test_unlink_warns_once_when_permission_error_outlasts_retries(
-        self, root, world, monkeypatch, caplog
+    @pytest.mark.parametrize("how", ["release-brief", "release-lasting", "reap-lasting"])
+    def test_entry_removal_retries_and_reports_a_lasting_sharing_violation(
+        self, root, world, monkeypatch, caplog, how
     ):
         spawn(world, 100)
         store = make_store(root, world)
-        tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        original_unlink = Path.unlink
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
+        reap = how == "reap-lasting"
+        if reap:
+            del world.alive[100]
+        held = {token.path: 2 if how == "release-brief" else 10**6}
+        hold_unlinks(monkeypatch, held)
 
-        def denied_unlink(path, *args, **kwargs):
-            if path == tok.path:
-                raise PermissionError("file is permanently in use")
-            return original_unlink(path, *args, **kwargs)
+        def remove():
+            return store.reap(CLASS_MEMORY) if reap else store.release(token)
 
-        monkeypatch.setattr(Path, "unlink", denied_unlink)
-        invocations = self._spy_on_entry_io_retry(store, monkeypatch)
         with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
-            store.release(tok)
+            first = remove()
 
-        entry_unlinks = [i for i in invocations if ("unlink", tok.path) in i["calls"]]
-        assert tok.path.exists()
-        assert [i["result"] for i in entry_unlinks] == [False]
-        assert [i["exhausted_runs"] for i in entry_unlinks] == [1]
+        if how == "release-brief":
+            assert not token.path.exists()
+            assert "Could not remove" not in caplog.text
+            return
+        assert token.path.exists()
         assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove Memory Reservation after retries: {tok.path.name}"
+            f"Could not remove Memory Reservation after retries: {token.path.name}"
         ]
+        held[token.path] = 0  # the next attempt finds the entry released
+        second = remove()
+        assert not token.path.exists()
+        if reap:
+            assert (first, second) == ([], [token.path.name])
 
     def test_undecodable_entry_reads_as_absent(self, root, world):
         spawn(world, 100)
@@ -881,27 +800,6 @@ class TestSingleProcess:
         assert store.refresh(tok).state == HOLDING
         assert attempts == 3
 
-    def test_promotion_gate_prevents_a_second_process_from_promoting(
-        self, root, world, monkeypatch
-    ):
-        spawn(world, 100)
-        spawn(world, 200)
-        first = make_store(root, world)
-        second = make_store(root, world)
-        first_token = first.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        second_token = second.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-
-        # Model the stale-rank interleaving directly: the second claimant had
-        # already observed rank zero when the first claimant entered the gate.
-        with monkeypatch.context() as patch:
-            patch.setattr(second, "_queue_position", lambda _token: None)
-            with first._promotion_gate(first_token) as acquired:
-                assert acquired is True
-                assert second.refresh(second_token).state == QUEUED
-
-        assert first.refresh(first_token).state == HOLDING
-        assert second.refresh(second_token).state == QUEUED
-
     def test_queue_positions_are_zero_based_and_ordered(self, root, world):
         spawn(world, 100)
         store = make_store(root, world)
@@ -918,82 +816,58 @@ class TestSingleProcess:
         state = store.refresh(waiter)
         assert (state.state, state.position) == (QUEUED, 0)
 
-    def test_only_the_memory_class_admits_with_a_claim(self, root, world):
-        store = make_store(root, world)
-        with pytest.raises(ValueError, match="memory class admits"):
-            store.submit(CLASS_MEMORY, pid=100)
-        with pytest.raises(ValueError, match="memory class admits"):
-            store.submit("warp", pid=100, memory=_ALONE)
 
-    def test_unknown_class_rejected(self, root, world):
-        store = make_store(root, world)
-        with pytest.raises(ValueError):
-            store.submit("warp", pid=100)
-
-
-def test_same_store_interleaved_submission_preserves_exact_entry_number(root, world, monkeypatch):
+def test_racing_claims_admit_one_and_the_loser_follows(root, world):
     spawn(world, 100)
-    store = make_store(root, world)
-    # Both threads may select the same sequence before either entry is published.
-    monkeypatch.setattr(store, "_next_seq", lambda _directory: 1)
-    construct = store._new_waiter_token
-    second = None
-    interleaved = False
-
-    def finish_after_other_submission(path, payload, request):
-        nonlocal second, interleaved
-        if not interleaved:
-            interleaved = True
-            second = store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-        return construct(path, payload, request)
-
-    monkeypatch.setattr(store, "_new_waiter_token", finish_after_other_submission)
-    first = store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-    assert second is not None
-    # Equal sequence and PID: the lease suffix orders the entries, and a waiter promotes behind it.
-    for token in sorted((first, second), key=lambda t: t.path.name):
-        assert store.refresh(token).state == HOLDING
-    assert store.renew(first), "second promotion must not overwrite the first lease"
-    assert first.path != second.path
-    holders, waiters = store.snapshot(CLASS_MEMORY)
-    assert {token.lease_id for token in holders} == {first.lease_id, second.lease_id}
-    assert not waiters
-    store.release(first)
-    store.release(second)
-    assert store.snapshot(CLASS_MEMORY) == ([], [])
+    spawn(world, 200)
+    a = make_store(root, world)
+    b = make_store(root, world)
+    # Both submit before either refreshes: the classic race window.
+    tok_a = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
+    winner, loser, winner_store, loser_store = (
+        (tok_a, tok_b, a, b) if a.refresh(tok_a).state == HOLDING else (tok_b, tok_a, b, a)
+    )
+    assert loser_store.refresh(loser).state == QUEUED
+    winner_store.release(winner)
+    winner_store.release(winner)  # idempotent
+    assert loser_store.refresh(loser).state == HOLDING
 
 
-@pytest.mark.parametrize("promote_before_publication", [False, True], ids=["waiter", "holder"])
-def test_same_pid_stores_never_reuse_entry_identity(
-    root, world, monkeypatch, promote_before_publication
+@pytest.mark.parametrize(
+    ("same_store", "promote_before_publication"),
+    [(True, False), (False, False), (False, True)],
+    ids=["same-store", "other-store-waiter", "other-store-holder"],
+)
+def test_interleaved_publication_keeps_distinct_entries(
+    root, world, monkeypatch, same_store, promote_before_publication
 ):
     spawn(world, 100)
     first_store = make_store(root, world)
-    second_store = make_store(root, world)
-    monkeypatch.setattr(first_store, "_next_seq", lambda _directory: 1)
-    monkeypatch.setattr(second_store, "_next_seq", lambda _directory: 1)
-    publish = job_slots.os.link
-    second = None
-    interleaved = False
+    second_store = first_store if same_store else make_store(root, world)
+    seconds: list[job_slots.SlotToken] = []
 
-    def publish_after_other_submission(source, target):
-        nonlocal second, interleaved
-        if not interleaved:
-            interleaved = True
-            second = second_store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-            if promote_before_publication:
-                assert second_store.refresh(second).state == HOLDING
-        publish(source, target)
+    def second_submission() -> None:
+        # Both submissions may select the same sequence before either entry is published.
+        second = second_store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
+        if promote_before_publication:
+            assert second_store.refresh(second).state == HOLDING
+        seconds.append(second)
 
-    monkeypatch.setattr(job_slots.os, "link", publish_after_other_submission)
+    interleave(monkeypatch, "hardlink_to", lambda path: path.suffix == ".json", second_submission)
     first = first_store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-    assert second is not None
+    (second,) = seconds
+    assert second.seq == first.seq
+    # Equal sequence and PID: the lease suffix orders the entries, and a waiter promotes behind it.
     for token, owner in sorted(
         ((first, first_store), (second, second_store)), key=lambda pair: pair[0].path.name
     ):
         assert owner.refresh(token).state == HOLDING
     assert first_store.renew(first) and second_store.renew(second)
     assert first.path != second.path
+    holders, waiters = first_store.snapshot(CLASS_MEMORY)
+    assert {token.lease_id for token in holders} == {first.lease_id, second.lease_id}
+    assert not waiters
     first_store.release(first)
     second_store.release(second)
     assert first_store.snapshot(CLASS_MEMORY) == ([], [])
@@ -1003,45 +877,39 @@ def test_cancelled_publication_never_deletes_replacement(root, world, monkeypatc
     spawn(world, 100)
     first_store = make_store(root, world)
     replacement_store = make_store(root, world)
-    for store in (first_store, replacement_store):
-        monkeypatch.setattr(store, "_next_seq", lambda _directory: 1)
-    publish = job_slots.os.link
-    replacement = None
-    interleaved = False
+    replacements: list[job_slots.SlotToken] = []
 
-    def cancel_and_replace_after_publication(source, target):
-        nonlocal replacement, interleaved
-        publish(source, target)
-        if not interleaved:
-            interleaved = True
-            assert first_store.cancel_waiter(100)
-            replacement = replacement_store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
+    def cancel_and_replace() -> None:
+        assert first_store.cancel_waiter(100)
+        replacements.append(replacement_store.submit(CLASS_MEMORY, memory=_HALF, pid=100))
 
-    monkeypatch.setattr(job_slots.os, "link", cancel_and_replace_after_publication)
+    interleave(
+        monkeypatch,
+        "hardlink_to",
+        lambda path: path.suffix == ".json",
+        cancel_and_replace,
+        after=True,
+    )
     cancelled = first_store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
+    (replacement,) = replacements
     assert first_store.refresh(cancelled).state == LOST
-    assert replacement is not None and replacement.path != cancelled.path
+    assert replacement.path != cancelled.path
     assert replacement_store.refresh(replacement).state == HOLDING
     assert replacement_store.renew(replacement)
     replacement_store.release(replacement)
     assert first_store.snapshot(CLASS_MEMORY) == ([], [])
 
 
-def test_legacy_counter_names_coexist_with_lease_names(root, world, monkeypatch):
+def test_legacy_counter_names_coexist_with_lease_names(root, world):
     spawn(world, 100)
     store = make_store(root, world)
-    legacy = store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-    old_path = legacy.path.with_name(
-        job_slots._entry_name("w", legacy.priority, legacy.seq, legacy.pid, 1)
-    )
-    legacy.path.rename(old_path)
-    legacy.path, legacy.n = old_path, 1
-    loaded = store._load_token(old_path)
-    assert loaded is not None and loaded.n == 1 and loaded.lease_id == legacy.lease_id
-    monkeypatch.setattr(store, "_next_seq", lambda _directory: legacy.seq)
     current = store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
-    assert current.seq == legacy.seq
-    assert job_slots._parse_entry_name(current.path.name)[4] == current.n
+    legacy = store.submit(CLASS_MEMORY, memory=_HALF, pid=100)
+    # The persisted pre-lease name older releases wrote, at the same sequence as `current`.
+    old_name = f"w-p{legacy.priority}-s{current.seq:010d}-{legacy.pid:010d}-0001.json"
+    legacy.path.rename(legacy.path.with_name(old_name))
+    loaded = next(t for t in store.observe(CLASS_MEMORY)[1] if t.lease_id == legacy.lease_id)
+    assert loaded.n == 1 and loaded.seq == current.seq
     assert store.refresh(loaded).state == HOLDING
     assert store.refresh(current).state == HOLDING
     holders, waiters = store.snapshot(CLASS_MEMORY)
@@ -1056,19 +924,6 @@ def test_legacy_counter_names_coexist_with_lease_names(root, world, monkeypatch)
 class TestTwoProcessRaces:
     """Simulated interleavings of two claimant processes over one directory."""
 
-    def test_both_race_for_last_slot_only_one_wins(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        b = make_store(root, world)
-        # Both submit before either refreshes — the classic race window.
-        tok_a = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        state_a = a.refresh(tok_a)
-        state_b = b.refresh(tok_b)
-        states = sorted([state_a.state, state_b.state])
-        assert states == [HOLDING, QUEUED]
-
     def test_an_earlier_claim_arriving_inside_the_gate_is_not_overtaken(
         self, root, world, monkeypatch
     ):
@@ -1079,140 +934,20 @@ class TestTwoProcessRaces:
         b = make_store(root, world)
         background = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100, role=job_slots.ROLE_BACKGROUND)
         arrivals: list[job_slots.SlotToken] = []
-        enter_gate = a._promotion_gate
-
-        @contextlib.contextmanager
-        def gate_with_an_arrival(token):
-            # Interactive work overtakes the queued background claim after its first look.
-            arrivals.append(b.submit(CLASS_MEMORY, memory=_ALONE, pid=200))
-            with enter_gate(token) as acquired:
-                yield acquired
-
-        monkeypatch.setattr(a, "_promotion_gate", gate_with_an_arrival)
+        # Interactive work overtakes the queued background claim after its first look.
+        interleave(
+            monkeypatch,
+            "hardlink_to",
+            lambda path: path.name == PROMOTION_GATE,
+            lambda: arrivals.append(b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)),
+        )
         assert a.refresh(background).state == QUEUED
         (interactive,) = arrivals
-        monkeypatch.undo()
         assert b.refresh(interactive).state == HOLDING
         assert a.refresh(background).state == QUEUED
 
-    def test_loser_promotes_after_winner_releases(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        b = make_store(root, world)
-        tok_a = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        winner, loser, winner_store, loser_store = (
-            (tok_a, tok_b, a, b) if a.refresh(tok_a).state == HOLDING else (tok_b, tok_a, b, a)
-        )
-        assert loser_store.refresh(loser).state == QUEUED
-        winner_store.release(winner)
-        assert loser_store.refresh(loser).state == HOLDING
-
-    def test_seq_ties_have_total_order(self, root, world):
-        # Two processes can allocate the same seq (scan-max race); the
-        # pid in the entry name keeps the order total and deterministic.
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        b = make_store(root, world)
-        tok_a = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        # Force identical seq by construction check: if they differ this
-        # test still holds — the point is exactly one holder either way.
-        assert (a.refresh(tok_a).state == HOLDING) != (b.refresh(tok_b).state == HOLDING)
-
 
 class TestGhostReaping:
-    def test_dead_pid_holder_is_reaped_and_slot_recovered(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        dead_tok = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert a.refresh(dead_tok).state == HOLDING
-        del world.alive[100]  # process 100 dies holding the slot
-        b = make_store(root, world)
-        tok = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        assert b.refresh(tok).state == HOLDING
-
-    def test_reap_leaves_entry_for_a_later_reap_when_sharing_violation_outlasts_retries(
-        self, root, world, monkeypatch, caplog
-    ):
-        spawn(world, 100)
-        store = make_store(root, world)
-        dead_tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(dead_tok).state == HOLDING
-        del world.alive[100]
-        # Deny every attempt of the bounded entry removal, so the retries run out.
-        attempts = hold_unlinks(monkeypatch, {dead_tok.path: job_slots._ENTRY_IO_ATTEMPTS})
-        with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
-            assert store.reap(CLASS_MEMORY) == []
-
-        assert dead_tok.path.exists()
-        assert [r.getMessage() for r in caplog.records] == [
-            f"Could not remove Memory Reservation after retries: {dead_tok.path.name}"
-        ]
-        assert attempts[dead_tok.path] == job_slots._ENTRY_IO_ATTEMPTS
-        assert store.reap(CLASS_MEMORY) == [dead_tok.path.name]
-        assert not dead_tok.path.exists()
-
-    def test_dead_waiter_is_reaped_out_of_the_queue(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        holder = a.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        assert a.refresh(holder).state == HOLDING
-        ghost_waiter = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert a.refresh(ghost_waiter).state == QUEUED
-        del world.alive[100]
-        b = make_store(root, world)
-        tok = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        # The dead waiter no longer counts toward ordering.
-        assert b.refresh(tok).position == 0
-
-    def test_recycled_pid_argv_mismatch_is_reaped(self, root, world):
-        spawn(world, 100, argv=["python", "-m", "booley.flows.sim"])
-        a = make_store(root, world)
-        tok = a.submit(
-            CLASS_MEMORY, memory=_ALONE, pid=100, argv=["python", "-m", "booley.flows.sim"]
-        )
-        assert a.refresh(tok).state == HOLDING
-        # PID 100 is recycled by an unrelated process.
-        world.alive[100] = ["sshd"]
-        spawn(world, 200)
-        b = make_store(root, world)
-        tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        assert b.refresh(tok_b).state == HOLDING
-
-    def test_unknown_cmdline_is_trusted_alive(self, root, world):
-        spawn(world, 100, argv=None)  # /proc unavailable → cannot judge
-        a = make_store(root, world)
-        tok = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100, argv=["python", "-m", "x"])
-        assert a.refresh(tok).state == HOLDING
-        assert a.reap(CLASS_MEMORY) == []
-
-    def test_linked_dead_owner_waits_for_complete_execution_tree(self, root, world):
-        execution_id = "a" * 32
-        terminal = False
-        cancellations: list[str] = []
-        spawn(world, 100)
-        store = make_execution_store(
-            root,
-            world,
-            execution_terminal=lambda _execution_id: terminal,
-            cancellations=cancellations,
-        )
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id=execution_id)
-        assert store.refresh(token).state == HOLDING
-        del world.alive[100]
-
-        assert store.reap(CLASS_MEMORY) == []
-        assert token.path.exists()
-        assert cancellations == [execution_id]
-
-        terminal = True
-        assert store.reap(CLASS_MEMORY) == [token.path.name]
-
     def test_expired_lease_claims_recovery_without_freeing_capacity(self, root, world):
         execution_id = "b" * 32
         terminal = False
@@ -1241,7 +976,9 @@ class TestGhostReaping:
         store.release(token)
         assert not token.path.exists()
 
-    def test_execution_id_is_inherited_and_persisted(self, tmp_path, world, monkeypatch):
+    def test_execution_id_is_inherited_and_persisted(
+        self, tmp_path, world, monkeypatch, booley_dir_cache
+    ):
         execution_id = "c" * 32
         project = tmp_path / ".booley"
         root = project / "runtime" / "jobs" / "slots"
@@ -1255,109 +992,31 @@ class TestGhostReaping:
         )
         monkeypatch.setenv("BOOLEY_DIR", str(project))
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
-        monkeypatch.setattr(
-            job_slots,
-            "verify_inherited_execution_id",
-            lambda raw, *, booley_dir, owner_pid: execution_records.verify_inherited_execution_id(
-                raw,
-                booley_dir=booley_dir,
-                owner_pid=owner_pid,
-                observe_identity=world.observe_identity,
-                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
-            ),
-        )
-        runtime_booley_dir.reset_cache()
+        verified_inheritance(monkeypatch, world, {(100, 50)})
         terminal = False
         cancellations: list[str] = []
-        try:
-            store = make_execution_store(
-                root,
-                world,
-                execution_terminal=lambda _execution_id: terminal,
-                cancellations=cancellations,
-            )
-            token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-            assert store.refresh(token).state == HOLDING
-
-            holder = store.snapshot(CLASS_MEMORY)[0][0]
-            assert holder.execution_id == execution_id
-            assert holder.owner_kind == "execution"
-            assert holder.lease_id
-            assert holder.lease_expires_at is not None
-
-            del world.alive[100]
-            assert store.reap(CLASS_MEMORY) == []
-            assert cancellations == [execution_id]
-            assert store.snapshot(CLASS_MEMORY)[0][0].lease_state == job_slots.LEASE_CANCELLING
-
-            terminal = True
-            assert store.reap(CLASS_MEMORY) == [token.path.name]
-        finally:
-            runtime_booley_dir.reset_cache()
-
-    def assert_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
-        self, tmp_path, world, monkeypatch, unverified_reason
-    ):
-        execution_id = "7" * 32
-        project = tmp_path / "current" / ".booley"
-        project.mkdir(parents=True)
-        root = project / "runtime" / "jobs" / "slots"
-        record_project = (
-            tmp_path / "foreign" / ".booley" if unverified_reason == "foreign_project" else project
-        )
-        record_project.parent.mkdir(exist_ok=True)
-        spawn(world, 50, ["supervisor"])
-        spawn(world, 100, ["owner"])
-        spawn(world, 200, ["waiter"])
-        supervisor = world.capture_identity(50)
-        assert supervisor is not None
-        atomic_write_json(
-            execution_paths(execution_id, booley_dir=record_project).record,
-            active_execution_record(supervisor),
-        )
-        monkeypatch.setenv("BOOLEY_DIR", str(project))
-        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
-        monkeypatch.setattr(
-            job_slots,
-            "verify_inherited_execution_id",
-            lambda raw, *, booley_dir, owner_pid: execution_records.verify_inherited_execution_id(
-                raw,
-                booley_dir=booley_dir,
-                owner_pid=owner_pid,
-                observe_identity=world.observe_identity,
-                ancestor_check=lambda owner, ancestor: (
-                    unverified_reason == "foreign_project" and (owner, ancestor) == (100, 50)
-                ),
-            ),
-        )
-        runtime_booley_dir.reset_cache()
-        cancellations: list[str] = []
-        store = SlotStore(
+        store = make_execution_store(
             root,
-            is_pid_alive=world.is_pid_alive,
-            read_cmdline=world.read_cmdline,
-            now=world.now,
-            sleep=lambda _seconds: None,
-            capture_identity=world.capture_identity,
-            observe_identity=world.observe_identity,
-            recovery=job_slots.SlotRecovery(
-                execution_is_terminal=lambda _execution_id: False,
-                cancel_execution=cancellations.append,
-                recover_execution=lambda _execution_id: False,
-                recover_process_owner=lambda _identity: True,
-            ),
+            world,
+            execution_terminal=lambda _execution_id: terminal,
+            cancellations=cancellations,
         )
-        owner = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, argv=["owner"])
-        assert store.refresh(owner).state == HOLDING
-        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=200, argv=["waiter"])
-        assert store.refresh(waiter).state == QUEUED
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        assert store.refresh(token).state == HOLDING
 
-        assert owner.owner_kind == "process"
+        holder = store.snapshot(CLASS_MEMORY)[0][0]
+        assert holder.execution_id == execution_id
+        assert holder.owner_kind == "execution"
+        assert holder.lease_id
+        assert holder.lease_expires_at is not None
+
         del world.alive[100]
-        assert store.refresh(waiter).state == HOLDING
-        assert not owner.path.exists()
-        assert cancellations == []
-        runtime_booley_dir.reset_cache()
+        assert store.reap(CLASS_MEMORY) == []
+        assert cancellations == [execution_id]
+        assert store.snapshot(CLASS_MEMORY)[0][0].lease_state == job_slots.LEASE_CANCELLING
+
+        terminal = True
+        assert store.reap(CLASS_MEMORY) == [token.path.name]
 
     def test_one_runtime_execution_can_own_multiple_job_leases(self, tmp_path, world, monkeypatch):
         execution_id = "e" * 32
@@ -1397,130 +1056,125 @@ class TestGhostReaping:
         assert {token.execution_id for token in holders} == {execution_id}
         assert len({token.lease_id for token in holders}) == 2
 
-    def test_unattached_job_lease_keeps_process_owner_compatibility(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-
-        holder = store.snapshot(CLASS_MEMORY)[0][0]
-        assert holder.execution_id is None
-        assert holder.owner_kind == "process"
-
-    def test_project_resolution_failure_does_not_inherit_execution_owner(
-        self, root, world, monkeypatch
+    @pytest.mark.parametrize(
+        "case",
+        ["foreign-project", "non-ancestor", "project-unresolvable", "noncanonical-root", "none"],
+    )
+    def test_inherited_execution_id_is_refused(
+        self, tmp_path, world, monkeypatch, booley_dir_cache, case
     ):
-        def fail_project_resolution():
-            raise RuntimeError("project unavailable")
-
-        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, "8" * 32)
-        monkeypatch.setattr(
-            runtime_booley_dir,
-            "resolve_booley_dir",
-            fail_project_resolution,
+        execution_id = "7" * 32
+        project = tmp_path / "current" / ".booley"
+        project.mkdir(parents=True)
+        root = (
+            tmp_path / "override-slots"
+            if case == "noncanonical-root"
+            else (project / "runtime" / "jobs" / "slots")
         )
-        spawn(world, 100)
-
-        token = make_store(root, world).submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-
-        assert token.execution_id is None
-        assert token.owner_kind == "process"
-
-    def test_noncanonical_slot_root_does_not_inherit_execution_owner(
-        self, tmp_path, world, monkeypatch
-    ):
-        execution_id = "9" * 32
-        project = tmp_path / ".booley"
-        project.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(project))
-        monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
-        runtime_booley_dir.reset_cache()
-        spawn(world, 50)
-        spawn(world, 100)
+        record_project = tmp_path / "foreign" / ".booley" if case == "foreign-project" else project
+        record_project.parent.mkdir(exist_ok=True)
+        spawn(world, 50, ["supervisor"])
+        spawn(world, 100, ["owner"])
+        spawn(world, 200, ["waiter"])
         supervisor = world.capture_identity(50)
         assert supervisor is not None
         atomic_write_json(
-            execution_paths(execution_id, booley_dir=project).record,
+            execution_paths(execution_id, booley_dir=record_project).record,
             active_execution_record(supervisor),
         )
-        monkeypatch.setattr(
-            job_slots,
-            "verify_inherited_execution_id",
-            lambda raw, *, booley_dir, owner_pid: execution_records.verify_inherited_execution_id(
-                raw,
-                booley_dir=booley_dir,
-                owner_pid=owner_pid,
-                observe_identity=world.observe_identity,
-                ancestor_check=lambda owner, ancestor: (owner, ancestor) == (100, 50),
-            ),
-        )
-        try:
-            store = SlotStore(
-                tmp_path / "override-slots",
-                is_pid_alive=world.is_pid_alive,
-                read_cmdline=world.read_cmdline,
-                now=world.now,
-                sleep=lambda _seconds: None,
-                capture_identity=world.capture_identity,
-                observe_identity=world.observe_identity,
-                recovery=job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
-            )
-            token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+        monkeypatch.setenv("BOOLEY_DIR", str(project))
+        if case == "none":
+            monkeypatch.delenv(RUNTIME_EXECUTION_ENV, raising=False)
+        else:
+            monkeypatch.setenv(RUNTIME_EXECUTION_ENV, execution_id)
+        # Ancestry holds for every case but the owner that is no descendant.
+        verified_inheritance(monkeypatch, world, set() if case == "non-ancestor" else {(100, 50)})
+        if case == "project-unresolvable":
 
-            assert token.execution_id is None
-            assert token.owner_kind == "process"
-        finally:
-            runtime_booley_dir.reset_cache()
+            def fail_project_resolution():
+                raise RuntimeError("project unavailable")
 
-    def test_linked_missing_promotion_metadata_uses_recovery_deadline(self, root, world):
-        execution_id = "d" * 32
-        terminal = False
+            monkeypatch.setattr(runtime_booley_dir, "resolve_booley_dir", fail_project_resolution)
         cancellations: list[str] = []
-        spawn(world, 100)
-        store = make_execution_store(
+        store = make_store(
             root,
             world,
-            execution_terminal=lambda _execution_id: terminal,
-            cancellations=cancellations,
+            recovery=job_slots.SlotRecovery(
+                execution_is_terminal=lambda _execution_id: False,
+                cancel_execution=cancellations.append,
+                recover_execution=lambda _execution_id: False,
+                recover_process_owner=lambda _identity: True,
+            ),
         )
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id=execution_id)
+        owner = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, argv=["owner"])
+        assert store.refresh(owner).state == HOLDING
+        waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=200, argv=["waiter"])
+        assert store.refresh(waiter).state == QUEUED
+
+        assert owner.execution_id is None
+        assert owner.owner_kind == "process"
+        del world.alive[100]
+        assert store.refresh(waiter).state == HOLDING
+        assert not owner.path.exists()
+        assert cancellations == []
+
+    @pytest.mark.parametrize("owner", ["execution", "process"])
+    def test_promotion_metadata_missing_falls_back_to_the_lease_deadline(self, root, world, owner):
+        execution_id = "d" * 32 if owner == "execution" else None
+        cancellations: list[str] = []
+        spawn(world, 100)
+        if owner == "process":
+            store = make_store(root, world)
+        else:
+            store = make_execution_store(
+                root,
+                world,
+                execution_terminal=lambda _execution_id: False,
+                cancellations=cancellations,
+            )
+        token = store.submit(
+            CLASS_MEMORY, memory=_ALONE, pid=100, timeout_s=None, execution_id=execution_id
+        )
         assert store.refresh(token).state == HOLDING
         payload = json.loads(token.path.read_text(encoding="utf-8"))
-        payload["promoted_at"] = None
-        payload["lease_expires_at"] = None
+        for key in ("promoted_at", "lease_expires_at"):
+            payload.pop(key)
         token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         world.clock += job_slots.LEASE_DURATION_SECONDS + 1
 
+        if owner == "process":
+            assert store.reap(CLASS_MEMORY) == [token.path.name]
+            return
         assert store.reap(CLASS_MEMORY) == []
         assert cancellations == [execution_id]
         assert store.snapshot(CLASS_MEMORY)[0][0].lease_state == job_slots.LEASE_CANCELLING
 
-    @pytest.mark.skipif(sys.platform != "linux", reason="execution recovery scans Linux /proc")
-    @pytest.mark.parametrize("record_state", ["missing", "unrecoverable"])
-    def test_failed_execution_is_scoped_recovered_and_releases_holder(
-        self, tmp_path, monkeypatch, record_state
+    @pytest.mark.skipif(sys.platform != "linux", reason="recovery scans Linux /proc")
+    @pytest.mark.parametrize("owner", ["execution-missing", "execution-unrecoverable", "process"])
+    def test_expired_lease_recovers_only_its_owner(
+        self, tmp_path, monkeypatch, booley_dir_cache, owner
     ):
         project = tmp_path / ".booley"
         project.mkdir()
         monkeypatch.setenv("BOOLEY_DIR", str(project))
-        runtime_booley_dir.reset_cache()
+        execution = owner != "process"
         # Unique: real recovery signals every host process carrying this ID (xdist workers too).
         execution_id = uuid.uuid4().hex
+        clean_env = {
+            key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV
+        }
+        sleeper = [sys.executable, "-c", "import time; time.sleep(120)"]
         process = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            env={**os.environ, RUNTIME_EXECUTION_ENV: execution_id},
+            sleeper,
+            env={**clean_env, RUNTIME_EXECUTION_ENV: execution_id} if execution else clean_env,
         )
-        unrelated = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            env={key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV},
-        )
+        unrelated = subprocess.Popen(sleeper, env=clean_env)
         store = SlotStore(project / "runtime" / "jobs" / "slots")
-        token = store.submit(
-            CLASS_MEMORY, memory=_ALONE, pid=process.pid, execution_id=execution_id
-        )
+        claim = {"execution_id": execution_id} if execution else {"timeout_s": None}
+        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=process.pid, **claim)
         assert store.refresh(token).state == HOLDING
         paths = execution_paths(execution_id, booley_dir=project)
-        if record_state == "unrecoverable":
+        if owner == "execution-unrecoverable":
             atomic_write_json(
                 paths.record,
                 {
@@ -1529,105 +1183,21 @@ class TestGhostReaping:
                     "tree_terminal": False,
                 },
             )
-        payload = json.loads(token.path.read_text(encoding="utf-8"))
-        payload["lease_expires_at"] = "1970-01-01T00:00:00Z"
-        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        edit_entry(token, lease_expires_at="1970-01-01T00:00:00Z")
         try:
             assert store.reap(CLASS_MEMORY) == [token.path.name]
             assert process.wait(timeout=hang_guard_s()) != 0
             assert unrelated.poll() is None
-            terminal = read_json(paths.record)
-            assert terminal["state"] == "terminal"
-            assert terminal["tree_terminal"] is True
+            if execution:
+                terminal = read_json(paths.record)
+                assert terminal["state"] == "terminal"
+                assert terminal["tree_terminal"] is True
         finally:
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=hang_guard_s())
             unrelated.kill()
             unrelated.wait(timeout=hang_guard_s())
-            runtime_booley_dir.reset_cache()
-
-    @pytest.mark.skipif(sys.platform != "linux", reason="process recovery scans Linux /proc")
-    def test_expired_process_lease_recovers_only_its_durable_owner(self, tmp_path):
-        clean_env = {
-            key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV
-        }
-        process = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            env=clean_env,
-        )
-        unrelated = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
-            env=clean_env,
-        )
-        store = SlotStore(tmp_path / "slots")
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=process.pid, timeout_s=None)
-        assert store.refresh(token).state == HOLDING
-        payload = json.loads(token.path.read_text(encoding="utf-8"))
-        payload["lease_expires_at"] = "1970-01-01T00:00:00Z"
-        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-        try:
-            assert store.reap(CLASS_MEMORY) == [token.path.name]
-            assert process.wait(timeout=hang_guard_s()) != 0
-            assert unrelated.poll() is None
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=hang_guard_s())
-            unrelated.kill()
-            unrelated.wait(timeout=hang_guard_s())
-
-    @pytest.mark.parametrize("unknown_schema", [job_slots.SLOT_SCHEMA_VERSION + 1, "future"])
-    def test_unknown_future_slot_schema_fails_closed(self, root, world, unknown_schema):
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(token).state == HOLDING
-        payload = json.loads(token.path.read_text(encoding="utf-8"))
-        payload["schema_version"] = unknown_schema
-        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-        del world.alive[100]
-
-        assert store.reap(CLASS_MEMORY) == []
-        assert token.path.exists()
-
-    def test_holder_past_deadline_is_reaped(self, root, world):
-        spawn(world, 100)
-        a = make_store(root, world)
-        tok = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100, timeout_s=600)
-        assert a.refresh(tok).state == HOLDING
-        world.clock += 600 + job_slots.DEADLINE_SLACK_SECONDS + 1
-        spawn(world, 200)
-        b = make_store(root, world)
-        tok_b = b.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        assert b.refresh(tok_b).state == HOLDING
-
-    def test_waiter_gets_no_deadline(self, root, world):
-        spawn(world, 100)
-        a = make_store(root, world)
-        holder = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100, timeout_s=600)
-        assert a.refresh(holder).state == HOLDING
-        waiter = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100, timeout_s=600)
-        world.clock += 100_000  # far past any budget — queueing is legitimate
-        assert a.refresh(waiter).state in (QUEUED, HOLDING)
-
-    def test_reaped_token_reads_lost(self, root, world):
-        spawn(world, 100)
-        a = make_store(root, world)
-        tok = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        tok.path.unlink()  # someone judged us stale
-        assert a.refresh(tok).state == LOST
-
-    def test_fresh_junk_is_kept_old_junk_is_reaped(self, root, world):
-        spawn(world, 100)
-        a = make_store(root, world)
-        cls_dir = root / CLASS_MEMORY
-        cls_dir.mkdir(parents=True)
-        junk = cls_dir / "not-an-entry.json"
-        junk.write_text("{oops", encoding="utf-8")
-        assert a.reap(CLASS_MEMORY) == []  # too young to condemn
-        world.clock = junk.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-        assert a.reap(CLASS_MEMORY) == ["not-an-entry.json"]
 
 
 class TestAcquire:
@@ -1638,7 +1208,6 @@ class TestAcquire:
         holder = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert a.refresh(holder).state == HOLDING
 
-        b = make_store(root, world)
         positions: list[int] = []
         released = {"done": False}
 
@@ -1647,7 +1216,7 @@ class TestAcquire:
                 a.release(holder)
                 released["done"] = True
 
-        b._sleep = sleep_then_release
+        b = make_store(root, world, sleep=sleep_then_release)
         tok = b.acquire(
             CLASS_MEMORY, memory=_ALONE, pid=200, poll_interval=0.01, on_queued=positions.append
         )
@@ -1662,7 +1231,6 @@ class TestAcquire:
         holder = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert a.refresh(holder).state == HOLDING
 
-        b = make_store(root, world)
         positions: list[int] = []
         polls = {"n": 0}
 
@@ -1673,7 +1241,7 @@ class TestAcquire:
             if polls["n"] >= 8:  # 80s of waiting, then let it through
                 a.release(holder)
 
-        b._sleep = tick
+        b = make_store(root, world, sleep=tick)
         b.acquire(
             CLASS_MEMORY,
             memory=_ALONE,
@@ -1690,122 +1258,14 @@ class TestAcquire:
         # (booley_cancel); re-queueing would undo it, so acquire must raise.
         spawn(world, 100)
         a = make_store(root, world)
-        orig_submit = a.submit
-
-        def submit_then_cancel(*args, **kwargs):
-            tok = orig_submit(*args, **kwargs)
-            tok.path.unlink()  # what cancel_waiter does from the server
-            return tok
-
-        a.submit = submit_then_cancel
         with pytest.raises(job_slots.ClaimLostError):
-            a.acquire(CLASS_MEMORY, memory=_ALONE, pid=100, poll_interval=0.01)
-
-    def test_cancel_waiter_removes_queued_entry_only(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        a = make_store(root, world)
-        holder = a.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert a.refresh(holder).state == HOLDING
-        waiter = a.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        assert a.refresh(waiter).state == QUEUED
-        # Holder pid is refused; waiter pid is cancelled.
-        assert a.cancel_waiter(100) is False
-        assert a.cancel_waiter(200) is True
-        assert a.refresh(waiter).state == LOST
-        assert a.refresh(holder).state == HOLDING
-
-
-@pytest.mark.parametrize("unverified_reason", ["foreign_project", "non_ancestor"])
-def test_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
-    tmp_path, world, monkeypatch, unverified_reason
-):
-    TestGhostReaping().assert_unverified_inherited_execution_owner_dies_and_waiter_proceeds(
-        tmp_path, world, monkeypatch, unverified_reason
-    )
-
-
-def _scenario_dead_owner_recovery_fails(store, world, _root, _terminal):
-    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id="a" * 32)
-    store.refresh(token)
-    del world.alive[100]
-
-
-def _scenario_terminal_execution(store, world, _root, terminal):
-    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id="b" * 32)
-    store.refresh(token)
-    terminal["value"] = True
-
-
-def _scenario_execution_without_id(store, world, _root, _terminal):
-    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-    store.refresh(token)
-    edit_entry(token, owner_kind="execution", execution_id=None)
-    del world.alive[100]
-
-
-def _scenario_future_schema(store, world, _root, _terminal):
-    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-    store.refresh(token)
-    edit_entry(token, schema_version=job_slots.SLOT_SCHEMA_VERSION + 1)
-    del world.alive[100]
-
-
-def _corrupt_entry(root: Path, world: FakeWorld, age_s: float) -> None:
-    directory = root / CLASS_MEMORY
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / job_slots._entry_name("h", 0, 1, 100, 1)
-    path.write_bytes(b"{not json")
-    old = world.clock - age_s  # the store reads age against the simulated clock
-    os.utime(path, (old, old))
-
-
-def _scenario_corrupt_young(_store, world, root, _terminal):
-    _corrupt_entry(root, world, 0)
-
-
-def _scenario_corrupt_old(_store, world, root, _terminal):
-    _corrupt_entry(root, world, 3600)
-
-
-def _scenario_holder_past_lease_recovery_fails(store, world, _root, _terminal):
-    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-    store.refresh(token)
-    world.clock += job_slots.LEASE_DURATION_SECONDS + 1
-
-
-def _scenario_live_holder(store, _world, _root, _terminal):
-    store.refresh(store.submit(CLASS_MEMORY, memory=_ALONE, pid=100))
-
-
-def _scenario_dead_process_owner(store, world, _root, _terminal):
-    store.refresh(store.submit(CLASS_MEMORY, memory=_ALONE, pid=100))
-    del world.alive[100]
-
-
-# Every staleness branch of the read-only judgment.
-STALENESS_SCENARIOS = {
-    "dead-owner-recovery-fails": _scenario_dead_owner_recovery_fails,
-    "terminal-execution": _scenario_terminal_execution,
-    "execution-without-id": _scenario_execution_without_id,
-    "future-schema": _scenario_future_schema,
-    "corrupt-young": _scenario_corrupt_young,
-    "corrupt-old": _scenario_corrupt_old,
-    "holder-past-lease-recovery-fails": _scenario_holder_past_lease_recovery_fails,
-    "live-holder": _scenario_live_holder,
-    "dead-process-owner": _scenario_dead_process_owner,
-}
-
-
-# Scenarios whose entry a reap might remove, and those it does remove (the others fail their recovery).
-MAY_BE_STALE = {
-    "dead-owner-recovery-fails",
-    "terminal-execution",
-    "corrupt-old",
-    "holder-past-lease-recovery-fails",
-    "dead-process-owner",
-}
-REAPED = {"terminal-execution", "corrupt-old", "dead-process-owner"}
+            a.acquire(
+                CLASS_MEMORY,
+                memory=_ALONE,
+                pid=100,
+                poll_interval=0.01,
+                on_submitted=a.cancel_waiter_token,
+            )
 
 
 class TestSnapshot:
@@ -1820,10 +1280,6 @@ class TestSnapshot:
         assert [t.argv for t in waiters] == [["synth"]]
         assert waiters[0].role == "background"
 
-    def test_snapshot_of_empty_class(self, root, world):
-        store = make_store(root, world)
-        assert store.snapshot(CLASS_MEMORY) == ([], [])
-
 
 def edit_entry(token: job_slots.SlotToken, **changes: object) -> None:
     """Rewrite fields of a slot entry's JSON in place, as a foreign or future writer might."""
@@ -1832,79 +1288,163 @@ def edit_entry(token: job_slots.SlotToken, **changes: object) -> None:
     token.path.write_bytes(json.dumps(payload).encode("utf-8"))
 
 
-class TestReadOnlyStalenessJudgment:
-    """``_may_be_stale`` predicts, without touching the store, what a reap may remove."""
+def _holder(store, world, **kwargs) -> job_slots.SlotToken:
+    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, **kwargs)
+    store.refresh(token)
+    return token
 
-    @pytest.mark.parametrize("scenario", sorted(STALENESS_SCENARIOS))
-    def test_judgment_and_reap_agree(self, root, world, scenario):
-        """For every staleness branch, the reap removes an entry only when it may be stale."""
-        spawn(world, 100)
-        terminal = {"value": False}
-        store = make_execution_store(
-            root,
-            world,
-            execution_terminal=lambda _execution_id: terminal["value"],
-            cancellations=[],
-        )
-        STALENESS_SCENARIOS[scenario](store, world, root, terminal)
-        (path,) = (root / CLASS_MEMORY).glob("*.json")
-        before = path.read_bytes()
 
-        assert store._may_be_stale(path) is (scenario in MAY_BE_STALE)
-        assert path.read_bytes() == before
-        reaped = store.reap(CLASS_MEMORY)
-        assert reaped == ([path.name] if scenario in REAPED else [])
+def _dead_owner(**changes):
+    """A holder whose process died, its entry edited by *changes*."""
 
-    @pytest.mark.parametrize(
-        ("age_s", "owner_alive", "may_be_stale"),
-        [(0, False, False), (3600, False, True), (3600, True, False)],
-        ids=["young-dead-owner", "old-dead-owner", "old-live-owner"],
-    )
-    def test_an_unreadable_entry_is_judged_as_reap_does(
-        self, root, world, monkeypatch, age_s, owner_alive, may_be_stale
-    ):
-        spawn(world, 100)
-        store = make_store(root, world)
-        token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    def setup(store, world, _root, _terminal):
+        token = _holder(store, world)
+        if changes:
+            edit_entry(token, **changes)
+        del world.alive[100]
+        return token.path
+
+    return setup
+
+
+def _stray(name: str, age_s: float):
+    """A file that is not a readable entry, last written *age_s* before the simulated now."""
+
+    def setup(_store, world, root, _terminal):
+        directory = root / CLASS_MEMORY
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_bytes(b"{not json")
         old = world.clock - age_s
-        os.utime(token.path, (old, old))
-        if not owner_alive:
-            del world.alive[100]
+        os.utime(path, (old, old))
+        return path
 
-        def unreadable(_self, _path):
-            raise OSError("sharing violation")
-
-        monkeypatch.setattr(SlotStore, "_load_token", unreadable)
-        assert store._may_be_stale(token.path) is may_be_stale
-        assert len(store.reap(CLASS_MEMORY)) == int(may_be_stale)
+    return setup
 
 
-class TestJobsConfigParsing:
-    def test_shared_budget_loader_warns_for_expected_read_failure(
-        self,
-        monkeypatch,
-        caplog,
-    ):
-        from booley.runtime.shared_infra import load_job_budget_config
+def _dead_execution_owner(store, world, _root, _terminal):
+    token = _holder(store, world, execution_id="a" * 32)
+    del world.alive[100]
+    return token.path
 
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda _root: (_ for _ in ()).throw(OSError("unreadable")),
-        )
 
-        assert load_job_budget_config() == {}
+def _dead_waiter(store, world, _root, _terminal):
+    spawn(world, 200)
+    holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
+    assert store.refresh(holder).state == HOLDING
+    ghost = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    del world.alive[100]
+    return ghost.path
+
+
+def _recycled_pid(store, world, _root, _terminal):
+    spawn(world, 100, ["python", "-m", "booley.flows.sim"])
+    token = _holder(store, world, argv=["python", "-m", "booley.flows.sim"])
+    world.alive[100] = ["sshd"]  # PID 100 is recycled by an unrelated process
+    return token.path
+
+
+def _unknown_cmdline(store, world, _root, _terminal):
+    spawn(world, 100, None)  # /proc unavailable: cannot judge
+    return _holder(store, world, argv=["python", "-m", "x"]).path
+
+
+def _terminal_execution(store, world, _root, terminal):
+    token = _holder(store, world, execution_id="b" * 32)
+    terminal["value"] = True
+    return token.path
+
+
+def _holder_past_lease(store, world, _root, _terminal):
+    token = _holder(store, world)
+    world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+    return token.path
+
+
+_ENTRY_NAME = "h-p0-s0000000001-0000000100-0001.json"  # the persisted name format
+FUTURE_SCHEMA = job_slots.SLOT_SCHEMA_VERSION + 1
+
+# id: (setup, reaped, executions cancelled). A reap removes an entry only when its
+# owner is provably gone; every other row survives it.
+REAP_ROWS = {
+    "live-holder": (lambda store, world, _r, _t: _holder(store, world).path, False, []),
+    "dead-process-owner": (_dead_owner(), True, []),
+    "dead-waiter": (_dead_waiter, True, []),
+    "recycled-pid-argv": (_recycled_pid, True, []),
+    "unknown-cmdline": (_unknown_cmdline, False, []),
+    "dead-owner-recovery-fails": (_dead_execution_owner, False, ["a" * 32]),
+    "terminal-execution": (_terminal_execution, True, []),
+    "execution-without-id": (
+        _dead_owner(owner_kind="execution", execution_id=None),
+        False,
+        [],
+    ),
+    "future-schema": (_dead_owner(schema_version=FUTURE_SCHEMA), False, []),
+    "future-string-schema": (_dead_owner(schema_version="future"), False, []),
+    "corrupt-young": (_stray(_ENTRY_NAME, 0), False, []),
+    "corrupt-old": (_stray(_ENTRY_NAME, OLD_S), True, []),
+    "junk-young": (_stray("not-an-entry.json", 0), False, []),
+    "junk-old": (_stray("not-an-entry.json", OLD_S), True, []),
+    "holder-past-lease-recovery-fails": (_holder_past_lease, False, []),
+}
+
+
+@pytest.mark.parametrize("row", sorted(REAP_ROWS))
+def test_reap_removes_only_provably_stale_entries(root, world, row):
+    setup, reaped, cancelled = REAP_ROWS[row]
+    spawn(world, 100)
+    terminal = {"value": False}
+    cancellations: list[str] = []
+    store = make_execution_store(
+        root,
+        world,
+        execution_terminal=lambda _execution_id: terminal["value"],
+        cancellations=cancellations,
+    )
+    path = setup(store, world, root, terminal)
+
+    assert store.reap(CLASS_MEMORY) == ([path.name] if reaped else [])
+    assert path.exists() is not reaped
+    assert cancellations == cancelled
+
+
+@pytest.mark.parametrize(
+    ("age_s", "owner_alive", "reaped"),
+    [(0, False, False), (OLD_S, False, True), (OLD_S, True, False)],
+    ids=["young-dead-owner", "old-dead-owner", "old-live-owner"],
+)
+def test_an_unreadable_entry_is_reaped_only_when_old_and_its_owner_is_dead(
+    root, world, monkeypatch, age_s, owner_alive, reaped
+):
+    # Unreadable is not missing: a live owner's entry survives the junk rule (#1905).
+    spawn(world, 100)
+    store = make_store(root, world)
+    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    old = world.clock - age_s
+    os.utime(token.path, (old, old))
+    if not owner_alive:
+        del world.alive[100]
+    hold_opens(monkeypatch, {token.path: 10**6})
+
+    assert store.reap(CLASS_MEMORY) == ([token.path.name] if reaped else [])
+
+
+@pytest.mark.parametrize("broken", ["directory", "bytes"])
+def test_job_budget_config_read_failure(tmp_path, monkeypatch, caplog, booley_dir_cache, broken):
+    from booley.runtime import shared_infra
+
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    # private: the CWD config cache has no public reset; without this an earlier test's config answers.
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
+    config = tmp_path / "booley.toml"
+    if broken == "directory":
+        config.mkdir()  # an OSError, not a missing file
+        assert shared_infra.load_job_budget_config() == {}
         assert "Failed to load the shared Project job budget" in caplog.text
-
-    def test_shared_budget_loader_propagates_unexpected_failure(self, monkeypatch):
-        from booley.runtime.shared_infra import load_job_budget_config
-
-        monkeypatch.setattr(
-            "booley.runtime.shared_infra._load_rtl_config",
-            lambda _root: (_ for _ in ()).throw(RuntimeError("broken invariant")),
-        )
-
-        with pytest.raises(RuntimeError, match="broken invariant"):
-            load_job_budget_config()
+    else:
+        config.write_bytes(b"\xff\xfe")  # not UTF-8: no handler turns it into a warning
+        with pytest.raises(UnicodeDecodeError):
+            shared_infra.load_job_budget_config()
 
 
 class TestPromotionDeadline:
@@ -1952,55 +1492,31 @@ class TestPromotionDeadline:
         world.clock += job_slots.DEADLINE_SLACK_SECONDS + 1
         assert store.reap(CLASS_MEMORY) == [waiter.path.name]
 
-    def test_null_timeout_holder_without_promotion_stamp_uses_lease_deadline(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world)
-        tok = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, timeout_s=None)
-        assert store.refresh(tok).state == HOLDING
-        payload = json.loads(tok.path.read_text(encoding="utf-8"))
-        del payload["promoted_at"]
-        del payload["lease_expires_at"]
-        tok.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
-        world.clock += job_slots.LEASE_DURATION_SECONDS + 1
-        assert store.reap(CLASS_MEMORY) == [tok.path.name]
+@pytest.mark.parametrize("failure", ["should-abort", "narration-raises"])
+def test_failed_wait_withdraws_the_entry(root, world, failure):
+    # Shutdown hook (the Runner's Ctrl+C path) or a narration hook blowing up: either must
+    # withdraw our own entry, since a claim without a caller-held token is unreleasable
+    # and, with the process alive, unreapable.
+    spawn(world, 100)
+    spawn(world, 200)
+    store = make_store(root, world)
+    holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    assert store.refresh(holder).state == HOLDING
+    aborts = iter([False, True])
 
+    def explode(_position):
+        raise RuntimeError("narration boom")
 
-class TestAcquireWithdrawsOnFailure:
-    def test_should_abort_raises_and_withdraws_entry(self, root, world):
-        # Shutdown hook: a queued acquire must end (entry withdrawn) when the
-        # caller's should_abort fires — the Runner's Ctrl+C path.
-        spawn(world, 100)
-        spawn(world, 200)
-        store = make_store(root, world)
-        holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(holder).state == HOLDING
-
-        aborts = iter([False, True])
-        with pytest.raises(job_slots.ClaimAbortedError):
-            store.acquire(CLASS_MEMORY, memory=_ALONE, pid=200, should_abort=lambda: next(aborts))
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.lease_id for token in holders] == [holder.lease_id]
-        assert waiters == []
-
-    def test_unexpected_error_mid_wait_withdraws_entry(self, root, world):
-        # An exception escaping the poll loop (here: a narration hook blowing
-        # up) must withdraw our own entry — a claim without a caller-held
-        # token is unreleasable and, with the process alive, unreapable.
-        spawn(world, 100)
-        spawn(world, 200)
-        store = make_store(root, world)
-        holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        assert store.refresh(holder).state == HOLDING
-
-        def explode(_position):
-            raise RuntimeError("narration boom")
-
-        with pytest.raises(RuntimeError, match="narration boom"):
-            store.acquire(CLASS_MEMORY, memory=_ALONE, pid=200, on_queued=explode)
-        holders, waiters = store.snapshot(CLASS_MEMORY)
-        assert [token.lease_id for token in holders] == [holder.lease_id]
-        assert waiters == []
+    if failure == "should-abort":
+        expected, kwargs = job_slots.ClaimAbortedError, {"should_abort": lambda: next(aborts)}
+    else:
+        expected, kwargs = RuntimeError, {"on_queued": explode}
+    with pytest.raises(expected):
+        store.acquire(CLASS_MEMORY, memory=_ALONE, pid=200, **kwargs)
+    holders, waiters = store.snapshot(CLASS_MEMORY)
+    assert [token.lease_id for token in holders] == [holder.lease_id]
+    assert waiters == []
 
 
 class TestSlotsDir:
@@ -2021,15 +1537,11 @@ class TestSlotsDir:
         finally:
             reset_cache()
 
-    def test_env_override_wins(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "elsewhere"))
-        assert job_slots.slots_dir() == tmp_path / "elsewhere"
-
-    def test_resolution_never_creates_the_dir(self, tmp_path, monkeypatch):
+    def test_env_override_wins_and_resolving_it_creates_nothing(self, tmp_path, monkeypatch):
         # Readers (mcp_server._job_phase) call this on hot paths; it must not
         # have runtime_dir()'s mkdir side effect.
         monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "elsewhere"))
-        job_slots.slots_dir()
+        assert job_slots.slots_dir() == tmp_path / "elsewhere"
         assert not (tmp_path / "elsewhere").exists()
 
 
@@ -2094,69 +1606,73 @@ def test_persisted_legacy_role_reloads_behind_interactive(root, world):
     for pid in (100, 200, 300):
         spawn(world, pid)
     store = make_store(root, world)
-    holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
+    holder = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, argv=["sim"])
     assert store.refresh(holder).state == HOLDING
-    legacy = store.submit(CLASS_MEMORY, memory=_ALONE, pid=200, role="ticket")
-    interactive = store.submit(CLASS_MEMORY, memory=_ALONE, pid=300, role=ROLE_INTERACTIVE)
+    legacy = store.submit(CLASS_MEMORY, memory=_ALONE, pid=200, role="ticket", argv=["synth"])
+    interactive = store.submit(
+        CLASS_MEMORY, memory=_ALONE, pid=300, role=ROLE_INTERACTIVE, argv=["lint"]
+    )
     reloaded = make_store(root, world)
     holders, waiting = reloaded.snapshot(CLASS_MEMORY)
-    assert [t.pid for t in holders] == [100]
-    assert [(t.pid, t.role) for t in waiting] == [
-        (interactive.pid, ROLE_INTERACTIVE),
-        (legacy.pid, "ticket"),
+    assert [(t.pid, t.argv) for t in holders] == [(100, ["sim"])]
+    assert [(t.pid, t.role, t.argv) for t in waiting] == [
+        (interactive.pid, ROLE_INTERACTIVE, ["lint"]),
+        (legacy.pid, "ticket", ["synth"]),
     ]
 
 
-def test_unreadable_execution_record_is_not_proven_terminal(monkeypatch) -> None:
+def test_default_recovery_keeps_a_cancelling_holder_while_its_record_is_unreadable(
+    tmp_path, monkeypatch, booley_dir_cache
+) -> None:
     """A lasting sharing error keeps the slot: release() must never raise."""
-    from types import SimpleNamespace
-
-    from tests.sharing_error_support import sharing_error
-
-    def held(_path: Path) -> None:
-        raise sharing_error()
-
-    monkeypatch.setattr(job_slots, "read_json", held)
-    monkeypatch.setattr(
-        job_slots, "execution_paths", lambda _id: SimpleNamespace(record=Path("r"))
+    project = tmp_path / ".booley"
+    project.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
+    execution_id = "f" * 32
+    store = SlotStore(project / "runtime" / "jobs" / "slots")
+    token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=os.getpid(), execution_id=execution_id)
+    assert store.refresh(token).state == HOLDING
+    assert store.begin_token_recovery(token) is True  # the default cancel writes the real request
+    record = execution_paths(execution_id, booley_dir=project).record
+    atomic_write_json(
+        record, {"schema_version": PROTOCOL_VERSION, "state": "terminal", "tree_terminal": True}
     )
-    assert job_slots._default_execution_is_terminal("a" * 32) is False
+    hold_opens(monkeypatch, {record: 10**6})
 
+    store.release(token)
 
-# A gate a dead process left behind: a bare PID, as gates were written before
-# they named their owner's identity. The PID is above the kernel limit.
-_DEAD_GATE_PID = 4_194_305
+    assert token.path.exists()
 
 
 class _SecondActor:
     """Runs a second process's gate attempt while the first one is paused, and holds what it took."""
 
     def __init__(self, enter_gate) -> None:
-        self._enter_gate = enter_gate
-        self._settled = threading.Event()
-        self._release = threading.Event()
-        self._thread: threading.Thread | None = None
+        self.enter_gate = enter_gate
+        self.settled = threading.Event()
+        self.release_event = threading.Event()
+        self.thread: threading.Thread | None = None
         self.acquired: bool | None = None
 
     def run_once(self) -> None:
         """Start the actor on first call and wait until it took the gate or gave up."""
-        if self._thread is not None:
+        if self.thread is not None:
             return
-        self._thread = threading.Thread(target=self._attempt)
-        self._thread.start()
-        assert self._settled.wait(hang_guard_s()), "second actor never settled"
+        self.thread = threading.Thread(target=self.attempt)
+        self.thread.start()
+        assert self.settled.wait(hang_guard_s()), "second actor never settled"
 
-    def _attempt(self) -> None:
-        with self._enter_gate() as acquired:
+    def attempt(self) -> None:
+        with self.enter_gate() as acquired:
             self.acquired = acquired
-            self._settled.set()
-            self._release.wait(2 * hang_guard_s())
+            self.settled.set()
+            self.release_event.wait(2 * hang_guard_s())
 
     def finish(self) -> None:
-        self._release.set()
-        if self._thread is not None:
-            self._thread.join(hang_guard_s())
-            assert not self._thread.is_alive()
+        self.release_event.set()
+        if self.thread is not None:
+            self.thread.join(hang_guard_s())
+            assert not self.thread.is_alive()
 
 
 def _pause(monkeypatch, gate: Path, actor: _SecondActor, method: str) -> None:
@@ -2187,15 +1703,17 @@ def _pause(monkeypatch, gate: Path, actor: _SecondActor, method: str) -> None:
 class TestStaleGateBreaking:
     """Two processes that find the same stale gate: at most one of them holds it."""
 
+    # private: the race needs the second breaker to keep the gate while the first resumes;
+    # every public call releases its gate before it returns.
     @pytest.mark.parametrize("pause", ["read", "unlink"], ids=["judging", "removing"])
     def test_one_breaker_holds_a_stale_promotion_gate(self, root, world, monkeypatch, pause):
         spawn(world, 100)
         spawn(world, 200)
         second = make_store(root, world)
         second_token = second.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate = root / CLASS_MEMORY / PROMOTION_GATE
         gate.write_text(f"{_DEAD_GATE_PID}\n", encoding="utf-8")
-        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        world.clock = gate.stat().st_mtime + OLD_S + 1
         actor = _SecondActor(lambda: second._promotion_gate(second_token))
         first = make_store(root, world)
         first_token = first.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
@@ -2207,6 +1725,7 @@ class TestStaleGateBreaking:
         finally:
             actor.finish()
 
+    # private: the same race over a lease gate, which no public call holds across a pause.
     @pytest.mark.parametrize("pause", ["stat", "rmdir"], ids=["judging", "removing"])
     def test_one_breaker_holds_a_stale_lease_gate(self, root, world, monkeypatch, pause):
         spawn(world, 100)
@@ -2214,9 +1733,9 @@ class TestStaleGateBreaking:
         holder_store = make_store(root, world)
         holder = holder_store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert holder_store.refresh(holder).state == HOLDING
-        gate = holder.path.parent / f".{holder.lease_id}.lease.lock"
+        gate = lease_gate(holder)
         gate.mkdir()  # a lease gate as a dead process left it before gates named their owner
-        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        world.clock = gate.stat().st_mtime + OLD_S + 1
         second = make_store(root, world)
         actor = _SecondActor(lambda: second._lease_gate(holder))
         first = make_store(root, world)
@@ -2228,101 +1747,51 @@ class TestStaleGateBreaking:
         finally:
             actor.finish()
 
-    def test_unreadable_live_promotion_gate_is_not_broken(self, root, world, monkeypatch):
-        spawn(world, 100)
-        spawn(world, 200)
-        holder = make_store(root, world)
-        holder_token = holder.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        breaker = make_store(root, world)
-        breaker_token = breaker.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        gate = root / CLASS_MEMORY / ".promotion.lock"
-        originals = {name: getattr(Path, name) for name in ("read_text", "read_bytes")}
-
-        def scanner(name):
-            def scanned(path, *args, **kwargs):
-                if path == gate:
-                    raise windows_sharing_error()  # a scanner holds the gate file
-                return originals[name](path, *args, **kwargs)
-
-            return scanned
-
-        with holder._promotion_gate(holder_token) as held:
-            assert held
-            world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-            for name in originals:
-                monkeypatch.setattr(Path, name, scanner(name))
-            with breaker._promotion_gate(breaker_token) as acquired:
-                assert not acquired
-
     def test_unusable_break_lock_is_reported_once(self, root, world, caplog):
         spawn(world, 100)
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        gate = root / CLASS_MEMORY / ".promotion.lock"
+        gate = root / CLASS_MEMORY / PROMOTION_GATE
         gate.write_text(f"{_DEAD_GATE_PID}\n", encoding="utf-8")
-        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
+        world.clock = gate.stat().st_mtime + OLD_S + 1
         (root / CLASS_MEMORY / ".gate-break.lock").mkdir()  # cannot be opened as a file
 
         with caplog.at_level(logging.WARNING, logger="booley.runtime.job_slots"):
             for _attempt in range(2):
-                with store._promotion_gate(token) as acquired:
-                    assert not acquired
+                assert store.refresh(token).state == QUEUED
         assert gate.exists()
         assert caplog.text.count("Cannot take the gate break lock") == 1
 
-    @pytest.mark.parametrize("content", [b"\xff\xfe junk\n", b"not json\n"], ids=["bytes", "text"])
-    def test_junk_promotion_gate_is_broken_once_old(self, root, world, content):
+    def test_lease_gate_names_the_current_process(self, root, world, monkeypatch):
+        current = [500]
+        store = make_store(root, world, getpid=lambda: current[0])
         spawn(world, 100)
-        store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        gate = root / CLASS_MEMORY / ".promotion.lock"
-        gate.write_bytes(content)
-        with store._promotion_gate(token) as acquired:
-            assert not acquired  # not yet old: its writer may still be mid-write
-        world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-        with store._promotion_gate(token) as acquired:
-            assert acquired
+        assert store.refresh(token).state == HOLDING
 
-    def test_gate_owner_is_recaptured_after_a_fork(self, root, world):
-        current = [os.getpid()]
-        spawn(world, current[0])
-        spawn(world, current[0] + 1)
-        store = SlotStore(
-            root,
-            is_pid_alive=world.is_pid_alive,
-            read_cmdline=world.read_cmdline,
-            now=world.now,
-            sleep=lambda _seconds: None,
-            capture_identity=world.capture_identity,
-            observe_identity=world.observe_identity,
-            getpid=lambda: current[0],
-        )
-        first = store._gate_owner()
-        assert first.identity is not None
-        assert store._gate_owner() is first  # cached while pid and identity hold
-        current[0] = first.pid + 1
-        assert store._gate_owner().pid == first.pid + 1
+        def gate_during_renew() -> dict:
+            """The lease gate's text, read while a renewal holds the gate."""
+            seen: list[dict] = []
+            interleave(
+                monkeypatch,
+                "replace",
+                is_rewrite_tmp,
+                lambda: seen.append(json.loads(lease_gate(token).read_text(encoding="utf-8"))),
+            )
+            assert store.renew(token)
+            return seen[0]
 
-    def test_gate_owner_retries_a_failed_identity_capture(self, root, world):
-        store = make_store(root, world)
-        assert store._gate_owner().identity is None  # this process is not in the fake world
-        spawn(world, os.getpid())
-        assert store._gate_owner().identity is not None
-
-    def test_recycled_pid_promotion_gate_is_broken(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        dead = make_store(root, world)
-        dead_token = dead.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
-        live = make_store(root, world)
-        live_token = live.submit(CLASS_MEMORY, memory=_ALONE, pid=200)
-        with dead._promotion_gate(dead_token) as held:
-            assert held
-            gate = root / CLASS_MEMORY / ".promotion.lock"
-            world.alive[100] = ["another", "process"]  # PID 100 is live again, as a new process
-            world.clock = gate.stat().st_mtime + job_slots._UNREADABLE_REAP_AGE_SECONDS + 1
-            with live._promotion_gate(live_token) as acquired:
-                assert acquired
+        # This process is not in the fake world yet: the gate names it, with no identity.
+        assert gate_during_renew() == {"pid": 500, "owner_identity": None}
+        # Once it is, the next renewal retries the failed capture.
+        spawn(world, 500)
+        named = gate_during_renew()
+        assert named["pid"] == 500 and named["owner_identity"] is not None
+        # After a fork the child's PID is the one the gate names.
+        current[0] = 501
+        spawn(world, 501)
+        forked = gate_during_renew()
+        assert forked["pid"] == 501 and forked["owner_identity"] is not None
 
 
 class TestLeaseRenewal:
@@ -2331,13 +1800,12 @@ class TestLeaseRenewal:
     )
     def test_missed_lease_gate_is_lost_only_after_expiry(self, root, world, elapsed, lost):
         spawn(world, 100)
-        spawn(world, os.getpid())  # the process the other gate holder runs in
+        spawn(world, 300)  # the process holding the other gate
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
         world.clock += elapsed
-        with make_store(root, world)._lease_gate(token) as held:
-            assert held
+        with held_gate(lease_gate(token), 300, world.capture_identity(300)):
             assert store.renew(token) is False  # not extended this time
         assert token.lease_health.lost.is_set() is lost
         assert store.renew(token) is not lost
@@ -2349,10 +1817,7 @@ class TestLeaseRenewal:
         store = make_store(root, world)
         token = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100)
         assert store.refresh(token).state == HOLDING
-        reaper = make_store(root, world)
-        reaper._capture_identity = lambda _pid: world.capture_identity(300)
-        with reaper._lease_gate(token) as held:
-            assert held
+        with held_gate(lease_gate(token), 300, world.capture_identity(300)):
             del world.alive[300]  # the reaper dies holding the gate; no time passes
 
             assert store.renew(token) is True
@@ -2368,30 +1833,3 @@ class TestLeaseRenewal:
         assert store.renew(token) is False
         assert token.lease_health.lost.is_set()
         assert store.snapshot(CLASS_MEMORY) == ([], [])  # the next reap recovers it
-
-    def test_renewal_thread_outlives_a_missed_lease_gate(self, root, monkeypatch):
-        monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
-        store = SlotStore(root)
-        missed = threading.Event()
-        real_renew = store.renew
-
-        def observed_renew(token):
-            renewed = real_renew(token)
-            if not renewed:
-                missed.set()
-            return renewed
-
-        monkeypatch.setattr(store, "renew", observed_renew)
-        token = store.acquire(CLASS_MEMORY, memory=_ALONE, pid=os.getpid(), poll_interval=0.01)
-        try:
-            with SlotStore(root)._lease_gate(token) as held:
-                assert held
-                assert missed.wait(hang_guard_s())
-                generation = token.lease_generation
-            deadline = time.monotonic() + hang_guard_s()
-            while token.lease_generation == generation and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert token.lease_generation > generation
-            assert not token.lease_health.lost.is_set()
-        finally:
-            store.release(token)
