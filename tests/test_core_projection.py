@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import signal
@@ -10,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.core.file_lock import LockTimeoutError
+from booley.core import file_lock
+from booley.core.file_lock import nonblocking_file_lock
 from booley.fusesoc import core_projection
 from booley.fusesoc.core_projection import (
     CoreProjectionError,
@@ -37,6 +39,7 @@ from tests.fusesoc_test_support import INHERITED_CORE_TEXT, symlinked_booley_dir
 from tests.time_budget import hang_guard_s
 
 _CORE = "CAPI=2:\nname: booley::demo:0\nfilesets: {}\ntargets: {}\n"
+_ISOLATED = "[stealth]\nenabled = true\nignore_native_cores = true\n"
 
 
 _PENDING = ".booley/tmp/core-projection-publication/pending.json"
@@ -67,38 +70,38 @@ def _die_publishing(root: Path, trace: Path, *, half_written: bool = False) -> P
     return leftover
 
 
-def _project(tmp_path: Path, *, stealth: str = "true") -> tuple[Path, Path]:
+def _project(
+    tmp_path: Path, *, stealth: str = "true", toml: str | None = None, core: str = _CORE
+) -> tuple[Path, Path]:
     root = tmp_path / "repo"
     cores = root / ".booley" / "cores"
     cores.mkdir(parents=True)
     (root / ".booley" / "booley.toml").write_text(
-        f"[stealth]\nenabled = {stealth}\n", encoding="utf-8"
+        f"[stealth]\nenabled = {stealth}\n" if toml is None else toml, encoding="utf-8"
     )
-    core = cores / "demo.core"
-    core.write_text(_CORE, encoding="utf-8")
-    return root, core
+    core_path = cores / "demo.core"
+    core_path.write_text(core, encoding="utf-8")
+    return root, core_path
 
 
-def test_projection_requires_explicit_stealth_true(tmp_path: Path) -> None:
-    root, _core = _project(tmp_path, stealth="false")
-    assert projection_enabled(root) is False
-    (root / ".booley" / "booley.toml").write_text("[stealth]\n", encoding="utf-8")
-    assert projection_enabled(root) is False
+@pytest.mark.parametrize(
+    ("toml", "projection", "native_ignored"),
+    [
+        ("[stealth]\nenabled = false\n", False, False),
+        ("[stealth]\n", False, False),
+        ("[stealth]\nenabled = true\n", True, False),
+        (_ISOLATED, True, True),
+        ("[stealth]\nenabled = false\nignore_native_cores = true\n", False, False),
+    ],
+    ids=["disabled", "no-enabled", "enabled", "enabled-with-ignore", "disabled-with-ignore"],
+)
+def test_stealth_toggles_require_explicit_true(
+    tmp_path: Path, toml: str, projection: bool, native_ignored: bool
+) -> None:
+    root, _core = _project(tmp_path, toml=toml)
 
-
-def test_native_core_ignore_requires_explicit_stealth_and_toggle(tmp_path: Path) -> None:
-    root, _core = _project(tmp_path)
-    assert native_cores_ignored(root) is False
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    assert native_cores_ignored(root) is True
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = false\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
-    assert native_cores_ignored(root) is False
+    assert projection_enabled(root) is projection
+    assert native_cores_ignored(root) is native_ignored
 
 
 def test_reconcile_writes_root_core_and_is_idempotent(tmp_path: Path) -> None:
@@ -175,20 +178,18 @@ def test_disabling_stealth_removes_only_owned_projections(tmp_path: Path) -> Non
 
 
 def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Path) -> None:
-    root, core = _project(tmp_path)
-    core.write_text(
-        "CAPI=2:\n"
-        "name: booley::demo:0\n"
-        "filesets:\n"
-        "  rtl:\n"
-        "    files:\n"
-        "      - rtl/demo.sv: {file_type: systemVerilogSource, include_path: rtl}\n"
-        "targets: {}\n",
-        encoding="utf-8",
-    )
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
+    root, core = _project(
+        tmp_path,
+        toml=_ISOLATED,
+        core=(
+            "CAPI=2:\n"
+            "name: booley::demo:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files:\n"
+            "      - rtl/demo.sv: {file_type: systemVerilogSource, include_path: rtl}\n"
+            "targets: {}\n"
+        ),
     )
     native = root / "native.core"
     native.write_text("not valid FuseSoC\n", encoding="utf-8")
@@ -209,11 +210,7 @@ def test_isolated_registry_rebases_files_and_excludes_native_cores(tmp_path: Pat
 
 
 def test_isolated_registry_keeps_inherited_flow_options(tmp_path: Path) -> None:
-    root, core = _project(tmp_path)
-    core.write_text(INHERITED_CORE_TEXT, encoding="utf-8")  # #5077
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
-    )
+    root, _core = _project(tmp_path, toml=_ISOLATED, core=INHERITED_CORE_TEXT)  # #5077
 
     generated = reconcile_isolated_registry(root).written[0]
 
@@ -224,27 +221,25 @@ def test_isolated_registry_keeps_inherited_flow_options(tmp_path: Path) -> None:
 def test_isolated_registry_resolves_fileset_symlink_but_preserves_file_parameter(
     tmp_path: Path,
 ) -> None:
-    root, core = _project(tmp_path)
+    root, _core = _project(
+        tmp_path,
+        toml=_ISOLATED,
+        core=(
+            "CAPI=2:\n"
+            "name: booley::demo:0\n"
+            "filesets:\n"
+            "  constraints:\n"
+            "    files:\n"
+            "      - constraints/timing.sdc: {file_type: SDC}\n"
+            "parameters:\n"
+            "  CONFIG: {datatype: file, paramtype: plusarg, default: config/authored.cfg}\n"
+            "targets: {}\n"
+        ),
+    )
     (root / "constraints").mkdir()
     physical = root / "constraints" / "physical.sdc"
     physical.write_text("create_clock -period 10 clk\n", encoding="utf-8")
     symlink_or_skip(root / "constraints" / "timing.sdc", physical)
-    core.write_text(
-        "CAPI=2:\n"
-        "name: booley::demo:0\n"
-        "filesets:\n"
-        "  constraints:\n"
-        "    files:\n"
-        "      - constraints/timing.sdc: {file_type: SDC}\n"
-        "parameters:\n"
-        "  CONFIG: {datatype: file, paramtype: plusarg, default: config/authored.cfg}\n"
-        "targets: {}\n",
-        encoding="utf-8",
-    )
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
-    )
 
     generated = reconcile_isolated_registry(root).written[0]
     text = generated.read_text(encoding="utf-8")
@@ -255,19 +250,17 @@ def test_isolated_registry_resolves_fileset_symlink_but_preserves_file_parameter
 
 
 def test_isolated_registry_rejects_nonliteral_fileset_path(tmp_path: Path) -> None:
-    root, core = _project(tmp_path)
-    core.write_text(
-        "CAPI=2:\n"
-        "name: booley::demo:0\n"
-        "filesets:\n"
-        "  rtl:\n"
-        "    files: ['tool_verilator? (rtl/demo.sv)']\n"
-        "targets: {}\n",
-        encoding="utf-8",
-    )
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n",
-        encoding="utf-8",
+    root, _core = _project(
+        tmp_path,
+        toml=_ISOLATED,
+        core=(
+            "CAPI=2:\n"
+            "name: booley::demo:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: ['tool_verilator? (rtl/demo.sv)']\n"
+            "targets: {}\n"
+        ),
     )
 
     with pytest.raises(CoreProjectionError, match="literal fileset paths"):
@@ -316,30 +309,29 @@ def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
 
 
 def test_private_mirror_names_in_checkout_files_relatively(tmp_path: Path) -> None:
-    root, core = _project(tmp_path)
+    outside = tmp_path / "outside.sv"
+    root, core = _project(
+        tmp_path,
+        toml=_ISOLATED,
+        core=(
+            "CAPI=2:\n"
+            "name: booley::demo:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files:\n"
+            "      - rtl/demo.sv\n"
+            "      - rtl/inc/defs.svh: {is_include_file: true, include_path: rtl/inc}\n"
+            "      - rtl/ext.sv\n"
+            f"      - {outside.as_posix()}\n"
+            "      - rtl/missing.sv\n"
+            "targets: {}\n"
+        ),
+    )
     (root / "rtl" / "inc").mkdir(parents=True)
     (root / "rtl" / "demo.sv").write_text("module demo; endmodule\n", encoding="utf-8")
     (root / "rtl" / "inc" / "defs.svh").write_text("`define X 1\n", encoding="utf-8")
-    outside = tmp_path / "outside.sv"
     outside.write_text("module outside; endmodule\n", encoding="utf-8")
     symlink_or_skip(root / "rtl" / "ext.sv", outside)
-    core.write_text(
-        "CAPI=2:\n"
-        "name: booley::demo:0\n"
-        "filesets:\n"
-        "  rtl:\n"
-        "    files:\n"
-        "      - rtl/demo.sv\n"
-        "      - rtl/inc/defs.svh: {is_include_file: true, include_path: rtl/inc}\n"
-        "      - rtl/ext.sv\n"
-        f"      - {outside.as_posix()}\n"
-        "      - rtl/missing.sv\n"
-        "targets: {}\n",
-        encoding="utf-8",
-    )
-    (root / ".booley" / "booley.toml").write_text(
-        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
-    )
     reconcile_isolated_registry(root)
     shared = {p: p.read_bytes() for p in isolated_registry_root(root).glob("*.core")}
     mirror_root = tmp_path / "mirror"
@@ -524,13 +516,21 @@ def test_publication_waiting_on_a_held_lock_times_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _core = _project(tmp_path)
+    state = root / ".booley" / "tmp" / "core-projection-publication"
+    state.mkdir(parents=True)
+    # The clock is the boundary: the real publication wait is 30 s. A clock that
+    # steps an hour per reading expires it on the first contended attempt.
+    ticks = itertools.count(step=3600.0)
+    monkeypatch.setattr(file_lock, "monotonic", lambda: next(ticks))
 
-    def busy(*_args: object, **_kwargs: object) -> None:
-        raise LockTimeoutError("held")
-
-    monkeypatch.setattr(core_projection, "wait_for_file_lock", busy)
-    with pytest.raises(CoreProjectionError, match="another core projection publication"):
+    with (
+        (state / "lock").open("a+", encoding="utf-8") as holder,
+        nonblocking_file_lock(holder),
+        pytest.raises(CoreProjectionError, match="another core projection publication"),
+    ):
         reconcile_projected_cores(root)
+
+    assert reconcile_projected_cores(root).written
 
 
 @_needs_fork
