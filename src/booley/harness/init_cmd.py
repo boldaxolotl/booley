@@ -1182,15 +1182,14 @@ def _select_agent_app(project_root: Path, project_data_source: Path | None = Non
     """Return the project's declared agent app, never one inferred from the host."""
     config_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
     if config_path.is_file():
-        try:
-            import tomllib
+        import tomllib
 
-            with config_path.open("rb") as config_file:
-                config = tomllib.load(config_file)
-            agent = config.get("agent", {})
-            provider = parse_agent_section(agent if isinstance(agent, dict) else {}).default
-        except (OSError, ValueError):
-            provider = None
+        # `_credential_plans` read this file first, so an unreadable or malformed one
+        # has already stopped the step.
+        with config_path.open("rb") as config_file:
+            config = tomllib.load(config_file)
+        agent = config.get("agent", {})
+        provider = parse_agent_section(agent if isinstance(agent, dict) else {}).default
         if provider in AGENT_CLIS:
             return provider
     return dc.APP_NONE
