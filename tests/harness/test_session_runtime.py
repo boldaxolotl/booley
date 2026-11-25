@@ -2010,6 +2010,10 @@ class TestT3CodeRelay:
             doctor, "observe_deep_status", lambda *_a, **_k: SimpleNamespace(render=lambda: "")
         )
         roots: dict[Path, None] = {}
+        # Any exec answers a pairing request with a link on the relay port it names.
+        up_docker.exec_reply = lambda argv: completed(
+            stdout=json.dumps({"pairUrl": f"http://127.0.0.1:{argv[-1].split()[-1]}/pair#token=t"})
+        )
 
         def run(command: list[str], root: Path) -> tuple[str, str]:
             self.relay_module(monkeypatch, relay_ports)
