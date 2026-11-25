@@ -16,6 +16,7 @@ from booley.harness.dashboard.measurement import (
     measurement_lines,
 )
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
+from booley.harness.dashboard.reviewed_commit import ReviewLine, review_lines
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.handles import HandleStore
@@ -50,6 +51,8 @@ class DashboardSnapshot:
     session_titles: Mapping[str, str] = field(default_factory=dict)
     #: The measurement line per checkout a session targets; a checkout without one shows none.
     measurements: Mapping[str, MeasurementLine] = field(default_factory=dict)
+    #: The review part per checkout a session targets; a checkout without one shows none.
+    reviews: Mapping[str, ReviewLine] = field(default_factory=dict)
 
 
 def health_lines(root: Path, booley_dir: Path) -> tuple[HealthLine, ...]:
@@ -100,6 +103,7 @@ class DashboardReader:
                     peak_memory=sample.peak_memory,
                 )
             measured.append(projected)
+        checkouts = {checkout_of(row.attribution) for row in sessions.rows}
         return DashboardSnapshot(
             sessions.rows,
             replace(jobs, jobs=tuple(measured)),
@@ -110,7 +114,8 @@ class DashboardReader:
             self._activity(sessions.rows, now),
             handles,
             titles,
-            measurement_lines({checkout_of(row.attribution) for row in sessions.rows}, measured),
+            measurement_lines(checkouts, measured),
+            review_lines(checkouts),
         )
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:
