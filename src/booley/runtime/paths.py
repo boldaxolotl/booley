@@ -46,7 +46,7 @@ def troubleshooting_path() -> Path:
 
 
 def changelog_path() -> Path:
-    """Return the packaged public changelog mirror."""
+    """Return the packaged public changelog, copied in by the build step."""
     return refs_dir() / "CHANGELOG.md"
 
 

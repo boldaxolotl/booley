@@ -1,6 +1,8 @@
 # Publish the user docs on the project site
 
-Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs; 2026-11-12: rendered doc copies, see Amendments)
+Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing
+text and contributor docs; 2026-11-12: rendered doc copies; 2026-11-25:
+rendered changelog copy, see Amendments)
 
 ## Context
 
@@ -108,3 +110,14 @@ Rejected alternatives:
   CI build step already renders before building the wheel and sdist.
 - **Committed copies regenerated only at release.** The copies would drift from
   their sources between releases, and tests would read stale text.
+
+### 2026-11-25
+
+The packaged `CHANGELOG.md` is no longer committed either. The same build step
+copies the root `CHANGELOG.md` byte for byte to
+`src/booley/data/refs/CHANGELOG.md`, the path the runtime reads, which is
+Git-ignored. The sync module, its launcher, and the readiness check that kept
+the committed copy in step are gone, and the release changelog script edits and
+checks only the root file. Fingerprints hash the root file, not the copy. A
+source checkout that has not run the build has no packaged changelog, as it has
+no packaged user docs.
