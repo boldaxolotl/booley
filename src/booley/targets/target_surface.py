@@ -9,7 +9,7 @@ Vocabulary (docs/GLOSSARY.md): a **Target** is a named FuseSoC ``.core`` build
 target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
 selects a smoke Flow in ``flow_options.booley.doctor``; "drivable" means the
 Booley Flow *could* run it (Flow/EDA-tool compatibility), selected or not. Health auditing
-(legacy upstream FuseSoC ``tools:`` authoring, missing ``tags:[tb]``, …) stays in doctor —
+(missing ``tags:[tb]``, …) stays in doctor —
 this module only describes, it never judges.
 """
 

@@ -33,7 +33,6 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_flow_option,
     core_target_is_doctor_selftest,
     core_target_names,
-    core_target_uses_legacy_fusesoc_api,
     discover_cores,
     missing_target_sources_for_ref,
     parse_edam,
@@ -2090,11 +2089,11 @@ class TestSetupCommandEdaToolFlag:
 
 
 # ---------------------------------------------------------------------------
-# core_target_uses_legacy_fusesoc_api (F-6)
+# Legacy tools-section Target (F-6)
 # ---------------------------------------------------------------------------
 
 
-class TestCoreTargetUsesLegacyFuseSocApi:
+class TestLegacyToolsSectionTarget:
     """Legacy Targets declare no Flow, though their EDA tool remains readable."""
 
     _LEGACY = """\
@@ -2109,25 +2108,7 @@ targets:
     toplevel: tb
     tools:
       icarus: {iverilog_options: [-g2012]}
-  modern:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: icarus}
-    toplevel: tb
-  hybrid:
-    filesets: [rtl]
-    flow: sim
-    tools: {icarus: {iverilog_options: []}}
 """
-
-    # A flow wins even with a legacy FuseSoC ``tools`` section (hybrid).
-    @pytest.mark.parametrize(
-        ("target", "legacy"),
-        [("sim", True), ("modern", False), ("hybrid", False), ("nope", False)],
-    )
-    def test_only_a_flowless_target_is_legacy(self, tmp_path: Path, target: str, legacy: bool):
-        doc = read_core(_write_core(tmp_path, self._LEGACY))
-        assert core_target_uses_legacy_fusesoc_api(doc, target) is legacy
 
     def test_legacy_target_still_reports_its_eda_tool(self, tmp_path: Path):
         # The EDA tool is readable (via the upstream default_tool mirror); only flow is absent.
