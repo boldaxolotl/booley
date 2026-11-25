@@ -3489,6 +3489,15 @@ def test_runtime_location(row, tmp_path, monkeypatch):
         assert not [call for call in calls if call[0] == "None"]
 
 
+def test_runtime_location_names_the_container_host_override(tmp_path, monkeypatch):
+    _runtime_setup(tmp_path, monkeypatch, inside=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+    monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
+    result = _doctor_run(tmp_path)
+    assert any("BOOLEY_CONTAINER=0 set" in m for m in _messages(result, Severity.PASS))
+    assert _messages(result, Severity.WARN, check_id="sandbox.runtime-marker") == []
+
+
 @pytest.mark.parametrize("app", [None, "claude", "codex"])
 def test_host_agent_session(app, tmp_path, monkeypatch):
     """A host agent gets no Booley Flows and no error: Doctor explains the Sandbox boundary."""

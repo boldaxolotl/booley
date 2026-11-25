@@ -54,11 +54,10 @@ def container_env(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         (None, None, False),
         ("1", None, True),
-        ("0", None, False),  # the marker must be exactly 1
         (None, "/.dockerenv", True),  # images built before the env var existed
         (None, "/run/.containerenv", True),  # Podman/OCI runtimes
     ],
-    ids=["host", "env-marker", "env-marker-0", "dockerenv", "containerenv"],
+    ids=["host", "env-marker", "dockerenv", "containerenv"],
 )
 def test_inside_session_runtime_reads_the_marker_then_the_probe_files(
     monkeypatch: pytest.MonkeyPatch, env: str | None, marker_file: str | None, inside: bool
@@ -179,7 +178,7 @@ class TestAgentSessionApp:
             None,
             ("Reopen in Container", "booley session enter -- bwave"),
         ),
-        (runtime_context.host_only_error, None, "1", ("HOST terminal",)),
+        (runtime_context.host_only_error, None, "1", ("HOST terminal", "BOOLEY_CONTAINER=0")),
     ],
     ids=["container-only", "host-only"],
 )
@@ -298,3 +297,39 @@ def test_booley_init_hint_names_the_location(
     _use_mountinfo(monkeypatch, tmp_path, _mountinfo(*mounts))
     assert runtime_context.booley_init_hint() == plain
     assert runtime_context.booley_init_hint(code=True) == code
+
+
+@pytest.mark.parametrize(
+    ("env", "marker_file", "mounts", "location"),
+    [
+        ("0", "/.dockerenv", ("/",), runtime_context.RuntimeLocation.HOST),
+        ("0", "/.dockerenv", None, runtime_context.RuntimeLocation.HOST),
+        ("0", None, ("/",), runtime_context.RuntimeLocation.HOST),
+        (None, "/.dockerenv", ("/",), HAND_WRITTEN),
+        ("0", "/.dockerenv", ("/", "/booley"), ISSUED),
+        ("0", None, ("/", "/work/.devcontainer"), ISSUED),
+    ],
+    ids=[
+        "override",
+        "override-unreadable-mounts",
+        "override-no-marker",
+        "no-override",
+        "override-in-issued-sandbox",
+        "override-in-issued-sandbox-no-marker",
+    ],
+)
+def test_container_host_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    env: str | None,
+    marker_file: str | None,
+    mounts: tuple[str, ...] | None,
+    location: runtime_context.RuntimeLocation,
+) -> None:
+    _pin_runtime(monkeypatch, env=env, marker_file=marker_file)
+    _use_mountinfo(monkeypatch, tmp_path, None if mounts is None else _mountinfo(*mounts))
+    is_host = location is runtime_context.RuntimeLocation.HOST
+    assert runtime_context.runtime_location() is location
+    assert runtime_context.inside_session_runtime() is not is_host
+    assert (runtime_context.host_only_error("booley session") is None) is is_host
+    assert (runtime_context.container_only_error("booley flow sim") is None) is not is_host
