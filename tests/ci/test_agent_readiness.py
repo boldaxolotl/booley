@@ -422,13 +422,13 @@ def test_probe_docker_maps_runner_failures(case):
     assert bool(calls) is (case != "missing")
 
 
-_DENIED = (1, "secret", "permission denied")
+_OK, _DENIED = (0, "", ""), (1, "secret", "permission denied")
 # case: (require, installed, `docker info` answer, check id, status, summary fragment)
 _DOCKER = {
-    "optional-present": (False, True, None, "docker.executable", "ready", "daemon not contacted"),
-    "optional-absent": (False, False, None, "docker.executable", "degraded", "optional"),
-    "required-absent": (True, False, None, "docker.executable", "blocked", "unavailable"),
-    "healthy": (True, True, (0, "", ""), "docker.daemon", "ready", "responds"),
+    "optional-present": (False, True, _OK, "docker.executable", "ready", "daemon not contacted"),
+    "optional-absent": (False, False, _OK, "docker.executable", "degraded", "optional"),
+    "required-absent": (True, False, _OK, "docker.executable", "blocked", "unavailable"),
+    "healthy": (True, True, _OK, "docker.daemon", "ready", "responds"),
     "permission": (True, True, _DENIED, "docker.daemon", "escalation-required", "approval"),
     "failed": (True, True, (1, "", "boom"), "docker.daemon", "blocked", "did not respond"),
 }
@@ -438,7 +438,7 @@ _DOCKER = {
 def test_docker_check_reports_the_probe(checkout, bare_path, monkeypatch, capsys, case):
     require, installed, info, check_id, status, summary = _DOCKER[case]
     docker = PathToolFake.install(bare_path, "docker", monkeypatch) if installed else None
-    if docker and info:
+    if docker:  # `info` is answered, so that a call to it would be logged
         docker.answer("info", returncode=info[0], stdout=info[1], stderr=info[2])
     document = _report(capsys, "--phase", "develop", *(["--require", "docker"] if require else []))
     check = document["by_id"][check_id]
@@ -609,6 +609,14 @@ def test_prepare_escalation_is_visible_in_human_output(checkout, monkeypatch, ca
     assert "current checkout is detached" in output
     assert "Run [before-edit] git.worktree-create:" in output
     assert "Branch:" not in output
+
+
+def test_develop_human_output_names_the_branch(checkout, capsys):
+    assert readiness.main(["--phase", "develop"]) == 1  # a primary checkout is not a worktree
+    output = capsys.readouterr().out
+    assert "Branch: main (primary)" in output
+    assert "OK: repository.source-marker" in output
+    assert "exit zero is not permission" not in output
 
 
 def _linked(root, fake=None, monkeypatch=None):
