@@ -475,9 +475,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
 
 _MIN_WRAP_WIDTH = 11
 _ROOT_DESCRIPTION = "Booley — RTL development harness."
-_ROOT_FOOTER = (
-    "See `booley cheat --skills` for guided agent workflows."
-)
+_ROOT_FOOTER = "See `booley cheat --skills` for guided agent workflows."
 
 
 def _help_width() -> int:
