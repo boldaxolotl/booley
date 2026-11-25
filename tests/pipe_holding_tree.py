@@ -155,3 +155,45 @@ def stall_wait_on(monkeypatch: pytest.MonkeyPatch) -> None:
         return proc, feeder
 
     monkeypatch.setattr(platform_paths, "_spawn", spawn)
+
+
+def wait_for_tree_start(paths: dict[str, Path]) -> float:
+    """Wait for the heartbeat grandchild's first write; return that ``time.monotonic()``.
+
+    Fails the test when no heartbeat appears within the hang guard.
+    """
+    deadline = time.monotonic() + hang_guard_s()
+    while not paths["heartbeat"].exists():
+        if time.monotonic() >= deadline:
+            pytest.fail(f"the process tree never started: no heartbeat in {hang_guard_s()} s")
+        time.sleep(0.05)
+    return time.monotonic()
+
+
+def start_deadline_after_tree_start(
+    monkeypatch: pytest.MonkeyPatch, paths: dict[str, Path]
+) -> list[float]:
+    """Hold the bounded runner's deadline until the heartbeat tree has started.
+
+    The runner starts its timeout when the spawn returns, so a slow host cannot
+    kill the tree before it exists.  The returned list receives the moment the
+    tree started; measure elapsed time from it.
+    """
+    from booley.runtime import platform_paths
+
+    # private: the spawn seam is the only point between the start and the deadline.
+    real_spawn = platform_paths._spawn
+    started: list[float] = []
+
+    def spawn(*args, **kwargs):
+        proc, feeder = real_spawn(*args, **kwargs)
+        try:
+            started.append(wait_for_tree_start(paths))
+        except BaseException:
+            with proc:  # closes its pipes and reaps it
+                platform_paths.kill_process_tree(proc)
+            raise
+        return proc, feeder
+
+    monkeypatch.setattr(platform_paths, "_spawn", spawn)
+    return started
