@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
 import sys
@@ -25,7 +24,7 @@ from booley.runtime.git import (
 )
 from tests.conftest import symlink_or_skip
 from tests.git_support import hostile
-from tests.harness.git_support import git_stdout
+from tests.harness.git_support import fake_powershell, git_stdout
 from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
@@ -419,24 +418,43 @@ def test_git_run_keeps_its_result_contract(
         git_run(repo, ["status"])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX fake powershell")
+@pytest.mark.parametrize(
+    ("script", "kept"),
+    [("exec sleep 60", True), ("exit 1", True), ("", True), ("exit 0", False)],
+    ids=["hung", "failed", "unlaunchable", "no-owner"],
+)
+def test_windows_git_process_check_decides_the_index_lock(
+    wt: Path, tmp_path: Path, monkeypatch, caplog, script: str, kept: bool
+) -> None:
+    (wt / "new.sv").write_text("wire x;\n", encoding="utf-8")
+    lock_path = Path(git_stdout(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
+    lock_path.write_text("", encoding="utf-8")
+    fake_powershell(tmp_path, monkeypatch, script)
+    monkeypatch.setattr(sys, "platform", "win32")
+    if kept:
+        with pytest.raises(BlockingError, match="git add failed"):
+            commit_scope(wt, ["new.sv"], "feat: keep unchecked lock")
+        assert "Could not inspect Git processes" in caplog.text
+    else:
+        commit_scope(wt, ["new.sv"], "feat: clear stale lock")
+        assert _committed(wt) == ["new.sv"]
+    assert lock_path.exists() is kept
+
+
 @pytest.mark.skipif(
     sys.platform == "win32", reason="a fake `powershell` script cannot shadow powershell.exe"
 )
 def test_windows_git_process_probe_stops_a_hung_tree(tmp_path: Path, monkeypatch) -> None:
-    # private: the public path (git_run's stale-lock check) reaches this probe only on
-    # Windows, where a fake `powershell` cannot shadow powershell.exe.
-    from booley.runtime.git import _iter_git_process_cmdlines_windows
+    from booley.runtime.git import _GitProcessCheckError, _iter_git_process_cmdlines_windows
 
     with heartbeat_tree(tmp_path) as paths:
-        fake = tmp_path / "bin" / "powershell"
-        fake.parent.mkdir()
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        fake.write_text(f"#!/bin/sh\nexec {shlex.join(argv)}\n", encoding="utf-8")
-        fake.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{fake.parent}{os.pathsep}{os.environ['PATH']}")
+        fake_powershell(tmp_path, monkeypatch, f"exec {shlex.join(argv)}")
         started = time.monotonic()
 
-        assert _iter_git_process_cmdlines_windows() == []
+        with pytest.raises(_GitProcessCheckError):
+            _iter_git_process_cmdlines_windows()
 
         assert time.monotonic() - started < scaled(38)
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
