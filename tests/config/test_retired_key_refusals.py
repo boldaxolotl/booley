@@ -5,9 +5,8 @@ replacement. ``CASES`` triggers each refusal the audit found and applies that ru
 text a user sees. A source scan then fails when a refusal template under ``src`` is not
 reached by a case, so a retired key added without coverage fails here.
 
-``BASELINE`` lists cases that still break the rule (fixing one without removing its entry
-fails); ``NO_REMEDY`` lists refusals no text could fix; ``NOT_A_KEY`` lists phrase hits
-that are not configuration-key refusals. Each carries a one-line reason.
+``NOT_A_KEY`` lists phrase hits that are not configuration-key refusals, each with a
+one-line reason.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from tests.harness.agent_auth_support import credential_findings
 from tests.source_checkout_support import source_checkout_files
 
 from booley.audit import agent_schema, flow_schema, project_schema
@@ -42,7 +42,6 @@ from booley.flows.synth.ppa_config import append_ppa_args
 from booley.flows.synth.recipe import resolve_synth_mode
 from booley.flows.synth.timing import SynthMode
 from booley.fusesoc.fusesoc_registry import core_schema_errors
-from booley.harness import doctor
 from booley.mcp.endpoint_config import parse_endpoint_config
 from booley.mcp.endpoint_validation import validate_custom_endpoints
 from booley.mcp.live_catalog import custom_directory
@@ -142,7 +141,6 @@ def _models(raw: dict) -> Callable[[Env], str]:
 
 def _sandbox_warning(toml: str) -> Callable[[Env], str]:
     def trigger(env: Env) -> str:
-        env.mp.setattr(agent_config, "_agent_settings", None)
         directory = _booley_dir(env, toml)
         return _logged(lambda: agent_config.load_agent_settings(env.tmp, booley_dir=directory))
 
@@ -204,7 +202,6 @@ def _host_egress(env: Env) -> str:
 
 
 def _legacy_pipeline_toml(env: Env) -> str:
-    env.mp.setattr(agent_config, "_agent_settings", None)
     directory = _booley_dir(env, "", "pipeline.toml")
     return _logged(lambda: agent_config.load_agent_settings(env.tmp, booley_dir=directory))
 
@@ -255,18 +252,25 @@ def _core_doctor_elab(env: Env) -> str:
 
 
 def _doctor_auth_auto(env: Env) -> str:
-    env.mp.setattr("booley.harness.init_cmd.detected_auth_policy", lambda _cli: "api_key")
-    audit = doctor.ProjectAudit(
-        project_root=env.tmp,
-        booley_dir=env.tmp / ".booley",
-        booley_toml={"agent": {"clis": ["claude"], "default": "claude", "auth": "auto"}},
-        configs_toml={},
-        first_target="",
+    home = env.tmp / "home"
+    home.mkdir()
+    for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+        env.mp.setenv(name, str(home))
+    env.mp.setenv("ANTHROPIC_API_KEY", "synthetic-key")
+    for name in (
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_AGENT_CLIS",
+        "BOOLEY_AGENT_APP",
+        "BOOLEY_DIR",
+    ):
+        env.mp.delenv(name, raising=False)
+    findings = credential_findings(
+        env.tmp, {"agent": {"clis": ["claude"], "default": "claude", "auth": "auto"}}
     )
-    reporter = doctor._Reporter.create()
-    doctor._check_auth_recorded(audit, ("claude",), reporter)
-    assert reporter.findings is not None
-    return "\n".join(f"{item.message}\n{item.fix or ''}" for item in reporter.findings)
+    return "\n".join(f"{item.message}\n{item.fix or ''}" for item in findings)
 
 
 def _env_project_dir(env: Env) -> str:
@@ -352,6 +356,7 @@ def _mapping_cases() -> Iterator[Refusal]:
             _TABLE_FIX[table],
             lambda _env, table=table: _audit(project_schema.audit_known_tables({table: {}})),
         )
+    # private: no public name lists the migrated keys; iterating it gives a new key its case
     for key in sorted(yosys_core._MIGRATED_CONSTRAINT_KEYS):
         yield Refusal(
             f"synth-constraint-{key}",
@@ -682,12 +687,6 @@ CASES: list[Refusal] = [
     *_mapping_cases(),
 ]
 
-#: Case ids whose refusal still breaks the rule. Fixing one fails until its entry goes.
-BASELINE: frozenset[str] = frozenset()
-
-#: Case ids whose refusal no text could remedy, each with a one-line reason.
-NO_REMEDY: dict[str, str] = {}
-
 #: Sites whose phrase hit is not a configuration-key refusal, each with a one-line reason.
 #: ``site#fragment`` exempts only the message containing the fragment; a bare site, all of it.
 NOT_A_KEY: dict[str, str] = {
@@ -753,16 +752,17 @@ class _Texts:
 
     def __init__(self, tmp_path_factory: pytest.TempPathFactory) -> None:
         self._factory = tmp_path_factory
-        self._texts: dict[str, str] = {}
+        self.seen: dict[str, str] = {}
 
     def of(self, case: Refusal) -> str:
-        if case.id not in self._texts:
+        if case.id not in self.seen:
             with pytest.MonkeyPatch.context() as mp:
                 try:
-                    self._texts[case.id] = case.trigger(Env(self._factory.mktemp(case.id), mp))
+                    self.seen[case.id] = case.trigger(Env(self._factory.mktemp(case.id), mp))
                 finally:
                     booley_dir_module.reset_cache()
-        return self._texts[case.id]
+                    agent_config.set_agent_settings(None)  # settings a trigger installed
+        return self.seen[case.id]
 
 
 @pytest.fixture(scope="module")
@@ -774,26 +774,8 @@ def texts(tmp_path_factory: pytest.TempPathFactory) -> _Texts:
 def test_retired_key_refusal_names_the_fix(case: Refusal, texts: _Texts) -> None:
     text = texts.of(case)
     assert case.key in text, f"{case.id} reached another refusal:\n{text}"
-    if case.id in NO_REMEDY:
-        return
-    lacks = _lacks_the_fix(case, text)
-    if case.id in BASELINE:
-        assert lacks, f"fixed: remove {case.id} from BASELINE"
-        return
     wanted = "say to delete or remove it" if case.fix is None else f"name {case.fix!r}"
-    assert not lacks, f"{case.id}: the refusal must {wanted}:\n{text}"
-
-
-def test_exception_lists_have_one_line_reasons() -> None:
-    ids = [case.id for case in CASES]
-    assert len(ids) == len(set(ids)), "two cases share an id"
-    assert set(ids) >= BASELINE, f"BASELINE names no case: {sorted(BASELINE - set(ids))}"
-    assert set(NO_REMEDY) <= set(ids), (
-        f"NO_REMEDY names no case: {sorted(set(NO_REMEDY) - set(ids))}"
-    )
-    assert not BASELINE & set(NO_REMEDY), "a case is in both BASELINE and NO_REMEDY"
-    for name, reason in {**NO_REMEDY, **NOT_A_KEY}.items():
-        assert reason.strip() and "\n" not in reason, f"{name} needs a one-line reason"
+    assert not _lacks_the_fix(case, text), f"{case.id}: the refusal must {wanted}:\n{text}"
 
 
 # --- Coverage: every refusal template under src is reached by a case ---

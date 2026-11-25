@@ -106,14 +106,20 @@ def test_the_refusal_names_an_escaped_section_without_a_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.config import retired
+    from booley.runtime import booley_dir as booley_dir_module
 
-    path = tmp_path / "booley.toml"
-    path.write_bytes(ESCAPED)
-    monkeypatch.setattr(retired, "resolve_common_booley_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(retired, "resolve_toml", lambda _dir: path)
-
-    with pytest.raises(retired.RetiredConfigError) as caught:
-        retired.refuse_retired_config(tmp_path)
-
+    booley_dir = tmp_path / "project" / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_bytes(ESCAPED)
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
+    booley_dir_module.reset_cache()
+    try:
+        with pytest.raises(retired.RetiredConfigError) as caught:
+            retired.refuse_retired_config(booley_dir.parent)
+        monkeypatch.delenv("BOOLEY_DIR")
+        booley_dir_module.reset_cache()
+        retired.refuse_retired_config(tmp_path / "nowhere")
+    finally:
+        booley_dir_module.reset_cache()
     assert str(caught.value).startswith("booley.toml has a [goals] section;")
     assert "booley-heal" in str(caught.value)
