@@ -190,9 +190,9 @@ class RecordProcess(Actor):
         super().__init__(
             _RECORD_INDEX, world, scheduler, root, recover, name="R", recovery=recovery
         )
-        self._open()
+        self._open_capacity()
 
-    def _open(self) -> None:
+    def _open_capacity(self) -> None:
         """Build the process: the Flow's claim (once), then a capacity whose lane locks are steps."""
         self.lanes = []
         self.supervisor = None
@@ -216,16 +216,18 @@ class RecordProcess(Actor):
         self.capacity = SimulationRecordCapacity(
             admission, _manifest(), self.booley_dir, lambda _item: _CLAIM
         )
-        # The registry's lock is an in-process one held across steps: make its waiters steps.
-        self.capacity._lanes._record_lock = self._record_lock  # type: ignore[method-assign]
+        # Private: the registry's per-execution lock is an in-process lock held across filesystem
+        # steps. No public entry point exchanges it, and a plain threading.Lock held across a
+        # step stalls the scheduler, so its waiters are made steps.
+        self.capacity._lanes._record_lock = self._step_lock  # type: ignore[method-assign]
 
-    def _record_lock(self, execution_id: ExecutionId) -> StepLock:
+    def _step_lock(self, execution_id: ExecutionId) -> StepLock:
         return self._locks.setdefault(execution_id, StepLock(self.scheduler))
 
     def restart(self) -> None:
         """A new process on the same PID: no lanes, and the old Flow claim left to be recovered."""
         super().restart()
-        self._open()
+        self._open_capacity()
 
 
 class LaneStepMachine(JobSlotStepMachine):
@@ -236,7 +238,7 @@ class LaneStepMachine(JobSlotStepMachine):
         super().__init__(parent, recovery=self._execution_recovery())
         self.booley_real = Path(self._temporary.name) / "booley"
         self.booley_dir = stepped_root(self.booley_real, self.scheduler)
-        self._observer = ChildExecutionRegistry.from_project_data(
+        self._record_registry = ChildExecutionRegistry.from_project_data(
             _manifest(), self.booley_dir, booley_dir=self.booley_dir
         )
         root = self.actors[0].root
@@ -248,10 +250,10 @@ class LaneStepMachine(JobSlotStepMachine):
             self._recover,
             self._execution_recovery(),
         )
-        self._terminal: set[str] = set()
+        self._terminal_ids: set[str] = set()
         self._lanes_opened = 0
         self._fake_pids = 0
-        self._snapshot: dict[str, Any] | None = None
+        self._step_reads: dict[str, Any] | None = None
         self.scheduler.checks = [
             self._begin_checks,
             *self.scheduler.checks,
@@ -270,7 +272,7 @@ class LaneStepMachine(JobSlotStepMachine):
     def _execution_recovery(self) -> SlotRecovery:
         """How every store recovers an execution-owned entry: the real recovery, stepped."""
         return SlotRecovery(
-            execution_is_terminal=lambda execution_id: self._observer.is_terminal(
+            execution_is_terminal=lambda execution_id: self._record_registry.is_terminal(
                 ExecutionId(execution_id)
             ),
             cancel_execution=lambda execution_id: request_cancellation(
@@ -393,17 +395,17 @@ class LaneStepMachine(JobSlotStepMachine):
     def _open_registered_lane(self) -> Lane | None:
         """A lane that runs, with no fault, to its first command and registers a process."""
         lane = self.start_lane()
-        self._settled(lane.worker)
+        self.settled(lane.worker)
         if lane.idle:
             self.command_lane(lane, "register")
-            self._settled(lane.worker)
+            self.settled(lane.worker)
         return lane if lane in self._registering_lanes() else None
 
     @precondition(lambda self: self._can_open_lane())
     @rule(settle=st.booleans())
     def open_lane(self, settle: bool) -> None:
         """Open a lane, and with *settle* run it, with no fault, to its first command."""
-        self._settled(self.start_lane().worker, settle)
+        self.settled(self.start_lane().worker, settle)
 
     @precondition(lambda self: bool(self._idle_lanes()))
     @rule(which=st.integers(0, 99), name=st.sampled_from(_COMMANDS), settle=st.booleans())
@@ -411,9 +413,9 @@ class LaneStepMachine(JobSlotStepMachine):
         idle = self._idle_lanes()
         lane = idle[which % len(idle)]
         self.command_lane(lane, name)
-        self._settled(lane.worker, settle)
+        self.settled(lane.worker, settle)
 
-    def _settled(self, worker: Worker | None, settle: bool = True) -> None:
+    def settled(self, worker: Worker | None, settle: bool = True) -> None:
         """With *settle*, run *worker* without faults to its next command or its end, or until
         it waits (for a lock, or for admission, which may never come): the rules' steps are few."""
         for _ in range(_SETTLE_STEPS if settle else 0):
@@ -469,7 +471,7 @@ class LaneStepMachine(JobSlotStepMachine):
         if self._supervisor_free():
             recoveries.append(self.start_supervisor("recover"))
         for worker in recoveries:
-            self._settled(worker)
+            self.settled(worker)
 
     @rule(pick=st.integers(0, _RARE), recycle=st.booleans())
     def crash_record(self, pick: int, recycle: bool) -> None:
@@ -500,7 +502,7 @@ class LaneStepMachine(JobSlotStepMachine):
     def _check_one_holder_per_slot(self) -> None:
         reserved = sum(
             self._reserved_mb(payload)
-            for name, payload in self._entries().items()
+            for name, payload in self.read_entries().items()
             if name.startswith("h-") and payload is not None
         )
         assert reserved <= _CLAIM.budget_mb, (
@@ -508,27 +510,27 @@ class LaneStepMachine(JobSlotStepMachine):
         )
 
     def _begin_checks(self) -> None:
-        self._snapshot = {}  # the checks of one step read the directories once between them
+        self._step_reads = {}  # the checks of one step read the directories once between them
 
     def _end_checks(self) -> None:
-        self._snapshot = None
+        self._step_reads = None
 
     def _read_once(self, key: str, read: Callable[[], Any]) -> Any:
-        if self._snapshot is None:
+        if self._step_reads is None:
             return read()
-        return self._snapshot.setdefault(key, read())
+        return self._step_reads.setdefault(key, read())
 
-    def _entries(self) -> dict[str, dict[str, Any] | None]:
-        return self._read_once("entries", super()._entries)
+    def read_entries(self) -> dict[str, dict[str, Any] | None]:
+        return self._read_once("entries", super().read_entries)
 
-    def _records(self) -> dict[str, dict[str, Any] | None]:
+    def _step_records(self) -> dict[str, dict[str, Any] | None]:
         """Execution ID -> record payload (None when unreadable), read around the scheduler."""
         return self._read_once("records", self._read_records)
 
     def _read_records(self) -> dict[str, dict[str, Any] | None]:
         root = self.booley_real / ".runtime" / "executions"
         directories = sorted(root.iterdir()) if root.is_dir() else []
-        return {path.name: self._payload(path / "record.json") for path in directories}
+        return {path.name: self.read_payload(path / "record.json") for path in directories}
 
     @staticmethod
     def _is_terminal_record(record: dict[str, Any] | None) -> bool:
@@ -539,17 +541,17 @@ class LaneStepMachine(JobSlotStepMachine):
         )
 
     def _check_terminal_records(self) -> None:
-        for execution_id, record in self._records().items():
+        for execution_id, record in self._step_records().items():
             if self._is_terminal_record(record):
-                self._terminal.add(execution_id)
-            elif record is not None and execution_id in self._terminal:
+                self._terminal_ids.add(execution_id)
+            elif record is not None and execution_id in self._terminal_ids:
                 raise AssertionError(
                     f"I6: the record of {execution_id} was terminal and reads {record.get('state')!r}"
                 )
 
     def _check_execution_entries(self) -> None:
-        records = self._records()
-        for name, payload in self._entries().items():
+        records = self._step_records()
+        for name, payload in self.read_entries().items():
             fields = _fields(name)
             if payload is None or fields is None or payload.get("owner_kind") != "execution":
                 continue
@@ -620,7 +622,7 @@ class LaneStepMachine(JobSlotStepMachine):
                 reaper.store.reap(CLASS_MEMORY)
         left = [
             name
-            for name, payload in self._entries().items()
+            for name, payload in self.read_entries().items()
             if payload is not None
             and payload.get("owner_kind") == "execution"
             and not self._is_flow_claim(payload)
@@ -661,12 +663,12 @@ def build_machine(tmp_path: Path) -> Iterator[Callable[[], LaneStepMachine]]:
 
 
 def _run_lane_to_idle(machine: LaneStepMachine, lane: Lane) -> None:
-    machine._settled(lane.worker)
+    machine.settled(lane.worker)
     assert lane.idle, f"{lane.label} did not reach its first command: {lane.outcome!r}"
 
 
 def _execution_claims(machine: LaneStepMachine) -> list[dict[str, Any]]:
-    payloads = (payload for payload in machine._entries().values() if payload is not None)
+    payloads = (payload for payload in machine.read_entries().values() if payload is not None)
     return [payload for payload in payloads if payload.get("owner_kind") == "execution"]
 
 
@@ -776,7 +778,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
         machine.scheduler.grant(reaper)
     machine.scheduler.drain()
     record = execution_paths(lane.execution_id, booley_dir=machine.booley_real).record
-    final = machine._payload(record)
+    final = machine.read_payload(record)
     assert final is not None
     assert final["state"] == "terminal"
     assert final["terminal_cause"] == "orphan_recovered"
