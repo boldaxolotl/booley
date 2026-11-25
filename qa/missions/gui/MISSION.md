@@ -132,10 +132,10 @@ Try:
 - From a command terminal, write
   [`../picorv32/fixtures/metrics.toml`](../picorv32/fixtures/metrics.toml) into
   `.booley/metrics.toml` and commit it in the Booley Directory's repository.
-- In a T3 Code thread start a Developer Agent (Claude or Codex) and send "Create a new zbb
-  worktree and implement the design described in .booley/specs/zbb-design.md.
-  Then give me a Measured Commit." Approve a `metrics.toml` change when asked,
-  and note the worktree and session handle.
+- In a T3 Code thread start a Developer Agent (Claude or Codex) and send
+  "Create a new zbb worktree and implement the design described in
+  .booley/specs/zbb-design.md. Then give me a Measured Commit." Approve a
+  `metrics.toml` change when asked, and note the worktree and session handle.
 - While the child works, start two overlapping Flows from a second command
   terminal: `booley flow sim --target sim_core` and
   `booley flow synth --target synth_core`.
