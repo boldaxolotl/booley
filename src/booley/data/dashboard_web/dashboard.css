@@ -122,6 +122,10 @@ summary {
   margin: 0 auto;
 }
 
+.topbar[hidden] {
+  display: none;
+}
+
 .topbar {
   display: flex;
   justify-content: space-between;

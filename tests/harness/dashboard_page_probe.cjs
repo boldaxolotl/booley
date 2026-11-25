@@ -2,7 +2,8 @@
 // node dashboard_page_probe.cjs <page.js> <scenario.json>
 // Runs the page script (or the page's scripts joined) in a vm with stand-ins for the browser and prints what they did.
 // `scenario.steps` then drives the page: {click: id}, {change|input: id, target: {...}},
-// {key}, {poll: true} and {release: path} (answer a route answer marked `held`); `views[0]` is
+// {key}, {poll: true}, {focus: dest, at} (a field in focus) and {release: path} (answer a route
+// answer marked `held`); `views[0]` is
 // the page after loading and `views[i + 1]` after step `i`.
 const fs = require('fs');
 const vm = require('vm');
@@ -17,11 +18,20 @@ function element() {
     set(value) { el.html = value; el.writes += 1; },
   });
   el.addEventListener = (type, fn, capture) => el.listeners.push({ type, fn, capture });
+  el.querySelector = (selector) => {
+    const dest = /\[data-dest="([^"]*)"\]/.exec(selector)[1];
+    if (!el.html.includes(`data-dest="${dest}"`)) return null;
+    return {
+      focus: () => focused.push(`field:${dest}`),
+      setSelectionRange: (start, end) => selections.push([dest, start, end]),
+    };
+  };
   return el;
 }
 
 const elements = {};
 const focused = [];
+const selections = [];
 const clipboard = [];
 const hiddenIds = new Set(scenario.hidden || []);
 const documentListeners = [];
@@ -85,6 +95,7 @@ function fetchStandIn(url, options) {
 const context = {
   document: {
     getElementById: byId,
+    activeElement: null,
     addEventListener: (type, fn) => documentListeners.push({ type, fn }),
   },
   navigator: { clipboard: { writeText: (text) => { clipboard.push(text); return Promise.resolve(); } } },
@@ -111,7 +122,13 @@ function fire(listeners, type, event) {
 function view() {
   const seen = {};
   for (const [id, el] of Object.entries(elements)) {
-    seen[id] = { html: el.html, text: el.textContent, hidden: el.hidden, attributes: { ...el.attributes } };
+    seen[id] = {
+      html: el.html,
+      text: el.textContent,
+      hidden: el.hidden,
+      disabled: el.disabled,
+      attributes: { ...el.attributes },
+    };
   }
   return seen;
 }
@@ -120,6 +137,7 @@ async function step(one) {
   const [kind] = Object.keys(one);
   if (kind === 'poll') timers.shift()();
   else if (kind === 'release') (held[one.release] || []).forEach((release) => release());
+  else if (kind === 'focus') context.document.activeElement = { dataset: { dest: one.focus }, selectionStart: one.at };
   else if (kind === 'key') fire(documentListeners, 'keydown', { key: one.key });
   else fire(byId(one[kind]).listeners, kind, { type: kind, target: one.target });
   await settle();
@@ -152,6 +170,7 @@ async function step(one) {
     renders,
     views,
     focused,
+    selections,
     clipboard,
     writes: { live: elements.live.writes, results: elements.results.writes },
     storage: store,

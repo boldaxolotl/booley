@@ -587,7 +587,8 @@ def _probe(client, wt, tmp_path, calls, steps, *, responses=None, reject=None, h
                 **({"body": reply.json()} if is_json else {"text": reply.text}),
             }
         )
-        sent = {"reject": "refused"} if index == reject else {**answers[-1], "held": index in held}
+        sent = {"reject": "refused"} if index == reject else answers[-1]
+        sent = {**sent, "held": index in held}
         routes.setdefault(f"/api/run/{route}", []).append(sent)
     scenario = {
         "search": web_tests._search(wt),
@@ -658,12 +659,12 @@ def test_run_button_is_the_top_bar_primary_action_only_while_the_flag_is_on(
             reject=0 if case == "unanswered" else None,
         )
 
-    top_bar = r'<header class="topbar">.*?<button id="run-button" class="primary".*?</header>'
+    top_bar = r'<header id="topbar" class="topbar" hidden>.*?<button id="run-button" class="primary".*?</header>'
     assert re.search(top_bar + r"\s*<section id=\"run\".*?<main>", page, re.S)
     assert "<dialog" not in page
     assert re.search(r"button\.primary \{[^}]*var\(--primary\)", css)
     loaded, *clicked = probe["views"]
-    assert loaded["run-button"]["hidden"] is (case == "off")
+    assert loaded["run-button"]["hidden"] is loaded["topbar"]["hidden"] is (case == "off")
     if case != "off":
         (opened,) = clicked
         body = answers[-1]["body"]
@@ -708,7 +709,7 @@ def test_run_form_opens_in_place_survives_polls_and_closes_without_side_effects(
     assert not any(view["live"]["hidden"] for view in probe["views"])
     assert closed["run"]["hidden"] is True
     assert closed["run-button"]["attributes"]["aria-expanded"] == "false"
-    assert closed["run-fields"]["html"] == ""
+    assert closed["run-fields"]["html"] == closed["run-entry"]["html"] == ""
     assert probe["focused"][-2:] == ["run-button", "run-entry"]
     assert reopened["run-entry"]["html"].startswith('<option value="" selected>')
     assert reopened["run-fields"]["html"] == ""
@@ -735,12 +736,13 @@ def test_flow_form_offers_the_api_choices_and_quotes_the_command(world, feature_
         _edit("target", "sim_fifo", "select-one"),
         _edit("test", "stress+short", "checkbox", checked=True),
         _edit("extra", "--seed 3"),
+        {"release": "/api/run/command"},
         {"click": "run-copy"},
     ]
     with _client(world, feature_flags) as client:
-        probe, answers = _probe(client, world.wt, tmp_path, calls, steps)
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={8})
 
-    _loaded, _opened, chosen, targeted, ticking, seeding, _copied = probe["views"]
+    _loaded, _opened, chosen, targeted, ticking, waiting, seeding, _copied = probe["views"]
     fields = chosen["run-fields"]["html"]
     assert _option_values(fields, "target") == ["", *TARGETS_BY_FLOW["sim"]]
     assert (
@@ -753,6 +755,9 @@ def test_flow_form_offers_the_api_choices_and_quotes_the_command(world, feature_
     shown = [view["run-command"]["text"] for view in (chosen, targeted, ticking, seeding)]
     assert shown == [answers[i]["body"]["command"] for i in (4, 6, 7, 8)]
     assert shown[-1].endswith("booley flow sim --target sim_fifo --test stress+short --seed 3")
+    # Until the command for an edit arrives, Copy offers no command of the older inputs.
+    assert (ticking["run-copy"]["disabled"], waiting["run-copy"]["disabled"]) == (False, True)
+    assert seeding["run-copy"]["disabled"] is False
     assert probe["clipboard"] == [shown[-1]]
 
 
@@ -793,6 +798,7 @@ def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_er
         _choose("specialist:reviewer"),
         _edit("more", "", "checkbox", checked=True),
         _edit("scope", "fifo.v"),
+        {"focus": "scope", "at": 6},
         {"release": "/api/run/form"},
         _edit("focus", "bugs", "select-one"),
         _choose("specialist:coverage_analyst"),
@@ -800,7 +806,9 @@ def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_er
     with _client(world, feature_flags) as client:
         probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={4})
 
-    _loaded, _opened, chosen, opening, _typing, released, focused, analysing = probe["views"]
+    _loaded, _opened, chosen, opening, _typing, _focus, released, focused, analysing = probe[
+        "views"
+    ]
     for view in (chosen, opening):
         assert re.search(
             r'<select data-dest="focus"><option value="" selected disabled>',
@@ -813,6 +821,10 @@ def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_er
         f'data-dest="{dest}"' in released["run-fields"]["html"]
         for dest in ("max_turns", "timeout")
     )
+    # The rebuilt form puts the caret back where the user was typing, and has no Textual hint.
+    assert "field:scope" in probe["focused"]
+    assert probe["selections"][0] == ["scope", 6, 6]
+    assert "Enter shows" not in released["run-fields"]["html"]
     assert focused["run-error"]["hidden"] is True
     assert focused["run-command"]["text"].endswith(
         "booley specialist reviewer --category rtl --focus bugs --scope fifo.v"
@@ -822,3 +834,39 @@ def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_er
         f'<datalist id="run-records"><option value="{escape(record["path"])}"'
         in analysing["run-fields"]["html"]
     )
+
+
+def test_a_failed_read_for_an_older_target_is_not_shown_beside_the_newer_tests(
+    world, feature_flags, tmp_path
+):
+    write_picker_project(world.wt)
+    sim = _run("sim", values={}, extra="")
+    wide = {**sim, "values": {"target": "sim_wide"}}
+    fifo = {**sim, "values": {"target": "sim_fifo"}}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "sim"}, None),
+        ("targets", {"flow": "sim"}, None),
+        ("command", {}, sim),
+        ("tests", {"target": "sim_wide"}, None),
+        ("command", {}, wide),
+        ("tests", {"target": "sim_fifo"}, None),
+        ("command", {}, fifo),
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _edit("target", "sim_wide", "select-one"),
+        _edit("target", "sim_fifo", "select-one"),
+        {"release": "/api/run/tests"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps, reject=5, held={5})
+
+    *_before, newer, released = probe["views"]
+    assert (
+        re.findall(r'data-dest="test" value="([^"]*)"', newer["run-fields"]["html"])
+        == SIM_FIFO_RUNS
+    )
+    assert released["run-problem"]["hidden"] is True
+    assert released["run-fields"]["html"] == newer["run-fields"]["html"]

@@ -1,6 +1,7 @@
 (function () {
   'use strict';
 
+  var topbar = document.getElementById('topbar');
   var button = document.getElementById('run-button');
   var panel = document.getElementById('run');
   var entrySelect = document.getElementById('run-entry');
@@ -70,6 +71,7 @@
     return null;
   }).then(function (r) {
     if (!(r && r.status === 404 && r.body === null)) {
+      topbar.hidden = false;
       button.hidden = false;
     }
   });
@@ -120,6 +122,7 @@
   function closeForm() {
     reset();
     panel.hidden = true;
+    entrySelect.innerHTML = '';
     button.setAttribute('aria-expanded', 'false');
     button.focus();
   }
@@ -178,14 +181,25 @@
       control(field) + '</span><span class="muted">' + escapeHtml(hint) + '</span></' + tag + '>';
   }
 
+  // A rebuilt form keeps the focus and caret of the field being edited.
   function render() {
+    var active = document.activeElement;
+    var dest = active && active.dataset && active.dataset.dest;
+    var caret = active && active.selectionStart;
     var rows = form.fields.map(function (field) {
-      return rowHtml(field, field.hint);
+      return rowHtml(field, field.kind === 'more' ? '' : field.hint);
     });
     if (form.extra) {
       rows.push(rowHtml({ dest: 'extra', kind: 'text', label: 'Extra arguments' }, form.extra.hint));
     }
     fieldsEl.innerHTML = (form.note ? '<p class="muted">' + escapeHtml(form.note) + '</p>' : '') + rows.join('');
+    var again = dest && fieldsEl.querySelector('[data-dest="' + dest + '"]');
+    if (again) {
+      again.focus();
+      if (typeof caret === 'number') {
+        again.setSelectionRange(caret, caret);
+      }
+    }
   }
 
   // The command line or the form's error: one shows at a time.
@@ -198,6 +212,7 @@
   function postCommand() {
     var mine = gen;
     var seq = cmdSeq += 1;
+    copyButton.disabled = true;
     fetch(url('/api/run/command'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -270,7 +285,11 @@
         apply(body);
         render();
       }
-    }).catch(problemUnless(mine));
+    }).catch(function (err) {
+      if (seq === readSeq) {
+        problemUnless(mine)(err);
+      }
+    });
   }
 
   function loadTests() {
