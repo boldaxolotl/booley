@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import IO, Any, Literal, cast, overload
+from typing import IO, Any, AnyStr, Literal, cast, overload
 
 from booley.runtime.process_group import (
     capture_process_group,
@@ -274,9 +274,9 @@ def _spawn(
     return proc, feeder
 
 
-def _communicate_sliced(
-    proc: subprocess.Popen[bytes], timeout: float
-) -> tuple[bytes | None, bytes | None]:
+def communicate_sliced(
+    proc: subprocess.Popen[AnyStr], timeout: float
+) -> tuple[AnyStr | None, AnyStr | None]:
     """``proc.communicate(timeout=...)`` in short slices so an interrupt is prompt.
 
     Raises ``subprocess.TimeoutExpired`` once *timeout* seconds have passed.
@@ -348,7 +348,22 @@ class _DeadlineKiller:
         return self._expired
 
 
-def _close_unowned_pipes(proc: subprocess.Popen[bytes]) -> None:
+def drain_killed_tree(
+    proc: subprocess.Popen[AnyStr],
+) -> tuple[AnyStr | None, AnyStr | None]:
+    """Read what *proc*'s killed tree wrote, waiting at most ``_KILL_DRAIN_TIMEOUT_S``.
+
+    A descendant that escaped the kill and still holds a pipe forfeits the
+    output: ``(None, None)``, with the pipes no reader thread owns closed.
+    """
+    try:
+        return proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        _close_unowned_pipes(proc)
+        return None, None
+
+
+def _close_unowned_pipes(proc: subprocess.Popen[Any]) -> None:
     """Close *proc*'s output pipes after an abandoned or interrupted ``communicate``.
 
     On POSIX ``communicate`` reads on the calling thread, so closing is safe. On
@@ -384,17 +399,11 @@ def _run_bounded(
         try:
             if killer is not None:
                 killer.start()
-            out, err = _communicate_sliced(proc, timeout)
+            out, err = communicate_sliced(proc, timeout)
         except subprocess.TimeoutExpired:
             if killer is None or not killer.stop():
                 kill_process_tree(proc)
-            try:
-                out, err = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                # A descendant escaped the group and still holds a pipe: give up
-                # on its output.
-                out = err = None
-                _close_unowned_pipes(proc)
+            out, err = drain_killed_tree(proc)
             raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err) from None
         except BaseException:
             if killer is None or not killer.stop():
