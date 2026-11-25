@@ -38,12 +38,10 @@ def test_timing_output_separates_collection_and_execution(tmp_path: Path, monkey
     shard_plugin.pytest_sessionstart(session)
     shard_plugin.pytest_collection_finish(session)
     shard_plugin.pytest_runtest_logstart("test_example.py::test_case", ("", 1, ""))
-    shard_plugin.pytest_runtest_logreport(
-        SimpleNamespace(when="call", nodeid="test_example.py::test_case", duration=1.25)
-    )
-    shard_plugin.pytest_runtest_logreport(
-        SimpleNamespace(when="teardown", nodeid="test_example.py::test_case", duration=0.1)
-    )
+    for when, duration in (("setup", 0.5), ("call", 1.25), ("teardown", 0.1)):
+        shard_plugin.pytest_runtest_logreport(
+            SimpleNamespace(when=when, nodeid="test_example.py::test_case", duration=duration)
+        )
     shard_plugin.pytest_sessionfinish(session)
 
     payload = json.loads(output.read_text(encoding="utf-8"))
@@ -52,7 +50,11 @@ def test_timing_output_separates_collection_and_execution(tmp_path: Path, monkey
         "controller_seconds": 8.0,
         "execution_seconds": 4.0,
     }
+    # Shard balance stays call-only.
     assert payload["tests"] == {"test_example.py::test_case": 1.25}
+    assert payload["test_phases"] == {
+        "test_example.py::test_case": {"setup": 0.5, "call": 1.25, "teardown": 0.1}
+    }
 
 
 def test_controller_keeps_slowest_worker_collection_time(tmp_path: Path) -> None:
@@ -64,38 +66,13 @@ def test_controller_keeps_slowest_worker_collection_time(tmp_path: Path) -> None
     faster = SimpleNamespace(workeroutput={"ci_collection_seconds": 1.5})
 
     shard_plugin.pytest_testnodedown(slower, None)
+    # A worker that crashed before it wrote workeroutput reports no time and does not raise.
+    shard_plugin.pytest_testnodedown(SimpleNamespace(), RuntimeError("worker crashed"))
     shard_plugin.pytest_testnodedown(faster, None)
     shard_plugin.pytest_sessionfinish(SimpleNamespace(config=config))
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["phases"]["collection_seconds"] == 2.25
-
-
-def test_controller_tolerates_worker_crash_before_workeroutput(tmp_path: Path) -> None:
-    shard_plugin.pytest_configure(_Config(tmp_path / "unused.json"))
-
-    shard_plugin.pytest_testnodedown(SimpleNamespace(), RuntimeError("worker crashed"))
-
-    assert shard_plugin._COLLECTION_SECONDS == []
-
-
-def test_timing_output_records_each_reported_phase(tmp_path: Path) -> None:
-    output = tmp_path / "timings.json"
-    config = _Config(output)
-    session = SimpleNamespace(config=config)
-    nodeid = "test_example.py::test_case"
-
-    shard_plugin.pytest_configure(config)
-    for when, duration in (("setup", 0.5), ("call", 1.25), ("teardown", 0.1)):
-        shard_plugin.pytest_runtest_logreport(
-            SimpleNamespace(when=when, nodeid=nodeid, duration=duration)
-        )
-    shard_plugin.pytest_sessionfinish(session)
-
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["test_phases"] == {nodeid: {"setup": 0.5, "call": 1.25, "teardown": 0.1}}
-    # Shard balance stays call-only.
-    assert payload["tests"] == {nodeid: 1.25}
 
 
 _PHASE_MODULES = {
