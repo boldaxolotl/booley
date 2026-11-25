@@ -410,5 +410,41 @@ def test_doctor_audits_what_the_runtime_resolves(
         sorted(runtime.clis),
         dict(runtime.auth),
     )
+    assert audit.allowed[0] == runtime.default_cli
     if "codex" in audit.allowed:
         assert audit.policy("codex") == codex_policy
+
+
+def _project(tmp_path, agent):
+    from booley.harness import doctor
+
+    return doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, {}, "")
+
+
+def test_auto_narrowing_keeps_a_listed_codex_from_gatewaying_claude(tmp_path, monkeypatch):
+    from booley.config.agent_app import AgentAppChoice
+    from booley.harness import doctor
+
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+    pin_venue(monkeypatch, inside=True)
+    agent = {"clis": _BOTH, "auth": {"claude": "subscription", "codex": "gateway"}}
+    choice = AgentAppChoice("claude", None, "only Claude is logged in", ("claude",))
+
+    audit = doctor._agent_audit(_project(tmp_path, agent), choice)
+
+    assert audit.allowed == ("claude",)
+    assert audit.policy("claude") == "subscription"
+
+
+def test_auto_choice_does_not_undo_a_refused_agent_table(tmp_path, monkeypatch):
+    from booley.config.agent_app import AgentAppChoice
+    from booley.harness import doctor
+
+    monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
+    pin_venue(monkeypatch, inside=False)
+    agent = {"default": "claude", "clis": ["codex"], "auth": "api_key"}
+    choice = AgentAppChoice("claude", None, "both logged in", tuple(_BOTH))
+
+    audit = doctor._agent_audit(_project(tmp_path, agent), choice)
+
+    assert audit.policy("claude") == "subscription"

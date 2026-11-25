@@ -364,7 +364,7 @@ def parse_agent_section(
     Doctor) keep it so they can name the replacement.
 
     Environment-free, so every reader agrees on it; the checks that need the effective
-    CLI set (an environment hand-off can change it) live in :func:`settings_from_data`.
+    CLI set (an environment hand-off can change it) live in :func:`resolve_agent_clis`.
     """
     raw_clis, clis = agent.get("clis"), None
     if raw_clis is not None:

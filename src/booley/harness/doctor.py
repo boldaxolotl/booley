@@ -3400,10 +3400,10 @@ class _AgentAudit:
     fallback: str  # the policy of a CLI the resolver gave none
 
     def policy(self, cli: str) -> str:
-        """*cli*'s policy; the hand-off audits a sole Claude as gateway (it routes Codex only)."""
+        """*cli*'s policy; the hand-off audits a sole listed Claude as gateway (it routes Codex only)."""
         from booley.config.agent import RETIRED_AUTH, gateway_handoff_active
 
-        if gateway_handoff_active() and self.allowed == (cli,):
+        if gateway_handoff_active() and self.listed == (cli,):
             return GATEWAY_AUTH
         policy = self.policies.get(cli, self.fallback)
         return self.fallback if policy == RETIRED_AUTH else policy
@@ -3420,8 +3420,7 @@ def _resolved_agent(
 
     if project is None:
         return None
-    section = project.booley_toml.get("agent")
-    agent: dict[str, Any] = dict(section) if isinstance(section, dict) else {}
+    agent: dict[str, Any] = as_dict(project.booley_toml.get("agent"), default={}) or {}
     if clis:
         agent["clis"] = list(clis)
     try:
@@ -3455,7 +3454,7 @@ def _agent_audit(project: ProjectAudit | None, auto_choice: AgentAppChoice | Non
     allowed = listed
     if auto_choice is not None:  # the auto set can name a CLI that [agent] clis does not list
         allowed = (default_cli, *(cli for cli in auto_choice.clis if cli != default_cli))
-        widened = _resolved_agent(project, allowed)
+        widened = _resolved_agent(project, allowed) if resolved else None
         policies = widened[2] if widened else policies
     fallback = DEFAULT_AUTH
     if project is None:
