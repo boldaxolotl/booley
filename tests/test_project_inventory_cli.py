@@ -10,6 +10,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -684,6 +685,35 @@ def test_main_wires_the_keeper_service_into_forget_and_prune(
         "released"
     ] == [orphan]
     assert own not in docker.images and orphan not in docker.images
+
+
+def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
+    tmp_path: Path,
+    docker: DockerImageCli,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI never stops an editor-owned Sandbox; once it stops, its container pins the keeper."""
+    project = _remember(tmp_path)
+    tag = keeper_image(project)
+    docker.images[tag] = _A
+    docker.containers[_CONTAINER] = _A
+    editor = SimpleNamespace(container_id=_CONTAINER, name="editor", running=True, vscode=True)
+    monkeypatch.setattr(
+        session_admission,
+        "running_project_sandboxes",
+        lambda *args, **kwargs: (editor,) if editor.running else (),
+    )
+    with pytest.raises(session_runtime.SessionError, match="VS Code owns"):
+        session_runtime.down(project)
+    assert docker.removals() == [] and _CONTAINER in docker.containers
+    editor.running = False
+    docker.stopped.add(_CONTAINER)
+
+    assert _cli("projects", "forget", str(project), "--json") == 0
+
+    assert json.loads(capsys.readouterr().out)["keeper"]["status"] == "retained-in-use"
+    assert tag in docker.images
 
 
 @pytest.mark.parametrize("failure", ["invalid-image", "invalid-container", "daemon"])
