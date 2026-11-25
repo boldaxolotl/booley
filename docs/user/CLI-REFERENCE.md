@@ -99,6 +99,7 @@ by itself when you attach to the container; see
 
 ```bash
 booley worktree new <name>               # a linked worktree for parallel work
+booley worktree prepare [PATH]           # give a worktree made with Git its own Booley Directory
 booley worktree list                     # each worktree's branch, changes, and use
 booley worktree rm <name> [--force]      # remove a worktree, keeping its evidence and branches
 booley worktree gc [--older-than AGE]    # remove idle worktrees (default: a week), where safe
