@@ -96,51 +96,33 @@ def test_manifest_verifier_proves_exact_union(tmp_path: Path) -> None:
     assert verify_manifests(paths, group="windows", shard_count=2) == 3
 
 
-def test_manifest_verifier_rejects_duplicate_selection(tmp_path: Path) -> None:
-    paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
-    payload = json.loads(paths[1].read_text(encoding="utf-8"))
-    payload["selected"] = ["test::a"]
-    paths[1].write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ShardError, match="more than once"):
-        verify_manifests(paths, group="windows", shard_count=2)
-
-
-def test_manifest_verifier_rejects_missing_shard(tmp_path: Path) -> None:
-    paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
-
-    with pytest.raises(ShardError, match=r"indexes 0\.\.1"):
-        verify_manifests(paths[:1], group="windows", shard_count=2)
+def _edit_manifest(path: Path, **fields: object) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload | fields), encoding="utf-8")
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
+    ("index", "fields", "message"),
     [
-        ("selected", "test::a", "selected must be a list"),
-        ("selected", ["test::a", 3], "selected must be a list"),
-        ("expected_count", True, "expected_count must be an integer"),
-        ("expected_sha256", "not-a-digest", "must be a lowercase SHA-256"),
+        (1, {"selected": ["test::a"]}, "more than once"),
+        (None, {}, r"indexes 0\.\.1"),
+        (0, {"selected": "test::a"}, "selected must be a list"),
+        (0, {"selected": ["test::a", 3]}, "selected must be a list"),
+        (0, {"expected_count": True}, "expected_count must be an integer"),
+        (0, {"expected_sha256": "not-a-digest"}, "must be a lowercase SHA-256"),
+        (1, {"expected_count": 1}, "expected test count"),
     ],
 )
-def test_manifest_verifier_rejects_malformed_fields(
-    tmp_path: Path, field: str, value: object, message: str
+def test_manifest_verifier_rejects(
+    tmp_path: Path, index: int | None, fields: dict[str, object], message: str
 ) -> None:
     paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
-    payload = json.loads(paths[0].read_text(encoding="utf-8"))
-    payload[field] = value
-    paths[0].write_text(json.dumps(payload), encoding="utf-8")
+    if index is None:
+        paths = paths[:1]  # the second shard's manifest is missing
+    else:
+        _edit_manifest(paths[index], **fields)
 
     with pytest.raises(ShardError, match=message):
-        verify_manifests(paths, group="windows", shard_count=2)
-
-
-def test_manifest_verifier_rejects_incorrect_expected_count(tmp_path: Path) -> None:
-    paths = _write_group(tmp_path, (("test::a",), ("test::b",)))
-    payload = json.loads(paths[1].read_text(encoding="utf-8"))
-    payload["expected_count"] = 1
-    paths[1].write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ShardError, match="expected test count"):
         verify_manifests(paths, group="windows", shard_count=2)
 
 
@@ -169,11 +151,6 @@ def _linux_groups() -> list[str]:
     """Group names the dispatched three-shard matrix emits."""
     include = build_test_matrix(10, linux_shard_count=3)["include"]
     return sorted({str(entry["group"]) for entry in include if entry["os"] == "ubuntu-latest"})
-
-
-def _edit_manifest(path: Path, **fields: object) -> None:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    path.write_text(json.dumps(payload | fields), encoding="utf-8")
 
 
 def _verify_download(download: Path, group: str) -> int:
@@ -208,36 +185,25 @@ def test_linux_group_assigns_tests_absent_from_the_linux_timing_model(tmp_path: 
         assert _verify_download(tmp_path / "download", group) == len(_LINUX_NODEIDS)
 
 
+@pytest.mark.parametrize(
+    ("shard_index", "field", "message"),
+    [
+        (1, "omitted", "union mismatch"),
+        (1, "duplicated", "more than once"),
+        (2, "inconsistent", "eligible node-ID set"),
+    ],
+)
 def test_linux_group_verifier_rejects_omitted_duplicated_and_inconsistent_ids(
-    tmp_path: Path,
+    tmp_path: Path, shard_index: int, field: str, message: str
 ) -> None:
     shards = assign_shards(_LINUX_NODEIDS, 3, TimingModel(1.0, {}))
+    edits: dict[str, dict[str, object]] = {
+        "omitted": {"selected": shards[1][:-1]},
+        "duplicated": {"selected": [*shards[1], shards[2][0]]},
+        "inconsistent": {"expected_sha256": nodeid_digest(["test::other", *_LINUX_NODEIDS])},
+    }
+    paths = _write_linux_download(tmp_path, dict.fromkeys(_linux_groups(), shards))
+    _edit_manifest(paths["linux-3.11"][shard_index], **edits[field])
 
-    def broken(name: str, group: str, shard_index: int, **fields: object) -> Path:
-        download = tmp_path / name
-        paths = _write_linux_download(download, dict.fromkeys(_linux_groups(), shards))
-        _edit_manifest(paths[group][shard_index], **fields)
-        return download
-
-    scenarios = (
-        ("omitted", "linux-3.11", 1, {"selected": shards[1][:-1]}, "union mismatch"),
-        (
-            "duplicated",
-            "linux-3.11",
-            1,
-            {"selected": [*shards[1], shards[2][0]]},
-            "more than once",
-        ),
-        (
-            "inconsistent",
-            "linux-3.11",
-            2,
-            {"expected_sha256": nodeid_digest(["test::other", *_LINUX_NODEIDS])},
-            "eligible node-ID set",
-        ),
-    )
-    for name, group, shard_index, fields, message in scenarios:
-        download = broken(name, group, shard_index, **fields)
-
-        with pytest.raises(ShardError, match=message):
-            _verify_download(download, group)
+    with pytest.raises(ShardError, match=message):
+        _verify_download(tmp_path, "linux-3.11")
