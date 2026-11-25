@@ -7,9 +7,7 @@ sharing violation, at most three times per thread), so another process can act
 between any two steps. Invariants are checked after every step; the failing
 schedule is printed step by step.
 
-The sequential machine in ``test_job_slot_state_machine.py`` checks exact queue
-order against a model. This one cannot predict an interleaved order and checks
-safety instead:
+The machine cannot predict an interleaved order, so it checks safety:
 
 - I1 at most ``_SLOTS`` holders.
 - I2 an entry that was seen and then absent never reappears.
@@ -157,7 +155,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
     def _wind_down(self) -> None:
         """Run every thread to its end, then judge the settled state."""
         self.scheduler.drain()
-        self._settle()
+        self._settle_waiters()
 
     def _recover(self, caller: Actor, identity: ProcessIdentity | None) -> bool:
         """Recovering an expired holder signals its owner: the owner process ends."""
@@ -350,17 +348,17 @@ class JobSlotStepMachine(RuleBasedStateMachine):
 
     # ----------------------------------------------------------- invariants
 
-    def _entries(self) -> dict[str, dict[str, Any] | None]:
+    def read_entries(self) -> dict[str, dict[str, Any] | None]:
         """Entry file name -> payload (None when unreadable), read around the scheduler."""
         entries: dict[str, dict[str, Any] | None] = {}
         listed = sorted(self.memory_dir.iterdir()) if self.memory_dir.is_dir() else []
         for path in listed:
             if _fields(path.name) is not None:
-                entries[path.name] = self._payload(path)
+                entries[path.name] = self.read_payload(path)
         return entries
 
     @staticmethod
-    def _payload(path: Path) -> dict[str, Any] | None:
+    def read_payload(path: Path) -> dict[str, Any] | None:
         try:
             payload = json.loads(read_file_bytes(path, sleep=_no_sleep).decode("utf-8"))
         except (FileNotFoundError, ValueError):
@@ -368,11 +366,11 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         return payload if isinstance(payload, dict) else None
 
     def _check_one_holder_per_slot(self) -> None:
-        holders = [name for name in self._entries() if name.startswith("h-")]
+        holders = [name for name in self.read_entries() if name.startswith("h-")]
         assert len(holders) <= _SLOTS, f"I1: {len(holders)} holders for {_SLOTS} slots: {holders}"
 
     def _check_no_entry_returns(self) -> None:
-        present = {fields[2] for name in self._entries() if (fields := _fields(name))}
+        present = {fields[2] for name in self.read_entries() if (fields := _fields(name))}
         self._gone |= self._seen - present
         assert not self._gone & present, f"I2: entries came back: {sorted(self._gone & present)}"
         self._seen |= present
@@ -383,7 +381,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
             assert len(live) <= 1, f"I3: gate {gate} is held by {live}"
 
     def _check_entry_owners(self) -> None:
-        for name, payload in self._entries().items():
+        for name, payload in self.read_entries().items():
             fields = _fields(name)
             if payload is None or fields is None or payload.get("owner_kind") == "execution":
                 continue  # an execution-owned entry is judged by its execution, not a token
@@ -429,6 +427,9 @@ class JobSlotStepMachine(RuleBasedStateMachine):
                 continue
             gate = f".{token.lease_id}.lease.lock"
             lost = token.lease_health.lost.is_set()
+            # Private: I5 asks whether the store's own rule had expired the lease. No public
+            # call answers that without renewing, and recomputing it from the entry's stamp
+            # here would copy the rule.
             assert not (
                 lost and gate not in worker.acquired and not actor.store._lease_expired(token)
             ), (
@@ -439,7 +440,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
 
     # --------------------------------------------------------------- settle
 
-    def _settle(self) -> None:
+    def _settle_waiters(self) -> None:
         """Two rounds of every live waiter refreshing in rank order, then S."""
         for _round in range(2):
             waiting = [
@@ -455,7 +456,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         self._check_no_waiter_stuck()
 
     def _check_no_waiter_stuck(self) -> None:
-        entries = self._entries()
+        entries = self.read_entries()
         stuck = [
             name
             for name, payload in entries.items()
@@ -538,6 +539,18 @@ def test_actors_interleave_between_filesystem_steps(
     names = _entry_names(machine)
     assert len(names) == 2
     assert all("-s0000000001-" in name for name in names)
+    late = machine.actors[2]
+    machine.scheduler.finish(
+        machine.start_operation(late, "submit", job_slots.ROLE_INTERACTIVE, 0)
+    )
+    (waiter,) = late.tokens
+    # The next claim takes the sequence after the highest one present.
+    assert waiter.path.name.startswith("w-")
+    assert "-s0000000002-" in waiter.path.name
+    assert late.store.renew(waiter) is False  # a waiter has no lease to renew
+    assert waiter.lease_health.lost.is_set()
+    assert late.store.cancel_waiter(late.pid) is True  # the last waiter, behind two others
+    assert _entry_names(machine) == names
 
 
 def test_injected_sharing_violation_is_retried_like_windows(
