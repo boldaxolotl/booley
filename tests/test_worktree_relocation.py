@@ -1,6 +1,7 @@
 """Directory migration moves only worktrees whose submodules can move with them."""
 
 import argparse
+import os
 
 import pytest
 
@@ -8,8 +9,16 @@ from booley.harness.init_cmd import run_init
 from tests.fake_docker_executable import install_fake_docker
 from tests.git_support import git
 
+_WINDOWS_DOCKER = pytest.mark.skipif(
+    os.name == "nt",
+    reason="the fake docker is docker.cmd, which a bare `docker` spawn cannot find on Windows: "
+    "the runner's own docker.exe, with no daemon, answers the Sandbox inventory instead",
+)
 
-@pytest.mark.parametrize("layout", ["native", "standalone", "broken"])
+
+@pytest.mark.parametrize(
+    "layout", ["native", pytest.param("standalone", marks=_WINDOWS_DOCKER), "broken"]
+)
 def test_init_check_moves_only_worktrees_with_standalone_submodules(
     tmp_path, monkeypatch, capsys, layout
 ):
