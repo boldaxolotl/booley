@@ -72,6 +72,9 @@ jobs:
       - name: Resolve compatible stable runtime base
         id: published
         if: steps.decide.outputs.publish != 'true'
+        # A dispatch builds a candidate base when this second lookup fails; a
+        # release-tag push never does, so its mismatch or registry error stops it.
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         env:
           BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
@@ -82,7 +85,7 @@ jobs:
 
       - name: Compute candidate stable-base metadata
         id: candidate-metadata
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         run: |
           {
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -94,7 +97,7 @@ jobs:
       # pushed only under a candidate-scoped tag and without a cache write.
       - name: Build and push candidate stable runtime base
         id: candidate-build
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -117,7 +120,7 @@ jobs:
 
       - name: Verify candidate stable runtime base
         id: candidate-verify
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         shell: bash
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.candidate-build.outputs.digest }}

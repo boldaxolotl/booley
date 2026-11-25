@@ -500,3 +500,16 @@ def test_stable_base_selection(tmp_path: Path) -> None:
     status, lines, log = _run_selection(tmp_path / "release", release, "label mismatch", env)
     assert status != 0, log
     assert lines == []
+
+
+def test_release_tag_never_substitutes_a_candidate_base() -> None:
+    """Only a dispatch may fall back to a candidate base after a failed second lookup (#4420)."""
+    workflow = yaml.safe_load((_WORKFLOWS / "docker-publish.yml").read_text(encoding="utf-8"))
+    steps = {s["id"]: s for s in workflow["jobs"]["runtime-base"]["steps"] if "id" in s}
+
+    assert steps["decide"]["if"] == "github.event_name == 'workflow_dispatch'"
+    assert steps["published"]["continue-on-error"] == (
+        "${{ github.event_name == 'workflow_dispatch' }}"
+    )
+    for name in ("candidate-metadata", "candidate-build", "candidate-verify"):
+        assert "steps.published.outcome == 'failure'" in steps[name]["if"]
