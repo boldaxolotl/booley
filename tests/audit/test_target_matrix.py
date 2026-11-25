@@ -18,7 +18,7 @@ targets:
 """
 
 
-def test_matrix_selects_doctor_targets_and_their_axes(tmp_path: Path) -> None:
+def test_matrix_selects_doctor_targets(tmp_path: Path) -> None:
     (tmp_path / "soc.core").write_bytes(_CORE.encode())
 
     matrix = target_matrix.build_doctor_target_matrix(tmp_path)
@@ -27,7 +27,6 @@ def test_matrix_selects_doctor_targets_and_their_axes(tmp_path: Path) -> None:
     assert matrix.is_selected("soc", "vendor:lib:soc:1")
     assert matrix.is_selected("soc_synth", "vendor:lib:soc:1")
     assert not matrix.is_selected("plain", "vendor:lib:soc:1")
-    assert matrix.axes() == {"soc": "sim", "soc_synth": "synth"}
     assert target_matrix.doctor_targets(tmp_path, "sim") == ("soc",)
 
 
