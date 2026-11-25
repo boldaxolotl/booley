@@ -14,7 +14,7 @@ _TIMEOUT_S = 30
 
 
 class WorktreeRelocationError(RuntimeError):
-    """A linked worktree cannot be safely relocated or recovered."""
+    """A linked worktree fails a native-submodule check for the Booley Directory migration."""
 
 
 def _validate_source(source: Path) -> None:

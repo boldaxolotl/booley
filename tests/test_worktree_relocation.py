@@ -5,11 +5,17 @@ import argparse
 import pytest
 
 from booley.harness.init_cmd import run_init
+from tests.fake_docker_executable import install_fake_docker
 from tests.git_support import git
 
 
 @pytest.mark.parametrize("layout", ["native", "standalone", "broken"])
-def test_init_check_moves_only_worktrees_with_standalone_submodules(tmp_path, capsys, layout):
+def test_init_check_moves_only_worktrees_with_standalone_submodules(
+    tmp_path, monkeypatch, capsys, layout
+):
+    install_fake_docker(
+        tmp_path / "bin", monkeypatch, {}
+    )  # no live Sandboxes, whatever the host runs
     dependency, root = tmp_path / "dependency", tmp_path / "root"
     for repository in (dependency, root):
         repository.mkdir()
