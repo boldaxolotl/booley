@@ -136,6 +136,7 @@ class _ContainerSpec:
     image: str
     role: str
     run_args: tuple[str, ...]
+    fingerprint: str
     required_network: str | None = None
 
 
@@ -162,14 +163,21 @@ class _DockerCli:
             raise SidecarError(f"Docker command failed: {exc}") from exc
 
 
-def policy_fingerprint(policy: SandboxHostPolicy) -> str:
-    """Return the canonical identity stamped on both singleton containers."""
-    document = {
+def policy_fingerprint(policy: SandboxHostPolicy, docker_socket: str = legacy.DOCKER_SOCK) -> str:
+    """Return the canonical identity stamped on a singleton container.
+
+    ``docker_socket`` is the host socket the reaper mounts. Only a source other than the
+    default ``/var/run/docker.sock`` changes the identity, so an installed reaper on a
+    default-socket host stays current.
+    """
+    document: dict[str, object] = {
         "egress_allowlist": list(policy.egress_allowlist),
         "idle_timeout_seconds": policy.idle_timeout_seconds,
         "max_sessions": policy.max_sessions,
         "schema": POLICY_SCHEMA,
     }
+    if docker_socket != legacy.DOCKER_SOCK:
+        document["docker_socket"] = docker_socket
     encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -219,11 +227,8 @@ def inspect_sidecars(
             for resource in ("proxy", "reaper")
         )
     else:
-        fingerprint = policy_fingerprint(policy)
-        findings.extend(
-            _inspect_bootstrap_container(spec, fingerprint, docker)
-            for spec in _container_specs(policy, fingerprint)
-        )
+        findings.append(_inspect_bootstrap_container(_proxy_spec(policy), docker))
+        findings.append(_reaper_finding(policy, Intent.CHECK, docker, inspect=True))
     return SidecarResult(tuple(findings))
 
 
@@ -256,9 +261,7 @@ def _reconcile_unproxied(
     if findings[-1].state is SidecarState.ERROR:
         return SidecarResult(tuple(findings))
     findings.extend(_retire_egress(intent, docker, inspect=False))
-    fingerprint = policy_fingerprint(policy)
-    reaper_spec = _container_specs(policy, fingerprint)[1]
-    findings.append(_reconcile_container(reaper_spec, fingerprint, intent, docker))
+    findings.append(_reaper_finding(policy, intent, docker, inspect=False))
     return SidecarResult(tuple(findings))
 
 
@@ -272,9 +275,7 @@ def _inspect_unproxied(
     if findings[0].resource != "sidecar-images":
         findings.insert(0, _proxy_image_not_required())
     findings.extend(_retire_egress(Intent.CHECK, docker, inspect=True))
-    fingerprint = policy_fingerprint(policy)
-    reaper_spec = _container_specs(policy, fingerprint)[1]
-    findings.append(_inspect_bootstrap_container(reaper_spec, fingerprint, docker))
+    findings.append(_reaper_finding(policy, Intent.CHECK, docker, inspect=True))
     return SidecarResult(tuple(findings))
 
 
@@ -390,39 +391,128 @@ def _remove_unused(args: list[str], name: str, docker: _DockerPort) -> None:
         raise SidecarError(f"failed to remove unused {name}: {_failure_detail(result)}")
 
 
-def _container_specs(
-    policy: SandboxHostPolicy,
-    fingerprint: str,
-) -> tuple[_ContainerSpec, ...]:
-    return (
-        _ContainerSpec(
-            "proxy",
-            legacy.PROXY_CONTAINER,
-            legacy.PROXY_IMAGE,
-            "egress-proxy",
-            tuple(_proxy_run_args(policy, fingerprint)),
-            legacy.EGRESS_NETWORK,
-        ),
-        _ContainerSpec(
-            "reaper",
-            legacy.REAPER_CONTAINER,
-            legacy.REAPER_IMAGE,
-            "reaper",
-            tuple(_reaper_run_args(policy, fingerprint)),
-        ),
+def _proxy_spec(policy: SandboxHostPolicy) -> _ContainerSpec:
+    fingerprint = policy_fingerprint(policy)
+    return _ContainerSpec(
+        "proxy",
+        legacy.PROXY_CONTAINER,
+        legacy.PROXY_IMAGE,
+        "egress-proxy",
+        tuple(_proxy_run_args(policy, fingerprint)),
+        fingerprint,
+        legacy.EGRESS_NETWORK,
     )
+
+
+def _reaper_spec(policy: SandboxHostPolicy, docker: _DockerPort) -> _ContainerSpec:
+    source = _reaper_socket_source(docker)
+    fingerprint = policy_fingerprint(policy, docker_socket=source)
+    return _ContainerSpec(
+        "reaper",
+        legacy.REAPER_CONTAINER,
+        legacy.REAPER_IMAGE,
+        "reaper",
+        tuple(_reaper_run_args(policy, fingerprint, source)),
+        fingerprint,
+    )
+
+
+def _docker_text(docker: _DockerPort, args: list[str], description: str) -> str:
+    """Run one read-only Docker query and return its stripped output."""
+    result = docker.run(args, timeout=15)
+    if result.returncode:
+        raise SidecarError(f"cannot read {description}: {_failure_detail(result)}")
+    return result.stdout.strip()
+
+
+def _reaper_socket_source(docker: _DockerPort) -> str:
+    """Return the host path the reaper mounts as the Docker socket of Booley's daemon."""
+    endpoint = _docker_text(
+        docker,
+        ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        "the active Docker endpoint",
+    )
+    version = _docker_text(
+        docker,
+        ["version", "--format", "{{.Client.Os}}\t{{.Server.Platform.Name}}"],
+        "the Docker engine",
+    )
+    client_os, _, engine = version.partition("\t")
+    scheme, _, path = endpoint.partition("://")
+    if engine.startswith("Docker Desktop"):
+        return legacy.DOCKER_SOCK
+    if scheme == "unix" and path and client_os == "linux":
+        return path
+    if scheme in {"unix", "npipe"} and client_os != "linux":
+        # Every local engine on macOS and Windows runs in a VM that exposes the default socket.
+        return legacy.DOCKER_SOCK
+    raise SidecarError(
+        f"cannot mount the Docker socket of {endpoint} into {legacy.REAPER_CONTAINER}: "
+        "the reaper needs a local unix:// socket of the daemon Booley uses; select a local "
+        "Docker endpoint with DOCKER_HOST, DOCKER_CONTEXT or `docker context use`, "
+        "then retry `booley bootstrap`"
+    )
+
+
+def _verify_reaper_daemon(docker: _DockerPort) -> None:
+    """Fail unless the reaper reaches the same Docker daemon as Booley's CLI."""
+    expected = _docker_text(docker, ["info", "--format", "{{.ID}}"], "the Docker daemon ID")
+    result = docker.run(
+        [
+            "exec",
+            legacy.REAPER_CONTAINER,
+            "docker",
+            "--host",
+            f"unix://{legacy.DOCKER_SOCK}",
+            "info",
+            "--format",
+            "{{.ID}}",
+        ],
+        timeout=15,
+    )
+    seen = result.stdout.strip()
+    if not result.returncode and seen == expected:
+        return
+    reached = (
+        f"another Docker daemon ({seen})"
+        if not result.returncode
+        else (f"no Docker daemon ({_failure_detail(result)})")
+    )
+    raise SidecarError(
+        f"{legacy.REAPER_CONTAINER} reaches {reached}, not the daemon Booley uses "
+        f"({expected}); make the active Docker endpoint a local unix:// socket of the "
+        "daemon Booley uses, then retry `booley bootstrap`"
+    )
+
+
+def _reaper_finding(
+    policy: SandboxHostPolicy, intent: Intent, docker: _DockerPort, *, inspect: bool
+) -> SidecarFinding:
+    """Inspect or converge the reaper, then prove it reaches Booley's Docker daemon."""
+    try:
+        spec = _reaper_spec(policy, docker)
+        if inspect:
+            return _inspect_bootstrap_container(spec, docker)
+        finding = _reconcile_container(spec, intent, docker)
+        if intent is not Intent.CHECK and finding.state in {
+            SidecarState.CURRENT,
+            SidecarState.CHANGED,
+        }:
+            _verify_reaper_daemon(docker)
+        return finding
+    except SidecarError as exc:
+        return SidecarFinding("reaper", SidecarState.ERROR, str(exc))
 
 
 def _inspect_bootstrap_container(
     spec: _ContainerSpec,
-    fingerprint: str,
     docker: _DockerPort,
 ) -> SidecarFinding:
     try:
         state = _inspect_container(spec.name, docker)
         _verify_container_ownership(spec.name, spec.role, state)
         image = _inspect_image(spec.image, docker)
-        current = image is not None and _container_matches(state, image[0], fingerprint)
+        current = image is not None and _container_matches(state, image[0], spec.fingerprint)
         if state.exists and not current:
             _require_idle_sessions(spec.name, docker)
         if image is None:
@@ -437,7 +527,7 @@ def _inspect_bootstrap_container(
         return SidecarFinding(
             spec.resource,
             SidecarState.PENDING,
-            _container_pending_detail(spec, state, image[0], fingerprint),
+            _container_pending_detail(spec, state, image[0]),
         )
     except SidecarError as exc:
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
@@ -484,23 +574,10 @@ def _reconcile_containers(
     docker: _DockerPort,
 ) -> tuple[SidecarFinding, ...]:
     """Reconcile the proxy/reaper container suffix after images and network."""
-    fingerprint = policy_fingerprint(policy)
-    proxy_spec, reaper_spec = _container_specs(policy, fingerprint)
-    proxy = _reconcile_container(
-        proxy_spec,
-        fingerprint,
-        intent,
-        docker,
-    )
+    proxy = _reconcile_container(_proxy_spec(policy), intent, docker)
     if proxy.state is SidecarState.ERROR:
         return (proxy,)
-    reaper = _reconcile_container(
-        reaper_spec,
-        fingerprint,
-        intent,
-        docker,
-    )
-    return proxy, reaper
+    return proxy, _reaper_finding(policy, intent, docker, inspect=False)
 
 
 def _reconcile_images(
@@ -823,7 +900,6 @@ def _network_container_names(containers: dict[Any, Any]) -> tuple[str, ...]:
 
 def _reconcile_container(
     spec: _ContainerSpec,
-    fingerprint: str,
     intent: Intent,
     docker: _DockerPort,
 ) -> SidecarFinding:
@@ -833,7 +909,7 @@ def _reconcile_container(
         if image_state is None:
             raise SidecarError(f"cannot reconcile {spec.name}: image {spec.image} is missing")
         _verify_container_ownership(spec.name, spec.role, state)
-        current = _container_matches(state, image_state[0], fingerprint)
+        current = _container_matches(state, image_state[0], spec.fingerprint)
         network_missing = (
             spec.required_network is not None and spec.required_network not in state.networks
         )
@@ -843,7 +919,7 @@ def _reconcile_container(
             return SidecarFinding(
                 spec.resource,
                 SidecarState.PENDING,
-                _container_pending_detail(spec, state, image_state[0], fingerprint),
+                _container_pending_detail(spec, state, image_state[0]),
             )
         _apply_container(spec.name, state, current, list(spec.run_args), docker)
         _ensure_container_network(spec.name, spec.required_network, docker)
@@ -877,12 +953,11 @@ def _container_pending_detail(
     spec: _ContainerSpec,
     state: _ContainerState,
     image_identity: str,
-    fingerprint: str,
 ) -> str:
     expected = {
         "exists": True,
         "image_identity": image_identity,
-        "source_fingerprint": fingerprint,
+        "source_fingerprint": spec.fingerprint,
         "running": True,
         "required_network_present": True,
     }
@@ -1106,11 +1181,11 @@ def _proxy_run_args(policy: SandboxHostPolicy, fingerprint: str) -> list[str]:
     return args
 
 
-def _reaper_run_args(policy: SandboxHostPolicy, fingerprint: str) -> list[str]:
+def _reaper_run_args(policy: SandboxHostPolicy, fingerprint: str, source: str) -> list[str]:
     args = _base_run_args(legacy.REAPER_CONTAINER, "reaper", fingerprint)
     args += [
         "-v",
-        f"{legacy.DOCKER_SOCK}:{legacy.DOCKER_SOCK}",
+        f"{source}:{legacy.DOCKER_SOCK}",
         "-e",
         f"BOOLEY_IDLE_TIMEOUT_SECONDS={policy.idle_timeout_seconds}",
         legacy.REAPER_IMAGE,

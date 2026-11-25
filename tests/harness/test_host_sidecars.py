@@ -72,6 +72,8 @@ def _damage(docker: EgressDocker, kind: str) -> None:
         docker.containers[_PROXY]["networks"] = set()
     elif kind == "stale-reaper":
         docker.containers[_REAPER]["labels"][sidecars.LABEL_POLICY_FINGERPRINT] = "old"  # type: ignore[index]
+    elif kind == "moved-socket":
+        docker.endpoint = "unix:///run/user/1000/docker.sock"
     elif kind == "stale-network":
         docker.stale_network = True
     elif kind == "missing-network":
@@ -169,6 +171,7 @@ def test_image_recipes_are_fingerprinted_in_either_layout(
         ("old-booley-image", "reaper-image", [f"{booley.__version__} -> 0.0.0"]),
         ("unstamped-container", "reaper", ["stale", "source_fingerprint {policy} -> <none>"]),
         ("stale-network", "network", ["has stale routing policy"]),
+        ("moved-socket", "reaper", ["stale", "source_fingerprint"]),
     ],
 )
 def test_check_reports_drift_without_mutating(
@@ -201,6 +204,7 @@ def test_check_reports_drift_without_mutating(
         ("stopped-proxy", [f"start {_PROXY}"]),
         ("disconnected-proxy", ["network connect"]),
         ("stale-reaper", [f"rm -f {_REAPER}", f"run {_REAPER}"]),
+        ("moved-socket", [f"rm -f {_REAPER}", f"run {_REAPER}"]),
         (
             "stale-network",
             [
@@ -307,6 +311,91 @@ def test_active_sessions_block_stale_replacement(
     ) in detail
     assert "/projects/elsewhere" not in detail
     assert not any(call[0] == "rm" or call[:2] == ["network", "rm"] for call in docker.calls)
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "version", "source"),
+    [
+        pytest.param(
+            "unix:///run/user/1000/docker.sock",
+            "linux\tDocker Engine - Community",
+            "/run/user/1000/docker.sock",
+            id="rootless-docker-host",
+        ),
+        pytest.param(
+            "unix:///srv/docker/second.sock",
+            "linux\tDocker Engine - Community",
+            "/srv/docker/second.sock",
+            id="second-daemon-context",
+        ),
+        pytest.param(
+            "unix:///var/run/docker.sock",
+            "linux\tDocker Engine - Community",
+            "/var/run/docker.sock",
+            id="default-socket",
+        ),
+        pytest.param(
+            "npipe:////./pipe/dockerDesktopLinuxEngine",
+            "windows\tDocker Desktop 4.37.1 (178610)",
+            "/var/run/docker.sock",
+            id="desktop-windows-npipe",
+        ),
+        pytest.param(
+            "unix:///Users/dev/.docker/run/docker.sock",
+            "darwin\tDocker Desktop 4.37.1 (178610)",
+            "/var/run/docker.sock",
+            id="desktop-macos-user-socket",
+        ),
+        pytest.param(
+            "unix:///home/dev/.docker/desktop/docker.sock",
+            "linux\tDocker Desktop 4.37.1 (178610)",
+            "/var/run/docker.sock",
+            id="desktop-linux",
+        ),
+        pytest.param(
+            "unix:///Users/dev/.colima/default/docker.sock",
+            "darwin\t",
+            "/var/run/docker.sock",
+            id="colima-macos",
+        ),
+    ],
+)
+def test_reaper_mounts_the_socket_of_the_selected_docker_endpoint(
+    docker: EgressDocker, endpoint: str, version: str, source: str
+) -> None:
+    docker.endpoint = endpoint
+    docker.version = version
+
+    result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
+
+    assert result.ready
+    reaper = next(call for call in docker.calls if _step(call) == f"run {_REAPER}")
+    assert ["-v", f"{source}:/var/run/docker.sock"] == reaper[
+        reaper.index("-v") : reaper.index("-v") + 2
+    ]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "version"),
+    [
+        pytest.param("tcp://192.0.2.7:2375", "linux\tDocker Engine - Community", id="tcp-linux"),
+        pytest.param("ssh://dev@build-host", "linux\tDocker Engine - Community", id="ssh-linux"),
+        pytest.param("ssh://dev@build-host", "darwin\tDocker Engine - Community", id="ssh-macos"),
+    ],
+)
+def test_remote_docker_endpoint_refuses_the_reaper(
+    docker: EgressDocker, endpoint: str, version: str
+) -> None:
+    docker.endpoint = endpoint
+    docker.version = version
+
+    result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
+
+    assert not result.ready
+    row = _row(result, "reaper")
+    assert row.state is _ERROR
+    assert endpoint in row.detail
+    assert f"run {_REAPER}" not in [_step(call) for call in docker.mutations()]
 
 
 @dataclass(frozen=True)
@@ -490,6 +579,22 @@ _FAILURES = {
         "failed to remove stale",
         damage="stale-network",
         answers=(_answer("rm", "-f", _PROXY, stderr="denied"),),
+    ),
+    "endpoint-unreadable": _Failure(
+        "reaper",
+        "cannot read the active Docker endpoint",
+        answers=(_answer("context", "inspect", stderr="no context"),),
+    ),
+    "reaper-reaches-other-daemon": _Failure(
+        "reaper",
+        "daemon-b",
+        answers=(_answer("exec", _REAPER, returncode=0, stdout="daemon-b\n"),),
+        installed=False,
+    ),
+    "reaper-reaches-no-daemon": _Failure(
+        "reaper",
+        "Cannot connect",
+        answers=(_answer("exec", _REAPER, stderr="Cannot connect to the Docker daemon"),),
     ),
     "network-remove-fails": _Failure(
         "network",
