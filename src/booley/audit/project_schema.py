@@ -22,7 +22,6 @@ from booley.core.boundary import (
     as_str,
     is_str_list,
     require_bool,
-    require_dict,
 )
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
@@ -377,17 +376,18 @@ def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
                 subject="jobs.max_tickets",
             )
         )
-    worktree = as_dict(data.get("worktree"))
-    if worktree is not None and "chat" in worktree:
-        findings.append(
-            ConfigFinding(
-                ConfigFindingSeverity.WARN,
-                "booley.toml [worktree].chat was removed and is ignored",
-                "delete chat from [worktree] in booley.toml",
-                check_id="config.ignored-key",
-                subject="worktree.chat",
+    worktree = as_dict(data.get("worktree")) or {}
+    for key in ("chat", "gc_older_than"):
+        if key in worktree:
+            findings.append(
+                ConfigFinding(
+                    ConfigFindingSeverity.WARN,
+                    f"booley.toml [worktree].{key} was removed and is ignored",
+                    f"delete {key} from [worktree] in booley.toml",
+                    check_id="config.ignored-key",
+                    subject=f"worktree.{key}",
+                )
             )
-        )
     return ConfigTableAudit(tuple(findings))
 
 
@@ -411,26 +411,6 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
             "fix [eda] provisioning configuration",
         )
     return ConfigTableAudit()
-
-
-def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate ``[worktree]``: the ``gc_older_than`` age."""
-    from booley.config.worktree import parse_gc_older_than
-
-    try:
-        require_dict(data.get("worktree", {}), field="[worktree]")
-    except ValueError as exc:
-        return failure(f"booley.toml {exc}", "make [worktree] a table")
-    findings: list[ConfigFinding] = []
-    try:
-        parse_gc_older_than(data)
-    except ValueError as exc:
-        findings.append(
-            fail_finding(
-                f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
-            )
-        )
-    return ConfigTableAudit(tuple(findings))
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:

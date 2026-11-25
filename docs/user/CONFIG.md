@@ -3,9 +3,9 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard, worktree settings (cleanup of idle worktrees and Git submodules),
-and feedback redaction. Settings for one Flow, the Sandbox, or
-Stealth Mode live on their own pages; the table below says where.
+Dashboard, Git submodules and worktree hooks, and feedback redaction. Settings
+for one Flow, the Sandbox, or Stealth Mode live on their own pages; the table
+below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
 [setup](SETUP.md), and afterwards you ask the Developer Agent to change a
@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -325,29 +325,15 @@ Git folder).
 
 ## Worktrees
 
-### Worktree settings (`[worktree]`)
-
-```toml
-[worktree]
-gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
-```
-
-`booley worktree gc` removes worktrees whose last use is older than
-`gc_older_than`, keeping any that `booley worktree rm` would refuse (default
-`"7d"`). `gc_older_than` is read from the main checkout's
-`.booley/booley.toml`; a worktree's own copy is ignored.
-`booley worktree gc --older-than AGE` overrides it. See
-[Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
-
 ### Worktree setup hooks (`.booley/hooks/`)
 
 Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
-toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
-`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
-Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
-and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git. `booley measure` runs the same hook in its checkout of
-the commit; see [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
+toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree prepare`
+runs `post-setup` (`.sh`, `.py`, or no suffix) in the worktree, with
+`BOOLEY_WORKTREE` set to the worktree. The output is shown and logged, and a
+failure removes what the run created. Keep generated build outputs ignored by
+Git. `booley measure` runs the same hook in its checkout of the commit; see
+[Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 ### Git submodules (`[submodules]`)
 

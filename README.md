@@ -58,11 +58,12 @@ access limited to the LLM provider. You can leave it running unattended; it
 can't touch the rest of your machine. The same container gives everyone on the
 team identical tool versions.
 
-Run several agents at once. Booley creates and manages a separate git worktree
-and branch for each one, so they work independently and never overwrite each
-other. A built-in scheduler learns how much memory each simulation or synthesis
-run needs and starts as many together as your machine can hold, so small runs
-don't wait behind big ones and nothing runs out of memory.
+Run several agents at once. T3 Code gives each one a separate git worktree
+and branch, which Booley prepares, so they work independently and never
+overwrite each other. A built-in scheduler learns how much memory each
+simulation or synthesis run needs and starts as many together as your machine
+can hold, so small runs don't wait behind big ones and nothing runs out of
+memory.
 
 Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms,
 and a dashboard showing what every agent is doing.

@@ -312,12 +312,12 @@ class Launcher:
         return check(worktree, kind, name, argv)
 
     def uncommitted(self, worktree: Path) -> int:
-        """Uncommitted changes in *worktree*, counted as ``booley worktree list`` counts them.
+        """Uncommitted changes in *worktree*.
 
-        Raises ``WorktreeListError`` when Git fails and ``BooleyLayoutError`` for a retired layout.
+        Raises ``WorktreeGitError`` when Git fails and ``BooleyLayoutError`` for a retired layout.
         """
         from booley.core.booley_dir import own_booley_dir_repo_path
-        from booley.harness.worktree_list import count_uncommitted
+        from booley.harness.dashboard.git_worktrees import count_uncommitted
 
         return count_uncommitted(worktree, own_booley_dir_repo_path(worktree).as_posix())
 
@@ -352,14 +352,14 @@ def review_check(
 ) -> ReviewCheck:
     """The argument check, then (when it passes) the uncommitted count the review shows."""
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.harness.worktree_list import WorktreeListError
+    from booley.harness.dashboard.git_worktrees import WorktreeGitError
 
     result = launcher.check(worktree, kind, name, argv)
     if result.facts is None:
         return ReviewCheck(result.error or NO_FACTS)
     try:
         uncommitted: int | str = launcher.uncommitted(worktree)
-    except (WorktreeListError, BooleyLayoutError) as exc:
+    except (WorktreeGitError, BooleyLayoutError) as exc:
         uncommitted = str(exc)
     return ReviewCheck("", result.facts, uncommitted)
 

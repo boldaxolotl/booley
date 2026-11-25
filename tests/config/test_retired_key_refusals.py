@@ -573,6 +573,15 @@ CASES: list[Refusal] = [
         lambda _env: _audit(project_schema.audit_ignored_settings({"worktree": {"chat": "auto"}})),
     ),
     Refusal(
+        "ignored-worktree-gc-older-than",
+        (f"{_PROJECT_SCHEMA}::audit_ignored_settings",),
+        "[worktree].gc_older_than",
+        None,
+        lambda _env: _audit(
+            project_schema.audit_ignored_settings({"worktree": {"gc_older_than": "7d"}})
+        ),
+    ),
+    Refusal(
         "agent-primary",
         ("src/booley/audit/agent_schema.py::audit_agent_table",),
         "primary",
@@ -733,7 +742,6 @@ NOT_A_KEY: dict[str, str] = {
     "src/booley/harness/setup/scaffold.py::_cocotb_testbench": (
         "scaffold text about a renamed cocotb file, not configuration"
     ),
-    "src/booley/harness/worktree_rm.py::_move_evidence": "a failure report",
 }
 
 

@@ -2726,8 +2726,9 @@ def _register_worktree(worktree: Path, administration: Path, *, absolute: bool =
     reverse = (
         worktree / ".git" if absolute else Path(os.path.relpath(worktree / ".git", administration))
     )
-    (worktree / ".git").write_text(f"gitdir: {pointer}\n", encoding="utf-8")
-    (administration / "gitdir").write_text(f"{reverse}\n", encoding="utf-8")
+    # Git writes forward slashes on every platform and finds a worktree by the "/.git" suffix.
+    (worktree / ".git").write_bytes(f"gitdir: {pointer.as_posix()}\n".encode())
+    (administration / "gitdir").write_bytes(f"{reverse.as_posix()}\n".encode())
 
 
 class TestWorktreePortability:
@@ -3029,7 +3030,9 @@ class TestWorktreePortability:
             )
         elif hazard == "metadata":
             _register_worktree(
-                project.booley_dir / "worktrees" / "ticket", tmp_path / "admin", absolute=True
+                tmp_path / "t3" / "ticket",
+                tmp_path / ".git" / "worktrees" / "ticket",
+                absolute=True,
             )
         git_versions((2, 53, 0))
         findings = self._inspect(project, None, True)
@@ -3043,13 +3046,20 @@ class TestWorktreePortability:
         else:
             assert any("host Git capability is unknown" in item.message for item in findings)
 
+    def test_unlistable_registry_warns_with_git_error(self, tmp_path):
+        report = readiness.Findings()
+        readiness._inspect_live_worktrees(self._project(tmp_path), report)
+        assert any("cannot list worktrees" in item.message for item in report.report().findings)
+
     @pytest.mark.parametrize(
         "row",
         ["absolute", "relative", "unreadable", "worktree-config", "config-unreadable", "paired"],
     )
     def test_live_worktree_metadata(self, tmp_path, monkeypatch, row):
+        _git_init(tmp_path)
         project = self._project(tmp_path)
-        outer = project.booley_dir / "worktrees" / "ticket"
+        # Git's registry decides what is a worktree, wherever T3 Code put it.
+        outer = tmp_path / "t3" / "ticket"
         (project.booley_dir / "worktrees" / "not-a-worktree").mkdir(parents=True)
         administration = tmp_path / ".git" / "worktrees" / "ticket"
         _register_worktree(outer, administration, absolute=row == "absolute")

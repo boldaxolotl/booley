@@ -295,8 +295,8 @@ Sessions have short handles such as `S17`; Jobs carry their kind, as in
 Agents that share a checkout overwrite each other's edits. Start each parallel
 task as its own T3 Code thread, which works in its own worktree; its Booley
 tool calls run in that worktree. Read-only sessions, such as one that only
-explains code or runs reviews, can share the main checkout. To create a
-worktree yourself, see [Worktrees](WORKTREES.md).
+explains code or runs reviews, can share the main checkout. To prepare a
+worktree you made yourself, see [Worktrees](WORKTREES.md).
 
 ### What the Developer Agent is allowed to do
 

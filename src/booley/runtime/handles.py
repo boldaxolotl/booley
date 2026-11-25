@@ -16,7 +16,6 @@ from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.mount_history import MountHistoryError, former_spellings, translate_stored_path
 from booley.runtime.safe_storage import refuse_symlinks
-from booley.runtime.worktree_usage import session_number_taken
 
 logger = logging.getLogger(__name__)
 MAX_MAP_BYTES = 16 * 1024 * 1024
@@ -58,11 +57,9 @@ class HandleMap:
     next_number: int = 1
     # Optional Session labels, keyed like ``entries``.
     names: dict[str, str] = field(default_factory=dict)
-    # Session maps only: numbers a worktree or branch occupies are never allocated.
-    number_taken: Callable[[int], bool] | None = field(default=None, compare=False, repr=False)
 
     def stored(self) -> dict[str, object]:
-        """The persisted fields; the allocation predicate never reaches storage."""
+        """The persisted fields."""
         return {
             "entries": self.entries,
             "aliases": self.aliases,
@@ -104,8 +101,6 @@ class HandleMap:
                     target = self.aliases[key] = prior
                     break
             else:
-                while self.number_taken is not None and self.number_taken(self.next_number):
-                    self.next_number += 1
                 self.entries[key] = f"{prefix}{self.next_number}"
                 self.next_number += 1
         for old in predecessors:
@@ -222,9 +217,8 @@ class HandleStore:
 
     def load(self) -> HandleMap:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)
-        taken = None if self.jobs else session_number_taken(self.booley_dir)
         if not self.path.exists():
-            return HandleMap(number_taken=taken)
+            return HandleMap()
         with open_with_sharing_retry(lambda: self.path.open("rb"), self.path) as stream:
             raw = stream.read(MAX_MAP_BYTES + 1)
         if len(raw) > MAX_MAP_BYTES:
@@ -240,7 +234,7 @@ class HandleStore:
             (int(m[0]) for v in entries.values() if (m := re.search(r"[0-9]+$", v))), default=0
         )
         counter = max(1, require_int(data.get("next_number"), field="handle counter"), highest + 1)
-        return HandleMap(entries, aliases, counter, dict(names), taken)
+        return HandleMap(entries, aliases, counter, dict(names))
 
     def save(self, handles: HandleMap) -> None:
         refuse_symlinks(self.path, booley_dir=self.booley_dir)

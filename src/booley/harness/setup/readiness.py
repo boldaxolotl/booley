@@ -52,7 +52,7 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import run_captured_bounded
-from booley.runtime.worktree_paths import worktree_state_dir
+from booley.runtime.worktrees import list_worktrees
 from booley.targets.catalog import TargetCatalog
 
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
@@ -464,15 +464,16 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
 
 
 def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
-    # The registry is Common Booley State: a linked worktree reads main's, not its own.
-    registry = worktree_state_dir(
-        resolve_main_checkout_root(project.project_root), booley_dir=project.common_booley_dir
-    )
-    root = registry / "worktrees"
-    if not root.is_dir():
+    # Git's registry is shared by every checkout of the repository, so any of them lists
+    # the linked worktrees: T3 Code's anywhere on disk and old ones under .booley/worktrees/.
+    main = resolve_main_checkout_root(project.project_root)
+    try:
+        entries = list_worktrees(main)
+    except (subprocess.TimeoutExpired, OSError):
         return ()
     worktrees: list[Path] = []
-    for outer in sorted(root.iterdir()):
+    for entry in entries[1:]:
+        outer = entry.path
         if not (outer / ".git").is_file():
             continue
         worktrees.append(outer)
@@ -486,7 +487,18 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
 
 
 def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
-    for worktree in _live_worktree_paths(project):
+    try:
+        worktrees = _live_worktree_paths(project)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        report.warn(
+            f"cannot list worktrees: {detail}",
+            "fix the Git error and rerun Doctor",
+            check_id="git.worktree-portability",
+            subject=str(project.project_root),
+        )
+        return
+    for worktree in worktrees:
         problems = _worktree_metadata_problems(worktree)
         if problems:
             report.warn(
@@ -594,7 +606,6 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     valid &= _add_config_audit(project_schema.audit_stealth_table(data), report)
     valid &= _add_config_audit(flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), report)
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
-    valid &= _add_config_audit(project_schema.audit_worktree_table(data), report)
     valid &= _add_config_audit(project_schema.audit_jobs_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)

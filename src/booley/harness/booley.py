@@ -2,7 +2,7 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    worktree  Create, prepare, list, remove, or clean up linked worktrees (paired or snapshot Project inputs)
+    worktree  Prepare a linked worktree made with Git or T3 Code
     cheat     Print quick-reference cheatsheet
     coverage  List uncovered coverage points of a finished coverage run
     doctor    Run environment health checks

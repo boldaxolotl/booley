@@ -882,7 +882,7 @@ def test_dry_run_records_evidence_for_projected_stealth_core(
 
 @pytest.mark.skipif(
     shutil.which("git") is None or os.name == "nt",
-    reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
+    reason="`booley worktree prepare` runs only in the Sandbox on POSIX with git",
 )
 @pytest.mark.parametrize("isolation", ["isolated", "projected"])
 def test_synth_plan_identity_matches_in_booley_worktree(
@@ -902,7 +902,7 @@ def test_synth_plan_identity_matches_in_booley_worktree(
     pytest.importorskip("edalize")
     from booley.harness import worktree_cmd
 
-    # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
+    # `booley worktree prepare` refuses a foreign ambient BOOLEY_DIR.
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "repo"
     _write_syn_demo_project(root)
@@ -922,8 +922,15 @@ def test_synth_plan_identity_matches_in_booley_worktree(
         ("commit", "-m", "init"),
     ):
         run_bounded_child(["git", *args], cwd=root, check=True)
-    # Created before any preparation, so the Snapshot holds no generated state.
-    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
+    worktree = tmp_path / "wt"
+    run_bounded_child(
+        ["git", "worktree", "add", "-q", "-b", "wt", str(worktree), "HEAD"], cwd=root, check=True
+    )
+    # Prepared before any run, so the Snapshot holds no generated state.
+    assert (
+        worktree_cmd.run(argparse.Namespace(worktree_command="prepare", path=worktree), worktree)
+        == 0
+    )
 
     def plans(checkout: Path):
         synth_cli.project = checkout
@@ -938,7 +945,7 @@ def test_synth_plan_identity_matches_in_booley_worktree(
         return dry, synth_cli.run_plan
 
     main_dry, main_real = plans(root)
-    wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
+    wt_dry, wt_real = plans(worktree)
 
     assert main_dry["semantic_plan_fingerprint"] == wt_dry["semantic_plan_fingerprint"]
     assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint

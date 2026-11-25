@@ -146,9 +146,8 @@ booley = [
     "data/**/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
-    # blocks at runtime: runtime/worktree_create.sh (`booley worktree new`) and pre-commit-ruff.sh (git hook).
+    # blocks at runtime: pre-commit-ruff.sh (git hook).
     "dev_support/*.sh",
-    "runtime/*.sh",
 ]
 
 [tool.setuptools.exclude-package-data]

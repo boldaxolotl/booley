@@ -530,6 +530,11 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
             "booley.toml [worktree].chat was removed and is ignored",
             "delete chat from [worktree] in booley.toml",
         ),
+        (
+            {"worktree": {"gc_older_than": "7d"}},
+            "booley.toml [worktree].gc_older_than was removed and is ignored",
+            "delete gc_older_than from [worktree] in booley.toml",
+        ),
     ],
 )
 def test_ignored_setting_warns_with_its_fix(data, message, fix):
@@ -538,10 +543,6 @@ def test_ignored_setting_warns_with_its_fix(data, message, fix):
     (finding,) = audit.findings
     assert finding.severity is config_common.ConfigFindingSeverity.WARN
     assert (finding.check_id, finding.message, finding.fix) == ("config.ignored-key", message, fix)
-
-
-def test_worktree_table_that_is_not_a_table_reports_once() -> None:
-    assert len(project_schema.audit_worktree_table({"worktree": []}).findings) == 1
 
 
 def test_chat_table_is_an_unknown_table() -> None:

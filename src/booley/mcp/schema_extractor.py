@@ -44,8 +44,8 @@ _WORK_DIR_PROPERTY: dict[str, Any] = {
     "description": (
         "Run the endpoint against this checkout instead of the session "
         "workspace. Must be the root of a linked git worktree of the "
-        "workspace repo — create one under .booley/worktrees/ "
-        "with `booley worktree new <name>`. Omit to use the current workspace."
+        "workspace repo, such as a T3 Code thread's worktree. "
+        "Omit to use the current workspace."
     ),
 }
 

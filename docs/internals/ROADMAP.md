@@ -257,8 +257,8 @@ Constraints: cost grows N-fold, so N is explicit and capped. Concurrent
 sessions share `[jobs]` limits, commercial license seats, and model-provider
 rate limits, so the scheduler must queue rather than fail. An optional early
 stop cancels the remaining sessions once one candidate meets every enforced
-metric. Losing candidates stay until the user removes them with `booley
-worktree rm` or `booley worktree gc`.
+metric. Losing candidates stay until the user deletes them in T3 Code or with
+`git worktree remove`.
 
 ## Notifications
 

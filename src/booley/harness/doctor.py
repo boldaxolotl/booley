@@ -1100,7 +1100,7 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
 def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> None:
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
-    ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
+    ``booley worktree prepare`` gives such a worktree a Paired Checkout. A copy
     made by hand looks healthy, but it records no paired revision, and measurements of
     its commits read the copy's live files instead of versioned ones.
     """
@@ -1123,8 +1123,8 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
         f"{versioned}; measurements will not use its committed revisions",
-        "save any work in this worktree, then recreate it with `booley worktree new <name>` "
-        f"from {primary}",
+        f"save any work in {local}, move it out of the worktree, then run "
+        f"`booley worktree prepare` in {project_root}",
     )
 
 
@@ -1707,7 +1707,7 @@ def _check_worktree_core_shadow_guard(
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
-    ``booley init`` and ``booley worktree new`` drop the marker that suppresses
+    ``booley init`` and ``booley worktree prepare`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """

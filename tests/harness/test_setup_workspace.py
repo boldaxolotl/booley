@@ -2,25 +2,19 @@
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 
 
 @pytest.fixture(autouse=True)
-def _select_worktree_state(tmp_path: Path, monkeypatch, request):
+def _select_worktree_state(tmp_path: Path, monkeypatch):
     from booley.core.booley_dir import reset_cache
 
     state = tmp_path / ".booley"
-    if "rejects_cwd_outside_git_root" in request.node.name:
-        return
     state.mkdir(exist_ok=True)
     monkeypatch.setenv("BOOLEY_DIR", str(state))
     reset_cache()
@@ -60,99 +54,25 @@ def _submodule_project(tmp_path: Path) -> tuple[Path, Path]:
     return project_root, project_data
 
 
-def _run_worktree_create(
-    project_root: Path,
-    name: str,
-    *,
-    branch_ref: str = "",
-    on_existing: str = "",
-) -> subprocess.CompletedProcess[str]:
-    from booley.runtime.paths import worktree_create_script
-    from booley.runtime.platform_paths import bash_bin
-
-    env = {k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"}
-    env["BOOLEY_PYTHON"] = sys.executable
-    payload = {"name": name, "cwd": str(project_root)}
-    if branch_ref:
-        payload["branch_ref"] = branch_ref
-    if on_existing:
-        payload["on_existing"] = on_existing
-    # Output goes to files, not pipes: if the script hangs, the timeout kill
-    # must not then wait for a descendant (git, python) that still holds a pipe
-    # (CPython's Windows post-kill ``communicate()`` has no time limit).
-    # Kept on subprocess.run: needs stdin data and writes output to files
-    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
-        completed = subprocess.run(
-            [bash_bin(), str(worktree_create_script())],
-            input=json.dumps(payload).encode("utf-8"),
-            stdout=out,
-            stderr=err,
-            check=False,
-            env=env,
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
-        out.seek(0)
-        err.seek(0)
-        stdout = out.read().decode("utf-8", errors="replace")
-        stderr = err.read().decode("utf-8", errors="replace")
-    return subprocess.CompletedProcess(completed.args, completed.returncode, stdout, stderr)
+def _add_worktree(project_root: Path, name: str) -> subprocess.CompletedProcess[str]:
+    """Add a plain Git worktree of *project_root* under its Booley Directory."""
+    worktree = project_root / ".booley" / "worktrees" / name
+    return _git(project_root, "worktree", "add", "-q", "-b", name, str(worktree), "HEAD")
 
 
 def _create_and_set_up(project_root: Path, name: str) -> subprocess.CompletedProcess[str]:
-    """Run the outer-worktree script, then Python's setup of that worktree."""
-    from booley.runtime.worktree_setup import set_up_linked_worktree
+    """Add a worktree, then apply the setup `booley worktree prepare` runs."""
+    from booley.runtime.worktree_setup import configure_worktree_git, copy_root_fusesoc_ignore
 
-    result = _run_worktree_create(project_root, name)
+    result = _add_worktree(project_root, name)
     if result.returncode == 0:
-        set_up_linked_worktree(
-            project_root, project_root / ".booley" / "worktrees" / name, paired=False
-        )
+        worktree = project_root / ".booley" / "worktrees" / name
+        configure_worktree_git(project_root, worktree, booley_dir=project_root / ".booley")
+        copy_root_fusesoc_ignore(project_root, worktree)
     return result
 
 
-class TestWorktreeCreateScript:
-    def test_rejects_missing_explicit_branch_without_removing_stale_path(
-        self, tmp_path: Path
-    ) -> None:
-        project_root, project_data = _submodule_project(tmp_path)
-        name = "missing-basis"
-        worktree = project_data / "worktrees" / name
-        worktree.mkdir(parents=True)
-        marker = worktree / "preserve.txt"
-        marker.write_text("preserve\n", encoding="utf-8")
-
-        result = _run_worktree_create(
-            project_root,
-            name,
-            branch_ref="refs/heads/booley-generation/0123456789abcdef/missing",
-        )
-
-        assert result.returncode != 0
-        assert "does not exist" in result.stderr
-        assert marker.read_text(encoding="utf-8") == "preserve\n"
-
-    def test_replace_policy_recreates_a_stale_destination(self, tmp_path: Path) -> None:
-        project_root, project_data = _submodule_project(tmp_path)
-        stale = project_data / "worktrees" / "stale-ticket"
-        stale.mkdir(parents=True)
-        (stale / "leftover.txt").write_text("stale\n", encoding="utf-8")
-
-        result = _run_worktree_create(project_root, "stale-ticket", on_existing="replace")
-
-        assert result.returncode == 0, result.stderr
-        assert "Stale worktree directory detected" in result.stderr
-        assert not (stale / "leftover.txt").exists()
-        assert (stale / ".git").is_file()
-
-    def test_unknown_existing_policy_is_rejected(self, tmp_path: Path) -> None:
-        project_root, project_data = _submodule_project(tmp_path)
-
-        result = _run_worktree_create(project_root, "bad-policy", on_existing="overwrite")
-
-        assert result.returncode != 0
-        assert "on_existing must be" in result.stderr
-        assert not (project_data / "worktrees" / "bad-policy").exists()
-
+class TestWorktreeSetup:
     def test_git_identity_comes_from_booley_toml(self, tmp_path: Path):
         project_root, project_data = _submodule_project(tmp_path)
         (project_data / "booley.toml").write_text(
@@ -203,64 +123,6 @@ class TestWorktreeCreateScript:
 
         with pytest.raises(WorktreeSetupError, match=r"\[agent.git\] name must be a string"):
             _create_and_set_up(project_root, "invalid-identity")
-
-    @pytest.mark.timeout(120)
-    def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
-        """Worktree slug must not escape the worktrees directory."""
-        from booley.runtime.paths import worktree_create_script
-        from booley.runtime.platform_paths import bash_bin
-
-        result = subprocess.run(
-            [bash_bin(), str(worktree_create_script())],
-            input=json.dumps({"name": "../escape", "cwd": str(tmp_path)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            # Windows shells may expose only the Store python aliases (F-7);
-            # pin the script to the suite's interpreter like the harness does.
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
-
-        assert result.returncode == 1
-        assert "single safe path component" in result.stderr
-        assert not (tmp_path / "escape").exists()
-
-    def test_rejects_cwd_outside_git_root_before_writing(self, tmp_path: Path):
-        """Hook JSON must not redirect state creation into an arbitrary directory."""
-        from booley.runtime.paths import worktree_create_script
-        from booley.runtime.platform_paths import bash_bin
-
-        result = subprocess.run(
-            [bash_bin(), str(worktree_create_script())],
-            input=json.dumps({"name": "safe-name", "cwd": str(tmp_path)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
-
-        assert result.returncode == 1
-        assert "must be the Git repository root" in result.stderr
-        assert not (tmp_path / ".booley").exists()
-
-    def test_leaves_gitlink_with_space_for_python_materialization(self, tmp_path: Path):
-        """The shell creates only the outer worktree; Python fills gitlinks later."""
-        project_root, project_data = _submodule_project(tmp_path)
-
-        result = _run_worktree_create(project_root, "security-audit")
-
-        assert result.returncode == 0, result.stderr
-        placeholder = project_data / "worktrees" / "security-audit" / "vendor" / "ip core"
-        assert placeholder.is_dir()
-        assert not any(placeholder.iterdir())
 
     @pytest.mark.timeout(120)
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
@@ -316,11 +178,12 @@ class TestWorktreeCreateScript:
         from booley.runtime import worktree_setup
 
         project_root, project_data = _submodule_project(tmp_path)
-        assert _run_worktree_create(project_root, "locked").returncode == 0
+        assert _add_worktree(project_root, "locked").returncode == 0
         worktree = project_data / "worktrees" / "locked"
         # The bound is the only way to observe the wait deterministically.
         monkeypatch.setattr(worktree_setup, "_PARENT_LOCK_TIMEOUT_S", 0.2)
         lock = project_data / "worktrees" / ".locks" / "_parent_git.lock"
+        lock.parent.mkdir(parents=True)
 
         with lock.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
             with pytest.raises(LockTimeoutError):
@@ -336,7 +199,7 @@ class TestWorktreeCreateScript:
         from booley.runtime.worktree_setup import WorktreeSetupError, configure_worktree_git
 
         project_root, project_data = _submodule_project(tmp_path)
-        assert _run_worktree_create(project_root, "absolute").returncode == 0
+        assert _add_worktree(project_root, "absolute").returncode == 0
         worktree = project_data / "worktrees" / "absolute"
         git_dir = _git(worktree, "rev-parse", "--absolute-git-dir").stdout.strip()
         pointer = worktree / ".git"

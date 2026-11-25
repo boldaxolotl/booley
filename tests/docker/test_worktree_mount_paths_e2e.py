@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -173,107 +172,6 @@ assert not Path('/.git').exists()
     assert result.returncode == 0, result.stderr
     assert state.is_dir()
     assert not (root / "replaced-state").exists()
-
-
-_WORKTREE_NEW = """
-import argparse
-import sys
-from pathlib import Path
-from booley.harness import worktree_cmd
-sys.exit(worktree_cmd.run(argparse.Namespace(worktree_command='new', name='demo'), Path('/work')))
-"""
-
-_SANDBOX_PATHS = ("/work/", "/booley")
-
-
-def _host_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return _run(["git", *args], cwd=cwd)
-
-
-def _commit_versioned_state(state: Path) -> None:
-    """Make the Booley Directory its own committed repository (a Versioned Booley Directory)."""
-    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-
-    (state / ".gitignore").write_text(PROJECT_GITIGNORE)
-    (state / "booley.toml").write_text("[agent.git]\nname='W'\nemail='w@test.invalid'\n")
-    for args in (
-        ("init", "-q", "-b", "main"),
-        ("config", "user.email", "fixture@example.test"),
-        ("config", "user.name", "Fixture"),
-        ("config", "worktree.useRelativePaths", "true"),
-        ("add", "."),
-        ("commit", "-qm", "project"),
-    ):
-        result = _host_git(state, *args)
-        assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("kind", ["snapshot", "paired"])
-def test_worktree_new_in_sandbox_records_host_visible_paths(
-    tmp_path: Path, docker_image, kind: str
-):
-    root, state = _repository(tmp_path)
-    assert _host_git(root, "config", "worktree.useRelativePaths", "true").returncode == 0
-    (state / "booley.toml").write_text("[submodules]\npaths = []\n")
-    if kind == "paired":
-        _commit_versioned_state(state)
-        (root / ".git" / "info" / "exclude").write_text("/.booley\n")
-
-    result = _container(docker_image[1], root, state, _WORKTREE_NEW, duplicate=False)
-
-    assert result.returncode == 0, result.stderr
-    worktree = state / "worktrees" / "demo"
-    assert _host_git(worktree, "status", "--short").returncode == 0
-    listing = _host_git(root, "worktree", "list", "--porcelain").stdout
-    assert str(worktree) in listing and "prunable" not in listing
-    pointers = [worktree / ".git", root / ".git" / "worktrees" / "demo" / "gitdir"]
-    if kind == "paired":
-        paired = worktree / ".booley"
-        assert _host_git(paired, "status", "--short").returncode == 0
-        assert "prunable" not in _host_git(state, "worktree", "list", "--porcelain").stdout
-        pointers += [paired / ".git", *(state / ".git" / "worktrees").glob("*/gitdir")]
-    for pointer in pointers:
-        text = pointer.read_text()
-        assert not any(spelling in text for spelling in _SANDBOX_PATHS), (pointer, text)
-
-
-@pytest.mark.slow
-def test_worktree_new_in_sandbox_refuses_external_booley_dir(tmp_path: Path, docker_image):
-    root = tmp_path / "project"
-    root.mkdir()
-    external = tmp_path / "external"
-    external.mkdir()
-    for args in (
-        ("init", "-q"),
-        ("config", "user.email", "fixture@example.test"),
-        ("config", "user.name", "Fixture"),
-        ("commit", "--allow-empty", "-qm", "initial"),
-    ):
-        assert _host_git(root, *args).returncode == 0
-    plain = f"booley2916-plain-{uuid4().hex}:local"
-    parent = f"127.0.0.1:1/booley2916-parent-{uuid4().hex}:local"
-    assert _run(["docker", "tag", docker_image[1], parent]).returncode == 0
-    with tempfile.TemporaryDirectory(prefix="booley2916-image-") as directory:
-        recipe = Path(directory) / "Dockerfile"
-        recipe.write_text(
-            f"FROM {parent}\nUSER root\nRUN rm -rf /booley && mkdir /booley\nUSER agent\n"
-        )
-        build = _run(
-            ["docker", "build", "--pull=false", "-f", str(recipe), "-t", plain, directory]
-        )
-    try:
-        assert build.returncode == 0, build.stderr
-        result = _external_container(plain, root, external, _WORKTREE_NEW)
-    finally:
-        _run(["docker", "image", "rm", plain, parent])
-
-    assert result.returncode == 1, result.stderr
-    assert "BOOLEY_DIR=/booley is not this checkout's Booley Directory" in result.stderr
-    assert "[project].dir" not in result.stderr
-    assert not (root / ".booley").exists()
-    assert not (external / "worktrees").exists()
-    assert _host_git(root, "worktree", "list", "--porcelain").stdout.count("worktree ") == 1
 
 
 @contextmanager

@@ -9,12 +9,10 @@ rules and adds its own details per area.
   `metrics.toml` fixture into the Booley Directory's `metrics.toml` (in
   Stealth Mode, commit it in the Booley Directory's own repository with
   `git -C .booley commit`), then run `booley measure --validate`: no error.
-- Create the area's worktree from the host with
-  `booley session enter -- booley worktree new <area>`, and note its path and
-  its branch (`booley/<area>`; `wt/<area>` in Stealth Mode). Start a Developer
-  Agent (Codex or Claude) in a T3 Code thread on that worktree, and send the
-  area's prompt verbatim; it ends with "give me a Measured Commit". The
-  operator never does the child's design work.
+- Start a Developer Agent (Codex or Claude) in a T3 Code thread in a new
+  worktree for the area, and note the worktree's path and the branch T3 Code
+  names. Send the area's prompt verbatim; it ends with "give me a Measured
+  Commit". The operator never does the child's design work.
 - The child follows the measuring rules (`booley cheat --metrics`). The
   operator is the deciding human for disposable QA work: a request to add a
   table or change `metrics.toml` or `tests.toml` gets an approval or a
@@ -32,9 +30,8 @@ rules and adds its own details per area.
 - From the host, run container commands as
   `booley session enter -- booley ...`; a Sandbox command written without that
   prefix is meant for the child's terminal inside the container.
-- Integration: merge the worktree's branch (`booley/<area>`; in Stealth Mode
-  `wt/<area>` and `booley-worktree/<area>`) into its run-owned destination,
-  record in `resources.md` only the branches actually created, then remove the
-  worktree with `booley session enter -- booley worktree rm <area>`, which keeps
-  evidence and branches. Leave every participating destination clean before
-  the next worktree.
+- Integration: merge the worktree's branch (in Stealth Mode also
+  `booley-worktree/<folder>`) into its run-owned destination, record in
+  `resources.md` only the branches actually created, then remove the worktree
+  by deleting its T3 Code thread; commits stay on the branches. Leave every
+  participating destination clean before the next worktree.

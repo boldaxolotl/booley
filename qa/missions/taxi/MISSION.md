@@ -64,10 +64,10 @@ Try:
 - The `src/eth/lib/taxi -> ../../../` symlink is unchanged; sources resolve without a working host
   symlink (Windows). Rerun plain `booley init`: no drift. Another run with the other provider:
   issued auth/client policy follows.
-- Image faults: changed dependency pin → stale image rebuilt; bounded post-setup hook in a new
-  new worktree (`booley worktree new`) runs once; status/resume does not rerun
-  it; nonzero hook blocks, fix + documented retry; opted-in
-  disposable host skill is read-only.
+- Image faults: changed dependency pin → stale image rebuilt; bounded
+  post-setup hook in a new worktree prepared with `booley worktree prepare`
+  runs once; status/resume does not rerun it; nonzero hook blocks, fix +
+  documented retry; opted-in disposable host skill is read-only.
 Look for: re-approval requests, Taxi edits, missing `cocotb_test`/`pytest` (imported at TB module
 scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebuilds the image.
 

@@ -1,8 +1,6 @@
-"""Set up a linked worktree after its outer checkout exists: markers, Git config, Snapshot.
+"""Set up a linked worktree after its outer checkout exists: markers and Git config.
 
-``booley worktree new`` creates the outer worktree with the packaged shell script, then
-calls :func:`set_up_linked_worktree`; each step also applies to any linked worktree on
-its own.
+``booley worktree prepare`` runs these steps on a worktree made by Git or T3 Code.
 """
 
 from __future__ import annotations
@@ -15,8 +13,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from booley.core.booley_dir import own_booley_dir, own_booley_dir_relative
-from booley.core.booley_layout import BooleyLayoutError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.incontainer_git_identity import (
@@ -30,7 +26,6 @@ from booley.runtime.project_repositories import (
     git_directories,
     run_git,
 )
-from booley.runtime.worktree_snapshot import SnapshotError, copy_snapshot
 
 _MARKER_LINE = (
     b"# Booley Directory: keep transient worktree .core copies out of FuseSoC/Booley "
@@ -178,32 +173,3 @@ def copy_root_fusesoc_ignore(project_root: Path, worktree: Path) -> None:
     marker = project_root / "FUSESOC_IGNORE"
     if marker.is_file() and not os.path.lexists(worktree / marker.name):
         shutil.copy2(marker, worktree / marker.name)
-
-
-def set_up_linked_worktree(project_root: Path, worktree: Path, *, paired: bool) -> list[str]:
-    """Set up the outer worktree *worktree* added from *project_root*; return the paths left out.
-
-    Applies the Git settings, then copies the Snapshot of the Main Booley Directory
-    into the worktree's own Booley Directory unless a Paired Checkout takes its
-    place (*paired*), then the root FuseSoC marker. The returned paths are the
-    unclassified ones the Snapshot named and did not copy; none when *paired*.
-
-    Raises:
-        WorktreeSetupError: a step failed; the caller rolls the worktree back.
-    """
-    booley_dir = own_booley_dir(project_root)
-    configure_worktree_git(project_root, worktree, booley_dir=booley_dir)
-    # The new worktree's own root booley.toml (it may come from another branch) says
-    # where it expects its Booley Directory.
-    try:
-        relative = own_booley_dir_relative(worktree)
-    except (ValueError, BooleyLayoutError) as exc:
-        raise WorktreeSetupError(str(exc)) from exc
-    skipped: list[str] = []
-    if not paired:
-        try:
-            skipped = copy_snapshot(booley_dir, worktree / relative)
-        except SnapshotError as exc:
-            raise WorktreeSetupError(str(exc)) from exc
-    copy_root_fusesoc_ignore(project_root, worktree)
-    return skipped
