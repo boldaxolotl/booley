@@ -83,15 +83,11 @@ by itself when you attach to the container; see
 ### Worktrees
 
 ```bash
-booley worktree new <name>               # a linked worktree for parallel work
-booley worktree prepare [PATH]           # give a worktree made with Git its own Booley Directory
-booley worktree list                     # each worktree's branch, changes, and use
-booley worktree rm <name> [--force]      # remove a worktree, keeping its evidence and branches
-booley worktree gc [--older-than AGE]    # remove idle worktrees (default: a week), where safe
+booley worktree prepare [PATH]           # give a worktree made with Git or T3 Code its own Booley Directory
 ```
 
-Run them in a container terminal. What each one creates, checks, and keeps is
-in [Worktrees](WORKTREES.md).
+Run it in a container terminal. What it creates, checks, and keeps is in
+[Worktrees](WORKTREES.md).
 
 ### Run a Flow or a Specialist · container
 

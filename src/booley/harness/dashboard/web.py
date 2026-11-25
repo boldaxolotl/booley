@@ -38,6 +38,7 @@ from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.core.boundary import require_dict
 from booley.core.resources import package_data_dir
 from booley.harness.dashboard import web_run
+from booley.harness.dashboard.git_worktrees import WorktreeGitError, worktree_registrations
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.model import read_occupants
@@ -47,7 +48,6 @@ from booley.harness.dashboard.specialist_form import SimRun
 from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.harness.dashboard.web_snapshot import find_report, finished_sim_runs, read_snapshot
-from booley.harness.worktree_list import WorktreeListError, worktree_registrations
 from booley.runtime import job_slots, loopback_http
 
 HOST = "127.0.0.1"
@@ -80,7 +80,7 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
         raise _RefusalError(400, "worktree must be an absolute path")
     try:
         registrations = worktree_registrations(main)
-    except WorktreeListError as exc:
+    except WorktreeGitError as exc:
         raise _RefusalError(503, f"Git could not list the worktrees: {exc}") from exc
     try:
         real = Path(value).resolve()

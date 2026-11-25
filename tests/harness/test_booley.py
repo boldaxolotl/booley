@@ -682,7 +682,7 @@ class TestEffectiveCommand:
         return tlr._build_parser().parse_args(argv)
 
     def test_subcommand_passthrough(self):
-        assert tlr._effective_command(self._parse(["worktree", "list"])) == "worktree"
+        assert tlr._effective_command(self._parse(["worktree", "prepare"])) == "worktree"
         assert tlr._effective_command(self._parse(["init"])) == "init"
 
     def test_unnormalized_no_command_has_no_effective_command(self):
@@ -1206,7 +1206,7 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
     assert tlr._dispatch_main() == 0
 
 
-@pytest.mark.parametrize("argv", [["dashboard"], ["worktree", "list"]])
+@pytest.mark.parametrize("argv", [["dashboard"], ["doctor"]])
 def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()

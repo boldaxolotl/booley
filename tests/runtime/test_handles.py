@@ -542,8 +542,8 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
     assert app._job_label(views["sim-running"]) == "J-SIM?"
 
 
-def test_every_session_allocation_path_skips_taken_numbers(tmp_path, monkeypatch):
-    """Session maps load with the worktree/branch rule, so no allocation path can reuse a number."""
+def test_session_allocation_ignores_worktrees_and_branches(tmp_path, monkeypatch):
+    """A worktree or branch named like a handle does not take its number."""
     isolate_git(tmp_path, monkeypatch)
     main = main_project(tmp_path)
     booley_dir = main / ".booley"
@@ -563,7 +563,7 @@ def test_every_session_allocation_path_skips_taken_numbers(tmp_path, monkeypatch
         store.path.unlink(missing_ok=True)  # A full prune: numbering restarts.
         allocate()
         labels = store.load().labels()
-        assert set(labels.values()) == {"S3"}, (key, labels)
+        assert set(labels.values()) == {"S1"}, (key, labels)
 
 
 def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():

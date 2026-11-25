@@ -90,7 +90,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists."',
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists] must be a tabl"',
     'fail - audit/project_schema.py::audit_stealth_table "booley.toml [stealth].ignore_native_core"',
-    'fail - audit/project_schema.py::audit_worktree_table "booley.toml"',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup: runtime did "',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup:"',
     'fail - harness/doctor.py::_check_git_conflicts "git operation in progress:"',

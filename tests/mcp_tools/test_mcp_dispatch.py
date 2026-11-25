@@ -93,7 +93,7 @@ class TestValidateWorkDir:
     def test_missing_dir_rejected_with_guidance(self, tmp_path):
         err = _validate_work_dir(str(tmp_path / "nope"))
         assert err is not None and "does not exist" in err
-        assert "booley worktree new <name>" in err
+        assert "T3 Code" in err and "booley worktree" not in err
 
     def test_plain_dir_without_git_pointer_rejected(self, tmp_path):
         plain = tmp_path / "plain"

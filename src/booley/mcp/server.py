@@ -142,7 +142,6 @@ from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
-from booley.runtime.worktree_usage import record_worktree_use
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
@@ -1465,7 +1464,7 @@ def _validate_work_dir(value: Any) -> str | None:
     """Reject a ``work_dir`` argument that is not a usable checkout root.
 
     The agent-facing ``work_dir`` retargets an endpoint at another checkout (a
-    linked git worktree, e.g. one made by ``booley worktree new``). Fail-closed
+    linked git worktree, e.g. a T3 Code thread's). Fail-closed
     validation: an arbitrary directory would silently scan zero cores or —
     worse — a stale copy of the RTL, so anything that is not the session
     workspace itself or the root of a linked worktree (``.git`` is a *file*
@@ -1487,16 +1486,14 @@ def _validate_work_dir(value: Any) -> str | None:
         return None  # explicit spelling of the default
     if not resolved.is_dir():
         return (
-            f"ERROR: work_dir {value!r} does not exist. Create a worktree "
-            "first: `booley worktree new <name>` puts it under "
-            ".booley/worktrees/<name>."
+            f"ERROR: work_dir {value!r} does not exist. Pass the root of an "
+            "existing linked worktree, such as a T3 Code thread's."
         )
     if not is_linked_worktree(resolved):
         return (
             f"ERROR: work_dir {value!r} is not the root of a linked git "
-            "worktree (no .git pointer file). Pass the worktree root created "
-            "by `booley worktree new <name>` under .booley/worktrees/, "
-            "or omit work_dir to run against the session workspace."
+            "worktree (no .git pointer file). Pass the root of a linked "
+            "worktree of this repository, or omit work_dir to run against the session workspace."
         )
     return None
 
@@ -1938,30 +1935,6 @@ async def _dispatch_special_mcp_tool(
     return None
 
 
-def _stamp_worktree_use(
-    arguments: Mapping[str, Any], request_context: McpRequestContext | None
-) -> None:
-    """Record a call's interactive worktree as just used (``booley worktree list``).
-
-    The checkout is the call's ``work_dir`` (explicit or routed) or, for tools
-    without one, the caller's routed checkout. The stamp is bookkeeping, not
-    admission, so an unreadable layout never fails the call.
-    """
-    work_dir = arguments.get("work_dir")
-    if isinstance(work_dir, str) and work_dir:
-        checkout = Path(work_dir)
-    elif request_context is not None:
-        checkout = request_context.checkout
-    else:
-        checkout = None
-    if checkout is None:
-        return
-    try:
-        record_worktree_use(checkout, resolve_common_booley_dir())
-    except (SourceCheckoutProjectError, BooleyLayoutError, OSError, ValueError):
-        logger.debug("Could not stamp worktree use for %s", checkout, exc_info=True)
-
-
 async def _dispatch_application_tool(
     name: str,
     arguments: dict[str, Any],
@@ -1974,7 +1947,6 @@ async def _dispatch_application_tool(
     server_identity: str | None = None,
 ) -> McpToolContent | McpInputRequired:
     """Dispatch one validated application call to its concrete endpoint."""
-    _stamp_worktree_use(arguments, request_context)
     caller = (
         None
         if server_identity is None

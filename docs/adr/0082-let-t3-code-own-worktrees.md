@@ -79,8 +79,10 @@ Checkout Booley State.
 ## Consequences
 
 - Deleting a thread's worktree in T3 force-removes it: uncommitted edits in
-  its Paired Checkout are lost without warning, and its commits survive on
-  its branch. T3 has no hook or dirty check to stop this.
+  its Paired Checkout are lost without warning, and so are the Flow reports
+  and build trees kept in the worktree, because nothing copies them out first.
+  Its commits survive on its branch. T3 has no hook or dirty check to stop
+  this.
 - Engineers who work only in a terminal get no automatic worktree. They make
   one with Git or T3.
 - Worktrees that `--baseline` Flow runs make are a Flow's internal detail,

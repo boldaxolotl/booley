@@ -733,7 +733,6 @@ NOT_A_KEY: dict[str, str] = {
     "src/booley/harness/setup/scaffold.py::_cocotb_testbench": (
         "scaffold text about a renamed cocotb file, not configuration"
     ),
-    "src/booley/harness/worktree_rm.py::_move_evidence": "a failure report",
 }
 
 

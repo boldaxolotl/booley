@@ -1,8 +1,8 @@
 """Give a linked worktree made by Git or T3 Code its own Booley Directory.
 
-``booley worktree prepare`` adopts a worktree that ``booley worktree new`` did not
-create. These are its steps without printing: which worktree of which Project a
-path names, and the Booley Directory it gets (or loses again when the run fails).
+``booley worktree prepare`` adopts a worktree that Git or T3 Code made. These are its
+steps without printing: which worktree of which Project a path names, and the Booley
+Directory it gets (or loses again when the run fails).
 """
 
 from __future__ import annotations

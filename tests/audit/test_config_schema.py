@@ -545,10 +545,6 @@ def test_ignored_setting_warns_with_its_fix(data, message, fix):
     assert (finding.check_id, finding.message, finding.fix) == ("config.ignored-key", message, fix)
 
 
-def test_worktree_table_that_is_not_a_table_reports_once() -> None:
-    assert len(project_schema.audit_worktree_table({"worktree": []}).findings) == 1
-
-
 def test_chat_table_is_an_unknown_table() -> None:
     audit = project_schema.audit_known_tables({"chat": {"worktree": "always"}})
 

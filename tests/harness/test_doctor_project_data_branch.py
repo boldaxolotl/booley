@@ -198,7 +198,7 @@ def test_plain_copy_of_versioned_booley_directory_in_linked_worktree_warns(
 
     assert [finding.check_id for finding in warnings] == ["project-data.worktree-unpaired"]
     assert "Paired Checkout" in warnings[0].message
-    assert "booley worktree new" in warnings[0].fix
+    assert "booley worktree prepare" in warnings[0].fix
 
 
 @pytest.mark.parametrize(

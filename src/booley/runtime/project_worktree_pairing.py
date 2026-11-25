@@ -11,7 +11,7 @@ from pathlib import Path
 
 from booley.runtime.booley_dir import own_booley_dir
 from booley.runtime.docs_links import sandbox_doc_path
-from booley.runtime.file_lock import release_file_lock, try_file_lock, wait_for_file_lock
+from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.incontainer_git_identity import (
     GitIdentityError,
@@ -43,11 +43,11 @@ class ProjectPairing:
 
 
 def refuse_paired_checkout(booley_dir: Path) -> None:
-    """Refuse worktree creation when *booley_dir* is a Paired Checkout (its ``.git`` is a file)."""
+    """Refuse pairing when *booley_dir* is a Paired Checkout (its ``.git`` is a file)."""
     if (booley_dir / ".git").is_file():
         raise ProjectPairingError(
-            "cannot create a worktree from a Paired Checkout; "
-            "run booley worktree new from the main checkout"
+            "cannot pair a worktree with a Paired Checkout; "
+            "run booley worktree prepare in a worktree of the main checkout"
         )
 
 
@@ -287,98 +287,3 @@ def prune_missing_checkouts(source: Path) -> None:
                     "remove that folder or restore the file, then run prepare again"
                 )
         _require_git(source, "worktree", "prune")
-
-
-def detach_checkout(checkout: Path) -> None:
-    """Drop a checkout's ``.git`` pointer so that an interrupted removal leaves it broken.
-
-    Git deletes files in directory order: a worktree it cut short could still look
-    intact, with its deleted files counted as uncommitted changes.
-    """
-    pointer = checkout / ".git"
-    if pointer.is_file():
-        pointer.unlink()
-
-
-def remove_paired_checkout(source: Path, worktree: Path) -> None:
-    """Remove *worktree*'s Paired Checkout from *source*; its branch stays."""
-    with _project_lock(source):
-        nested = own_booley_dir(worktree)
-        detach_checkout(nested)
-        remove_worktree_registration(source, nested)
-
-
-def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
-    """Remove the newly created outer checkout after paired rollback completes."""
-    remove_worktree_registration(project_root, worktree)
-
-
-def validate_project_pairing(source: Path | None, name: str) -> None:
-    """Refuse invalid Project inputs before paying for the outer checkout."""
-    if source is not None:
-        _require_base(source, f"booley-worktree/{name}")
-
-
-def worktree_removal_instructions(
-    project_root: Path, worktree: Path, name: str, *, branch: str | None, paired: bool = True
-) -> str:
-    """Format removal in the Sandbox namespace available to this command.
-
-    *branch* is the outer branch the failed creation was making (``None`` for a
-    ``<branch>--<description>`` name, which creates none); it depends on Stealth
-    Mode, so the caller names it.
-
-    Paths stay as the caller named them (absolute, symlinks kept) so they match
-    the worktree path ``booley worktree new`` prints; Git resolves them itself.
-    """
-    root, outer = project_root.absolute(), worktree.absolute()
-    source = own_booley_dir(root)
-
-    def quote(path: Path) -> str:
-        return shlex.quote(str(path))
-
-    kind = "Paired Checkout" if paired else "Snapshot"
-    steps = [
-        f"{kind} removal instructions (run in the same Sandbox, outside this worktree):",
-        "These are Sandbox paths; do not paste them into a host terminal.",
-        "First preserve needed evidence and other ignored/untracked files outside "
-        f"this worktree, as described in {_REMOVAL_DOC}.",
-        "Then clean dirty/untracked files, including a Snapshot's copied files; "
-        "inspect locks before unlocking or forcing removal.",
-        "Git refuses to remove a worktree that holds populated submodules without "
-        "--force: after preserving evidence, add --force to each 'git worktree remove' "
-        "below.",
-    ]
-    if paired:
-        steps.append(
-            f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove "
-            f"{quote(own_booley_dir(outer))}"
-        )
-    steps.append(
-        f"{'Then remove' if paired else 'Remove'} the outer worktree: "
-        f"git -C {quote(root)} worktree remove {quote(outer)}"
-    )
-    if paired:
-        steps.append(
-            "Optional, to reuse the name, delete the Project branch after preserving its commits: "
-            f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
-        )
-    if branch is not None:
-        steps.append(
-            "Optional, to reuse the name, delete the worktree's branch after preserving its "
-            f"commits: git -C {quote(root)} branch -D {shlex.quote(branch)}"
-        )
-    return "\n".join(steps)
-
-
-def remove_creation_lock(project_root: Path, name: str) -> None:
-    """Remove this failed creation's per-name file only when it is unlocked."""
-    locks = own_booley_dir(project_root) / "worktrees" / ".locks"
-    path = locks / f"{name}.lock"
-    if not path.is_file() or (locks / f"{name}.mkdir.lock").exists():
-        return
-    with path.open("r+", encoding="utf-8") as handle, try_file_lock(handle) as acquired:
-        if acquired and os.name != "nt":
-            path.unlink()
-    if acquired and os.name == "nt":
-        path.unlink(missing_ok=True)

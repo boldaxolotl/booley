@@ -71,9 +71,9 @@ python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 
 Two project-side extension points:
 
 - **`post-setup` hook** — `.booley/hooks/post-setup.sh`, `….py`, or
-  extensionless `post-setup` runs in each new sandboxed worktree that
-  `booley worktree new` creates, and a failure removes the
-  worktree again; make it idempotent. It may install/build dependencies, copy
+  extensionless `post-setup` runs in each worktree that
+  `booley worktree prepare` prepares, and a failure removes what the run
+  created; make it idempotent. It may install/build dependencies, copy
   files, create symlinks, or prepare generated inputs. `booley measure` also
   runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that

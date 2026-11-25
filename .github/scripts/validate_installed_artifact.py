@@ -33,7 +33,6 @@ EXPECTED_RESOURCES = {
     "booley/data/vscode/dashboard/extension.js",
     "booley/data/vscode/dashboard/LICENSE.txt",
     "booley/dev_support/pre-commit-ruff.sh",
-    "booley/runtime/worktree_create.sh",
     # The Sandbox links /booley-docs to these packaged copies of the shipped docs.
     *(f"booley/data/docs/{Path(source).name}" for source in SHIPPED_DOCS),
 }

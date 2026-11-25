@@ -134,7 +134,7 @@ def test_visible_cli_help_describes_current_version() -> None:
         "booley projects",
         "booley projects discover",
         "booley eda grant add",
-        "booley worktree new",
+        "booley worktree prepare",
         "booley flow sim",
         "booley flow synth",
         "booley flow lint",
