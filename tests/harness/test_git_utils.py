@@ -23,7 +23,7 @@ from booley.runtime.git import (
     remove_git_excludes,
 )
 from tests.conftest import symlink_or_skip
-from tests.git_support import hostile
+from tests.git_support import hostile, no_live_git_processes
 from tests.harness.git_support import fake_powershell, git_stdout
 from tests.pipe_holding_tree import (
     heartbeat_tree,
@@ -304,6 +304,7 @@ def test_git_helpers_keep_the_intended_linked_worktree_under_foreign_selectors(
     tmp_path, monkeypatch
 ):
     """Inherited GIT_DIR-style variables never redirect a helper to another repository."""
+    no_live_git_processes(monkeypatch)
     main = _init_repo(tmp_path / "main")
     linked = _make_worktree(main, tmp_path / "linked")
     foreign = _init_repo(tmp_path / "foreign")
