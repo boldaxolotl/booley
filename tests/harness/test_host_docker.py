@@ -18,7 +18,12 @@ import pytest
 from booley.runtime import host_docker as idk
 from booley.runtime import image_identity, project_image
 from tests.harness.session_docker_fake import SandboxDocker, completed, serve_sandbox_docker
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.time_budget import hang_guard_s, scaled
 
 _DEADLINE_S = scaled(2)
@@ -260,7 +265,9 @@ def test_issued_comparisons_report_inspect_failure_cause(docker: SandboxDocker) 
         ),
     ],
 )
-def test_run_docker_timeout_stops_or_abandons_the_tree(mode: str, tmp_path: Path) -> None:
+def test_run_docker_timeout_stops_or_abandons_the_tree(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The call raises while the grandchild holding the pipe is still running (2f5537dd3, e990c2e5c).
 
     The grandchild writes `done` only when it ends by itself, so a runner that waits
@@ -269,11 +276,11 @@ def test_run_docker_timeout_stops_or_abandons_the_tree(mode: str, tmp_path: Path
     with heartbeat_tree(tmp_path) as paths:
         # `executable` is the interpreter; the "docker args" are the script.
         python, *args = parent_argv(tmp_path, sys.executable, paths, mode)
+        start_deadline_after_tree_start(monkeypatch, paths)
 
         with pytest.raises(subprocess.TimeoutExpired):
             idk._run_docker(args, timeout=_DEADLINE_S, executable=python)
 
-        assert paths["heartbeat"].exists(), "grandchild never started"
         assert not paths["done"].exists()
         if mode == "live":
             assert wait_until_heartbeat_stops(paths["heartbeat"]), "grandchild outlived the kill"
