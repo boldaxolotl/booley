@@ -9,14 +9,22 @@
   var fieldsEl = document.getElementById('run-fields');
   var commandEl = document.getElementById('run-command');
   var copyButton = document.getElementById('run-copy');
+  var reviewEl = document.getElementById('run-review');
   var errorEl = document.getElementById('run-error');
+  var checkButton = document.getElementById('run-check');
+  var submitButton = document.getElementById('run-submit');
   var worktree = new URLSearchParams(location.search).get('worktree') || '';
 
-  // gen changes whenever the form opens, closes or changes entry; readSeq and cmdSeq number the
-  // newest dependent read and command request. An answer to an older one is dropped.
+  // gen changes whenever the form opens, closes or changes entry; readSeq, cmdSeq and checkSeq number
+  // the newest dependent read, command and check request. An answer to an older one is dropped.
   var gen = 0;
   var readSeq = 0;
   var cmdSeq = 0;
+  var checkSeq = 0;
+  // The request the shown review checked and allows to submit, or null; submitting while one is sent.
+  var reviewed = null;
+  var refusal = '';
+  var submitting = false;
   var entry = null;
   var form = null;
   var values = {};
@@ -115,6 +123,8 @@
     extra = '';
     targets = runs = [];
     fieldsEl.innerHTML = '';
+    submitting = false;
+    clearReview();
     show(problemEl, '');
     showCommand('', '');
   }
@@ -193,6 +203,7 @@
       rows.push(rowHtml({ dest: 'extra', kind: 'text', label: 'Extra arguments' }, form.extra.hint));
     }
     fieldsEl.innerHTML = (form.note ? '<p class="muted">' + escapeHtml(form.note) + '</p>' : '') + rows.join('');
+    updateButtons();
     var again = dest && fieldsEl.querySelector('[data-dest="' + dest + '"]');
     if (again) {
       again.focus();
@@ -209,24 +220,111 @@
     show(errorEl, error);
   }
 
+  function updateButtons() {
+    checkButton.disabled = !form || submitting;
+    submitButton.disabled = !reviewed || submitting;
+  }
+
+  function clearReview() {
+    checkSeq += 1;
+    reviewed = null;
+    refusal = '';
+    reviewEl.innerHTML = '';
+    reviewEl.hidden = true;
+    updateButtons();
+  }
+
+  function request() {
+    return { kind: entry.kind, name: entry.name, values: values, extra: extra };
+  }
+
+  function post(path, body) {
+    return fetch(url(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(answer);
+  }
+
+  function failure(r) {
+    return (r.body && r.body.error) || 'HTTP ' + r.status;
+  }
+
   function postCommand() {
     var mine = gen;
     var seq = cmdSeq += 1;
     copyButton.disabled = true;
-    fetch(url('/api/run/command'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: entry.kind, name: entry.name, values: values, extra: extra }),
-    }).then(answer).then(function (r) {
+    post('/api/run/command', request()).then(function (r) {
       if (mine !== gen || seq !== cmdSeq) {
         return;
       }
-      showCommand(r.ok ? r.body.command : '', r.ok ? '' : (r.body && r.body.error) || 'HTTP ' + r.status);
+      showCommand(r.ok ? r.body.command : '', r.ok ? '' : failure(r));
     }).catch(function (err) {
       if (mine === gen && seq === cmdSeq) {
         showCommand('', err.message);
       }
     });
+  }
+
+  // Review checks the form as it is: the command, the facts to read, and a refusal that blocks Submit.
+  function review() {
+    if (!form || submitting) {
+      return;
+    }
+    clearReview();
+    cmdSeq += 1;
+    var mine = gen;
+    var seq = checkSeq;
+    var sent = request();
+    post('/api/run/check', sent).then(function (r) {
+      if (mine !== gen || seq !== checkSeq) {
+        return;
+      }
+      if (!r.ok) {
+        showCommand('', failure(r));
+        return;
+      }
+      showCommand(r.body.command, '');
+      reviewEl.innerHTML = r.body.lines.map(function (line) {
+        return '<li>' + escapeHtml(line) + '</li>';
+      }).join('');
+      reviewEl.hidden = false;
+      refusal = r.body.refusal;
+      show(errorEl, refusal);
+      reviewed = refusal ? null : sent;
+      updateButtons();
+    }).catch(function (err) {
+      if (mine === gen && seq === checkSeq) {
+        showCommand('', err.message);
+      }
+    });
+  }
+
+  // Submit starts exactly the reviewed request. After a failed or lost answer only a new Review re-enables it.
+  function submit() {
+    if (!reviewed || submitting) {
+      return;
+    }
+    var mine = gen;
+    var sent = reviewed;
+    clearReview();
+    submitting = true;
+    updateButtons();
+    post('/api/run/submit', sent).then(function (r) {
+      if (mine === gen) {
+        return r.ok ? closeForm() : ended(failure(r));
+      }
+    }).catch(function (err) {
+      if (mine === gen) {
+        ended(err.message);
+      }
+    });
+  }
+
+  function ended(error) {
+    submitting = false;
+    show(errorEl, error);
+    updateButtons();
   }
 
   // A form answer sets the list values: the server may drop a focus the category lacks.
@@ -307,6 +405,7 @@
   // A Specialist's fields follow its list values and More, as the wizard's form does.
   function reloadForm() {
     dependentRead('/api/run/form', Object.assign({ kind: entry.kind, name: entry.name }, values), function (body) {
+      clearReview(); // the answer may change the values a shown review checked
       adopt(body);
       postCommand();
     });
@@ -319,6 +418,7 @@
     if (!entry || !dest || (target.type === 'text') !== (event.type === 'input')) {
       return;
     }
+    clearReview();
     if (dest === 'extra') {
       extra = target.value;
     } else if (dest === 'test') {
@@ -344,13 +444,15 @@
     Promise.resolve().then(function () {
       return navigator.clipboard.writeText(text);
     }).catch(function () {
-      show(errorEl, 'Copy failed: select the command');
+      show(errorEl, (refusal ? refusal + ' ' : '') + 'Copy failed: select the command');
     });
   }
 
   button.addEventListener('click', openForm);
   document.getElementById('run-cancel').addEventListener('click', closeForm);
   copyButton.addEventListener('click', copy);
+  checkButton.addEventListener('click', review);
+  submitButton.addEventListener('click', submit);
   entrySelect.addEventListener('change', function (event) {
     chooseEntry(event.target.value);
   });

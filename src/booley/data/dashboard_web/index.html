@@ -18,10 +18,13 @@
 <label>Run <select id="run-entry"></select></label>
 <p id="run-problem" class="error" hidden></p>
 <div id="run-fields"></div>
+<ul id="run-review" class="run-review" hidden aria-label="Review"></ul>
 <div class="run-command"><code id="run-command"></code>
 <button id="run-copy" type="button" disabled>Copy</button></div>
 <p id="run-error" class="error" hidden></p>
-<div class="run-actions"><button id="run-cancel" type="button">Cancel</button></div>
+<div class="run-actions"><button id="run-check" type="button" disabled>Review</button>
+<button id="run-submit" class="primary" type="button" disabled>Submit</button>
+<button id="run-cancel" type="button">Cancel</button></div>
 </section>
 <main>
 <div id="live"><p>Loading</p></div>
