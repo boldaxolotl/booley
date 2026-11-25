@@ -221,7 +221,6 @@ class TestTestsTomlVariantsAndSeeds:
         assert section["seed"] == "+seed={seed}"
         assert section["default_seed"] == 7
         assert section["variants"] == _VARIANTS
-        # A getopt seed option and an empty default variant (the migration path) load too.
         assert (
             normalize_tests_toml(_section(seed="--seed={seed}"))["sim"]["seed"] == "--seed={seed}"
         )

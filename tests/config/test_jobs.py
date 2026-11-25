@@ -31,7 +31,6 @@ def test_absent_seat_caps_are_empty_and_required_seats_pair_each_tool_with_its_c
 
     assert parse_seat_caps({}) == {}
     assert parse_seat_caps({"jobs": {"max_light": 2}}) == {}
-    # A non-table [jobs] has no seats.
     assert parse_seat_caps({"jobs": "many"}) == {}
     data = {"jobs": {"seats": {"vivado": 3}}}
     assert required_seats(("vivado",), data) == (("vivado", 3),)
