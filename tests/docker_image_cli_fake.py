@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 
 import pytest
 
@@ -38,6 +39,10 @@ class DockerImageCli:
         self.replies: dict[tuple[str, ...], _Reply] = {}
         self.calls: list[list[str]] = []
         self.eol = "\n"
+        #: The size every listed image reports.
+        self.size = "1GB"
+        #: Called with the argv after each served command, to change daemon state mid-operation.
+        self.after_call: Callable[[list[str]], None] | None = None
 
     def answer(
         self, *words: str, stdout="", stderr="", code=0, error: BaseException | None = None
@@ -60,6 +65,8 @@ class DockerImageCli:
                 raise reply
             return subprocess.CompletedProcess(argv, reply.returncode, reply.stdout, reply.stderr)
         code, out, err = self._serve(words)
+        if self.after_call is not None:
+            self.after_call(list(argv))
         return subprocess.CompletedProcess(argv, code, out, err)
 
     def _all_ids(self) -> set[str]:
@@ -68,19 +75,30 @@ class DockerImageCli:
     def _id_of(self, reference: str) -> str | None:
         return self.images.get(reference) or (reference if reference in self._all_ids() else None)
 
-    def _serve(self, words: list[str]) -> tuple[int, str, str]:
-        verb = " ".join(words[:2]) if words[0] in ("image", "container") else words[0]
+    def _serve(self, words: list[str]) -> tuple[int, str, str]:  # noqa: PLR0911 -- one branch per verb
+        verb = (
+            " ".join(words[:2])
+            if words[0] in ("image", "container", "volume", "network")
+            else words[0]
+        )
         if verb == "image inspect":
             return self._inspect(words)
         if verb == "image ls":
-            return self._list(quiet="--quiet" in words, full="--no-trunc" in words)
+            return self._list(words)
         if verb == "container ls":
+            if "--filter" in words:  # Project-labelled or volume-using containers: none
+                return 0, "", ""
             listed = [c for c in self.containers if "--all" in words or c not in self.stopped]
             return 0, "".join(f"{container}{self.eol}" for container in listed), ""
         if verb == "container inspect":
-            return 0, self.containers[words[-1]] + "\n", ""
-        if verb == "tag":
-            self.images[words[2]] = self._id_of(words[1]) or ""
+            target = next(word for word in words[2:] if not word.startswith(("-", "{{")))
+            if target not in self.containers:
+                return 1, "", f"Error: No such container: {target}"
+            return 0, self.containers[target] + "\n", ""
+        if verb in ("tag", "image tag"):
+            self.images[words[-1]] = self._id_of(words[-2]) or ""
+            return 0, "", ""
+        if verb in ("volume ls", "network ls"):  # no state volumes or Project networks
             return 0, "", ""
         if verb == "image rm":
             return self._remove(words[-1])
@@ -93,11 +111,16 @@ class DockerImageCli:
         image_id = self._id_of(reference)
         if image_id is None:
             return 1, "", f"Error: No such image: {reference}"
+        if "{{len .RootFS.Layers}}" in words:  # purge orders tags by layer count
+            return 0, "1\n", ""
         if "--format" in words or "-f" in words:  # ``-f`` is RepoDigests: tests answer it
             return 0, (image_id if "--format" in words else "[]") + "\n", ""
         return 0, json.dumps([{"Id": image_id}]), ""
 
-    def _list(self, *, quiet: bool, full: bool) -> tuple[int, str, str]:
+    def _list(self, words: list[str]) -> tuple[int, str, str]:
+        quiet, full = "--quiet" in words, "--no-trunc" in words
+        template = words[words.index("--format") + 1] if "--format" in words else "{{json .}}"
+
         def shown(image_id: str) -> str:  # Docker shortens IDs unless asked not to
             return image_id if full else image_id.removeprefix("sha256:")[:12]
 
@@ -108,7 +131,16 @@ class DockerImageCli:
             for reference, image_id in sorted(self.images.items())
             if not reference.startswith("sha256:")
         ] + [(*row[:2], shown(row[2])) for row in self.untagged_rows]
-        return 0, "".join(image_row(*row, self.eol) for row in rows), ""
+        if template == "{{json .}}":
+            return 0, "".join(image_row(*row, self.eol) for row in rows), ""
+        lines = [
+            template.replace("{{.ID}}", image_id)
+            .replace("{{.Repository}}", repository)
+            .replace("{{.Tag}}", tag)
+            .replace("{{.Size}}", self.size)
+            for repository, tag, image_id in rows
+        ]
+        return 0, "".join(line + self.eol for line in lines), ""
 
     def _remove(self, reference: str) -> tuple[int, str, str]:
         image_id = self._id_of(reference)

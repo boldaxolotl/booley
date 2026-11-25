@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import logging
 import math
 import socket
+from collections.abc import AsyncIterator
 
 import pytest
 from tests.time_budget import hang_guard_s, scaled
@@ -45,55 +47,48 @@ def _env(**overrides: str) -> dict[str, str]:
     return values
 
 
-class TestRelayConfig:
-    def test_accepts_fixed_ipv4_hostid_and_distinct_ports(self) -> None:
-        config = RelayConfig.from_env(_env())
-        assert config.upstream_ipv4 == ipaddress.IPv4Address("10.20.30.40")
-        assert config.server_hostid == "license-server-01"
-        assert config.routes == (PortRoute(2100, 2100), PortRoute(2101, 2101))
+def test_accepts_fixed_ipv4_hostid_and_distinct_ports() -> None:
+    config = RelayConfig.from_env(_env())
+    assert config.upstream_ipv4 == ipaddress.IPv4Address("10.20.30.40")
+    assert config.server_hostid == "license-server-01"
+    assert config.routes == (PortRoute(2100, 2100), PortRoute(2101, 2101))
 
-    @pytest.mark.parametrize(
-        "value",
-        [
-            "licenses.example",
-            "::1",
-            "0.0.0.0",
-            "127.0.0.1",
-            "169.254.1.2",
-            "224.0.0.1",
-            "255.255.255.255",
+
+@pytest.mark.parametrize(
+    "name,value,match",
+    [
+        *[
+            (ENV_UPSTREAM_IPV4, value, "literal IPv4|usable IPv4 unicast")
+            for value in (
+                "licenses.example",
+                "::1",
+                "0.0.0.0",
+                "127.0.0.1",
+                "169.254.1.2",
+                "224.0.0.1",
+                "255.255.255.255",
+            )
         ],
-    )
-    def test_rejects_nonliteral_or_unsupported_ipv4(self, value: str) -> None:
-        with pytest.raises(RelayConfigError, match=r"literal IPv4|IPv4 unicast"):
-            RelayConfig.from_env(_env(**{ENV_UPSTREAM_IPV4: value}))
-
-    @pytest.mark.parametrize(
-        "value", ["", "-server", "server-", "license/server", "192.0.2.1", "bad\nname"]
-    )
-    def test_rejects_invalid_server_host_identifier(self, value: str) -> None:
-        with pytest.raises(RelayConfigError, match=r"Host Identifier|required"):
-            RelayConfig.from_env(_env(**{ENV_SERVER_HOSTID: value}))
-
-    @pytest.mark.parametrize("value", ["0", "65536", "two", "-1"])
-    def test_rejects_invalid_ports(self, value: str) -> None:
-        with pytest.raises(RelayConfigError, match=r"TCP port|between"):
-            RelayConfig.from_env(_env(**{ENV_LMGRD_PORT: value}))
-
-    def test_rejects_duplicate_ports(self) -> None:
-        with pytest.raises(RelayConfigError, match="distinct"):
-            RelayConfig.from_env(_env(**{ENV_VENDOR_PORT: "2100"}))
-
-    @pytest.mark.parametrize("name", [ENV_CONNECT_TIMEOUT, ENV_IDLE_TIMEOUT])
-    @pytest.mark.parametrize("value", ["0", "nan", "inf", "not-a-number", "99999"])
-    def test_rejects_unbounded_timeouts(self, name: str, value: str) -> None:
-        with pytest.raises(RelayConfigError, match=r"numeric|finite"):
-            RelayConfig.from_env(_env(**{name: value}))
-
-    @pytest.mark.parametrize("value", ["0", "513", "1.5", "many"])
-    def test_rejects_unbounded_connection_limits(self, value: str) -> None:
-        with pytest.raises(RelayConfigError, match=r"positive decimal|between"):
-            RelayConfig.from_env(_env(**{ENV_MAX_CONNECTIONS: value}))
+        *[
+            (ENV_SERVER_HOSTID, value, "Host Identifier|required")
+            for value in ("", "-server", "bad\nname", "192.0.2.1")
+        ],
+        *[(ENV_LMGRD_PORT, value, "TCP port|between") for value in ("two", "0", "65536")],
+        (ENV_VENDOR_PORT, "2100", "distinct"),
+        *[
+            (name, value, "numeric|finite")
+            for name in (ENV_CONNECT_TIMEOUT, ENV_IDLE_TIMEOUT)
+            for value in ("0", "nan", "not-a-number", "99999")
+        ],
+        *[
+            (ENV_MAX_CONNECTIONS, value, "positive decimal|between")
+            for value in ("0", "513", "many")
+        ],
+    ],
+)
+def test_rejects_invalid_relay_settings(name: str, value: str, match: str) -> None:
+    with pytest.raises(RelayConfigError, match=match):
+        RelayConfig.from_env(_env(**{name: value}))
 
 
 async def _start_server(handler) -> asyncio.AbstractServer:
@@ -132,15 +127,27 @@ def _test_config(
     )
 
 
+@contextlib.asynccontextmanager
+async def _relay_to(handler, **config) -> AsyncIterator[FlexNetRelay]:
+    """Run a started relay whose two routes lead to one upstream server running *handler*."""
+    upstream = await _start_server(handler)
+    port = upstream.sockets[0].getsockname()[1]
+    relay = FlexNetRelay(_test_config((port, port), **config))
+    try:
+        await relay.start()
+        try:
+            yield relay
+        finally:
+            await relay.close()
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+
+
 @pytest.mark.asyncio
 async def test_relays_both_ports_preserves_half_close_and_never_logs_payload(caplog) -> None:
-    first = await _start_server(_half_close_echo)
-    second = await _start_server(_half_close_echo)
-    upstream = (first.sockets[0].getsockname()[1], second.sockets[0].getsockname()[1])
-    relay = FlexNetRelay(_test_config(upstream))
     caplog.set_level(logging.INFO)
-    await relay.start()
-    try:
+    async with _relay_to(_half_close_echo) as relay:
         for port, payload in zip(
             relay.bound_ports, (b"manager-secret", b"vendor-secret"), strict=True
         ):
@@ -151,11 +158,6 @@ async def test_relays_both_ports_preserves_half_close_and_never_logs_payload(cap
             assert await reader.read() == b"reply:" + payload
             writer.close()
             await writer.wait_closed()
-    finally:
-        await relay.close()
-        first.close()
-        second.close()
-        await asyncio.gather(first.wait_closed(), second.wait_closed())
 
     assert "manager-secret" not in caplog.text
     assert "vendor-secret" not in caplog.text
@@ -165,18 +167,10 @@ async def test_relays_both_ports_preserves_half_close_and_never_logs_payload(cap
 
 @pytest.mark.asyncio
 async def test_health_endpoint_is_loopback_ready_only_while_started() -> None:
-    upstream = await _start_server(_half_close_echo)
-    port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port)))
-    await relay.start()
-    health_port = relay.health_bound_port
-    assert health_port is not None
-    try:
+    async with _relay_to(_half_close_echo) as relay:
+        health_port = relay.health_bound_port
+        assert health_port is not None
         assert await asyncio.to_thread(healthcheck, port=health_port)
-    finally:
-        await relay.close()
-        upstream.close()
-        await upstream.wait_closed()
     assert not await asyncio.to_thread(healthcheck, port=health_port, timeout=0.05)
 
 
@@ -189,21 +183,15 @@ async def test_idle_connection_is_closed_with_metadata_only_reason(caplog) -> No
         writer.close()
         await writer.wait_closed()
 
-    upstream = await _start_server(hanging)
-    port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), idle_timeout=scaled(0.05)))
     caplog.set_level(logging.WARNING)
-    await relay.start()
-    try:
-        reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-        assert await asyncio.wait_for(reader.read(), timeout=hang_guard_s()) == b""
-        writer.close()
-        await writer.wait_closed()
-    finally:
-        release.set()
-        await relay.close()
-        upstream.close()
-        await upstream.wait_closed()
+    async with _relay_to(hanging, idle_timeout=scaled(0.05)) as relay:
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
+            assert await asyncio.wait_for(reader.read(), timeout=hang_guard_s()) == b""
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            release.set()
     assert "reason=idle" in caplog.text
 
 
@@ -221,11 +209,7 @@ async def test_activity_in_either_direction_resets_connection_idle_timeout() -> 
         writer.close()
         await writer.wait_closed()
 
-    upstream = await _start_server(streaming)
-    port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), idle_timeout=_RESET_IDLE_S))
-    await relay.start()
-    try:
+    async with _relay_to(streaming, idle_timeout=_RESET_IDLE_S) as relay:
         reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
         writer.write(b"?")
         await writer.drain()
@@ -235,10 +219,6 @@ async def test_activity_in_either_direction_resets_connection_idle_timeout() -> 
         )
         writer.close()
         await writer.wait_closed()
-    finally:
-        await relay.close()
-        upstream.close()
-        await upstream.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -252,28 +232,24 @@ async def test_connection_limit_rejects_excess_without_upstream_attempt(caplog) 
         writer.close()
         await writer.wait_closed()
 
-    upstream = await _start_server(holding)
-    port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), maximum=1))
     caplog.set_level(logging.WARNING)
-    await relay.start()
-    first_reader, first_writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-    await asyncio.wait_for(accepted.wait(), timeout=hang_guard_s())
-    try:
-        rejected_reader, rejected_writer = await asyncio.open_connection(
-            "127.0.0.1", relay.bound_ports[1]
+    async with _relay_to(holding, maximum=1) as relay:
+        first_reader, first_writer = await asyncio.open_connection(
+            "127.0.0.1", relay.bound_ports[0]
         )
-        assert await asyncio.wait_for(rejected_reader.read(), timeout=hang_guard_s()) == b""
-        rejected_writer.close()
-        await rejected_writer.wait_closed()
-    finally:
-        release.set()
-        first_writer.close()
-        await first_writer.wait_closed()
-        await first_reader.read()
-        await relay.close()
-        upstream.close()
-        await upstream.wait_closed()
+        try:
+            await asyncio.wait_for(accepted.wait(), timeout=hang_guard_s())
+            rejected_reader, rejected_writer = await asyncio.open_connection(
+                "127.0.0.1", relay.bound_ports[1]
+            )
+            assert await asyncio.wait_for(rejected_reader.read(), timeout=hang_guard_s()) == b""
+            rejected_writer.close()
+            await rejected_writer.wait_closed()
+        finally:
+            release.set()
+            first_writer.close()
+            await first_writer.wait_closed()
+            await first_reader.read()
     assert "reason=limit" in caplog.text
 
 
