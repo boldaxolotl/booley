@@ -413,9 +413,13 @@ def test_missing_project_data_is_pending_only_when_full_init_creates_it(
         target.mkdir()
         host.image = None  # the preview fails: no Sandbox Image to pin
     elif entry == "unreadable":
-        real_lstat = Path.lstat
+        real_lstat, real_is_symlink = Path.lstat, Path.is_symlink
         monkeypatch.setattr(
             Path, "lstat", lambda path: _deny(path) if path == target else real_lstat(path)
+        )
+        # Python before 3.13 lets the denial out of is_symlink; 3.13 and later swallow it.
+        monkeypatch.setattr(
+            Path, "is_symlink", lambda path: path != target and real_is_symlink(path)
         )
 
     result = _sandbox(
