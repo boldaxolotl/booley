@@ -3,64 +3,101 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from mcp import Client, MCPError
 from mcp.client.subscriptions import ToolsListChanged
 from mcp.server.transport_security import TransportSecurityMiddleware
-from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, CallToolRequestParams, TextContent
+from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, CallToolRequestParams
 from starlette.requests import Request
 
-from booley.mcp import (
-    catalog,
-)
+import tests.mcp_runner_fake as fake
 from booley.mcp import server as mcp_server
+from booley.runtime.booley_dir import reset_cache
 from tests.time_budget import hang_guard_s, scaled
 
 
-def _test_server(monkeypatch: pytest.MonkeyPatch):
-    definition = {
-        "name": "booley_status",
-        "description": "Status",
-        "schema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
-    }
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
-    monkeypatch.setattr(mcp_server, "_discover_booley_mcp_tools", lambda: ([], []))
-    monkeypatch.setattr(mcp_server, "_build_mcp_tool_index", lambda _tools: {})
-    monkeypatch.setattr(catalog, "visible_definitions", lambda _exposure, _tools: [definition])
-
-    async def dispatch_status(name, arguments, jobs, names, *, request_context=None, caller=None):
-        return [TextContent(type="text", text=f"{name}: ready")]
-
-    monkeypatch.setattr(mcp_server, "_dispatch_special_mcp_tool", dispatch_status)
+def _server(tmp_path, monkeypatch):
+    """Build the SDK server over the real catalog; its endpoint child process is faked."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
+    reset_cache()
+    fake.install(monkeypatch)
+    # Private seam: only `main()` builds the SDK server, and it serves until stopped.
     return mcp_server._build_server()[0]
 
 
-def test_modern_inprocess_client_lists_and_calls_without_initialize(monkeypatch) -> None:
-    server = _test_server(monkeypatch)
+@pytest.fixture
+def sdk(tmp_path, monkeypatch):
+    """A server started where no Project is selected: a live catalog over built-ins only."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    yield _server(tmp_path, monkeypatch)
+    reset_cache()
+
+
+@pytest.fixture
+def source_sdk(tmp_path, monkeypatch):
+    """A server started in Booley's own Source Checkout: built-in tools, no live catalog."""
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
+    )
+    # Private seam: real discovery refuses a Source Checkout; schema-only adapters serve the
+    # built-in tools without selecting a Project, and no public entry builds that server.
+    monkeypatch.setattr(mcp_server, "_discover_booley_mcp_tools", lambda: ([], []))
+    yield _server(tmp_path, monkeypatch)
+    reset_cache()
+
+
+@pytest.fixture
+def catalog_dir(tmp_path, monkeypatch):
+    """A Project whose Booley Directory the running catalog watches."""
+    directory = tmp_path / ".booley"
+    directory.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(directory))
+    return directory
+
+
+@pytest.fixture
+def project_sdk(tmp_path, monkeypatch, catalog_dir):
+    """The SDK server built over `catalog_dir`."""
+    yield _server(tmp_path, monkeypatch)
+    reset_cache()
+
+
+def _http_app(sdk):
+    # Private seam: `main()` serves the HTTP app on a fixed loopback port until stopped.
+    return mcp_server._streamable_http_app(sdk)
+
+
+def _peer_state(changes) -> tuple[int, bool]:
+    # Private state: ToolChanges exposes no peer count; clients see only notifications.
+    return len(changes._peers), changes._running
+
+
+def test_modern_inprocess_client_lists_and_calls_without_initialize(source_sdk) -> None:
+    sdk = source_sdk
 
     async def exercise() -> None:
-        async with Client(server, mode="2026-07-28") as client:
+        async with Client(sdk, mode="2026-07-28") as client:
             assert client.protocol_version == "2026-07-28"
             listed = await client.list_tools()
-            assert [tool.name for tool in listed.tools] == ["booley_status"]
-            called = await client.call_tool("booley_status", {})
+            assert "bwave" in [tool.name for tool in listed.tools]
+            called = await client.call_tool("bwave", {"extra_args": ["--help"]})
             assert called.is_error is False
-            assert called.content[0].text == "booley_status: ready"
+            assert "EXIT_CODE: 0" in called.content[0].text
 
     asyncio.run(exercise())
 
 
-def test_schema_failure_is_tool_error_but_unknown_tool_is_protocol_error(monkeypatch) -> None:
-    server = _test_server(monkeypatch)
+def test_schema_failure_is_tool_error_but_unknown_tool_is_protocol_error(source_sdk) -> None:
+    sdk = source_sdk
 
     async def exercise() -> None:
-        async with Client(server, mode="2026-07-28") as client:
-            invalid = await client.call_tool("booley_status", {"unexpected": True})
+        async with Client(sdk, mode="2026-07-28") as client:
+            invalid = await client.call_tool("bwave", {"unexpected": True})
             assert invalid.is_error is True
             assert "Invalid tool arguments at $" in invalid.content[0].text
             with pytest.raises(MCPError) as raised:
@@ -70,10 +107,10 @@ def test_schema_failure_is_tool_error_but_unknown_tool_is_protocol_error(monkeyp
     asyncio.run(exercise())
 
 
-def test_http_adapter_rejects_host_and_origin_injection(monkeypatch) -> None:
-    server = _test_server(monkeypatch)
-    mcp_server._streamable_http_app(server)
-    settings = server._session_manager.security_settings
+def test_http_adapter_rejects_host_and_origin_injection(source_sdk) -> None:
+    sdk = source_sdk
+    _http_app(sdk)
+    settings = sdk._session_manager.security_settings
     middleware = TransportSecurityMiddleware(settings)
 
     def request(host: str, origin: str | None = None) -> Request:
@@ -96,64 +133,47 @@ def test_http_adapter_rejects_host_and_origin_injection(monkeypatch) -> None:
     assert loopback is None
 
 
-def test_application_dispatch_routes_bwave_and_python_tools(monkeypatch) -> None:
-    async def no_special(*_args, request_context=None, caller=None):
-        return None
-
-    async def bwave(name, _arguments, _request_context=None):
-        return [TextContent(type="text", text="wave")] if name == "bwave" else None
-
-    async def python_tool(name, arguments, definition, counts, jobs, *, caller=None):
-        assert (name, arguments, definition) == ("sim", {"target": "smoke"}, {"module": "sim"})
-        assert counts == {} and jobs is sentinel and caller is None
-        return [TextContent(type="text", text="simulation")]
-
-    sentinel = object()
-    monkeypatch.setattr(mcp_server, "_dispatch_special_mcp_tool", no_special)
-    monkeypatch.setattr(mcp_server, "_dispatch_bwave", bwave)
-    monkeypatch.setattr(mcp_server, "_dispatch_booley_mcp_tool", python_tool)
-    monkeypatch.setattr(mcp_server, "_prepend_changed_health_alert", lambda result: result)
-
-    wave = asyncio.run(
-        mcp_server._dispatch_application_tool(
-            "bwave", {}, {}, jobs=sentinel, status_mcp_tool_names=[], mcp_tool_call_counts={}
-        )
-    )
-    simulation = asyncio.run(
-        mcp_server._dispatch_application_tool(
-            "sim",
-            {"target": "smoke"},
-            {"module": "sim"},
-            jobs=sentinel,
-            status_mcp_tool_names=[],
-            mcp_tool_call_counts={},
-        )
-    )
-
-    assert wave[0].text == "wave"
-    assert simulation[0].text == "simulation"
-
-
 @pytest.mark.parametrize(
     ("error", "expected_code"),
     [
         (MCPError(INVALID_PARAMS, "known protocol error"), INVALID_PARAMS),
         (RuntimeError("private detail"), INTERNAL_ERROR),
     ],
+    ids=["known", "unexpected"],
 )
-def test_application_call_translates_only_unexpected_errors(error, expected_code) -> None:
-    class FailingApplication:
-        async def call_tool(self, _name, _arguments):
+def test_application_call_translates_only_unexpected_errors(
+    sdk, monkeypatch, error, expected_code
+) -> None:
+    fake.install(monkeypatch, error)
+
+    async def exercise() -> None:
+        async with Client(sdk, mode="2026-07-28") as client:
+            with pytest.raises(MCPError) as raised:
+                await client.call_tool("bwave", {"extra_args": ["--help"]})
+            assert raised.value.code == expected_code
+            if expected_code == INTERNAL_ERROR:
+                assert raised.value.message == "Internal server error"
+
+    asyncio.run(exercise())
+
+
+def test_context_free_application_call_translates_only_unexpected_errors() -> None:
+    # Private seam: the SDK always supplies a request context and an observer; only a direct
+    # call reaches the context-free arm.
+    params = CallToolRequestParams(name="broken", arguments={})
+    for error, code in (
+        (MCPError(INVALID_PARAMS, "known"), INVALID_PARAMS),
+        (RuntimeError("x"), INTERNAL_ERROR),
+    ):
+
+        async def call_tool(_name, _arguments, error=error):
             raise error
 
-    params = CallToolRequestParams(name="broken", arguments={})
-
-    with pytest.raises(MCPError) as raised:
-        asyncio.run(mcp_server._call_application_tool(FailingApplication(), params))
-
-    assert raised.value.code == expected_code
-    if expected_code == INTERNAL_ERROR:
-        assert raised.value.message == "Internal server error"
+        with pytest.raises(MCPError) as raised:
+            asyncio.run(
+                mcp_server._call_application_tool(SimpleNamespace(call_tool=call_tool), params)
+            )
+        assert raised.value.code == code
 
 
 async def _notification_exercise(sdk, directory, *, edit_before_list=False):
@@ -172,17 +192,11 @@ async def _notification_exercise(sdk, directory, *, edit_before_list=False):
     assert received, "running catalog must notify without a list request"
 
 
-def test_running_catalog_sends_list_changed(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache
+def test_running_catalog_sends_list_changed(project_sdk, catalog_dir):
+    sdk = project_sdk
     from tests.mcp_tools.test_live_catalog import write_endpoint
 
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    monkeypatch.chdir(tmp_path)
-    reset_cache()
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
-    sdk, _ = mcp_server._build_server()
+    directory = catalog_dir
     assert sdk.get_capabilities().tools.list_changed, (
         "running catalog must advertise tools list changes"
     )
@@ -205,44 +219,20 @@ def test_running_catalog_sends_list_changed(tmp_path, monkeypatch):
                 # must still arrive before its first tools/list request.
                 await client.list_tools()
 
-    try:
-        asyncio.run(exercise())
-    finally:
-        reset_cache()
+    asyncio.run(exercise())
 
 
-def test_list_refresh_does_not_consume_pending_notification(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache
-
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    monkeypatch.chdir(tmp_path)
-    reset_cache()
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
-    sdk, _ = mcp_server._build_server()
-    try:
-        asyncio.run(_notification_exercise(sdk, directory, edit_before_list=True))
-    finally:
-        reset_cache()
+def test_list_refresh_does_not_consume_pending_notification(project_sdk, catalog_dir):
+    asyncio.run(_notification_exercise(project_sdk, catalog_dir, edit_before_list=True))
 
 
-async def _http_notification_case(tmp_path, monkeypatch, *, legacy, concurrent=False):
+async def _http_notification_case(sdk, directory, *, legacy, concurrent=False):
     import socket
     from contextlib import asynccontextmanager
 
     import uvicorn
 
-    from booley.runtime.booley_dir import reset_cache
-
-    directory = tmp_path / ".booley"
-    directory.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(directory))
-    monkeypatch.chdir(tmp_path)
-    reset_cache()
-    monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
-    sdk, _ = mcp_server._build_server()
-    app = mcp_server._streamable_http_app(sdk)
+    app = _http_app(sdk)
 
     @asynccontextmanager
     async def serving():
@@ -260,29 +250,28 @@ async def _http_notification_case(tmp_path, monkeypatch, *, legacy, concurrent=F
                 host.should_exit = True
                 await asyncio.wait_for(task, hang_guard_s())
 
-    try:
-        async with serving() as url:
-            if concurrent:
-                await _concurrent_http_notifications(url, directory, sdk)
-                return
-            if not legacy:
-                await _notification_exercise(url, directory)
-                return
-            await _legacy_http_notification(url, directory)
-    finally:
-        reset_cache()
+    async with serving() as url:
+        if concurrent:
+            await _concurrent_http_notifications(url, directory, sdk)
+            return
+        if not legacy:
+            await _notification_exercise(url, directory)
+            return
+        await _legacy_http_notification(url, directory)
 
 
-def test_http_json_client_receives_catalog_change_subscription(tmp_path, monkeypatch):
-    asyncio.run(_http_notification_case(tmp_path, monkeypatch, legacy=False))
+def test_http_json_client_receives_catalog_change_subscription(project_sdk, catalog_dir):
+    asyncio.run(_http_notification_case(project_sdk, catalog_dir, legacy=False))
 
 
-def test_legacy_http_json_client_receives_catalog_change(tmp_path, monkeypatch):
-    asyncio.run(_http_notification_case(tmp_path, monkeypatch, legacy=True))
+def test_legacy_http_json_client_receives_catalog_change(project_sdk, catalog_dir):
+    asyncio.run(_http_notification_case(project_sdk, catalog_dir, legacy=True))
 
 
-def test_concurrent_http_clients_share_poller_and_survive_peer_disconnect(tmp_path, monkeypatch):
-    asyncio.run(_http_notification_case(tmp_path, monkeypatch, legacy=False, concurrent=True))
+def test_concurrent_http_clients_share_poller_and_survive_peer_disconnect(
+    project_sdk, catalog_dir
+):
+    asyncio.run(_http_notification_case(project_sdk, catalog_dir, legacy=False, concurrent=True))
 
 
 async def _concurrent_http_notifications(url, directory, sdk):
@@ -300,7 +289,7 @@ async def _concurrent_http_notifications(url, directory, sdk):
             )
             assert all(isinstance(event, ToolsListChanged) for event in events)
             assert "sim" not in {tool.name for tool in (await second.list_tools()).tools}
-        assert sdk.lifespan.__self__._running
+        assert _peer_state(sdk.lifespan.__self__)[1]
         (directory / "booley.toml").write_text("[flows.sim]\nenabled = true\n")
         event = await asyncio.wait_for(anext(first_events), hang_guard_s())
         assert isinstance(event, ToolsListChanged)
@@ -352,30 +341,20 @@ async def _legacy_http_notification(url, directory):
         assert received, "running catalog must notify without a list request"
 
 
-def test_legacy_peer_cleanup_and_modern_peer_exclusion(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
-    sdk = _test_server(monkeypatch)
+def test_legacy_peer_cleanup_and_modern_peer_exclusion(sdk):
     changes = sdk.lifespan.__self__
 
     async def exercise():
         async with Client(sdk, mode="legacy") as client:
             await client.list_tools()
-            assert len(changes._peers) == 1
-        assert changes._peers == {}
-        assert changes._running is False
+            assert _peer_state(changes) == (1, True)
+        assert _peer_state(changes) == (0, False)
         async with Client(sdk, mode="2026-07-28") as client:
             await client.list_tools()
-            assert changes._peers == {}
-        assert changes._running is False
+            assert _peer_state(changes)[0] == 0
+        assert _peer_state(changes) == (0, False)
 
-    try:
-        asyncio.run(exercise())
-    finally:
-        reset_cache()
+    asyncio.run(exercise())
 
 
 def test_change_fanout_bounds_failed_peers_and_isolates_servers(monkeypatch):
@@ -410,27 +389,22 @@ def test_change_fanout_bounds_failed_peers_and_isolates_servers(monkeypatch):
                     session=SimpleNamespace(_connection=peer),
                 )
                 await first.remember_legacy_peer(context, next_handler)
+            # Private seam: shortens the send timer the slow peer must outlive.
             monkeypatch.setattr("booley.mcp.tool_changes._SEND_TIMEOUT_SECONDS", scaled(0.05))
             await first.publish()
             assert sent == ["good"]
-            assert len(first._peers) == 1
-            assert second._peers == {}
-        assert first._peers == {}
+            assert _peer_state(first)[0] == 1
+            assert _peer_state(second)[0] == 0
+        assert _peer_state(first)[0] == 0
 
     asyncio.run(exercise())
 
 
-def test_legacy_http_idle_expiry_removes_notification_peer(tmp_path, monkeypatch):
+def test_legacy_http_idle_expiry_removes_notification_peer(sdk):
     import httpx
 
-    from booley.runtime.booley_dir import reset_cache
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
-    sdk = _test_server(monkeypatch)
     changes = sdk.lifespan.__self__
-    app = mcp_server._streamable_http_app(sdk)
+    app = _http_app(sdk)
     sdk._session_manager.session_idle_timeout = scaled(0.05)
 
     async def exercise():
@@ -455,28 +429,19 @@ def test_legacy_http_idle_expiry_removes_notification_peer(tmp_path, monkeypatch
                 },
             )
             assert response.status_code == 200
-            assert len(changes._peers) == 1
+            assert _peer_state(changes)[0] == 1
             async with asyncio.timeout(hang_guard_s()):
-                while changes._peers:
+                while _peer_state(changes)[0]:
                     await asyncio.sleep(0.01)
             assert sdk._session_manager._server_instances == {}
-        assert changes._running is False
+        assert _peer_state(changes)[1] is False
 
-    try:
-        asyncio.run(exercise())
-    finally:
-        reset_cache()
+    asyncio.run(exercise())
 
 
-def test_stdio_run_cancellation_stops_catalog_poller(tmp_path, monkeypatch):
+def test_stdio_run_cancellation_stops_catalog_poller(sdk):
     import anyio
 
-    from booley.runtime.booley_dir import reset_cache
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    reset_cache()
-    sdk = _test_server(monkeypatch)
     changes = sdk.lifespan.__self__
 
     async def exercise():
@@ -485,19 +450,15 @@ def test_stdio_run_cancellation_stops_catalog_poller(tmp_path, monkeypatch):
         async with incoming, reads, writes, outgoing:
             task = asyncio.create_task(sdk.run(reads, writes, sdk.create_initialization_options()))
             async with asyncio.timeout(hang_guard_s()):
-                while not changes._running:
+                while not _peer_state(changes)[1]:
                     await asyncio.sleep(0)
             task.cancel()
             await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), hang_guard_s())
-            assert changes._running is False
-            assert changes._peers == {}
+            assert _peer_state(changes) == (0, False)
             assert not [
                 task
                 for task in asyncio.all_tasks()
                 if task is not asyncio.current_task() and not task.done()
             ]
 
-    try:
-        asyncio.run(exercise())
-    finally:
-        reset_cache()
+    asyncio.run(exercise())
