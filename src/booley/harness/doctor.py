@@ -1132,7 +1132,7 @@ def _check_kept_worktree_branches(project_root: Path, reporter: _Reporter) -> No
     """Warn about each ``booley-worktree/*`` branch that has no worktree.
 
     ``booley worktree prepare`` deletes such a branch once all its commits are on the
-    Booley Directory's branch, so one still listed holds work to merge or discard.
+    Booley Directory's branch, so one still listed may hold work to merge or discard.
     """
     from booley.core.booley_dir import resolve_main_checkout_root
     from booley.core.booley_layout import BooleyLayoutError

@@ -2381,6 +2381,31 @@ def test_prepare_refuses_a_reused_name_over_an_unmerged_branch(
     assert {"booley-worktree/t3-o'reused", "keep/merged"} <= _branches(source)
 
 
+def test_prepare_keeps_every_branch_while_the_booley_directory_is_detached(
+    versioned_project: Path,
+) -> None:
+    (gone,) = _prepare_with_own_commits(versioned_project, ["t3-gone"], own_commit=True)
+    source = versioned_project / ".booley"
+    shutil.rmtree(gone)
+    assert _git(source, "checkout", "--detach", "booley-worktree/t3-gone").returncode == 0
+
+    assert _prepare(_git_worktree(versioned_project, "t3-next")) == 0
+
+    assert "booley-worktree/t3-gone" in _branches(source)
+
+
+def test_prepare_deletes_a_branch_whole_when_its_name_holds_unicode_whitespace(
+    versioned_project: Path,
+) -> None:
+    source = versioned_project / ".booley"
+    assert _git(source, "branch", "booley-worktree/a\u00a0keep/merged").returncode == 0
+    assert _git(source, "branch", "keep/merged").returncode == 0
+
+    assert _prepare(_git_worktree(versioned_project, "t3-next")) == 0
+
+    assert _branches(source) == {"main", "keep/merged", "booley-worktree/t3-next"}
+
+
 def test_prepare_drops_a_killed_runs_snapshot_leftovers(project: Path) -> None:
     worktree = _git_worktree(project, "t3-killed")
     _write(worktree / f".booley.prepare-{os.getpid()}/stale.txt", "old\n")

@@ -277,23 +277,23 @@ def kept_paired_branches(source: Path) -> list[str]:
 
 
 def _paired_branches_without_checkout(source: Path) -> dict[str, bool]:
-    """Map each such branch to whether all its commits are reachable from *source*'s HEAD.
+    """Map each such branch to whether all its commits are on the branch *source* has checked out.
 
     Every registration Git lists counts as a checkout, a prunable or locked one too;
-    an unreadable branch counts as unmerged.
+    an unreadable branch counts as unmerged, and so does every branch while *source*
+    is detached, because no branch then holds the commits.
     """
     listing = _require_git(source, "worktree", "list", "--porcelain")
-    registered = {line.removeprefix("branch ") for line in listing.splitlines()}
+    registered = {line.removeprefix("branch ") for line in listing.split("\n")}
     refs = _require_git(
         source, "for-each-ref", "--format=%(refname)", "refs/heads/booley-worktree/"
     )
+    attached = run_git(source, "symbolic-ref", "--quiet", "HEAD").returncode == 0
     return {
-        ref.removeprefix("refs/heads/"): run_git(
-            source, "merge-base", "--is-ancestor", ref, "HEAD"
-        ).returncode
-        == 0
-        for ref in refs.split()
-        if ref not in registered
+        ref.removeprefix("refs/heads/"): attached
+        and run_git(source, "merge-base", "--is-ancestor", ref, "HEAD").returncode == 0
+        for ref in refs.split("\n")
+        if ref and ref not in registered
     }
 
 
