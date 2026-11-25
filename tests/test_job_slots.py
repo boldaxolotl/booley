@@ -1082,7 +1082,10 @@ class TestGhostReaping:
             execution_paths(execution_id, booley_dir=record_project).record,
             active_execution_record(supervisor),
         )
-        monkeypatch.setenv("BOOLEY_DIR", str(project))
+        if case == "project-unresolvable":
+            monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        else:
+            monkeypatch.setenv("BOOLEY_DIR", str(project))
         if case == "none":
             monkeypatch.delenv(RUNTIME_EXECUTION_ENV, raising=False)
         else:
