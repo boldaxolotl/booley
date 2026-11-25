@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from booley.flows.base import SubprocessResult
+from booley.core.build_paths import work_root_for
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
-from booley.flows.fpga.backends.vivado import edam as fpga_edam
-from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
+from booley.flows.fpga.flow import FpgaImplFlow
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from tests.flows.fpga.vivado_fake import (
+    EDALIZE_LEAKS_HANDLE,
+    FakeVivado,
+    run_fpga,
+    write_fpga_project,
+)
 
 
 def _artifacts(root: Path, *, bitstream: bool = True) -> None:
@@ -29,16 +35,6 @@ def _artifacts(root: Path, *, bitstream: bool = True) -> None:
         (impl / "top.bit").write_bytes(b"bitstream")
 
 
-def _parsed_pass() -> dict:
-    return {
-        "status": "pass",
-        "lut_count": 10,
-        "ff_count": 5,
-        "wns_ns": 0.2,
-        "whs_ns": 0.1,
-    }
-
-
 def _run_evidence(run_id: str = "producer-1") -> dict:
     return {
         "version": 1,
@@ -47,13 +43,6 @@ def _run_evidence(run_id: str = "producer-1") -> dict:
         "source_sha256": "b" * 64,
         "recipe_sha256": "c" * 64,
     }
-
-
-def _flow(root: Path) -> FpgaImplFlow:
-    flow = FpgaImplFlow()
-    flow.parse_args(["--target", "fpga_demo", "--work-dir", str(root), "--timeout-ms", "1000"])
-    flow._project_root = root
-    return flow
 
 
 def _resolved(root: Path) -> ResolvedTarget:
@@ -75,50 +64,27 @@ def _resolved(root: Path) -> ResolvedTarget:
     )
 
 
-def test_input_fingerprint_changes_with_source_and_resolved_parameters(tmp_path: Path) -> None:
+@pytest.mark.parametrize("change", ["source", "parameter", "recipe"])
+def test_input_fingerprint_changes_with_each_input(tmp_path: Path, change: str) -> None:
     resolved = _resolved(tmp_path)
     edam = {"name": "fpga_demo", "toplevel": "top", "tool_options": {"part": "p"}}
-    first = fpga_cache.input_fingerprint(resolved, edam, out_of_context=False)
-
-    (tmp_path / "rtl.sv").write_text("module top; wire changed; endmodule\n", encoding="utf-8")
-    source_changed = fpga_cache.input_fingerprint(resolved, edam, out_of_context=False)
-    assert source_changed != first
-
-    parameters = {"WIDTH": {"datatype": "int", "paramtype": "vlogparam", "default": 16}}
-    parameter_changed = fpga_cache.input_fingerprint(
-        replace(resolved, parameters=parameters), edam, out_of_context=False
+    before = fpga_cache.input_fingerprint(resolved, edam, out_of_context=False, recipe_sha256="a")
+    recipe = "b" if change == "recipe" else "a"
+    if change == "source":
+        (tmp_path / "rtl.sv").write_text("module top; wire changed; endmodule\n", encoding="utf-8")
+    if change == "parameter":
+        width = {"datatype": "int", "paramtype": "vlogparam", "default": 16}
+        resolved = replace(resolved, parameters={"WIDTH": width})
+    after = fpga_cache.input_fingerprint(
+        resolved, edam, out_of_context=False, recipe_sha256=recipe
     )
-    assert parameter_changed != source_changed
-
-
-def test_input_fingerprint_changes_with_resolved_recipe(tmp_path: Path) -> None:
-    resolved = _resolved(tmp_path)
-    edam = {"name": "fpga_demo", "toplevel": "top", "tool_options": {"part": "p"}}
-
-    balanced = fpga_cache.input_fingerprint(
-        resolved,
-        edam,
-        out_of_context=False,
-        recipe_sha256="balanced-recipe",
-    )
-    compact = fpga_cache.input_fingerprint(
-        resolved,
-        edam,
-        out_of_context=False,
-        recipe_sha256="compact-recipe",
-    )
-
-    assert compact != balanced
+    assert after != before
 
 
 def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
     _artifacts(tmp_path)
-    assert fpga_cache.store(
-        tmp_path,
-        "a" * 64,
-        require_bitstream=True,
-        producer_evidence=_run_evidence(),
-    )
+    evidence = _run_evidence()
+    assert fpga_cache.store(tmp_path, "a" * 64, require_bitstream=True, producer_evidence=evidence)
     assert fpga_cache.load(tmp_path, "a" * 64, require_bitstream=True) is not None
     assert fpga_cache.load(tmp_path, "b" * 64, require_bitstream=True) is None
 
@@ -128,145 +94,94 @@ def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
 
 
 def test_cache_rejects_non_mapping_metadata_and_boolean_producer_version(tmp_path: Path) -> None:
+    _artifacts(tmp_path)
     (tmp_path / fpga_cache.CACHE_FILE).write_text("[]", encoding="utf-8")
-    assert fpga_cache._read_metadata(tmp_path) is None
-    assert not fpga_cache._valid_producer_evidence({**_run_evidence(), "version": True})
-
-
-def test_cache_store_requires_bitstream_when_target_is_not_ooc(tmp_path: Path) -> None:
-    _artifacts(tmp_path, bitstream=False)
+    assert fpga_cache.load(tmp_path, "a" * 64, require_bitstream=True) is None
+    boolean_version = {**_run_evidence(), "version": True}
     assert not fpga_cache.store(
-        tmp_path,
-        "a" * 64,
-        require_bitstream=True,
-        producer_evidence=_run_evidence(),
-    )
-    assert fpga_cache.store(
-        tmp_path,
-        "a" * 64,
-        require_bitstream=False,
-        producer_evidence=_run_evidence(),
+        tmp_path, "a" * 64, require_bitstream=True, producer_evidence=boolean_version
     )
 
 
-def test_store_rejects_artifacts_predating_dispatch(tmp_path: Path) -> None:
-    _artifacts(tmp_path)
-    old = time.time() - 3600
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
+@pytest.mark.parametrize(
+    ("bitstream", "require_bitstream", "stale", "stored"),
+    [(False, True, False, False), (False, False, False, True), (True, True, True, False)],
+    ids=["bitstream-required", "out-of-context", "predates-dispatch"],
+)
+def test_store_accepts_only_fresh_complete_artifacts(
+    tmp_path: Path, bitstream: bool, require_bitstream: bool, stale: bool, stored: bool
+) -> None:
+    _artifacts(tmp_path, bitstream=bitstream)
+    if stale:
+        old = time.time() - 3600
+        for path in tmp_path.rglob("*"):
             os.utime(path, (old, old))
-    assert not fpga_cache.store(
-        tmp_path,
-        "a" * 64,
+    assert (
+        fpga_cache.store(
+            tmp_path,
+            "a" * 64,
+            require_bitstream=require_bitstream,
+            producer_evidence=_run_evidence(),
+            min_mtime=time.time() if stale else None,
+        )
+        is stored
+    )
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    return write_fpga_project(tmp_path / "project")
+
+
+@pytest.fixture
+def vivado(project: Path, monkeypatch: pytest.MonkeyPatch) -> FakeVivado:
+    return FakeVivado.install(monkeypatch, project)
+
+
+@EDALIZE_LEAKS_HANDLE
+@pytest.mark.parametrize(
+    ("args", "cached", "calls"),
+    [((), True, [["-B"]]), (("--no-cache",), False, [["-B"], ["-B"]])],
+    ids=["reuse", "no-cache"],
+)
+def test_second_run_reuses_the_verified_route_unless_told_not_to(
+    project: Path, vivado: FakeVivado, args: tuple[str, ...], cached: bool, calls: list
+) -> None:
+    """A cache miss forces Make to rebuild; a hit keeps its producer's run evidence."""
+    _, first = run_fpga(project)
+    outcome, second = run_fpga(project, *args)
+
+    assert outcome.exit_code == EXIT_SUCCESS
+    assert second["cached"] is cached
+    assert vivado.calls() == calls
+    assert second["recipe_fingerprint"] == first["recipe_fingerprint"] != ""
+    producer = first["run_evidence"]["run_id"]
+    assert (second["run_evidence"]["run_id"] == producer) is cached
+    assert (second["cache_consumer_run_id"] not in {None, producer}) is cached
+
+
+@EDALIZE_LEAKS_HANDLE
+def test_cached_reports_cannot_replace_missing_route_witness(
+    project: Path, vivado: FakeVivado
+) -> None:
+    """A cache whose run log lost the route witness runs Vivado again (#1075)."""
+    run_fpga(project)
+    work_root = work_root_for(project, "fpga", "fpga")
+    impl = work_root / "fake.runs" / "impl_1"
+    (impl / "runme.log").write_bytes(b"no route occurred\n")
+    (impl / "top_drc_routed.rpt").write_bytes(b"route_design completed successfully\n")
+    stored = json.loads((work_root / fpga_cache.CACHE_FILE).read_text(encoding="utf-8"))
+    assert fpga_cache.store(
+        work_root,
+        stored["fingerprint"],
         require_bitstream=True,
-        producer_evidence=_run_evidence(),
-        min_mtime=time.time(),
+        producer_evidence=stored["producer_evidence"],
     )
 
+    _, report = run_fpga(project)
 
-def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> None:
-    _artifacts(tmp_path)
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
-            os.utime(path, (time.time() + 3600, time.time() + 3600))
-    flow = _flow(tmp_path)
-    prepared = _PreparedFpgaCommand(
-        run_cmd=["make", "-C", "build"],
-        work_root=tmp_path,
-        fingerprint="a" * 64,
-        require_bitstream=True,
-        source_bytes=None,
-        recipe_snapshot={"flow": "fpga", "target": "fpga_demo"},
-        recipe_fingerprint="recipe-a",
-        run_evidence=_run_evidence("consumer-2"),
-    )
-    with (
-        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
-        patch.object(
-            fpga_cache,
-            "load",
-            return_value=fpga_cache.CacheHit("a" * 64, "reports", _run_evidence()),
-        ),
-        patch(
-            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
-            return_value=_parsed_pass(),
-        ),
-        patch.object(flow, "_execute_boundary") as execute,
-    ):
-        metrics = flow._run_single_target("fpga_demo")
-    execute.assert_not_called()
-    assert metrics.passed
-    assert metrics.cached
-    assert metrics.cache_fingerprint == "a" * 64
-    assert metrics.recipe_fingerprint == "recipe-a"
-    assert metrics.run_evidence["run_id"] == "producer-1"
-    assert metrics.cache_consumer_run_id == "consumer-2"
-
-
-def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
-    _artifacts(tmp_path)
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
-            os.utime(path, (time.time() + 3600, time.time() + 3600))
-    flow = _flow(tmp_path)
-    prepared = _PreparedFpgaCommand(
-        run_cmd=["make", "-C", "build"],
-        work_root=tmp_path,
-        fingerprint="a" * 64,
-        require_bitstream=False,
-        source_bytes=None,
-    )
-    executed: list[str] = []
-
-    def execute(command, *, timeout):
-        del timeout
-        executed.extend(command)
-        return SubprocessResult(returncode=0, stdout="routed", dispatched_unix=time.time())
-
-    with (
-        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
-        patch.object(fpga_cache, "load", return_value=None),
-        patch.object(fpga_cache, "store", return_value=True),
-        patch.object(flow, "_execute_boundary", side_effect=execute),
-        patch(
-            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
-            return_value=_parsed_pass(),
-        ),
-    ):
-        metrics = flow._run_single_target("fpga_demo")
-    assert executed[-1] == "-B"
-    assert metrics.passed
-    assert not metrics.cached
-
-
-def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
-    _artifacts(tmp_path)
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
-            os.utime(path, (time.time() + 3600, time.time() + 3600))
-    flow = _flow(tmp_path)
-    flow.args.no_cache = True
-    prepared = _PreparedFpgaCommand(["make", "-C", "build"], tmp_path, "a" * 64, False, None)
-    with (
-        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
-        patch.object(fpga_cache, "load") as load,
-        patch.object(fpga_cache, "store", return_value=True),
-        patch.object(
-            flow,
-            "_execute_boundary",
-            return_value=SubprocessResult(
-                returncode=0, stdout="routed", dispatched_unix=time.time()
-            ),
-        ) as execute,
-        patch(
-            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
-            return_value=_parsed_pass(),
-        ),
-    ):
-        metrics = flow._run_single_target("fpga_demo")
-    load.assert_not_called()
-    execute.assert_called_once()
-    assert metrics.passed
+    assert report["cached"] is False
+    assert len(vivado.calls()) == 2
 
 
 @pytest.mark.parametrize(
@@ -280,85 +195,49 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
     ],
 )
 def test_post_route_completion_gates_success_and_cache(
-    tmp_path: Path, completion_log: str, returncode: int, passes: bool
+    project: Path, vivado: FakeVivado, completion_log: str, returncode: int, passes: bool
 ) -> None:
-    from booley.flows.fpga.profiles import VIVADO_PROFILES
+    vivado.answer(stdout=completion_log + "\n", returncode=returncode)
 
-    _artifacts(tmp_path)
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
-            os.utime(path, (time.time() + 3600, time.time() + 3600))
-    flow = _flow(tmp_path)
-    prepared = _PreparedFpgaCommand(
-        ["make"],
-        tmp_path,
-        "a" * 64,
-        False,
-        None,
-        ppa_profile=VIVADO_PROFILES["max_frequency"],
-    )
-    with (
-        patch.object(flow, "_prepare_fpga_command", return_value=prepared),
-        patch.object(fpga_cache, "load", return_value=None),
-        patch.object(fpga_cache, "store") as store,
-        patch.object(
-            flow,
-            "_execute_boundary",
-            return_value=SubprocessResult(
-                returncode=returncode,
-                stdout="route_design completed successfully\n" + completion_log + "\n",
-            ),
-        ),
-        patch(
-            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
-            return_value=_parsed_pass(),
-        ),
-    ):
-        metrics = flow._run_single_target("fpga_demo")
-    assert metrics.passed is passes
-    if passes:
-        store.assert_called_once()
-    else:
-        assert "post-route" in metrics.infra_error.lower()
-        store.assert_not_called()
+    outcome, _ = run_fpga(project, "--ppa-profile", "max_frequency")
 
-
-def test_cached_reports_cannot_replace_missing_route_witness(tmp_path):
-    _artifacts(tmp_path)
-    (tmp_path / "demo.runs/impl_1/runme.log").write_text("no route occurred")
-    (tmp_path / "demo.runs/impl_1/top_drc_routed.rpt").write_text(
-        "route_design completed successfully"
-    )
-    assert fpga_cache.store(
-        tmp_path, "a" * 64, require_bitstream=False, producer_evidence=_run_evidence()
-    )
-    with patch(
-        "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=_parsed_pass()
-    ):
-        assert (
-            _flow(tmp_path)._load_cached_metrics(
-                "fpga_demo", tmp_path, "a" * 64, require_bitstream=False
-            )
-            is None
-        )
+    assert outcome.exit_code == (EXIT_SUCCESS if passes else EXIT_ERROR)
+    cache_file = work_root_for(project, "fpga", "fpga") / fpga_cache.CACHE_FILE
+    assert cache_file.exists() is passes
+    assert ("post-route" in outcome.report_text.lower()) is not passes
 
 
 @pytest.mark.parametrize("datatype", ["str", "file"])
-def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch, datatype):
-    resolved = replace(
-        _resolved(tmp_path),
-        parameters={"NAME": {"datatype": datatype, "paramtype": "vlogparam", "default": "MAC"}},
-    )
-    flow = _flow(tmp_path)
-    monkeypatch.setattr(flow, "_resolve_fpga_target", lambda *_args, **_kwargs: resolved)
-    monkeypatch.setattr(
-        fpga_cache, "load", lambda *_args, **_kwargs: pytest.fail("string reached cache")
-    )
-    monkeypatch.setattr(
-        fpga_edam, "build_fpga_edam", lambda *_args, **_kwargs: pytest.fail("string reached EDAM")
-    )
+def test_string_parameter_is_refused_before_vivado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, datatype: str
+) -> None:
+    project = write_fpga_project(tmp_path / "project", width=datatype, default="MAC")
+    vivado = FakeVivado.install(monkeypatch, project)
+
+    outcome, _ = run_fpga(project)
+
+    assert outcome.exit_code == EXIT_ERROR
+    assert "Vivado does not support string/file" in outcome.report_text
+    assert vivado.calls() == []
+    assert not list(work_root_for(project, "fpga", "fpga").glob("*.tcl"))
+    # Private: a run refuses the recipe while planning, so only preparation, which a
+    # baseline re-resolves at execution, shows the refusal precedes the cache and EDAM.
+    flow = FpgaImplFlow()
+    flow.parse_args(["--target", "fpga", "--project", str(project)])
     with pytest.raises(ValueError, match="Vivado does not support string/file"):
-        flow._prepare_fpga_command("fpga_demo")
+        flow._prepare_fpga_command("fpga")
+
+
+def test_numbered_log_is_skipped_without_a_report_directory(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Private: every Flow entry point sets a report directory before it runs (the
+    # Booley Directory default), so only the publisher shows that a run without one
+    # skips its numbered log instead of failing.
+    monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
+    flow = FpgaImplFlow()
+    flow.parse_args(["--target", "fpga", "--project", str(project)])
+    assert flow._publish_numbered_fpga_log("fpga", "log") == ""
 
 
 def _reachable_target(tmp_path: Path) -> ResolvedTarget:
@@ -390,7 +269,8 @@ def test_default_payload_has_no_reachable_files(
     resolved = _reachable_target(tmp_path)
     (resolved.build_root / "src" / "inc" / "extra.vh").write_text("// x\n", encoding="utf-8")
     with monkeypatch.context() as guard:
-        # The legacy payload must never reach the reachable-file walk.
+        # Private: the hashed payload is not observable, so only the walk's absence
+        # shows that a Project without reachable folders keeps its earlier cache key.
         guard.setattr(fpga_cache, "_reachable_file_evidence", _forbidden_walk)
         plain = fpga_cache.input_fingerprint(resolved, {}, out_of_context=False)
         assert plain == fpga_cache.input_fingerprint(
@@ -450,6 +330,14 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     (user / "locked.vh").write_text("// v1\n", encoding="utf-8")
     empty = tmp_path / "empty"
     empty.mkdir()
+    readable = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(user,)
+    )
+    without_file = fpga_cache.input_fingerprint(
+        resolved, {}, out_of_context=False, reachable_dirs=(empty,)
+    )
+    # Private: no portable file is listed as a regular file yet fails to open
+    # (root and Windows ignore a chmod 000), so the one hashing call is replaced.
     real_hash = fpga_cache._hash_file
 
     def _locked_only(path: Path) -> tuple[str, int]:
@@ -461,11 +349,5 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     with_locked = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(user,)
     )
-    without_file = fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=(empty,)
-    )
     assert with_locked != without_file  # the unreadable file is still in the key
-    monkeypatch.setattr(fpga_cache, "_hash_file", real_hash)
-    assert with_locked != fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=(user,)
-    )  # and its entry differs from the readable one
+    assert with_locked != readable  # and its entry differs from the readable one
