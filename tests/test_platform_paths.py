@@ -33,9 +33,10 @@ from tests.pipe_holding_tree import (
     heartbeat_tree,
     parent_argv,
     stall_wait_on,
+    start_deadline_after_tree_start,
     wait_until_heartbeat_stops,
 )
-from tests.time_budget import hang_guard_s, scaled
+from tests.time_budget import SCALE_VARIABLE, hang_guard_s, scaled
 
 # ---------------------------------------------------------------------------
 # platform conventions
@@ -312,9 +313,9 @@ _HUNG_TREE_DEADLINE_S = scaled(2)
 
 def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutExpired:
     """Run a hung child tree that ignores stdin under *mode*; it must be stopped in time."""
-    with heartbeat_tree(tmp_path) as paths:
+    with heartbeat_tree(tmp_path) as paths, pytest.MonkeyPatch.context() as monkeypatch:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        started = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         expired: subprocess.TimeoutExpired | None = None
         try:
             completed = platform_paths.run_captured_bounded(
@@ -324,7 +325,7 @@ def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutEx
             expired = raised
         # The elapsed time is taken at the helper's return; the tree is observed
         # only when a check fails, up to 1 s later.
-        elapsed = time.monotonic() - started
+        elapsed = time.monotonic() - started[0]
         summary = f"run_captured_bounded returned after {elapsed:.2f} s against a {_HUNG_TREE_DEADLINE_S:g} s deadline"
         if expired is None:
             pytest.fail(
@@ -374,10 +375,10 @@ def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
         stall_wait_on(monkeypatch)
-        started = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         with pytest.raises(subprocess.TimeoutExpired):
             platform_paths.run_captured_bounded(argv, timeout=_HUNG_TREE_DEADLINE_S, text=False)
-        assert time.monotonic() - started < scaled(38)
+        assert time.monotonic() - started[0] < scaled(38)
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
     assert not [t for t in threading.enumerate() if t.name == "bounded-capture-deadline"]
 
@@ -399,3 +400,18 @@ def test_run_captured_bounded_accepts_an_infinite_timeout(monkeypatch: pytest.Mo
     use_windows_deadline_policy(monkeypatch)
     result = platform_paths.run_captured_bounded(_EXIT_AT_ONCE, timeout=math.inf)
     assert result.returncode == 0
+
+
+def test_a_hung_tree_that_never_starts_fails_at_the_hang_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cleanup_margin = scaled(15)  # a Windows tree kill may take 10 s
+    monkeypatch.setenv(SCALE_VARIABLE, "0.05")  # a 2 s hang guard
+    silent = [sys.executable, "-c", "import time; time.sleep(60)"]  # never beats
+    with heartbeat_tree(tmp_path) as paths:
+        start_deadline_after_tree_start(monkeypatch, paths)
+        started = time.monotonic()
+        with pytest.raises(pytest.fail.Exception, match="the process tree never started"):
+            platform_paths.run_captured_bounded(silent, timeout=hang_guard_s())
+        # It waited the whole guard, then stopped the silent child instead of reaping it at 60 s.
+        assert hang_guard_s() <= time.monotonic() - started < hang_guard_s() + cleanup_margin
