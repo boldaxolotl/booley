@@ -6,7 +6,7 @@ policy is rejected, the server does not become ready, ``t3 policy show`` does no
 report Booley's policy as in effect, or ``t3 auth pairing create`` stops returning a
 link under the base URL that ``booley session up`` will print. The file named by
 ``--policy`` holds the expected values: ``organization``, ``limits`` and optional
-``settings``, a mapping of setting name to the value Booley locks it to.
+``settings``, each a ``{"value", "locked"}`` entry as T3 Code's policy file writes it.
 
 ``verify_t3code_claude_tools.py`` reuses its helpers for the check of the tools T3 Code offers
 Claude. Standard library only: the image's Python runs it without Booley installed.
@@ -130,8 +130,11 @@ def _check_policy_show(root: Path, policy: dict[str, Any]) -> dict[str, Any]:
     if result.returncode:
         fail("t3 policy show failed", command_output(result))
     shown = _parse_show(result.stdout)
-    locked = {key: [value, True] for key, value in policy.get("settings", {}).items()}
-    problems = _differences("settings", locked, shown["settings"])
+    expected = {
+        key: [setting["value"], setting["locked"]]
+        for key, setting in policy.get("settings", {}).items()
+    }
+    problems = _differences("settings", expected, shown["settings"])
     problems += _differences("limits", policy["limits"], shown["limits"])
     if (shown["organization"], shown["path"]) != (policy["organization"], _INSTALLED_POLICY):
         problems.append(f"policy source: {shown['organization']} at {shown['path']}")

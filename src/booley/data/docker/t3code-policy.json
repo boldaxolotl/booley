@@ -1,6 +1,22 @@
 {
   "schemaVersion": 1,
   "organization": "Booley",
+  "settings": {
+    "worktreesDirectory": { "value": "/booley/t3-worktrees", "locked": true },
+    "defaultProjectScripts": {
+      "value": [
+        {
+          "id": "booley-worktree-prepare",
+          "name": "Prepare Booley worktree",
+          "command": "booley worktree prepare",
+          "icon": "configure",
+          "runOnWorktreeCreate": true,
+          "async": false
+        }
+      ],
+      "locked": true
+    }
+  },
   "limits": {
     "maxRuntimeMode": "auto",
     "connect": false,

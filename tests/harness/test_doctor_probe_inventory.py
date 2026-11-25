@@ -143,6 +143,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_goal_leftovers",
             "_check_job_logs_leftover",
             "_check_worktree_booley_pairing",
+            "_check_kept_worktree_branches",
             "_check_common_state_in_worktrees",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",

@@ -11,8 +11,9 @@ one. Run the commands in a container terminal.
 ## Preparing a worktree
 
 A new worktree has no Booley Directory of its own and uses the main checkout's
-configuration until it is prepared. T3 Code prepares the worktrees it creates.
-For one made with `git worktree add`, run this in it:
+configuration until it is prepared. T3 Code in the Sandbox prepares each
+worktree it creates before the thread's first turn; if that fails, the thread
+does not start. For one made with `git worktree add`, run this in it:
 
 ```bash
 booley worktree prepare [PATH]
@@ -38,6 +39,12 @@ repository, so the worktree gets a **Paired Checkout** instead: a checkout of
 its last commit on branch `booley-worktree/<folder>`. Uncommitted and untracked
 files are left out, and one warning names them. Commit them first if the
 worktree needs them.
+
+Each run also deletes the `booley-worktree/*` branches whose worktree is gone
+and whose commits are all on the Booley Directory's branch. Doctor warns about
+the others (`project-data.worktree-branch-kept`) with the command that merges or
+deletes each. A reused folder name whose old branch holds commits of its own
+fails, naming the branch: merge or delete it, then run again.
 
 </details>
 
