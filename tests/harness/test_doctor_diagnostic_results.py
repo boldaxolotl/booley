@@ -603,9 +603,6 @@ FuseSoC .core checks
   ·  .core schema upstream.core: provider cannot be validated by any definition — FuseSoC ignores this whole .core, so none of its Targets resolve — vendored core, no Doctor Target selects it; FuseSoC skips it at resolve, so only that core's own Targets are unusable
   ✓  .core Targets enumerated: lint_fast, sim_bad, sim_fast, sim_sec, synth_fast
   ✓  Doctor Target matrix valid: 5 Target/Flow pair(s)
-  ✓  .core Targets use the flow API (no legacy FuseSoC tools-section targets)
-  ✓  Target names follow the <axis>_<subject> convention
-  ✓  no dead 'default:' Targets in Booley-authored .core files
   ✓  synth Target 'synth_fast' (yosys) declares flow_options.arch
   ✓  3 Verilator sim Target(s) trace-capable (own a --exe main)
   ✓  sim Target 'sim_fast' TB fileset tagged
@@ -697,9 +694,6 @@ FuseSoC .core checks
   ✓  .core CAPI2 schema valid
   ✓  .core Targets enumerated: lint_fast, sim_fast, synth_fast
   ✓  Doctor Target matrix valid: 3 Target/Flow pair(s)
-  ✓  .core Targets use the flow API (no legacy FuseSoC tools-section targets)
-  ✓  Target names follow the <axis>_<subject> convention
-  ✓  no dead 'default:' Targets in Booley-authored .core files
   ✓  synth Target 'synth_fast' (yosys) declares flow_options.arch
   ✓  1 Verilator sim Target(s) trace-capable (own a --exe main)
   ✓  sim Target 'sim_fast' TB fileset tagged
