@@ -14,7 +14,6 @@ import pytest
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import _Claim
 from booley.flows.endpoint_diff import read_source_dirs_from_toml
-from booley.flows.endpoint_events import _write_display_event
 from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.flows.endpoint_session import _transcript_diagnostic_path
 from booley.flows.source_fingerprint import as_str_list
@@ -25,7 +24,6 @@ from booley.mcp.base import (
     McpTool,
     McpToolResult,
 )
-from booley.mcp.run_lock import _as_pid, _scan_endpoint_events
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.report_headline import assert_paired_headline
@@ -274,40 +272,6 @@ def test_console_failure_is_normalized_and_recovery_is_attempted() -> None:
     recover.assert_called_once_with(endpoint, result.outcome)
 
 
-def test_endpoint_end_failure_is_suppressed_after_completion_failure() -> None:
-    class PersistenceFailingMcpTool(ConcreteMcpTool):
-        def write_report(self, result: EndpointOutcome) -> Path | None:
-            raise OSError(errno.EIO, "persistence failed")
-
-    def fail_endpoint_end(event: dict[str, object]) -> None:
-        if event["type"] == "endpoint_end":
-            raise OSError("display unavailable")
-
-    endpoint = PersistenceFailingMcpTool()
-    with (
-        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
-        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
-    ):
-        result = endpoint.execute_cli([])
-
-    assert result.exit_code == EXIT_ERROR
-    assert result.outcome.detail["completion_error"]["operation"] == "publish report.json"
-
-
-def test_endpoint_end_failure_propagates_without_completion_failure() -> None:
-    def fail_endpoint_end(event: dict[str, object]) -> None:
-        if event["type"] == "endpoint_end":
-            raise OSError("display unavailable")
-
-    endpoint = ConcreteMcpTool()
-    with (
-        mock.patch("booley.flows.endpoint_session._write_display_event", fail_endpoint_end),
-        mock.patch("booley.flows.endpoint_reporting._write_display_event", fail_endpoint_end),
-        pytest.raises(OSError, match="display unavailable"),
-    ):
-        endpoint.execute_cli([])
-
-
 def test_dry_run_skips_admission_and_persistent_bookkeeping(tmp_path: Path) -> None:
     state_file = tmp_path / "state.json"
     state_file.write_bytes(b'{"opaque": true}\n')
@@ -541,16 +505,11 @@ def test_code_modifying_tool_resets_nothing_and_keeps_change_statistics(tmp_path
     env["BOOLEY_RUNTIME_DIR"] = str(tmp_path / "runtime")
     endpoint = CommittingTool(code_modifying=True)
     with mock.patch.dict(os.environ, env):
-        exit_code = endpoint.main(["--work-dir", str(repo)])
+        result = endpoint.execute_cli(["--work-dir", str(repo)])
 
-    assert exit_code == EXIT_SUCCESS
+    assert result.exit_code == EXIT_SUCCESS
     assert state_file.read_bytes() == before
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    (end,) = [event for event in events if event["type"] == "endpoint_end"]
-    assert (end["lines_added"], end["lines_removed"]) == (2, 0)
+    assert (result.outcome.lines_added, result.outcome.lines_removed) == (2, 0)
 
 
 def test_custom_endpoint_with_hand_set_state_file_runs_and_reports_no_criteria(
@@ -575,12 +534,6 @@ def test_custom_endpoint_with_hand_set_state_file_runs_and_reports_no_criteria(
 
     assert exit_code == EXIT_SUCCESS
     assert state_file.read_bytes() == before
-    events = [
-        json.loads(line)
-        for line in (logs_dir / ".runtime/display.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    assert events
-    assert "criteria_update" not in {event["type"] for event in events}
 
 
 class TestHumanModeStderr:
@@ -965,58 +918,6 @@ class TestMcpToolWriteReport:
 
 
 class TestMcpToolMain:
-    @pytest.mark.parametrize(
-        ("run_raises", "expected_exit"),
-        [(False, EXIT_SUCCESS), (True, EXIT_ERROR)],
-    )
-    def test_completed_display_label_updates_end_of_lifecycle(
-        self,
-        tmp_path: Path,
-        run_raises: bool,
-        expected_exit: int,
-    ) -> None:
-        state_file = tmp_path / "state.json"
-
-        class LabelledMcpTool(ConcreteMcpTool):
-            def _run(self) -> McpToolResult:
-                if run_raises:
-                    raise RuntimeError("boom")
-                return McpToolResult(
-                    exit_code=EXIT_SUCCESS,
-                    display_label="target demo · 2 tests",
-                )
-
-        endpoint = LabelledMcpTool()
-        sentinel = "target demo · test smoke"
-        with (
-            mock.patch.dict(os.environ, _env_with_state(state_file)),
-            mock.patch.object(
-                endpoint,
-                "_resolve_display_label",
-                side_effect=[sentinel, "must not be resolved twice"],
-            ) as resolve_label,
-            mock.patch("booley.flows.endpoint_session._write_display_event") as write_event,
-            mock.patch("booley.flows.endpoint_reporting._write_display_event", write_event),
-        ):
-            exit_code = endpoint.main([])
-
-        lifecycle_events = [
-            call.args[0]
-            for call in write_event.call_args_list
-            if call.args[0]["type"] in {"endpoint_start", "endpoint_end"}
-        ]
-        assert exit_code == expected_exit
-        resolve_label.assert_called_once_with()
-        assert [event["type"] for event in lifecycle_events] == [
-            "endpoint_start",
-            "endpoint_end",
-        ]
-        completed_label = sentinel if run_raises else "target demo · 2 tests"
-        assert [event["display_label"] for event in lifecycle_events] == [
-            sentinel,
-            completed_label,
-        ]
-
     def test_exception_returns_actionable_durable_error(self, tmp_path: Path, capsys, caplog):
         state_file = tmp_path / "state.json"
         report_dir = tmp_path / "reports"
@@ -1147,223 +1048,6 @@ class TestMcpToolMain:
         assert exit_code == EXIT_SUCCESS
 
 
-# ===========================================================================
-# _write_display_event
-# ===========================================================================
-
-
-class TestWriteDisplayEvent:
-    def test_writes_jsonl_when_env_set(self, tmp_path: Path, monkeypatch):
-        """Event appended to $BOOLEY_RUNTIME_DIR/display.jsonl."""
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
-        event = {"type": "endpoint_start", "endpoint": "lint"}
-        _write_display_event(event)
-
-        jsonl = tmp_path / ".runtime" / "display.jsonl"
-        assert jsonl.exists()
-        lines = jsonl.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        assert json.loads(lines[0]) == event
-
-    def test_appends_multiple_events(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
-        _write_display_event({"type": "endpoint_start"})
-        _write_display_event({"type": "endpoint_end"})
-
-        lines = (
-            (tmp_path / ".runtime" / "display.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()
-        )
-        assert len(lines) == 2
-
-    def test_noop_when_env_unset(self, tmp_path: Path, monkeypatch):
-        """No file created when BOOLEY_RUNTIME_DIR is absent."""
-        monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-        _write_display_event({"type": "endpoint_start"})
-
-        assert not (tmp_path / ".runtime" / "display.jsonl").exists()
-
-    def test_emit_completion_marks_repeated_final_line(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / ".runtime"))
-        endpoint = ConcreteMcpTool()
-
-        endpoint.emit_completion("✓ target_a", repeats_at_end=True)
-
-        event = json.loads((tmp_path / ".runtime" / "display.jsonl").read_text(encoding="utf-8"))
-        assert event == {
-            "type": "endpoint_progress",
-            "endpoint": "test_endpoint",
-            "line": "✓ target_a",
-            "completion": True,
-            "repeats_at_end": True,
-            "invocation_id": endpoint._invocation_id,
-            "display_scope": "developer",
-            "timestamp": event["timestamp"],
-        }
-
-
-# ===========================================================================
-# McpTool.main() display events
-# ===========================================================================
-
-
-class TestMainDisplayEvents:
-    def test_main_emits_endpoint_start_and_endpoint_end(self, tmp_path: Path):
-        """main() brackets _run() with endpoint_start and endpoint_end display events."""
-        state_file = tmp_path / "state.json"
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = ConcreteMcpTool()
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_SUCCESS
-
-        jsonl = logs_dir / ".runtime" / "display.jsonl"
-        assert jsonl.exists()
-        all_events = [
-            json.loads(l) for l in jsonl.read_text(encoding="utf-8").strip().splitlines()
-        ]
-        events = [e for e in all_events if e["type"] in ("endpoint_start", "endpoint_end")]
-        assert len(events) == 2
-        assert events[0]["type"] == "endpoint_start"
-        assert events[0]["endpoint"] == "test_endpoint"
-        assert events[1]["type"] == "endpoint_end"
-        assert events[1]["endpoint"] == "test_endpoint"
-        assert events[1]["exit_code"] == EXIT_SUCCESS
-
-    def test_config_aware_false_suppresses_config(self, tmp_path: Path):
-        """config_aware=False suppresses config in display events."""
-        state_file = tmp_path / "state.json"
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        class NoConfigMcpTool(ConcreteMcpTool):
-            config_aware = False
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = NoConfigMcpTool()
-        with mock.patch.dict(os.environ, env):
-            endpoint.main(["--target", "default"])
-
-        all_events = [
-            json.loads(l)
-            for l in (logs_dir / ".runtime" / "display.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()
-        ]
-        events = [e for e in all_events if e["type"] in ("endpoint_start", "endpoint_end")]
-        for evt in events:
-            assert evt["target"] is None, f"{evt['type']} should have target=None"
-
-    def test_endpoint_end_emitted_on_exception(self, tmp_path: Path):
-        """endpoint_end is still written when _run() raises."""
-        state_file = tmp_path / "state.json"
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        class FailingMcpTool(ConcreteMcpTool):
-            def _run(self):
-                raise RuntimeError("kaboom")
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = FailingMcpTool()
-        with mock.patch.dict(os.environ, env):
-            exit_code = endpoint.main([])
-        assert exit_code == EXIT_ERROR
-
-        events = [
-            json.loads(l)
-            for l in (logs_dir / ".runtime" / "display.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()
-        ]
-        types = [e["type"] for e in events]
-        assert "endpoint_start" in types
-        assert "endpoint_end" in types
-        # endpoint_end should report the error exit code
-        end_evt = next(e for e in events if e["type"] == "endpoint_end")
-        assert end_evt["exit_code"] == EXIT_ERROR
-        report = json.loads(
-            (logs_dir / ".runtime/mcp-tool-reports/test_endpoint.json").read_text(encoding="utf-8")
-        )
-        assert end_evt["report_text"] == report["report_text"]
-        assert end_evt["report_text"].startswith("test_endpoint failed: RuntimeError: kaboom")
-
-    def test_completion_failure_emits_endpoint_end(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        state_file = tmp_path / "state.json"
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        class PublicationFailingMcpTool(ConcreteMcpTool):
-            def write_report(self, result: EndpointOutcome) -> Path | None:
-                raise OSError(errno.EIO, "publication failed")
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = PublicationFailingMcpTool()
-
-        with mock.patch.dict(os.environ, env):
-            result = endpoint.execute_cli([])
-
-        assert result.exit_code == EXIT_ERROR
-        assert result.outcome.detail["completion_error"]["operation"] == "publish report.json"
-        events = [
-            json.loads(line)
-            for line in (logs_dir / ".runtime" / "display.jsonl")
-            .read_text(encoding="utf-8")
-            .splitlines()
-        ]
-        assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
-        assert events[-1]["exit_code"] == EXIT_ERROR
-
-    def test_display_tag_overrides_config(self, tmp_path: Path):
-        """display_tag property overrides config_aware in display events."""
-        state_file = tmp_path / "state.json"
-        logs_dir = tmp_path / "logs"
-        logs_dir.mkdir()
-
-        class TaggedMcpTool(ConcreteMcpTool):
-            config_aware = False
-
-            @property
-            def display_tag(self):
-                return "rtl"
-
-        env = _env_with_state(state_file)
-        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_dir / ".runtime")
-        endpoint = TaggedMcpTool()
-        with mock.patch.dict(os.environ, env):
-            endpoint.main([])
-
-        all_events = [
-            json.loads(l)
-            for l in (logs_dir / ".runtime" / "display.jsonl")
-            .read_text(encoding="utf-8")
-            .strip()
-            .splitlines()
-        ]
-        events = [e for e in all_events if e["type"] in ("endpoint_start", "endpoint_end")]
-        for evt in events:
-            assert evt["target"] == "rtl", f"{evt['type']} should have target='rtl'"
-
-
 class MemoryMcpTool(ConcreteMcpTool):
     """ConcreteMcpTool classed as memory class — participates in slot-store admission."""
 
@@ -1372,7 +1056,7 @@ class MemoryMcpTool(ConcreteMcpTool):
 
 class TestJobSlotAdmission:
     """ADR 0028: McpTool.main() claims a Job Class slot from the shared on-disk
-    store instead of the deleted display.jsonl blocking scan. The SlotStore
+    store. The SlotStore
     scheduling itself is covered by tests/test_job_slots.py; these tests pin
     the *wiring* in main(): who claims, when, with what role, and how a full
     queue surfaces.
@@ -1438,66 +1122,6 @@ class TestJobSlotAdmission:
         assert seen["waiters"] == []
         # After main: the finally released the claim — no live entries remain.
         assert list((slots / job_slots.CLASS_MEMORY).glob("*.json")) == []
-
-
-class TestMcpToolEventScan:
-    """_scan_endpoint_events parses display.jsonl into unmatched starts + last
-    ends. Post-ADR-0028 this is bookkeeping only (Console/telemetry) — it no
-    longer gates admission — but the parsing contract still matters."""
-
-    def test_matched_start_end_leaves_no_unmatched(self):
-        lines = [
-            '{"type":"endpoint_start","endpoint":"review","timestamp":"t0"}',
-            '{"type":"endpoint_end","endpoint":"review","timestamp":"t1"}',
-        ]
-        unmatched, last_end = _scan_endpoint_events(lines)
-        assert unmatched["review"] == []
-        assert last_end["review"] == "t1"
-
-    def test_unmatched_start_survives(self):
-        lines = ['{"type":"endpoint_start","endpoint":"review","timestamp":"t0","pid":42}']
-        unmatched, last_end = _scan_endpoint_events(lines)
-        assert unmatched["review"] == [("t0", 42)]
-        assert last_end == {}
-
-    def test_garbage_lines_skipped(self):
-        lines = [
-            "not json at all",
-            '{"type":"endpoint_start","timestamp":"t0"}',  # no endpoint → ignored
-            '{"type":"endpoint_start","endpoint":"lint","timestamp":"t1"}',
-        ]
-        unmatched, _ = _scan_endpoint_events(lines)
-        assert list(unmatched) == ["lint"]
-
-
-class TestPidCoercion:
-    """_as_pid validates the untrusted pid field of display.jsonl events."""
-
-    def test_int_passthrough(self):
-        assert _as_pid(4321) == 4321
-
-    def test_numeric_string_coerced(self):
-        assert _as_pid("4321") == 4321
-
-    def test_none_and_missing(self):
-        assert _as_pid(None) is None
-
-    def test_garbage_string_is_none(self):
-        assert _as_pid("not-a-pid") is None
-
-    def test_bool_rejected(self):
-        # bool is an int subclass; a JSON `true` pid must not become PID 1.
-        assert _as_pid(True) is None
-
-    def test_scan_events_coerces_string_pid(self, tmp_path: Path):
-        # Boundary: a string pid from JSON must reach PID consumers as an int.
-        lines = [
-            '{"type":"endpoint_start","endpoint":"review","timestamp":"t0","pid":"4321"}',
-            '{"type":"endpoint_start","endpoint":"lint","timestamp":"t1","pid":"bogus"}',
-        ]
-        unmatched, _ = _scan_endpoint_events(lines)
-        assert unmatched["review"] == [("t0", 4321)]
-        assert unmatched["lint"] == [("t1", None)]
 
 
 class TestReadSourceDirs:
@@ -1722,10 +1346,7 @@ class TestNoReportDirWarning:
         assert not [r for r in caplog.records if "report-dir" in r.getMessage()]
 
 
-def test_custom_endpoint_report_and_completion_carry_no_criterion(tmp_path, monkeypatch):
-    events = []
-    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
-
+def test_custom_endpoint_report_and_completion_carry_no_criterion(tmp_path):
     class EvaluatingTool(ConcreteMcpTool):
         def _run(self):
             self.set_criterion("actual", True)
@@ -1738,8 +1359,6 @@ def test_custom_endpoint_report_and_completion_carry_no_criterion(tmp_path, monk
     assert_paired_headline(reports, tool.name)
     flat = json.loads((reports / f"{tool.name}.json").read_text())
     assert "criterion_key" not in flat and "criterion_met" not in flat
-    completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert "criterion_key" not in completion and "criterion_met" not in completion
 
 
 def test_project_local_sim_endpoint_writes_project_local_schema(tmp_path):

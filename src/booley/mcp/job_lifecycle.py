@@ -30,7 +30,6 @@ from booley.mcp.endpoint_process import (
     _run_subprocess,
     cancel_grace_seconds,
     stop_grace_seconds,
-    write_synthetic_endpoint_end,
 )
 from booley.mcp.job_ownership import Caller, owns
 from booley.mcp.job_results import (
@@ -41,7 +40,7 @@ from booley.mcp.job_results import (
 )
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
-from booley.runtime.display_identity import DisplayIdentity, DisplayScope
+from booley.runtime.display_identity import DisplayScope
 from booley.runtime.handles import register_job
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
@@ -250,10 +249,6 @@ class JobLifecycle:
         rec.ended_at = utc_now_rfc3339()
         jobrec.write_record(rec, root=self._write_root(rec))
 
-    @staticmethod
-    def _display_identity(rec: jobrec.JobRecord) -> DisplayIdentity:
-        return DisplayIdentity(rec.run_id, rec.display_scope)
-
     def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
         """Drop a finished inline run's record and its pinned root."""
         root = self._write_root(rec)
@@ -268,12 +263,6 @@ class JobLifecycle:
 
     def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
         self._record_terminal(rec, 2, timed_out=False)
-        self._write_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="aborted",
-        )
         self._forget_synchronous(rec)
 
     def submit(
@@ -330,12 +319,6 @@ class JobLifecycle:
             self._abort_synchronous(rec)
             raise
         exit_code, _stdout, _stderr, timed_out = result
-        if timed_out:
-            self._write_end(
-                name,
-                timeout,
-                identity=self._display_identity(rec),
-            )
         self._record_terminal(rec, exit_code, timed_out=timed_out)
         self._forget_synchronous(rec)
         return result
@@ -367,15 +350,10 @@ class JobLifecycle:
         """Run the subprocess to completion and persist the terminal outcome."""
         try:
             exit_code, stdout, stderr, timed_out = await self._execute_record(rec, context)
-            if timed_out:
-                self._write_end(rec.endpoint, rec.timeout_s, identity=self._display_identity(rec))
             self._results[rec.run_id] = (exit_code, stdout, stderr, timed_out)
             self._record_terminal(rec, exit_code, timed_out=timed_out)
         except asyncio.CancelledError:
             if rec.run_id not in self._cancel_requested:
-                self._write_end(
-                    rec.endpoint, 0, identity=self._display_identity(rec), outcome="aborted"
-                )
                 raise
             self._record_user_cancellation(rec)
         finally:
@@ -395,12 +373,6 @@ class JobLifecycle:
             False,
         )
         jobrec.write_record(rec, root=self._write_root(rec))
-        self._write_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="cancelled",
-        )
 
     def _adopt_report_outcome(self, rec: jobrec.JobRecord) -> bool:
         report, report_fresh = self._report(rec)
@@ -556,7 +528,6 @@ class JobLifecycle:
     _is_alive = staticmethod(is_pid_alive)
     _repository = JobRepository()
     _run_process = staticmethod(_run_subprocess)
-    _write_end = staticmethod(write_synthetic_endpoint_end)
     _cancel_process = staticmethod(_cancel_adopted_process_group)
 
     def _report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:

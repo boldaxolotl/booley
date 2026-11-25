@@ -964,7 +964,6 @@ class ReviewerSpecialist(Specialist):
         example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
     )
     code_modifying: bool = False
-    config_aware: bool = False
     accepts_target: bool = False
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True
@@ -1054,14 +1053,6 @@ class ReviewerSpecialist(Specialist):
     def _diff_scoped(self) -> bool:
         """Whether this run reviews a change (``--base``) rather than whole files."""
         return self._review_change is not None
-
-    @property
-    def display_tag(self) -> str | None:
-        if not self._args:
-            return None
-        if (self.args.recheck or self._given_recheck) and not self.args.category:
-            return "recheck"  # the evidence file has not been read yet
-        return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

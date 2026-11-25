@@ -383,7 +383,7 @@ def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
     invocation = endpoint.prepare_endpoint_invocation()
 
     outcome = endpoint.invoke_endpoint(
-        PreparedExecution(None, None, False, False, invocation),
+        PreparedExecution(False, invocation),
         admission=context,
         started=0.0,
     )

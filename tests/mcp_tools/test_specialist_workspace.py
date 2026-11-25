@@ -868,17 +868,24 @@ def test_fileset_sources_under_fw_follow_their_category(
     assert seen == dict.fromkeys(names, category == visible_to)
 
 
-def test_a_caller_supplied_event_callback_reaches_the_agent_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "on_event",
+    [
+        pytest.param(lambda _event: None, id="caller-callback"),
+        pytest.param(None, id="no-callback"),
+    ],
+)
+def test_the_callers_event_callback_reaches_the_agent_call_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_event
 ) -> None:
-    """A caller that streams its own events is not given the default display callback."""
+    """A caller's callback, or none, reaches the agent call as given."""
     agent = install_agent(monkeypatch)
-    endpoint, seen = ReviewerSpecialist(), lambda _event: None
+    endpoint = ReviewerSpecialist()
     endpoint.parse_args(_review_argv(tmp_path, "rtl", "bugs", "rtl/dut.sv"))
     params = endpoint._single_review_params("bugs", None)
 
-    # Private seam: a Reviewer run always streams to the display, so only a direct call
-    # passes its own callback.
-    endpoint._invoke_agent(params, on_event=seen)
+    # Private seam: no Booley Specialist passes its own callback, so only a direct call
+    # shows that a caller's callback, or none, reaches the agent unchanged.
+    endpoint._invoke_agent(params, on_event=on_event)
 
-    assert agent.on_events == [seen]
+    assert agent.on_events == [on_event]

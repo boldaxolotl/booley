@@ -101,7 +101,7 @@ def test_target_normalization_uses_strict_boundary_validation() -> None:
         (SimulateFlow, ("--mode", "elab-only")),
     ],
 )
-def test_duplicate_target_fails_before_start_event_or_admission(
+def test_duplicate_target_fails_before_admission(
     flow_type: type[BuiltinFlow],
     extra_args: tuple[str, ...],
     tmp_path: Path,
@@ -146,8 +146,6 @@ def test_duplicate_target_fails_before_start_event_or_admission(
     report = json.loads((tmp_path / "reports" / f"{flow.name}.json").read_text())
     assert report["exit_code"] == 2
     assert "already selected" in report["report_text"]
-    # The display log is written when a start event is published.
-    assert not (tmp_path / "runtime" / "display.jsonl").exists()
 
 
 @pytest.mark.parametrize("flow_type", FLOW_TYPES)
@@ -271,7 +269,6 @@ def test_unusable_report_dir_is_refused_before_any_job_work(
             assert len(errors) == 1
             assert "argument --report-dir:" in errors[0]
             assert str(report_dir) in errors[0]
-            assert not (runtime / "display.jsonl").exists()
             assert not (root / "reports").exists()
 
 
@@ -564,13 +561,7 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
         captured.err
         == "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
     )
-    events = [
-        json.loads(line)
-        for line in (logs_dir / ".runtime" / "display.jsonl").read_text().splitlines()
-    ]
-    lifecycle = [event for event in events if event["type"] in {"endpoint_start", "endpoint_end"}]
-    assert [event["type"] for event in lifecycle] == ["endpoint_start", "endpoint_end"]
-    assert all(event["dry_run"] is True for event in lifecycle)
+    assert not list((logs_dir / ".runtime").glob("*.jsonl"))
     assert not (report_dir / "dry_contract.json").exists()
     assert not any(path.name == "report.json" for path in report_dir.rglob("*"))
 
