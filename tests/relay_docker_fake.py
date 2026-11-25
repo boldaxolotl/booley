@@ -146,15 +146,15 @@ class RelayDocker:
         if args[1] == "rm" and args[-1] in self.cleanup_failure:
             return result(1, stderr="still attached")
         if args[1] == "inspect":
-            return self._inspect(args[0], args[2], args[-1])
+            return self.answer_inspect(args[0], args[2], args[-1])
         return result()
 
-    def _inspect(  # noqa: PLR0911 - compact Docker inspect protocol fixture
+    def answer_inspect(  # noqa: PLR0911 - compact Docker inspect protocol fixture
         self, kind: str, name: str, template: str
     ) -> subprocess.CompletedProcess[str]:
         resources = self.resources
         if "State.Status" in template:
-            return self._next_health()
+            return self.answer_health()
         if name == resources.relay_container and template == name:
             return result(stdout=json.dumps([self.state]))
         if kind == "network" and template == name:
@@ -169,7 +169,7 @@ class RelayDocker:
                 )
             )
         if "Labels" in template:
-            return result(stdout=json.dumps(self._labels(name)))
+            return result(stdout=json.dumps(self.answer_labels(name)))
         if "Health.Status" in template:
             return result(stdout="healthy")
         if ".NetworkSettings.Networks" in template:
@@ -184,7 +184,7 @@ class RelayDocker:
             return result(stdout=json.dumps(isolated if name == resources.private_network else {}))
         return result(1, stderr="unexpected inspect")
 
-    def _labels(self, name: str) -> dict[str, str]:
+    def answer_labels(self, name: str) -> dict[str, str]:
         resources = self.resources
         role = {
             resources.relay_container: "license-relay",
@@ -198,7 +198,7 @@ class RelayDocker:
             **self.extra_labels,
         }
 
-    def _next_health(self) -> subprocess.CompletedProcess[str]:
+    def answer_health(self) -> subprocess.CompletedProcess[str]:
         status = self.health.pop(0) if self.health else "starting"
         if status == INSPECT_FAILURE:
             return result(1, stderr="daemon busy")
