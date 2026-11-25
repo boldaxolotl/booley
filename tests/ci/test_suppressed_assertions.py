@@ -61,19 +61,24 @@ _RULE_CASES: dict[str, tuple[str, list[str]]] = {
         ]
     },
     **{
-        f"alias-{expression}": (
+        f"alias-{index}-{expression}": (
             f"{imports}\nwith {expression}(OSError):\n    assert False\n",
             ["suppressed-assertion"],
         )
-        for imports, expression in [
-            ("import contextlib", "contextlib.suppress"),
-            ("import contextlib as cl", "cl.suppress"),
-            ("from contextlib import suppress", "suppress"),
-            ("from contextlib import suppress as ignore", "ignore"),
-            ("import contextlib\nignore = contextlib.suppress", "ignore"),
-            ("import contextlib\ncl = contextlib\nignore = cl.suppress\nagain = ignore", "again"),
-            ("import contextlib.some_module", "contextlib.suppress"),
-        ]
+        for index, (imports, expression) in enumerate(
+            [
+                ("import contextlib", "contextlib.suppress"),
+                ("import contextlib as cl", "cl.suppress"),
+                ("from contextlib import suppress", "suppress"),
+                ("from contextlib import suppress as ignore", "ignore"),
+                ("import contextlib\nignore = contextlib.suppress", "ignore"),
+                (
+                    "import contextlib\ncl = contextlib\nignore = cl.suppress\nagain = ignore",
+                    "again",
+                ),
+                ("import contextlib.some_module", "contextlib.suppress"),
+            ]
+        )
     },
     "shadowed-names": (
         "from contextlib import suppress\ndef test_other(suppress):\n    with suppress(OSError):\n        assert False\ndef test_local():\n    suppress = unrelated\n    with suppress(OSError):\n        assert False\n",

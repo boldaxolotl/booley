@@ -692,7 +692,7 @@ def test_pr_text_fails_closed(tmp_path: Path, case: str, message: str) -> None:
 def test_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     _seal(repo)
-    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
+    (repo / ".git/booley-leak-guard.toml").write_bytes(b"[private]\nwords = ['other']\n")
     stale = base64.b64encode(_config(_words("other")).encode()).decode()
 
     result = _guard(
@@ -725,22 +725,26 @@ def test_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(tmp_path: 
     ],
 )
 def test_publish_pr_sends_exact_drafts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: str, gh_args: str, stdin: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: str,
+    gh_args: str,
+    stdin: str,
 ) -> None:
     repo, _base = _repository(tmp_path)
     _seal(repo)
     title, body = tmp_path / "title.txt", tmp_path / "body.md"
-    title.write_text("Public-title\n", encoding="utf-8")
+    title.write_text("Public title\n", encoding="utf-8")
     body.write_text("Public description\n", encoding="utf-8")
     gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
     gh.answer("pr", reads_input=True)
-    command = arguments.format(title=title, body=body).split()
+    command = [word.format(title=title, body=body) for word in arguments.split()]
 
     result = _guard(repo, "publish-pr", *command, env={"GH_REPO": "somewhere/else"})
 
     _expect_exit(result, 0)
     (call,) = gh.calls()
-    assert call.args == gh_args.format(name="Public-title").split()
+    assert call.args == [word.format(name="Public title") for word in gh_args.split()]
     assert call.input == stdin
     assert "GH_REPO" not in call.env
 
@@ -749,6 +753,7 @@ def test_publish_pr_sends_exact_drafts(
     ("case", "message"),
     [("confidential", "confidential term"), ("old-ci-env", "could not complete")],
 )
+@_GH_BY_NAME
 def test_publish_pr_stops_before_gh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, message: str
 ) -> None:
@@ -762,6 +767,7 @@ def test_publish_pr_stops_before_gh(
     else:
         env = {"BOOLEY_LEAK_GUARD_CONFIG_B64": base64.b64encode(_config().encode()).decode()}
     gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
+    gh.answer("pr", reads_input=True)
     args = ["create", "--base", "main", "--head", "topic", "--title-file", str(title)]
 
     result = _guard(repo, "publish-pr", *args, "--body-file", str(body), env=env)
@@ -800,7 +806,7 @@ def test_sync_ci_key_uses_sealed_vocabulary_and_not_stale_ci_env(
 ) -> None:
     repo, _base = _repository(tmp_path)
     _seal(repo)
-    (repo / ".git/booley-leak-guard.toml").write_text("[private]\nwords = ['other']\n")
+    (repo / ".git/booley-leak-guard.toml").write_bytes(b"[private]\nwords = ['other']\n")
     gh = PathToolFake.install(tmp_path / "bin", "gh", monkeypatch)
     gh.answer("secret", reads_input=True)
     stale = {"BOOLEY_LEAK_GUARD_KEY_B64": base64.b64encode(b"stale key").decode()}
@@ -938,7 +944,9 @@ def test_workflow_trusts_only_the_exact_renovate_app_identity(
         assert "author identity" in result.stderr
 
 
-def test_loading_the_guard_module_runs_no_command(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loading_the_guard_module_defines_main_without_running_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.syspath_prepend(str(SCANNER.parent))
 
     namespace = runpy.run_path(str(SCANNER))
