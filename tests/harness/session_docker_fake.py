@@ -329,6 +329,25 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     return docker
 
 
+def route_docker_commands(
+    monkeypatch: pytest.MonkeyPatch, docker: SandboxDocker, *, executable: str = "docker"
+) -> SandboxDocker:
+    """Answer every *executable* argv that reaches ``subprocess.run`` from *docker*; run others for real.
+
+    Pairs with the routing fixtures of ``tests/docker_cli_guard.py``, which send each
+    host-side Docker capture through ``subprocess.run``.
+    """
+    real_run = subprocess.run
+
+    def run(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(argv, list) and argv and argv[0] == executable:
+            return docker.run(argv, **kwargs)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return docker
+
+
 def attach_commands(
     monkeypatch: pytest.MonkeyPatch,
     *,
