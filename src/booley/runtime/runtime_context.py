@@ -20,12 +20,27 @@ from booley.runtime.sandbox_layout import (
     PROJECT_DATA_MOUNT_PATH,
 )
 
+_CONTAINER_MARKER_FILES = (Path("/.dockerenv"), Path("/run/.containerenv"))
+
+
+def container_marker_file() -> bool:
+    """Return whether the container runtime left its marker file in this filesystem."""
+    return any(marker.exists() for marker in _CONTAINER_MARKER_FILES)
+
 
 def inside_session_runtime() -> bool:
-    """Return whether this process runs inside a Booley Sandbox."""
-    if os.environ.get("BOOLEY_CONTAINER") == "1":
+    """Return whether this process runs inside a Booley Sandbox.
+
+    ``BOOLEY_CONTAINER=1`` declares a Sandbox. ``BOOLEY_CONTAINER=0`` declares a
+    container that is itself a Booley host; only issued-Sandbox mount points
+    outrank it. Any other value falls back to the container marker files.
+    """
+    declared = os.environ.get("BOOLEY_CONTAINER")
+    if declared == "1":
         return True
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    if declared == "0":
+        return _issued_mount_points(unreadable=False)
+    return container_marker_file()
 
 
 class RuntimeLocation(Enum):
@@ -41,16 +56,17 @@ _MOUNTINFO = Path("/proc/self/mountinfo")
 _ISSUED_MOUNT_TARGETS = (BOOLEY_DIR_TARGET, PROJECT_DATA_MOUNT_PATH, DEVCONTAINER_TARGET)
 
 
-def _issued_mount_points() -> bool:
+def _issued_mount_points(*, unreadable: bool) -> bool:
     """Return whether any mount point is, or lies under, an issued-Sandbox target.
 
-    An unreadable mountinfo counts as issued: the only consequence of a false
-    "issued" verdict is a refusal.
+    *unreadable* is the verdict for an unreadable mountinfo. Inside a Sandbox it
+    is ``True``: the only consequence of a false "issued" verdict is a refusal.
+    Under ``BOOLEY_CONTAINER=0`` it is ``False``: no table is no evidence.
     """
     try:
         lines = _MOUNTINFO.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
-        return True
+        return unreadable
     for line in lines:
         fields = line.split()
         if len(fields) < 5:
@@ -70,7 +86,7 @@ def runtime_location() -> RuntimeLocation:
     """
     if not inside_session_runtime():
         return RuntimeLocation.HOST
-    if _issued_mount_points():
+    if _issued_mount_points(unreadable=True):
         return RuntimeLocation.ISSUED_SANDBOX
     return RuntimeLocation.HAND_WRITTEN_SANDBOX
 
@@ -179,6 +195,7 @@ def host_only_error(what: str) -> str | None:
         f"ERROR: `{what}` is a host-side command and cannot run inside the "
         f"Booley container.\n\n"
         f"  Run it from a HOST terminal (outside the devcontainer).\n"
+        f"  A container that is itself a Booley host sets BOOLEY_CONTAINER=0.\n"
         f"  See `booley --help` for public commands and "
         f"`booley cheat --skills` for guided agent workflows."
     )

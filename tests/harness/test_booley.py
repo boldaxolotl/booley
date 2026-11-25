@@ -737,6 +737,42 @@ class TestEnforceVenue:
             assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
             assert message in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        ("mounts", "refused", "init_message"),
+        [
+            ("/", False, "host init reached"),
+            ("/work/.devcontainer", True, "cannot run inside a Booley-issued Sandbox"),
+        ],
+        ids=["container-host", "issued-sandbox"],
+    )
+    def test_container_host_override_reaches_host_commands(
+        self, tmp_path, monkeypatch, capsys, mounts, refused, init_message
+    ):
+        """BOOLEY_CONTAINER=0 in a container runs host commands, except in an issued Sandbox."""
+        from booley.harness import init_cmd
+        from booley.runtime import runtime_context
+
+        def reach_host_init(*_args):
+            raise OSError("host init reached")
+
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
+        monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+        monkeypatch.setattr(Path, "exists", lambda self: self.as_posix() == "/.dockerenv")
+        # private: the first host-only step of run_init; reaching it proves the host dispatch.
+        monkeypatch.setattr(init_cmd, "_check_init_layout", reach_host_init)
+        for command in ("bootstrap", "session"):
+            if refused:
+                with pytest.raises(SystemExit) as exc:
+                    tlr._enforce_runtime_location(command)
+                assert exc.value.code == 2
+            else:
+                tlr._enforce_runtime_location(command)  # must not raise
+        capsys.readouterr()
+        assert init_cmd.run_init(Namespace(seed=True), tmp_path) == 2
+        assert init_message in capsys.readouterr().err
+
     def test_init_allowed_on_host(self, monkeypatch):
         with _host_venue(monkeypatch):
             tlr._enforce_runtime_location("init")  # must not raise

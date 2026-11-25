@@ -3397,6 +3397,14 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
+    elif row == "host-override":
+        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+        monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
+        _answer_command(
+            monkeypatch,
+            lambda cmd: "{{json .Config.Env}}" in cmd,
+            stdout='["BOOLEY_CONTAINER=1"]\n',
+        )
     elif row == "host-no-marker":
         _answer_command(
             monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout='["PATH=/usr/bin"]\n'
@@ -3487,6 +3495,18 @@ def test_runtime_location(row, tmp_path, monkeypatch):
     else:
         assert any("no Docker/Podman runtime found" in m for m in skips)
         assert not [call for call in calls if call[0] == "None"]
+
+
+def test_runtime_location_names_the_container_host_override(tmp_path, monkeypatch):
+    """A container that declares itself a host gets a PASS naming the override, not a warning."""
+    _runtime_setup(tmp_path, monkeypatch, inside=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+    monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
+
+    result = _doctor_run(tmp_path)
+
+    assert any("BOOLEY_CONTAINER=0 set" in m for m in _messages(result, Severity.PASS))
+    assert _messages(result, Severity.WARN, check_id="sandbox.runtime-marker") == []
 
 
 @pytest.mark.parametrize("app", [None, "claude", "codex"])

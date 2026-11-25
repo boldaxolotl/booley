@@ -1964,13 +1964,21 @@ def _check_runtime_location(
     means a stale pre-ADR-0028 image; and the shared slot store every process
     arbitrates admission through must be writable. Host-side, verify the
     sandbox image bakes the marker so the container sessions it spawns detect
-    correctly.
+    correctly. ``BOOLEY_CONTAINER=0`` in a container declares it a Booley host.
     """
     _warn = _warning_sink(_warn, "sandbox.runtime-marker")
 
     from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
+        if os.environ.get("BOOLEY_CONTAINER") == "0" and runtime_context.container_marker_file():
+            _pass(
+                warning(
+                    "sandbox.runtime-marker",
+                    "BOOLEY_CONTAINER=0 set: this container counts as a Booley host "
+                    "(explicit override)",
+                )
+            )
         _check_host_agent_session(_pass)
         _check_image_bakes_runtime_marker(
             docker_exe,
