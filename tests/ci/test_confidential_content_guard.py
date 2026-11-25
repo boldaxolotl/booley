@@ -1509,6 +1509,11 @@ if "GH_REPO" in os.environ or os.environ.get("GH_PROMPT_DISABLED") != "1":
 if arguments[:1] != ["api"]:
     sys.exit(2)
 arguments = arguments[1:]
+if "--method" in arguments and "/statuses/" in arguments[arguments.index("--method") + 2]:
+    # The workflow publishes a commit status with `-f key=value` fields.
+    fields = [arguments[i + 1].split("=", 1) for i, a in enumerate(arguments) if a == "-f"]
+    record(method="POST", endpoint=arguments[arguments.index("--method") + 2], body=dict(fields))
+    sys.exit(0)
 if "--method" in arguments:
     # A request body is only accepted verbatim through `--input -`, never as fields.
     if any(flag in arguments for flag in ("-f", "-F", "--field", "--raw-field")):
@@ -1874,6 +1879,156 @@ def test_outside_pr_sharing_its_head_commit_with_other_work_stays_enforced(
     lookups = [call for call in gh.calls() if "/pulls?" in call.get("endpoint", "")]
     assert lookups
     assert all(call["endpoint"].startswith("repos/boldaxolotl/booley/pulls?") for call in lookups)
+
+
+def _publish_step() -> dict:
+    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["confidential-content"][
+        "steps"
+    ]
+    return next(step for step in steps if step.get("name") == "Publish scan status")
+
+
+def _run_publish_step(
+    repo: Path, event: dict, gh: _FakeGh, **env: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the shipped `Publish scan status` script, by default for a passing PR scan."""
+    environment = {key: value for key, value in gh.env.items() if key != "GH_REPO"} | {
+        "GH_PROMPT_DISABLED": "1",
+        "GITHUB_EVENT_NAME": "pull_request_target",
+        "GITHUB_EVENT_PATH": str(_write_event(repo, event)),
+        "GITHUB_REPOSITORY": "boldaxolotl/booley",
+        "GITHUB_SERVER_URL": "https://github.test",
+        "GITHUB_RUN_ID": "42",
+        "GITHUB_SHA": "c" * 40,
+        "PR_HEAD_SHA": event["pull_request"]["head"]["sha"],
+        "PR_OUTCOME": "success",
+    }
+    return run_bounded_child(
+        ["bash", "-e", "-c", _publish_step()["run"]], cwd=repo, check=False, env=environment | env
+    )
+
+
+def _published(gh: _FakeGh, sha: str) -> list[tuple[str, str]]:
+    """The (state, description) of each confidential-content status posted on `sha`."""
+    posts = gh.posts(f"/statuses/{sha}")
+    assert all(post["body"]["context"] == "confidential-content" for post in posts)
+    assert all(post["body"]["target_url"].endswith("/actions/runs/42") for post in posts)
+    return [(post["body"]["state"], post["body"]["description"]) for post in posts]
+
+
+_SHARED = ("failure", "Head commit is shared with another open pull request")
+_LOOKUP_FAILED = ("failure", "Open pull-request lookup failed")
+_PASSED = ("success", "Confidential-content scan passed")
+# name -> (PR commit, whether the PR is outside work, whether the base already holds the head,
+#          whether another open PR has this head (None: the lookup fails), own live title,
+#          expected statuses, expected publish exit)
+_PUBLISH_CASES = {
+    "shared-head-clean-scan": ((SAFE, _CLEAN_FILE), False, False, True, "public", [_SHARED], 1),
+    # Only the other PR's range holds the term; this PR's own range is empty and scans clean.
+    "shared-head-other-range-empty": (
+        (SAFE, _TERM_FILE),
+        False,
+        True,
+        True,
+        "public",
+        [_SHARED],
+        1,
+    ),
+    "lookup-fails": ((SAFE, _CLEAN_FILE), False, False, None, "public", [_LOOKUP_FAILED], 1),
+    "unshared-outside-term": ((OUTSIDER, _TERM_FILE), True, False, False, "public", [_PASSED], 0),
+    "superseded-event": ((SAFE, _CLEAN_FILE), False, False, False, "renamed", [], 0),
+}
+# A failed scan whose event the PR has since changed publishes nothing, like a passed one.
+_FAILED_CASES = {
+    "superseded-failed-event": ("renamed", []),
+    "current-failed-event": ("public", [("failure", "Confidential-content scan failed")]),
+}
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", sorted(_PUBLISH_CASES))
+def test_publish_step_fails_a_head_commit_another_open_pr_shares(
+    tmp_path: Path, case: str
+) -> None:
+    commit, outside, empty_range, shared, title, expected, exit_status = _PUBLISH_CASES[case]
+    repo, base, head = _pr_scenario(tmp_path, [commit])
+    scan_base = head if empty_range else base
+    event = _pr_event(
+        head=head,
+        base=scan_base,
+        head_repo_id=2 if outside else 1,
+        association="NONE" if outside else "OWNER",
+    )
+    own = _open_pull(
+        head=head, head_repo_id=2 if outside else 1, association="NONE" if outside else "OWNER"
+    ) | {"number": 7, "body": "", "title": title}
+    other = _open_pull(head=head if shared else _OTHER_HEAD, head_repo_id=1, association="OWNER")
+    gh = _FakeGh(tmp_path)
+    gh.serve_open_pulls(*((None,) if shared is None else (own, other)))
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=scan_base), 0)
+    gh.reset()
+
+    result = _run_publish_step(repo, event, gh)
+
+    _expect_exit(result, exit_status)
+    assert _published(gh, head) == expected
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize("case", sorted(_FAILED_CASES))
+def test_publish_step_leaves_a_stale_failed_scan_to_the_newer_run(
+    tmp_path: Path, case: str
+) -> None:
+    title, expected = _FAILED_CASES[case]
+    repo, base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
+    event = _pr_event(head=head, base=base)
+    own = _open_pull(head=head, head_repo_id=1, association="OWNER") | {
+        "number": 7,
+        "body": "",
+        "title": title,
+    }
+    gh = _FakeGh(tmp_path)
+    gh.serve_open_pulls(own)
+    _expect_exit(_run_pr_scan_step(repo, event, gh, base=base), 0)
+    gh.reset()
+
+    result = _run_publish_step(repo, event, gh, PR_OUTCOME="failure")
+
+    _expect_exit(result, 0)
+    assert _published(gh, head) == expected
+
+
+@POSIX_ONLY
+@pytest.mark.parametrize(
+    ("ref", "published"), [("refs/heads/main", True), ("refs/heads/topic", False)]
+)
+def test_publish_step_sets_a_non_pr_status_only_on_main(
+    tmp_path: Path, ref: str, published: bool
+) -> None:
+    repo, _base, head = _pr_scenario(tmp_path, [(SAFE, _CLEAN_FILE)])
+    gh = _FakeGh(tmp_path)
+    event = _pr_event(head=head, base=head)
+
+    result = _run_publish_step(
+        repo,
+        event,
+        gh,
+        GITHUB_EVENT_NAME="workflow_dispatch",
+        GITHUB_REF=ref,
+        PUSH_OUTCOME="success",
+    )
+
+    _expect_exit(result, 0)
+    assert _published(gh, "c" * 40) == ([_PASSED] if published else [])
+    assert not [call for call in gh.calls() if "/pulls?" in call.get("endpoint", "")]
+
+
+def test_workflow_runs_one_pr_scan_per_head_commit_at_a_time() -> None:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert workflow["concurrency"] == {
+        "group": "confidential-content-${{ github.event.pull_request.head.sha || github.run_id }}",
+        "cancel-in-progress": False,
+    }
 
 
 @POSIX_ONLY

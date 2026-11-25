@@ -73,6 +73,17 @@ python3 .github/scripts/confidential_content_guard.py --repo . sync-ci-key
 It first checks that the key decrypts the tracked file, then sends the key to
 `gh secret set` through stdin; it never prints the key or the plaintext.
 
+## Pull requests that share a head commit
+
+The `confidential-content` status lives on a PR's head commit, so every
+open PR with that commit writes the same status. A PR scan therefore
+publishes `failure` when another open PR has the same head commit, or when
+the list of open PRs cannot be read, whatever its own scan found. Close one
+of the PRs, then re-run the newest `Confidential content` run of the other.
+A run whose PR title, body, or branches changed after its event publishes
+nothing, whatever its scan found; the newer event's run sets the status, so
+re-run only the newest run.
+
 ## Provenance rules
 
 The scanner attributes content to where it came from, so a merged outside PR
