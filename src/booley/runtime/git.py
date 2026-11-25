@@ -303,6 +303,10 @@ def remove_git_excludes(wt: Path, entries: Iterable[str]) -> None:
         replace_regular_file(exclude, ("\n".join(kept) + "\n").encode("utf-8"))
 
 
+class _GitProcessCheckError(Exception):
+    """The live-Git-process check could not inspect the host's processes."""
+
+
 def _remove_stale_index_lock(wt: Path) -> bool:
     """Remove a stale index.lock after confirming no live Git owns this worktree."""
     git_dir = _git_dir_for_worktree(wt)
@@ -311,7 +315,12 @@ def _remove_stale_index_lock(wt: Path) -> bool:
     lock_path = git_dir / "index.lock"
     if not lock_path.exists():
         return False
-    if _git_process_owns_worktree(wt, git_dir):
+    try:
+        owned = _git_process_owns_worktree(wt, git_dir)
+    except _GitProcessCheckError as exc:
+        logger.warning("Could not inspect Git processes (%s); keeping %s", exc, lock_path)
+        return False
+    if owned:
         logger.warning("Refusing to remove %s; a live git process appears to own it", lock_path)
         return False
     try:
@@ -369,7 +378,10 @@ def _iter_git_process_cmdlines_procfs() -> list[str]:
 
 
 def _iter_git_process_cmdlines_windows() -> list[str]:
-    """Collect git command lines on Windows via PowerShell/CIM."""
+    """Collect git command lines on Windows via PowerShell/CIM.
+
+    Raises ``_GitProcessCheckError`` when PowerShell cannot list the processes.
+    """
     script = (
         "Get-CimInstance Win32_Process "
         "-Filter \"Name = 'git.exe' OR Name = 'git'\" | "
@@ -379,10 +391,10 @@ def _iter_git_process_cmdlines_windows() -> list[str]:
         result = platform_paths.run_captured_bounded(
             ["powershell", "-NoProfile", "-Command", script], timeout=5
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return []
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _GitProcessCheckError(f"powershell failed: {exc}") from exc
     if result.returncode != 0:
-        return []
+        raise _GitProcessCheckError(f"powershell exited {result.returncode}")
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
