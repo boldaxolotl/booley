@@ -2312,6 +2312,71 @@ def test_prepare_keeps_a_checkout_that_lost_its_git_file(versioned_project: Path
     assert not (other / ".booley").exists()
 
 
+def _branches(source: Path) -> set[str]:
+    return set(
+        _git(source, "for-each-ref", "--format=%(refname:short)", "refs/heads").stdout.split()
+    )
+
+
+def _prepare_with_own_commits(root: Path, folders: list[str], *, own_commit: bool) -> list[Path]:
+    made = [_git_worktree(root, folder) for folder in folders]
+    for worktree in made:
+        assert _prepare(worktree) == 0
+        if own_commit:
+            assert (
+                _git(worktree / ".booley", "commit", "--allow-empty", "-m", "own").returncode == 0
+            )
+    return made
+
+
+@pytest.mark.parametrize("own_commit", [False, True], ids=["merged", "unmerged"])
+def test_prepare_deletes_only_merged_paired_branches_whose_worktree_is_gone(
+    versioned_project: Path, own_commit: bool
+) -> None:
+    from booley.harness import doctor
+
+    gone, _live = _prepare_with_own_commits(
+        versioned_project, ["t3-gone", "t3-live"], own_commit=own_commit
+    )
+    source = versioned_project / ".booley"
+    assert _git(source, "branch", "keep/merged").returncode == 0
+    shutil.rmtree(gone)
+
+    assert _prepare(_git_worktree(versioned_project, "t3-next")) == 0
+
+    kept = {"main", "keep/merged", "booley-worktree/t3-live", "booley-worktree/t3-next"}
+    assert _branches(source) == kept | ({"booley-worktree/t3-gone"} if own_commit else set())
+    reporter = doctor._Reporter.create()
+    doctor._check_kept_worktree_branches(versioned_project, reporter)
+    warned = [finding for finding in reporter.findings or () if finding.severity == "warn"]
+    assert [finding.subject for finding in warned] == (
+        ["booley-worktree/t3-gone"] if own_commit else []
+    )
+    assert all(
+        "branch -D booley-worktree/t3-gone" in w.fix and "merge booley-worktree/t3-gone" in w.fix
+        for w in warned
+    )
+
+
+def test_prepare_refuses_a_reused_name_over_an_unmerged_branch(
+    versioned_project: Path, capsys
+) -> None:
+    (old,) = _prepare_with_own_commits(versioned_project, ["t3-o'reused"], own_commit=True)
+    source = versioned_project / ".booley"
+    assert _git(source, "branch", "keep/merged").returncode == 0
+    shutil.rmtree(old)
+    assert _git(versioned_project, "worktree", "prune").returncode == 0
+    assert _git(versioned_project, "worktree", "add", "-b", "t3/renamed", str(old)).returncode == 0
+
+    assert _prepare(old) == 1
+
+    last = capsys.readouterr().err.splitlines()[-1]
+    assert "branch -D 'booley-worktree/t3-o'\"'\"'reused'" in last
+    assert "merge" in last
+    assert "retry" in last
+    assert {"booley-worktree/t3-o'reused", "keep/merged"} <= _branches(source)
+
+
 def test_prepare_drops_a_killed_runs_snapshot_leftovers(project: Path) -> None:
     worktree = _git_worktree(project, "t3-killed")
     _write(worktree / f".booley.prepare-{os.getpid()}/stale.txt", "old\n")
