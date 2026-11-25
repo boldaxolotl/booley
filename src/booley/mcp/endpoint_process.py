@@ -20,7 +20,7 @@ from typing import Any, BinaryIO
 from booley.flows.endpoint_events import _write_display_event
 from booley.mcp.call_context import CallContext
 from booley.mcp.report_encoding import _max_stderr_bytes, _max_stdout_bytes
-from booley.measurement.mcp_job import MEASURE_ENDPOINT
+from booley.measurement.mcp_job import MEASURE_ENDPOINT, REVIEW_ENDPOINT
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.process_group import (
@@ -48,9 +48,10 @@ def stop_grace_seconds(endpoint: str) -> float | None:
     """How long *endpoint* needs to stop on SIGTERM; None when the default applies.
 
     The grace both bounds a cancel and makes a timeout terminate before it kills, so the
-    children a ``measure`` Job leads in their own process groups are stopped, not orphaned.
+    children a ``measure`` Job and the post-setup hook of a ``review`` Job lead in their own
+    process groups are stopped, not orphaned.
     """
-    return MEASURE_STOP_GRACE_SECONDS if endpoint == MEASURE_ENDPOINT else None
+    return MEASURE_STOP_GRACE_SECONDS if endpoint in (MEASURE_ENDPOINT, REVIEW_ENDPOINT) else None
 
 
 def cancel_grace_seconds(endpoint: str) -> float:

@@ -79,6 +79,7 @@ from booley.mcp import (
     job_results,
     measure_tool,
     peer_checkout,
+    review_tool,
 )
 from booley.mcp.application import (
     McpApplication,
@@ -115,6 +116,7 @@ from booley.mcp.session_registry import (
     git_checkout_metadata,
 )
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
+from booley.measurement import mcp_job
 from booley.runtime import job_records as jobrec
 from booley.runtime import loopback_http, pid, runtime_context
 from booley.runtime.booley_dir import (
@@ -1085,8 +1087,8 @@ def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
     if progress is None:
         return message
     rec = _job_record(run_id)
-    if rec is not None and rec.endpoint == measure_tool.MEASURE_ENDPOINT:
-        return f"{message} {measure_tool.running_text(progress)}"
+    if rec is not None and rec.endpoint in mcp_job.COMMAND_ENDPOINTS:
+        return f"{message} {mcp_job.running_text(rec.endpoint, progress)}"
     completed = progress.get("completed_targets", [])
     pending = progress.get("pending_targets", [])
     phase = progress.get("phase", "running")
@@ -1235,11 +1237,11 @@ def _job_listing(outcome: OwnedPoll) -> str:
     def line(rec: jobrec.JobRecord, state: str) -> str:
         text = f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
         progress = (
-            _running_progress(rec.run_id)
-            if rec.endpoint == measure_tool.MEASURE_ENDPOINT
-            else None
+            _running_progress(rec.run_id) if rec.endpoint in mcp_job.COMMAND_ENDPOINTS else None
         )
-        return text if progress is None else f"{text}. {measure_tool.running_text(progress)}"
+        return (
+            text if progress is None else f"{text}. {mcp_job.running_text(rec.endpoint, progress)}"
+        )
 
     sections = []
     if outcome.running:
@@ -1841,15 +1843,17 @@ def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
     return [TextContent(type="text", text=json.dumps(result, sort_keys=True))]
 
 
-async def _dispatch_measure(
+async def _dispatch_command_job(
+    endpoint: str,
+    argv: list[str],
     arguments: dict[str, Any],
     jobs: _JobManager,
     request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent:
-    """Submit ``booley measure`` as a Job and hand its ``run_id`` back at once.
+    """Submit ``booley measure`` or ``booley review`` as a Job; hand its ``run_id`` back at once.
 
-    A measurement runs with the plain call context. It never
+    The command runs with the plain call context. It never
     attaches to an identical live Job: ``HEAD`` and the base branch move while one runs, so
     the same argv can name another commit.
     """
@@ -1860,9 +1864,9 @@ async def _dispatch_measure(
     if request_context is not None and request_context.session_key() is not None:
         context = replace(context, session_key=request_context.session_key())
     return await _dispatch_async_job(
-        measure_tool.MEASURE_ENDPOINT,
-        measure_tool.measure_argv(arguments),
-        measure_tool.MEASURE_TIMEOUT_S,
+        endpoint,
+        argv,
+        mcp_job.COMMAND_JOB_TIMEOUT_S,
         jobs,
         context=context,
         caller=caller,
@@ -1871,14 +1875,31 @@ async def _dispatch_measure(
     )
 
 
-async def _dispatch_measure_or_cancel(
+# Command Job tool name -> its endpoint, its argv builder and whether the tool is offered.
+_COMMAND_TOOLS: dict[
+    str, tuple[str, Callable[[dict[str, Any]], list[str]], Callable[[catalog.Exposure], bool]]
+] = {
+    measure_tool.MEASURE_TOOL_NAME: (
+        mcp_job.MEASURE_ENDPOINT,
+        measure_tool.measure_argv,
+        catalog.measure_visible,
+    ),
+    review_tool.REVIEW_TOOL_NAME: (
+        mcp_job.REVIEW_ENDPOINT,
+        review_tool.review_argv,
+        catalog.review_visible,
+    ),
+}
+
+
+async def _dispatch_command_or_cancel(
     name: str,
     arguments: dict[str, Any],
     jobs: _JobManager,
     request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent | None:
-    """Route ``booley_measure`` and ``booley_cancel``; ``None`` when the tool is hidden."""
+    """Route a command Job tool and ``booley_cancel``; ``None`` when the tool is hidden."""
     exposure = _exposure()
     if name == catalog._CANCEL_MCP_TOOL_NAME:
         return (
@@ -1886,9 +1907,12 @@ async def _dispatch_measure_or_cancel(
             if catalog.utilities_visible(exposure)
             else None
         )
-    if not catalog.measure_visible(exposure):
+    endpoint, argv_of, visible = _COMMAND_TOOLS[name]
+    if not visible(exposure):
         return None
-    return await _dispatch_measure(arguments, jobs, request_context, caller)
+    return await _dispatch_command_job(
+        endpoint, argv_of(arguments), arguments, jobs, request_context, caller
+    )
 
 
 async def _dispatch_special_mcp_tool(
@@ -1930,8 +1954,8 @@ async def _dispatch_special_mcp_tool(
         return handler() if visible() else None
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs, caller)
-    if name in {measure_tool.MEASURE_TOOL_NAME, catalog._CANCEL_MCP_TOOL_NAME}:
-        return await _dispatch_measure_or_cancel(name, arguments, jobs, request_context, caller)
+    if name in _COMMAND_TOOLS or name == catalog._CANCEL_MCP_TOOL_NAME:
+        return await _dispatch_command_or_cancel(name, arguments, jobs, request_context, caller)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
     return None
