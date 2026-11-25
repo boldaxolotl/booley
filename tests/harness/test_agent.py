@@ -521,6 +521,7 @@ class TestCallAgent:
             (RuntimeError("Invalid max_tokens: 500.5; expected an integer"), False),
             (RuntimeError("Invalid connection string in config"), False),
             (RuntimeError("Invalid connection string: error parsing host"), False),
+            (RuntimeError("Step 3 reported: Command failed with exit code 2"), False),
         ],
         ids=[
             "connection-reset",
@@ -551,6 +552,7 @@ class TestCallAgent:
             "decimal-500",
             "connection-string",
             "connection-string-error",
+            "quoted-exit-phrase",
         ],
     )
     async def test_retries_only_transient_failures(self, monkeypatch, no_backoff, error, retried):
