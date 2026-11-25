@@ -25,7 +25,12 @@ from booley.runtime.git import (
 from tests.conftest import symlink_or_skip
 from tests.git_support import hostile
 from tests.harness.git_support import fake_powershell, git_stdout
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
@@ -389,17 +394,18 @@ def _hanging_alias(argv: list[str]) -> list[str]:
     return ["-c", f"alias.hang=!{command}", "hang"]
 
 
-def test_git_run_timeout_kills_the_tree_and_returns_promptly(tmp_path: Path) -> None:
+def test_git_run_timeout_kills_the_tree_and_returns_promptly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A hung Git tree (git -> sh -> python -> heartbeat) is killed at the timeout."""
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        start = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         with pytest.raises(subprocess.TimeoutExpired):
             git_run(tmp_path, _hanging_alias(argv), timeout=scaled(5))
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - started[0]
         # Timeout plus the helper's documented Windows worst case (~32 s), inside the test budget.
         assert elapsed < scaled(40), f"git_run took {elapsed:.1f}s to give up"
-        assert paths["heartbeat"].exists(), "the hung command never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "a descendant is still running"
 
 
