@@ -33,6 +33,7 @@ ADR_0082_SAMPLES = {
     "mcp-tool-reports/t/1.json": "checkout",
     "tmp/setup/x": "checkout",
     "goals/G1/record.json": "common",
+    "t3-worktrees/work/t3-1a2b3c4d-0123456789abcdef/rtl/top.sv": "common",
     "runtime/jobs/j1/state.json": "common",
     "runtime/job-handles/h": "common",
     "runtime/sessions/s1.json": "common",

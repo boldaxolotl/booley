@@ -64,9 +64,10 @@ with either prefix.
 
 ## Preparing a worktree made with Git
 
-A worktree made with `git worktree add`, or by another tool such as T3 Code,
-has no Booley Directory of its own and uses the main checkout's configuration.
-In the new worktree, run:
+T3 Code in the Sandbox prepares each worktree it creates before the thread's
+first turn; if that fails, the thread does not start. A worktree made with
+`git worktree add` has no Booley Directory of its own and uses the main
+checkout's configuration. In the new worktree, run:
 
 ```bash
 booley worktree prepare [PATH]

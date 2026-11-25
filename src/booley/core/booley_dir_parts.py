@@ -129,6 +129,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "result-cache/": _COMMON,
         "measurements/": _COMMON,
         "worktrees/": _COMMON,
+        "t3-worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,
         ".directory-relocation.json": _COMMON,
