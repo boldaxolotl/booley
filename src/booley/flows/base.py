@@ -27,7 +27,6 @@ from booley.flows import execution, job_resources
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
-from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.invocation import resolve_timeout_ms
@@ -257,12 +256,6 @@ class FlowMechanics:
 
         @property
         def args(self) -> Any: ...  # Any: mirrors EndpointState.args, whose type varies
-
-        def _requested_targets(self) -> list[str]: ...
-
-    def _resolve_display_label(self) -> str | None:
-        """Describe the requested Target scope without resolving it."""
-        return format_flow_display_label(self._requested_targets())
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""

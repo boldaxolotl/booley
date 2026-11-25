@@ -9,10 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_cli import runtime_report_root
-from booley.flows.endpoint_events import (
-    _endpoint_start_event,
-    _write_display_event,
-)
 from booley.flows.endpoint_reporting import _StdoutWitness, removed_root, report_root_removed
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
@@ -40,9 +36,6 @@ logger = logging.getLogger(__name__)
 class PreparedExecution:
     """Adapter-owned state carried through the neutral execution sequence."""
 
-    display_target: str | None
-    display_label: str | None
-    dry_run: bool
     non_persisting_dry_run: bool
     invocation: PreparedInvocation
 
@@ -163,25 +156,9 @@ def _prepare_target(endpoint: EndpointState) -> EndpointOutcome | None:
 def _prepared_execution(
     endpoint: EndpointState, invocation: PreparedInvocation
 ) -> PreparedExecution:
-    """Publish the start event after all preparation gates have succeeded."""
-    display_target = endpoint._resolve_display_config()
-    display_label = endpoint._resolve_display_label()
-    dry_run = bool(getattr(endpoint.args, "dry_run", False))
-    non_persisting_dry_run = endpoint._is_non_persisting_dry_run()
-    _write_display_event(
-        _endpoint_start_event(
-            endpoint.name,
-            display_target,
-            display_label=display_label,
-            dry_run=dry_run,
-            identity=endpoint._display_identity,
-        )
-    )
+    """Carry the prepared invocation once all preparation gates have succeeded."""
     return PreparedExecution(
-        display_target=display_target,
-        display_label=display_label,
-        dry_run=dry_run,
-        non_persisting_dry_run=non_persisting_dry_run,
+        non_persisting_dry_run=endpoint._is_non_persisting_dry_run(),
         invocation=invocation,
     )
 
@@ -271,7 +248,7 @@ def finish_execution(
     *,
     started: float | None,
 ) -> ExecutionResult:
-    """Publish completion: the report refreshes its detail, then the display event ends."""
+    """Publish completion: the report refreshes its detail and the console report is published."""
     for cleanup_error in endpoint._requeue_cleanup_errors:
         normalize_completion_error(outcome, cleanup_error, "retire the killed attempt's progress")
     endpoint._requeue_cleanup_errors.clear()
@@ -281,12 +258,5 @@ def finish_execution(
         outcome.report_text = f"{endpoint.name} failed: {removed} was removed during the run"
     persist_report = not prepared.non_persisting_dry_run and not report_root_removed(endpoint)
     with run_roots(*_live_roots(endpoint)):
-        exit_code = endpoint._finish_main(
-            outcome,
-            prepared.display_target,
-            outcome.display_label or prepared.display_label,
-            started=started,
-            dry_run=prepared.dry_run,
-            persist_report=persist_report,
-        )
+        exit_code = endpoint._finish_main(outcome, persist_report=persist_report)
     return ExecutionResult(exit_code=exit_code, outcome=outcome)

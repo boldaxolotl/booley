@@ -1,7 +1,6 @@
 """Internal SDK-independent endpoint process supervision.
 
-Owns output draining, queue-aware timeout accounting, process-group termination,
-and synthetic end events when a child cannot close its own presentation state.
+Owns output draining, queue-aware timeout accounting and process-group termination.
 """
 
 from __future__ import annotations
@@ -17,12 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from booley.flows.endpoint_events import _write_display_event
 from booley.mcp.call_context import CallContext
 from booley.mcp.report_encoding import _max_stderr_bytes, _max_stdout_bytes
 from booley.measurement.mcp_job import MEASURE_ENDPOINT
 from booley.runtime.booley_dir import resolve_booley_dir
-from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.process_group import (
     ProcessGroup,
     capture_process_group,
@@ -34,7 +31,6 @@ from booley.runtime.process_group import (
 )
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.session_paths import logs_runtime_dir
-from booley.runtime.timefmt import utc_now_rfc3339
 
 _STREAM_CAP_MULTIPLIER = 4
 _WATCHDOG_TICK_SECONDS = 5.0
@@ -503,31 +499,6 @@ async def _cancel_async_process_tree(
 ) -> None:
     """SIGTERM a endpoint process group, then SIGKILL it after a bounded grace."""
     await terminate_async_process_group(proc, group, grace_seconds=grace_seconds)
-
-
-def write_synthetic_endpoint_end(
-    mcp_tool_name: str,
-    duration_s: int,
-    *,
-    identity: DisplayIdentity,
-    outcome: str = "timed_out",
-) -> None:
-    """Close presentation state when a killed child cannot publish its own end."""
-    exit_code = 130 if outcome == "cancelled" else 2
-    report_text = {
-        "cancelled": "Cancelled by request",
-        "aborted": "Endpoint supervisor stopped before completion",
-    }.get(outcome, f"Killed by MCP server after {duration_s}s timeout")
-    event: dict[str, Any] = {
-        "type": "endpoint_end",
-        "endpoint": mcp_tool_name,
-        "exit_code": exit_code,
-        "duration_s": duration_s,
-        "outcome": outcome,
-        "report_text": report_text,
-        "timestamp": utc_now_rfc3339(),
-    }
-    _write_display_event(identity.apply(event))
 
 
 async def _cancel_adopted_process_group(

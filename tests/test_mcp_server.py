@@ -1041,11 +1041,6 @@ def test_dispatch_without_a_server_identity_runs_the_tool(monkeypatch, tmp_path)
     assert "EXIT_CODE: 0" in result[0].text
 
 
-def _display_events(tmp_path: Path) -> list[dict[str, Any]]:
-    lines = (tmp_path / "runtime" / "display.jsonl").read_text(encoding="utf-8").splitlines()
-    return [json.loads(line) for line in lines]
-
-
 @pytest.mark.parametrize(
     ("answer", "exit_code"),
     [
@@ -1054,8 +1049,8 @@ def _display_events(tmp_path: Path) -> list[dict[str, Any]]:
         pytest.param(OSError("spawn failed"), 2, id="spawn-error"),
     ],
 )
-def test_bwave_call_brackets_console_activity(monkeypatch, tmp_path, answer, exit_code):
-    """A spawn failure still closes the console activity it opened (d8c107aa2)."""
+def test_bwave_call_returns_the_cli_answer(monkeypatch, tmp_path, answer, exit_code):
+    """A spawn failure propagates; an exit code reaches the answer."""
     fake.install(monkeypatch, answer)
     app = fake.application(monkeypatch, tmp_path)
     arguments = {"extra_args": ["@dut", "wave", "-t", "start:done"]}
@@ -1067,13 +1062,6 @@ def test_bwave_call_brackets_console_activity(monkeypatch, tmp_path, answer, exi
         text = fake.call(app, "bwave", arguments).content[0].text
         assert f"EXIT_CODE: {exit_code}" in text
         assert answer[2] in text
-
-    events = _display_events(tmp_path)
-    assert [event["type"] for event in events] == ["endpoint_start", "endpoint_end"]
-    assert [event["endpoint"] for event in events] == ["bwave", "bwave"]
-    assert [event["display_label"] for event in events] == ["@dut wave -t start:done"] * 2
-    assert events[1]["exit_code"] == exit_code
-    assert events[1]["duration_s"] >= 0
 
 
 class TestBwaveDispatch:

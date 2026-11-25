@@ -3,14 +3,13 @@
 The harness runs Booley endpoints in two contexts:
 
 * TOP_LEVEL: the outer harness Python process invokes a Flow directly
-  (CLI: ``python -m booley.flows.sim``). Owns concurrent-run scan
-  and orphan-lock reconciliation against ``display.jsonl``.
+  (CLI: ``python -m booley.flows.sim``). Owns outer-harness durable-record
+  hygiene: ghost Job record cleanup and Session registry writes.
 * NESTED: the endpoint runs underneath an MCP server (either the
   developer's MCP server or a specialist sub-agent's nested MCP
-  server). Outer-process bookkeeping is unsafe here — the parent
-  Specialist's still-running ``endpoint_start`` event would be misread as
-  a live blocker or an orphaned lock, and PID liveness across
-  host/container PID namespaces is unreliable.
+  server). Outer-process bookkeeping is unsafe here — a parent's live Jobs
+  would be misread as orphaned, and PID liveness across host/container
+  PID namespaces is unreliable.
 
 The harness signals NESTED by injecting ``BOOLEY_MCP_NESTED=1`` into
 the MCP server's environment (see ``harness.mcp_config``). Anything

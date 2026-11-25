@@ -173,7 +173,7 @@ class ExecutableEndpoint(Protocol[Prepared_contra]):
         *,
         started: float | None,
     ) -> ExecutionResult:
-        """Publish completion: the report refreshes its detail, then the display event ends."""
+        """Publish completion: the report refreshes its detail and the console report is published."""
         ...
 
 
