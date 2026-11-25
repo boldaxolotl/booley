@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -12,15 +13,45 @@ import tomllib
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import NoReturn
 
 import pytest
+from tests.bwave.native_binary import require_native_binary
+from tests.git_command_fake import GitCommandFake
+from tests.git_support import git, repository
+from tests.path_tool_fake import PathToolFake
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
 from tests.time_budget import hang_guard_s
 
 from booley.core import file_lock
-from booley.core.host_probes import HostProbe, ProbeState, probe_docker
+from booley.core.host_probes import ProbeState, probe_docker
 from booley.dev_support import agent_readiness as readiness
+from booley.dev_support.test_profiles import BWAVE_BUILD, native_test_binary
+
+# The serialized shape of one readiness check, with no per-check probe flag.
+CHECK_KEYS = {"id", "status", "required", "summary", "commands"}
+LAUNCHER = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
+ENVIRONMENT = "python.shared-environment"
+PREPARE_IDS = [
+    "git.executable",
+    "git.repository-identity",
+    "repository.source-marker",
+    "git.main",
+    "git.branch-absent",
+    "git.main-tracking",
+    "worktree.path",
+    "git.write-policy",
+    "git.current-checkout",
+]
+_RUNNER_NAMES = (
+    "pytest",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pytest-timeout",
+    "pytest-repeat",
+    "pytest-cov",
+    "coverage",
+)
+PINS = dict.fromkeys((*_RUNNER_NAMES, "ruff", "pyright"), "1")
 
 
 def _bootstrap_module():
@@ -69,94 +100,106 @@ def test_status_precedence_and_exit_contract():
         readiness.Check("two", readiness.Status.ESCALATION, True, "approval"),
         readiness.Check("three", readiness.Status.DEGRADED, False, "optional"),
     ]
+    assert readiness.aggregate_status(()) is readiness.Status.READY
     assert readiness.aggregate_status(checks) is readiness.Status.ESCALATION
     assert readiness.exit_code(readiness.Status.ESCALATION) == 0
     assert readiness.exit_code(readiness.Status.BLOCKED) == 1
 
 
-def test_verification_commands_are_stable(tmp_path, monkeypatch):
-    monkeypatch.setattr(readiness.sys, "platform", "linux")
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "cache" / "agent-tools")
-    python = str(tmp_path / "bin/python")
-    commands = readiness._verification_commands(tmp_path / "bin/python", tmp_path)
-    assert [command.id for command in commands] == [
-        "ruff.agent-gate",
-        "ruff.ci-check",
-        "ruff.ci-format",
-        "pyright.ci-check",
-        "packaged-copies.check",
-        "markdown.line-length",
-        "function-length.check",
-        "pytest.broad",
-        "coverage.changed-lines",
-    ]
-    assert commands[0].argv == (python, "-m", "ruff", "check", "src/", "tests/")
-    assert commands[0].required_at == "before-commit"
-    markdown = commands[5]
-    assert markdown.argv == (
-        python,
-        "-B",
-        str(tmp_path / ".github/scripts/markdown_line_length.py"),
+@pytest.fixture
+def checkout(tmp_path, monkeypatch):
+    """A pinned source checkout (a Git repository with one commit) and a private tools cache."""
+    root = repository(tmp_path / "repo")
+    _write_pinned(root)
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "initial")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))
+    monkeypatch.delenv("BOOLEY_AGENT_GIT_WRITE_POLICY", raising=False)
+    monkeypatch.chdir(root)
+    return root
+
+
+@pytest.fixture
+def bare_path(tmp_path, monkeypatch):
+    """An empty ``PATH``: Git, Docker and Cargo are absent unless a test installs a fake."""
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    monkeypatch.setenv("PATH", str(directory))
+    return directory
+
+
+def _report(capsys, *argv):
+    """Run ``main`` with ``--json``; the document plus its exit code, raw text and checks by id."""
+    code = readiness.main([*argv, "--json"])
+    raw = capsys.readouterr().out
+    document = json.loads(raw)
+    by_id = {check["id"]: check for check in document["checks"]}
+    return document | {"exit": code, "raw": raw, "by_id": by_id}
+
+
+def _shared_environment(capsys) -> tuple[Path, str]:
+    """The environment folder and fingerprint the reported bootstrap command names."""
+    argv = _report(capsys, "--phase", "develop")["by_id"][ENVIRONMENT]["commands"][0]["argv"]
+    return Path(argv[argv.index("--environment") + 1]), argv[argv.index("--fingerprint") + 1]
+
+
+def test_develop_reports_verification_commands(checkout, capsys):
+    root = checkout.resolve()
+    document = _report(capsys, "--phase", "develop")
+    python = str(readiness.venv_python(Path(document["commands"][0]["argv"][-3])))
+    scripts, report = root / ".github/scripts", readiness.coverage_xml_path(root)
+    commands = {command["id"]: command for command in document["commands"]}
+    assert " ".join(commands) == (
+        "python.bootstrap-agent-tools readiness.rerun-develop ruff.agent-gate ruff.ci-check "
+        "ruff.ci-format pyright.ci-check packaged-copies.check markdown.line-length "
+        "function-length.check pytest.broad coverage.changed-lines"
     )
-    assert (markdown.cwd, markdown.purpose, markdown.required_at) == (
-        str(tmp_path),
-        "lint",
-        "before-commit",
-    )
-    # CI's bare `pyright` step, with imports resolved in the shared environment.
-    assert commands[3].argv == (python, "-m", "pyright", "--pythonpath", python)
-    assert commands[3].cwd == str(tmp_path)
-    assert commands[3].required_at == "handoff"
-    packaged = commands[4]
-    assert packaged.argv == (
-        python,
-        "-B",
-        str(tmp_path / ".github/scripts/sync_packaged_copies.py"),
-        "--check",
-    )
-    assert (packaged.cwd, packaged.purpose) == (str(tmp_path), "lint")
-    assert packaged.required_at == "before-commit"
-    length = commands[6]
-    assert length.argv == (
-        python,
-        "-B",
-        str(tmp_path / ".github/scripts/check_function_length.py"),
-    )
-    assert (length.cwd, length.purpose) == (str(tmp_path), "lint")
-    assert length.required_at == "before-commit"
-    report = readiness.coverage_xml_path(tmp_path)
-    broad, coverage = commands[-2:]
-    assert broad.argv == (
-        python,
-        "-m",
-        "pytest",
-        "tests/",
-        "--test-profile",
-        "python",
-        "-n",
-        "auto",
-        "--maxprocesses=8",
-        "--dist=loadscope",
-        f"--basetemp={readiness.pytest_basetemp(tmp_path)}",
-        "--cov=booley",
-        f"--cov-report=xml:{report}",
-        "--cov-fail-under=0",
-    )
-    assert broad.required_at == "optional-broad-verification"
-    # CI's changed-line gate reads the report the broad run wrote.
-    assert coverage.argv == (
-        python,
-        "-B",
-        str(tmp_path / ".github/scripts/changed_line_coverage.py"),
-        "--coverage-xml",
-        str(report),
-    )
-    assert (coverage.cwd, coverage.required_at) == (str(tmp_path), "handoff")
+    options = ["-n", "auto", "--maxprocesses=8", "--dist=loadscope"]
+    if sys.platform != "win32":
+        options.append(f"--basetemp={readiness.pytest_basetemp(root)}")
+    coverage = ["--cov=booley", f"--cov-report=xml:{report}", "--cov-fail-under=0"]
+    tool, launcher = [python, "-m"], [python, "-B"]
+    expected = {
+        "ruff.agent-gate": [*tool, "ruff", "check", "src/", "tests/"],
+        "ruff.ci-check": [*tool, "ruff", "check", "."],
+        "ruff.ci-format": [*tool, "ruff", "format", "--check", "."],
+        # CI's bare `pyright` step, with imports resolved in the shared environment.
+        "pyright.ci-check": [*tool, "pyright", "--pythonpath", python],
+        "packaged-copies.check": [*launcher, str(scripts / "sync_packaged_copies.py"), "--check"],
+        "markdown.line-length": [*launcher, str(scripts / "markdown_line_length.py")],
+        "function-length.check": [*launcher, str(scripts / "check_function_length.py")],
+        "pytest.broad": [
+            *tool,
+            "pytest",
+            "tests/",
+            "--test-profile",
+            "python",
+            *options,
+            *coverage,
+        ],
+        # CI's changed-line gate reads the report the broad run wrote.
+        "coverage.changed-lines": [
+            *launcher,
+            str(scripts / "changed_line_coverage.py"),
+            "--coverage-xml",
+            str(report),
+        ],
+    }
+    handoff = {"ruff.ci-check", "ruff.ci-format", "pyright.ci-check", "coverage.changed-lines"}
+    for identifier, argv in expected.items():
+        required_at = "handoff" if identifier in handoff else "before-commit"
+        if identifier == "pytest.broad":
+            required_at = "optional-broad-verification"
+        assert commands[identifier]["argv"] == argv, identifier
+        assert commands[identifier]["required_at"] == required_at, identifier
+        assert commands[identifier]["cwd"] == str(root), identifier
 
 
 def test_packaged_copies_check_runs_as_reported():
     """The reported argv works as written: right launcher path, src insert, flag."""
     root = Path(__file__).parents[2]
+    # private: the reported command names the shared environment's interpreter, which a test run need not have; this builds it for sys.executable.
     commands = readiness._verification_commands(Path(sys.executable), root)
     command = next((item for item in commands if item.id == "packaged-copies.check"), None)
     assert command is not None
@@ -172,14 +215,18 @@ def test_packaged_copies_check_runs_as_reported():
 
 def test_broad_pytest_keeps_default_basetemp_on_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(readiness.sys, "platform", "win32")
+    # private: develop cannot run under a patched win32 platform (shutil.which then calls Windows-only APIs), so the Windows options are built directly.
     commands = readiness._verification_commands(tmp_path / "python.exe", tmp_path)
     assert commands[-2].argv[6:10] == ("-n", "auto", "--maxprocesses=8", "--dist=loadscope")
     assert not any(arg.startswith("--basetemp") for arg in commands[-2].argv)
 
 
 def test_pytest_basetemp_is_per_checkout_and_outside_it(tmp_path, monkeypatch):
-    cache = tmp_path / "cache" / "agent-tools"
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: cache)
+    monkeypatch.setattr(readiness.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    cache = tmp_path / "cache" / "booley" / "agent-tools-v2"
+    assert readiness.agent_tools_root() == cache
+    assert readiness.venv_python(tmp_path) == tmp_path / "bin/python"
     first = readiness.pytest_basetemp(tmp_path / "first")
     second = readiness.pytest_basetemp(tmp_path / "second")
     assert first != second
@@ -187,11 +234,16 @@ def test_pytest_basetemp_is_per_checkout_and_outside_it(tmp_path, monkeypatch):
     assert first.name.startswith("pytest-basetemp-")
     assert first == readiness.pytest_basetemp(tmp_path / "first")
     assert not first.is_relative_to(tmp_path / "first")
+    monkeypatch.setattr(readiness.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools-v2"
+    assert readiness.venv_python(tmp_path) == tmp_path / "Scripts/python.exe"
 
 
 def test_coverage_report_mirrors_the_checkout_outside_it(tmp_path, monkeypatch):
-    cache = tmp_path / "cache" / "agent-tools"
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: cache)
+    monkeypatch.setattr(readiness.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    cache = tmp_path / "cache" / "booley" / "agent-tools-v2"
     checkout = (tmp_path / "work" / "checkout").resolve()
     report = readiness.coverage_xml_path(checkout)
     assert report.is_relative_to(cache / "changed-line-coverage")
@@ -232,25 +284,23 @@ def test_project_runner_pins_match_the_readiness_contract():
 def _write_project(
     root: Path, test: list[str], quality: list[str], extras: dict[str, list[str]] | None = None
 ) -> None:
-    """Write a minimal pyproject.toml declaring the given extras (plus any ``extras``)."""
+    """Write a minimal source-checkout pyproject.toml declaring the given extras."""
     lines = ["[project]", 'name = "demo"', 'version = "0"', "dependencies = []"]
     lines += ["[project.optional-dependencies]"]
     lines += ["test = [" + ", ".join(f'"{item}"' for item in test) + "]"]
     lines += ["quality = [" + ", ".join(f'"{item}"' for item in quality) + "]"]
     for name, items in (extras or {}).items():
         lines += [f"{name} = [" + ", ".join(f'"{item}"' for item in items) + "]"]
+    lines += ["[tool.booley]", "source_checkout = true"]
     (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-_RUNNER_NAMES = (
-    "pytest",
-    "pytest-asyncio",
-    "pytest-xdist",
-    "pytest-timeout",
-    "pytest-repeat",
-    "pytest-cov",
-    "coverage",
-)
+def _write_pinned(root: Path) -> None:
+    """Write a source-checkout pyproject.toml that pins every runner to ``PINS``."""
+    test = [
+        f"{name}=={version}" for name, version in PINS.items() if name not in {"ruff", "pyright"}
+    ]
+    _write_project(root, test, ["ruff==1", "pyright==1"])
 
 
 def test_runner_pins_derive_from_project_metadata(tmp_path):
@@ -307,41 +357,25 @@ def test_self_reference_with_a_specifier_is_a_usage_error(tmp_path, reference):
         readiness.dependency_argv(tmp_path)
 
 
-_UNPINNED_RUNNER_CASES = (
-    ("pytest", "pytest>=1"),
-    ("pytest", "pytest==1.*"),
-    ("pytest", "pytest===1"),
-    ("coverage", None),
-    ("ruff", "ruff>=0.1"),
-    ("pyright", "pyright>=1.1"),
+_OTHERS = [f"{name}==1" for name in _RUNNER_NAMES[1:]]
+
+
+@pytest.mark.parametrize(
+    ("test", "quality", "culprit"),
+    [
+        (["pytest>=1", *_OTHERS], ["ruff==1", "pyright==1"], "pytest"),
+        (["pytest==1.*", *_OTHERS], ["ruff==1", "pyright==1"], "pytest"),
+        (["pytest===1", *_OTHERS], ["ruff==1", "pyright==1"], "pytest"),
+        (["pytest==1", *_OTHERS[:-1]], ["ruff==1", "pyright==1"], "coverage"),
+        (["pytest==1", *_OTHERS], ["ruff>=0.1", "pyright==1"], "ruff"),
+        (["pytest==1", *_OTHERS], ["ruff==1", "pyright>=1.1"], "pyright"),
+    ],
 )
-
-
-def test_runner_without_exact_pin_is_a_usage_error(tmp_path):
+def test_runner_without_exact_pin_is_a_usage_error(tmp_path, test, quality, culprit):
     """Floors, wildcards, `===` and missing runners are rejected, naming the runner."""
-    for index, (culprit, bad_requirement) in enumerate(_UNPINNED_RUNNER_CASES):
-        root = tmp_path / str(index)
-        root.mkdir()
-        test = [f"{name}==1" for name in _RUNNER_NAMES if name != culprit or culprit == "pytest"]
-        quality = [
-            bad_requirement if culprit == name else f"{name}==1" for name in ("ruff", "pyright")
-        ]
-        if culprit == "pytest":
-            test = [bad_requirement if item.startswith("pytest==") else item for item in test]
-        _write_project(root, test, quality)
-        with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
-            readiness.runner_pins(root)
-
-
-def test_unpinned_runner_blocks_the_shared_environment_check(monkeypatch, tmp_path):
-    """The failure is reported on the environment check, not as a missing source marker."""
-    _write_project(tmp_path, ["pytest>=1"], ["ruff==1"])
-    monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path / "tools")
-    check, commands, _python = readiness._environment_check(tmp_path)
-    assert (check.id, check.status) == ("python.shared-environment", readiness.Status.BLOCKED)
-    assert "pytest" in check.summary
-    assert commands == ()
+    _write_project(tmp_path, test, quality)
+    with pytest.raises(readiness.ReadinessUsageError, match=f"{culprit}.*exact"):
+        readiness.runner_pins(tmp_path)
 
 
 def test_bootstrap_dependencies_never_install_booley():
@@ -349,37 +383,6 @@ def test_bootstrap_dependencies_never_install_booley():
     assert not any(
         item.startswith("-e") or item in {".", "booley", "booley-rtl"} for item in arguments
     )
-
-
-def test_default_docker_check_is_passive(monkeypatch):
-    calls = []
-    monkeypatch.setattr(readiness.shutil, "which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(readiness, "_run_process", lambda *args, **kwargs: calls.append(args))
-    check = readiness._docker_check(False)
-    assert check.status is readiness.Status.READY
-    assert not calls
-
-
-def test_escalation_is_visible_even_when_exit_is_zero():
-    check = readiness.Check(
-        "git.write-policy", readiness.Status.ESCALATION, False, "approval required"
-    )
-    result = readiness.Result(
-        "prepare",
-        readiness.Status.ESCALATION,
-        readiness.Repository("/tmp/x", "codex/x", "primary"),
-        (check,),
-        (),
-    )
-    human = readiness.render_human(result)
-    assert "ESCALATION-REQUIRED" in human
-    assert "exit zero is not permission" in human
-    assert result.as_dict()["status"] == "escalation-required"
-
-
-# The serialized shape of one readiness check, with no per-check probe flag.
-CHECK_KEYS = {"id", "status", "required", "summary", "commands"}
-LAUNCHER = Path(__file__).parents[2] / ".github/scripts/agent_readiness.py"
 
 
 def _run_launcher(*args: str) -> subprocess.CompletedProcess[str]:
@@ -395,81 +398,301 @@ def _run_launcher(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_real_launcher_emits_one_versioned_json_document():
+def test_real_launcher_reports_current_check_ids():
     result = _run_launcher("--phase", "prepare", "--branch", "codex/contract-test", "--json")
     assert result.returncode in {0, 1}
-    document = json.loads(result.stdout)
-    assert document["schema_version"] == 1
-    assert document["phase"] == "prepare"
     assert not result.stderr
-
-
-@pytest.mark.parametrize(
-    ("args", "check_ids"),
-    [
-        pytest.param(
-            ("--phase", "prepare", "--branch", "codex/contract-test", "--json"),
-            [
-                "git.executable",
-                "git.repository-identity",
-                "repository.source-marker",
-                "git.main",
-                "git.branch-absent",
-                "git.main-tracking",
-                "worktree.path",
-                "git.write-policy",
-                "git.current-checkout",
-            ],
-            id="prepare",
-        ),
-        pytest.param(
-            ("--phase", "develop", "--json"),
-            [
-                "git.topology",
-                "repository.source-marker",
-                "python.shared-environment",
-                "docker.executable",
-            ],
-            id="develop",
-        ),
-    ],
-)
-def test_real_launcher_reports_current_check_ids(args, check_ids):
-    document = json.loads(_run_launcher(*args).stdout)
-    assert document["schema_version"] == 1
-    assert [check["id"] for check in document["checks"]] == check_ids
+    document = json.loads(result.stdout)
+    assert (document["schema_version"], document["phase"]) == (1, "prepare")
+    assert [check["id"] for check in document["checks"]] == PREPARE_IDS
     assert all(set(check) == CHECK_KEYS for check in document["checks"])
 
 
-def test_neutral_docker_probe_does_not_disclose_output():
-    def run(*args, **kwargs):
-        return subprocess.CompletedProcess(args[0], 1, stdout="secret", stderr="permission denied")
+@pytest.mark.parametrize("case", ["missing", "oserror", "timeout"])
+def test_probe_docker_maps_runner_failures(case):
+    calls = []
 
-    observation = probe_docker(which=lambda _: "/docker", run=run)
-    assert observation.state is ProbeState.PERMISSION
-    assert not hasattr(observation, "stdout")
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(argv, 10) if case == "timeout" else OSError
+
+    which = (lambda _name: None) if case == "missing" else (lambda _name: "docker")
+    state = {"missing": ProbeState.MISSING, "oserror": ProbeState.FAILED}.get(case)
+    assert probe_docker(which=which, run=run).state is (state or ProbeState.TIMEOUT)
+    assert bool(calls) is (case != "missing")
 
 
-@pytest.mark.parametrize("value", ["bad", "allowed-now"])
-def test_git_write_policy_is_closed(monkeypatch, value):
-    monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", value)
-    with pytest.raises(readiness.ReadinessUsageError):
-        readiness._prepare(Path.cwd(), "codex/x", None)
+_DENIED = (1, "secret", "permission denied")
+# case: (require, installed, `docker info` answer, check id, status, summary fragment)
+_DOCKER = {
+    "optional-present": (False, True, None, "docker.executable", "ready", "daemon not contacted"),
+    "optional-absent": (False, False, None, "docker.executable", "degraded", "optional"),
+    "required-absent": (True, False, None, "docker.executable", "blocked", "unavailable"),
+    "healthy": (True, True, (0, "", ""), "docker.daemon", "ready", "responds"),
+    "permission": (True, True, _DENIED, "docker.daemon", "escalation-required", "approval"),
+    "failed": (True, True, (1, "", "boom"), "docker.daemon", "blocked", "did not respond"),
+}
+
+
+@pytest.mark.parametrize("case", _DOCKER)
+def test_docker_check_reports_the_probe(checkout, bare_path, monkeypatch, capsys, case):
+    require, installed, info, check_id, status, summary = _DOCKER[case]
+    docker = PathToolFake.install(bare_path, "docker", monkeypatch) if installed else None
+    if docker and info:
+        docker.answer("info", returncode=info[0], stdout=info[1], stderr=info[2])
+    document = _report(capsys, "--phase", "develop", *(["--require", "docker"] if require else []))
+    check = document["by_id"][check_id]
+    assert check["status"] == status
+    assert summary in check["summary"]
+    assert "secret" not in document["raw"]
+    if docker and not require:
+        assert docker.calls() == []  # passive: the daemon is never contacted
+
+
+@pytest.mark.parametrize(
+    "case", ["build", "no-cargo", pytest.param("binary", marks=pytest.mark.native_bwave)]
+)
+def test_full_profile_reports_native_prerequisites(checkout, bare_path, monkeypatch, capsys, case):
+    if case == "build":
+        PathToolFake.install(bare_path, "cargo", monkeypatch)
+    if case == "binary":
+        binary = native_test_binary(checkout)
+        binary.parent.mkdir(parents=True)
+        shutil.copy2(require_native_binary(), binary)
+    document = _report(capsys, "--phase", "develop", "--test-profile", "full")
+    check = document["by_id"]["native.bwave"]
+    commands = {command["id"]: command for command in document["commands"]}
+    if case == "binary":
+        assert check["status"] == "ready"
+        assert commands["pytest.broad"]["argv"][4:6] == ["--test-profile", "full"]
+        return
+    assert check["status"] == "blocked"
+    assert "pytest.broad" not in commands
+    assert all(command["purpose"] != "test" for command in document["commands"])
+    if case == "build":
+        assert [command["argv"] for command in check["commands"]] == [list(BWAVE_BUILD)]
+    else:
+        assert "install Rust/Cargo" in check["summary"]
+        assert check["commands"] == []
+
+
+_PREPARE = ["--phase", "prepare", "--branch"]
+# case: (argv, argparse message, what Git answers to `check-ref-format`; None: not asked)
+_PARSE_ERRORS = {
+    "no-branch": (["--phase", "prepare"], "--branch is required", None),
+    "develop-branch": (["--phase", "develop", "--branch", "codex/x"], "only valid", None),
+    "prepare-require": ([*_PREPARE, "codex/x", "--require", "docker"], "only valid", None),
+    "prepare-test-profile": ([*_PREPARE, "codex/x", "--test-profile", "full"], "only valid", None),
+    "publish-removed": (["--phase", "publish"], "invalid choice", None),
+    "no-prefix": ([*_PREPARE, "feature/x"], "new local", None),
+    "git-refuses": ([*_PREPARE, "codex/x..y"], "new local", "real"),
+    "git-refused": ([*_PREPARE, "codex/ok"], "new local", "refused"),
+    "git-missing": ([*_PREPARE, "codex/ok"], "new local", "missing"),
+}
+
+
+@pytest.mark.parametrize("case", _PARSE_ERRORS)
+def test_parse_errors_name_the_rule(case, monkeypatch, capsys):
+    """The codex/ prefix is gated locally; every other ref rule is Git's."""
+    argv, message, git_answer = _PARSE_ERRORS[case]
+    fake = GitCommandFake.install(monkeypatch)
+    if git_answer == "refused":
+        fake.answer("check-ref-format", returncode=128)
+    if git_answer == "missing":
+        fake.crash("check-ref-format", error=OSError())
+    with pytest.raises(SystemExit):
+        readiness.main(argv)
+    assert message in capsys.readouterr().err
+    checked = [["git", "check-ref-format", "--branch", argv[-1]]] if git_answer else []
+    assert fake.commands == checked
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "fragment"),
+    [
+        (None, "not inside"),
+        ("[", "cannot read"),
+        ("[tool.booley]\nsource_checkout = false\n", "not inside"),
+    ],
+    ids=["no-pyproject", "unreadable", "not-source"],
+)
+def test_usage_errors_render_as_blocked_json(tmp_path, monkeypatch, capsys, pyproject, fragment):
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    if pyproject is not None:
+        (folder / "pyproject.toml").write_bytes(pyproject.encode())
+    monkeypatch.chdir(folder)
+    document = _report(capsys, "--phase", "develop")
+    assert (document["exit"], document["status"]) == (1, "blocked")
+    assert document["by_id"].keys() == {"repository.source-marker"}
+    assert fragment in document["by_id"]["repository.source-marker"]["summary"]
+
+
+def _branch_exists(root, fake, monkeypatch):
+    git(root, "branch", "codex/x")
+
+
+def _dirty(root, fake, monkeypatch):
+    (root / "scratch.txt").write_bytes(b"untracked")
+
+
+def _symlink_escape(root, fake, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("symlinks need privileges")
+    (root / ".worktrees").mkdir()
+    (root / ".worktrees" / "x").symlink_to(root.parent / "missing", target_is_directory=True)
+
+
+def _tracking(root, fake, monkeypatch, *, drifted=False):
+    if drifted:
+        git(root, "commit", "--allow-empty", "-q", "-m", "second")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD~1" if drifted else "HEAD")
+    fake.answer("--abbrev-ref", returncode=0, stdout=b"origin/main\n")
+
+
+def _tracking_drift(root, fake, monkeypatch):
+    _tracking(root, fake, monkeypatch, drifted=True)
+
+
+def _identity_crash(root, fake, monkeypatch):
+    fake.crash("--show-toplevel", error=OSError())
+
+
+def _bad_policy(root, fake, monkeypatch):
+    monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", "bad")
+
+
+_FRESH = dict.fromkeys(PREPARE_IDS, "ready")
+_WORKTREE = ".worktrees/x"
+# case: (setup, --worktree-path under the checkout, expected statuses, planned worktree path)
+_PREPARE_CASES = {
+    "fresh": (None, None, _FRESH, _WORKTREE),
+    "branch-exists": (_branch_exists, None, {"git.branch-absent": "blocked"}, None),
+    "requested-inside": (None, "inside", {"worktree.path": "blocked"}, None),
+    "requested-outside": (None, "../elsewhere", {"worktree.path": "ready"}, "../elsewhere"),
+    "symlink-escape": (_symlink_escape, None, {"worktree.path": "blocked"}, None),
+    "dirty": (_dirty, None, {"git.current-checkout": "degraded"}, _WORKTREE),
+    "tracking-match": (_tracking, None, {"git.main-tracking": "ready"}, _WORKTREE),
+    "tracking-drift": (_tracking_drift, None, {"git.main-tracking": "degraded"}, _WORKTREE),
+    "identity-crash": (_identity_crash, None, {"git.repository-identity": "blocked"}, _WORKTREE),
+    "bad-policy": (_bad_policy, None, {"repository.source-marker": "blocked"}, None),
+}
+
+
+@pytest.mark.parametrize("case", _PREPARE_CASES)
+def test_prepare_reports_each_check(checkout, monkeypatch, capsys, case):
+    setup, requested, statuses, planned = _PREPARE_CASES[case]
+    root = checkout.resolve()
+    fake = GitCommandFake.install(monkeypatch)
+    if setup:
+        setup(checkout, fake, monkeypatch)
+    (root / "nested").mkdir()
+    monkeypatch.chdir(root / "nested")  # the checkout is found from a subfolder
+    path = ["--worktree-path", str(root / requested)] if requested else []
+    document = _report(capsys, *_PREPARE, "codex/x", *path)
+    assert {key: document["by_id"][key]["status"] for key in statuses} == statuses
+    assert document["exit"] == int("blocked" in statuses.values())
+    argv = [command["argv"] for command in document["commands"]]
+    worktree = [str((root / planned).resolve())] if planned else None
+    assert argv == (
+        [["git", "worktree", "add", "-b", "codex/x", *worktree, "main"]] if planned else []
+    )
+
+
+def test_prepare_escalation_is_visible_in_human_output(checkout, monkeypatch, capsys):
+    git(checkout, "checkout", "-q", "--detach")
+    monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", "escalation-required")
+    assert readiness.main(["--phase", "prepare", "--branch", "codex/x"]) == 0
+    output = capsys.readouterr().out
+    assert "ESCALATION-REQUIRED" in output
+    assert "exit zero is not permission" in output
+    assert "current checkout is detached" in output
+    assert "Run [before-edit] git.worktree-create:" in output
+    assert "Branch:" not in output
+
+
+def _linked(root, fake=None, monkeypatch=None):
+    path = root.parent / "linked"
+    git(root, "worktree", "add", "-q", "-b", "codex/x", str(path), "main")
+    return path
+
+
+def _count_unreadable(root, fake, monkeypatch):
+    path = _linked(root)
+    git(path, "commit", "--allow-empty", "-q", "-m", "work")
+    unreadable = subprocess.CompletedProcess([], 0, "not-an-int", "")
+    fake.rewrite("--count", edit=lambda result, _options: unreadable)
+    return path
+
+
+def _unreadable_gitfile(root, fake, monkeypatch):
+    if os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0):
+        pytest.skip("needs a mode-000 file that its owner cannot read")
+    plain = root.parent / "plain"
+    plain.mkdir()
+    _write_pinned(plain)
+    (plain / ".git").write_bytes(b"gitdir: elsewhere\n")
+    (plain / ".git").chmod(0)
+    return plain
+
+
+# case: (setup returning the folder to run in, status, summary fragment, kind, branch)
+_TOPOLOGY = {
+    "primary": (None, "blocked", "linked worktree", "primary", "main"),
+    "fresh-linked": (_linked, "ready", "fresh linked", "linked", "codex/x"),
+    "count-unreadable": (_count_unreadable, "degraded", "no unique commits", "linked", "codex/x"),
+    "unreadable-gitfile": (_unreadable_gitfile, "blocked", "linked worktree", "primary", None),
+}
+
+
+@pytest.mark.parametrize("case", _TOPOLOGY)
+def test_develop_reads_topology_from_git(checkout, monkeypatch, capsys, case):
+    setup, status, summary, kind, branch = _TOPOLOGY[case]
+    fake = GitCommandFake.install(monkeypatch)
+    monkeypatch.chdir(setup(checkout, fake, monkeypatch) if setup else checkout)
+    document = _report(capsys, "--phase", "develop")
+    topology = document["by_id"]["git.topology"]
+    assert (topology["status"], summary in topology["summary"]) == (status, True)
+    assert (document["repository"]["worktree_kind"], document["repository"]["branch"]) == (
+        kind,
+        branch,
+    )
+    ids = ["git.topology", "repository.source-marker", ENVIRONMENT, "docker.executable"]
+    assert [check["id"] for check in document["checks"]] == ids
+    assert all(set(check) == CHECK_KEYS for check in document["checks"])
+
+
+def test_worktrees_of_one_repository_share_the_tools_environment(
+    checkout, tmp_path, monkeypatch, capsys
+):
+    nested = checkout / "nested"
+    nested.mkdir()
+    other = repository(tmp_path / "other")
+    _write_pinned(other)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    _write_pinned(plain)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+
+    def fingerprint(folder: Path) -> str:
+        monkeypatch.chdir(folder)
+        return _shared_environment(capsys)[1]
+
+    # `--git-common-dir` prints `.git` in the primary checkout: it names the root, not the folder.
+    primary = fingerprint(nested)
+    assert fingerprint(_linked(checkout)) == primary
+    assert fingerprint(other) != primary
+    assert len(fingerprint(plain)) == 32  # no Git: the root is the identity
 
 
 STALE = "shared tools environment receipt or interpreter is stale"
-PINS = "shared tools environment has mismatched Ruff/Pyright/Pytest runner pins"
+MISMATCH = "shared tools environment has mismatched Ruff/Pyright/Pytest runner pins"
+VALID = "shared tools environment matches the repository fingerprint"
 
 
-def _runner_pins() -> dict[str, str]:
-    """The runner pins this checkout's pyproject.toml declares."""
-    return readiness.runner_pins(Path(__file__).parents[2])
-
-
-def _receipt(pins: dict[str, str] | None = None, **overrides: object) -> dict[str, object]:
+def _receipt(**overrides: object) -> dict[str, object]:
     """A valid schema-2 receipt for fingerprint ``fp``, with *overrides* applied."""
-    installed = _runner_pins() if pins is None else pins
-    return {"schema_version": 2, "fingerprint": "fp", "installed": installed} | overrides
+    return {"schema_version": 2, "fingerprint": "fp", "installed": PINS} | overrides
 
 
 def _write_receipt(environment: Path, receipt: object = None) -> None:
@@ -486,81 +709,67 @@ def _write_receipt(environment: Path, receipt: object = None) -> None:
 @pytest.mark.parametrize(
     ("receipt", "summary"),
     [
-        (_receipt, "shared tools environment matches the repository fingerprint"),
-        ("[", "shared tools environment is missing or has no valid receipt"),
-        ("null", STALE),
-        (lambda pins: _receipt(pins, schema_version=1), STALE),
-        (lambda pins: _receipt(pins, fingerprint="other"), STALE),
-        (lambda pins: _receipt(pins, installed=None), PINS),
-        (lambda pins: _receipt(pins, installed=pins | {"ruff": "0.0.0"}), PINS),
+        (lambda fp: _receipt(fingerprint=fp), VALID),
+        (lambda fp: "[", "shared tools environment is missing or has no valid receipt"),
+        (lambda fp: "null", STALE),
+        (lambda fp: _receipt(fingerprint=fp, schema_version=1), STALE),
+        (lambda fp: _receipt(), STALE),
+        (lambda fp: _receipt(fingerprint=fp, installed=None), MISMATCH),
+        (lambda fp: _receipt(fingerprint=fp, installed=PINS | {"ruff": "0.0.0"}), MISMATCH),
     ],
     ids=["valid", "unparsable", "null", "schema-1", "fingerprint", "no-pins", "wrong-pin"],
 )
-def test_develop_trusts_the_receipt_without_probing(monkeypatch, tmp_path, receipt, summary):
-    pins = _runner_pins()
-    monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fp")
-    monkeypatch.setattr(readiness, "runner_pins", lambda _root: pins)
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
-    monkeypatch.setattr(readiness.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
-    _write_receipt(tmp_path / "fp", receipt(pins) if callable(receipt) else receipt)
-    check, commands, _python = readiness._environment_check(tmp_path)
-    blocked = receipt is not _receipt
-    assert (check.id, check.summary) == ("python.shared-environment", summary)
-    assert check.status is (readiness.Status.BLOCKED if blocked else readiness.Status.READY)
-    assert [command.id for command in commands] == (
+def test_develop_trusts_the_receipt_without_probing(
+    checkout, monkeypatch, capsys, receipt, summary
+):
+    fake = GitCommandFake.install(monkeypatch)
+    environment, fingerprint = _shared_environment(capsys)
+    _write_receipt(environment, receipt(fingerprint))
+    check = _report(capsys, "--phase", "develop")["by_id"][ENVIRONMENT]
+    blocked = summary != VALID
+    assert (check["status"], check["summary"]) == ("blocked" if blocked else "ready", summary)
+    assert [command["id"] for command in check["commands"]] == (
         ["python.bootstrap-agent-tools", "readiness.rerun-develop"] if blocked else []
     )
+    assert all(command[0] == "git" for command in fake.commands)  # no probe ran the environment
 
 
-def test_invalid_environment_is_rebuilt_in_place(monkeypatch, tmp_path):
-    module = _bootstrap_module()
-    destination = tmp_path / "environment"
-    destination.mkdir()
-    (destination / "stale").write_text("stale", encoding="utf-8")
-    built_at = []
-
-    def build(environment, *_args):
-        built_at.append(environment)
-        environment.mkdir()
-        (environment / "ready").write_text("ready", encoding="utf-8")
-
-    monkeypatch.setattr(module, "_build", build)
-    module._rebuild(destination, tmp_path, "fingerprint", {})
-
-    assert built_at == [destination]
-    assert (destination / "ready").read_text(encoding="utf-8") == "ready"
-    assert not (destination / "stale").exists()
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["environment"]
+def test_unpinned_runner_blocks_the_shared_environment_check(checkout, capsys):
+    """The failure is reported on the environment check, not as a missing source marker."""
+    _write_project(checkout, ["pytest>=1"], ["ruff==1"])
+    check = _report(capsys, "--phase", "develop")["by_id"][ENVIRONMENT]
+    assert check["status"] == "blocked"
+    assert "pytest" in check["summary"]
+    assert check["commands"] == []
 
 
-def test_failed_build_leaves_neither_tree_nor_receipt(monkeypatch, tmp_path):
-    module = _bootstrap_module()
+@pytest.mark.timeout(240)  # One real venv build.
+@pytest.mark.parametrize("cleanup_fails", [False, True], ids=["cleaned", "in-use"])
+def test_failed_build_leaves_neither_tree_nor_receipt(
+    offline_bootstrap, tmp_path, monkeypatch, cleanup_fails
+):
+    next(tmp_path.glob("*.whl")).unlink()  # the real `pip install` now fails
     environment = tmp_path / "fp"
-    _write_receipt(environment, _receipt(schema_version=1))
-    error = RuntimeError("pip failed")
+    if not cleanup_fails:
+        _write_receipt(environment, _receipt(schema_version=1))  # a stale tree to replace
+    if cleanup_fails:
 
-    def build(environment, *_args):
-        readiness.venv_python(environment).parent.mkdir(parents=True)
-        raise error
+        def rmtree_in_use(path):
+            raise PermissionError(13, "in use", str(path))
 
-    def rmtree_in_use(path):
-        raise PermissionError(13, "in use", str(path))
-
-    monkeypatch.setattr(module, "_build", build)
-    with pytest.raises(RuntimeError) as raised:
-        module.main(["--environment", str(environment), "--fingerprint", "fp"])
-    assert raised.value is error
-    assert sorted(path.name for path in tmp_path.iterdir()) == [".fp.lock"]
-
-    monkeypatch.setattr(module.shutil, "rmtree", rmtree_in_use)
-    with pytest.raises(RuntimeError) as raised:
-        module._rebuild(environment, tmp_path, "fp", {})
-    assert raised.value is error
-    assert "partial agent-tools tree" in raised.value.__notes__[0]
+        monkeypatch.setattr(offline_bootstrap.shutil, "rmtree", rmtree_in_use)
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        offline_bootstrap.main(["--environment", str(environment), "--fingerprint", "fp"])
+    assert not (environment / "receipt.json").exists()
+    if cleanup_fails:
+        assert "partial agent-tools tree" in raised.value.__notes__[0]
+    else:
+        assert sorted(path.name for path in tmp_path.iterdir()) == [".fp.lock"]
 
 
-def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_path):
-    module = _bootstrap_module()
+def test_waiting_bootstrap_reuses_the_published_environment(
+    offline_bootstrap, monkeypatch, tmp_path
+):
     acquire, contended = file_lock.acquire_file_lock, threading.Event()
 
     def observed_acquire(handle, **kwargs):
@@ -570,17 +779,20 @@ def test_waiting_bootstrap_reuses_the_published_environment(monkeypatch, tmp_pat
             contended.set()
             raise
 
+    # Patched only to observe contention: no public event says the waiter is blocked on the lock.
     monkeypatch.setattr(file_lock, "acquire_file_lock", observed_acquire)
-    monkeypatch.setattr(module, "_build", lambda *_args: pytest.fail("rebuilt"))
     argv = ["--environment", str(tmp_path / "fp"), "--fingerprint", "fp"]
     lock = tmp_path / ".fp.lock"
     with ThreadPoolExecutor() as pool, lock.open("a+", encoding="utf-8") as first:
         acquire(first)
-        second = pool.submit(module.main, argv)
+        second = pool.submit(offline_bootstrap.main, argv)
         assert contended.wait(hang_guard_s())
         _write_receipt(tmp_path / "fp")
+        published = (tmp_path / "fp" / "receipt.json").read_text(encoding="utf-8")
         file_lock.release_file_lock(first)
         assert second.result(2 * hang_guard_s()) == 0
+    # A rebuild would have rewritten the receipt.
+    assert (tmp_path / "fp" / "receipt.json").read_text(encoding="utf-8") == published
 
 
 def _console_script_wheel(directory: Path) -> Path:
@@ -651,289 +863,3 @@ def test_schema_one_receipt_is_rebuilt_with_working_console_scripts(offline_boot
     assert readiness.validate_environment(
         environment, "fingerprint", readiness.venv_python(environment), {}
     )[0]
-
-
-def test_models_and_renderers_serialize_nested_commands():
-    command = readiness.Command("check", ("python", "-V"), "/repo", "inspect", "now")
-    check = readiness.Check(
-        "example", readiness.Status.READY, True, "x" * 300, commands=(command,)
-    )
-    result = readiness.Result(
-        "develop",
-        readiness.Status.READY,
-        readiness.Repository("/repo", "codex/example", "linked"),
-        (check,),
-        (command,),
-    )
-
-    assert command.as_dict()["argv"] == ["python", "-V"]
-    assert len(check.as_dict()["summary"]) == 240
-    assert set(check.as_dict()) == CHECK_KEYS
-    assert result.as_dict()["repository"]["branch"] == "codex/example"
-    assert "Run [now] check" in readiness.render_human(result)
-    assert readiness._argv(("hello world", "--flag")) == "'hello world' --flag"
-
-
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    [
-        pytest.param(["--phase", "prepare"], "--branch is required", id="no-branch"),
-        pytest.param(
-            ["--phase", "develop", "--branch", "codex/x"], "only valid", id="develop-branch"
-        ),
-        pytest.param(
-            ["--phase", "prepare", "--branch", "codex/x", "--require", "docker"],
-            "only valid",
-            id="prepare-require",
-        ),
-        pytest.param(["--phase", "prepare", "--branch", "bad"], "new local", id="bad-branch"),
-        pytest.param(["--phase", "publish"], "invalid choice", id="publish-removed"),
-    ],
-)
-def test_parse_args_rejects_invalid_phase_combinations(argv, message, capsys):
-    with pytest.raises(SystemExit):
-        readiness._parse_args(argv)
-    assert message in capsys.readouterr().err
-
-
-def test_main_renders_usage_error_as_json(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-
-    assert readiness.main(["--phase", "develop", "--json"]) == 1
-    document = json.loads(capsys.readouterr().out)
-    assert document["status"] == "blocked"
-    assert document["checks"][0]["id"] == "repository.source-marker"
-
-
-def test_find_source_checkout_handles_markers_and_bad_toml(tmp_path):
-    root = tmp_path / "checkout"
-    nested = root / "nested"
-    nested.mkdir(parents=True)
-    (root / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
-    )
-    assert readiness.find_source_checkout(nested) == root
-
-    broken = tmp_path / "broken"
-    broken.mkdir()
-    (broken / "pyproject.toml").write_text("[", encoding="utf-8")
-    with pytest.raises(readiness.ReadinessUsageError, match="cannot read"):
-        readiness.find_source_checkout(broken)
-
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    with pytest.raises(readiness.ReadinessUsageError, match="not inside"):
-        readiness.find_source_checkout(empty)
-
-
-def test_run_phase_dispatches_each_phase(monkeypatch, tmp_path):
-    root = tmp_path / "root"
-    root.mkdir()
-    monkeypatch.setattr(readiness, "find_source_checkout", lambda _path: root)
-    expected = readiness.Result(
-        "x", readiness.Status.READY, readiness.Repository("", None, ""), (), ()
-    )
-    calls = []
-    monkeypatch.setattr(
-        readiness, "_prepare", lambda *args: calls.append(("prepare", args)) or expected
-    )
-    monkeypatch.setattr(
-        readiness,
-        "_develop",
-        lambda *args, **kwargs: calls.append(("develop", args, kwargs)) or expected,
-    )
-
-    readiness.run_phase(readiness._parse_args(["--phase", "prepare", "--branch", "codex/x"]))
-    readiness.run_phase(readiness._parse_args(["--phase", "develop", "--require", "docker"]))
-    assert [call[0] for call in calls] == ["prepare", "develop"]
-
-
-def test_prepare_reports_safe_and_unsafe_paths(monkeypatch, tmp_path):
-    root = tmp_path / "root"
-    root.mkdir()
-
-    def process(args):
-        return subprocess.CompletedProcess(args, 0, str(root), "")
-
-    monkeypatch.setattr(readiness.shutil, "which", lambda _name: "/usr/bin/git")
-    monkeypatch.setattr(readiness, "_git", lambda _root, args: process(args))
-    monkeypatch.setattr(
-        readiness, "_git_text", lambda _root, args: "main" if "symbolic" in args else None
-    )
-    monkeypatch.setenv("BOOLEY_AGENT_GIT_WRITE_POLICY", "escalation-required")
-
-    result = readiness._prepare(root, "codex/x", root / "outside")
-    assert result.status is readiness.Status.BLOCKED
-    assert any(check.id == "git.write-policy" for check in result.checks)
-    assert not result.commands
-
-
-@pytest.mark.parametrize("state", list(ProbeState))
-def test_docker_check_maps_all_probe_states(monkeypatch, state):
-    monkeypatch.setattr(readiness, "probe_docker", lambda **_kwargs: HostProbe("docker", state))
-    check = readiness._docker_check(True)
-    if state is ProbeState.HEALTHY:
-        assert check.status is readiness.Status.READY
-    elif state is ProbeState.PERMISSION:
-        assert check.status is readiness.Status.ESCALATION
-    else:
-        assert check.status is readiness.Status.BLOCKED
-
-
-def test_environment_check_emits_bootstrap_commands(monkeypatch, tmp_path):
-    monkeypatch.setattr(readiness, "dependency_fingerprint", lambda _root: "fingerprint")
-    monkeypatch.setattr(readiness, "agent_tools_root", lambda: tmp_path)
-    python = tmp_path / "bin/python"
-    monkeypatch.setattr(readiness, "venv_python", lambda _root: python)
-    monkeypatch.setattr(readiness, "runner_pins", lambda _root: {})
-    monkeypatch.setattr(readiness, "validate_environment", lambda *args: (False, "stale"))
-    check, commands, shared = readiness._environment_check(tmp_path / "root")
-    assert check.status is readiness.Status.BLOCKED
-    assert [command.id for command in commands] == [
-        "python.bootstrap-agent-tools",
-        "readiness.rerun-develop",
-    ]
-    assert shared == python
-
-
-def test_dependency_helpers_and_platform_paths(monkeypatch, tmp_path):
-    root = Path(__file__).parents[2]
-    monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
-    assert len(readiness.dependency_fingerprint(root)) == 32
-    assert readiness.dependency_argv(root)[0] == "install"
-    monkeypatch.setattr(readiness.sys, "platform", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    assert readiness.agent_tools_root() == tmp_path / "local" / "Booley" / "agent-tools-v2"
-    monkeypatch.setattr(readiness, "RECEIPT_SCHEMA_VERSION", 1)
-    assert readiness.agent_tools_root().name == "agent-tools-v1"
-    assert readiness.venv_python(tmp_path) == tmp_path / "Scripts/python.exe"
-
-
-def test_low_level_helpers_handle_failures(monkeypatch, tmp_path):
-    failed = subprocess.CompletedProcess([], 1, "", "")
-    monkeypatch.setattr(readiness, "_git", lambda *_args: failed)
-    assert readiness._git_text(tmp_path, ()) is None
-    monkeypatch.setattr(readiness, "_git_text", lambda *_args: "not-an-int")
-    assert readiness._git_count(tmp_path, ()) is None
-    monkeypatch.setattr(
-        readiness.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()),
-    )
-    assert readiness._run_process(("missing",), tmp_path) is None
-    assert not readiness._successful(None)
-
-
-def test_worktree_and_linked_checkout_guards(tmp_path):
-    root = tmp_path / "root"
-    worktrees = root / ".worktrees"
-    worktrees.mkdir(parents=True)
-    assert readiness._worktree_path(root, "codex/x", None) == worktrees / "x"
-    assert readiness._worktree_path(root, "codex/x", root / "unsafe") is None
-    assert readiness._worktree_path(root, "codex/x", worktrees / "safe") == worktrees / "safe"
-    gitfile = root / ".git"
-    gitfile.write_text("gitdir: /tmp/git", encoding="utf-8")
-    assert readiness._is_linked_worktree(root)
-    gitfile.unlink()
-    gitfile.mkdir()
-    assert not readiness._is_linked_worktree(root)
-
-
-def test_remaining_readiness_boundaries(monkeypatch, tmp_path):
-    assert readiness.aggregate_status(()) is readiness.Status.READY
-
-    marker = tmp_path / "pyproject.toml"
-    marker.write_text("[tool.booley]\nsource_checkout = false\n", encoding="utf-8")
-    with pytest.raises(readiness.ReadinessUsageError):
-        readiness.find_source_checkout(tmp_path)
-
-    monkeypatch.setattr(readiness, "_git_text", lambda *_args: None)
-    monkeypatch.setattr(readiness, "_is_linked_worktree", lambda _root: False)
-    result = readiness._result("x", tmp_path, (), ())
-    assert result.repository.branch is None
-
-    def text_factory(items):
-        values_iter = iter(items)
-
-        def git_text(*_args):
-            return next(values_iter)
-
-        return git_text
-
-    for values, status in (
-        ((None, None, None), readiness.Status.READY),
-        (("origin/main", "same", "same"), readiness.Status.READY),
-        (("origin/main", "local", "remote"), readiness.Status.DEGRADED),
-    ):
-        monkeypatch.setattr(readiness, "_git_text", text_factory(values))
-        check = readiness._tracking_advisory(tmp_path)
-        assert (check.id, check.status) == ("git.main-tracking", status)
-
-    monkeypatch.setattr(readiness, "_within", lambda *_args: False)
-    assert readiness._worktree_path(tmp_path, "codex/x", None) is None
-    source_root = Path(__file__).parents[2]
-
-    monkeypatch.setattr(readiness, "_git_text", lambda *_args: "relative/common")
-    assert len(readiness.dependency_fingerprint(source_root)) == 32
-
-
-def test_probe_boundaries_and_human_main(monkeypatch, capsys, tmp_path):
-    def unused_run(*_args, **_kwargs) -> NoReturn:
-        raise AssertionError("a missing Docker executable must not be run")
-
-    assert probe_docker(which=lambda _name: None, run=unused_run).state is ProbeState.MISSING
-
-    def docker_error(*_args, **_kwargs):
-        raise OSError
-
-    assert probe_docker(which=lambda _name: "docker", run=docker_error).state is ProbeState.FAILED
-    monkeypatch.setattr(
-        readiness,
-        "run_phase",
-        lambda _args: readiness.Result(
-            "develop",
-            readiness.Status.READY,
-            readiness.Repository(str(tmp_path), None, "primary"),
-            (),
-            (),
-        ),
-    )
-    assert readiness.main(["--phase", "develop"]) == 0
-    assert "Agent Readiness: ready" in capsys.readouterr().out
-
-
-def test_remaining_probe_and_environment_branches(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        readiness.Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError())
-    )
-    gitfile = tmp_path / ".git"
-    gitfile.write_text("gitdir", encoding="utf-8")
-    assert not readiness._is_linked_worktree(tmp_path)
-    monkeypatch.setattr(readiness.sys, "platform", "linux")
-    assert readiness.agent_tools_root().name == "agent-tools-v2"
-
-
-@pytest.mark.parametrize(
-    ("branch", "git_result", "accepted", "expect_call"),
-    [
-        pytest.param("codex/issue-1-x", "real", True, True, id="valid"),
-        pytest.param("feature/x", "real", False, False, id="no-prefix"),
-        pytest.param("codex/x..y", "real", False, True, id="git-refuses"),
-        pytest.param(
-            "codex/ok", subprocess.CompletedProcess([], 128, "", ""), False, True, id="git-refused"
-        ),
-        pytest.param("codex/ok", None, False, True, id="git-missing"),
-    ],
-)
-def test_branch_validation_defers_to_git(monkeypatch, branch, git_result, accepted, expect_call):
-    """The codex/ prefix is gated locally; every other ref rule is Git's."""
-    real_run_process = readiness._run_process
-    calls = []
-
-    def spy(argv, cwd, **kwargs):
-        calls.append(tuple(argv))
-        return real_run_process(argv, cwd, **kwargs) if git_result == "real" else git_result
-
-    monkeypatch.setattr(readiness, "_run_process", spy)
-    assert readiness._valid_branch(branch) is accepted
-    assert calls == ([("git", "check-ref-format", "--branch", branch)] if expect_call else [])
