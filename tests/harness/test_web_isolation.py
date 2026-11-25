@@ -10,6 +10,7 @@ import booley
 from booley.core.models import AgentCallParams
 from booley.harness import web_isolation
 from booley.runtime import _claude_backend, _codex_backend, mcp_config
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
 def _docker_data() -> Path:
@@ -45,6 +46,23 @@ def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() ->
         "updates": {"mode": "off"},
         "providers": {"allowedDrivers": ["claudeAgent", "codex"]},
     }
+
+
+def test_shipped_t3code_policy_locks_worktrees_and_their_prepare_script() -> None:
+    settings = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))[
+        "settings"
+    ]
+
+    assert settings["worktreesDirectory"] == {
+        "value": f"{BOOLEY_DIR_TARGET}/t3-worktrees",
+        "locked": True,
+    }
+    assert settings["defaultProjectScripts"]["locked"] is True
+    assert [
+        (script["command"], script["async"])
+        for script in settings["defaultProjectScripts"]["value"]
+        if script["runOnWorktreeCreate"]
+    ] == [("booley worktree prepare", False)]
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:

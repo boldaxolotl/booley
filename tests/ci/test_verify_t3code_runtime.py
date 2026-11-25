@@ -118,7 +118,7 @@ def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str
             {
                 "organization": "Booley",
                 "limits": _LIMITS,
-                "settings": {"worktreesDirectory": "/tmp/wt"},
+                "settings": {"worktreesDirectory": {"value": "/tmp/wt", "locked": True}},
             }
         ),
         encoding="utf-8",
