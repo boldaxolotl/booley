@@ -11,7 +11,7 @@ import pytest
 
 from booley.config import agent as agent_config
 from booley.core.models import AgentResult
-from booley.harness import developer_probe, doctor
+from booley.harness import developer_probe
 from booley.runtime import _claude_backend, _codex_backend
 from booley.runtime import agent as agent_mod
 from booley.runtime import agent_config as backend_config
@@ -33,11 +33,11 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "project" / ".booley"))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
+    # Private: the one function in each module that tells the host from the Sandbox.
     monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
     monkeypatch.setattr(_codex_backend, "_inside_container", lambda: True)
+    # Private: a process-wide cache of nested Codex homes; an earlier test's home must not leak in.
     monkeypatch.setattr(_codex_backend, "_NESTED_HOMES", {})
-    monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
-    monkeypatch.setattr(developer_probe, "configure_agent_call", lambda params: params)
     agent_config.set_agent_settings(None)
     reset_cache()
     yield tmp_path / "project"
@@ -65,6 +65,8 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
     async def fake_call_agent(params):
         seen["params"] = params
         seen["cwd_existed"] = Path(params.cwd).is_dir()
+        # Private: the SDK options and the Codex argv cross to the external agent, and
+        # `measure_developer_rss` returns neither, so they are captured at that last step.
         if flavor == "claude":
             seen["options"] = _claude_backend._build_sdk_options(params)
             return AgentResult(output="OK")

@@ -15,6 +15,8 @@ def add_grant(
     license_profile: str | None = None,
 ) -> authority.ProjectGrant:
     """Authorize one Project directly in EDA authority state."""
+    # private: the public caller, GrantCoordinator, also withdraws the issuance stamp and
+    # cleans up; outside callers need the uncoordinated store.
     with authority._prepare_add_grant(
         authority.grant_project_identity(project),
         kind,
@@ -26,6 +28,8 @@ def add_grant(
 
 def revoke_grant(project: Path, kind: str = authority.VIVADO_KIND) -> authority.ProjectGrant:
     """Remove one Project grant directly from EDA authority state."""
+    # private: the public caller, GrantCoordinator, also withdraws the issuance stamp and
+    # cleans up; outside callers need the uncoordinated removal.
     with authority._prepare_revoke_grant(
         authority.revoke_project_identity(project, kind), kind
     ) as commit:

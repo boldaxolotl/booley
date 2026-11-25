@@ -28,6 +28,11 @@ def linked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path,
     return project, entry, target
 
 
+def pin_store() -> Path:
+    """The host-private pin directory (under the per-test config directory conftest selects)."""
+    return booley_dir_pin.config_dir() / "booley-dir-pins"
+
+
 def test_host_resolvers_refuse_unpinned_and_retargeted_entry(linked, tmp_path: Path) -> None:
     project, entry, target = linked
     resolvers = (
@@ -80,7 +85,7 @@ def test_real_entry_sandbox_and_booley_dir_skip_the_pin(
     entry.mkdir()
     booley_dir_pin.require_pinned_entry(project)
     assert booley_dir.resolve_checkout_booley_dir(project) == entry
-    assert not booley_dir_pin._store().root.exists()
+    assert not pin_store().exists()
 
 
 def test_booley_dir_selection_skips_the_pin_of_an_unpinned_link(
@@ -90,13 +95,13 @@ def test_booley_dir_selection_skips_the_pin_of_an_unpinned_link(
     # The link stays unpinned; an explicit host BOOLEY_DIR selection bypasses it.
     monkeypatch.setenv("BOOLEY_DIR", str(target))
     assert booley_dir.resolve_booley_dir(project, cache_result=False) == target
-    assert not booley_dir_pin._store().root.exists()
+    assert not pin_store().exists()
 
 
 def test_damaged_pin_store_refuses_with_the_pin_error(linked) -> None:
     project, entry, _target = linked
     booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
-    pin_file = booley_dir_pin._store().root / booley_dir_pin._pin_filename(project)
+    (pin_file,) = pin_store().iterdir()
 
     pin_file.write_text("{not json", encoding="utf-8")
     with pytest.raises(booley_dir_pin.BooleyDirPinError, match="unreadable"):
@@ -105,7 +110,7 @@ def test_damaged_pin_store_refuses_with_the_pin_error(linked) -> None:
     pin_file.chmod(0o644)  # a store hardening refusal must not crash with TypeError
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         booley_dir_pin.require_pinned_entry(project)
-    booley_dir_pin._store().root.chmod(0o755)
+    pin_store().chmod(0o755)
     with pytest.raises(booley_dir_pin.BooleyDirPinError):
         booley_dir_pin.require_pinned_entry(project)
 

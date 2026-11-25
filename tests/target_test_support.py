@@ -9,13 +9,9 @@ from pathlib import Path
 import pytest
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets import domain
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import (
-    _HANDLE_FACTORY_KEY,
-    TargetHandle,
-    TargetInspection,
-    UnknownTargetError,
-)
+from booley.targets.domain import TargetHandle, TargetInspection, UnknownTargetError
 
 
 def make_target_handle(
@@ -47,7 +43,9 @@ def make_target_handle(
         doctor_flows=doctor_flows,
         cocotb_module=cocotb_module,
         declared_toplevel=declared_toplevel,
-        _factory_key=_HANDLE_FACTORY_KEY,
+        # private: only TargetCatalog creates handles, and its callers here test
+        # Flow layers on Project roots no catalog declares.
+        _factory_key=domain._HANDLE_FACTORY_KEY,  # pyright: ignore[reportPrivateUsage]
     )
 
 
@@ -98,8 +96,8 @@ class _LenientCatalog:
             )
 
     def core_closure(self, handles):
-        # Intentional test-adapter seam: production consumers cannot reach this
-        # registry walker; the fake mirrors TargetCatalog behavior.
+        # private: fallback handles carry no catalog snapshot, so
+        # TargetCatalog.core_closure refuses them; the walker is the one it uses.
         return fusesoc_registry._selectable_core_closure_for_refs(  # pyright: ignore[reportPrivateUsage]
             self.project_root, handles
         )

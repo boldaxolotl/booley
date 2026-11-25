@@ -15,6 +15,7 @@ import pytest
 from booley.flows import job_resources
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.targets.domain import TargetHandle
+from tests.subprocess_budget import STALL_DUMP_S
 from tests.time_budget import hang_guard_s
 
 
@@ -339,7 +340,7 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
         resource_flags=(),
         commands=(
             f'"{sys.executable}" -c "import project_helper; assert project_helper.VALUE == 42"',
-            f'"{sys.executable}" -m pytest --lf -q "{nested}"',
+            f'"{sys.executable}" -m pytest -o faulthandler_timeout={STALL_DUMP_S:g} --lf -q "{nested}"',
         ),
     )
 

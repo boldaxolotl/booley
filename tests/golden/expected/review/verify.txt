@@ -1,0 +1,34 @@
+Review Report
+Not Reviewed: 3 findings need you
+
+Run
+  verify Review Run 20260104T000000-dddddd of `333333333333`
+  verifies discovery Review Run 20260101T000000-aaaaaa of `aaaaaaaaaaaa`
+  earlier verify Review Runs: 20260102T000000-bbbbbb, 20260103T000000-cccccc
+  Base `bbbbbbbbbbbb` (merge-base with local main)
+  rules changed since the Base: reviews.toml
+  Commit message: Fix 3
+    Run `make` *twice*.
+
+Waivers
+  `f-waived-ok` rtl/a.sv:5 MAJOR waiver not judged: f-waived-ok summary; justification: the output follows the input; verify Review Run 20260103T000000-cccccc
+  `f-waived-ok` rtl/a.sv:5 MAJOR waiver accepted: f-waived-ok summary; justification: the output follows the input; ruling: the reason holds; verify Review Run 20260104T000000-dddddd
+  `f-waived-refused` rtl/a.sv:6 MAJOR waiver refused: f-waived-refused summary; justification: cosmetic; verify Review Run 20260104T000000-dddddd
+
+Needs you
+  `f-major-open` rtl/a.sv:2 MAJOR blocking: f-major-open summary (rtl bugs, resolve major)
+  `f-waived-refused` rtl/a.sv:6 MAJOR blocking: f-waived-refused summary (rtl bugs, resolve major)
+  `f-spec-minor` rtl/a.sv:8 MINOR blocking: f-spec-minor summary (rtl spec, resolve minor)
+
+Fixed
+  `f-critical-fixed` rtl/a.sv:4 CRITICAL fixed in `111111111111`: f-critical-fixed summary
+
+Non-blocking: introduced
+  `f-minor-open` rtl/a.sv:3 MINOR non-blocking: f-minor-open summary
+  `f-advisory` rtl/a.sv:7 MAJOR non-blocking, advisory: f-advisory summary
+
+Non-blocking: pre-existing
+  `f-old` rtl/a.sv:9 CRITICAL pre-existing: f-old summary
+
+Reviews not needed
+  tb quality: no changed file

@@ -8,6 +8,8 @@ from claude_agent_sdk import ClaudeAgentOptions
 from booley.runtime import _claude_backend
 
 
+# _build_sdk_options always sets a model, so no public call produces options
+# without one; the SDK types the field optional and this guard keeps that state loud.
 def test_options_model_rejects_options_without_a_model() -> None:
     with pytest.raises(RuntimeError, match="no model"):
         _claude_backend._options_model(ClaudeAgentOptions(model=None))

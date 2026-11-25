@@ -11,20 +11,13 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.fpga.profiles import VIVADO_PROFILES
 from tests.time_budget import scaled
 
 _FIXTURE = Path(__file__).resolve().parents[4] / "fixtures" / "vivado_profile_characterization"
 # Completion deadline of the opt-in licensed-host routed run, which takes minutes.
 _RUN_TIMEOUT_S = scaled(900)
 _PROFILES = ("balanced", "compact", "max_frequency")
-_EXPECTED_MAPPING = {
-    "balanced": ("Vivado Synthesis Defaults", "Vivado Implementation Defaults"),
-    "compact": ("Flow_AreaOptimized_high", "Area_Explore"),
-    "max_frequency": (
-        "Flow_PerfOptimized_high",
-        "Performance_ExplorePostRoutePhysOpt",
-    ),
-}
 
 
 def _evidence() -> dict[str, object]:
@@ -69,12 +62,13 @@ def test_checked_in_evidence_covers_every_portable_profile() -> None:
     assert tuple(supported) == ("synthesis", "implementation")
     for catalog in supported.values():
         assert catalog == sorted(set(catalog))
-    for profile, (synthesis, implementation) in _EXPECTED_MAPPING.items():
-        result = evidence["profiles"][profile]
-        assert result["synthesis_strategy"] == synthesis
-        assert result["implementation_strategy"] == implementation
-        assert synthesis in supported["synthesis"]
-        assert implementation in supported["implementation"]
+    # The mapping Booley applies is the one this evidence characterized.
+    for name, profile in VIVADO_PROFILES.items():
+        result = evidence["profiles"][name]
+        assert result["synthesis_strategy"] == profile.synthesis_strategy
+        assert result["implementation_strategy"] == profile.implementation_strategy
+        assert profile.synthesis_strategy in supported["synthesis"]
+        assert profile.implementation_strategy in supported["implementation"]
         assert result["final_status"].endswith("Complete!")
         assert result["wns_ns"] >= 0
         assert result["whs_ns"] >= 0

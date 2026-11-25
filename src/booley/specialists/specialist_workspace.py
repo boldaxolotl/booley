@@ -101,10 +101,14 @@ def _populate_snapshot(real_root: Path, snapshot_root: Path) -> None:
         )
 
 
-def _initialize_snapshot_git(snapshot_root: Path) -> None:
-    """Record only the sources the agent is allowed to read."""
+def initialize_snapshot_git(snapshot_root: Path, *, include_ignored: bool = False) -> None:
+    """Record only the sources the agent is allowed to read.
+
+    *include_ignored* records files a ``.gitignore`` would skip too, for a tree that
+    was exported from a commit: its tracked files and its built inputs must all show.
+    """
     _run_git(["init", "--quiet"], snapshot_root)
-    _run_git(["add", "--all"], snapshot_root)
+    _run_git(["add", "--all", *(["--force"] if include_ignored else [])], snapshot_root)
     _run_git(
         [
             "-c",
@@ -214,7 +218,7 @@ def isolated_agent_workspace(
                 excluded_roots=excluded_roots,
                 cwd=snapshot.snapshot_root / relative_cwd,
             )
-        _initialize_snapshot_git(snapshot.snapshot_root)
+        initialize_snapshot_git(snapshot.snapshot_root)
         old = str(real_root)
         new = str(snapshot.snapshot_root)
         isolated = replace(

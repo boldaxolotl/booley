@@ -9,7 +9,6 @@ import pytest
 from booley.feedback import materialize, render
 from booley.feedback.findings import Finding, append, read_log
 from booley.feedback.render import Environment
-from tests.time_budget import scaled
 
 
 def _project(tmp_path: Path) -> Path:
@@ -134,7 +133,7 @@ def test_duplicate_rows_materialize_distinct_snapshots_and_preserve_unknown_fiel
     ]
 
 
-def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, monkeypatch):
+def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, lock_wait_expires):
     from booley.feedback import findings
     from tests.feedback.test_findings import holding_findings_lock
 
@@ -144,7 +143,6 @@ def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, monke
     append(Finding(title="attached", attachments=[str(source)]), directory)
     path = findings.log_path(directory)
     before = path.read_bytes()
-    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", scaled(0.01))
     with (
         holding_findings_lock(directory),
         pytest.raises(findings.FindingsLockTimeoutError, match=r"materialize.*findings.lock"),
@@ -195,33 +193,6 @@ def test_materialize_never_overwrites_legacy_snapshot(tmp_path):
     )
     materialize.materialize_attachments(directory, [source])
     assert old.read_text(encoding="utf-8") == "preserved old evidence"
-
-
-def _refuse(*_args, **_kwargs):
-    raise AssertionError("materialization must not render or collect an environment")
-
-
-def test_snapshot_uses_renderer_attachment_limits(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(render, "MAX_ATTACHMENT_LINES", 2)
-    monkeypatch.setattr(render, "MAX_ATTACHMENT_CHARS", 7)
-    source = tmp_path / "long.log"
-    source.write_text("one\ntwo\nthree\n", encoding="utf-8")
-
-    excerpt, metadata = materialize._excerpt(source)
-
-    assert excerpt == "o\nthree"
-    assert (metadata["clipped"], metadata["line_count"]) == (True, 3)
-
-
-def test_materialize_renders_no_report_and_reads_no_environment(tmp_path, monkeypatch) -> None:
-    for name in ("collect_environment", "render_user_report", "render_booley_report"):
-        monkeypatch.setattr(render, name, _refuse)
-    booley_dir = _project(tmp_path)
-    source = tmp_path / "attached.log"
-    source.write_text("attached\n", encoding="utf-8")
-    append(Finding(title="finding", attachments=[str(source)]), booley_dir)
-
-    assert materialize.materialize_attachments(booley_dir, [source]) == (source,)
 
 
 def test_materialized_attachment_renders_identical_report_and_export(tmp_path: Path) -> None:

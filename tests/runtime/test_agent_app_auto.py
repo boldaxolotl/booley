@@ -1,8 +1,8 @@
 """``BOOLEY_AGENT_APP=auto``: the registrar picks the app and every consumer agrees (#2425).
 
 Every test runs as a Sandbox start: the registrar hook runs, then the Specialist,
-MCP-server and Doctor consumers read what the start decided.
-Nothing here depends on host credentials or on ``claude``/``codex`` being on PATH.
+MCP-server, ``booley auth``, ``booley shell`` and Doctor consumers read what the start
+decided. Nothing here depends on host credentials or on ``claude``/``codex`` being on PATH.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from booley.config import agent_app
 from booley.config.agent import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.config.settings import set_agent_settings
 from booley.harness import auth_cmd, doctor
+from booley.harness import booley as booley_cli
 from booley.harness import incontainer_register as entry
 from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
@@ -46,6 +47,12 @@ _CREDENTIAL_ENV = (
 )
 
 
+def _pin_venue(monkeypatch, *, inside: bool) -> None:
+    # private: the container marker is /.dockerenv on the real filesystem; no public
+    # seam points the Sandbox probe at a fixture.
+    monkeypatch.setattr(config_agent, "_inside_container", lambda: inside)
+
+
 def _use_home(monkeypatch, home: Path) -> Path:
     """Make *home* the Sandbox home on POSIX (HOME) and Windows (USERPROFILE)."""
     home.mkdir(parents=True, exist_ok=True)
@@ -61,8 +68,7 @@ def sandbox(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
-    monkeypatch.setattr(config_agent, "_inside_container", lambda: True)
-    monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
+    _pin_venue(monkeypatch, inside=True)
     monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
     serve_t3_code(monkeypatch, running=True)
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
@@ -73,6 +79,8 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
     set_agent_settings(None)
     env = SimpleNamespace(home=_use_home(monkeypatch, tmp_path / "home"), project=project)
+    for installed in (".claude", ".codex"):  # what Doctor reads as an installed Agent CLI
+        (env.home / installed).mkdir()
     _record_auth(env, monkeypatch)
     yield env
     set_agent_settings(None)
@@ -85,12 +93,12 @@ def _give(kind: str, home: Path, monkeypatch) -> None:
     if kind == "claude-oauth-token":
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-claude-token")
     if kind == "claude-login":
-        (home / ".claude").mkdir()
+        (home / ".claude").mkdir(exist_ok=True)
         (home / ".claude" / ".credentials.json").write_text("{}")
     if kind in ("codex-api-key", "both"):
         monkeypatch.setenv("OPENAI_API_KEY", "synthetic-codex-key")
     if kind == "codex-login":
-        (home / ".codex").mkdir()
+        (home / ".codex").mkdir(exist_ok=True)
         (home / ".codex" / "auth.json").write_text('{"tokens": {}}')
     if kind == "gateway":
         monkeypatch.setenv("BOOLEY_GATEWAY_URL", _GATEWAY_URL)
@@ -134,6 +142,29 @@ def _record_auth(sandbox, monkeypatch, toml: bytes = b'[agent]\nauth = "visitor"
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
 
 
+_VISITOR_PROJECT = SimpleNamespace(booley_toml={"agent": {"auth": "visitor"}})
+
+
+def _doctor_findings(project) -> list:
+    # private: run_doctor_result runs every host, Docker and Flow probe first; this
+    # is its agent credential section alone.
+    reporter = doctor._Reporter.create()
+    doctor._run_agent_credential_checks(project, reporter)
+    return reporter.findings
+
+
+def _audited_clis(findings) -> set[str]:
+    """The Agent CLIs whose credential Doctor graded."""
+    labels = {"claude": "Claude Code", "codex": "Codex"}
+    return {
+        cli for cli, label in labels.items() if any(f.message.startswith(label) for f in findings)
+    }
+
+
+def _graded_on_the_gateway(findings) -> bool:
+    return any(f.message.startswith("Codex auth: the gateway at") for f in findings)
+
+
 # What each credential situation resolves to: (default app, policy the consumers see,
 # every allowed CLI with the default first).
 _CASES = {
@@ -170,9 +201,11 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
         read_settings()
         settings = get_agent_settings()
         assert (settings.default_cli, settings.auth_for(app)) == (app, policy)
-    assert doctor._configured_provider(None) == app
-    recorded = SimpleNamespace(booley_toml={"agent": {"auth": "visitor"}})
-    assert doctor._configured_auth_policy(recorded) == policy
+    findings = _doctor_findings(_VISITOR_PROJECT)
+    assert [f.message for f in findings if f.severity.value == "fail"] == []
+    assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == []
+    assert _audited_clis(findings) == set(clis)
+    assert _graded_on_the_gateway(findings) == (policy == "gateway")
 
 
 def test_consumers_keep_the_start_choice_when_a_credential_appears_later(
@@ -183,8 +216,8 @@ def test_consumers_keep_the_start_choice_when_a_credential_appears_later(
 
     _give("claude-login", sandbox.home, monkeypatch)  # appears after the start resolved
 
-    assert doctor._configured_provider(None) == "codex"
-    assert doctor._configured_auth_policy(None) == "gateway"
+    findings = _doctor_findings(_VISITOR_PROJECT)
+    assert (_audited_clis(findings), _graded_on_the_gateway(findings)) == ({"codex"}, True)
     assert (get_agent_settings().default_cli, get_agent_settings().auth_for("codex")) == (
         "codex",
         "gateway",
@@ -250,8 +283,14 @@ def test_signing_in_after_a_gateway_start_makes_the_stored_health_result_due(
 
 @pytest.mark.parametrize(
     "credential,gateway_policy",
-    [("claude-api-key", None), ("codex-api-key", None), ("codex-api-key", "gateway")],
-    ids=["claude", "codex", "codex-gateway-policy"],
+    [
+        ("claude-api-key", None),
+        ("codex-api-key", None),
+        ("codex-api-key", "gateway"),
+        ("claude-api-key", "gateway"),
+        ("claude-api-key", "auto"),
+    ],
+    ids=["claude", "codex", "codex-gateway-policy", "claude-gateway-policy", "claude-auto-policy"],
 )
 def test_visitor_credential_beats_a_configured_gateway(
     sandbox, monkeypatch, capsys, credential, gateway_policy
@@ -267,7 +306,8 @@ def test_visitor_credential_beats_a_configured_gateway(
 
     assert f"app:{app} " in status
     assert not config_agent.gateway_handoff_active()
-    assert set(get_agent_settings().auth.values()) == {"visitor"}
+    settings = get_agent_settings()
+    assert (settings.default_cli, set(settings.auth.values())) == (app, {"visitor"})
     assert "booley_gateway" not in _codex_config(sandbox.home)
 
 
@@ -330,7 +370,7 @@ def test_restart_after_the_choice_changes_leaves_no_breaking_registration(
     _restart_with(second, sandbox, monkeypatch, capsys)
 
     app = _CASES[second][0]
-    assert doctor._configured_provider(None) == app
+    assert agent_app.auto_choice().app == app
     codex = _codex_config(sandbox.home)
     assert "booley_gateway" not in codex
     assert not any(line.startswith("model") for line in codex.split("[", 1)[0].splitlines())
@@ -347,12 +387,6 @@ def test_restart_after_the_choice_changes_leaves_no_breaking_registration(
         assert "[mcp_servers.booley]" in codex
 
 
-def _doctor_findings(project) -> list:
-    reporter = doctor._Reporter.create()
-    doctor._run_agent_credential_checks(project, reporter)
-    return reporter.findings
-
-
 @pytest.mark.parametrize("kind", ["both", "gateway"])
 def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
     sandbox, monkeypatch, capsys, kind
@@ -366,6 +400,7 @@ def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
     chosen = [f.message for f in findings if "BOOLEY_AGENT_APP=auto" in f.message]
     assert len(chosen) == 1
     assert ("Claude Code" if app == "claude" else "Codex") in chosen[0]
+    assert ("Claude Code (default), Codex" in chosen[0]) == (kind == "both")
     assert ("Claude is the default" in chosen[0]) == (kind == "both")
     configuration = _auto_spec_report(sandbox, monkeypatch, declared_provider=None)
     # An unpinned auto spec is accepted: no WARN or FAIL, only the note that it is
@@ -375,25 +410,15 @@ def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
     ]
 
 
-def test_doctor_audits_every_auto_allowed_cli(sandbox, monkeypatch, capsys):
+def test_doctor_fails_only_the_default_cli_without_a_recorded_auth(sandbox, monkeypatch, capsys):
     _give("both", sandbox.home, monkeypatch)
     _start(capsys)
 
-    findings = _doctor_findings(SimpleNamespace(booley_toml={"agent": {"auth": "visitor"}}))
-
-    messages = [f.message for f in findings]
-    chosen = [m for m in messages if "BOOLEY_AGENT_APP=auto" in m]
-    assert len(chosen) == 1
-    assert "Claude Code (default), Codex" in chosen[0]
-    # One credential line per allowed CLI, not only the default's.
-    assert any(m.startswith("Claude Code auth:") for m in messages)
-    assert any(m.startswith("Codex auth:") for m in messages)
-    assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == []
-    missing = _doctor_findings(SimpleNamespace(booley_toml={"agent": {}}))
-    assert [f.subject for f in missing if f.check_id == "agent.credential-policy"] == ["claude"]
-    # A retired value still fails, for the Project's own CLI (the default) only.
-    retired = _doctor_findings(SimpleNamespace(booley_toml={"agent": {"auth": "auto"}}))
-    assert [f.subject for f in retired if f.check_id == "agent.credential-policy"] == ["claude"]
+    for booley_toml in ({}, {"agent": {"auth": "auto"}}):  # missing; a retired value
+        findings = _doctor_findings(SimpleNamespace(booley_toml=booley_toml))
+        assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == [
+            "claude"
+        ]
 
 
 def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
@@ -421,12 +446,13 @@ def test_auto_spec_with_a_provider_pin_warns_instead_of_failing(sandbox, monkeyp
 
 
 @pytest.mark.parametrize(
-    "surface", ["specialist-settings", "project-settings", "doctor", "registrar", "auth-status"]
+    "surface",
+    ["specialist-settings", "project-settings", "doctor", "registrar", "auth-status", "shell"],
 )
 def test_auto_outside_a_sandbox_is_refused_naming_the_variable(
     sandbox, monkeypatch, capsys, surface
 ):
-    monkeypatch.setattr(config_agent, "_inside_container", lambda: False)
+    _pin_venue(monkeypatch, inside=False)
     if surface == "specialist-settings":
         message = _refusal(get_agent_settings)
     elif surface == "project-settings":
@@ -441,6 +467,12 @@ def test_auto_outside_a_sandbox_is_refused_naming_the_variable(
             code = exit_info.code
         message = capsys.readouterr().err
         assert (code, "registration refused" in message) == (1, True)
+    elif surface == "shell":
+        # private: `booley shell` through main() first discovers a Project and runs the
+        # host-install gates; this is the command's own handler.
+        code = booley_cli._cmd_shell(argparse.Namespace(net=False, command=[]), sandbox.project)
+        message = capsys.readouterr().err
+        assert code == 2
     else:
         auth_cmd.run_auth(argparse.Namespace(status=True, app=None), None)
         captured = capsys.readouterr()
@@ -448,8 +480,40 @@ def test_auto_outside_a_sandbox_is_refused_naming_the_variable(
     assert "BOOLEY_AGENT_APP" in message
 
 
+def _record(**fields) -> str:
+    """A start record of the current schema with *fields* changed."""
+    record = {"schema": 2, "app": "claude", "clis": ["claude"], "policy": None, "reason": "x"}
+    return json.dumps({**record, **fields})
+
+
 @pytest.mark.parametrize(
-    "record", [None, "not json", '{"schema": 99}'], ids=["missing", "unreadable", "unknown-schema"]
+    "record",
+    [
+        None,
+        "not json",
+        '{"schema": 99}',
+        '{"schema": 2, "app": "claude", "clis": ["claude"]}',
+        _record(schema=1),  # written by an older Booley, without a set
+        _record(clis="claude"),
+        _record(clis=7),
+        _record(clis=[]),
+        _record(clis=["codex"]),  # the default must lead the set
+        _record(clis=["claude", "gemini"]),
+        _record(clis=["claude", {}]),  # an unhashable entry is refused, not a TypeError
+    ],
+    ids=[
+        "missing",
+        "unreadable",
+        "unknown-schema",
+        "missing-field",
+        "schema-1",
+        "text-set",
+        "number-set",
+        "empty-set",
+        "default-not-first",
+        "unknown-cli",
+        "unhashable-entry",
+    ],
 )
 def test_unresolved_auto_is_refused_naming_the_start_hook(sandbox, record):
     if record is not None:
@@ -474,34 +538,6 @@ def test_failed_resolution_leaves_no_stale_choice(sandbox, monkeypatch, capsys):
 
     message = _refusal(get_agent_settings)
     assert "incontainer_register" in message
-
-
-def test_handwritten_auto_policy_selects_the_visitor_mode(sandbox, monkeypatch, capsys, tmp_path):
-    """``BOOLEY_PRIMARY_AUTH=auto``: the visitor's credential, else the sponsored gateway."""
-    from booley.runtime import auth_token
-
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
-    _give("claude-api-key", sandbox.home, monkeypatch)
-
-    status = _start(capsys)
-
-    assert "app:claude " in status
-    assert get_agent_settings().auth_for("claude") == "visitor"
-    plan = auth_token.credential_plan("claude", "visitor")
-    assert [key for key, _ in plan.values] == ["ANTHROPIC_API_KEY"]
-    assert "booley_gateway" not in _codex_config(sandbox.home)
-
-    # Without a credential the same spec falls back to the gateway.
-    monkeypatch.delenv("ANTHROPIC_API_KEY")
-    home = _use_home(monkeypatch, tmp_path / "second-home")
-    _give("gateway", home, monkeypatch)
-    set_agent_settings(None)
-
-    status = _start(capsys)
-
-    assert "app:codex " in status
-    assert get_agent_settings().auth_for("codex") == "gateway"
-    assert 'model_provider = "booley_gateway"' in _codex_config(home)
 
 
 @pytest.mark.parametrize(
@@ -662,10 +698,118 @@ def test_an_unreadable_codex_config_does_not_fail_a_start_that_skips_codex(
     """Dropping a stale gateway provider is best effort when Codex is not chosen."""
     _record_auth(sandbox, monkeypatch, b"[agent]\n")
     _give("claude-api-key", sandbox.home, monkeypatch)
-    (sandbox.home / ".codex").mkdir()
     (sandbox.home / ".codex" / "config.toml").write_text("not = [valid toml")
 
     status = _start(capsys)
 
     assert "codex-gateway:unreadable" in status
     assert "refused" not in status
+
+
+def test_a_vanished_codex_key_is_not_mistaken_for_a_login(sandbox, monkeypatch, capsys):
+    """The registrar's own auth.json copy of a gone key must not win the next start."""
+    _give("codex-api-key", sandbox.home, monkeypatch)
+    _start(capsys)
+    assert "synthetic-codex-key" in _read(sandbox.home / ".codex" / "auth.json")
+
+    monkeypatch.delenv("OPENAI_API_KEY")
+    _give("gateway", sandbox.home, monkeypatch)
+    status = _start(capsys)
+
+    assert "app:codex" in status
+    assert "no Claude or Codex credential" in status
+    assert 'model_provider = "booley_gateway"' in _codex_config(sandbox.home)
+
+
+def test_auth_status_follows_the_start_choice_without_a_pin(sandbox, monkeypatch, capsys):
+    _give("gateway", sandbox.home, monkeypatch)
+    _start(capsys)
+    capsys.readouterr()
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app=None), sandbox.project)
+
+    output = capsys.readouterr()
+    assert code == 0
+    assert "claude" not in output.out + output.err
+
+
+def test_auth_status_in_a_project_reports_every_listed_cli_under_auto(
+    sandbox, monkeypatch, capsys
+):
+    """The start choice only names an undeclared set; a declared `clis` is reported whole."""
+    _give("codex-api-key", sandbox.home, monkeypatch)
+    _start(capsys)
+    capsys.readouterr()
+    _record_auth(
+        sandbox,
+        monkeypatch,
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "codex"\nauth = "visitor"\n',
+    )
+
+    code = auth_cmd.run_auth(argparse.Namespace(status=True, app=None), sandbox.project)
+
+    output = capsys.readouterr()
+    text = output.out + output.err
+    assert code == 0
+    assert text.index("codex: auth policy") < text.index("claude: auth policy")
+
+
+def test_no_credential_value_reaches_the_record_or_the_status_line(sandbox, monkeypatch, capsys):
+    for kind in ("both", "gateway", "claude-oauth-token"):
+        _give(kind, sandbox.home, monkeypatch)
+    status = _start(capsys)
+    record = _read(sandbox.home / ".booley-agent-app.json")
+
+    for secret in (
+        "synthetic-claude-key",
+        "synthetic-claude-token",
+        "synthetic-codex-key",
+        "synthetic-gateway-token",
+    ):
+        assert secret not in status + record
+
+
+def test_a_gateway_that_stopped_being_configured_still_leaves_codex_working(
+    sandbox, monkeypatch, capsys
+):
+    """Codex routed through a gateway earlier, then the gateway variables vanish."""
+    _give("gateway", sandbox.home, monkeypatch)
+    _start(capsys)
+    for name in ("BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN", "BOOLEY_GATEWAY_MODEL"):
+        monkeypatch.delenv(name)
+
+    _restart_with("codex-api-key", sandbox, monkeypatch, capsys)
+
+    codex = _codex_config(sandbox.home)
+    assert "booley_gateway" not in codex
+    assert "model_provider" not in codex
+
+
+@pytest.mark.parametrize(
+    "app,record,expected",
+    [
+        ("claude", "", ("claude",)),
+        (" codex ", "", ("codex",)),
+        ("claude", "codex=gateway,claude=auto", ("claude", "codex")),
+        ("codex", "claude=auto,codex=auto", ("codex", "claude")),
+        ("claude", "not a record", ("claude",)),  # an undecodable record is ignored
+        ("none", "claude=auto", ()),
+        ("", "", ()),
+        ("gemini", "", ()),
+    ],
+    ids=[
+        "explicit",
+        "stripped",
+        "record-default-first",
+        "record-codex-default",
+        "bad-record",
+        "none",
+        "empty",
+        "unknown",
+    ],
+)
+def test_sandbox_agent_clis_outside_auto(monkeypatch, app, record, expected):
+    monkeypatch.setenv("BOOLEY_AGENT_APP", app)
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+
+    assert config_agent.sandbox_agent_clis() == expected

@@ -26,7 +26,6 @@ import hashlib
 import json
 import logging
 import os
-import shlex
 import socket
 import sys
 import time
@@ -64,11 +63,6 @@ from booley.config.feature_flags import FeatureConfigError, enabled_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
-from booley.flows.endpoint_events import (
-    _endpoint_end_event,
-    _endpoint_start_event,
-    _write_display_event,
-)
 from booley.mcp import (
     call_context,
     catalog,
@@ -79,6 +73,7 @@ from booley.mcp import (
     job_results,
     measure_tool,
     peer_checkout,
+    review_tool,
 )
 from booley.mcp.agent_thread import resolve_agent_thread
 from booley.mcp.application import (
@@ -116,6 +111,7 @@ from booley.mcp.session_registry import (
     git_checkout_metadata,
 )
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
+from booley.measurement import mcp_job
 from booley.runtime import job_records as jobrec
 from booley.runtime import loopback_http, pid, runtime_context
 from booley.runtime.booley_dir import (
@@ -126,8 +122,7 @@ from booley.runtime.booley_dir import (
 from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.display_identity import DisplayIdentity
-from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON, EndpointOutcome
+from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.handles import HandleStore
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
@@ -934,39 +929,14 @@ async def _dispatch_bwave(
     if not catalog.tool_visible(name, _exposure()):
         return None
     cmd = builder(arguments)
-    extra_args = arguments.get("extra_args", [])
-    display_label = shlex.join(extra_args) if extra_args else None
-    identity = DisplayIdentity.current(uuid.uuid4().hex)
-    _write_display_event(
-        _endpoint_start_event(
-            name,
-            None,
-            display_label=display_label,
-            identity=identity,
-        ),
-    )
-    started = time.monotonic()
-    exit_code = 2
-    try:
-        checkout = request_context.checkout if request_context is not None else None
-        exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
-        return [
-            TextContent(
-                type="text",
-                text=_format_mcp_tool_result(exit_code, stdout, stderr),
-            )
-        ]
-    finally:
-        _write_display_event(
-            _endpoint_end_event(
-                name,
-                None,
-                EndpointOutcome(exit_code=exit_code),
-                time.monotonic() - started,
-                display_label=display_label,
-                identity=identity,
-            ),
+    checkout = request_context.checkout if request_context is not None else None
+    exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
+    return [
+        TextContent(
+            type="text",
+            text=_format_mcp_tool_result(exit_code, stdout, stderr),
         )
+    ]
 
 
 def _job_inline_wait_seconds() -> float:
@@ -1085,8 +1055,8 @@ def _format_job_running_poll(run_id: str, owned: bool = True) -> str:
     if progress is None:
         return message
     rec = _job_record(run_id)
-    if rec is not None and rec.endpoint == measure_tool.MEASURE_ENDPOINT:
-        return f"{message} {measure_tool.running_text(progress)}"
+    if rec is not None and rec.endpoint in mcp_job.COMMAND_ENDPOINTS:
+        return f"{message} {mcp_job.running_text(rec.endpoint, progress)}"
     completed = progress.get("completed_targets", [])
     pending = progress.get("pending_targets", [])
     phase = progress.get("phase", "running")
@@ -1155,10 +1125,6 @@ class _JobManager(JobLifecycle):
     @staticmethod
     async def _run_process(cmd: list[str], **kwargs: Any) -> tuple[int, str, str, bool]:
         return await _run_subprocess(cmd, **kwargs)
-
-    @staticmethod
-    def _write_end(name: str, duration_s: int, **kwargs: Any) -> None:
-        endpoint_process.write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
     @staticmethod
     async def _cancel_process(pid: int, grace_seconds: float) -> None:
@@ -1235,11 +1201,11 @@ def _job_listing(outcome: OwnedPoll) -> str:
     def line(rec: jobrec.JobRecord, state: str) -> str:
         text = f"- {rec.run_id}: {rec.endpoint}, Target {target_label(rec.argv)}, {state}"
         progress = (
-            _running_progress(rec.run_id)
-            if rec.endpoint == measure_tool.MEASURE_ENDPOINT
-            else None
+            _running_progress(rec.run_id) if rec.endpoint in mcp_job.COMMAND_ENDPOINTS else None
         )
-        return text if progress is None else f"{text}. {measure_tool.running_text(progress)}"
+        return (
+            text if progress is None else f"{text}. {mcp_job.running_text(rec.endpoint, progress)}"
+        )
 
     sections = []
     if outcome.running:
@@ -1530,25 +1496,15 @@ async def _run_inline_endpoint(
     """Run inline work, recording only user-visible endpoint activity."""
     if publish_activity:
         return await jobs.run_synchronous(name, cmd, timeout, context=context)
-    identity = DisplayIdentity.current(invocation_id or uuid.uuid4().hex)
-    try:
-        result = await _run_subprocess(
-            cmd,
-            timeout=timeout,
-            env=endpoint_process._endpoint_subprocess_env(
-                context,
-                pytest_scope=name,
-                BOOLEY_DISPLAY_INVOCATION_ID=identity.invocation_id,
-            ),
-        )
-    except asyncio.CancelledError:
-        endpoint_process.write_synthetic_endpoint_end(
-            name, 0, identity=identity, outcome="aborted"
-        )
-        raise
-    if result[3]:
-        endpoint_process.write_synthetic_endpoint_end(name, timeout, identity=identity)
-    return result
+    return await _run_subprocess(
+        cmd,
+        timeout=timeout,
+        env=endpoint_process._endpoint_subprocess_env(
+            context,
+            pytest_scope=name,
+            BOOLEY_DISPLAY_INVOCATION_ID=invocation_id or uuid.uuid4().hex,
+        ),
+    )
 
 
 def _unroutable_endpoint_error(
@@ -1839,15 +1795,17 @@ def _dispatch_coverage_evidence(arguments: dict[str, Any]) -> McpToolContent:
     return [TextContent(type="text", text=json.dumps(result, sort_keys=True))]
 
 
-async def _dispatch_measure(
+async def _dispatch_command_job(
+    endpoint: str,
+    argv: list[str],
     arguments: dict[str, Any],
     jobs: _JobManager,
     request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent:
-    """Submit ``booley measure`` as a Job and hand its ``run_id`` back at once.
+    """Submit ``booley measure`` or ``booley review`` as a Job; hand its ``run_id`` back at once.
 
-    A measurement runs with the plain call context. It never
+    The command runs with the plain call context. It never
     attaches to an identical live Job: ``HEAD`` and the base branch move while one runs, so
     the same argv can name another commit.
     """
@@ -1858,9 +1816,9 @@ async def _dispatch_measure(
     if request_context is not None and request_context.session_key() is not None:
         context = replace(context, session_key=request_context.session_key())
     return await _dispatch_async_job(
-        measure_tool.MEASURE_ENDPOINT,
-        measure_tool.measure_argv(arguments),
-        measure_tool.MEASURE_TIMEOUT_S,
+        endpoint,
+        argv,
+        mcp_job.COMMAND_JOB_TIMEOUT_S,
         jobs,
         context=context,
         caller=caller,
@@ -1869,14 +1827,31 @@ async def _dispatch_measure(
     )
 
 
-async def _dispatch_measure_or_cancel(
+# Command Job tool name -> its endpoint, its argv builder and whether the tool is offered.
+_COMMAND_TOOLS: dict[
+    str, tuple[str, Callable[[dict[str, Any]], list[str]], Callable[[catalog.Exposure], bool]]
+] = {
+    measure_tool.MEASURE_TOOL_NAME: (
+        mcp_job.MEASURE_ENDPOINT,
+        measure_tool.measure_argv,
+        catalog.measure_visible,
+    ),
+    review_tool.REVIEW_TOOL_NAME: (
+        mcp_job.REVIEW_ENDPOINT,
+        review_tool.review_argv,
+        catalog.review_visible,
+    ),
+}
+
+
+async def _dispatch_command_or_cancel(
     name: str,
     arguments: dict[str, Any],
     jobs: _JobManager,
     request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent | None:
-    """Route ``booley_measure`` and ``booley_cancel``; ``None`` when the tool is hidden."""
+    """Route a command Job tool and ``booley_cancel``; ``None`` when the tool is hidden."""
     exposure = _exposure()
     if name == catalog._CANCEL_MCP_TOOL_NAME:
         return (
@@ -1884,9 +1859,12 @@ async def _dispatch_measure_or_cancel(
             if catalog.utilities_visible(exposure)
             else None
         )
-    if not catalog.measure_visible(exposure):
+    endpoint, argv_of, visible = _COMMAND_TOOLS[name]
+    if not visible(exposure):
         return None
-    return await _dispatch_measure(arguments, jobs, request_context, caller)
+    return await _dispatch_command_job(
+        endpoint, argv_of(arguments), arguments, jobs, request_context, caller
+    )
 
 
 async def _dispatch_special_mcp_tool(
@@ -1928,8 +1906,8 @@ async def _dispatch_special_mcp_tool(
         return handler() if visible() else None
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs, caller)
-    if name in {measure_tool.MEASURE_TOOL_NAME, catalog._CANCEL_MCP_TOOL_NAME}:
-        return await _dispatch_measure_or_cancel(name, arguments, jobs, request_context, caller)
+    if name in _COMMAND_TOOLS or name == catalog._CANCEL_MCP_TOOL_NAME:
+        return await _dispatch_command_or_cancel(name, arguments, jobs, request_context, caller)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
     return None
@@ -2473,7 +2451,7 @@ def _job_logs_dir() -> Path | None:
 def _maybe_configure_job_logs_dir() -> None:
     """In the Sandbox, point ``BOOLEY_LOGS_DIR`` at the Main Booley Directory.
 
-    Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
+    Without this, transcripts from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
     disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
     takes precedence over this default.

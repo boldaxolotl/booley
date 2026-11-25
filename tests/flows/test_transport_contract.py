@@ -157,7 +157,7 @@ def _flow_removing(monkeypatch, removed, *, raises):
     return flow
 
 
-def test_booley_directory_removed_before_the_display_event_stays_removed(runtime, monkeypatch):
+def test_booley_directory_removed_during_the_run_stays_removed(runtime, monkeypatch):
     checkout = runtime / "checkout"
     booley_dir = checkout / ".booley"
     booley_dir.mkdir(parents=True)
@@ -422,8 +422,6 @@ def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch
     assert first["eda_tool"] == "verible"
     assert "argv" not in second
     assert "eda_tool" not in second
-    starts = [event for event in _display_events(runtime) if event["type"] == "endpoint_start"]
-    assert len({event["invocation_id"] for event in starts}) == 2
     assert request.report_dir is None
 
 
@@ -449,12 +447,6 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
     assert report_root / "lint/1" not in diagnostic.parents
     output = capsys.readouterr()
     assert "Traceback" not in output.out + output.err
-
-
-def _display_events(runtime):
-    """Every event the endpoints appended to the runtime's display.jsonl."""
-    path = runtime / "runtime/display.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 def _report_targets(root):
@@ -494,5 +486,4 @@ def test_mutation_flow_and_specialist_reports_carry_no_criterion(runtime, monkey
     )
     assert not hasattr(result.outcome, "criterion_key")
     assert_paired_headline(runtime / "reports", name)
-    (end,) = (event for event in _display_events(runtime) if event["type"] == "endpoint_end")
-    assert "criterion_key" not in end and "criterion_met" not in end
+    assert not list((runtime / "runtime").glob("*.jsonl"))

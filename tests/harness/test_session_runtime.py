@@ -65,7 +65,12 @@ from tests.harness.session_docker_fake import (
     serve_sandbox_docker,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
-from tests.pipe_holding_tree import heartbeat_tree, parent_argv, wait_until_heartbeat_stops
+from tests.pipe_holding_tree import (
+    heartbeat_tree,
+    parent_argv,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
 from tests.subprocess_budget import run_bounded_child
 from tests.t3code_fake import TOKEN, echo_listener, serve_t3_code
 from tests.time_budget import hang_guard_s, scaled
@@ -4503,16 +4508,15 @@ def test_remove_refresh_predecessor_stops_then_removes_by_immutable_id(workspace
 # argv; these tests run real non-Docker processes through it, so they call it directly.
 
 
-def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path):
+def test_run_timeout_kills_the_tree_and_returns_promptly(tmp_path, monkeypatch):
     """A timed call ends with ``TimeoutExpired`` soon and leaves no descendant running."""
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live")
-        start = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         with pytest.raises(subprocess.TimeoutExpired):
             sr._run(argv, timeout=scaled(2))
-        elapsed = time.monotonic() - start
+        elapsed = time.monotonic() - started[0]
         assert elapsed < scaled(25), f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
-        assert paths["heartbeat"].exists(), "grandchild never started"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), (
             "grandchild still running after the timeout"
         )

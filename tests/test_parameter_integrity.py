@@ -13,11 +13,14 @@ from booley.targets.parameter_integrity import (
     validate_top_parameter_intent,
 )
 
+_DEFINE = {"ENABLE_ZBB": {"paramtype": "vlogdefine", "default": True}}
+_CHILD = "module child #(parameter ENABLE_ZBB = 0) (); endmodule\n"
+
 
 def _resolved(
     tmp_path: Path,
     source: str,
-    parameters: dict,
+    parameters: dict = _DEFINE,
     *,
     include: str | None = None,
     eda_tool: str | None = "verilator",
@@ -56,285 +59,107 @@ def _resolved(
     )
 
 
-def _define(value=True) -> dict:
-    return {"ENABLE_ZBB": {"paramtype": "vlogdefine", "default": value}}
-
-
-def test_enabled_define_cannot_silently_leave_top_parameter_zero(tmp_path: Path):
-    resolved = _resolved(
-        tmp_path,
-        "module dut #(parameter bit ENABLE_ZBB = 1'b0) (); endmodule\n",
-        _define(),
+def _guarded_override(directive: str, prefix: str = "", value: str = "1") -> str:
+    """``dut`` instantiates ``child`` with an ENABLE_ZBB override inside *directive*."""
+    return (
+        f"{prefix}{_CHILD}module dut ();\n  child #(\n`{directive}\n"
+        f"    .ENABLE_ZBB({value})\n`endif\n  ) u_child();\nendmodule\n"
     )
 
-    with pytest.raises(ParameterIntegrityError, match=r"vlogdefine.*literal default 0"):
-        validate_top_parameter_intent(resolved, flow="sim")
+
+_TOP = r"vlogdefine.*literal default 0"
+_CHILD_ZERO = r"ENABLE_ZBB \(child\)"
+
+
+@pytest.mark.parametrize(
+    ("source", "match"),
+    [
+        ("module dut #(parameter bit ENABLE_ZBB = 1'b0) (); endmodule\n", _TOP),
+        # The override sits in a branch the Target's own define makes inactive.
+        (_guarded_override("ifndef ENABLE_ZBB"), _CHILD_ZERO),
+        (_CHILD + "module dut (); child u_child(); endmodule\n", _CHILD_ZERO),
+        (_CHILD + "module dut (); child #(.ENABLE_ZBB(1'b0)) u_child(); endmodule\n", _CHILD_ZERO),
+    ],
+    ids=["top-literal-zero", "inactive-branch", "unoverridden-child", "zero-override"],
+)
+def test_enabled_define_cannot_silently_leave_a_parameter_zero(
+    tmp_path: Path, source: str, match: str
+):
+    with pytest.raises(ParameterIntegrityError, match=match):
+        validate_top_parameter_intent(_resolved(tmp_path, source), flow="sim")
 
 
 @pytest.mark.parametrize(
     "source",
     [
         "module dut #(parameter ENABLE_ZBB = `ENABLE_ZBB) (); endmodule\n",
-        """\
-module dut #(
-`ifdef ENABLE_ZBB
-  parameter ENABLE_ZBB = 1
-`else
-  parameter ENABLE_ZBB = 0
-`endif
-) (); endmodule
-""",
+        "module dut #(\n`ifdef ENABLE_ZBB\n  parameter ENABLE_ZBB = 1\n`else\n"
+        "  parameter ENABLE_ZBB = 0\n`endif\n) (); endmodule\n",
+        _CHILD + "module dut (); child #(.ENABLE_ZBB(1)) u_child(); endmodule\n",
+        _CHILD + "module wrapper ();\n  child #(\n`ifndef SYNTH_TEST\n`ifdef ENABLE_ZBB\n"
+        "    .ENABLE_ZBB(1)\n`endif\n`endif\n  ) u_child();\nendmodule\n"
+        "module dut (); wrapper u_wrapper(); endmodule\n",
+        _guarded_override("ifdef VERILATOR"),
+        # Ambiguous source macro state cannot block an `ifndef override.
+        _guarded_override("ifndef MODE", "`define MODE\n`undef MODE\n"),
+        _guarded_override("ifndef MODE", "`ifdef NEVER\n`define MODE\n`endif\n"),
+        _guarded_override("ifdef MODE", "`define MODE\n"),
+        _guarded_override("ifndef ENABLE_ZBB", "`undef ENABLE_ZBB\n"),
+        "`ifndef ENABLE_ZBB\n" + _CHILD + "`else\n"
+        "module child #(parameter ENABLE_ZBB = 1) (); endmodule\n`endif\n"
+        "module dut (); child u_child(); endmodule\n",
+        _CHILD + "module dut ();\n  child #(\n`ifndef ENABLE_ZBB\n    .ENABLE_ZBB(0)\n"
+        "`elsif MODE\n    .ENABLE_ZBB(1)\n`endif\n  ) u_child();\nendmodule\n",
+        # Unproven nested reachability does not block.
+        _CHILD + 'module dut (); $display("child fake()"); endmodule\n',
+        _CHILD + 'module dut (); $display("parameter ENABLE_ZBB = 0)"); endmodule\n',
+        _CHILD + "module dut (); generate if (0) begin : g child u_child(); end endgenerate"
+        " endmodule\n",
+        _CHILD + "module dut (); if (0) child u_child(); endmodule\n",
+    ],
+    ids=[
+        "macro-default",
+        "conditional-default",
+        "nested-override",
+        "override-inside-unrelated-ifndef",
+        "selected-tool-builtin-define",
+        "define-then-undef",
+        "define-in-inactive-branch",
+        "source-defined-macro",
+        "source-undef-of-target-macro",
+        "outer-conditional-module",
+        "unknown-elsif",
+        "display-text-instance",
+        "display-text-parameter",
+        "generate-if-0",
+        "if-0",
     ],
 )
-def test_macro_driven_top_parameter_is_allowed(tmp_path: Path, source: str):
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_explicit_nested_parameter_override_is_allowed(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut (); child #(.ENABLE_ZBB(1)) u_child(); endmodule
-"""
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_macro_override_inside_unrelated_ifndef_is_allowed(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module wrapper ();
-  child #(
-`ifndef SYNTH_TEST
-`ifdef ENABLE_ZBB
-    .ENABLE_ZBB(1)
-`endif
-`endif
-  ) u_child();
-endmodule
-module dut (); wrapper u_wrapper(); endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_override_in_known_inactive_target_branch_does_not_hide_mismatch(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifndef ENABLE_ZBB
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-
-    with pytest.raises(ParameterIntegrityError, match=r"ENABLE_ZBB \(child\)"):
-        validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_selected_tool_builtin_define_is_active(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifdef VERILATOR
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-@pytest.mark.parametrize("configured_tool", ("icarus", "iverilog"))
-def test_legacy_icarus_configured_backend_define_is_active(
-    tmp_path: Path,
-    configured_tool: str,
-) -> None:
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifdef __ICARUS__
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-
-    validate_top_parameter_intent(
-        _resolved(
-            tmp_path,
-            source,
-            _define(),
-            eda_tool=None,
-            configured_eda_tool=configured_tool,
-        ),
-        flow="sim",
-    )
-
-
-def test_string_valued_define_is_present_in_preprocessor_environment(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifdef MODE
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-    params = {
-        **_define(),
-        "MODE": {"paramtype": "vlogdefine", "default": "fast"},
-    }
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, params), flow="sim")
-
-
-@pytest.mark.parametrize("include", [None, "`define MODE\n"])
-def test_source_defined_macro_is_present_in_preprocessor_environment(
-    tmp_path: Path,
-    include: str | None,
-):
-    prefix = "`define MODE\n" if include is None else '`include "defs.svh"\n'
-    source = (
-        prefix
-        + """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifdef MODE
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-    )
-
-    validate_top_parameter_intent(
-        _resolved(tmp_path, source, _define(), include=include),
-        flow="sim",
-    )
+def test_proven_or_unproven_override_is_allowed(tmp_path: Path, source: str):
+    validate_top_parameter_intent(_resolved(tmp_path, source), flow="sim")
 
 
 @pytest.mark.parametrize(
-    "prefix",
+    "kwargs",
     [
-        "`define MODE\n`undef MODE\n",
-        "`ifdef NEVER\n`define MODE\n`endif\n",
+        {"eda_tool": None, "configured_eda_tool": "icarus"},
+        {"eda_tool": None, "configured_eda_tool": "iverilog"},
+        {"parameters": {**_DEFINE, "MODE": {"paramtype": "vlogdefine", "default": "fast"}}},
+        {"include": "`define MODE\n"},
     ],
+    ids=["icarus", "iverilog", "string-define", "included-define"],
 )
-def test_ambiguous_source_macro_state_cannot_block_ifndef_override(
-    tmp_path: Path,
-    prefix: str,
-):
-    source = (
-        prefix
-        + """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifndef MODE
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-    )
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_source_undef_of_target_macro_cannot_force_false_branch(tmp_path: Path):
-    source = """\
-`undef ENABLE_ZBB
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifndef ENABLE_ZBB
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_outer_conditional_selects_effective_module_definition(tmp_path: Path):
-    source = """\
-`ifndef ENABLE_ZBB
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-`else
-module child #(parameter ENABLE_ZBB = 1) (); endmodule
-`endif
-module dut (); child u_child(); endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_unknown_elsif_override_is_marked_unproven(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut ();
-  child #(
-`ifndef ENABLE_ZBB
-    .ENABLE_ZBB(0)
-`elsif MODE
-    .ENABLE_ZBB(1)
-`endif
-  ) u_child();
-endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_unoverridden_parameter_below_simulation_top_is_rejected(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut (); child u_child(); endmodule
-"""
-
-    with pytest.raises(ParameterIntegrityError, match=r"ENABLE_ZBB \(child\)"):
-        validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-def test_explicit_zero_override_below_simulation_top_is_rejected(tmp_path: Path):
-    source = """\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut (); child #(.ENABLE_ZBB(1'b0)) u_child(); endmodule
-"""
-
-    with pytest.raises(ParameterIntegrityError, match=r"ENABLE_ZBB \(child\)"):
-        validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
-
-
-@pytest.mark.parametrize(
-    "top_body",
-    [
-        '$display("child fake()");',
-        '$display("parameter ENABLE_ZBB = 0)");',
-        "generate if (0) begin : g child u_child(); end endgenerate",
-        "if (0) child u_child();",
-    ],
-)
-def test_unproven_nested_reachability_does_not_block(tmp_path: Path, top_body: str):
-    source = f"""\
-module child #(parameter ENABLE_ZBB = 0) (); endmodule
-module dut (); {top_body} endmodule
-"""
-
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define()), flow="sim")
+def test_preprocessor_environment_activates_the_override(tmp_path: Path, kwargs: dict):
+    directive = "ifdef __ICARUS__" if "configured_eda_tool" in kwargs else "ifdef MODE"
+    prefix = '`include "defs.svh"\n' if "include" in kwargs else ""
+    source = _guarded_override(directive, prefix)
+    validate_top_parameter_intent(_resolved(tmp_path, source, **kwargs), flow="sim")
 
 
 def test_disabled_define_and_vlogparam_are_not_guard_candidates(tmp_path: Path):
     source = "module dut #(parameter ENABLE_ZBB = 0) (); endmodule\n"
-    validate_top_parameter_intent(_resolved(tmp_path, source, _define(False)), flow="sim")
+    disabled = {"ENABLE_ZBB": {"paramtype": "vlogdefine", "default": False}}
+    validate_top_parameter_intent(_resolved(tmp_path, source, disabled), flow="sim")
     params = {"ENABLE_ZBB": {"paramtype": "vlogparam", "default": 1}}
     validate_top_parameter_intent(_resolved(tmp_path, source, params), flow="fpga")
 

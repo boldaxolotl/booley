@@ -137,7 +137,8 @@ def assert_controls(parser, *, timeout=False):
 
 
 def test_recursive_command_inventory():
-    routes = list(walk(cli._build_parser()))
+    # A gated command is absent from the flag-off parser, so build it with every flag on.
+    routes = list(walk(cli._build_parser(frozenset(cli.GATED_COMMANDS.values()))))
     top = {route[0] for route, _ in routes if len(route) == 1}
     assert top == cli.COMMAND_PROJECT_BINDINGS.keys()
     for route, parser in routes:

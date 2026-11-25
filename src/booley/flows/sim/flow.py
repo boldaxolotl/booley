@@ -188,13 +188,6 @@ class OrdinarySimulationRecordPlanning:
 _DEFAULT_TIMEOUT_MS = default_timeout_ms("sim")
 
 
-def _prepared_coverage_display_label(plans: Sequence[CoverageTargetPlan]) -> str | None:
-    """Describe the exact Target/test scope selected during coverage preflight."""
-    targets = [plan.handle.selector for plan in plans]
-    tests = [test for plan in plans for test in plan.selected_tests]
-    return format_flow_display_label(targets, tests=tests if tests else None)
-
-
 class SimulateFlow(
     ElabOnlyMixin,
     SimulationRecordResumeMixin,
@@ -353,8 +346,6 @@ class SimulateFlow(
         self,
         prepared: PreparedExecution,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
         """Register the published Targets' bwave traces, then report: the attempt's final step.
 
@@ -364,7 +355,7 @@ class SimulateFlow(
         """
         if self._simulation_record_outcomes:
             register_trace_sessions(self._simulation_record_outcomes, Path(self.args.work_dir))
-        return super().finish_execution(prepared, outcome, started=started)
+        return super().finish_execution(prepared, outcome)
 
     def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None:
         if self.cycle_report_json is not None:
@@ -652,31 +643,6 @@ class SimulateFlow(
     def _mode(self) -> SimulationMode:
         """Effective mode without erasing whether the caller supplied it."""
         return self.args.mode or SimulationMode.SIMULATE
-
-    def _resolve_display_label(self) -> str | None:
-        """Describe the requested Target/test scope without validating it."""
-        targets = self._requested_targets()
-        if self._mode.elaborates_only:
-            return format_flow_display_label(targets, mode="elaboration")
-        if getattr(self.args, "coverage", False) and self._coverage_prepared is not None:
-            return _prepared_coverage_display_label(self._coverage_prepared.targets)
-        try:
-            test_names = _get_test_names(self.args.work_dir)
-            selected = (
-                [name for _target in targets for name in self.args.test]
-                if self.args.test
-                else [
-                    test
-                    for target in targets
-                    for test in self._resolve_tests_to_run(target, test_names)
-                ]
-            )
-        except Exception:  # display metadata must not block a Flow run
-            logger.debug("could not resolve simulation display scope", exc_info=True)
-            return format_flow_display_label(targets, tests=None)
-        if any(test is None for test in selected):
-            return format_flow_display_label(targets, tests=None)
-        return format_flow_display_label(targets, tests=(str(test) for test in selected))
 
     def _build_command(self) -> list[str]:
         # Not used — _run() is overridden for multi-config logic

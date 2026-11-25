@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 
 _ROOT = Path(__file__).parents[1]
 # A Sandbox-only module that stays cheap (the nested run must finish well inside the 30 s
@@ -23,20 +23,10 @@ def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")
     }
-    return run_bounded_child(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-p",
-            "no:cacheprovider",
-            "--basetemp",
-            str(tmp_path / "nested"),
-            *arguments,
-        ],
+    return run_nested_pytest(
+        ["-p", "no:cacheprovider", "--basetemp", str(tmp_path / "nested"), *arguments],
         cwd=_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
 
 

@@ -34,17 +34,24 @@ class PinTrace:
             raise self.oracle.CircuitMismatchError(reason)
 
 
-@pytest.mark.parametrize("edge", [2020, 2276])
-def test_timeout_accepts_inclusive_public_boundaries(oracle, edge):
-    driver = PinTrace(oracle, {edge})
-    assert asyncio.run(oracle.timed_event(driver, (100, 100), 99)) == edge
-
-
-@pytest.mark.parametrize("edges", [{2019}, {2277}, set(), {2019, 2100}])
-def test_timeout_rejects_first_early_late_or_missing_event(oracle, edges):
+@pytest.mark.parametrize(
+    ("edges", "accepted_edge"),
+    [
+        pytest.param({2020}, 2020, id="inclusive-lower-boundary"),
+        pytest.param({2276}, 2276, id="inclusive-upper-boundary"),
+        pytest.param({2019}, None, id="early"),
+        pytest.param({2277}, None, id="late"),
+        pytest.param(set(), None, id="missing"),
+        pytest.param({2019, 2100}, None, id="first-event-early"),
+    ],
+)
+def test_timeout_grades_first_event_against_public_boundaries(oracle, edges, accepted_edge):
     driver = PinTrace(oracle, edges)
-    with pytest.raises(oracle.CircuitMismatchError):
-        asyncio.run(oracle.timed_event(driver, (100, 100), 99))
+    if accepted_edge is None:
+        with pytest.raises(oracle.CircuitMismatchError):
+            asyncio.run(oracle.timed_event(driver, (100, 100), 99))
+    else:
+        assert asyncio.run(oracle.timed_event(driver, (100, 100), 99)) == accepted_edge
 
 
 def test_timeout_checks_edges_recorded_during_bus_work(oracle):

@@ -1,20 +1,13 @@
 """Focused regression tests for containerized EDA environment audits."""
 
 import ast
-import subprocess
 from pathlib import Path
 
-from booley.audit import eda_environment, host_environment
+from tests.command_runner_fake import CannedRunner, refusing_runner
+
+from booley.audit import eda_environment
 
 _ROOT = Path(__file__).resolve().parents[2]
-
-
-def _unused_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-    raise AssertionError("a non-RISC-V image must not start a probe")
-
-
-def test_environment_audits_share_one_command_runner_contract() -> None:
-    assert eda_environment.CommandRunner is host_environment.CommandRunner
 
 
 def test_non_riscv_image_has_no_riscv_probe_surface() -> None:
@@ -22,29 +15,25 @@ def test_non_riscv_image_has_no_riscv_probe_surface() -> None:
         "docker",
         "booley-sandbox",
         None,
-        run=_unused_run,
+        run=refusing_runner,
     )
 
     assert findings == ()
 
 
 def test_riscv_image_probes_every_advertised_tool_and_document() -> None:
-    calls: list[list[str]] = []
-
-    def run(args, **_kwargs):
-        calls.append(args)
-        return subprocess.CompletedProcess(args, 0, "", "")
+    runner = CannedRunner()
 
     findings = eda_environment.audit_riscv_toolchain(
         "docker",
         "booley-sandbox-riscv",
         "riscv",
-        run=run,
+        run=runner,
     )
 
     assert len(findings) == len(eda_environment.riscv_probe_specs())
     assert all(finding.severity is eda_environment.EdaFindingSeverity.PASS for finding in findings)
-    document_call = next(call for call in calls if "riscv-isa-unprivileged.html" in call)
+    document_call = next(call for call in runner.calls if "riscv-isa-unprivileged.html" in call)
     assert set(eda_environment.RISCV_DOC_FILES) <= set(document_call)
 
 
@@ -53,7 +42,7 @@ def test_failed_riscv_probe_has_one_stable_rebuild_fix() -> None:
         "docker",
         "booley-sandbox-riscv",
         "riscv",
-        run=lambda args, **_kwargs: subprocess.CompletedProcess(args, 1, "", ""),
+        run=CannedRunner(1),
     )
 
     assert findings

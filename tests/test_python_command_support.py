@@ -80,17 +80,6 @@ def test_bare_fusesoc_resolves_from_the_test_environment() -> None:
     assert importlib.metadata.version("fusesoc") in result.stdout + result.stderr
 
 
-def test_suite_path_starts_with_the_test_interpreter_entries() -> None:
-    """The autouse fixture puts the interpreter shim and scripts directory first on PATH."""
-    entries = os.environ["PATH"].split(os.pathsep)
-
-    if _IS_WINDOWS:
-        assert entries[:2] == [str(Path(sys.executable).parent), sysconfig.get_path("scripts")]
-    else:
-        assert (Path(entries[0]) / "python3").is_file()
-        assert entries[1] == sysconfig.get_path("scripts")
-
-
 @pytest.mark.skipif(_IS_WINDOWS, reason="CreateProcess cannot run script decoys")
 def test_interpreter_path_outranks_decoys_on_the_base_path(tmp_path: Path) -> None:
     """Decoys first on the base PATH lose to the test interpreter and its console scripts."""

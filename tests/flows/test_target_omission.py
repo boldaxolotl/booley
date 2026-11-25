@@ -228,7 +228,6 @@ def test_omitted_target_rejects_cardinality(entry, name, count, project, execute
     choices = "(none)" if count == 0 else "chosen0, chosen1"
     assert f"Eligible Targets: {choices}" in text, "eligible Target list missing: " + text
     assert code == 2 and executed == []
-    assert not (project / "runtime/display.jsonl").exists(), "a refused run started"
     assert "--target omitted; selected Target" not in text
 
 

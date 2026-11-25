@@ -62,7 +62,7 @@ from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
-from tests.conftest import add_git_command_config, symlink_or_skip
+from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -3499,6 +3499,15 @@ def test_runtime_location(row, tmp_path, monkeypatch):
         assert not [call for call in calls if call[0] == "None"]
 
 
+def test_runtime_location_names_the_container_host_override(tmp_path, monkeypatch):
+    _runtime_setup(tmp_path, monkeypatch, inside=False)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+    monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
+    result = _doctor_run(tmp_path)
+    assert any("BOOLEY_CONTAINER=0 set" in m for m in _messages(result, Severity.PASS))
+    assert _messages(result, Severity.WARN, check_id="sandbox.runtime-marker") == []
+
+
 @pytest.mark.parametrize("app", [None, "claude", "codex"])
 def test_host_agent_session(app, tmp_path, monkeypatch):
     """A host agent gets no Booley Flows and no error: Doctor explains the Sandbox boundary."""
@@ -4000,138 +4009,22 @@ class TestDeveloperProbe:
 
 
 # =============================================================
-def test_legacy_tools_section_targets_by_ownership(tmp_path, monkeypatch):
-    def legacy(name, tool, marked=False):
-        marker = "    flow_options: {booley: {doctor: [sim]}}\n" if marked else ""
-        return (
-            f"  {name}:\n    filesets: [rtl]\n{marker}    default_tool: {tool}\n"
-            f"    tools: {{{tool}: {{}}}}\n"
-        )
-
-    def legacy_core(name, targets):
-        return _core(name, targets, "  rtl: {files: [rtl/dut.sv], file_type: verilogSource}\n")
-
-    _core_project(
-        tmp_path,
-        monkeypatch,
-        {
-            # The core hosts a selected Target, so it is the Project's own.
-            "legacy_a.core": legacy_core(
-                "legacy_a",
-                legacy("sim_old", "icarus", marked=True) + legacy("lint_old", "verilator"),
-            ),
-            # F-10: unselected legacy Targets of a vendored core roll up to one line.
-            "legacy_b.core": legacy_core(
-                "legacy_b",
-                legacy("sim_b", "icarus")
-                + legacy("lint_b", "verilator")
-                + legacy("synth_b", "yosys"),
-            ),
-            # A bare name repeated in a distinct core is still audited.
-            "legacy_c.core": legacy_core("legacy_c", legacy("sim_b", "icarus")),
-        },
+def test_doctor_reports_no_target_style_advisories(tmp_path, monkeypatch):
+    """No Flow acts on a tools-section Target, a Target name or an unused `default:`."""
+    targets = (
+        "  default:\n    filesets: [rtl]\n"
+        "  soc_old:\n    filesets: [rtl]\n    flow_options: {booley: {doctor: [sim]}}\n"
+        "    default_tool: icarus\n    tools: {icarus: {}}\n"
+        + _target("soc_lint", flow="lint", filesets="rtl", top="dut", doctor=True)
     )
-    result = _doctor_run(tmp_path)
-
-    legacy_rows = [f for f in result.findings if f.check_id == "core.legacy-target"]
-    assert [f.subject for f in legacy_rows] == ["sim_old"]
-    assert "flow_options: {tool: icarus}" in legacy_rows[0].message
-    assert "CORE_TEMPLATE.yaml" in legacy_rows[0].message
-    notes = _rows(result, Severity.NOTE, "legacy FuseSoC tools-section target")
-    assert sorted(note.split(" — ")[0] for note in notes) == [
-        "legacy_a.core: 1 legacy FuseSoC tools-section target (lint_old)",
-        "legacy_b.core: 3 legacy FuseSoC tools-section targets (lint_b, sim_b, synth_b)",
-        "legacy_c.core: 1 legacy FuseSoC tools-section target (sim_b)",
-    ]
-    assert all("not selected by this project" in note for note in notes)
-    assert not any("CORE_TEMPLATE.yaml" in note for note in notes)
-
-
-def _naming_project(tmp_path, monkeypatch):
-    def target(name, flow="sim", tool="verilator", marked=True, extra=""):
-        axis = "synth" if tool == "yosys" else flow
-        marker = f", booley: {{doctor: [{axis}]}}" if marked else ""
-        flow_name = "generic" if tool == "yosys" else flow
-        return (
-            f"  {name}:\n    filesets: [rtl]\n    flow: {flow_name}\n"
-            f"    flow_options: {{tool: {tool}{extra}{marker}}}\n    toplevel: dut\n"
-        )
-
     fs = "  rtl: {files: [rtl/dut.sv], file_type: systemVerilogSource}\n"
-    yosys = {"tool": "yosys", "extra": ", arch: xilinx"}
-    owned = (
-        target("soc_sim")
-        + target("soc")
-        + target("sim")
-        + target("lint", flow="lint")
-        + target("synth", **yosys)
-        + target("sim_ok", marked=False)
-    )
-    meta = target("meta_sim", **yosys) + target("asic_core", **yosys)
-    vendor = target("soc_sim2", marked=False) + target("fpga", flow="lint", marked=False)
-    _core_project(
-        tmp_path,
-        monkeypatch,
-        {
-            "owned.core": _core("demo", owned, fs),
-            "meta.core": _core("meta", meta, fs),
-            "vendor.core": _core("upstream", vendor, fs),
-        },
-    )
-
-
-def test_target_naming_notes_only_selected_or_state_targets(tmp_path, monkeypatch):
-    _naming_project(tmp_path, monkeypatch)
-    result = _doctor_run(tmp_path)
-
-    # Doctor metadata beats the legacy suffix (`meta_sim` is a synth Target); an
-    # unselected Target, a conformant name and a vendored core's names are left alone.
-    notes = {
-        message.split("'")[1]: message
-        for message in _rows(result, Severity.NOTE, "' in ")
-        if "axis" in message
-    }
-    renames = {
-        "soc_sim": "sim_soc",
-        "soc": "sim_soc",
-        "meta_sim": "synth_meta",
-        "asic_core": "synth_core",
-    }
-    for name, rename in renames.items():
-        assert f"no axis prefix (sim/lint/synth/fpga) — rename it '{rename}'" in notes[name]
-    assert "tests.toml" in notes["soc_sim"]
-    for axis in ("sim", "lint", "synth"):
-        assert f"bare axis; add a subject — rename it '{axis}_demo'" in notes[axis]
-    assert notes.keys() == set(renames) | {"sim", "lint", "synth"}
-    assert _rows(result, Severity.PASS, "<axis>_<subject>") == []
-
-
-def test_stray_default_target_warns_only_without_dependents(tmp_path, monkeypatch):
-    def core(name, depend="", default="  default:\n    filesets: [rtl]\n"):
-        return _core(
-            name,
-            default + _target(f"lint_{name}", flow="lint", filesets="rtl", top="dut"),
-            f"  rtl: {{files: [rtl/dut.sv], file_type: systemVerilogSource{depend}}}\n",
-        )
-
-    _core_project(
-        tmp_path,
-        monkeypatch,
-        {
-            ".booley/cores/demo.core": core("demo"),
-            # FuseSoC builds a dependency core through `default`, so it is load-bearing.
-            ".booley/cores/lib.core": core("lib"),
-            ".booley/cores/top.core": core("top", ', depend: ["::lib"]', default=""),
-            # Outside the state zone and unselected: not the Project's to edit.
-            "vendor.core": core("upstream"),
-        },
-    )
+    _core_project(tmp_path, monkeypatch, {"demo.core": _core("demo", targets, fs)})
 
     result = _doctor_run(tmp_path)
 
-    stray = _rows(result, Severity.WARN, "declares a 'default:' Target")
-    assert len(stray) == 1
-    assert stray[0].startswith("demo.core declares") and "no other .core depends on it" in stray[0]
+    assert _rows(result, Severity.PASS, "soc_lint, soc_old") != []  # the .core audit ran
+    advisories = ("tools-section", "<axis>_<subject>", "no axis prefix", "'default:'")
+    assert [f.message for f in result.findings if any(a in f.message for a in advisories)] == []
 
 
 class TestReporterAcceptsFixHints:
@@ -5329,50 +5222,6 @@ def test_sim_copyto_run_cwd_decides_the_collision(tmp_path, monkeypatch, run_cwd
     result = _doctor_run(tmp_path)
 
     assert bool(_warnings(result, "sim.runtime-input-collision")) is collides
-
-
-def test_symlinked_booley_directory_cores_are_owned(tmp_path, monkeypatch):
-    project = tmp_path / "project"
-    project.mkdir()
-    booley_dir = _write_project(project)
-    external = tmp_path / "external-booley"
-    booley_dir.rename(external)
-    symlink_or_skip(booley_dir, external, target_is_directory=True)
-    fs = "  rtl: {files: [rtl/dut.sv], file_type: systemVerilogSource}\n"
-    targets = (
-        "  default:\n    filesets: [rtl]\n"
-        "  legacy_x:\n    filesets: [rtl]\n    default_tool: icarus\n    tools: {icarus: {}}\n"
-        "  soc_sim:\n    filesets: [rtl]\n    flow: sim\n    flow_options: {tool: verilator}\n    toplevel: dut\n"
-        "  sim_ok:\n    filesets: [rtl]\n    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n    toplevel: dut\n"
-    )
-    (external / "cores").mkdir()
-    (external / "cores" / "demo.core").write_text(_core("demo", targets, fs), encoding="utf-8")
-    _patch_environment(monkeypatch, project, booley_dir)
-    other_commands = doctor.subprocess.run
-
-    def run(cmd, **kwargs):
-        # The external directory is its own Git checkout; the fake answers the Project Root.
-        cwd = kwargs.get("cwd")
-        if "--show-toplevel" in cmd and cwd is not None and Path(cwd) == external:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{external}\n", stderr="")
-        return other_commands(cmd, **kwargs)
-
-    monkeypatch.setattr(doctor.subprocess, "run", run)
-
-    result = _doctor_run(project)
-
-    # Only `sim_ok` is selected, so the legacy WARN and the naming NOTE rest on the
-    # symlink-aware state-core ownership alone; the stray `default:` check sees the core
-    # both as selected and as a state core, and reports it once.
-    assert [f.subject for f in result.findings if f.check_id == "core.legacy-target"] == [
-        "legacy_x"
-    ]
-    assert _rows(result, Severity.NOTE, "Target 'soc_sim' in demo.core") != []
-    assert (
-        "rename it 'sim_soc'" in _rows(result, Severity.NOTE, "Target 'soc_sim' in demo.core")[0]
-    )
-    assert len(_rows(result, Severity.WARN, "declares a 'default:' Target")) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")

@@ -6,7 +6,6 @@ and estimates its cost.
 
 from __future__ import annotations
 
-from booley.config.pricing import MODEL_PRICING as _MODEL_PRICES  # noqa: F401 — legacy alias
 from booley.config.pricing import estimate_cost
 
 

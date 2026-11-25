@@ -351,6 +351,5 @@ strict = [
     "src/booley/flows/target_test_plan.py",
     "src/booley/flows/target_test_plan_loading.py",
     "src/booley/flows/simulator_family.py",
-    "src/booley/runtime/publication_ownership.py",
     "src/booley/runtime/pinned_history.py",
 ]

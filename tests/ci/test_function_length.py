@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+from tests.git_support import git, repository
 from tests.subprocess_budget import run_bounded_child
+
+from booley.dev_support import function_length as gate
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LAUNCHER = _SOURCE_ROOT / ".github/scripts/check_function_length.py"
 _MODULE = "src/booley/mod.py"
-
-
-def _gate() -> ModuleType:
-    # Imported in the test body so a missing module fails the test, not collection.
-    return importlib.import_module("booley.dev_support.function_length")
 
 
 def _body(name: str, lines: int) -> str:
@@ -25,30 +21,20 @@ def _body(name: str, lines: int) -> str:
     return f"def {name}():\n" + "    x = 1\n" * (lines - 1)
 
 
-def _git(repo: Path, *args: str) -> str:
-    return run_bounded_child(
-        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
-        cwd=repo,
-        check=True,
-    ).stdout.strip()
-
-
 def _commit(repo: Path, files: dict[str, str]) -> str:
     for name, text in files.items():
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_bytes(text.encode("utf-8"))
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "change")
-    return _git(repo, "rev-parse", "HEAD")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "change")
+    return git(repo, "rev-parse", "HEAD")
 
 
 @pytest.fixture
 def repo(tmp_path: Path, isolated_git_attributes: None) -> Path:
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
+    root = repository(tmp_path / "repo")
     _commit(root, {"README.md": "base\n", "src/booley/old.py": _body("f", 60) + "y = 1\n"})
-    _git(root, "switch", "-q", "-c", "codex/feature")
+    git(root, "switch", "-q", "-c", "codex/feature")
     return root
 
 
@@ -59,11 +45,11 @@ def _run(repo: Path) -> tuple[int, str, str]:
 
 def _exit_codes(repo: Path, cases: dict[str, tuple[dict[str, str], int]]) -> None:
     """Commit each case's files on a fresh branch tip and check the exit code."""
-    start = _git(repo, "rev-parse", "HEAD")
+    start = git(repo, "rev-parse", "HEAD")
     for case, (files, expected) in cases.items():
         _commit(repo, files)
         code = _run(repo)[0]
-        _git(repo, "reset", "-q", "--hard", start)
+        git(repo, "reset", "-q", "--hard", start)
         assert code == expected, case
 
 
@@ -91,12 +77,12 @@ def test_oversize_base_function_may_not_grow(repo: Path) -> None:
 
 def test_docstring_and_blank_lines_do_not_count() -> None:
     source = 'def f():\n    """Doc\n\n    more\n    """\n\n' + "    x = 1\n\n" * 49
-    assert _gate().function_lengths(source) == [("f", 50)]
-    assert _gate().violations("a.py", source, None) == []
-    assert _gate().violations("a.py", source + "    x = 1\n", None) != []
+    assert gate.function_lengths(source) == [("f", 50)]
+    assert gate.violations("a.py", source, None) == []
+    assert gate.violations("a.py", source + "    x = 1\n", None) != []
     # U+2028 inside a comment is not a Python line break: all 51 lines count.
     separator = "def f():\n    # \u2028\n" + "    x = 1\n" * 49
-    assert _gate().function_lengths(separator) == [("f", 51)]
+    assert gate.function_lengths(separator) == [("f", 51)]
 
 
 def test_nested_function_counts_alone_and_in_parent(repo: Path) -> None:
@@ -104,7 +90,7 @@ def test_nested_function_counts_alone_and_in_parent(repo: Path) -> None:
         "def outer():\n    y = 1\n    def inner():\n        z = 1\n        return z\n    return y\n"
         "class Box:\n    def method(self):\n        return 1\n"
     )
-    assert _gate().function_lengths(source) == [
+    assert gate.function_lengths(source) == [
         ("outer", 6),
         ("outer.<locals>.inner", 3),
         ("Box.method", 2),
@@ -138,13 +124,13 @@ def test_failure_message_names_file_function_and_both_lengths(repo: Path) -> Non
 
 def test_duplicate_names_pair_by_occurrence() -> None:
     base = _body("f", 60) + _body("f", 10)
-    assert _gate().violations("a.py", _body("f", 60) + _body("f", 9), base) == []
-    assert len(_gate().violations("a.py", _body("f", 10) + _body("f", 61), base)) == 1
-    assert len(_gate().violations("a.py", base + _body("f", 55), base)) == 1
+    assert gate.violations("a.py", _body("f", 60) + _body("f", 9), base) == []
+    assert len(gate.violations("a.py", _body("f", 10) + _body("f", 61), base)) == 1
+    assert len(gate.violations("a.py", base + _body("f", 55), base)) == 1
 
 
 def test_files_outside_the_package_are_ignored(repo: Path) -> None:
-    _git(repo, "rm", "-q", "src/booley/old.py")
+    git(repo, "rm", "-q", "src/booley/old.py")
     _commit(repo, {"tests/test_x.py": _body("test_x", 60), "src/booley/notes.txt": "x\n"})
     assert _run(repo)[0] == 0
 

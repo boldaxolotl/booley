@@ -153,9 +153,6 @@ underscores.
 - **Order the subject from coarse to fine**: `sim_smoke`, then
   `sim_smoke_irq`. `booley targets` sorts each core's Targets by name, so they
   appear grouped by Flow, and related Targets sit together.
-- **Doctor flags names that break these rules** in the Targets it checks and
-  in Stealth Mode cores, and suggests one: `lint_soc` for a bare `lint` in a
-  core named `soc`.
 - **Vendored upstream cores keep their own names.**
 
 Add a `default:` Target only when another core depends on this one. Booley

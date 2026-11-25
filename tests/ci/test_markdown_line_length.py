@@ -2,25 +2,18 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+from tests.git_support import git, repository
 from tests.subprocess_budget import run_bounded_child
+
+from booley.dev_support import markdown_line_length as gate
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LAUNCHER = _SOURCE_ROOT / ".github/scripts/markdown_line_length.py"
 _LONG = ("word " * 20).strip() + " end"  # 104 columns
-
-
-def _git(repo: Path, *args: str) -> str:
-    return run_bounded_child(
-        ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", *args],
-        cwd=repo,
-        check=True,
-    ).stdout.strip()
 
 
 def _write(repo: Path, files: dict[str, str]) -> None:
@@ -32,15 +25,13 @@ def _write(repo: Path, files: dict[str, str]) -> None:
 
 def _commit(repo: Path, files: dict[str, str], message: str) -> None:
     _write(repo, files)
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", message)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
 
 
 @pytest.fixture
 def repo(tmp_path: Path, isolated_git_attributes: None) -> Path:
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
+    root = repository(tmp_path / "repo")
     return root
 
 
@@ -52,7 +43,7 @@ def _run(repo: Path, *args: str) -> tuple[int, str, str]:
 def test_branch_line_over_80_columns_fails_and_80_columns_passes(repo: Path) -> None:
     """Catches a `>=` boundary and a message that omits the path, line or length."""
     _commit(repo, {"doc.md": "short\n"}, "base")
-    _git(repo, "switch", "-q", "-c", "codex/feature")
+    git(repo, "switch", "-q", "-c", "codex/feature")
     eighty, eighty_one = "x " * 39 + "xx", "x " * 39 + "xxx"
     assert (len(eighty), len(eighty_one)) == (80, 81)
     _commit(repo, {"doc.md": f"short\n{eighty}\n{eighty_one}\n"}, "branch")
@@ -67,10 +58,10 @@ def test_branch_line_over_80_columns_fails_and_80_columns_passes(repo: Path) -> 
 
 def test_unchanged_over_long_lines_pass(repo: Path) -> None:
     """Catches hunk ranges instead of added lines, and lost rename detection."""
-    _git(repo, "config", "diff.interHunkContext", "10")
+    git(repo, "config", "diff.interHunkContext", "10")
     _commit(repo, {"doc.md": f"one\n{_LONG}\nthree\n", "moved.md": f"{_LONG}\n"}, "base")
-    _git(repo, "switch", "-q", "-c", "codex/feature")
-    _git(repo, "mv", "moved.md", "renamed.md")
+    git(repo, "switch", "-q", "-c", "codex/feature")
+    git(repo, "mv", "moved.md", "renamed.md")
     _commit(repo, {"doc.md": f"ONE\n{_LONG}\nTHREE\n"}, "branch")
 
     code, out, _ = _run(repo)
@@ -82,11 +73,11 @@ def test_unchanged_over_long_lines_pass(repo: Path) -> None:
 def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
     """Generated, fixture and changelog-fragment Markdown is owned elsewhere."""
     _commit(repo, {"keep.md": "x\n"}, "base")
-    _git(repo, "switch", "-q", "-c", "codex/feature")
+    git(repo, "switch", "-q", "-c", "codex/feature")
     owned = [
         "CHANGELOG.md",
         "src/booley/data/refs/CHANGELOG.md",
-        "changelog.d/1.md",
+        "changelog.d/1.fix.md",
         "tests/fixtures/ticket_guidance/x.md",
     ]
     _commit(repo, dict.fromkeys(owned, _LONG + "\n"), "owned")
@@ -101,7 +92,7 @@ def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
 def test_added_line_that_looks_like_a_diff_header_is_content(repo: Path) -> None:
     """Catches `++ x` read as a `+++ ` file header, and form-feed line drift."""
     _commit(repo, {"doc.md": "x\n"}, "base")
-    _git(repo, "switch", "-q", "-c", "codex/feature")
+    git(repo, "switch", "-q", "-c", "codex/feature")
     _commit(repo, {"doc.md": f"x\n++ counter\na\x0cb\r\n{_LONG}\n"}, "branch")
 
     code, out, _ = _run(repo)
@@ -113,14 +104,14 @@ def test_added_line_that_looks_like_a_diff_header_is_content(repo: Path) -> None
 def test_explicit_base_and_git_failures(repo: Path) -> None:
     """`--base` is honored; an unusable base or missing history exits 2."""
     _commit(repo, {"doc.md": "x\n"}, "base")
-    base = _git(repo, "rev-parse", "HEAD")
+    base = git(repo, "rev-parse", "HEAD")
     _commit(repo, {"doc.md": f"x\n{_LONG}\n"}, "more")
     assert _run(repo, "--base", base)[0] == 1
     code, _, err = _run(repo, "--base", "no-such-rev")
     assert code == 2
     assert err.startswith("markdown line length: ")
     # Detached orphan history: no merge base with main.
-    _git(repo, "switch", "-q", "--orphan", "other")
+    git(repo, "switch", "-q", "--orphan", "other")
     _commit(repo, {"o.md": "x\n"}, "orphan")
     code, _, err = _run(repo)
     assert code == 2
@@ -128,11 +119,6 @@ def test_explicit_base_and_git_failures(repo: Path) -> None:
 
 
 _FENCE = "`" * 3
-
-
-def _gate() -> ModuleType:
-    """Import inside each test so a missing module fails the test body."""
-    return importlib.import_module("booley.dev_support.markdown_line_length")
 
 
 _EXEMPT_CASES: list[list[str]] = [
@@ -165,7 +151,7 @@ def test_exempt_lines_pass() -> None:
     """Each exemption passes with every over-80 line marked changed."""
     for lines in _EXEMPT_CASES:
         text = "\n".join(lines) + "\n"
-        assert _gate().long_lines(text, set(range(1, len(lines) + 1))) == [], lines
+        assert gate.long_lines(text, set(range(1, len(lines) + 1))) == [], lines
 
 
 def test_prose_past_a_closed_fence_or_short_token_fails() -> None:
@@ -188,5 +174,5 @@ def test_prose_past_a_closed_fence_or_short_token_fails() -> None:
     ]
     for lines in cases:
         text = "\n".join(lines) + "\n"
-        found = _gate().long_lines(text, set(range(1, len(lines) + 1)))
+        found = gate.long_lines(text, set(range(1, len(lines) + 1)))
         assert [number for number, _ in found] == [len(lines)], lines

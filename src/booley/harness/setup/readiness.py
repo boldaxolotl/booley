@@ -19,6 +19,7 @@ from typing import Any
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.config_paths import resolve_toml
 from booley.core.host_shell import quote_arg
 from booley.fusesoc import core_projection, fusesoc_registry
@@ -479,8 +480,8 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
         worktrees.append(outer)
         try:
             paired = resolve_checkout_booley_dir(outer)
-        except (FileNotFoundError, ValueError):
-            continue
+        except (FileNotFoundError, ValueError, BooleyLayoutError):
+            continue  # No Booley Directory, or a retired layout: only the outer is checked.
         if paired.is_relative_to(outer) and (paired / ".git").is_file():
             worktrees.append(paired)
     return tuple(worktrees)

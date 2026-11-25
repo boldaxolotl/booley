@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from tests.architecture.contract import (
     ArchitectureContract,
     CompositionPermission,
@@ -106,42 +108,32 @@ def test_missing_waiver_metadata_and_stale_waiver_fail() -> None:
     assert evaluate_contract((), replace(contract, waivers=())) == ()
 
 
-def test_waiver_retirement_work_must_name_a_github_issue() -> None:
+@pytest.mark.parametrize(
+    ("source", "retirement_issue", "problem"),
+    [
+        ("booley.policy.legacy", "eventually", "W1 retirement issue is not a GitHub issue"),
+        ("booley.policy.*", "#123", "W1 source is not an exact module"),
+    ],
+    ids=["retirement-issue-not-github", "prefix-shaped-source"],
+)
+def test_invalid_waiver_metadata_is_reported(
+    source: str, retirement_issue: str, problem: str
+) -> None:
     contract = ArchitectureContract(
         rules=(_rule("D1", "booley.policy", "booley.presentation"),),
         waivers=(
             LegacyWaiver(
                 identifier="W1",
                 rule="D1",
-                source="booley.policy.legacy",
+                source=source,
                 target="booley.presentation.view",
-                explanation="Legacy policy discovers the presentation registry.",
-                retirement_issue="eventually",
+                explanation="An invalid waiver.",
+                retirement_issue=retirement_issue,
             ),
         ),
     )
 
-    assert "W1 retirement issue is not a GitHub issue" in format_problems(
-        evaluate_contract((), contract)
-    )
-
-
-def test_prefix_shaped_waiver_is_invalid() -> None:
-    contract = ArchitectureContract(
-        rules=(_rule("D1", "booley.policy", "booley.presentation"),),
-        waivers=(
-            LegacyWaiver(
-                identifier="W1",
-                rule="D1",
-                source="booley.policy.*",
-                target="booley.presentation.view",
-                explanation="An invalid broad waiver.",
-                retirement_issue="#123",
-            ),
-        ),
-    )
-
-    assert "W1 source is not an exact module" in format_problems(evaluate_contract((), contract))
+    assert problem in format_problems(evaluate_contract((), contract))
 
 
 def test_rule_metadata_requires_valid_selectors_and_a_design_reason() -> None:

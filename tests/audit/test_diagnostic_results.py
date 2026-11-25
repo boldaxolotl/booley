@@ -11,15 +11,19 @@ from booley.audit.diagnostic_results import (
 )
 
 
-@pytest.mark.parametrize("check_id", [None, "", "Text with spaces", "host."])
-def test_warning_cannot_be_constructed_without_stable_identity(check_id):
+@pytest.mark.parametrize(
+    ("severity", "check_id"),
+    [
+        (Severity.WARN, None),
+        (Severity.WARN, ""),
+        (Severity.WARN, "Text with spaces"),
+        (Severity.WARN, "host."),
+        (Severity.WAIVED, None),
+    ],
+)
+def test_warning_cannot_be_constructed_without_stable_identity(severity, check_id):
     with pytest.raises(ValueError, match="stable check ID"):
-        DiagnosticFinding(Severity.WARN, "Actionable", check_id=check_id)
-
-
-def test_waived_warning_requires_a_stable_identity():
-    with pytest.raises(ValueError, match="stable check ID"):
-        DiagnosticFinding(Severity.WAIVED, "Missing identity")
+        DiagnosticFinding(severity, "Actionable", check_id=check_id)
 
 
 def test_only_fail_and_warn_findings_are_active():
