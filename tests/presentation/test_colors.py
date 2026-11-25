@@ -2,240 +2,90 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import importlib
 
 import pytest
 
-import booley.presentation.colors as colors_mod
-from booley.presentation.colors import (
-    _ANSI_RE,
-    _FG,
-    _style,
-    bold,
-    bold_green,
-    bold_red,
-    dim,
-    gray,
-    green,
-    hyperlink,
-    len_visible,
-    red,
-    yellow,
+from booley.presentation import colors
+
+# Expected values are ANSI SGR sequences (ECMA-48), the terminal's own contract.
+STYLED = [
+    (colors.red, "\033[31mx\033[0m"),
+    (colors.green, "\033[32mx\033[0m"),
+    (colors.yellow, "\033[33mx\033[0m"),
+    (colors.gray, "\033[90mx\033[0m"),
+    (colors.bold, "\033[1mx\033[0m"),
+    (colors.dim, "\033[2mx\033[0m"),
+    (colors.bold_green, "\033[1m\033[32mx\033[0m"),
+    (colors.bold_red, "\033[1m\033[31mx\033[0m"),
+]
+
+
+@pytest.mark.parametrize(("style", "styled"), STYLED)
+def test_style_applies_only_while_colors_are_enabled(monkeypatch, style, styled):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", True)
+    assert style("x") == styled
+    monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+    assert style("x") == "x"
+
+
+@pytest.mark.parametrize(
+    ("text", "cells"),
+    [
+        ("hello", 5),
+        ("", 0),
+        ("\033[1m\033[0m", 0),
+        ("abc\033[31mde\033[0m", 5),
+        ("\033[38;5;123mx\033[1;31my\033[0m", 2),
+        ("\033]8;;file:///tmp/t.md\033\\hello\033]8;;\033\\", 5),
+        ("\033]8;;file:///tmp/t.md\007hello\033]8;;\007", 5),
+    ],
 )
-
-# ---------------------------------------------------------------------------
-# _style
-# ---------------------------------------------------------------------------
+def test_len_visible_ignores_style_and_hyperlink_sequences(text, cells):
+    assert colors.len_visible(text) == cells
 
 
-class TestStyle:
-    def test_returns_plain_when_colors_disabled(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", False):
-            assert _style("hello", "\033[1m") == "hello"
-
-    def test_wraps_with_codes_when_enabled(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            result = _style("hello", "\033[1m")
-            assert result.startswith("\033[1m")
-            assert result.endswith("\033[0m")
-            assert "hello" in result
-
-    def test_multiple_codes(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            result = _style("x", "\033[1m", "\033[36m")
-            assert result.startswith("\033[1m\033[36m")
+@pytest.mark.parametrize(
+    ("enabled", "uri", "expected"),
+    [
+        (True, "file:///tmp/t.md", "\033]8;;file:///tmp/t.md\033\\name\033]8;;\033\\"),
+        (False, "file:///tmp/t.md", "name"),
+        (True, "", "name"),
+    ],
+)
+def test_hyperlink_wraps_only_with_colors_and_a_uri(monkeypatch, enabled, uri, expected):
+    monkeypatch.setattr(colors, "COLORS_ENABLED", enabled)
+    assert colors.hyperlink("name", uri) == expected
 
 
-# ---------------------------------------------------------------------------
-# Color functions (when enabled)
-# ---------------------------------------------------------------------------
-
-
-class TestColorFunctions:
-    @pytest.fixture(autouse=True)
-    def enable_colors(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            yield
-
-    @pytest.mark.parametrize(
-        "fn,color_key",
-        [
-            (red, "red"),
-            (green, "green"),
-            (yellow, "yellow"),
-            (gray, "gray"),
-        ],
-    )
-    def test_single_color_wraps(self, fn, color_key):
-        result = fn("test")
-        assert _FG[color_key] in result
-        assert "\033[0m" in result
-        assert "test" in result
-
-    @pytest.mark.parametrize("fn", [bold_green, bold_red])
-    def test_bold_color_has_bold_code(self, fn):
-        result = fn("test")
-        assert "\033[1m" in result
-
-    def test_bold(self):
-        assert "\033[1m" in bold("x")
-
-    def test_dim(self):
-        assert "\033[2m" in dim("x")
-
-
-# ---------------------------------------------------------------------------
-# Color functions (when disabled)
-# ---------------------------------------------------------------------------
-
-
-class TestColorFunctionsDisabled:
-    @pytest.fixture(autouse=True)
-    def disable_colors(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", False):
-            yield
-
-    @pytest.mark.parametrize(
-        "fn",
-        [
-            red,
-            green,
-            yellow,
-            gray,
-            bold,
-            dim,
-            bold_green,
-            bold_red,
-        ],
-    )
-    def test_returns_plain_text(self, fn):
-        assert fn("hello") == "hello"
-
-
-# ---------------------------------------------------------------------------
-# len_visible
-# ---------------------------------------------------------------------------
-
-
-class TestLenVisible:
-    def test_plain_string(self):
-        assert len_visible("hello") == 5
-
-    def test_strips_ansi(self):
-        colored = "\033[1m\033[36mhello\033[0m"
-        assert len_visible(colored) == 5
-
-    def test_empty_string(self):
-        assert len_visible("") == 0
-
-    def test_only_ansi(self):
-        assert len_visible("\033[1m\033[0m") == 0
-
-    def test_mixed_content(self):
-        # "abc" + ANSI + "de" -> visible = 5
-        s = "abc\033[31mde\033[0m"
-        assert len_visible(s) == 5
-
-    def test_strips_osc8_hyperlink(self):
-        s = "\033]8;;file:///tmp/t.md\033\\hello\033]8;;\033\\"
-        assert len_visible(s) == 5
-
-    def test_strips_osc8_bel_terminated(self):
-        s = "\033]8;;file:///tmp/t.md\007hello\033]8;;\007"
-        assert len_visible(s) == 5
-
-    def test_hyperlinked_colored_text(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            s = hyperlink(bold("hello"), "file:///tmp/t.md")
-        assert len_visible(s) == 5
-
-
-# ---------------------------------------------------------------------------
-# hyperlink
-# ---------------------------------------------------------------------------
-
-
-class TestHyperlink:
-    def test_wraps_with_osc8_when_enabled(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            result = hyperlink("name", "file:///tmp/t.md")
-        assert result == "\033]8;;file:///tmp/t.md\033\\name\033]8;;\033\\"
-
-    def test_plain_when_disabled(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", False):
-            assert hyperlink("name", "file:///tmp/t.md") == "name"
-
-    def test_plain_when_no_uri(self):
-        with patch.object(colors_mod, "COLORS_ENABLED", True):
-            assert hyperlink("name", "") == "name"
-
-
-# ---------------------------------------------------------------------------
-# in_vscode
-# ---------------------------------------------------------------------------
-
-
-class TestInVscode:
-    def test_true_for_vscode_term_program(self, monkeypatch):
-        monkeypatch.setenv("TERM_PROGRAM", "vscode")
-        assert colors_mod.in_vscode() is True
-
-    def test_case_insensitive(self, monkeypatch):
-        monkeypatch.setenv("TERM_PROGRAM", "vsCode")
-        assert colors_mod.in_vscode() is True
-
-    def test_false_for_other_terminal(self, monkeypatch):
-        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
-        assert colors_mod.in_vscode() is False
-
-    def test_false_when_unset(self, monkeypatch):
+@pytest.mark.parametrize(
+    ("term_program", "expected"),
+    [("vscode", True), ("vsCode", True), ("iTerm.app", False), (None, False)],
+)
+def test_in_vscode_reads_term_program(monkeypatch, term_program, expected):
+    if term_program is None:
         monkeypatch.delenv("TERM_PROGRAM", raising=False)
-        assert colors_mod.in_vscode() is False
+    else:
+        monkeypatch.setenv("TERM_PROGRAM", term_program)
+    assert colors.in_vscode() is expected
 
 
-# ---------------------------------------------------------------------------
-# _ANSI_RE
-# ---------------------------------------------------------------------------
-
-
-class TestAnsiRegex:
-    @pytest.mark.parametrize(
-        "code",
-        [
-            "\033[0m",
-            "\033[1m",
-            "\033[31m",
-            "\033[1;31m",
-            "\033[38;5;123m",
-        ],
-    )
-    def test_matches_valid_codes(self, code):
-        assert _ANSI_RE.match(code) is not None
-
-    def test_no_match_plain(self):
-        assert _ANSI_RE.search("plain text") is None
-
-
-class TestColorPolicy:
+@pytest.mark.parametrize(
+    ("no_color", "term", "expected"),
+    [("1", "xterm", False), (None, "dumb", False), (None, "xterm", True)],
+    ids=["no-color", "dumb-terminal", "capable-terminal"],
+)
+def test_import_decides_color_from_the_terminal(monkeypatch, no_color, term, expected):
     """NO_COLOR and TERM=dumb switch color off even on a TTY stdout."""
-
-    @pytest.fixture(autouse=True)
-    def tty_stdout(self, monkeypatch):
-        monkeypatch.delenv("FORCE_COLOR", raising=False)
-        monkeypatch.setattr(colors_mod.sys.stdout, "isatty", lambda: True, raising=False)
-        monkeypatch.setattr(colors_mod.sys, "platform", "linux")
-
-    def test_no_color_disables_color(self, monkeypatch):
-        monkeypatch.setenv("TERM", "xterm")
-        monkeypatch.setenv("NO_COLOR", "1")
-        assert colors_mod._color_supported() is False
-
-    def test_dumb_terminal_disables_color(self, monkeypatch):
+    # Reloading re-runs the import-time decision; teardown restores the original flag.
+    monkeypatch.setattr(colors, "COLORS_ENABLED", colors.COLORS_ENABLED)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    monkeypatch.setattr(colors.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(colors.sys, "platform", "linux")
+    monkeypatch.setenv("TERM", term)
+    if no_color is None:
         monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setenv("TERM", "dumb")
-        assert colors_mod._color_supported() is False
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
 
-    def test_capable_terminal_enables_color(self, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setenv("TERM", "xterm")
-        assert colors_mod._color_supported() is True
+    assert importlib.reload(colors).COLORS_ENABLED is expected

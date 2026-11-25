@@ -3,145 +3,89 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.runtime import heartbeat
+from booley.runtime.heartbeat import Heartbeat, touch_reaper_heartbeat
 from tests.time_budget import hang_guard_s
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.heartbeat import Heartbeat
-
-# ---------------------------------------------------------------------------
-# Heartbeat class
-# ---------------------------------------------------------------------------
 
 
 class TestHeartbeat:
     @pytest.fixture(autouse=True)
-    def _clear_no_heartbeat(self, monkeypatch):
-        """Ensure BOOLEY_NO_HEARTBEAT is unset so start() creates a thread."""
+    def touches(self, monkeypatch):
+        """Start a thread on every start(), and record reaper touches instead of writing them.
+
+        The default touch target is the host's shared /tmp rendezvous file, which
+        no public argument redirects.
+        """
         monkeypatch.delenv("BOOLEY_NO_HEARTBEAT", raising=False)
+        calls = []
+        monkeypatch.setattr(heartbeat, "touch_reaper_heartbeat", lambda: calls.append(None))
+        return calls
 
-    def test_start_stop_lifecycle(self):
-        """Heartbeat can be started and stopped without error."""
-        hb = Heartbeat("test", render=MagicMock(), interval=1)
-        hb.start()
-        assert hb._thread is not None
-        assert hb._thread.is_alive()
-        hb.stop()
-        # Thread should be joined (or daemon-dead)
-        assert not hb._thread.is_alive()
-
-    def test_context_manager(self):
-        """Heartbeat works as a context manager."""
-        with Heartbeat("test", render=MagicMock(), interval=1) as hb:
-            assert hb._thread.is_alive()
-        assert not hb._thread.is_alive()
-
-    def test_heartbeat_fires(self):
-        """Heartbeat should call _heartbeat_line after the interval."""
+    def test_ticks_render_adaptive_elapsed_and_keep_the_session_alive(self, monkeypatch, touches):
         fired = threading.Event()
-        calls: list[tuple[str, str, str]] = []
+        rows = []
 
-        def render(description: str, elapsed: str, extra: str) -> None:
-            calls.append((description, elapsed, extra))
+        def render(*row):
+            rows.append(row)
             fired.set()
+            time.sleep(0.05)  # still rendering when stop() is called
 
-        hb = Heartbeat("sim", render=render, interval=0.01)
-        hb.start()
-        assert fired.wait(timeout=hang_guard_s())
-        hb.stop()
-        assert calls[0][0] == "sim"
+        timer = Heartbeat("build", render=render, interval=0.01)
+        threads_before = set(threading.enumerate())
+        clock = iter([1_000_000.0])  # start(); every tick then reads 3661 s later
+        monkeypatch.setattr(heartbeat, "monotonic", lambda: next(clock, 1_003_661.0))
+        # The suite's thread-leak guard fails this test if leaving the block keeps ticking.
+        with timer:
+            assert fired.wait(timeout=hang_guard_s())
 
-    @patch("booley.runtime.heartbeat.touch_reaper_heartbeat")
-    def test_heartbeat_keeps_session_runtime_alive(self, mock_touch):
-        fired = threading.Event()
-        hb = Heartbeat(
-            "sim",
-            render=lambda *_args: fired.set(),
-            interval=0.01,
-        )
-        hb.start()
-        assert fired.wait(timeout=hang_guard_s())
-        hb.stop()
+        assert set(threading.enumerate()) <= threads_before  # stop() waited for the render
+        assert rows[0] == ("build", "1h 01m", "")
+        assert len(touches) >= 2  # start, then every tick
 
-        assert mock_touch.call_count >= 2  # immediate touch plus at least one tick
-
-    def test_status_fn_appended(self):
-        """status_fn return value should be passed as extra."""
-        status_fn = MagicMock(return_value="stage: planning")
+    @pytest.mark.parametrize(
+        ("status", "extra"),
+        [("stage: planning", "stage: planning"), (RuntimeError("oops"), "")],
+        ids=["appended", "failure-swallowed"],
+    )
+    def test_status_fn_result_is_the_extra(self, status, extra):
         fired = threading.Event()
         extras: list[str] = []
 
-        def render(_description: str, _elapsed: str, extra: str) -> None:
-            extras.append(extra)
+        def status_fn() -> str:
+            if isinstance(status, Exception):
+                raise status
+            return status
+
+        def render(_description: str, _elapsed: str, row_extra: str) -> None:
+            extras.append(row_extra)
             fired.set()
 
-        hb = Heartbeat(
-            "harness",
-            render=render,
-            interval=0.01,
-            status_fn=status_fn,
-        )
-        hb.start()
-        assert fired.wait(timeout=hang_guard_s())
-        hb.stop()
-        assert status_fn.call_count >= 1
-        assert "stage: planning" in extras
-
-    def test_status_fn_exception_swallowed(self):
-        """Exceptions from status_fn should be silently swallowed."""
-
-        def bad_fn():
-            raise RuntimeError("oops")
-
-        fired = threading.Event()
-        hb = Heartbeat(
-            "harness",
-            render=lambda *_args: fired.set(),
-            interval=0.01,
-            status_fn=bad_fn,
-        )
-        hb.start()
-        assert fired.wait(timeout=hang_guard_s())
-        hb.stop()
-
-
-# ---------------------------------------------------------------------------
-# touch_reaper_heartbeat (ADR 0028 Decision 11)
-# ---------------------------------------------------------------------------
-
-from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
+        with Heartbeat("harness", render=render, interval=0.01, status_fn=status_fn):
+            assert fired.wait(timeout=hang_guard_s())
+        assert extras[0] == extra
 
 
 class TestTouchReaperHeartbeat:
-    def test_writes_epoch_seconds(self, tmp_path):
+    def test_publishes_current_epoch_over_an_older_value(self, tmp_path):
         hb = tmp_path / "hb"
+        hb.write_text("1\n", encoding="utf-8")
         before = time.time()
         touch_reaper_heartbeat(str(hb))
         value = float(hb.read_text(encoding="utf-8").strip())
         # Wall-clock epoch, within a sane window of "now".
         assert before - 2 <= value <= time.time() + 2
 
-    def test_overwrites_previous_value(self, tmp_path):
-        hb = tmp_path / "hb"
-        hb.write_text("1\n", encoding="utf-8")
-        touch_reaper_heartbeat(str(hb))
-        assert float(hb.read_text(encoding="utf-8").strip()) > 1_000_000_000
-
-    def test_none_path_disables(self):
-        # Lifetimes without a heartbeat pass None; must be a silent no-op.
-        touch_reaper_heartbeat(None)  # must not raise
-
-    def test_oserror_swallowed(self, tmp_path):
-        # Heartbeat is advisory: an unwritable path (here: a directory)
-        # must never break the caller.
-        touch_reaper_heartbeat(str(tmp_path))  # must not raise
+    @pytest.mark.parametrize("target", ["none", "directory"])
+    def test_advisory_touch_never_raises(self, tmp_path, target):
+        # Lifetimes without a heartbeat pass None; an unwritable path (here: a
+        # directory) must never break the caller.
+        touch_reaper_heartbeat(None if target == "none" else str(tmp_path))
 
     def test_publication_never_exposes_truncated_payload(self, tmp_path, monkeypatch):
         hb = tmp_path / "hb"
@@ -154,18 +98,18 @@ class TestTouchReaperHeartbeat:
 
         class PausedFile:
             def __init__(self, file):
-                self._file = file
+                self.inner = file
 
             def __enter__(self):
                 ready.set()
                 assert release.wait(timeout=hang_guard_s())
-                return self._file.__enter__()
+                return self.inner.__enter__()
 
             def __exit__(self, *exc):
-                return self._file.__exit__(*exc)
+                return self.inner.__exit__(*exc)
 
             def __getattr__(self, name):
-                return getattr(self._file, name)
+                return getattr(self.inner, name)
 
         def delayed_open(path, *args, **kwargs):
             file = real_open(path, *args, **kwargs)
@@ -247,21 +191,6 @@ class TestTouchReaperHeartbeat:
     def test_default_path_is_the_reaper_rendezvous(self):
         # The reaper (booley.docker.reaper, stdlib-only image) hardcodes the
         # same path; keep them in lockstep.
-        assert REAPER_HEARTBEAT_PATH == "/tmp/booley_mcp_heartbeat"
         from booley.docker.reaper import HEARTBEAT_PATH
 
-        assert HEARTBEAT_PATH == REAPER_HEARTBEAT_PATH
-
-
-def test_timer_uses_shared_adaptive_duration(monkeypatch):
-    from booley.runtime import heartbeat
-
-    rendered = []
-    timer = Heartbeat("build", interval=0, render=lambda *row: rendered.append(row))
-    timer._start = 1000000
-    monkeypatch.setattr(heartbeat, "monotonic", lambda: 1003661)
-    monkeypatch.setattr(heartbeat, "touch_reaper_heartbeat", lambda: None)
-    waits = iter((False, True))
-    monkeypatch.setattr(timer._stop_event, "wait", lambda _interval: next(waits))
-    timer._run()
-    assert rendered == [("build", "1h 01m", "")]
+        assert HEARTBEAT_PATH == heartbeat.REAPER_HEARTBEAT_PATH
