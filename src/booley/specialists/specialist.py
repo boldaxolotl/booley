@@ -339,14 +339,11 @@ class Specialist(McpTool):
     ) -> Any:
         """One isolated agent call with *params*, accumulating token/cost usage.
 
-        Missing callbacks stream specialist_thinking events to display.jsonl.
         Missing per-Specialist nested MCP-tool allowlists come from
         booley.runtime.nested_mcp_capabilities, the shared authority.
         A parent-death watchdog bounds this expensive call to the client's
         lifetime (SETUP-F-36).
         """
-        if on_event is None:
-            on_event = self._make_streaming_callback()
         if params.agent_cli is None:
             params = dataclasses.replace(params, agent_cli=self._resolve_cli())
         if params.nested_mcp_tools is None:
@@ -424,18 +421,6 @@ class Specialist(McpTool):
             path.write_text(self._last_session_id, encoding="utf-8")
         except OSError:
             logger.warning("Failed to persist session_id to %s", path)
-
-    def _make_streaming_callback(self) -> Any:
-        """Create an on_event callback that streams agent text to display.jsonl."""
-        from booley.flows.endpoint_events import _specialist_thinking_event, _write_display_event
-
-        def _on_event(event: dict) -> None:
-            if event.get("type") == "agent_thinking":
-                text = event.get("text", "")
-                if text:
-                    _write_display_event(_specialist_thinking_event(text))
-
-        return _on_event
 
     def _validate_call_args(self) -> McpToolResult | None:
         """Developer Agent session argument validation hook.

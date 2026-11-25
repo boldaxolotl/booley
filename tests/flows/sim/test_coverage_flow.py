@@ -144,19 +144,6 @@ def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
 
 
-def _lifecycle_labels(tmp_path: Path) -> list[object]:
-    """The `display_label` of each lifecycle event the Flow wrote to the display sink."""
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "runtime" / "display.jsonl").read_text("utf-8").splitlines()
-    ]
-    return [
-        event["display_label"]
-        for event in events
-        if event["type"] in {"endpoint_start", "endpoint_end"}
-    ]
-
-
 def test_console_lifecycle_reports_executed_suite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,7 +152,6 @@ def test_console_lifecycle_reports_executed_suite(
     result = _coverage(tmp_path, target="sim_0,sim_1")
 
     assert result.exit_code == 0, result.outcome
-    assert _lifecycle_labels(tmp_path) == ["2 targets · 9 tests", "2 targets · 9 tests"]
     assert {
         observation["test"]
         for simulation_record in result.outcome.detail["records"].values()
@@ -189,7 +175,6 @@ def test_pre_outcome_coverage_failure_keeps_prepared_console_scope(
     result = _coverage(tmp_path, target="sim_0,sim_1")
 
     assert result.exit_code == 2
-    assert _lifecycle_labels(tmp_path) == ["2 targets · 9 tests", "2 targets · 9 tests"]
     assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
     assert result.outcome.detail["pending_targets"] == ["sim_0", "sim_1"]
 

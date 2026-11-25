@@ -396,21 +396,6 @@ def test_recheck_refuses_review_options(project: Path, monkeypatch: pytest.Monke
         invoke.assert_not_called()
 
 
-def test_display_tag_follows_the_evidence_file_once_it_is_read(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path, ids = full_review(project, monkeypatch, [finding(RESET)])
-    reviewer, _ = _reviewer(
-        project,
-        monkeypatch,
-        ["--recheck", str(path)],
-        json.dumps({"verdicts": [verdict(ids[RESET], "fixed")]}),
-    )
-    assert reviewer.display_tag == "recheck"
-    reviewer._run()
-    assert reviewer.display_tag == "rtl/bugs"
-
-
 def test_recheck_evidence_feeds_a_later_recheck(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -218,9 +218,7 @@ def _completion_fixture(flow, elapsed):
     )
 
 
-def test_completion_records_preserve_legacy_stage_bytes(tmp_path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    display = tmp_path / "display.jsonl"
+def test_completion_records_preserve_legacy_stage_bytes(monkeypatch):
     monkeypatch.setattr(terminal_progress, "utc_now_rfc3339", lambda: "2026-10-08T10:00:00Z")
     prefixes = {
         "lint": "[lint] top          [] 0 warnings (target total), ",
@@ -234,9 +232,7 @@ def test_completion_records_preserve_legacy_stage_bytes(tmp_path, monkeypatch):
         )
         progress.started = 0
         progress.log = io.BytesIO()
-        # private: emit_completion reads the endpoint's _display_identity; only a live
-        # flow endpoint sets it, so this stand-in carries the unset value.
-        endpoint = SimpleNamespace(name=flow, terminal_progress=progress, _display_identity=None)
+        endpoint = SimpleNamespace(name=flow, terminal_progress=progress)
         expected_records, expected_log = [], []
         for elapsed in (61.1, 61.9):
             line = _completion_fixture(flow, elapsed)
@@ -248,8 +244,6 @@ def test_completion_records_preserve_legacy_stage_bytes(tmp_path, monkeypatch):
             progress.observe("stdout", b"")
             progress.end_command()
             expected_log.append(f"\n[{flow} Target=top stage={legacy} source=stdout]\n")
-            event = json.loads(display.read_text(encoding="utf-8").splitlines()[-1])
-            assert "1m 01s" in event["line"], "completion display/record contract missing"
         assert stream.getvalue() == "".join(expected_records), (
             "completion display/record contract missing"
         )
