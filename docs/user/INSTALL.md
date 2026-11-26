@@ -14,7 +14,8 @@ supported. You need:
 - [Git 2.37.2+](https://git-scm.com/downloads/)
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
-- [VS Code](https://code.visualstudio.com/) 1.109 or newer
+- Optional: [VS Code](https://code.visualstudio.com/) 1.109 or newer, to open
+  the Sandbox in an editor
 - An agent CLI on the host PATH with credentials configured for Project Setup:
   [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
   or [Codex](https://developers.openai.com/codex/cli) (`codex`)
@@ -61,10 +62,11 @@ Then recreate each Project's Sandbox and run the upgrade review; see
 ## Host Bootstrap
 
 Host Bootstrap (`booley bootstrap`) prepares this machine once for every Booley
-Project. It checks Git, Docker, VS Code, and your agent CLI, installs the Dev
-Containers extension, installs Booley's skills for Claude Code and Codex, and
-downloads or builds the Sandbox Image. It does not touch any Project; you
-connect one later in [Setup](SETUP.md).
+Project. It checks Git, Docker, and your agent CLI, installs the Dev Containers
+extension when it finds VS Code's `code` shell command, installs Booley's skills
+for Claude Code and Codex, and downloads or builds the Sandbox Image. Without VS
+Code or its `code` command, it warns and skips the extension. It does not touch
+any Project; you connect one later in [Setup](SETUP.md).
 
 Run it again with `--update` after every upgrade. Other useful options:
 

@@ -120,8 +120,9 @@ Each is a Booley behavior that the QA Host works around:
 
 - **`/.dockerenv`:** Booley treats any process that sees it as inside a
   Sandbox and refuses host commands, so the entrypoint deletes it (#5584).
-- **VS Code:** Host Bootstrap requires a VS Code CLI and the Dev Containers
-  extension. `code-stub.sh` answers the two commands Bootstrap runs (#5603).
+- **VS Code:** Host Bootstrap needs no editor. `code-stub.sh` still answers the
+  two commands Bootstrap runs when it finds a VS Code CLI; a follow-up to #5603
+  removes it.
 - **`python3-venv`:** a development wheel builds itself in a venv while
   building the Sandbox Image; without `ensurepip` Bootstrap fails only after
   building the runtime base (#5585).
