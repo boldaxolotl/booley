@@ -6,6 +6,7 @@
   var panel = document.getElementById('run');
   var entrySelect = document.getElementById('run-entry');
   var problemEl = document.getElementById('run-problem');
+  var rereadButton = document.getElementById('run-reread');
   var fieldsEl = document.getElementById('run-fields');
   var commandEl = document.getElementById('run-command');
   var copyButton = document.getElementById('run-copy');
@@ -126,6 +127,7 @@
     submitting = false;
     clearReview();
     show(problemEl, '');
+    rereadButton.hidden = true;
     showCommand('', '');
   }
 
@@ -153,7 +155,8 @@
     return runs.length ? runs.map(function (run) {
       return '<label><input type="checkbox" data-dest="test" value="' + escapeHtml(run) + '"' +
         ((values.test || []).indexOf(run) === -1 ? '' : ' checked') + '> ' + escapeHtml(run) + '</label>';
-    }).join(' ') : '<span class="muted">' + (values.target ? 'No Tests listed' : 'Choose a Target first') + '</span>';
+    }).join(' ') : '<span class="muted">' +
+      (values.target ? 'No Tests listed' : 'Choose a Target first; or type Test Runs in the extra arguments.') + '</span>';
   }
 
   function recordsHtml() {
@@ -346,6 +349,18 @@
     }
   }
 
+  // A Targets answer with a problem offers to read again.
+  function showTargets(body) {
+    targets = body.targets;
+    show(problemEl, body.problem);
+    rereadButton.hidden = !body.problem;
+  }
+
+  // Unlike choosing the entry again, this keeps the typed values.
+  function rereadTargets() {
+    dependentRead('/api/run/targets', { flow: entry.name }, showTargets);
+  }
+
   function chooseEntry(value) {
     reset();
     var at = value.indexOf(':');
@@ -362,13 +377,15 @@
       if (mine !== gen) {
         return;
       }
-      if (answers[0].problem) {
-        show(problemEl, answers[0].problem);
+      var unbuilt = answers[0].problem ? 'The form cannot be built: ' + answers[0].problem : '';
+      show(problemEl, unbuilt);
+      if (!answers[0].fields) {
         return;
       }
       adopt(answers[0]);
-      targets = answers[1] ? answers[1].targets : [];
-      show(problemEl, answers[1] ? answers[1].problem : '');
+      if (!unbuilt && answers[1]) {
+        showTargets(answers[1]);
+      }
       render();
       postCommand();
     }).catch(problemUnless(mine));
@@ -451,6 +468,7 @@
   button.addEventListener('click', openForm);
   document.getElementById('run-cancel').addEventListener('click', closeForm);
   copyButton.addEventListener('click', copy);
+  rereadButton.addEventListener('click', rereadTargets);
   checkButton.addEventListener('click', review);
   submitButton.addEventListener('click', submit);
   entrySelect.addEventListener('change', function (event) {

@@ -1,0 +1,16 @@
+schedule_task
+delete_scheduled_task
+list_scheduled_tasks
+run_scheduled_task_now
+t3_environment_link
+t3_environment_links
+t3_environment_unlink
+t3_thread_transfer
+t3_project_create
+t3_project_delete
+t3_project_clone
+device_open
+device_close
+device_list
+device_screenshot
+request_secret

@@ -41,6 +41,12 @@ _NO_TESTS: tuple[str, ...] = ("only Simulation Targets have tests",)
 # A Flow that is not Target-aware but drives another Flow's Targets: the Mutation Flow runs one
 # Simulation Target, so Targets offer it and its Target picker lists what the Simulation Flow can drive.
 TARGET_KIND_OF_FLOW = {"mutation": "sim"}
+# What a Run form says to do when it cannot list a value to pick.
+TYPE_TARGETS = "Type Targets in the extra arguments."
+TYPE_RUNS = "Type Test Runs in the extra arguments."
+NO_FITTING_TARGET = (
+    "No Target here can be driven by this Flow; type Targets in the extra arguments."
+)
 
 
 def first_line(error: BaseException) -> str:
@@ -105,6 +111,13 @@ def targets_for(listing: TargetListing, flow: str) -> tuple[str, ...]:
     return tuple(row.selector for row in listing.rows if drives in row.flows)
 
 
+def targets_problem(listing: TargetListing, flow: str) -> str:
+    """Why a Run form offers *flow* no Target and what to do; empty when it offers one."""
+    if listing.problem:
+        return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}"
+    return "" if targets_for(listing, flow) else NO_FITTING_TARGET
+
+
 @dataclass(frozen=True)
 class TargetDetail:
     """What one Target declares, before any setup.
@@ -139,6 +152,11 @@ class RunChoices:
     selector: str
     runs: tuple[str, ...]
     problem: str = ""
+
+
+def runs_problem(choices: RunChoices) -> str:
+    """Why the Test Runs cannot be listed and what to do; empty when they can."""
+    return f"{choices.problem}. {TYPE_RUNS}" if choices.problem else ""
 
 
 @dataclass(frozen=True)

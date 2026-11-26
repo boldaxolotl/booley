@@ -203,7 +203,8 @@ default = "claude"           # the one used unless you pick another
 - **`clis`**: listing a second CLI lets a `[models]` entry run a Specialist on
   it and gives the Sandbox its login (see
   [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
-  Without `clis`, the Project uses only `default`.
+  It also decides which agents T3 Code offers in the Sandbox. Without `clis`,
+  the Project uses only `default`.
 
 `booley init` asks for the default CLI (Enter picks `claude`) and keeps your
 answer on re-runs. `booley init --provider codex` skips the prompt. `provider`
@@ -293,8 +294,9 @@ reviewer = "gpt-6-astra"   # runs on Codex
 The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
 model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
 `clis` stops Booley from loading the config, and `booley doctor` names the
-entry. The Developer Agent itself uses your Agent CLI's own model setting, not
-this table.
+entry. `[models]` chooses Specialist models only: you choose a T3 Code thread's
+model in T3 Code, and a Developer Agent outside T3 Code uses your Agent CLI's
+own model setting.
 
 A Specialist without an entry uses the default CLI's built-in model, so most
 Projects need no `[models]` at all:

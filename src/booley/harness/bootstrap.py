@@ -108,7 +108,8 @@ def inspect_bootstrap(*, verbose: bool = False, include_images: bool = True) -> 
     findings.append(installation)
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
-    findings.append(_reconcile_vscode_dev_containers(Intent.CHECK))
+    if dev_containers := _reconcile_vscode_dev_containers(Intent.CHECK):
+        findings.append(dev_containers)
     findings.append(
         BootstrapFinding(
             "skills",
@@ -271,8 +272,10 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         return BootstrapResult(intent, tuple(findings), policy)
 
     for reconcile in (_reconcile_vscode_dev_containers, _reconcile_skills):
-        findings.append(reconcile(intent))
-        if findings[-1].state is BootstrapState.ERROR:
+        if (finding := reconcile(intent)) is None:
+            continue
+        findings.append(finding)
+        if finding.state is BootstrapState.ERROR:
             return BootstrapResult(intent, tuple(findings), policy)
 
     if not qa_opt_out and (qa := _reconcile_qa_skills(intent, opt_out=False)):
@@ -475,13 +478,15 @@ def _vscode_finding() -> BootstrapFinding:
     if application is not None:
         return BootstrapFinding(
             "vscode",
-            BootstrapState.CURRENT,
-            f"{application.name} application found; install its shell command for terminal use",
+            BootstrapState.WARNING,
+            f"{application.name} application found without its shell command; "
+            "install it so Bootstrap can install the Dev Containers extension",
         )
     return BootstrapFinding(
         "vscode",
-        BootstrapState.ERROR,
-        "VS Code or a supported compatible editor is required to open the Sandbox",
+        BootstrapState.WARNING,
+        "no VS Code or supported compatible editor found; "
+        "it is optional and only opens the Sandbox in an editor",
     )
 
 
@@ -546,17 +551,13 @@ def _vscode_dev_containers_finding(command: str) -> BootstrapFinding:
     )
 
 
-def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding:
-    """Ensure the desktop editor can open Booley's Sandbox."""
+def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding | None:
+    """Ensure the Dev Containers extension in the resolved desktop editor, if any."""
     from booley.config.editor import resolve_editor_management_command
 
     command = resolve_editor_management_command()
     if command is None:
-        return BootstrapFinding(
-            "vscode-dev-containers",
-            BootstrapState.ERROR,
-            "cannot find the installed editor's extension-management command",
-        )
+        return None
     finding = _vscode_dev_containers_finding(command)
     if finding.state is not BootstrapState.PENDING or intent is Intent.CHECK:
         return finding

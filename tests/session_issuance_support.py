@@ -17,10 +17,36 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from tests.devcontainer_spec_support import build_spec
 
+SHIPPED_T3_POLICY = (Path(dc.__file__).parents[1] / "data/docker/t3code-policy.json").read_bytes()
 
-def _docker_without_images(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Docker CLI stand-in on which no image (so no keeper) exists."""
-    return subprocess.CompletedProcess(args, 1, "", "Error: No such image")
+
+def _docker_without_images(t3_policy: bytes | None) -> Callable[..., Any]:
+    """Docker CLI stand-in on which no image (so no keeper) exists.
+
+    The one exception is the inert container Sandbox Issuance copies the image's T3 Code
+    policy out of: it holds *t3_policy*, or no such file when that is ``None``.
+    """
+
+    def run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        inert = _inert_container(args, t3_policy)
+        return inert or _answer(args, 1, "", "Error: No such image")
+
+    return run
+
+
+def _inert_container(
+    args: list[str], t3_policy: bytes | None
+) -> subprocess.CompletedProcess[str] | None:
+    """Answer a call on the inert container that the T3 Code policy is copied out of."""
+    if args[:2] in (["container", "create"], ["container", "rm"]):
+        return _answer(args, 0, "inert")
+    copies_policy = args[:2] == ["container", "cp"] and args[-2].endswith(
+        ":/etc/t3code/policy.json"
+    )
+    if copies_policy and t3_policy is not None:
+        Path(args[-1]).write_bytes(t3_policy)
+        return _answer(args, 0, "")
+    return None
 
 
 def install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -39,7 +65,9 @@ def install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     return executable
 
 
-def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
+def stub_keeper(
+    monkeypatch: pytest.MonkeyPatch, t3_policy: bytes | None = SHIPPED_T3_POLICY
+) -> None:
     """Replace the Docker keeper-tag calls that `issue_prepared` makes around persistence.
 
     `_persist_prepared` snapshots the keeper before writing and restores it when a
@@ -47,7 +75,9 @@ def stub_keeper(monkeypatch: pytest.MonkeyPatch) -> None:
     Patching the test's own ``monkeypatch`` lets a test override a stub later.
     """
     # private: the Docker CLI seam of `host_docker`, the shared fake of that boundary.
-    monkeypatch.setattr("booley.runtime.host_docker._run_docker", _docker_without_images)
+    monkeypatch.setattr(
+        "booley.runtime.host_docker._run_docker", _docker_without_images(t3_policy)
+    )
     monkeypatch.setattr("booley.runtime.host_docker.tag_image", lambda *_args: None)
     monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", lambda _image: None)
 
@@ -77,9 +107,10 @@ def issue_built(
     project: Path,
     build: runtime_spec.SpecBuilder,
     monkeypatch: pytest.MonkeyPatch,
+    t3_policy: bytes | None = SHIPPED_T3_POLICY,
 ) -> tuple[runtime_spec.PreparedSessionSpec, Path, runtime_spec.Issuance]:
     """Preview *build* and issue it, as production does; return prepared, path and stamp."""
-    stub_keeper(monkeypatch)
+    stub_keeper(monkeypatch, t3_policy)
     prepared = runtime_spec.preview(project, build)
     stamp = runtime_spec.issue_prepared(project, prepared)
     return prepared, dc.devcontainer_path(project), stamp
@@ -134,6 +165,8 @@ class HostDocker:
 
     def answer(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
+        if inert := _inert_container(args, SHIPPED_T3_POLICY):
+            return inert
         verb = " ".join(args[:2])
         if verb == "image inspect":
             found, out = self.image is not None, self.image or ""

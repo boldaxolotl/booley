@@ -134,8 +134,8 @@ Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley wit
 ## Installation
 
 Booley runs on Windows and Linux (macOS is not supported) for SystemVerilog
-or Verilog designs. It needs Python 3.11+, Git, Docker, VS Code, and a Claude
-Code or Codex CLI. With
+or Verilog designs. It needs Python 3.11+, Git, Docker, and a Claude Code or
+Codex CLI; VS Code is optional. With
 [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html):
 
 ```bash

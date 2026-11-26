@@ -13,8 +13,8 @@ With the flag on, ``POST /api/run/command``, ``/check`` and ``/submit`` take a J
 and refusal, and the start of a Standalone Job. Each requires a page of this server (an ``Origin``
 of ``http://127.0.0.1:<port>``, the Host's own) and a JSON body, so no other site can launch;
 errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or Specialist), 422 (the form or the
-parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the Job record cannot be
-written).
+parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the argument check itself
+failed, or the Job record cannot be written).
 """
 
 from __future__ import annotations
@@ -190,6 +190,7 @@ def _run_posts(
         web_run.InvalidRunError: 400,
         web_run.UnknownEntryError: 404,
         web_run.RunRefusedError: 422,
+        web_run.CheckFailedError: 500,
     }
 
     def posted(
@@ -202,11 +203,7 @@ def _run_posts(
                 worktree, _branch = _accepted_worktree(main, request.query_params.get("worktree"))
                 try:
                     return work(worktree, web_run.run_request(body))
-                except (
-                    web_run.InvalidRunError,
-                    web_run.UnknownEntryError,
-                    web_run.RunRefusedError,
-                ) as exc:
+                except tuple(statuses) as exc:
                     raise _RefusalError(statuses[type(exc)], str(exc)) from exc
 
             return JSONResponse(await run_in_threadpool(answer))
