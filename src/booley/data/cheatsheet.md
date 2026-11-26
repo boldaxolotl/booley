@@ -252,6 +252,5 @@ Offline copies of the user docs that skills cite (config, Flows, troubleshooting
 To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 **`booley dashboard` runs in the Sandbox.**
-For parallel work, use one linked worktree per session. The
-Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
+For parallel work, use one linked worktree per session.
 `booley session` runs on the host. `booley init` runs on the host or in a hand-written Sandbox (Project Initialization only); a Booley-issued Sandbox refuses it. Doctor works on either side.

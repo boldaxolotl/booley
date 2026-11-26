@@ -721,7 +721,6 @@ def issue_prepared(
     *,
     force_dependencies: bool = False,
     current_builder: Callable[[], SpecBuilder] | None = None,
-    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist one exact preview after revalidating its authority inputs."""
     project = project_root.resolve(strict=True)
@@ -738,12 +737,7 @@ def issue_prepared(
                 runner=host_docker.relay_docker,
                 force_relay=force_dependencies,
             )
-            return _persist_prepared(
-                project,
-                prepared,
-                requirements=requirements,
-                reconcile_dashboard=reconcile_dashboard,
-            )
+            return _persist_prepared(project, prepared, requirements=requirements)
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
 
@@ -753,10 +747,9 @@ def _persist_prepared(
     prepared: PreparedSessionSpec,
     *,
     requirements: eda_requirements.SessionEdaRequirements,
-    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
-    from booley.runtime import dashboard_tasks, devcontainer
+    from booley.runtime import devcontainer
 
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
@@ -781,15 +774,10 @@ def _persist_prepared(
         )
     except mount_history.MountHistoryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
-    task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
         if t3_policy is not None:
             replace_regular_file(t3_policy_path(project), t3_policy)
-        if reconcile_dashboard:
-            task_transaction = dashboard_tasks.reconcile(
-                project, prepared.inputs.project_data_source
-            )
         return _issue_document_with_requirements(
             project,
             prepared.spec,
@@ -798,8 +786,6 @@ def _persist_prepared(
             str(authorized_project_data_source(project)),
         )
     except Exception:
-        if task_transaction is not None:
-            task_transaction.rollback()
         for issued_file, snapshot in snapshots.items():
             _restore_file(issued_file, *snapshot)
         _restore_keeper(project, previous_keeper_id)

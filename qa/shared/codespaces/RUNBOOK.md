@@ -157,15 +157,9 @@ the trust prompt ("Do you trust the authors of the files in this folder?")
    Continue" by its `aria-ref`. A selector click on that button can time
    out; then click its page coordinates (see "Clicking" in step 7). Check
    right after that the prompt is gone and Restricted Mode has ended.
-2. About 5-20 s later the Dashboard extension opens a "Booley Dashboard"
-   terminal running `booley dashboard --on-attach`. It should come to the
-   front on its own, ahead of the `postAttachCommand` terminal
-   ("Codespaces: python -m booley.runtime.incontainer_live_preview …"). If
-   another terminal stays in front, or the toast "Booley Dashboard is ready in
-   the terminal panel." appears, log a finding. The tab list holds `bash`, the
-   `Codespaces: python -m …` terminal and `Booley Dashboard`, in either order.
-   Click the "Booley Dashboard" entry.
-3. Open a command terminal: F1, type `Terminal: Create New Terminal`, Enter.
+2. Open a terminal: F1, type `Terminal: Create New Terminal`, Enter. Run
+   `booley dashboard` and check that the Dashboard renders.
+3. Open a second terminal, the command terminal, the same way.
    Run `booley --version`. Before step 6 the terminal is a canvas: read the
    result from a screenshot.
 

@@ -86,8 +86,7 @@ memory = "8g"                                  # container memory limit; unset =
 ```
 
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
-admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
-covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
+admits Jobs; `booley doctor` warns while it is unset.
 
 `swap` is the swap the Sandbox may use beyond `memory`. Unset, it is a quarter
 of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
@@ -453,8 +452,7 @@ These steps apply when `[sandbox].image` names an image Booley doesn't build.
 `booley session refresh` refuses such an image.
 
 After upgrading Booley, first rebuild your image with the new Booley wheel
-installed, and run `python3 -I -m booley.runtime.dashboard_extension` as root
-in its recipe. Without that step, Dashboard auto-open is unavailable.
+installed.
 
 Then, after an upgrade or a settings change:
 

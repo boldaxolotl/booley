@@ -2771,19 +2771,6 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     _pass("Dashboard session-activity hooks installed")
 
 
-def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> None:
-    """Check image-owned delivery independently of editor trust and user preferences."""
-    from booley.runtime.dashboard_extension import installed_error
-
-    error = installed_error()
-    if error:
-        _warning_sink(_warn, "sandbox.dashboard-extension-unavailable")(
-            f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox"
-        )
-        return
-    _pass("Dashboard workspace extension bundled in the Sandbox Image")
-
-
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
@@ -2888,7 +2875,6 @@ def _run_container_checks(
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
-        _check_current_runtime_dashboard_extension(_pass, _warn)
         _check_current_runtime_git_identity(project, _pass, _warn, _skip)
         _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())

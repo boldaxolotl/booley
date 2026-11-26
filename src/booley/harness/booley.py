@@ -570,10 +570,7 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
             "instead."
         ),
     )
-    attach = dashboard.add_mutually_exclusive_group()
-    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
-    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
-    attach.add_argument(
+    dashboard.add_argument(
         "--web",
         action="store_true",
         help="Serve each worktree's Jobs page and JSON on 127.0.0.1 instead of opening the "
@@ -782,7 +779,7 @@ def _add_init_subparser(sub) -> None:
         help="Set up a Booley project (in a Sandbox: Project files only)",
         description="Set up a Booley project. On the host this is full setup. Inside a "
         "hand-written Sandbox (for example a Codespace) it runs Project Initialization "
-        "only: guidance links, Dashboard task, git settings and line endings. It is "
+        "only: guidance links, git settings and line endings. It is "
         "idempotent, so a spec can call it from onCreateCommand. A Booley-issued "
         "Sandbox refuses it; run it on the host.",
     )
@@ -1115,10 +1112,8 @@ def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
         from booley.harness.dashboard.web import DEFAULT_PORT, serve
 
         return serve(project_root, args.port or DEFAULT_PORT)
-    from booley.harness.dashboard.command import run_attach, run_dashboard
+    from booley.harness.dashboard.command import run_dashboard
 
-    if args.attach_policy or args.on_attach:
-        return run_attach(project_root, policy_only=args.attach_policy)
     return run_dashboard(project_root)
 
 

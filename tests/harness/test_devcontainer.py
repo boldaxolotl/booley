@@ -7,7 +7,6 @@ import json
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime.dashboard_extension import VSIX_PATH
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 from tests.devcontainer_spec_support import build_spec
 
@@ -310,12 +309,13 @@ class TestMaskPathsValidation:
 class TestAppExtension:
     def test_claude_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
         assert "remote.extensionKind" not in vscode["settings"]
+        assert not any(key.startswith("booley.dashboard") for key in vscode["settings"])
 
     def test_codex_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CODEX)["customizations"]["vscode"]
-        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
         assert "remote.extensionKind" not in vscode["settings"]
 
     def test_generated_spec_omits_tcl_highlighting(self):
@@ -332,9 +332,9 @@ class TestAppExtension:
 
     def test_none_installs_no_agent_extension(self):
         # "none" carries the app-agnostic extensions (HDL highlighting, Live
-        # Preview, the Dashboard) but no agent extension.
+        # Preview) but no agent extension.
         vscode = build_spec(dc.APP_NONE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX, VSIX_PATH]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a

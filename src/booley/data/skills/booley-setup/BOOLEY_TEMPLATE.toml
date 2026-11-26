@@ -70,7 +70,3 @@ enabled = false              # synthesis recipe belongs in Target flow_options
 # tagged `tags: [tb]` is testbench, everything else is RTL. There is
 # no [sources.*] table in booley.toml anymore; tag your testbench fileset in the
 # .core instead (see CORE_TEMPLATE.yaml).
-
-# Dashboard opens on VS Code folder attachment; false removes the owned task.
-# [sandbox]
-# dashboard = true

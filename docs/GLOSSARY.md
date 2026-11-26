@@ -34,9 +34,9 @@ _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
 Idempotent, location-neutral reconciliation of one codebase's Project files
-(Booley Directory, Git integration, guidance links, core projections, Dashboard
-task), making it a **Project** without interpreting its design and without
-Docker, host credentials or **Sandbox Issuance** ([ADR
+(Booley Directory, Git integration, guidance links, core projections), making it
+a **Project** without interpreting its design and without Docker, host
+credentials or **Sandbox Issuance** ([ADR
 0085](adr/0085-run-project-initialization-anywhere.md)).
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 

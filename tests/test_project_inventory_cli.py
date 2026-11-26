@@ -656,7 +656,7 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
     project_image.project_data_alias_capable.cache_clear()
     prepared = session_issuance.preview(project, fixed(spec))
     path = devcontainer.devcontainer_path(project)
-    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    session_issuance.issue_prepared(project, prepared)
     docker.containers[_CONTAINER] = _A
 
     assert _cli("projects", "forget", str(project), "--json") == 0
@@ -674,7 +674,7 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
     assert session_runtime.sandbox_remedy(project) == (
         "on the host run `booley init`, then use Dev Containers: Rebuild Container"
     )
-    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    session_issuance.issue_prepared(project, prepared)
     assert session_issuance.validate(project, prepared.spec, path).image_id == _A
 
 

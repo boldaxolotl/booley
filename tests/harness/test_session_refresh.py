@@ -377,7 +377,7 @@ def _reissue_with(prepared: runtime_spec.PreparedSessionSpec, project: Path) -> 
     """A ``reissue`` that issues the real spec and stamp, as the harness does."""
 
     def reissue(*_args, **_kwargs) -> None:
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
 
     return reissue
 
@@ -701,7 +701,7 @@ def test_image_gc_deferral_does_not_block_completed_refresh(
         ("relocated", ["/.devcontainer", "/.claude", "/.booley", "/tools/booley"]),
     ],
 )
-def test_finalization_reconciles_dashboard_task_and_git_excludes(
+def test_finalization_reconciles_git_excludes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, excluded: list[str]
 ) -> None:
     from booley.runtime.booley_dir import reset_cache
@@ -724,9 +724,8 @@ def test_finalization_reconciles_dashboard_task_and_git_excludes(
 
     session_refresh.finalize_project(project)
 
-    assert (source / "runtime" / "dashboard-task.json").is_file()
     exclude = (project / ".git" / "info" / "exclude").read_text("utf-8").splitlines()
-    assert [line for line in exclude if line.startswith("/")] == ["/.vscode", *excluded]
+    assert [line for line in exclude if line.startswith("/")] == excluded
 
 
 def test_refresh_prepares_spec_in_host_egress_mode(project_local_booley_dir, issued) -> None:
