@@ -15,21 +15,29 @@ import pytest
 
 DATA = Path(__file__).parents[2] / "src/booley/data/docker"
 SCRIPT = DATA / "t3code_tool_deny_hook.py"
-# Codex's names for ``t3-code`` and ``t3-code-direct``, and the form it takes when a second
+# Codex's names for ``t3-code`` and ``t3-code-direct``, and the forms they take when a second
 # server sanitizes to the same name.
-PREFIXES = ["mcp__t3_code__", "mcp__t3_code_direct__", "mcp__t3_code_0123456789ab__"]
+PREFIXES = [
+    "mcp__t3_code__",
+    "mcp__t3_code_direct__",
+    "mcp__t3_code_0123456789ab__",
+    "mcp__t3_code_direct_0123456789ab__",
+]
 
 
 def _denied() -> list[str]:
     return (DATA / "t3code-denied-tools.txt").read_text(encoding="utf-8").split()
 
 
-def _run_hook(script: Path, tool_name: str, monkeypatch: pytest.MonkeyPatch) -> int:
+def _event(tool_name: str) -> bytes:
+    return json.dumps({"tool_name": tool_name}).encode()
+
+
+def _run_hook(script: Path, payload: bytes, monkeypatch: pytest.MonkeyPatch) -> int:
     spec = importlib.util.spec_from_file_location("t3code_tool_deny_hook", script)
     assert spec is not None and spec.loader is not None
     hook = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook)
-    payload = json.dumps({"tool_name": tool_name}).encode()
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(payload)))
     return hook.main()
 
@@ -39,12 +47,14 @@ def test_hook_blocks_listed_t3code_tools(
     prefix: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     for name in _denied():
-        assert _run_hook(SCRIPT, prefix + name, monkeypatch) == 2
-        assert name in capsys.readouterr().err
+        # Also the name Codex gives a tool whose joined name another server's tool takes.
+        for tool_name in (prefix + name, f"{prefix}{name}_0123456789ab"):
+            assert _run_hook(SCRIPT, _event(tool_name), monkeypatch) == 2
+            assert name in capsys.readouterr().err
 
     kept = [prefix + "html_render", prefix + "t3_thread_wait"]
     for tool_name in [*kept, "mcp__booley__list_scheduled_tasks"]:
-        assert _run_hook(SCRIPT, tool_name, monkeypatch) == 0
+        assert _run_hook(SCRIPT, _event(tool_name), monkeypatch) == 0
         assert capsys.readouterr().err == ""
 
 
@@ -68,5 +78,13 @@ def test_hook_blocks_when_it_cannot_read_the_list(
     # Codex lets a call through when its hook fails any other way than exit 2 with a reason.
     alone = Path(shutil.copy(SCRIPT, tmp_path))
 
-    assert _run_hook(alone, "mcp__t3_code__html_render", monkeypatch) == 2
+    assert _run_hook(alone, _event("mcp__t3_code__html_render"), monkeypatch) == 2
     assert "t3code-denied-tools.txt" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("payload", [b"not json", b"{}", b"[]"])
+def test_hook_blocks_an_event_it_cannot_read(
+    payload: bytes, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _run_hook(SCRIPT, payload, monkeypatch) == 2
+    assert "could not check" in capsys.readouterr().err

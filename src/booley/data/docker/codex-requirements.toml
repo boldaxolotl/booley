@@ -23,13 +23,15 @@ type = "command"
 command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
 timeout = 3
 
-# Block the T3 Code tools Claude's managed settings deny. The matcher sends the hook
-# only calls to T3 Code's two MCP servers, in the names Codex gives hooks.
+# Block the T3 Code tools t3code-denied-tools.txt names (a test holds Claude's managed
+# deny list equal to it). The matcher sends the hook only calls to T3 Code's two MCP
+# servers, in the names Codex gives hooks. The interpreter is named by path, so a
+# python3 in an agent-writable PATH directory cannot stand in for it.
 [[hooks.PreToolUse]]
 matcher = "^mcp__t3_code(_direct)?(_[0-9a-f]{12})?__"
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "python3 -I -S /usr/local/libexec/booley/t3code_tool_deny_hook.py"
+command = "/usr/bin/python3 -I -S /usr/local/libexec/booley/t3code_tool_deny_hook.py"
 timeout = 3
 
 [[hooks.PostToolUse]]

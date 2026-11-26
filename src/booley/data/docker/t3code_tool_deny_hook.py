@@ -19,8 +19,11 @@ from pathlib import Path
 
 DENIED_TOOLS = Path(__file__).with_name("t3code-denied-tools.txt")
 # Codex shows hooks the servers ``t3-code`` and ``t3-code-direct`` with ``-`` turned into
-# ``_``, and appends ``_<12 hex>`` to one when a second server's name turns into the same.
-T3CODE_TOOL = re.compile(r"mcp__t3_code(?:_direct)?(?:_[0-9a-f]{12})?__(?P<tool>.+)")
+# ``_``. It appends ``_<12 hex>`` to a server name when a second server's name turns into the
+# same, and to a tool name when another server's tool spells the same server and tool joined.
+T3CODE_TOOL = re.compile(
+    r"mcp__t3_code(?:_direct)?(?:_[0-9a-f]{12})?__(?P<tool>.+?)(?:_[0-9a-f]{12})?"
+)
 
 
 def denial(tool_name: str, denied: frozenset[str]) -> str | None:
