@@ -21,7 +21,6 @@ from tests.devcontainer_spec_support import build_spec
 from tests.docker_host_support import fake_docker_host
 from tests.harness.session_docker_fake import serve_sandbox_docker
 from tests.session_issuance_support import (
-    SHIPPED_T3_POLICY,
     damaged,
     fixed,
     install_trusted_validator,
@@ -3945,7 +3944,10 @@ _CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
 
 
 def test_reissue_after_a_clis_change_rewrites_the_t3_code_policy(issued, monkeypatch, request):
-    image_policy = SHIPPED_T3_POLICY.replace(b'"auto"', b'"approval"')
+    image_policy = (
+        b'{"limits": {"maxRuntimeMode": "approval",'
+        b' "providers": {"allowedDrivers": ["claudeAgent", "codex"]}}}'
+    )
     project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
     prepared, _, _ = issue_built(project, fixed(spec), monkeypatch, image_policy)
     policy_file = project.resolve() / ".devcontainer" / "t3code-policy.json"
@@ -3983,6 +3985,35 @@ def test_issuance_refuses_a_symlinked_t3_code_policy(issued, monkeypatch, reques
     with pytest.raises(runtime_spec.RuntimeSpecError, match="refusing to write through symlinked"):
         _issue_spec(project, spec, monkeypatch)
     assert link.is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a Windows privilege")
+def test_issuance_refuses_a_symlinked_devcontainer_folder(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    writable = project / ".booley" / "control"
+    (project / ".devcontainer").rename(writable)
+    (project / ".devcontainer").symlink_to(writable, target_is_directory=True)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="is a symlink"):
+        _issue_spec(project, spec, monkeypatch)
+    assert not (writable / "t3code-policy.json").exists()
+
+
+def test_interrupted_policy_copy_leaves_the_issued_spec_alone(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(project, fixed(spec))
+    answer = idk._run_docker
+
+    def interrupted(args: list[str], **kwargs: object):
+        if args[:2] == ["container", "cp"]:
+            raise KeyboardInterrupt
+        return answer(args, **kwargs)
+
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", interrupted)
+    before = dc.devcontainer_path(project).read_bytes()
+    with pytest.raises(KeyboardInterrupt):
+        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert dc.devcontainer_path(project).read_bytes() == before
 
 
 @pytest.mark.parametrize(

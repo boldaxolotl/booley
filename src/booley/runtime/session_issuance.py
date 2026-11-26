@@ -761,6 +761,7 @@ def _persist_prepared(
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
     snapshots = _issued_file_snapshots(project, path)
+    t3_policy = _narrowed_t3_policy(prepared.spec)
     previous_issuance = None
     previous_stamp_path = _stamp_read_path(project)
     if previous_stamp_path.is_file():
@@ -783,7 +784,8 @@ def _persist_prepared(
     task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
-        _write_t3_policy(project, prepared.spec)
+        if t3_policy is not None:
+            replace_regular_file(t3_policy_path(project), t3_policy)
         if reconcile_dashboard:
             task_transaction = dashboard_tasks.reconcile(
                 project, prepared.inputs.project_data_source
@@ -819,19 +821,18 @@ def _issued_file_snapshots(project: Path, path: Path) -> dict[Path, tuple[bytes 
     }
 
 
-def _write_t3_policy(project: Path, spec: dict[str, Any]) -> None:
-    """Write the policy the spec mounts: the pinned image's, narrowed to its Agent CLIs."""
+def _narrowed_t3_policy(spec: dict[str, Any]) -> bytes | None:
+    """The policy the spec mounts: the pinned image's, narrowed to its Agent CLIs."""
     record = _spec_cli_record(spec)
     if not record:
-        return
+        return None
     base = _image_t3_policy(spec["image"])
     try:
-        policy = narrowed_policy(base, record)
+        return narrowed_policy(base, record)
     except ValueError as exc:
         raise RuntimeSpecError(
             f"Sandbox Image T3 Code policy {T3_POLICY_TARGET} is unusable: {exc}"
         ) from exc
-    replace_regular_file(t3_policy_path(project), policy)
 
 
 def _image_t3_policy(image_id: str) -> bytes:
@@ -1128,6 +1129,17 @@ def expected_t3_policy_mount(project_root: Path) -> str:
     return f"source={source},target={T3_POLICY_TARGET},type=bind,readonly"
 
 
+def _require_t3_policy_mount(mounts: list[str], project: Path) -> None:
+    """Require the read-only policy bind, in a folder the Sandbox cannot reach another way."""
+    folder = t3_policy_path(project).parent
+    if folder.is_symlink():
+        # A link target inside a writable mount would bypass the read-only binds.
+        raise RuntimeSpecError(
+            f"cannot protect the T3 Code policy: {folder} is a symlink; make it a real folder"
+        )
+    _require_exact_readonly_mount(mounts, expected_t3_policy_mount(project))
+
+
 def _validate_spec_identity(spec: dict[str, Any]) -> str:
     expected_location = {"workspaceFolder": "/work", "remoteUser": "agent"}
     actual_location = {
@@ -1228,7 +1240,7 @@ def _validate_issued_mounts(
     _validate_state_volume(mounts, record, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     if record:
-        _require_exact_readonly_mount(mounts, expected_t3_policy_mount(project))
+        _require_t3_policy_mount(mounts, project)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
     if requirements.installation_mount is not None:
         _require_exact_readonly_mount(mounts, requirements.installation_mount)
