@@ -367,7 +367,8 @@ session history is kept across rebuilds.
 
 Booley's tools and skills work in every listed CLI, so a plain `claude` or
 `codex` in a Sandbox terminal has them. The Developer Agent's window uses the
-`default` CLI; Specialists use whichever listed CLI their model needs.
+`default` CLI; Specialists use whichever listed CLI their model needs. T3 Code
+in the Sandbox offers threads only for the listed CLIs.
 
 After changing `clis`, `auth`, or `default`,
 [apply the change](#after-changing-sandbox-settings). Until you do, a changed

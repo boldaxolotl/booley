@@ -270,7 +270,23 @@ def test_ensure_t3_server_registers_the_project(
 
     assert reg.ensure_t3_server(tmp_path) == status
     assert len(t3.added) == adds
+    assert t3.checked == [["t3", "policy", "check", "/etc/t3code/policy.json"]]
     assert "boom" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("reply", "reported"),
+    [((77, "allowedDrivers: unknown driver"), "unknown driver"), (OSError("no t3"), "OSError")],
+    ids=["rejected", "run-error"],
+)
+def test_a_rejected_t3_code_policy_stops_t3_serve(tmp_path, monkeypatch, capsys, reply, reported):
+    t3 = _t3_code(monkeypatch, check_reply=reply)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+
+    assert reg.ensure_t3_server(tmp_path) == "policy-rejected"
+    assert t3.served == []
+    err = capsys.readouterr().err
+    assert "t3 policy check" in err and reported in err
 
 
 def test_a_t3_code_failure_never_stops_registration(tmp_path, monkeypatch, capsys):
