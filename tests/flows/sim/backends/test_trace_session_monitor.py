@@ -468,6 +468,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
         sim_proc.kill()
         sim_proc.wait(timeout=hang_guard_s())
         _stop_monitor_within(session, _CLEANUP_STOP_S)
+        conversion.kill()
         conversion.finish(timeout_s=hang_guard_s())
 
 

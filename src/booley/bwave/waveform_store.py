@@ -387,6 +387,7 @@ class StreamingConversion:
         self,
         process: subprocess.Popen[bytes],
         keepalive_fd: int,
+        read_fd: int,
         fifo_path: Path,
         store_path: Path,
         stderr_path: Path,
@@ -395,6 +396,9 @@ class StreamingConversion:
     ) -> None:
         self._process = process
         self._keepalive_fd: int | None = keepalive_fd
+        # FIONREAD must go to a read-only descriptor: macOS answers a read-write FIFO
+        # descriptor with its empty write side's count, so the backlog would read 0.
+        self._read_fd: int | None = read_fd
         self.fifo_path = fifo_path
         self.store_path = store_path
         self.stderr_path = stderr_path
@@ -444,10 +448,10 @@ class StreamingConversion:
         import termios
 
         with self._input_lock:
-            if self._keepalive_fd is None:
+            if self._read_fd is None:
                 return 0
             try:
-                packed = fcntl.ioctl(self._keepalive_fd, termios.FIONREAD, struct.pack("i", 0))
+                packed = fcntl.ioctl(self._read_fd, termios.FIONREAD, struct.pack("i", 0))
             except OSError:
                 return 0
         return int(struct.unpack("i", packed)[0])
@@ -471,14 +475,16 @@ class StreamingConversion:
                     os.read(fd, 1 << 16)
 
     def close_input(self) -> None:
-        """Stop any drain, close the keepalive so B-Wave sees EOF, and remove our pipe."""
+        """Stop any drain, close our pipe ends so B-Wave sees EOF, and remove our pipe."""
         with self._input_lock:
             self._drain_stop.set()
             if self._drain is not None:
                 self._drain.join()
-            if self._keepalive_fd is not None:
-                os.close(self._keepalive_fd)
-                self._keepalive_fd = None
+            for fd in (self._keepalive_fd, self._read_fd):
+                if fd is not None:
+                    os.close(fd)
+            self._keepalive_fd = None
+            self._read_fd = None
         self._remove_fifo_if_ours()
 
     def link_pipe_to(self, path: Path) -> None:
@@ -593,23 +599,23 @@ def start_streaming_conversion(
     if scope:
         command.extend(["--scope", scope])
     try:
-        try:
-            process = subprocess.Popen(
-                command,
-                stdin=read_fd,
-                stdout=subprocess.DEVNULL,
-                stderr=stderr_file,
-            )
-        except OSError:
-            os.close(keepalive_fd)
-            fifo_path.unlink(missing_ok=True)
-            return None
+        process = subprocess.Popen(
+            command,
+            stdin=read_fd,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+        )
+    except OSError:
+        os.close(keepalive_fd)
+        os.close(read_fd)
+        fifo_path.unlink(missing_ok=True)
+        return None
     finally:
         stderr_file.close()
-        os.close(read_fd)
     return StreamingConversion(
         process,
         keepalive_fd,
+        read_fd,
         fifo_path,
         store_path,
         stderr_path,
