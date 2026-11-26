@@ -95,8 +95,6 @@ BOOLEY_DIR_BASENAME = ".booley"
 # absolute host path instead of relying on env-var indirection here.
 DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
-# VS Code setting through which the spec tells the dashboard extension its attach protocol.
-_DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
@@ -420,9 +418,9 @@ def sandbox_visible_expectation(spec: dict) -> dict:
 
     Inside the Sandbox the host project config, credentials, skills and caches are
     invisible, so the spec ``booley init`` would write cannot be rebuilt in full. The
-    parts this function fixes do not depend on them: the agent app, the Agent CLI set
-    and the dashboard flag are read from *spec* itself, and no credential or seed
-    sources are supplied. Compare only :func:`sandbox_visible` projections of the result.
+    parts this function fixes do not depend on them: the agent app and the Agent CLI set
+    are read from *spec* itself, and no credential or seed sources are supplied. Compare
+    only :func:`sandbox_visible` projections of the result.
     Raises ``ValueError`` when the spec's Agent CLI record is malformed.
     """
     policies = spec_cli_policies(spec)
@@ -433,16 +431,11 @@ def sandbox_visible_expectation(spec: dict) -> dict:
     app = spec_agent_app(spec) or APP_NONE
     if not plans:
         plans = [auth_token.CredentialPlan(app, DEFAULT_AUTH, None, frozenset(), ())]
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    settings = vscode.get("settings") if isinstance(vscode, dict) else None
-    dashboard = isinstance(settings, dict) and settings.get(_DASHBOARD_PROTOCOL_SETTING) == 1
     return build_devcontainer_spec(
         app,
         cli_seeds=[CliSeeds(plan) for plan in plans],
         booley_dir_source="",
         mcp_start_command=mcp_post_start_command(),
-        dashboard=dashboard,
     )
 
 
@@ -882,7 +875,6 @@ def build_devcontainer_spec(
     mask_paths: Sequence[str] = (),
     mask_source: str = "",
     local_timezone: str = "",
-    dashboard: bool = False,
     egress: str = "proxy",
     legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
@@ -1030,13 +1022,6 @@ def build_devcontainer_spec(
             **_PYTHON_TERMINAL_SETTINGS,
         },
     }
-    from booley.runtime.dashboard_extension import VSIX_PATH
-
-    # The image-local Booley Sandbox Integration extension is installed in every
-    # Sandbox; the attach protocol alone decides whether it also opens the
-    # Dashboard terminal.
-    vscode["extensions"].append(VSIX_PATH)
-    vscode["settings"][_DASHBOARD_PROTOCOL_SETTING] = 1 if dashboard else 0
     spec["customizations"] = {"vscode": vscode}
 
     # The attach hook only fires when a UI client attaches, so headless

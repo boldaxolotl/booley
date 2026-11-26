@@ -11,7 +11,7 @@ from booley.audit.doctor_waivers import (
 )
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.presentation import colors
-from booley.runtime import dashboard_extension, runtime_context
+from booley.runtime import runtime_context
 from tests.harness.test_doctor import _patch_environment, _write_project
 
 
@@ -213,8 +213,8 @@ def _run_inside_the_sandbox(monkeypatch, root, booley_dir) -> None:
 
 @pytest.mark.parametrize("waived", [False, True])
 def test_doctor_waives_the_warnings_of_the_in_sandbox_checks(tmp_path, monkeypatch, waived):
-    """Doctor run inside the Sandbox tags both image warnings with waivable check IDs (#2123)."""
-    check_ids = ["sandbox.activity-hooks-unavailable", "sandbox.dashboard-extension-unavailable"]
+    """Doctor run inside the Sandbox tags the image warning with a waivable check ID (#2123)."""
+    check_ids = ["sandbox.activity-hooks-unavailable"]
     booley_dir = _write_project(tmp_path)
     if waived:
         _write(
@@ -228,7 +228,6 @@ def test_doctor_waives_the_warnings_of_the_in_sandbox_checks(tmp_path, monkeypat
         )
     _run_inside_the_sandbox(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: "hook missing")
-    monkeypatch.setattr(dashboard_extension, "installed_error", lambda: "extension missing")
 
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 

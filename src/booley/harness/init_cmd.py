@@ -163,7 +163,6 @@ from booley.presentation.colors import bold_amber, green, red, yellow
 from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import (
     auth_token,
-    dashboard_tasks,
     doctor_stamp,
     project_repositories,
     runtime_context,
@@ -1118,12 +1117,6 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
         )
 
 
-def _dashboard_enabled(booley_dir: Path) -> bool:
-    from booley.runtime.dashboard_tasks import enabled
-
-    return enabled(booley_dir)
-
-
 def _project_sandbox_config(
     project_root: Path, project_data_source: Path | None = None
 ) -> SandboxConfig:
@@ -1307,7 +1300,6 @@ class _SandboxSpecSources:
     project_data_source: Path
     memory: str
     memory_swap: str
-    dashboard: bool
     timezone: str
     legacy_subscription_clis: frozenset[str] = frozenset()
 
@@ -1330,7 +1322,6 @@ class _SandboxSpecSources:
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
             memory_swap=self.memory_swap,
-            dashboard=self.dashboard,
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
             protected_devcontainer_source=docker_mount_path(
@@ -1444,7 +1435,6 @@ def _sandbox_spec_sources(
         project_data_source=source,
         memory=sandbox.memory,
         memory_swap=memory_swap,
-        dashboard=_dashboard_enabled(source),
         timezone=detect_host_timezone(),
         legacy_subscription_clis=_legacy_subscription_clis(ctx.project_root),
     )
@@ -1643,8 +1633,6 @@ def _step_sandbox(
     plan = _inspect_sandbox_plan(ctx, request)
     if plan is None:
         return
-    for notice in plan.dashboard_tasks.notices:
-        info(notice)
     if ctx.check_only or (not plan.pending_details and not ctx.force):
         _report_sandbox_state(ctx, plan)
         return
@@ -1655,7 +1643,7 @@ def _step_sandbox(
 
 
 def _step_sandbox_files(ctx: InitContext) -> None:
-    """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
+    """Reconcile the Interactive excludes without a Sandbox.
 
     These are the Project-file parts of the Sandbox: no Docker, no Sandbox
     Issuance. Records nothing when everything is current, and nothing in check-only.
@@ -1665,20 +1653,12 @@ def _step_sandbox_files(ctx: InitContext) -> None:
     root = ctx.project_root
     try:
         excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
-        transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
-    except (OSError, RuntimeError, RuntimeSpecError) as exc:
+    except (OSError, RuntimeError) as exc:
         err(f"could not reconcile Sandbox files: {exc}")
         ctx.record("interactive_files", "err", str(exc))
         return
     if excludes_changed:
         ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
-    for notice in transaction.plan.notices:
-        info(notice)
-    for diagnostic in transaction.plan.diagnostics:
-        warn(diagnostic)
-    if transaction.plan.diagnostics:
-        ctx.record("interactive_files", "warn", "; ".join(transaction.plan.diagnostics))
-    elif excludes_changed or transaction.applied:
         ctx.record("interactive_files", "ok", "reconciled")
 
 
@@ -2583,8 +2563,8 @@ class ProjectInitialization:
     agent_config_path: Path
     #: Called once, after the Booley Directory content steps and before Git integration.
     host_facts: Callable[[], ProjectFacts]
-    #: Also reconcile the Dashboard task and Interactive excludes (host init leaves
-    #: them to its Sandbox Issuance step, which owns their preconditions).
+    #: Also reconcile the Interactive excludes (host init leaves them to its Sandbox
+    #: Issuance step, which owns their preconditions).
     reconcile_interactive_files: bool = True
     guidance_plan: InitPlan | None = None
     line_ending_baseline: Mapping[Path, bool | None] | None = None
@@ -2986,7 +2966,7 @@ def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
     if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
         return (
             "ERROR: `booley init` cannot run inside a Booley-issued Sandbox: the host "
-            "owns this Project's Sandbox and Dashboard task. Run `booley init` on the host."
+            "owns this Project's Sandbox. Run `booley init` on the host."
         )
     for attribute, flag in _SANDBOX_REFUSED_OPTIONS:
         if getattr(args, attribute, None):

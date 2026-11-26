@@ -81,7 +81,7 @@ def issue_built(
     """Preview *build* and issue it, as production does; return prepared, path and stamp."""
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(project, build)
-    stamp = runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    stamp = runtime_spec.issue_prepared(project, prepared)
     return prepared, dc.devcontainer_path(project), stamp
 
 

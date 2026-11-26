@@ -587,6 +587,15 @@ CASES: list[Refusal] = [
         ),
     ),
     Refusal(
+        "ignored-sandbox-dashboard",
+        (f"{_PROJECT_SCHEMA}::audit_ignored_settings",),
+        "[sandbox].dashboard",
+        None,
+        lambda _env: _audit(
+            project_schema.audit_ignored_settings({"sandbox": {"dashboard": True}})
+        ),
+    ),
+    Refusal(
         "agent-primary",
         ("src/booley/audit/agent_schema.py::audit_agent_table",),
         "primary",

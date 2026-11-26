@@ -439,17 +439,6 @@ def test_init_upgrade_requires_committing_repaired_ignore_file(versioned_project
     assert_clean(repo)
 
 
-def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project):
-    from booley.runtime.dashboard_tasks import reconcile
-
-    _root, data, repo = versioned_project
-    transaction = reconcile(repo, data)
-    assert transaction.applied
-    assert (data / "runtime/dashboard-task.json").is_file()
-    assert (data / "runtime/dashboard-task.lock").is_file()
-    assert_clean(repo)
-
-
 def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
     from booley.runtime.atomic_files import atomic_write_once
 

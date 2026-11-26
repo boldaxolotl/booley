@@ -369,42 +369,29 @@ def test_claiming_the_view_covers_every_outcome(monkeypatch, capsys):
     monkeypatch.setattr(command.view_probe, "unseen_owner", lambda _scope: stale)
 
     claim = _Claim(None)
-    assert command._bind_view(claim, "s", on_attach=True) is None
+    assert command._bind_view(claim, "s") is None
 
     claim = _Claim(errno.EADDRINUSE, None)
-    assert command._bind_view(claim, "s", on_attach=True) is None
+    assert command._bind_view(claim, "s") is None
     assert retired == [stale]
 
     # The retired process's address frees a moment after it shows as gone.
     claim = _Claim(errno.EADDRINUSE, errno.EADDRINUSE, errno.EADDRINUSE, None)
-    assert command._bind_view(claim, "s", on_attach=True) is None
+    assert command._bind_view(claim, "s") is None
     assert claim.binds == 4
 
     # Another newcomer won the race for the freed address.
     monkeypatch.setattr(command.view_probe, "RELEASE_GRACE_SECONDS", scaled(0.2))
     claim = _Claim(*[errno.EADDRINUSE] * 100)
-    assert command._bind_view(claim, "s", on_attach=True) == command.ALREADY_OPEN
-    assert command._bind_view(_Claim(*[errno.EADDRINUSE] * 100), "s", on_attach=False) == 0
+    assert command._bind_view(claim, "s") == 0
     assert "already open" in capsys.readouterr().out
 
-    assert command._bind_view(_Claim(errno.EACCES), "s", on_attach=False) == 2
+    assert command._bind_view(_Claim(errno.EACCES), "s") == 2
     assert "cannot reserve" in capsys.readouterr().out
 
     monkeypatch.setattr(command.view_probe, "retire", lambda _owner: False)
-    assert command._bind_view(_Claim(errno.EADDRINUSE), "s", on_attach=False) == 2
+    assert command._bind_view(_Claim(errno.EADDRINUSE), "s") == 2
     assert "unresponsive Dashboard" in capsys.readouterr().out
 
     monkeypatch.setattr(command.view_probe, "unseen_owner", lambda _scope: None)
-    assert (
-        command._bind_view(_Claim(errno.EADDRINUSE), "s", on_attach=True) == command.ALREADY_OPEN
-    )
-
-
-def test_attach_reports_unreadable_project_policy(tmp_path, monkeypatch, capsys):
-    def broken(*_):
-        raise ValueError("invalid dashboard configuration")
-
-    monkeypatch.setattr(command, "attach_blocker", broken)
-    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
-    assert command.run_attach(tmp_path) == 2
-    assert "invalid dashboard configuration" in capsys.readouterr().err
+    assert command._bind_view(_Claim(errno.EADDRINUSE), "s") == 0

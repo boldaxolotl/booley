@@ -175,7 +175,3 @@
 - **Step 6 status:** pending
 - **Step 7 status:** pending
 - **Final disposition:** <unset>
-
-### Dashboard
-
-- **Dashboard attachment task:** <default on, or requested opt-out>

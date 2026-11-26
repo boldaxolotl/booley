@@ -928,5 +928,4 @@ approved config is on disk.
 
 Do not put `[developer]` or `[jobs].max_tickets` in the Project configuration;
 Doctor treats
-them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
-when the human opts out of the default Dashboard attachment task.
+them as ignored settings with delete fixes.

@@ -258,16 +258,14 @@ def test_every_spec_extension_is_bundled_in_the_base_image() -> None:
     """No generated entry is a gallery ID: an egress-locked Sandbox cannot resolve one.
 
     Every entry must be a VSIX the image installs at exactly that path (so an
-    image version that differs from its Python constant fails here) or the
-    dashboard extension, which the wheel build supplies.
+    image version that differs from its Python constant fails here).
     """
     from booley.runtime import devcontainer
-    from booley.runtime.dashboard_extension import VSIX_PATH
 
     bundled = _bundled_vsix_install_targets(_BASE_DOCKERFILE.read_text(encoding="utf-8"))
     for app in devcontainer.SUPPORTED_APPS:
         extensions = build_spec(app)["customizations"]["vscode"]["extensions"]
-        assert [entry for entry in extensions if entry not in bundled | {VSIX_PATH}] == []
+        assert [entry for entry in extensions if entry not in bundled] == []
 
 
 # name -> (ARG prefix, third-party notice member in the VSIX, notice file name shipped)

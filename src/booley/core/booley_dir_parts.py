@@ -119,7 +119,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/job-handles/": _COMMON,
         "runtime/sessions/": _COMMON,
         "runtime/session_activity/": _COMMON,
-        "runtime/dashboard-task.lock": _COMMON,
         "job_logs/": _COMMON,
         "runtime/doctor_stamp.json": _COMMON,
         "runtime/doctor_deep_stamp.json": _COMMON,
@@ -142,7 +141,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "goalsets/": _COMMON,
         "docker/": _COMMON,
         # Common, written by other Booley modules.
-        "runtime/dashboard-task.json": _COMMON,
         "runtime/upgrade_review.lock": _COMMON,
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,

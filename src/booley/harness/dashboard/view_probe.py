@@ -7,8 +7,8 @@ an emulator attached to the pty answers a cursor-position request, a pty
 whose renderer is gone does not. The Dashboard sends that request on its
 refresh heartbeat and records when it was last answered in a `ViewState`.
 `serve` publishes the age of that answer on the Dashboard's Sandbox socket, so
-a newcomer or the attach policy can call the owner *unseen* once the age
-passes `UNSEEN_AFTER`, and `retire` it before taking over.
+a newcomer can call the owner *unseen* once the age passes `UNSEEN_AFTER`, and
+`retire` it before taking over.
 
 Nothing here is a guess. An owner that cannot prove it is unseen (an older
 Booley that never listens, a process of another user, a malformed reply)

@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -310,18 +310,6 @@ entry to change. `booley doctor --deep` checks every model ahead of time.
 `[models]` has no model tiers. A config with `heavy`, `standard`, or `light`
 keys or a `[models.roles]` table doesn't load; the error shows the `[models]`
 entries to use instead.
-
-## Dashboard (`[sandbox].dashboard`)
-
-```toml
-[sandbox]
-dashboard = true     # open the Dashboard when VS Code attaches to the Sandbox
-```
-
-With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
-open on its own; `booley dashboard` in a container terminal still opens it, and
-so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
-Git folder).
 
 ## Worktrees
 

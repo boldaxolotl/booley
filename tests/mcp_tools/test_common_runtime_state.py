@@ -161,11 +161,18 @@ def test_dashboard_handles_use_main(worktree, monkeypatch):
     from booley.harness.dashboard import command
 
     main, tree = worktree
-    blockers: list[Path] = []
-    monkeypatch.setattr(command, "attach_blocker", lambda _root, d: blockers.append(d) or "")
-    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
-    command.attach_policy(tree)
-    assert blockers == [main]
+    owner = MagicMock()
+    owner.__enter__.return_value = owner
+    monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(command.socket, "socket", lambda *_: owner)
+    monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
+    monkeypatch.setattr(command.view_probe, "serve", lambda *_: MagicMock())
+    monkeypatch.setattr(command, "_label_terminal", lambda: lambda: None)
+    monkeypatch.setattr(command, "DashboardApp", MagicMock())
+    reader = MagicMock()
+    monkeypatch.setattr(command, "DashboardReader", reader)
+    assert command.run_dashboard(tree) == 0
+    reader.assert_called_once_with(tree, main)
 
 
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):

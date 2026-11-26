@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import init_cmd
-from booley.runtime import auth_token
+from booley.runtime import auth_token, git
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -68,22 +68,20 @@ def test_refresh_creates_missing_files_once(root: Path) -> None:
     assert "interactive_files" not in {name for name, _status in _statuses(root)}
 
 
-@pytest.mark.parametrize(
-    ("problem", "status", "detail"),
-    [
-        ("unsafe-bind-source", "err", "generated bind source"),
-        ("blocked-vscode-directory", "warn", "Dashboard task unavailable"),
-    ],
-)
 def test_refresh_records_sandbox_file_problems(
-    problem: str, status: str, detail: str, root: Path, tmp_path: Path
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if problem == "unsafe-bind-source":
-        root = _root(tmp_path, "proj,unsafe")  # the bind-source validation refuses a comma
-    else:
-        (root / ".vscode").write_bytes(b"not a directory\n")
+    write = git.replace_regular_file
+
+    # An unwritable exclude file would stop the core-projection step first, and file modes
+    # do not refuse writes on every host: refuse only the Sandbox exclusions' write.
+    def refuse_sandbox_exclusions(target: Path, data: bytes) -> None:
+        if b"/.devcontainer" in data:
+            raise PermissionError(f"cannot write {target.name}")
+        write(target, data)
+
+    monkeypatch.setattr(git, "replace_regular_file", refuse_sandbox_exclusions)
 
     results = [row for row in _refresh(root) if row[0] == "interactive_files"]
 
-    assert [(name, found) for name, found, _ in results] == [("interactive_files", status)]
-    assert detail in results[0][2]
+    assert results == [("interactive_files", "err", "cannot write exclude")]

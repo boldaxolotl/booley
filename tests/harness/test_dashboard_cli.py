@@ -1,11 +1,10 @@
-"""Deployment catalog, Sandbox guard and repeat-attach policy with cheap fixtures."""
+"""Deployment catalog, Sandbox guard and repeat-launch behavior with cheap fixtures."""
 
 from __future__ import annotations
 
 import errno
 import json
 import os
-import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +29,7 @@ def _stub_view_probe(monkeypatch, *, unseen=None):
     monkeypatch.setattr(command.view_probe, "unseen_owner", lambda _scope: unseen)
 
 
-def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
+def test_repeat_launch_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
     monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
@@ -61,70 +60,9 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
     monkeypatch.setattr(command.socket, "socket", lambda *_: Owner())
     assert command.run_dashboard(tmp_path) == 0
     assert command.run_dashboard(tmp_path) == 0
-    assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
     assert launched == ["run"]
     assert "already open" in capsys.readouterr().out
     assert list(tmp_path.iterdir()) == []
-
-
-def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
-    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
-    monkeypatch.setattr(command, "run_dashboard", lambda *_: pytest.fail("must not start"))
-    assert command.run_attach(tmp_path, policy_only=True) == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "protocol": 1,
-        "enabled": False,
-        "reason": "disabled by configuration",
-        "already_open": False,
-    }
-    assert command.run_attach(tmp_path) == command.ATTACH_DISABLED
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_attach_policy_reports_an_opt_out_even_where_ownership_cannot_be_observed(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
-
-    def unobservable():
-        raise RuntimeError("Sandbox Dashboard ownership is unavailable")
-
-    monkeypatch.setattr(command, "_dashboard_is_open", unobservable)
-    assert command.attach_policy(tmp_path) == {
-        "protocol": 1,
-        "enabled": False,
-        "reason": "disabled by configuration",
-        "already_open": False,
-    }
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
-    with pytest.raises(RuntimeError, match="ownership is unavailable"):
-        command.attach_policy(tmp_path)
-
-
-def test_attach_rechecks_policy_before_launch_and_surfaces_bad_configuration(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
-    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
-    launches = []
-    monkeypatch.setattr(
-        command, "run_dashboard", lambda root, **kw: launches.append((root, kw)) or 0
-    )
-    assert command.run_attach(tmp_path) == 0
-    assert launches == [(tmp_path, {"on_attach": True})]
-
-    def invalid(*_):
-        raise ValueError("invalid dashboard configuration")
-
-    monkeypatch.setattr(command, "attach_blocker", invalid)
-    assert command.run_attach(tmp_path, policy_only=True) == 2
-    assert "invalid dashboard configuration" in capsys.readouterr().err
 
 
 def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, capsys):
@@ -132,31 +70,6 @@ def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, ca
     monkeypatch.setattr(command, "namespace", lambda: "fixture")
     assert command.run_dashboard(tmp_path) == 2
     assert "AF_UNIX" in capsys.readouterr().out
-
-
-def test_dashboard_configuration_is_always_validated():
-    from booley.audit import project_schema
-
-    data = {"sandbox": {"dashboard": "invalid"}}
-    assert not project_schema.audit_known_tables(data).findings
-    assert not project_schema.audit_sandbox_table(data).is_valid
-
-
-def test_dashboard_preflight_observes_without_reserving_a_socket(monkeypatch):
-    if not Path("/proc/net/unix").exists() or not hasattr(socket, "AF_UNIX"):
-        pytest.skip("Linux abstract socket inventory is required")
-    scope = f"pid:[attach-policy-test-{os.getpid()}]"
-    monkeypatch.setattr(command, "namespace", lambda: scope)
-    assert not command._dashboard_is_open()
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
-        owner.bind("\0booley-dashboard:" + scope)
-        with monkeypatch.context() as probe:
-            # Observing may connect to the owner but must never reserve an address.
-            probe.setattr(
-                socket.socket, "bind", lambda *_: pytest.fail("probe must not bind"), raising=True
-            )
-            assert command._dashboard_is_open()
-    assert not command._dashboard_is_open()
 
 
 _TITLE_PUSH = "\x1b[22;2t"
@@ -549,7 +462,7 @@ def test_dashboard_label_restores_original_stream_on_interrupted_acquisition(mon
     assert stream.writes[-3:] == [_TITLE_PUSH, _TITLE_SET, _TITLE_POP]
 
 
-def test_dashboard_does_not_label_refusals_or_policy_probes(tmp_path, monkeypatch, capsys):
+def test_dashboard_does_not_label_refusals(tmp_path, monkeypatch, capsys):
     _, owner = _stub_dashboard(monkeypatch, tmp_path)
     monkeypatch.setattr(
         command, "_label_terminal", lambda: pytest.fail("must not label"), raising=False
@@ -563,13 +476,7 @@ def test_dashboard_does_not_label_refusals_or_policy_probes(tmp_path, monkeypatc
 
     owner.bind = occupied
     assert command.run_dashboard(tmp_path) == 0
-    assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
-    assert command.run_attach(tmp_path) == command.ATTACH_DISABLED
-    # The policy probe reads /proc/net/unix, which Windows lacks; it is not under test here.
-    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
-    assert command.run_attach(tmp_path, policy_only=True) == 0
-    assert "disabled by configuration" in capsys.readouterr().out
+    assert "already open" in capsys.readouterr().out
 
 
 def test_dashboard_help_describes_run(capsys):

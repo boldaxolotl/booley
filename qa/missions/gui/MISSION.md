@@ -101,9 +101,8 @@ Try:
 - Time to first sim: run `booley flow sim --target sim_core` in a command
   terminal and note the time from the create click to its pass (reference
   from the 2026-11-06 run: the sim took 20 s, about 5.5 min from the click).
-Look for: onboarding steps that need knowledge the page doesn't give, a wrong
-Dashboard terminal in front (#2700), a Doctor line that disagrees with the
-CLI, slow or silent waits with no progress shown.
+Look for: onboarding steps that need knowledge the page doesn't give, a Doctor
+line that disagrees with the CLI, slow or silent waits with no progress shown.
 Evidence: `setup-*` screenshots of the creation page, trust prompt,
 START-HERE, Dashboard and version line; the timing table in `log.md`.
 
@@ -232,13 +231,14 @@ Try:
   the Codespace with `gh codespace stop --codespace <name>` and time it.
 - Reopen it in your tab (`https://<name>.github.dev`), trust again if asked,
   and time the way back to the Dashboard.
-- After resume: the Dashboard reattaches by itself; finished Jobs and their
-  results are still listed; an interrupted measurement is never shown Measured.
+- After resume: `booley dashboard` reopens the Dashboard; finished Jobs and
+  their results are still listed; an interrupted measurement is never shown
+  Measured.
   Resume the
   agent's T3 Code thread and ask it to continue; measuring again needs no
   `--again`.
 Look for: Jobs reported running forever, lost results, a cancelled run shown
-Measured, a Dashboard that needs manual restarting.
+Measured.
 Evidence: `stop-resume-*` before/after pairs with oracle output.
 
 ### 7. terminal-output — CLI rendering in the browser terminal (~15 min)

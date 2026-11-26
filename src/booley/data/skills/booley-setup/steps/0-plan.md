@@ -1061,8 +1061,3 @@ compile-flag probe.
    firmware file is present on disk but untracked, or if a committed artifact
    looks built from in-repo source; both nudge you toward this build-on-demand
    pattern.
-
-## Dashboard task in the plan
-
-Record any requested opt-out of the default Dashboard task with
-`[sandbox].dashboard=false`.
