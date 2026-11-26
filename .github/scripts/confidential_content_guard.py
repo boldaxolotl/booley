@@ -89,14 +89,20 @@ _REVIEW_LABEL = "confidential-review"
 _ADVISORY_MARKER = "confidential-content-advisory"
 _TERM_KIND = "confidential term"
 _BOT_LOGIN = "github-actions[bot]"
-# Per open pull request, only the fields `_is_outside` and the head-commit check read.
+# Per open pull request, only the fields `_is_outside` and the head-commit checks read.
 _OPEN_PULLS_JQ = (
-    ".[] | {author_association, head: {sha: .head.sha, repo: {id: .head.repo.id}}, "
-    "base: {repo: {id: .base.repo.id}}} | @json"
+    ".[] | {number, title, body, author_association, "
+    "head: {sha: .head.sha, ref: .head.ref, repo: {id: .head.repo.id}}, "
+    "base: {ref: .base.ref, repo: {id: .base.repo.id}}} | @json"
 )
+# The pull-request fields a scan reads from its event that change without a new head commit.
+_SCANNED_FIELDS = (("title",), ("body",), ("head", "ref"), ("base", "ref"))
 _MAX_ADVISORY_ROWS = 100
 _MAX_LOCATION_CHARS = 200
 _LOOKUP_TIMEOUT_SECONDS = 10
+# `head-status` exit statuses beside 0 (publish the scan result) and 1 (could not complete).
+_HEAD_SHARED_EXIT = 3
+_EVENT_SUPERSEDED_EXIT = 4
 _GH_TIMEOUT_SECONDS = 120
 # What `_scan_text` and `_commit_*` locations look like: drop the volatile parts
 # (commit prefix, trailing line number) so an amended or rebased commit keeps its digest.
@@ -901,7 +907,7 @@ def _pull_request_object(event: object) -> dict[str, object]:
     return cast("dict[str, object]", pull_request)
 
 
-def _pull_request_scope(pull_request: object) -> PullRequestScope:
+def _pull_request_scope(pull_request: dict[str, object]) -> PullRequestScope:
     """Classify a pull request; the classifiers are disjoint (a candidate is same-repository)."""
     if _is_outside(pull_request):
         return "maintainer" if _shares_head_with_other_work(pull_request) else "outside"
@@ -910,38 +916,43 @@ def _pull_request_scope(pull_request: object) -> PullRequestScope:
     return "maintainer"
 
 
-def _shares_head_with_other_work(pull_request: object) -> bool:
+def _open_pulls_with_head(pull_request: dict[str, object]) -> list[object]:
+    """The open pull requests, this one included, whose head commit is this pull request's.
+
+    They are listed from the base repository, because a commit that exists only
+    in forks has no entry in the per-commit lookup. Raises ``GuardError`` when
+    the list cannot be read completely.
+    """
+    full_name, _number = _pull_request_target(pull_request)
+    head_sha = _nested(pull_request, "head", "sha")
+    if not isinstance(head_sha, str) or _OID_RE.fullmatch(head_sha) is None:
+        raise GuardError("the pull-request head revision is invalid")
+    output = _gh_api(
+        [
+            "--paginate",
+            f"repos/{full_name}/pulls?state=open&per_page=100",
+            "--jq",
+            _OPEN_PULLS_JQ,
+        ],
+        "head-commit lookup",
+    )
+    return [
+        row
+        for row in _json_lines(output, "head-commit lookup")
+        if str(_nested(row, "head", "sha")).casefold() == head_sha.casefold()
+    ]
+
+
+def _shares_head_with_other_work(pull_request: dict[str, object]) -> bool:
     """True when another open PR has this head commit and is not outside work, or the lookup fails.
 
     The required status is published on the head commit, which several PRs can
     share. An outside PR whose head is a maintainer PR's (or a Mergify
     candidate's) head commit would otherwise overwrite that PR's status with its
-    own advisory success, so such a PR is enforced like maintainer work. The
-    open pull requests are listed from the base repository, because a commit
-    that exists only in forks has no entry in the per-commit lookup.
+    own advisory success, so such a PR is enforced like maintainer work.
     """
     try:
-        if not isinstance(pull_request, dict):
-            raise GuardError("the pull request is invalid")
-        pull_request = cast("dict[str, object]", pull_request)
-        full_name, _number = _pull_request_target(pull_request)
-        head_sha = _nested(pull_request, "head", "sha")
-        if not isinstance(head_sha, str) or _OID_RE.fullmatch(head_sha) is None:
-            raise GuardError("the pull-request head revision is invalid")
-        output = _gh_api(
-            [
-                "--paginate",
-                f"repos/{full_name}/pulls?state=open&per_page=100",
-                "--jq",
-                _OPEN_PULLS_JQ,
-            ],
-            "head-commit lookup",
-        )
-        associated = [
-            row
-            for row in _json_lines(output, "head-commit lookup")
-            if str(_nested(row, "head", "sha")).casefold() == head_sha.casefold()
-        ]
+        associated = _open_pulls_with_head(pull_request)
     except GuardError:
         print(
             "NOTE: the head-commit lookup failed; this pull request stays enforced",
@@ -1365,6 +1376,38 @@ def _pull_request_target(pull_request: dict[str, object]) -> tuple[str, int]:
     ):
         raise GuardError("the pull-request repository or number is invalid")
     return full_name, number
+
+
+def head_status_main(event_path: Path) -> int:
+    """Decide whether a passing PR scan may publish `success` on its head commit.
+
+    Exit 0: publish. `_HEAD_SHARED_EXIT`: another open PR has this head commit.
+    `_EVENT_SUPERSEDED_EXIT`: the PR changed after this event, so the newer
+    event's run publishes. 1: the open-PR list could not be read.
+    """
+    try:
+        pull_request = _pull_request_object(_read_event(event_path))
+        _full_name, number = _pull_request_target(pull_request)
+        rows = _open_pulls_with_head(pull_request)
+    except GuardError as exc:
+        return _guard_failure(exc, sys.stderr)
+    if any(_nested(row, "number") != number for row in rows):
+        print(
+            "ERROR: another open pull request has this head commit. Close one of them,"
+            " then re-run the other's confidential-content check.",
+            file=sys.stderr,
+        )
+        return _HEAD_SHARED_EXIT
+    if any(
+        _nested(row, *field) != _nested(pull_request, *field)
+        for row in rows
+        for field in _SCANNED_FIELDS
+    ):
+        print(
+            "NOTE: the pull request changed after this event; its newer run publishes the status"
+        )
+        return _EVENT_SUPERSEDED_EXIT
+    return 0
 
 
 def post_advisory_main(event_path: Path, report_path: Path) -> int:
@@ -1972,6 +2015,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     post_parser.add_argument("--event", required=True, type=Path)
     post_parser.add_argument("--report", required=True, type=Path)
+    head_status_parser = subparsers.add_parser(
+        "head-status", help="decide whether a passing PR scan may publish success"
+    )
+    head_status_parser.add_argument("--event", required=True, type=Path)
     pr_text_parser = subparsers.add_parser(
         "pr-text", help="inspect proposed PR text before publishing it"
     )
@@ -1992,6 +2039,8 @@ def _pr_command_main(parsed: argparse.Namespace) -> int:
         return pull_request_main(parsed.repo, parsed.event, parsed.advisory_report)
     if parsed.command == "post-advisory":
         return post_advisory_main(parsed.event, parsed.report)
+    if parsed.command == "head-status":
+        return head_status_main(parsed.event)
     if parsed.command == "pr-text":
         return pr_text_main(parsed.repo, parsed.file, read_stdin=parsed.stdin)
     return publish_pr_main(parsed.repo, parsed)
@@ -2031,7 +2080,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if parsed.command == "self-test":
         return self_test_main()
-    if parsed.command in {"pull-request", "post-advisory", "pr-text", "publish-pr"}:
+    if parsed.command in {"pull-request", "post-advisory", "head-status", "pr-text", "publish-pr"}:
         return _pr_command_main(parsed)
     if parsed.command in {
         "seal-config",

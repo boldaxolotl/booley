@@ -22,6 +22,7 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
+from booley.harness.setup.docker_image import wheel_build_environment_error
 from booley.harness.setup.skills import (
     HostSkillReconciliation,
     reconcile_host_qa_skills,
@@ -107,7 +108,8 @@ def inspect_bootstrap(*, verbose: bool = False, include_images: bool = True) -> 
     findings.append(installation)
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
-    findings.append(_reconcile_vscode_dev_containers(Intent.CHECK))
+    if dev_containers := _reconcile_vscode_dev_containers(Intent.CHECK):
+        findings.append(dev_containers)
     findings.append(
         BootstrapFinding(
             "skills",
@@ -226,6 +228,11 @@ def _inspect_bootstrap_images(
         return BootstrapResult(Intent.CHECK, tuple(findings), policy)
     base, finding = _reconcile_base_image(Intent.CHECK, verbose=verbose)
     findings.append(finding)
+    if finding.state is BootstrapState.PENDING:
+        try:
+            findings.extend(_wheel_build_findings(Intent.ENSURE))
+        except (ImageLifecycleError, OSError, ValueError) as exc:
+            findings.append(BootstrapFinding("image-capacity", BootstrapState.ERROR, str(exc)))
     sidecars = host_sidecars.inspect_sidecars(policy)
     findings.extend(_sidecar_finding(item) for item in sidecars.findings)
     return BootstrapResult(Intent.CHECK, tuple(findings), policy, base)
@@ -265,8 +272,10 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         return BootstrapResult(intent, tuple(findings), policy)
 
     for reconcile in (_reconcile_vscode_dev_containers, _reconcile_skills):
-        findings.append(reconcile(intent))
-        if findings[-1].state is BootstrapState.ERROR:
+        if (finding := reconcile(intent)) is None:
+            continue
+        findings.append(finding)
+        if finding.state is BootstrapState.ERROR:
             return BootstrapResult(intent, tuple(findings), policy)
 
     if not qa_opt_out and (qa := _reconcile_qa_skills(intent, opt_out=False)):
@@ -289,6 +298,14 @@ def _load_bootstrap_policy(findings: list[BootstrapFinding]) -> SandboxHostPolic
     return load_host_policy(on_deprecation=record_deprecation)
 
 
+def _wheel_build_findings(intent: Intent) -> tuple[BootstrapFinding, ...]:
+    """Report a Python that cannot build the wheel a planned local build needs."""
+    error = wheel_build_environment_error()
+    if error is None or not host_capacity_requests(intent):
+        return ()
+    return (BootstrapFinding("python-venv", BootstrapState.ERROR, error, remedy=""),)
+
+
 def _reconcile_bootstrap_images(
     intent: Intent,
     findings: list[BootstrapFinding],
@@ -300,6 +317,9 @@ def _reconcile_bootstrap_images(
     plan = None
     if intent is not Intent.CHECK:
         try:
+            if blocked := _wheel_build_findings(intent):
+                findings.extend(blocked)
+                return BootstrapResult(intent, tuple(findings), policy)
             requests = (
                 *host_capacity_requests(intent),
                 *host_sidecars.plan_image_builds(intent, egress=policy.egress),
@@ -458,13 +478,15 @@ def _vscode_finding() -> BootstrapFinding:
     if application is not None:
         return BootstrapFinding(
             "vscode",
-            BootstrapState.CURRENT,
-            f"{application.name} application found; install its shell command for terminal use",
+            BootstrapState.WARNING,
+            f"{application.name} application found without its shell command; "
+            "install it so Bootstrap can install the Dev Containers extension",
         )
     return BootstrapFinding(
         "vscode",
-        BootstrapState.ERROR,
-        "VS Code or a supported compatible editor is required to open the Sandbox",
+        BootstrapState.WARNING,
+        "no VS Code or supported compatible editor found; "
+        "it is optional and only opens the Sandbox in an editor",
     )
 
 
@@ -529,17 +551,13 @@ def _vscode_dev_containers_finding(command: str) -> BootstrapFinding:
     )
 
 
-def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding:
-    """Ensure the desktop editor can open Booley's Sandbox."""
+def _reconcile_vscode_dev_containers(intent: Intent) -> BootstrapFinding | None:
+    """Ensure the Dev Containers extension in the resolved desktop editor, if any."""
     from booley.config.editor import resolve_editor_management_command
 
     command = resolve_editor_management_command()
     if command is None:
-        return BootstrapFinding(
-            "vscode-dev-containers",
-            BootstrapState.ERROR,
-            "cannot find the installed editor's extension-management command",
-        )
+        return None
     finding = _vscode_dev_containers_finding(command)
     if finding.state is not BootstrapState.PENDING or intent is Intent.CHECK:
         return finding

@@ -296,7 +296,6 @@
     "tests/harness/test_mcp_probe.py::test_probe_entrypoint_builds_real_interactive_catalog": 4.029,
     "tests/harness/test_runtime_attachment.py::test_cwd_disappearing_at_startup_is_not_reported_as_image_defect": 2.021,
     "tests/harness/test_runtime_attachment.py::test_sigint_after_root_exit_cancels_surviving_descendant": 4.34,
-    "tests/harness/test_worktree_cmd.py::test_worktree_new_after_managed_bundle_runtime_init": 2.058,
     "tests/lint/test_no_swallowed_subprocess_errors.py::test_allowlisted_sites_still_exist": 5.575,
     "tests/lint/test_no_swallowed_subprocess_errors.py::test_no_swallowed_subprocess_errors": 5.957,
     "tests/mcp_tools/test_application.py::test_cancelled_schema_discovery_owns_worker_until_cleanup[8.25-RuntimeError]": 8.263,

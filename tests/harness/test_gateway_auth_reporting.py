@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import sys
 from pathlib import Path
 
+import anyio
 import pytest
 
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.harness import auth_cmd, doctor
-from booley.runtime import _claude_backend, _codex_backend, auth_token
+from booley.runtime import auth_token
+from booley.runtime._claude_backend import ClaudeSDKBackend
+from tests.claude_cli_fake import record_sdk_options
+from tests.codex_cli_fake import codex_report, install_fake_codex, write_codex_login
 from tests.gateway_command_support import write_token_command
+from tests.harness.agent_auth_support import credential_findings, install_agent_clis, pin_venue
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -37,8 +40,8 @@ def gateway_env(tmp_path, monkeypatch):
         "BOOLEY_PRIMARY_PROVIDER",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-    monkeypatch.setattr(doctor, "_agent_app_installed", lambda _provider: True)
+    pin_venue(monkeypatch, inside=True)
+    install_agent_clis(tmp_path / "userhome")
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
     monkeypatch.setenv("BOOLEY_GATEWAY_URL", _URL)
     monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", _TOKEN)
@@ -47,18 +50,8 @@ def gateway_env(tmp_path, monkeypatch):
 
 def _doctor_findings(root, provider="codex"):
     """Run the agent credential checks for a Project and return its findings."""
-    data = root / ".booley"
-    data.mkdir(parents=True, exist_ok=True)
-    audit = doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=data,
-        booley_toml={"agent": {"provider": provider, "auth": "subscription"}},
-        configs_toml={},
-        first_target="",
-    )
-    reporter = doctor._Reporter.create()
-    doctor._run_agent_credential_checks(audit, reporter)
-    return reporter.findings or []
+    (root / ".booley").mkdir(parents=True, exist_ok=True)
+    return credential_findings(root, {"agent": {"provider": provider, "auth": "subscription"}})
 
 
 def _auth_status(root, capsys, app="codex"):
@@ -66,35 +59,23 @@ def _auth_status(root, capsys, app="codex"):
     return code, capsys.readouterr()
 
 
-def test_doctor_gateway_complete_config_passes_without_rotation_risk(gateway_env):
-    findings = _doctor_findings(gateway_env)
-
-    assert [f.severity.value for f in findings] == ["pass"]
-    assert f"the gateway at {_URL}" in findings[0].message
-    assert not any(f.check_id == "agent.rotation-risk" for f in findings)
-    assert _TOKEN not in str([f.message for f in findings])
-
-
-def test_doctor_gateway_missing_url_fails(gateway_env, monkeypatch):
-    monkeypatch.delenv("BOOLEY_GATEWAY_URL")
+@pytest.mark.parametrize("unset", [None, "BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN"])
+def test_doctor_grades_the_gateway_config(gateway_env, monkeypatch, unset):
+    if unset:
+        monkeypatch.delenv(unset)
 
     findings = _doctor_findings(gateway_env)
 
-    assert [(f.severity.value, f.check_id) for f in findings] == [
-        ("fail", "agent.credential-missing")
-    ]
-    assert "BOOLEY_GATEWAY_URL" in findings[0].message
-
-
-def test_doctor_gateway_missing_token_fails(gateway_env, monkeypatch):
-    monkeypatch.delenv("BOOLEY_GATEWAY_TOKEN")
-
-    findings = _doctor_findings(gateway_env)
-
-    assert [(f.severity.value, f.check_id) for f in findings] == [
-        ("fail", "agent.credential-missing")
-    ]
-    assert "BOOLEY_GATEWAY_TOKEN" in findings[0].message
+    if unset is None:
+        assert [f.severity.value for f in findings] == ["pass"]
+        assert f"the gateway at {_URL}" in findings[0].message
+        assert not any(f.check_id == "agent.rotation-risk" for f in findings)
+        assert _TOKEN not in str([f.message for f in findings])
+    else:
+        assert [(f.severity.value, f.check_id) for f in findings] == [
+            ("fail", "agent.credential-missing")
+        ]
+        assert unset in findings[0].message
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="gateway mode is container-only")
@@ -152,21 +133,13 @@ def test_doctor_gateway_working_token_command_passes(gateway_env, monkeypatch):
 
 
 def test_gateway_handoff_ignored_on_host_with_doctor_warning(gateway_env, monkeypatch):
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    pin_venue(monkeypatch, inside=False)
 
     findings = _doctor_findings(gateway_env)
 
     warned = [f for f in findings if f.check_id == "agent.credential-policy"]
     assert [f.severity.value for f in warned] == ["warn"]
     assert "gateway" not in " ".join(f.message for f in findings if f.severity.value == "pass")
-
-
-def test_auth_status_gateway_complete_config_exits_zero(gateway_env, capsys):
-    code, captured = _auth_status(gateway_env, capsys)
-
-    assert code == 0
-    assert f"the gateway at {_URL}" in captured.out
-    assert _TOKEN not in captured.out + captured.err
 
 
 def test_auth_status_states_the_policy_in_words_with_one_glyph_per_line(
@@ -176,8 +149,10 @@ def test_auth_status_states_the_policy_in_words_with_one_glyph_per_line(
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
-    _code, captured = _auth_status(gateway_env, capsys)
+    code, captured = _auth_status(gateway_env, capsys)
 
+    assert code == 0
+    assert _TOKEN not in captured.out + captured.err
     lines = captured.out.splitlines()
     assert lines[:3] == [
         "",
@@ -209,45 +184,23 @@ def test_auth_status_gateway_missing_token_exits_one_naming_it(gateway_env, monk
     assert "BOOLEY_GATEWAY_TOKEN" in captured.out + captured.err
 
 
-def test_subscription_removes_anthropic_auth_token_from_claude_env(gateway_env, monkeypatch):
+@pytest.mark.asyncio
+async def test_subscription_codex_child_gets_no_api_credential(tmp_path, monkeypatch):
+    install_fake_codex(tmp_path, monkeypatch)
+    write_codex_login(tmp_path)
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI_KEY")
 
-    overrides = _claude_backend._claude_env_overrides("subscription")
+    report = await codex_report(tmp_path, auth_mode="subscription")
 
-    assert overrides["ANTHROPIC_AUTH_TOKEN"] == ""
-
-
-def test_subscription_removes_anthropic_auth_token_from_codex_child_env(gateway_env, monkeypatch):
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: False)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
-    login = auth_token.subscription_creds_path("codex")
-    login.parent.mkdir(parents=True)
-    login.write_text(json.dumps({"tokens": {"access_token": "SYNTHETIC_LOGIN"}}), encoding="utf-8")
-    captured: dict = {}
-
-    async def fake_exec(*cmd, **kwargs):
-        captured.update(kwargs)
-        return object()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-    params = AgentCallParams(prompt="p", model="gpt-5.5", cwd=".")
-
-    asyncio.run(_codex_backend._codex_spawn(["codex"], params, "subscription"))
-
-    assert captured["env"] is not None
-    assert "ANTHROPIC_AUTH_TOKEN" not in captured["env"]
+    assert report["credentials_present"] == []
 
 
-def test_visitor_keeps_anthropic_auth_token_for_claude_but_never_forwards_it(
-    gateway_env, monkeypatch
-):
+def test_visitor_never_forwards_anthropic_auth_token(gateway_env, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", _BEARER)
 
     plan = auth_token.credential_plan("claude", auth_token.VISITOR_AUTH)
 
-    assert "ANTHROPIC_AUTH_TOKEN" not in _claude_backend._claude_env_overrides(
-        auth_token.VISITOR_AUTH
-    )
     assert "ANTHROPIC_AUTH_TOKEN" in plan.allowed_env
     assert "ANTHROPIC_AUTH_TOKEN" not in dict(plan.values)
     assert _BEARER not in repr(plan)
@@ -257,7 +210,7 @@ def test_auth_status_notes_a_gateway_policy_it_ignores(gateway_env, monkeypatch,
     from booley.presentation import colors
 
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    pin_venue(monkeypatch, inside=False)
 
     _code, captured = _auth_status(gateway_env, capsys, app="claude")
 
@@ -343,6 +296,8 @@ def _deep_probe_failure(project, monkeypatch):
     def record(kind):
         return lambda message, *_fix: events.append((kind, message))
 
+    # private: run_doctor_result(deep=True) runs every deep check and a real agent; this is the
+    # probe step alone.
     doctor._run_developer_probe(project, record("pass"), record("skip"), record("fail"))
     return events
 
@@ -398,10 +353,10 @@ def test_auth_status_for_claude_ignores_codex_gateway(claude_session, monkeypatc
 def test_auth_status_on_host_reads_declared_gateway_as_subscription(
     gateway_env, monkeypatch, capsys
 ):
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    pin_venue(monkeypatch, inside=False)
     monkeypatch.delenv("BOOLEY_PRIMARY_AUTH")
     login = Path.home() / ".codex" / "auth.json"
-    login.parent.mkdir()
+    login.parent.mkdir(exist_ok=True)
     login.write_bytes(b'{"tokens": {"access_token": "SYNTHETIC"}}')
     _write_toml(
         gateway_env,
@@ -436,24 +391,30 @@ def test_auth_status_in_handwritten_sandbox_reports_declared_gateway(
     assert "applies inside a Sandbox only" not in output
 
 
-def test_claude_sdk_env_blanks_gateway_settings(gateway_env, monkeypatch):
+@pytest.mark.parametrize("gateway_set", [True, False], ids=["values-set", "none-set"])
+def test_claude_session_hides_only_set_gateway_values(gateway_env, monkeypatch, gateway_set):
+    login = auth_token.subscription_creds_path("claude")
+    login.parent.mkdir(parents=True, exist_ok=True)
+    login.write_bytes(b'{"claudeAiOauth": {"accessToken": "SYNTHETIC"}}')
     monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-    monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "synthetic-model")
     monkeypatch.delenv("BOOLEY_GATEWAY_EFFORT", raising=False)
+    if gateway_set:
+        monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", "synthetic-model")
+    else:
+        for key in _GATEWAY_KEYS:
+            monkeypatch.delenv(key, raising=False)
+    seen = record_sdk_options(monkeypatch)
 
-    overrides = _claude_backend._claude_env_overrides("subscription")
+    anyio.run(
+        ClaudeSDKBackend(auth_mode="subscription").call,
+        AgentCallParams(prompt="p", model="claude-test", cwd=gateway_env),
+    )
 
-    blanked = {key for key, value in overrides.items() if key.startswith("BOOLEY_") and not value}
-    assert blanked == {"BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN", "BOOLEY_GATEWAY_MODEL"}
-    assert overrides["BOOLEY_HIDDEN_GATEWAY"] == "1"
-
-
-def test_claude_sdk_env_without_gateway_values_sets_no_marker(gateway_env, monkeypatch):
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
-    for key in _GATEWAY_KEYS:
-        monkeypatch.delenv(key, raising=False)
-
-    overrides = _claude_backend._claude_env_overrides("subscription")
-
-    assert "BOOLEY_HIDDEN_GATEWAY" not in overrides
+    env = seen[0].env
+    blanked = {key for key, value in env.items() if key.startswith("BOOLEY_") and not value}
+    if gateway_set:
+        assert blanked == {"BOOLEY_GATEWAY_URL", "BOOLEY_GATEWAY_TOKEN", "BOOLEY_GATEWAY_MODEL"}
+        assert env["BOOLEY_HIDDEN_GATEWAY"] == "1"
+    else:
+        assert "BOOLEY_HIDDEN_GATEWAY" not in env

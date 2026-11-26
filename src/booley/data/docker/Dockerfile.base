@@ -419,6 +419,9 @@ RUN chmod 0755 /etc/t3code \
 # standard-library script, not a `booley` import: the client waits for it on
 # every prompt and tool call.
 COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/session_activity_hook.py
+# Codex's requirements run this hook to block the T3 Code tools the list names.
+COPY src/booley/data/docker/t3code_tool_deny_hook.py /usr/local/libexec/booley/t3code_tool_deny_hook.py
+COPY src/booley/data/docker/t3code-denied-tools.txt /usr/local/libexec/booley/t3code-denied-tools.txt
 
 # Non-root user for agent execution.
 # Pin agent to uid/gid 1000 so it matches the typical first host user on native

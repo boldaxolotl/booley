@@ -100,6 +100,8 @@ def test_doctor_does_not_reimplement_extracted_mechanisms() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
+    # private: an absence check over doctor.py's definitions; no public entry point
+    # observes a function that does not exist.
     assert not function_names & {"_count_design_files", "_configured_design_size", "_design_size"}
 
 

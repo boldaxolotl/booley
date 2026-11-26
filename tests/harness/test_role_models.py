@@ -17,6 +17,7 @@ from booley.audit import project_schema
 from booley.audit.config_common import ConfigFindingSeverity
 from booley.config import agent as bc
 from booley.config.agent import AgentSettings, BackendConfigError, load_agent_settings
+from tests.harness.agent_auth_support import pin_venue
 
 # Booley's built-in models per Agent CLI: (Specialist model, internal model, Specialist effort).
 _BUILTIN = {
@@ -40,9 +41,10 @@ def _clean_env(monkeypatch):
         "BOOLEY_AGENT_APP",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(bc, "_agent_settings", None)
-    monkeypatch.setattr(bc, "_inside_container", lambda: False)
+    bc.set_agent_settings(None)
+    pin_venue(monkeypatch, inside=False)
     yield
+    bc.set_agent_settings(None)
 
 
 def _write_toml(root: Path, body: str) -> Path:
@@ -56,56 +58,50 @@ def _write_toml(root: Path, body: str) -> Path:
 # --- load path ---------------------------------------------------------------
 
 
-_PROVIDER_AND_STRING_AUTH_RESOLVE_AS_TODAY_CASES = ["claude", "codex"]
-
-
-def test_provider_and_string_auth_resolve_as_today(tmp_path):
+@pytest.mark.parametrize("cli", ["claude", "codex"])
+def test_provider_and_string_auth_resolve_as_today(tmp_path, cli):
     """A pre-existing ``provider`` + string ``auth`` config keeps today's models."""
-    for cli in _PROVIDER_AND_STRING_AUTH_RESOLVE_AS_TODAY_CASES:
-        _write_toml(tmp_path, f'[agent]\nprovider = "{cli}"\nauth = "subscription"\n')
-        settings = load_agent_settings(tmp_path)
-        specialist_model, internal_model, effort = _BUILTIN[cli]
+    _write_toml(tmp_path, f'[agent]\nprovider = "{cli}"\nauth = "subscription"\n')
+    settings = load_agent_settings(tmp_path)
+    specialist_model, internal_model, effort = _BUILTIN[cli]
 
-        assert settings.default_cli == cli
-        assert settings.auth_for(cli) == "subscription"
-        for name in sorted(bc.SPECIALISTS):
-            assert settings.cli_for_specialist(name) == cli
-            assert settings.model_for_specialist(name) == specialist_model
-        assert settings.internal_model() == internal_model
-        assert settings.effort_for(cli) == effort
-
-
-_INVALID_CONFIG_FAILS_LOADING_NAMING_KEY_CASES = [
-    ('[models]\nreviwer = "claude-opus-5-5"\n', ("reviwer",)),
-    ('[models]\nreviewer = "o3-mini"\n', ("reviewer",)),
-    ('[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n', ("reviewer", "codex")),
-    ('[agent]\ndefault = "claude"\nprovider = "codex"\n', ("default", "provider")),
-    ('[agent.auth]\nclaude = "gateway"\n', ("[agent.auth] claude",)),
-    ('[agent]\nclis = ["claude", "codex"]\nauth = "gateway"\n', ("[agent] auth", "claude")),
-]
+    assert settings.default_cli == cli
+    assert settings.auth_for(cli) == "subscription"
+    for name in sorted(bc.SPECIALISTS):
+        assert settings.cli_for_specialist(name) == cli
+        assert settings.model_for_specialist(name) == specialist_model
+    assert settings.internal_model() == internal_model
+    assert settings.effort_for(cli) == effort
 
 
-def test_invalid_config_fails_loading_naming_key(tmp_path):
+@pytest.mark.parametrize(
+    ("body", "keys"),
+    [
+        ('[models]\nreviewer = "o3-mini"\n', ("reviewer",)),
+        (
+            '[agent]\ndefault = "claude"\n\n[models]\nreviewer = "gpt-6-luna"\n',
+            ("reviewer", "codex"),
+        ),
+        ('[agent]\ndefault = "claude"\nprovider = "codex"\n', ("default", "provider")),
+        ('[agent.auth]\nclaude = "gateway"\n', ("[agent.auth] claude",)),
+        ('[agent]\nclis = ["claude", "codex"]\nauth = "gateway"\n', ("[agent] auth", "claude")),
+    ],
+)
+def test_invalid_config_fails_loading_naming_key(tmp_path, body, keys):
     """Loading and Doctor's audit refuse the same config with the same message."""
-    for body, keys in _INVALID_CONFIG_FAILS_LOADING_NAMING_KEY_CASES:
-        from booley.audit.agent_schema import audit_agent_table, audit_models_table
+    from booley.audit.agent_schema import audit_agent_table, audit_models_table
 
-        _write_toml(tmp_path, body)
-        with pytest.raises(BackendConfigError) as excinfo:
-            load_agent_settings(tmp_path)
-        message = str(excinfo.value)
-        for key in keys:
-            assert key in message
+    _write_toml(tmp_path, body)
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+    message = str(excinfo.value)
+    for key in keys:
+        assert key in message
 
-        data = tomllib.loads(body)
-        findings = audit_agent_table(data).findings + audit_models_table(data).findings
-        fails = [f.message for f in findings if f.severity is ConfigFindingSeverity.FAIL]
-        assert fails == [message]
-
-
-def test_model_roles_are_reviewer_and_coverage_analyst():
-    """Mutation testing runs no model, so only the two model-backed Specialists are roles."""
-    assert {"reviewer", "coverage_analyst"} == bc.SPECIALISTS
+    data = tomllib.loads(body)
+    findings = audit_agent_table(data).findings + audit_models_table(data).findings
+    fails = [f.message for f in findings if f.severity is ConfigFindingSeverity.FAIL]
+    assert fails == [message]
 
 
 def test_stale_mutation_tester_key_reports_retired_flow(tmp_path):
@@ -149,94 +145,73 @@ def test_unknown_models_key_says_delete_without_rename(tmp_path):
     assert finding.message == expected
 
 
-_RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES = [
-    (
-        '[models]\nstandard = "claude-sonnet-5-5"\n',
-        ["[models]", *(f'{n} = "claude-sonnet-5-5"' for n in _SPECIALIST_NAMES)],
-    ),
-    (
-        '[agent]\ndefault = "claude"\n\n[models.roles]\nreviewer = "gpt-6-luna"\n',
-        [
-            "[models]",
-            'reviewer = "gpt-6-luna"',
-            'coverage_analyst = "claude-opus-5-5"',
-            "[agent]",
-            'clis = ["claude", "codex"]',
-        ],
-    ),
-]
-
-
-def test_retired_model_keys_fail_with_migration_entries(tmp_path):
-    """Tier keys and ``[models.roles]`` fail, showing the equivalent new lines."""
-    for body, expected in _RETIRED_MODEL_KEYS_FAIL_WITH_MIGRATION_ENTRIES_CASES:
-        _write_toml(tmp_path, body)
-        with pytest.raises(BackendConfigError) as excinfo:
-            load_agent_settings(tmp_path)
-        lines = str(excinfo.value).splitlines()
-        for line in expected:
-            assert line in lines
-
-
-_EAGER_AND_LAZY_RESOLVE_THE_SAME_DEFAULT_CLI_CASES = [
-    (
-        {"BOOLEY_PRIMARY_PROVIDER": "codex"},
-        '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
-        "codex",
-    ),
-    ({"BOOLEY_AGENT_APP": "codex"}, "", "codex"),
-    ({"BOOLEY_AGENT_APP": "none"}, "", "claude"),
-    ({}, '[agent]\ndefault = "codex"\n', "codex"),
-    ({}, '[agent]\nclis = ["codex", "claude"]\n', "codex"),
-]
-
-
-def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch):
-    """The MCP server's eager loader and a Specialist's lazy loader agree on the CLI."""
-    for env, body, expected in _EAGER_AND_LAZY_RESOLVE_THE_SAME_DEFAULT_CLI_CASES:
-        for name in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_AGENT_APP", "BOOLEY_DIR"):
-            monkeypatch.delenv(name, raising=False)
-        for name, value in env.items():
-            monkeypatch.setenv(name, value)
-        _write_toml(tmp_path, body)
-
-        eager = load_agent_settings(tmp_path).default_cli
-        monkeypatch.setattr(bc, "_agent_settings", None)
-        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-        lazy = bc.get_agent_settings().default_cli
-
-        assert (eager, lazy) == (expected, expected)
-
-
 @pytest.mark.parametrize(
-    ("model_pin", "expected"),
+    ("body", "expected"),
     [
-        pytest.param(
-            None,
-            {
-                "claude-opus-5-5": ("[models] coverage_analyst",),
-                "gpt-6-luna": ("[models] reviewer",),
-            },
-            id="pins",
+        (
+            '[models]\nstandard = "claude-sonnet-5-5"\n',
+            ["[models]", *(f'{n} = "claude-sonnet-5-5"' for n in _SPECIALIST_NAMES)],
         ),
-        pytest.param(
-            "gw-model",
-            {
-                "claude-opus-5-5": ("[models] coverage_analyst",),
-                "gw-model": ("BOOLEY_GATEWAY_MODEL",),
-            },
-            id="gateway-pin-codex-only",
+        (
+            '[agent]\ndefault = "claude"\n\n[models.roles]\nreviewer = "gpt-6-luna"\n',
+            [
+                "[models]",
+                'reviewer = "gpt-6-luna"',
+                'coverage_analyst = "claude-opus-5-5"',
+                "[agent]",
+                'clis = ["claude", "codex"]',
+            ],
         ),
     ],
 )
-def test_model_settings_maps_each_model_to_its_keys(model_pin, expected):
-    """Every Specialist model maps to the key selecting it; the gateway pin hits Codex only."""
+def test_retired_model_keys_fail_with_migration_entries(tmp_path, body, expected):
+    """Tier keys and ``[models.roles]`` fail, showing the equivalent new lines."""
+    _write_toml(tmp_path, body)
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
+    lines = str(excinfo.value).splitlines()
+    for line in expected:
+        assert line in lines
+
+
+@pytest.mark.parametrize(
+    ("env", "body", "expected"),
+    [
+        (
+            {"BOOLEY_PRIMARY_PROVIDER": "codex"},
+            '[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
+            "codex",
+        ),
+        ({"BOOLEY_AGENT_APP": "codex"}, "", "codex"),
+        ({"BOOLEY_AGENT_APP": "none"}, "", "claude"),
+        ({}, '[agent]\ndefault = "codex"\n', "codex"),
+        ({}, '[agent]\nclis = ["codex", "claude"]\n', "codex"),
+    ],
+)
+def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch, env, body, expected):
+    """The MCP server's eager loader and a Specialist's lazy loader agree on the CLI."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _write_toml(tmp_path, body)
+
+    eager = load_agent_settings(tmp_path).default_cli
+    bc.set_agent_settings(None)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    lazy = bc.get_agent_settings().default_cli
+
+    assert (eager, lazy) == (expected, expected)
+
+
+def test_model_settings_maps_each_model_to_its_keys():
+    """Every Specialist model maps to the key selecting it."""
     settings = AgentSettings(
         clis=("claude", "codex"),
         specialist_models={"reviewer": "gpt-6-luna"},
-        model_pin=model_pin,
     )
-    assert settings.model_settings() == expected
+    assert settings.model_settings() == {
+        "claude-opus-5-5": ("[models] coverage_analyst",),
+        "gpt-6-luna": ("[models] reviewer",),
+    }
 
 
 def test_project_cli_policies_accept_codex_gateway(tmp_path):
@@ -330,28 +305,34 @@ def test_models_is_a_recognized_top_level_table():
     assert audit.findings == ()
 
 
-def test_sandbox_settings_take_each_cli_policy_from_spec_record(tmp_path, monkeypatch):
-    """A Specialist subprocess reads each listed CLI's policy from the issued spec record."""
-    data = {
-        "agent": {"clis": ["claude", "codex"], "default": "claude"},
-    }
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=api_key")
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
-
-    settings = bc.settings_from_data(data, lazy=True)
-
-    assert dict(settings.auth) == {"claude": "subscription", "codex": "api_key"}
-
-
-def test_malformed_spec_record_falls_back_to_the_default_cli_hand_off(monkeypatch):
-    monkeypatch.setattr(bc, "_inside_container", lambda: False)
+@pytest.mark.parametrize(
+    ("record", "hand_off", "expected"),
+    [
+        (
+            "claude=subscription,codex=api_key",
+            "subscription",
+            {"claude": "subscription", "codex": "api_key"},
+        ),
+        (
+            "claude=gateway,codex=subscription",  # malformed: Claude never takes the gateway
+            "api_key",
+            {"claude": "api_key", "codex": "subscription"},
+        ),
+    ],
+    ids=["spec-record", "malformed-record"],
+)
+def test_sandbox_settings_take_each_cli_policy_from_spec_record(
+    monkeypatch, record, hand_off, expected
+):
+    """A Specialist subprocess reads each listed CLI's policy from the issued spec record,
+    and falls back to the default CLI's hand-off when the record is malformed."""
     data = {"agent": {"clis": ["claude", "codex"], "default": "claude"}}
-    monkeypatch.setenv("BOOLEY_AGENT_CLIS", "claude=gateway,codex=subscription")
-    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", record)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", hand_off)
 
     settings = bc.settings_from_data(data, lazy=True)
 
-    assert dict(settings.auth) == {"claude": "api_key", "codex": "subscription"}
+    assert dict(settings.auth) == expected
 
 
 @pytest.mark.parametrize(
@@ -377,8 +358,7 @@ def test_cli_record_round_trips_in_order():
     assert bc.decode_cli_policies("") == {}
 
 
-def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path, monkeypatch):
-    monkeypatch.setattr(bc, "_inside_container", lambda: False)
+def test_project_credential_policies_name_the_set_default_and_each_policy(tmp_path):
     _write_toml(
         tmp_path,
         '[agent]\nclis = ["codex", "claude"]\ndefault = "claude"\n\n'
@@ -406,24 +386,28 @@ def test_project_credential_policies_use_the_selected_cli_when_undeclared(tmp_pa
 
 # --- hidden [models] fallback list (#2836, ADR 0084 amendment) -------------------
 
-_MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES = [
-    ("reviewer = []", "[models] reviewer is an empty list"),
-    ("reviewer = [1]", "[models] reviewer entry 1 must be a model ID string"),
-    ('reviewer = [["gpt-6-luna"]]', "[models] reviewer entry 1 must be a model ID string"),
-    ('reviewer = ["claude-opus-5-5", ""]', "[models] reviewer entry 2 must be a model ID string"),
-    ('reviewer = ["llama-3"]', "[models] reviewer entry 'llama-3' names no known Agent CLI"),
-]
 
-
-def test_model_list_shape_errors_fail_loading_naming_key(tmp_path):
+@pytest.mark.parametrize(
+    ("line", "fragment"),
+    [
+        ("reviewer = []", "[models] reviewer is an empty list"),
+        ("reviewer = [1]", "[models] reviewer entry 1 must be a model ID string"),
+        ('reviewer = [["gpt-6-luna"]]', "[models] reviewer entry 1 must be a model ID string"),
+        (
+            'reviewer = ["claude-opus-5-5", ""]',
+            "[models] reviewer entry 2 must be a model ID string",
+        ),
+        ('reviewer = ["llama-3"]', "[models] reviewer entry 'llama-3' names no known Agent CLI"),
+    ],
+)
+def test_model_list_shape_errors_fail_loading_naming_key(tmp_path, line, fragment):
     """An empty list or a bad entry fails loading and names the ``[models]`` key."""
-    for line, fragment in _MODEL_LIST_SHAPE_ERRORS_FAIL_LOADING_NAMING_KEY_CASES:
-        _write_toml(tmp_path, f"[models]\n{line}\n")
+    _write_toml(tmp_path, f"[models]\n{line}\n")
 
-        with pytest.raises(BackendConfigError) as excinfo:
-            load_agent_settings(tmp_path)
+    with pytest.raises(BackendConfigError) as excinfo:
+        load_agent_settings(tmp_path)
 
-        assert fragment in str(excinfo.value)
+    assert fragment in str(excinfo.value)
 
 
 def test_model_list_entry_outside_clis_loads(tmp_path):

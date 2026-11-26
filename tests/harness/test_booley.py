@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -84,10 +85,14 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
     assert {key: args.get(key, "absent") for key in expected} == expected
 
 
-def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
+def test_bare_booley_in_the_sandbox_prints_help(monkeypatch, capsys):
     monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
-    args = _parse_argv(monkeypatch)
-    assert (args.command, args.agent_args) == ("chat", [])
+    with pytest.raises(SystemExit) as raised:
+        _parse_argv(monkeypatch)
+    assert raised.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage: booley" in out
+    assert "Getting started" not in out
 
 
 @pytest.mark.parametrize(
@@ -105,13 +110,10 @@ def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
         (["bootstrap", "--check-only", "--force"], "not allowed with argument"),
         (["bootstrap", "--with-qa-skills", "--without-qa-skills"], "not allowed with argument"),
         (["bootstrap", "--egress", "open"], "invalid choice"),
-        (["chat", "--cli", "bogus"], "invalid choice: 'bogus'"),
-        (["chat", "--name"], "--name: expected one argument"),
         *(
-            (["chat", "--name", label], "argument --name: use 1-32 letters")
-            for label in ["", "   ", "a/b", "x" * 33, ".hidden", "café", "tab\there"]
+            ([removed], "invalid choice")
+            for removed in ["mcp-tool", "link-guidance", "tool", "chat"]
         ),
-        *(([removed], "invalid choice") for removed in ["mcp-tool", "link-guidance", "tool"]),
     ],
 )
 def test_usage_errors_exit_two_naming_the_problem(argv, message, monkeypatch, capsys):
@@ -119,88 +121,6 @@ def test_usage_errors_exit_two_naming_the_problem(argv, message, monkeypatch, ca
         _parse_argv(monkeypatch, *argv)
     assert raised.value.code == 2
     assert message in capsys.readouterr().err
-
-
-def test_chat_forwards_arguments_after_chat(monkeypatch):
-    assert _parse_argv(monkeypatch, "chat", "resume", "--last").agent_args == ["resume", "--last"]
-    assert _parse_argv(monkeypatch, "chat", "--resume", "abc").agent_args == ["--resume", "abc"]
-    assert _parse_argv(monkeypatch, "chat", "--resume", "abc").cli is None
-    # The first `chat` is the value of --project; only the second is the command.
-    # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
-    args = _parse_argv(monkeypatch, "--project", "chat", "chat", "--resume", "x", "--", "y")
-    assert args.agent_args == ["--resume", "x", "--", "y"]
-    assert args._cli_selection.value == "chat"
-    # Leading Booley options stay Booley's; the rest is forwarded.
-    args = _parse_argv(monkeypatch, "chat", "--project", "P", "--continue")
-    assert args.agent_args == ["--continue"]
-    assert args._cli_selection.value == "P"
-
-
-def test_chat_cli_option_is_booleys_only_when_leading(monkeypatch):
-    args = _parse_argv(monkeypatch, "chat", "--cli", "codex", "--resume", "x")
-    assert (args.cli, args.agent_args) == ("codex", ["--resume", "x"])
-    assert _parse_argv(monkeypatch, "chat", "--cli=codex").cli == "codex"
-    # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
-    args = _parse_argv(monkeypatch, "chat", "-C", "P", "--cli", "codex")
-    assert (args.cli, args._cli_selection.value) == ("codex", "P")
-    # After the agent's own arguments, `--cli` belongs to the agent CLI.
-    args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--cli", "codex")
-    assert (args.cli, args.agent_args) == (None, ["--resume", "x", "--cli", "codex"])
-
-
-def test_chat_name_option_is_booleys_only_when_leading(monkeypatch):
-    # Bug caught: a leading `--name X` / `--name=X` not parsed into `session_name`, or `--name`
-    # after the agent's own arguments swallowed instead of forwarded.
-    args = _parse_argv(monkeypatch, "chat", "--name", "uart-fix", "--resume", "x")
-    assert (args.session_name, args.agent_args) == ("uart-fix", ["--resume", "x"])
-    args = _parse_argv(monkeypatch, "chat", "--cli", "codex", "--name=uart-fix", "resume")
-    assert (args.cli, args.session_name, args.agent_args) == ("codex", "uart-fix", ["resume"])
-    assert _parse_argv(monkeypatch, "chat").session_name is None
-    args = _parse_argv(monkeypatch, "chat", "--resume", "x", "--name", "y")
-    assert (args.session_name, args.agent_args) == (None, ["--resume", "x", "--name", "y"])
-    # `--` hands even a leading `--name` to the agent (Claude's own session name).
-    args = _parse_argv(monkeypatch, "chat", "--", "--name", "y")
-    assert (args.session_name, args.agent_args) == (None, ["--name", "y"])
-
-
-def test_chat_name_is_trimmed_and_length_bounded(monkeypatch):
-    assert _parse_argv(monkeypatch, "chat", "--name", "  uart fix  ").session_name == "uart fix"
-    assert _parse_argv(monkeypatch, "chat", "--name", "x" * 32).session_name == "x" * 32
-
-
-def test_chat_later_booley_options_are_forwarded(monkeypatch, capsys):
-    """Only leading -h/-C/--project are Booley's; later ones belong to the agent."""
-    for tail in (["--resume", "x", "--project", "P"], ["--resume", "x", "-C", "P"]):
-        args = _parse_argv(monkeypatch, "chat", *tail)
-        assert args.agent_args == tail
-        # `_cli_selection` stays private: -C is resolved to a Project only at dispatch.
-        assert not hasattr(args, "_cli_selection")
-    assert _parse_argv(monkeypatch, "chat", "--resume", "x", "--help").agent_args == [
-        "--resume",
-        "x",
-        "--help",
-    ]
-    assert _parse_argv(monkeypatch, "chat", "--", "--help").agent_args == ["--help"]
-    assert capsys.readouterr().out == ""
-
-
-def test_chat_help_documents_passthrough_and_options(monkeypatch, capsys):
-    with pytest.raises(SystemExit) as raised:
-        _parse_argv(monkeypatch, "chat", "--help")
-    assert raised.value.code == 0
-    help_text = " ".join(capsys.readouterr().out.split())
-    for text in (
-        "passed unchanged to the Agent CLI",
-        "booley chat -- --help",
-        "overrides [worktree] chat for this launch",
-        "--cli {claude,codex}",
-        "must be listed in booley.toml [agent] clis",
-        "[--name NAME]",
-        "S3 · NAME",
-        "resumed in its worktree keeps its label unless --name sets a new one",
-        "--here and --name only before any other argument",
-    ):
-        assert text in help_text, text
 
 
 def test_auth_cli_and_hidden_app_alias_parse_identically(monkeypatch, capsys):
@@ -700,7 +620,7 @@ def _host_venue(monkeypatch):
 
 
 class TestEnforceVenue:
-    @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
+    @pytest.mark.parametrize("command", ["dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
@@ -712,7 +632,7 @@ class TestEnforceVenue:
         assert "Sandbox" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
-    @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
+    @pytest.mark.parametrize("command", ["dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
@@ -737,6 +657,36 @@ class TestEnforceVenue:
             assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
             assert message in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        ("mounts", "refused", "init_message"),
+        [
+            ("/", False, "host init reached"),
+            ("/work/.devcontainer", True, "cannot run inside a Booley-issued Sandbox"),
+        ],
+        ids=["container-host", "issued-sandbox"],
+    )
+    def test_container_host_override_reaches_host_commands(
+        self, tmp_path, monkeypatch, capsys, mounts, refused, init_message
+    ):
+        """BOOLEY_CONTAINER=0 in a container runs host commands, except in an issued Sandbox."""
+        from booley.harness import init_cmd
+        from booley.runtime import runtime_context
+
+        (tmp_path / "mountinfo").write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
+        monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "mountinfo")
+        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
+        monkeypatch.setattr(Path, "exists", lambda self: self.as_posix() == "/.dockerenv")
+        # private: the first host-only step of run_init; reaching it proves the host dispatch.
+        monkeypatch.setattr(
+            init_cmd, "_check_init_layout", Mock(side_effect=OSError(init_message))
+        )
+        for command in ("bootstrap", "session"):
+            with pytest.raises(SystemExit) if refused else contextlib.nullcontext():
+                tlr._enforce_runtime_location(command)
+        assert init_cmd.run_init(Namespace(seed=True), tmp_path) == 2
+        output = capsys.readouterr()
+        assert init_message in output.out + output.err
+
     def test_init_allowed_on_host(self, monkeypatch):
         with _host_venue(monkeypatch):
             tlr._enforce_runtime_location("init")  # must not raise
@@ -755,7 +705,7 @@ class TestEnforceVenue:
 
         assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
         assert "Locations:" not in help_text
-        assert "Open this Project's default (or chosen) Agent CLI" in " ".join(help_text.split())
+        assert "Open the Sandbox Dashboard" in " ".join(help_text.split())
 
 
 class TestEffectiveCommand:
@@ -763,17 +713,11 @@ class TestEffectiveCommand:
         return tlr._build_parser().parse_args(argv)
 
     def test_subcommand_passthrough(self):
-        assert tlr._effective_command(self._parse(["worktree", "list"])) == "worktree"
+        assert tlr._effective_command(self._parse(["worktree", "prepare"])) == "worktree"
         assert tlr._effective_command(self._parse(["init"])) == "init"
 
     def test_unnormalized_no_command_has_no_effective_command(self):
         assert tlr._effective_command(self._parse([])) is None
-
-    def test_normalized_sandbox_default_is_chat(self, monkeypatch):
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
-        parser = tlr._build_parser()
-        args = tlr._normalize_args(parser, parser.parse_args([]))
-        assert tlr._effective_command(args) == "chat"
 
 
 # ===========================================================================
@@ -1293,7 +1237,7 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
     assert tlr._dispatch_main() == 0
 
 
-@pytest.mark.parametrize("argv", [["dashboard"], ["chat"], ["worktree", "list"]])
+@pytest.mark.parametrize("argv", [["dashboard"], ["doctor"]])
 def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()

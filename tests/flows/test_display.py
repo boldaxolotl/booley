@@ -5,9 +5,6 @@ from __future__ import annotations
 import pytest
 
 from booley.flows.display import format_flow_display_label, short_target_name
-from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.lint.flow import LintFlow
-from booley.flows.synth.flow import AsicSynthesizeFlow
 
 
 @pytest.mark.parametrize(
@@ -29,21 +26,3 @@ def test_format_flow_display_label(targets, tests, mode, expected):
 
 def test_short_target_name_preserves_unicode_and_strips_qualification():
     assert short_target_name("::core:0#sim_λ") == "sim_λ"
-
-
-@pytest.mark.parametrize("flow_type", [LintFlow, AsicSynthesizeFlow, FpgaImplFlow])
-@pytest.mark.parametrize(
-    ("target", "expected"),
-    [
-        ("::lib:core:0#default", "target default"),
-        ("::lib:core:0#small,::lib:core:0#large", "2 targets"),
-    ],
-)
-# Private seam: the label reaches only the `endpoint_start` display event, which a
-# built-in Flow publishes after its Target selection resolves, so a public run
-# needs a resolvable Target.
-def test_target_aware_flows_share_human_target_labels(flow_type, target, expected):
-    flow = flow_type()
-    flow.parse_args(["--target", target])
-
-    assert flow._resolve_display_label() == expected

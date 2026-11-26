@@ -45,11 +45,8 @@ source of truth: it observes state other components own.
   in every request; Claude Code does not, but each tab is its own process,
   found from the loopback peer port; otherwise the key is the call's resolved
   `work_dir`. A Codex daemon shared by tabs never gets a process key, so a
-  Codex client without a thread id falls back to the worktree. A named
-  `booley chat` Codex launch is the exception: it runs without the daemon,
-  and its process identity, marked at launch, owns its CLI and helpers. That
-  gives a terminal a stable handle without making the first conversation to
-  call Booley its owner. Built-in subagents get no separate session.
+  Codex client without a thread id falls back to the worktree. Built-in
+  subagents get no separate session.
 - **Rows come from Booley tool calls only.** `tools/list` and other requests
   create nothing, so a tab that never used Booley is invisible. A row goes
   away when its identity is dead, its worktree is gone, or the client reported
@@ -100,10 +97,6 @@ source of truth: it observes state other components own.
   after an approval the session shows waiting for user input until the tool
   ends; a tool call in flight at session end can bring the row back until it
   expires.
-- **Conversation records** written by the same hook at session start let
-  `booley chat` resume a conversation in the interactive worktree it last
-  ran in. They are keyed so a same-named later worktree is not mistaken for
-  the old one.
 
 ### Jobs
 

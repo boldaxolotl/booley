@@ -15,7 +15,7 @@ import pytest
 from tests.time_budget import hang_guard_s
 
 from booley.core.models import AgentCallParams
-from booley.runtime.text_only_agent import _GATEWAY_BASE_INSTRUCTIONS, prepare_codex_text_only
+from booley.runtime.text_only_agent import prepare_codex_text_only
 
 
 def _model():
@@ -86,65 +86,56 @@ def _recording_handler(requests):
     return Handler
 
 
+@pytest.fixture
+def codex_probe(tmp_path):
+    """The pinned binary, an empty work dir, and a localhost server recording requests."""
+    binary = os.environ.get("BOOLEY_CODEX_TEXT_ONLY_BINARY")
+    if not binary:
+        pytest.skip("Set BOOLEY_CODEX_TEXT_ONLY_BINARY to run the pinned CLI localhost probe")
+    original = tmp_path / "original"
+    original.mkdir()
+    work = tmp_path / "empty"
+    work.mkdir()
+    requests = []
+    server = HTTPServer(("127.0.0.1", 0), _recording_handler(requests))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield binary, work, original, server.server_port, requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=hang_guard_s())
+
+
 @pytest.mark.parametrize("container_bypass", [False, True])
-def test_pinned_codex_request_contains_no_tools(tmp_path, container_bypass):
-    binary = os.environ.get("BOOLEY_CODEX_TEXT_ONLY_BINARY")
-    if not binary:
-        pytest.skip("Set BOOLEY_CODEX_TEXT_ONLY_BINARY to run the pinned CLI localhost probe")
-    original = tmp_path / "original"
-    original.mkdir()
+def test_pinned_codex_request_contains_no_tools(codex_probe, container_bypass):
+    binary, work, original, port, requests = codex_probe
     (original / "models_cache.json").write_text(json.dumps({"models": [_model()]}))
-    work = tmp_path / "empty"
-    work.mkdir()
-    requests = []
-    server = HTTPServer(("127.0.0.1", 0), _recording_handler(requests))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        result = _run_probe(binary, work, original, server.server_port, container_bypass)
-        assert result.returncode == 0, result.stderr + result.stdout
-        assert len(requests) == 1
-        assert not requests[0].get("tools")
-        assert '"type":"turn.completed"' in result.stdout
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=hang_guard_s())
+    result, _catalog = _run_probe(binary, work, original, port, container_bypass)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert len(requests) == 1
+    assert not requests[0].get("tools")
+    assert '"type":"turn.completed"' in result.stdout
 
 
-def test_pinned_codex_accepts_gateway_seeded_catalog(tmp_path):
-    binary = os.environ.get("BOOLEY_CODEX_TEXT_ONLY_BINARY")
-    if not binary:
-        pytest.skip("Set BOOLEY_CODEX_TEXT_ONLY_BINARY to run the pinned CLI localhost probe")
-    original = tmp_path / "original"
-    original.mkdir()
-    work = tmp_path / "empty"
-    work.mkdir()
-    requests = []
-    server = HTTPServer(("127.0.0.1", 0), _recording_handler(requests))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        result = _run_probe(binary, work, original, server.server_port, False, gateway=True)
-        assert result.returncode == 0, result.stderr + result.stdout
-        assert len(requests) == 1
-        assert not requests[0].get("tools")
-        # The seeded entry's instructions and the configured effort reach the request.
-        # Codex sends the catalog base instructions as the first input item, a
-        # developer message, not in the Responses `instructions` field.
-        assert "instructions" not in requests[0]
-        first_item = requests[0]["input"][0]
-        assert first_item["type"] == "message"
-        assert first_item["role"] == "developer"
-        assert first_item["content"] == [
-            {"type": "input_text", "text": _GATEWAY_BASE_INSTRUCTIONS}
-        ]
-        assert requests[0]["reasoning"]["effort"] == "low"
-        assert '"type":"turn.completed"' in result.stdout
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=hang_guard_s())
+def test_pinned_codex_accepts_gateway_seeded_catalog(codex_probe):
+    binary, work, original, port, requests = codex_probe
+    result, catalog = _run_probe(binary, work, original, port, False, gateway=True)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert len(requests) == 1
+    assert not requests[0].get("tools")
+    # The seeded entry's instructions and the configured effort reach the request.
+    # Codex sends the catalog base instructions as the first input item, a
+    # developer message, not in the Responses `instructions` field.
+    assert "instructions" not in requests[0]
+    first_item = requests[0]["input"][0]
+    assert first_item["type"] == "message"
+    assert first_item["role"] == "developer"
+    [seeded] = catalog["models"]
+    assert first_item["content"] == [{"type": "input_text", "text": seeded["base_instructions"]}]
+    assert requests[0]["reasoning"]["effort"] == "low"
+    assert '"type":"turn.completed"' in result.stdout
 
 
 def _run_probe(
@@ -192,8 +183,11 @@ def _run_probe(
     command, environment = prepare_codex_text_only(
         [*command, "-"], params, environment, auth_mode="gateway" if gateway else "subscription"
     )
+    # The catalog Booley seeded, named by the `model_catalog_json` setting it added.
+    setting = next(part for part in command if part.startswith("model_catalog_json="))
+    catalog = json.loads(Path(json.loads(setting.partition("=")[2])).read_text())
     # Unbounded child: the child needs stdin data (input=)
-    return subprocess.run(
+    result = subprocess.run(
         command,
         input=params.prompt,
         text=True,
@@ -203,3 +197,4 @@ def _run_probe(
         cwd=work,
         check=False,
     )
+    return result, catalog

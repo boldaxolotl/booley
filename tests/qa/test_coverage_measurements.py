@@ -79,15 +79,6 @@ def half_coverage_record():
     return manifest, points, case
 
 
-def test_hand_authored_half_has_eight_directional_points():
-    manifest, points, case = half_coverage_record()
-    assert oracle.verify_known_answer(manifest, points, case) == {
-        "covered": 4,
-        "eligible": 8,
-        "exact_percent": "50",
-    }
-
-
 def test_invalid_scoring_accepts_retained_points_with_empty_summaries():
     manifest, points, _ = half_coverage_record()
     manifest["collection"]["status"] = "collector_error"

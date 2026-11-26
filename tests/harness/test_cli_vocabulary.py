@@ -137,7 +137,8 @@ def assert_controls(parser, *, timeout=False):
 
 
 def test_recursive_command_inventory():
-    routes = list(walk(cli._build_parser()))
+    # A gated command is absent from the flag-off parser, so build it with every flag on.
+    routes = list(walk(cli._build_parser(frozenset(cli.GATED_COMMANDS.values()))))
     top = {route[0] for route, _ in routes if len(route) == 1}
     assert top == cli.COMMAND_PROJECT_BINDINGS.keys()
     for route, parser in routes:
@@ -150,7 +151,7 @@ def test_recursive_command_inventory():
         "session": {"up", "enter", "pair", "down", "status", "validate", "prepare", "refresh"},
         "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
-        "worktree": {"new", "list", "rm", "gc"},
+        "worktree": {"prepare"},
         "feedback": {"add", "friction", "say", "win", "triage", "filed"}
         | {"list", "report", "export", "redact"},
     }
@@ -181,7 +182,6 @@ def test_detached_endpoint_inventory():
         ["session", "-C", "../b", "status"],
         ["session", "status", "--project=../b"],
         ["-C../b", "session", "status"],
-        ["-C", "../b"],
         ["cleanup", "preview", "--run-id", "r", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
@@ -416,7 +416,7 @@ def dispatch(argv, monkeypatch):
 
 @pytest.mark.parametrize(
     "route",
-    ["targets", "chat", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
+    ["targets", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
 )
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []

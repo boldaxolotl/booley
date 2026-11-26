@@ -6,8 +6,6 @@ import random
 import re
 from pathlib import Path
 
-from claude_agent_sdk import ProcessError
-
 # --- API resilience constants (owned here, re-exported by config.py) ---
 # Exponential backoff with jitter: base 30s → 60s → 120s → 240s → 300s,
 # each randomized by ±JITTER_FRACTION to avoid lockstep retries.
@@ -19,33 +17,50 @@ API_RETRY_JITTER_FRACTION = 0.25
 RATE_LIMIT_SLEEP_BUFFER_S = 60
 RATE_LIMIT_FALLBACK_BACKOFF_S = 300
 
-_TRANSIENT_PATTERNS = [
-    "500",
+# Provider HTTP statuses count only as whole tokens, so "1500 bytes",
+# "max_tokens 2500", "500.5" and a request ID like "req_015003" do not match.
+_TRANSIENT_STATUS_RE = re.compile(r"(?<![\w-])(?<!\d\.)(?:500|502|503|529)(?![\w-])(?!\.\d)")
+_TRANSIENT_PHRASES = (
     "internal server error",
-    "502",
     "bad gateway",
-    "503",
     "service unavailable",
-    "529",
     "overloaded",
-    "connection",
     "econnreset",
     "etimedout",
     # Codex mid-stream drop after its own reconnect ladder is exhausted —
     # transient once the proxy env is in place (mcp_config forwards it).
     "stream disconnected",
-    "command failed with exit code",
-]
+)
+# A failed connection, not any text that mentions one ("Invalid connection string").
+# A failure word within a few words of "connection", in either order, covers the
+# reset/refused/closed/lost/timed-out wordings of Python, httpx, urllib3 and Windows.
+_CONNECTION_FAILURE_WORD = (
+    r"(?:reset|refus|clos|abort|time(?:d ?| )?out|error|lost|terminat|fail|broken|disconnect)"
+)
+_CONNECTION_FAILURE_RE = re.compile(
+    rf"\bconnect(?:ion)?\b(?! string).{{0,60}}?\b{_CONNECTION_FAILURE_WORD}"
+    rf"|\b{_CONNECTION_FAILURE_WORD}.{{0,40}}?\bconnection\b(?! string)"
+    r"|\bconnection(?:reset|refused|aborted|error)"
+)
+# The Claude SDK's ProcessError text when the CLI exits nonzero and reports no
+# provider message: the cause is unknown, so it gets the transient retry budget.
+_BARE_CLI_EXIT_PREFIX = "command failed with exit code"
+
+
+def _is_bare_cli_exit(text: str) -> bool:
+    """Return whether lowercased *text* is a nonzero CLI exit with no provider message."""
+    return text.startswith(_BARE_CLI_EXIT_PREFIX)
 
 
 def _is_transient_error(exc: Exception) -> bool:
     """Check if an exception represents a transient API/network error."""
-    if isinstance(exc, (ConnectionError, OSError)):
-        return True
     text = str(exc).lower()
-    if isinstance(exc, ProcessError) and exc.stderr:
-        text += " " + exc.stderr.lower()
-    return any(p in text for p in _TRANSIENT_PATTERNS)
+    return (
+        _TRANSIENT_STATUS_RE.search(text) is not None
+        or any(phrase in text for phrase in _TRANSIENT_PHRASES)
+        or _CONNECTION_FAILURE_RE.search(text) is not None
+        or _is_bare_cli_exit(text)
+    )
 
 
 def compute_backoff(attempt: int, retry_after: float | None = None) -> float:

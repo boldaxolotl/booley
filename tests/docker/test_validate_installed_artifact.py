@@ -38,31 +38,6 @@ def test_invalid_wheel_metadata_raises_explicit_validation_error(tmp_path):
         validator._assert_wheel_matches_install(wheel, set())
 
 
-def test_worktree_script_ships_in_the_distribution():
-    """The runtime worktree script is package data and an asserted wheel resource.
-
-    Ticket setup and `booley worktree new` resolve it relative to the installed
-    package; a wheel without it blocks both at runtime.
-    """
-    import fnmatch
-    import tomllib
-
-    from booley.runtime.paths import worktree_create_script
-
-    resource = "booley/runtime/worktree_create.sh"
-    validator = _load_validator()
-    assert resource in validator.EXPECTED_RESOURCES
-
-    pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text("utf-8"))
-    package_data = pyproject["tool"]["setuptools"]["package-data"]["booley"]
-    relative = resource.removeprefix("booley/")
-    assert any(fnmatch.fnmatch(relative, pattern) for pattern in package_data)
-
-    script = worktree_create_script()
-    assert script.is_file()
-    assert script.as_posix().endswith(resource)
-
-
 def test_packaged_docs_are_expected_resources():
     """The image build asserts every shipped doc copy is in the installed wheel."""
     from booley.runtime import packaged_docs

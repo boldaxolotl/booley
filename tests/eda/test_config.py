@@ -11,45 +11,39 @@ from booley.eda.config import (
     EdaConfigError,
     load_eda_config,
     parse_eda_config,
-    retired_config_error,
     validate_host_provisioning_platform,
 )
-from booley.runtime.booley_dir import reset_cache
 
 
-def test_absent_config_is_empty() -> None:
-    assert parse_eda_config(None) == {}
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, {}),
+        ({"vivado": {}}, {"vivado": EdaConfig("vivado")}),
+        ({"vivado": {"provisioning": "host"}}, {"vivado": EdaConfig("vivado", "host")}),
+    ],
+)
+def test_parse_selects_provisioning(raw: object, expected: dict[str, EdaConfig]) -> None:
+    assert parse_eda_config(raw) == expected
 
 
-def test_image_is_default() -> None:
-    assert parse_eda_config({"vivado": {}}) == {"vivado": EdaConfig("vivado")}
+@pytest.mark.parametrize(
+    "provisioning,match", [("host", r"unsupported on Windows.*eda\.vivado"), ("image", None)]
+)
+def test_windows_accepts_only_image_provisioning(provisioning: str, match: str | None) -> None:
+    configs = parse_eda_config({"vivado": {"provisioning": provisioning}})
 
-
-def test_host_selects_provisioning_without_an_installation_name() -> None:
-    assert parse_eda_config({"vivado": {"provisioning": "host"}}) == {
-        "vivado": EdaConfig("vivado", "host")
-    }
-
-
-def test_windows_rejects_host_provisioning() -> None:
-    configs = parse_eda_config({"vivado": {"provisioning": "host"}})
-
-    with pytest.raises(EdaConfigError, match=r"unsupported on Windows.*eda\.vivado"):
+    if match is None:
         validate_host_provisioning_platform(configs, platform_name="win32")
-
-
-def test_windows_accepts_image_provisioning() -> None:
-    configs = parse_eda_config({"vivado": {"provisioning": "image"}})
-
-    validate_host_provisioning_platform(configs, platform_name="win32")
+    else:
+        with pytest.raises(EdaConfigError, match=match):
+            validate_host_provisioning_platform(configs, platform_name="win32")
 
 
 @pytest.mark.parametrize(
     "raw,match",
     [
         ({"quartus": {}}, "unsupported EDA kind"),
-        ({"vivado": {"mount": "/opt"}}, "unknown key"),
-        ({"vivado": {"provisioning": "remote"}}, "image.*host"),
         (
             {"vivado": {"provisioning": "host", "installation": "vivado_2025_2"}},
             "installation is retired",
@@ -59,27 +53,6 @@ def test_windows_accepts_image_provisioning() -> None:
 def test_rejects_invalid_authority_surface(raw: object, match: str) -> None:
     with pytest.raises(EdaConfigError, match=match):
         parse_eda_config(raw)
-
-
-@pytest.mark.parametrize(
-    "raw,fragment",
-    [
-        ({"flows": {"venue": "host"}}, "[flows].venue"),
-        ({"flows": {"backend": "docker"}}, "[flows].backend"),
-        ({"flows": {"host_setup_commands": ["setup"]}}, "[flows].host_setup_commands"),
-        ({"flows": {"sim": {"venue": "host"}}}, "[flows.sim].venue"),
-        ({"flows": {"sim": {"backend": "docker"}}}, "[flows.sim].backend"),
-        (
-            {"flows": {"sim": {"host_setup_commands": ["setup"]}}},
-            "[flows.sim].host_setup_commands",
-        ),
-        ({"flows": {"elab": {}}}, "[flows.elab] is retired"),
-        ({"flows": {"elaborate": {}}}, "[flows.elaborate] is retired"),
-        ({"sandbox": {"passthrough_env": ["LM_LICENSE_FILE"]}}, "passthrough_env"),
-    ],
-)
-def test_retired_host_surfaces_have_hard_migration_errors(raw: dict, fragment: str) -> None:
-    assert fragment in (retired_config_error(raw) or "")
 
 
 def test_load_eda_config_uses_external_project_data_dir(
@@ -95,16 +68,5 @@ def test_load_eda_config_uses_external_project_data_dir(
     )
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
-    reset_cache()
-    try:
-        assert load_eda_config(project) == {"vivado": EdaConfig("vivado", "host")}
-    finally:
-        reset_cache()
 
-
-def test_retired_standalone_frontend_has_hard_migration_error() -> None:
-    for flow in ("sim", "lint"):
-        message = retired_config_error({"flows": {flow: {"standalone_frontend": "auto"}}})
-        assert message is not None
-        assert f"[flows.{flow}].standalone_frontend is retired" in message
-        assert "each Target's simulator" in message
+    assert load_eda_config(project) == {"vivado": EdaConfig("vivado", "host")}

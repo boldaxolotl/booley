@@ -1,8 +1,7 @@
-"""Tests for setup.common.guarded_write — the single init clobber-guard.
+"""Tests for init's shared output helpers and the writer knobs init steps rely on.
 
-Every scaffolding step routes its writes through guarded_write, so these
-tests pin the ownership contract each historical per-site scheme (bare
-.exists(), _SYSTEMD_MARKER, "already ours" hook sniffs) collapsed into.
+``tests/runtime/test_guarded_write.py`` covers each ownership outcome of the shared
+writer; these cases cover the newline and executable-bit knobs init's hooks use.
 """
 
 from __future__ import annotations
@@ -14,8 +13,6 @@ from io import BytesIO, TextIOWrapper
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from booley.harness import terminal_status as ts
 from booley.harness.setup import common
@@ -75,200 +72,82 @@ def test_banner_is_the_doctor_section_header(
     assert capsys.readouterr().out == "\n" + ts.section_header("A title") + "\n"
 
 
-# ---------------------------------------------------------------------------
-# create-only (owner_marker=None)
-# ---------------------------------------------------------------------------
+_POSIX_MODE = pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
 
 
-class TestCreateOnly:
-    def test_creates_missing_file(self, tmp_path: Path):
-        target = tmp_path / "sub" / "booley.toml"
-        outcome = guarded_write(target, "skeleton\n")
-        assert outcome is WriteOutcome.WRITTEN
-        assert target.read_text(encoding="utf-8") == "skeleton\n"
-
-    def test_never_touches_existing_file(self, tmp_path: Path):
-        target = tmp_path / "booley.toml"
-        target.write_text("user content\n", encoding="utf-8")
-        outcome = guarded_write(target, "skeleton\n")
-        assert outcome is WriteOutcome.SKIPPED
-        assert target.read_text(encoding="utf-8") == "user content\n"
-
-    def test_dry_run_reports_written_without_writing(self, tmp_path: Path):
-        target = tmp_path / "booley.toml"
-        outcome = guarded_write(target, "skeleton\n", dry_run=True)
-        assert outcome is WriteOutcome.WRITTEN
-        assert not target.exists()
-
-
-# ---------------------------------------------------------------------------
-# managed (owner_marker set)
-# ---------------------------------------------------------------------------
-
-
-class TestManaged:
-    def test_creates_missing_file(self, tmp_path: Path):
-        target = tmp_path / "unit.service"
-        content = f"{MARKER}\nbody v1\n"
-        assert guarded_write(target, content, owner_marker=MARKER) is WriteOutcome.WRITTEN
-        assert target.read_text(encoding="utf-8") == content
-
-    def test_refreshes_stale_booley_owned_file(self, tmp_path: Path):
-        target = tmp_path / "unit.service"
-        target.write_text(f"{MARKER}\nbody v1\n", encoding="utf-8")
-        outcome = guarded_write(target, f"{MARKER}\nbody v2\n", owner_marker=MARKER)
-        assert outcome is WriteOutcome.WRITTEN
-        assert "body v2" in target.read_text(encoding="utf-8")
-
-    def test_identical_content_is_unchanged(self, tmp_path: Path):
-        target = tmp_path / "unit.service"
-        content = f"{MARKER}\nbody\n"
-        target.write_text(content, encoding="utf-8")
-        assert guarded_write(target, content, owner_marker=MARKER) is WriteOutcome.UNCHANGED
-
-    def test_refuses_foreign_file(self, tmp_path: Path):
-        target = tmp_path / "unit.service"
-        target.write_text("hand-rolled unit\n", encoding="utf-8")
-        outcome = guarded_write(target, f"{MARKER}\nbody\n", owner_marker=MARKER)
-        assert outcome is WriteOutcome.REFUSED
-        assert target.read_text(encoding="utf-8") == "hand-rolled unit\n"
-
-    def test_backs_up_foreign_file_when_suffix_given(self, tmp_path: Path):
-        target = tmp_path / "commit-msg"
-        target.write_text("#!/bin/sh\ncustom hook\n", encoding="utf-8")
-        outcome = guarded_write(
-            target,
-            f"{MARKER}\nours\n",
-            owner_marker=MARKER,
-            backup_suffix=".pre-booley",
-        )
-        assert outcome is WriteOutcome.BACKED_UP
-        backup = tmp_path / "commit-msg.pre-booley"
-        assert backup.read_text(encoding="utf-8") == "#!/bin/sh\ncustom hook\n"
-        assert "ours" in target.read_text(encoding="utf-8")
-
-    def test_dry_run_never_writes_or_backs_up(self, tmp_path: Path):
-        target = tmp_path / "commit-msg"
-        target.write_text("custom hook\n", encoding="utf-8")
-        outcome = guarded_write(
-            target,
-            f"{MARKER}\nours\n",
-            owner_marker=MARKER,
-            backup_suffix=".pre-booley",
-            dry_run=True,
-        )
-        assert outcome is WriteOutcome.BACKED_UP
-        assert target.read_text(encoding="utf-8") == "custom hook\n"
-        assert not (tmp_path / "commit-msg.pre-booley").exists()
-
-    def test_content_missing_its_own_marker_is_a_bug(self, tmp_path: Path):
-        # Content without the marker would make the NEXT run refuse booley's
-        # own file — reject the write-site bug loudly.
-        with pytest.raises(ValueError, match="owner marker"):
-            guarded_write(tmp_path / "x", "no marker here\n", owner_marker=MARKER)
-
-
-# ---------------------------------------------------------------------------
-# newline / executable knobs
-# ---------------------------------------------------------------------------
-
-
-class TestWriteKnobs:
-    def test_lf_newline_forced(self, tmp_path: Path):
-        # newline="\n" must defeat OS line translation (a CRLF shebang is an
-        # ENOENT inside the container — QA_REPORT D0a).
-        target = tmp_path / "hook"
-        guarded_write(target, "#!/bin/sh\necho hi\n", newline="\n")
-        assert b"\r" not in target.read_bytes()
-
-    def test_dry_run_detects_crlf_without_rewriting(self, tmp_path: Path):
-        target = tmp_path / "hook"
-        target.write_bytes(f"{MARKER}\r\nbody\r\n".encode())
-
-        outcome = guarded_write(
-            target,
-            f"{MARKER}\nbody\n",
-            owner_marker=MARKER,
-            newline="\n",
-            dry_run=True,
-        )
-
-        assert outcome is WriteOutcome.WRITTEN
-        assert b"\r\n" in target.read_bytes()
-
-    def test_managed_lf_write_heals_crlf(self, tmp_path: Path):
-        target = tmp_path / "hook"
-        target.write_bytes(f"{MARKER}\r\nbody\r\n".encode())
-
-        guarded_write(
-            target,
-            f"{MARKER}\nbody\n",
-            owner_marker=MARKER,
-            newline="\n",
-        )
-
-        assert b"\r" not in target.read_bytes()
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
-    def test_executable_bit_set_on_write(self, tmp_path: Path):
-        target = tmp_path / "hook"
-        guarded_write(target, f"{MARKER}\nbody\n", owner_marker=MARKER, executable=True)
-        assert target.stat().st_mode & 0o111
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
-    def test_executable_bit_healed_on_unchanged(self, tmp_path: Path):
-        content = f"{MARKER}\nbody\n"
-        target = tmp_path / "hook"
-        target.write_text(content, encoding="utf-8")
-        target.chmod(0o644)
-        outcome = guarded_write(target, content, owner_marker=MARKER, executable=True)
-        assert outcome is WriteOutcome.UNCHANGED
-        assert target.stat().st_mode & 0o111
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX exec bit")
-    def test_dry_run_reports_missing_executable_bit_without_healing(self, tmp_path: Path):
-        content = f"{MARKER}\nbody\n"
-        target = tmp_path / "hook"
-        target.write_text(content, encoding="utf-8")
+@pytest.mark.parametrize(
+    ("existing", "options", "outcome", "after"),
+    [
+        # A CRLF shebang is an ENOENT inside the container (QA_REPORT D0a).
+        pytest.param(None, {"newline": "\n"}, WriteOutcome.WRITTEN, b"x\nbody\n", id="lf-forced"),
+        pytest.param(
+            b"x\r\nbody\r\n",
+            {"newline": "\n", "dry_run": True},
+            WriteOutcome.WRITTEN,
+            b"x\r\nbody\r\n",
+            id="dry-run-reports-crlf",
+        ),
+        pytest.param(
+            b"x\r\nbody\r\n",
+            {"newline": "\n"},
+            WriteOutcome.WRITTEN,
+            b"x\nbody\n",
+            id="crlf-healed",
+        ),
+        pytest.param(
+            b"custom hook\n",
+            {"backup_suffix": ".pre-booley", "dry_run": True},
+            WriteOutcome.BACKED_UP,
+            b"custom hook\n",
+            id="dry-run-never-backs-up",
+        ),
+        pytest.param(
+            b"x\nbody\n",
+            {"executable": True, "dry_run": True},
+            WriteOutcome.WRITTEN,
+            b"x\nbody\n",
+            id="dry-run-reports-missing-exec-bit",
+            marks=_POSIX_MODE,
+        ),
+    ],
+)
+def test_managed_write_plans_and_heals_line_endings_and_modes(
+    tmp_path: Path, existing: bytes | None, options: dict, outcome: WriteOutcome, after: bytes
+) -> None:
+    target = tmp_path / "hook"
+    if existing is not None:
+        target.write_bytes(existing.replace(b"x", MARKER.encode()))
         target.chmod(0o644)
 
-        outcome = guarded_write(
-            target,
-            content,
-            owner_marker=MARKER,
-            executable=True,
-            dry_run=True,
-        )
+    result = guarded_write(target, f"{MARKER}\nbody\n", owner_marker=MARKER, **options)
 
-        assert outcome is WriteOutcome.WRITTEN
+    assert result is outcome
+    assert target.read_bytes() == after.replace(b"x", MARKER.encode())
+    assert not (tmp_path / "hook.pre-booley").exists()
+    if options.get("executable"):
         assert target.stat().st_mode & 0o111 == 0
 
-    def test_dry_run_ignores_unrepresentable_windows_executable_bits(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from booley.runtime import guarded_write as guarded_write_module
 
-        content = f"{MARKER}\nbody\n"
-        target = tmp_path / "hook"
-        target.write_text(content, encoding="utf-8")
-        monkeypatch.setattr(guarded_write_module.os, "name", "nt")
+def test_dry_run_ignores_unrepresentable_windows_executable_bits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from booley.runtime import guarded_write as guarded_write_module
 
-        outcome = guarded_write(
-            target,
-            content,
-            owner_marker=MARKER,
-            executable=True,
-            dry_run=True,
-        )
+    content = f"{MARKER}\nbody\n"
+    target = tmp_path / "hook"
+    target.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(guarded_write_module.os, "name", "nt")
 
-        assert outcome is WriteOutcome.UNCHANGED
+    outcome = guarded_write(
+        target,
+        content,
+        owner_marker=MARKER,
+        executable=True,
+        dry_run=True,
+    )
 
-
-# ---------------------------------------------------------------------------
-# Step numbering (F-2)
-# ---------------------------------------------------------------------------
+    assert outcome is WriteOutcome.UNCHANGED
 
 
 class TestStepBanner:

@@ -10,22 +10,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path, PureWindowsPath
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from tests.pipe_holding_tree import (
-    describe_heartbeat_tree,
-    heartbeat_tree,
-    parent_argv,
-    stall_wait_on,
-    wait_until_heartbeat_stops,
-)
-from tests.time_budget import hang_guard_s, scaled
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime import platform_paths
 from booley.runtime.platform_paths import (
     cargo_bin,
@@ -36,140 +26,107 @@ from booley.runtime.platform_paths import (
     popen_new_group_kwargs,
     venv_python,
 )
+from tests.host_platform_fake import use_windows_deadline_policy, use_windows_paths
+from tests.path_tool_fake import PathToolFake
+from tests.pipe_holding_tree import (
+    describe_heartbeat_tree,
+    heartbeat_tree,
+    parent_argv,
+    stall_wait_on,
+    start_deadline_after_tree_start,
+    wait_until_heartbeat_stops,
+)
+from tests.time_budget import SCALE_VARIABLE, hang_guard_s, scaled
 
 # ---------------------------------------------------------------------------
-# docker_mount_path
-# ---------------------------------------------------------------------------
-
-
-class TestDockerMountPath:
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_passthrough(self):
-        assert docker_mount_path(Path("/home/user/project")) == "/home/user/project"
-
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_drive_conversion(self):
-        result = docker_mount_path(Path("C:/Users/dev/project"))
-        assert result == "/c/Users/dev/project"
-
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_lowercase_drive(self):
-        result = docker_mount_path(Path("D:/data"))
-        assert result == "/d/data"
-
-
-class TestHostPathFromDockerMount:
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_docker_desktop_drive_source_becomes_native(self):
-        assert host_path_from_docker_mount("/c/Users/dev/project").as_posix() == (
-            "C:/Users/dev/project"
-        )
-
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    @patch.object(platform_paths, "Path", PureWindowsPath)
-    def test_windows_drive_root_is_absolute(self):
-        assert host_path_from_docker_mount("/c").as_posix() == "C:/"
-
-    @pytest.mark.parametrize(
-        "source",
-        [
-            "/host_mnt/c/Users/dev/project",
-            "/run/desktop/mnt/host/c/Users/dev/project",
-        ],
-    )
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    @patch.object(platform_paths, "Path", PureWindowsPath)
-    def test_windows_docker_daemon_drive_source_becomes_native(self, source: str):
-        assert host_path_from_docker_mount(source).as_posix() == "C:/Users/dev/project"
-
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_unmappable_daemon_source_has_no_native_path(self):
-        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/hash"
-        assert host_path_from_docker_mount(source) is None
-
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_source_passes_through(self):
-        assert host_path_from_docker_mount("/home/dev/project") == Path("/home/dev/project")
-
-
-# ---------------------------------------------------------------------------
-# venv_python
+# platform conventions
 # ---------------------------------------------------------------------------
 
 
-class TestVenvPython:
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_venv_python(self):
-        result = venv_python(Path("/some/venv"))
-        assert result == Path("/some/venv/Scripts/python.exe")
-
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_venv_python(self):
-        result = venv_python(Path("/some/venv"))
-        assert result == Path("/some/venv/bin/python")
-
-
-# ---------------------------------------------------------------------------
-# native_binary
-# ---------------------------------------------------------------------------
-
-
-class TestNativeBinary:
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_adds_exe_suffix(self):
-        result = native_binary(Path("/bin"), "bwave")
-        assert result == Path("/bin/bwave.exe")
-
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_no_suffix(self):
-        result = native_binary(Path("/bin"), "bwave")
-        assert result == Path("/bin/bwave")
-
-
-# ---------------------------------------------------------------------------
-# cargo_bin
-# ---------------------------------------------------------------------------
-
-
-class TestCargoBin:
-    @patch("shutil.which", return_value="/usr/bin/cargo")
-    def test_found_on_path(self, mock_which):
-        assert cargo_bin() == "/usr/bin/cargo"
-
-    @patch("shutil.which", return_value=None)
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_fallback_to_plain_name(self, mock_which):
-        assert cargo_bin() == "cargo"
-
-    @patch("shutil.which", return_value=None)
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    @patch.object(platform_paths, "_MSYS2_CARGO")
-    def test_windows_msys2_fallback(self, mock_cargo, mock_which):
-        mock_cargo.exists.return_value = True
-        mock_cargo.__str__ = lambda self: "C:/msys64/mingw64/bin/cargo.exe"
-        assert cargo_bin() == "C:/msys64/mingw64/bin/cargo.exe"
-
-
-# ---------------------------------------------------------------------------
-# popen_new_group_kwargs
-# ---------------------------------------------------------------------------
-
-
-class TestPopenNewGroupKwargs:
-    @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_returns_creation_flags(self):
-        result = popen_new_group_kwargs()
+@pytest.mark.parametrize(
+    ("windows", "call", "expected"),
+    [
+        (False, lambda: docker_mount_path(Path("/home/user/project")), "/home/user/project"),
+        (True, lambda: docker_mount_path(Path("C:/Users/dev/project")), "/c/Users/dev/project"),
+        (False, lambda: venv_python(Path("/some/venv")).as_posix(), "/some/venv/bin/python"),
+        (
+            True,
+            lambda: venv_python(Path("/some/venv")).as_posix(),
+            "/some/venv/Scripts/python.exe",
+        ),
+        (False, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave"),
+        (True, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave.exe"),
+        (False, popen_new_group_kwargs, {"start_new_session": True}),
         # 0x200 is the Win32 CREATE_NEW_PROCESS_GROUP flag.
-        assert result == {"creationflags": 0x00000200}
+        (True, popen_new_group_kwargs, {"creationflags": 0x200}),
+        (
+            False,
+            lambda: host_path_from_docker_mount("/home/dev/project").as_posix(),
+            "/home/dev/project",
+        ),
+    ],
+    ids=[
+        "docker-posix",
+        "docker-windows",
+        "venv-posix",
+        "venv-windows",
+        "binary-posix",
+        "binary-windows",
+        "group-posix",
+        "group-windows",
+        "host-path-posix",
+    ],
+)
+def test_conventions_follow_the_host_platform(
+    monkeypatch: pytest.MonkeyPatch, windows: bool, call: Callable[[], object], expected: object
+):
+    use_windows_paths(monkeypatch, windows=windows)
+    assert call() == expected
 
-    @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_returns_new_session(self):
-        result = popen_new_group_kwargs()
-        assert result == {"start_new_session": True}
+
+@pytest.mark.parametrize(
+    ("source", "native"),
+    [
+        ("/c/Users/dev/project", "C:/Users/dev/project"),
+        ("/c", "C:/"),
+        ("/host_mnt/c/Users/dev/project", "C:/Users/dev/project"),
+        ("/run/desktop/mnt/host/c/Users/dev/project", "C:/Users/dev/project"),
+        ("/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/hash", None),
+    ],
+    ids=["docker-desktop", "drive-root", "host-mnt", "run-desktop", "wsl-bind-mount"],
+)
+def test_windows_docker_source_becomes_a_native_path_when_addressable(
+    monkeypatch: pytest.MonkeyPatch, source: str, native: str | None
+):
+    use_windows_paths(monkeypatch, windows=True)
+    # PureWindowsPath keeps the drive-letter spelling checkable on a POSIX host; a POSIX Path
+    # cannot parse a drive letter, so no public input reaches this behavior there.
+    monkeypatch.setattr(platform_paths, "Path", PureWindowsPath)
+    result = host_path_from_docker_mount(source)
+    assert (None if result is None else result.as_posix()) == native
+
+
+def test_cargo_bin_prefers_cargo_on_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    fake = PathToolFake.install(tmp_path, "cargo", monkeypatch)
+    assert platform_paths.same_host_path(cargo_bin(), fake.executable)
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_cargo_bin_falls_back_to_msys2_only_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
+):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    msys2 = tmp_path / "cargo.exe"
+    msys2.write_bytes(b"")
+    monkeypatch.setenv("PATH", str(empty))
+    use_windows_paths(monkeypatch, windows=windows)
+    # private: the MSYS2 cargo is a fixed C: drive path that no public input moves.
+    monkeypatch.setattr(platform_paths, "_MSYS2_CARGO", msys2)
+    assert cargo_bin() == (str(msys2) if windows else "cargo")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="os.killpg is a POSIX API")
-@patch.object(platform_paths, "IS_WINDOWS", False)
 def test_kill_process_tree_kills_descendants_after_wrapper_exits():
     proc = type(
         "Proc",
@@ -259,34 +216,32 @@ def test_run_captured_bounded_runs_in_cwd_with_env(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-class TestSameHostPath:
-    def test_spelling_decides_before_the_filesystem(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
-        assert platform_paths.same_host_path("C:/Users/Dev", Path("c:\\users\\dev"))
-
-    def test_missing_different_paths_are_not_equal(self, tmp_path: Path):
-        assert not platform_paths.same_host_path(tmp_path / "a", tmp_path / "b")
-
-    def test_nul_byte_in_a_label_is_not_equal(self, tmp_path: Path):
-        assert not platform_paths.same_host_path(str(tmp_path) + "\0", tmp_path)
-
-    def test_same_directory_through_a_trailing_separator_is_equal(self, tmp_path: Path):
-        assert platform_paths.same_host_path(str(tmp_path) + os.sep, tmp_path)
+def test_same_host_path_spelling_decides_before_the_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
+    assert platform_paths.same_host_path("C:/Users/Dev", Path("c:\\users\\dev"))
 
 
-_EMIT_INVALID_UTF8 = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
-
-
-def test_run_captured_bounded_replaces_undecodable_bytes_by_default():
-    assert (
-        "�"
-        in platform_paths.run_captured_bounded(_EMIT_INVALID_UTF8, timeout=hang_guard_s()).stdout
-    )
+@pytest.mark.parametrize(
+    ("spellings", "same"),
+    [
+        (lambda d: (d / "a", d / "b"), False),  # missing paths: samefile raises OSError
+        (lambda d: (str(d) + "\0", d), False),  # a NUL byte in a Docker label: ValueError
+        (lambda d: (str(d) + os.sep, d), True),  # a trailing separator, same directory
+    ],
+    ids=["missing-paths", "nul-byte", "trailing-separator"],
+)
+def test_same_host_path_falls_back_to_the_filesystem(
+    tmp_path: Path, spellings: Callable[[Path], tuple[str | Path, Path]], same: bool
+):
+    left, right = spellings(tmp_path)
+    assert platform_paths.same_host_path(left, right) is same
 
 
 def test_run_captured_bounded_decodes_strictly_on_request():
     """``errors`` selects the decoding mode; strict never turns a timeout into a decode error."""
-    emit = _EMIT_INVALID_UTF8
+    emit = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"]
     with pytest.raises(UnicodeDecodeError):
         platform_paths.run_captured_bounded(emit, timeout=hang_guard_s(), errors="strict")
     truncated = [
@@ -358,9 +313,9 @@ _HUNG_TREE_DEADLINE_S = scaled(2)
 
 def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutExpired:
     """Run a hung child tree that ignores stdin under *mode*; it must be stopped in time."""
-    with heartbeat_tree(tmp_path) as paths:
+    with heartbeat_tree(tmp_path) as paths, pytest.MonkeyPatch.context() as monkeypatch:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
-        started = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         expired: subprocess.TimeoutExpired | None = None
         try:
             completed = platform_paths.run_captured_bounded(
@@ -370,7 +325,7 @@ def _assert_hung_tree_is_stopped(tmp_path: Path, **mode) -> subprocess.TimeoutEx
             expired = raised
         # The elapsed time is taken at the helper's return; the tree is observed
         # only when a check fails, up to 1 s later.
-        elapsed = time.monotonic() - started
+        elapsed = time.monotonic() - started[0]
         summary = f"run_captured_bounded returned after {elapsed:.2f} s against a {_HUNG_TREE_DEADLINE_S:g} s deadline"
         if expired is None:
             pytest.fail(
@@ -416,14 +371,14 @@ def test_run_captured_bounded_stops_a_hung_tree_while_the_wait_is_stalled(
     """A wait stuck until the tree closes its pipes still times out at the deadline (#4323)."""
     # Exercise the Windows deadline policy on every host, with native process
     # group operations still selected by the real host platform.
-    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    use_windows_deadline_policy(monkeypatch)
     with heartbeat_tree(tmp_path) as paths:
         argv = parent_argv(tmp_path, sys.executable, paths, "live-until-stop")
         stall_wait_on(monkeypatch)
-        started = time.monotonic()
+        started = start_deadline_after_tree_start(monkeypatch, paths)
         with pytest.raises(subprocess.TimeoutExpired):
             platform_paths.run_captured_bounded(argv, timeout=_HUNG_TREE_DEADLINE_S, text=False)
-        assert time.monotonic() - started < scaled(38)
+        assert time.monotonic() - started[0] < scaled(38)
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
     assert not [t for t in threading.enumerate() if t.name == "bounded-capture-deadline"]
 
@@ -432,6 +387,8 @@ def test_deadline_kill_spares_a_child_that_already_exited():
     """A child that exited before the deadline is not reported as timed out (#4323)."""
     proc = subprocess.Popen(_EXIT_AT_ONCE)
     proc.wait(timeout=hang_guard_s())
+    # private: whether the killer fires for an exited child is a race inside
+    # run_captured_bounded; only the killer itself can order the deadline before stop().
     killer = platform_paths._DeadlineKiller(proc, 0)
     killer.start()
     killer._thread.join(hang_guard_s())  # the deadline has passed before the wait returns
@@ -440,6 +397,21 @@ def test_deadline_kill_spares_a_child_that_already_exited():
 
 
 def test_run_captured_bounded_accepts_an_infinite_timeout(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(platform_paths, "sys", SimpleNamespace(platform="win32"))
+    use_windows_deadline_policy(monkeypatch)
     result = platform_paths.run_captured_bounded(_EXIT_AT_ONCE, timeout=math.inf)
     assert result.returncode == 0
+
+
+def test_a_hung_tree_that_never_starts_fails_at_the_hang_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cleanup_margin = scaled(15)  # a Windows tree kill may take 10 s
+    monkeypatch.setenv(SCALE_VARIABLE, "0.05")  # a 2 s hang guard
+    silent = [sys.executable, "-c", "import time; time.sleep(60)"]  # never beats
+    with heartbeat_tree(tmp_path) as paths:
+        start_deadline_after_tree_start(monkeypatch, paths)
+        started = time.monotonic()
+        with pytest.raises(pytest.fail.Exception, match="the process tree never started"):
+            platform_paths.run_captured_bounded(silent, timeout=hang_guard_s())
+        # It waited the whole guard, then stopped the silent child instead of reaping it at 60 s.
+        assert hang_guard_s() <= time.monotonic() - started < hang_guard_s() + cleanup_margin

@@ -3,9 +3,9 @@
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
 Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard, worktree settings (where `booley chat` starts,
-cleanup of idle worktrees, and Git submodules), and feedback redaction. Settings for one Flow, the Sandbox, or
-Stealth Mode live on their own pages; the table below says where.
+Dashboard, Git submodules and worktree hooks, and feedback redaction. Settings
+for one Flow, the Sandbox, or Stealth Mode live on their own pages; the table
+below says where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
 [setup](SETUP.md), and afterwards you ask the Developer Agent to change a
@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[worktree]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -197,13 +197,14 @@ clis = ["claude", "codex"]   # every Agent CLI this Project may use
 default = "claude"           # the one used unless you pick another
 ```
 
-- **`default`** is what `booley chat` opens. It also runs Specialists unless a
-  [`[models]`](#model-selection-models) entry needs the other CLI. Without it, the first entry of `clis` is the default.
-- **`clis`**: listing a second CLI lets you open it with
-  `booley chat --cli codex`, lets a `[models]` entry run a Specialist on it, and
-  gives the Sandbox its login (see
+- **`default`** runs Specialists unless a
+  [`[models]`](#model-selection-models) entry needs the other CLI. Without it,
+  the first entry of `clis` is the default.
+- **`clis`**: listing a second CLI lets a `[models]` entry run a Specialist on
+  it and gives the Sandbox its login (see
   [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox)).
-  Without `clis`, the Project uses only `default`.
+  It also decides which agents T3 Code offers in the Sandbox. Without `clis`,
+  the Project uses only `default`.
 
 `booley init` asks for the default CLI (Enter picks `claude`) and keeps your
 answer on re-runs. `booley init --provider codex` skips the prompt. `provider`
@@ -293,8 +294,9 @@ reviewer = "gpt-6-astra"   # runs on Codex
 The `[models]` keys are `reviewer` and `coverage_analyst`. Any other key, a
 model that is neither `claude-*` nor `gpt-*`, or a model whose CLI isn't in
 `clis` stops Booley from loading the config, and `booley doctor` names the
-entry. The Developer Agent itself uses your Agent CLI's own model setting, not
-this table.
+entry. `[models]` chooses Specialist models only: you choose a T3 Code thread's
+model in T3 Code, and a Developer Agent outside T3 Code uses your Agent CLI's
+own model setting.
 
 A Specialist without an entry uses the default CLI's built-in model, so most
 Projects need no `[models]` at all:
@@ -325,46 +327,15 @@ Git folder).
 
 ## Worktrees
 
-### Worktree settings (`[worktree]`)
-
-```toml
-[worktree]
-chat = "auto"          # "auto" (default), "always", or "never"
-gc_older_than = "7d"   # d, h, m, s components such as "36h" or "1d12h"
-```
-
-`chat` decides where `booley chat` starts when you run it from the main
-checkout:
-
-- `auto`: in the main checkout when no other Booley session is using it,
-  otherwise in a new worktree `s<N>` on branch `booley/s<N>` (`wt/s<N>` in
-  Stealth Mode).
-- `always`: always in a new worktree; if the main checkout was free, the launch
-  holds it until its session ends, so a later `auto` launch starts in a
-  worktree too.
-- `never`: always in the main checkout.
-
-`booley chat --new-worktree` and `--here` override it for one launch. Any other
-value stops `booley chat` with exit 2 and fails Doctor. Run from inside a
-linked worktree, `booley chat` starts there whatever this says. See
-[Several agents at once](USAGE.md#several-agents-at-once).
-
-`booley worktree gc` removes worktrees whose last use is older than
-`gc_older_than`, keeping any that `booley worktree rm` would refuse (default
-`"7d"`). Every `booley chat` launch runs the same cleanup with this age.
-`gc_older_than` is read from the main checkout's `.booley/booley.toml`; a
-worktree's own copy is ignored. `booley worktree gc --older-than AGE` overrides
-it. See [Cleaning up idle worktrees](WORKTREES.md#cleaning-up-idle-worktrees).
-
 ### Worktree setup hooks (`.booley/hooks/`)
 
 Keep Project setup scripts, such as a `.booley/hooks/post-setup.sh` that builds a
-toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree new` runs
-`post-setup` (`.sh`, `.py`, or no suffix) in the new worktree after it fills the
-Git submodules, with `BOOLEY_WORKTREE` set to the worktree. The output is shown
-and logged, and a failure removes the worktree again. Keep generated build
-outputs ignored by Git. `booley measure` runs the same hook in its checkout of
-the commit; see [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
+toolchain or fetches vectors, under `.booley/hooks/`. `booley worktree prepare`
+runs `post-setup` (`.sh`, `.py`, or no suffix) in the worktree, with
+`BOOLEY_WORKTREE` set to the worktree. The output is shown and logged, and a
+failure removes what the run created. Keep generated build outputs ignored by
+Git. `booley measure` runs the same hook in its checkout of the commit; see
+[Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 ### Git submodules (`[submodules]`)
 

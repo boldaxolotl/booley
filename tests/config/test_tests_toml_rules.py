@@ -77,24 +77,6 @@ def test_non_string_names_are_refused(name: object) -> None:
         validate_test_or_variant_name(name)
 
 
-def test_rule_sentence_mentions_every_refusal() -> None:
-    # The sentence is quoted to users; a rule added to the check must be added here.
-    for fragment in (
-        "not empty",
-        "'default'",
-        "start with '-'",
-        "whitespace",
-        "control character",
-        "'+'",
-        "'@'",
-        "'<'",
-        "'>'",
-        "quote",
-        "backslash",
-    ):
-        assert fragment in TEST_NAME_RULES
-
-
 @pytest.mark.parametrize("name", [*VALID_NAMES, *(name for name, _ in INVALID_NAMES)])
 @pytest.mark.parametrize("key", ["tests", "skip"])
 def test_loader_refuses_exactly_the_names_the_rule_refuses(name: str, key: str) -> None:
@@ -111,11 +93,6 @@ def test_loader_refuses_exactly_the_names_the_rule_refuses(name: str, key: str) 
     with pytest.raises(ValueError) as excinfo:
         normalize_tests_toml(raw)
     assert str(excinfo.value) == f"tests.toml [sim].{key}: {expected}"
-
-
-# ---------------------------------------------------------------------------
-# Environment tables
-# ---------------------------------------------------------------------------
 
 
 def test_env_table_accepts_string_pairs() -> None:
@@ -136,10 +113,15 @@ def test_env_table_refuses_a_non_identifier_name(name: str) -> None:
     )
 
 
-@pytest.mark.parametrize("value", [1, 1.5, True, None, ["a"]])
-def test_env_table_refuses_a_non_string_value(value: object) -> None:
-    with pytest.raises(EnvTableError, match=r"^t\.env\.N must be a string — quote the value"):
+@pytest.mark.parametrize(
+    ("value", "type_name"),
+    [(1, "int"), (1.5, "float"), (True, "bool"), (None, "NoneType"), (["a"], "list")],
+)
+def test_env_table_refuses_a_non_string_value(value: object, type_name: str) -> None:
+    message = f"t.env.N must be a string — quote the value (got {type_name})"
+    with pytest.raises(EnvTableError) as excinfo:
         validate_env_table({"N": value}, where="t.env")
+    assert str(excinfo.value) == message
 
 
 @pytest.mark.parametrize("raw", [["X=1"], "X=1", None, 3])

@@ -1,461 +1,211 @@
-"""FAIL/WARN branch coverage for doctor probes that only had happy-path tests.
+"""FAIL and WARN branches of Doctor probes, driven through a whole Doctor run.
 
-Each probe here had NO test driving its failure branch (2026-07-26 audit): a
-regression that broke the WARN/FAIL side — or turned it into a crash — was
-invisible to the suite. Every test drives the CURRENT behavior of unmodified
-``doctor.py``; where that behavior is a silent return by design, the test
-documents it rather than "fixing" it.
-
-Style mirrors tests/harness/test_doctor.py: a ``_Rec`` reporter double whose
-signatures exactly match ``doctor._Reporter`` (the past ``warn_(msg, fix)``
-arity bug), argv-pattern subprocess fakes, tmp_path project trees.
+Each test answers the commands Doctor runs through the shared fake in
+``tests/harness/test_doctor.py`` and lets every Booley step between the run and
+that fake execute.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
-import json
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
 
 import booley
 from booley.audit import host_environment
-from booley.fusesoc import fusesoc_registry
+from booley.audit.diagnostic_results import Severity
 from booley.harness import doctor
 from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-from tests.diagnostic_helpers import (
-    _record_environment,
-    _require_doctor_warning,
-)
-from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.diagnostic_helpers import _Rec, _record_environment
+from tests.harness.doctor_host_support import serve_healthy_doctor_host
+from tests.harness.test_doctor import _doctor_run, _messages, _write_project
 from tests.subprocess_budget import run_bounded_child
-from tests.target_test_support import write_two_core_sim_project
 
 
-@pytest.fixture(autouse=True)
-def _doctor_probes_use_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """This module fakes the doctor probes through ``subprocess.run``."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, doctor)
+def _git(root: Path, *args: str) -> None:
+    identity = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+    run_bounded_child(["git", *identity, *args], cwd=root, check=True)
 
 
-class _Rec:
-    """Collects doctor check outcomes as (level, message) tuples.
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[list[str]]]:
+    """A committed Doctor Project on a healthy host; returns its root and Doctor's commands.
 
-    The signatures mirror ``_Reporter``'s exactly — ``warn_``/``fail_`` take an
-    optional fix hint. A stub that accepted fewer args than the real reporter
-    is what let a ``warn_(msg, fix)`` TypeError reach a user's `doctor` run
-    (see test_doctor.py); this double is copied faithfully, not re-invented.
+    The Project sits below the working directory, so Doctor resolves Git's relative paths.
     """
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str]] = []
-
-    def p(self, m: str) -> None:
-        self.events.append(("pass", m))
-
-    def w(self, m: str, fix: str = "") -> None:
-        _require_doctor_warning(m)
-        self.events.append(("warn", m))
-
-    def n(self, m: str) -> None:
-        self.events.append(("note", m))
-
-    def s(self, m: str) -> None:
-        self.events.append(("skip", m))
-
-    def f(self, m: str, fix: str = "") -> None:
-        self.events.append(("fail", m))
-
-    def fails(self) -> list[str]:
-        return [m for lvl, m in self.events if lvl == "fail"]
-
-    def warns(self) -> list[str]:
-        return [m for lvl, m in self.events if lvl == "warn"]
-
-    def skips(self) -> list[str]:
-        return [m for lvl, m in self.events if lvl == "skip"]
-
-    def kinds(self) -> set[str]:
-        return {lvl for lvl, _ in self.events}
+    root = tmp_path / "project"
+    root.mkdir()
+    _write_project(root)
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "project")
+    return root, serve_healthy_doctor_host(monkeypatch, root)
 
 
-def _mk_audit(root: Path, booley_toml: dict | None = None) -> doctor.ProjectAudit:
-    """Minimal ProjectAudit over a tmp tree (local re-implementation — the
-    helpers in test_doctor.py must not be imported while parallel work edits
-    that file)."""
-    booley_dir = root / ".booley"
-    booley_dir.mkdir(exist_ok=True)
-    return doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=booley_dir,
-        booley_toml=booley_toml or {},
-        configs_toml={"fast": {}},
-        first_target="fast",
+_CODEX_MISSING = (
+    Severity.WARN,
+    "worker backend (Codex): Codex CLI not found on PATH (npm i -g @openai/codex)",
+)
+
+
+@pytest.mark.parametrize(
+    ("cli", "deep", "rows"),
+    [
+        ("codex", False, [_CODEX_MISSING]),
+        # f7a68eec6: deep Doctor drops the plain-mode hint but keeps the warning.
+        ("codex", True, [_CODEX_MISSING]),
+        (
+            "claude",
+            False,
+            [
+                (
+                    Severity.NOTE,
+                    "worker backend configured locally: Claude SDK; provider authorization was "
+                    "not exercised and the CLI was not started by plain Doctor "
+                    "(run `booley doctor --deep` for a live check)",
+                )
+            ],
+        ),
+    ],
+    ids=["warning", "warning-deep", "healthy"],
+)
+def test_backend_health_row(project, cli, deep, rows):
+    root, _calls = project
+    config = root / ".booley" / "booley.toml"
+    # Bytes keep LF on Windows, where Doctor would report a CRLF checkout.
+    config.write_bytes(
+        config.read_bytes().replace(b"[agent]", f'[agent]\ndefault = "{cli}"'.encode())
+    )
+
+    result = _doctor_run(root, deep=deep)
+
+    assert [
+        (f.severity, f.message) for f in result.findings if f.message.startswith("worker backend")
+    ] == rows
+
+
+def test_backend_config_failure_is_a_warning_not_a_crash(project, monkeypatch):
+    root, _calls = project
+
+    def unreadable(_root):
+        raise ValueError("models.toml is garbage")
+
+    # load_backend_config re-reads the [agent] settings that Project load already validated,
+    # so no Project file makes this later read fail; only the replaced load can.
+    monkeypatch.setattr(runtime_agent_config, "load_backend_config", unreadable)
+
+    warnings = _messages(_doctor_run(root), Severity.WARN, check_id="agent.backend-health")
+
+    assert warnings == ["worker backend health check failed: models.toml is garbage"]
+
+
+@pytest.mark.parametrize("dirty", [True, False], ids=["merge-and-dirty", "clean"])
+def test_git_state_reports_an_unfinished_merge_and_a_dirty_tree(project, dirty):
+    root, _calls = project
+    if dirty:
+        (root / ".git" / "MERGE_HEAD").write_bytes(b"0" * 40 + b"\n")
+        (root / "rtl" / "dut.sv").write_bytes(b"module dut; wire w; endmodule\n")
+        (root / "untracked.txt").write_bytes(b"new\n")
+
+    result = _doctor_run(root)
+
+    git_rows = [
+        (finding.severity, finding.message)
+        for finding in result.findings
+        if "git operation" in finding.message
+        or "merge/rebase" in finding.message
+        or "git working tree" in finding.message
+    ]
+    assert git_rows == (
+        [
+            (Severity.NOTE, "git working tree has 2 modified file(s)"),
+            (Severity.FAIL, "git operation in progress: merge"),
+        ]
+        if dirty
+        else [(Severity.PASS, "no git merge/rebase/cherry-pick in progress")]
     )
 
 
-# ---------------------------------------------------------------------------
-# _check_agent_backend_health — WARN on any backend failure, never crash
-# ---------------------------------------------------------------------------
-
-
-class TestAgentBackendHealth:
-    def _patch_backend(self, monkeypatch, backend) -> None:
-        # Doctor resolves live composition through the Runtime adapter.
-        monkeypatch.setattr(runtime_agent_config, "load_backend_config", lambda _root: None)
-        monkeypatch.setattr(
-            runtime_agent_config,
-            "get_backend_config",
-            lambda: SimpleNamespace(active_backend=backend),
-        )
-
-    @pytest.mark.parametrize("deep", [False, True])
-    def test_backend_raising_becomes_warn_not_crash(self, tmp_path, monkeypatch, deep):
-        def boom() -> str:
-            raise RuntimeError("backend exploded")
-
-        self._patch_backend(monkeypatch, SimpleNamespace(name="claude", health_check=boom))
-        rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
-        assert rec.kinds() == {"warn"}
-        assert "backend exploded" in rec.warns()[0]
-
-    @pytest.mark.parametrize("deep", [False, True])
-    def test_config_load_failure_becomes_warn(self, tmp_path, monkeypatch, deep):
-        def bad_load(_root) -> None:
-            raise ValueError("models.toml is garbage")
-
-        monkeypatch.setattr(runtime_agent_config, "load_backend_config", bad_load)
-        rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
-        assert rec.kinds() == {"warn"}
-        assert "models.toml is garbage" in rec.warns()[0]
-
-    @pytest.mark.parametrize("deep", [False, True])
-    def test_backend_warning_string_is_relayed(self, tmp_path, monkeypatch, deep):
-        self._patch_backend(
-            monkeypatch,
-            SimpleNamespace(name="codex", health_check=lambda: "auth token expires soon"),
-        )
-        rec = _Rec()
-        doctor._check_agent_backend_health(tmp_path, rec.p, rec.w, deep=deep)
-        assert rec.kinds() == {"warn"}
-        assert "codex" in rec.warns()[0]
-        assert "auth token expires soon" in rec.warns()[0]
-
-    @pytest.mark.parametrize("deep", [False, True])
-    @pytest.mark.parametrize("note_sink", [False, True])
-    def test_locally_healthy_backend_is_an_offline_note(
-        self, tmp_path, monkeypatch, deep, note_sink
-    ):
-        self._patch_backend(monkeypatch, SimpleNamespace(name="claude", health_check=lambda: ""))
-        rec = _Rec()
-        doctor._check_agent_backend_health(
-            tmp_path, rec.p, rec.w, _note=rec.n if note_sink else None, deep=deep
-        )
-        expected = (
-            "worker backend configured locally: claude; "
-            "provider authorization was not exercised and the CLI was not started "
-            "by plain Doctor (run `booley doctor --deep` for a live check)"
-        )
-        assert rec.events == ([] if deep else [("note" if note_sink else "pass", expected)])
-
-
-# ---------------------------------------------------------------------------
-# _check_sim_verdict_setup — sentinel WARNs + FuseSocError silent return
-# ---------------------------------------------------------------------------
-
-
-def _sim_ref(root: Path, cocotb_module: str | None = None) -> fusesoc_registry.TargetRef:
-    return fusesoc_registry.TargetRef(
-        name="sim_fast",
-        vlnv="::unit:0",
-        core_file=root / "unit.core",
-        eda_tool="verilator",
-        flow="sim",
-        cocotb_module=cocotb_module,
+def test_sim_dry_run_pins_the_first_test_of_the_selected_cores_section(project):
+    """#1595: a qualified Target reads its own core's tests.toml section, not a namesake's."""
+    root, calls = project
+    (root / "other.core").write_bytes(
+        b"CAPI=2:\nname: ::other:0\nfilesets:\n  rtl:\n    files: [rtl/dut.sv]\n"
+        b"    file_type: systemVerilogSource\ntargets:\n  sim_fast:\n    flow: sim\n"
+        b"    flow_options: {tool: verilator}\n    filesets: [rtl]\n    toplevel: dut\n"
+    )
+    (root / ".booley" / "tests.toml").write_bytes(
+        b'["::other:0#sim_fast"]\ntests = ["other_first"]\n'
+        b'["::unit:0#sim_fast"]\ntests = ["unit_first"]\n'
     )
 
+    _doctor_run(root)
 
-class TestSimVerdictSetup:
-    def _run(self, tmp_path, tb_files, booley_toml=None, ref=None) -> _Rec:
-        project = _mk_audit(tmp_path, booley_toml)
-        rec = _Rec()
-        doctor._check_sim_verdict_setup(
-            project,
-            tmp_path,
-            "sim_fast",
-            ref or _sim_ref(tmp_path),
-            rec.p,
-            rec.w,
-            sources=fusesoc_registry.CoreSources(
-                rtl_source_files=(),
-                tb_files=tuple(tb_files),
-            ),
+    [dry_run] = [argv for argv in calls if "booley.flows.sim" in argv and "--dry-run" in argv]
+    assert dry_run[dry_run.index("--target") + 1] == "unit#sim_fast"
+    assert dry_run[dry_run.index("--test") + 1] == "unit_first"
+
+
+@pytest.mark.parametrize(
+    ("source_checkout", "fix"),
+    [
+        (False, "fix .booley/mcp_tools and the [flows]/[specialists] tables in booley.toml"),
+        (True, "run Doctor from the Project's workspace, not a Booley source checkout"),
+    ],
+    ids=["retired-config", "source-checkout"],
+)
+def test_custom_endpoint_validation_failure_fails_with_its_fix(tmp_path, source_checkout, fix):
+    (tmp_path / ".booley").mkdir()
+    if source_checkout:
+        (tmp_path / "pyproject.toml").write_bytes(b"[tool.booley]\nsource_checkout = true\n")
+    else:
+        (tmp_path / ".booley" / "booley.toml").write_bytes(
+            b"[mcp_tools.custom_check]\nenabled = true\n"
         )
-        return rec
+    rec = _Rec()
 
-    def test_sv_tb_without_sentinel_warns(self, tmp_path):
-        (tmp_path / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
-        rec = self._run(tmp_path, ["tb.sv"])
-        assert rec.kinds() == {"warn"}
-        msg = rec.warns()[0]
-        assert "no configured pass sentinel" in msg
-        assert "$display" in msg  # SV-shaped hint, not the cocotb one
+    # Private: a whole Doctor run rejects this config at project load and refuses a
+    # Source Checkout before any check, so only the check itself reaches these branches.
+    doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, rec.f)
 
-    def test_python_tb_without_sentinel_gets_cocotb_hint(self, tmp_path):
-        (tmp_path / "test_dut.py").write_text("import cocotb\n", encoding="utf-8")
-        rec = self._run(tmp_path, ["test_dut.py"])
-        assert rec.kinds() == {"warn"}
-        assert "cocotb_module" in rec.warns()[0]  # F-8: hint fits a .py TB
-
-    def test_custom_sentinel_from_booley_toml_passes(self, tmp_path):
-        (tmp_path / "tb.sv").write_text('initial $display("ALL GOOD");\n', encoding="utf-8")
-        rec = self._run(
-            tmp_path,
-            ["tb.sv"],
-            booley_toml={"flows": {"sim": {"pass_sentinels": ["ALL GOOD"]}}},
-        )
-        assert rec.kinds() == {"pass"}
-
-    def test_fusesoc_error_returns_silently(self, tmp_path, monkeypatch):
-        # Documenting CURRENT behavior: an enumeration failure emits nothing
-        # from this probe (the structural core audit reports it separately).
-        def boom(_handle):
-            raise fusesoc_registry.FuseSocError("core exploded")
-
-        project = _mk_audit(tmp_path)
-        broken = SimpleNamespace(
-            select=lambda token: token,
-            inspect=boom,
-        )
-        monkeypatch.setattr(
-            doctor.TargetCatalog,
-            "build",
-            classmethod(lambda _cls, _root: broken),
-        )
-        rec = _Rec()
-        doctor._check_sim_verdict_setup(
-            project, tmp_path, "sim_fast", _sim_ref(tmp_path), rec.p, rec.w
-        )
-        assert rec.events == []
-
-    def test_cocotb_target_is_exempt(self, tmp_path):
-        # ADR 0034 decision 6: verdict comes from results.xml — no sentinel
-        # scan, no events at all.
-        rec = self._run(
-            tmp_path,
-            ["test_dut.py"],
-            ref=_sim_ref(tmp_path, cocotb_module="test_dut"),
-        )
-        assert rec.events == []
-
-
-def test_first_smoke_test_reads_the_selected_cores_section(tmp_path):
-    write_two_core_sim_project(
-        tmp_path,
-        '["vendor:a:x#sim"]\ntests = ["a_first"]\n["vendor:b:y#sim"]\ntests = ["b_first"]\n',
-    )
-    project = _mk_audit(tmp_path)
-    assert doctor._first_smoke_test(project, "y#sim") == "b_first"
-    assert doctor._first_smoke_test(project, "x#sim") == "a_first"
-
-
-# ---------------------------------------------------------------------------
-# _check_custom_endpoints — both FAIL branches
-# ---------------------------------------------------------------------------
-
-
-class TestCustomEndpoints:
-    def test_generic_error_fails_with_message(self, tmp_path, monkeypatch):
-        from booley.mcp import endpoint_validation
-
-        def boom(_root):
-            raise ValueError("booley.toml is not a table")
-
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
-        rec = _Rec()
-        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, rec.f)
-        assert rec.kinds() == {"fail"}
-        assert "custom endpoint validation failed: booley.toml is not a table" in rec.fails()[0]
-
-    def test_source_checkout_refusal_points_at_the_project_workspace(self, tmp_path, monkeypatch):
-        from booley.mcp import endpoint_validation
-        from booley.runtime.checkout_role import SourceCheckoutProjectError
-
-        def boom(_root):
-            raise SourceCheckoutProjectError("refusing the Booley source checkout")
-
-        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints", boom)
-        rec = _Rec()
-        fixes: list[str] = []
-
-        def fail_with_fix(m: str, fix: str = "") -> None:
-            rec.f(m, fix)
-            fixes.append(fix)
-
-        doctor._check_custom_endpoints(tmp_path, rec.p, rec.w, fail_with_fix)
-        assert rec.kinds() == {"fail"}
-        assert fixes == ["run Doctor from the Project's workspace, not a Booley source checkout"]
-
-
-# ---------------------------------------------------------------------------
-# _check_git_conflicts + _warn_if_dirty — real git repos in tmp_path
-# ---------------------------------------------------------------------------
-
-
-def _git_init(root: Path) -> None:
-    run_bounded_child(["git", "init", "-q", str(root)], check=True)
-
-
-class TestGitConflictsAndDirty:
-    def test_merge_in_progress_fails(self, tmp_path):
-        _git_init(tmp_path)
-        # A MERGE_HEAD in .git is exactly what an unfinished merge leaves.
-        (tmp_path / ".git" / "MERGE_HEAD").write_text("0" * 40 + "\n", encoding="utf-8")
-        rec = _Rec()
-        doctor._check_git_conflicts(tmp_path, rec.p, rec.f)
-        assert rec.kinds() == {"fail"}
-        assert "git operation in progress" in rec.fails()[0]
-        assert "merge" in rec.fails()[0]
-
-    def test_clean_repo_passes(self, tmp_path):
-        _git_init(tmp_path)
-        rec = _Rec()
-        doctor._check_git_conflicts(tmp_path, rec.p, rec.f)
-        assert rec.kinds() == {"pass"}
-
-    def test_dirty_tree_notes_count(self, tmp_path):
-        _git_init(tmp_path)
-        (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
-        (tmp_path / "b.txt").write_text("y\n", encoding="utf-8")
-        rec = _Rec()
-        doctor._note_if_dirty(tmp_path, rec.n)
-        assert rec.kinds() == {"note"}
-        assert "2 modified file(s)" in rec.events[0][1]
-
-    def test_clean_tree_stays_silent(self, tmp_path):
-        _git_init(tmp_path)
-        rec = _Rec()
-        doctor._note_if_dirty(tmp_path, rec.n)
-        assert rec.events == []
-
-
-# ---------------------------------------------------------------------------
-# _check_legacy_distribution — both FAIL branches (pre-rename `booley` dist)
-# ---------------------------------------------------------------------------
+    assert rec.kinds() == {"fail"}
+    assert rec.fails()[0].startswith("custom endpoint validation failed: ")
+    assert rec.fix_hints == [fix]
 
 
 class _FakeDist:
     metadata: ClassVar[dict[str, str]] = {"Version": "0.0.9"}
 
 
-class TestLegacyDistribution:
-    def _patch_dist_present(self, monkeypatch, *, current: bool) -> None:
-        # The probe does `from importlib.metadata import distribution` at call
-        # time, so patching the module attribute intercepts it.
-        def distribution(name):
-            if name == "booley" or current:
-                return _FakeDist()
-            raise importlib.metadata.PackageNotFoundError(name)
+@pytest.mark.parametrize(
+    ("installed", "dist_name", "expected"),
+    [
+        ({"booley"}, "booley", ("fail", "booley-rtl` is not installed at all", "0.0.9")),
+        ({"booley", "booley-rtl"}, "booley-rtl", ("fail", "both `booley`", "shadow")),
+        (set(), "booley-rtl", ("pass",)),
+    ],
+    ids=["legacy-only", "both-shadowing", "current-only"],
+)
+def test_legacy_distribution_audit(monkeypatch, installed, dist_name, expected):
+    def distribution(name):
+        if name in installed:
+            return _FakeDist()
+        raise importlib.metadata.PackageNotFoundError(name)
 
-        monkeypatch.setattr(importlib.metadata, "distribution", distribution)
-
-    def test_legacy_only_install_fails(self, monkeypatch):
-        self._patch_dist_present(monkeypatch, current=False)
-        monkeypatch.setattr(booley, "__dist_name__", "booley")
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="0.0.9",
-                origin=VersionOrigin.DISTRIBUTION,
-                distribution_name="booley",
-            ),
-        )
-        rec = _Rec()
-        _record_environment(
-            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
-        )
-        assert rec.kinds() == {"fail"}
-        assert "booley-rtl` is not installed at all" in rec.fails()[0]
-        assert "0.0.9" in rec.fails()[0]
-
-    def test_both_installed_fails_on_shadowing(self, monkeypatch):
-        self._patch_dist_present(monkeypatch, current=True)
-        monkeypatch.setattr(booley, "__dist_name__", "booley-rtl")
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="1.0.0",
-                origin=VersionOrigin.DISTRIBUTION,
-                distribution_name="booley-rtl",
-            ),
-        )
-        rec = _Rec()
-        _record_environment(
-            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
-        )
-        assert rec.kinds() == {"fail"}
-        assert "both `booley`" in rec.fails()[0]
-        assert "shadow" in rec.fails()[0]
-
-    def test_no_legacy_dist_passes(self, monkeypatch):
-        def not_found(name):
-            raise importlib.metadata.PackageNotFoundError(name)
-
-        monkeypatch.setattr(importlib.metadata, "distribution", not_found)
-        rec = _Rec()
-        _record_environment(
-            host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f
-        )
-        assert rec.kinds() == {"pass"}
-
-
-# ---------------------------------------------------------------------------
-# _check_image_bakes_runtime_marker — WARN on missing marker + SKIP paths
-# ---------------------------------------------------------------------------
-
-
-class TestImageBakesVenueMarker:
-    _IMAGE = "unit-sandbox:latest"
-
-    def _patch_inspect(self, monkeypatch, *, returncode: int, env: list | None):
-        def fake_run(cmd, **kwargs):
-            assert cmd[1:3] == ["image", "inspect"], f"unexpected argv: {cmd}"
-            stdout = json.dumps(env) if env is not None else ""
-            return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
-
-        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-
-    def test_marker_absent_warns(self, monkeypatch):
-        self._patch_inspect(monkeypatch, returncode=0, env=["PATH=/usr/bin", "LANG=C.UTF-8"])
-        rec = _Rec()
-        doctor._check_image_bakes_runtime_marker("docker", self._IMAGE, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"warn"}
-        assert "does not bake BOOLEY_CONTAINER=1" in rec.warns()[0]
-
-    def test_no_runtime_skips(self):
-        rec = _Rec()
-        doctor._check_image_bakes_runtime_marker(None, self._IMAGE, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"skip"}
-        assert "container runtime unavailable" in rec.skips()[0]
-
-    def test_missing_image_skips(self, monkeypatch):
-        self._patch_inspect(monkeypatch, returncode=1, env=None)
-        rec = _Rec()
-        doctor._check_image_bakes_runtime_marker("docker", self._IMAGE, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"skip"}
-        assert "not present" in rec.skips()[0]
-
-    def test_marker_present_passes(self, monkeypatch):
-        self._patch_inspect(monkeypatch, returncode=0, env=["BOOLEY_CONTAINER=1"])
-        rec = _Rec()
-        doctor._check_image_bakes_runtime_marker("docker", self._IMAGE, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    monkeypatch.setattr(booley, "__dist_name__", dist_name)
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="1.0.0", origin=VersionOrigin.DISTRIBUTION, distribution_name=dist_name
+        ),
+    )
+    rec = _Rec()
+    _record_environment(host_environment.audit_legacy_distribution(), passed=rec.p, failed=rec.f)
+    [(kind, message)] = rec.events
+    assert kind == expected[0]
+    assert all(text in message for text in expected[1:])

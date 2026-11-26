@@ -3,52 +3,36 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from concurrent.futures import ThreadPoolExecutor
-from io import StringIO
+from pathlib import Path
 
 import pytest
 
 from booley.runtime import lifecycle_lock
-from booley.runtime.file_lock import LockContentionError, LockTimeoutError
+from booley.runtime.file_lock import LockContentionError
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.time_budget import hang_guard_s
 
 
-def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
-
-    with lifecycle_lock.host_lifecycle_lock("session refresh"):
-        pass
-
-    owner = (tmp_path / "locks" / "docker-lifecycle.lock").read_text(encoding="utf-8")
-    assert owner == f"pid={os.getpid()} operation=session refresh\n"
+@pytest.fixture
+def lock_path(tmp_path: Path) -> Path:
+    """The lock file under the config directory the autouse isolation fixture selects."""
+    return tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_host_lifecycle_lock_creates_private_booley_directories_below_shared_xdg_root(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("root_exists", [True, False], ids=["existing-root", "missing-root"])
+def test_host_lifecycle_lock_keeps_its_directories_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_exists: bool
 ) -> None:
     xdg_root = tmp_path / "config"
-    xdg_root.mkdir(mode=0o755)
-    xdg_root.chmod(0o755)
+    if root_exists:
+        xdg_root.mkdir(mode=0o755)
+        xdg_root.chmod(0o755)
     booley_config = xdg_root / "booley"
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: booley_config)
-
-    with lifecycle_lock.host_lifecycle_lock("session up"):
-        pass
-
-    assert stat.S_IMODE(xdg_root.stat().st_mode) == 0o755
-    assert stat.S_IMODE(booley_config.stat().st_mode) == 0o700
-    assert stat.S_IMODE((booley_config / "locks").stat().st_mode) == 0o700
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode policy")
-def test_host_lifecycle_lock_creates_missing_xdg_root_privately_under_open_umask(
-    tmp_path, monkeypatch
-) -> None:
-    xdg_root = tmp_path / "config"
-    booley_config = xdg_root / "booley"
+    # The autouse config directory's parent always exists; this test chooses whether it does.
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: booley_config)
 
     original_umask = os.umask(0o002)
@@ -58,14 +42,12 @@ def test_host_lifecycle_lock_creates_missing_xdg_root_privately_under_open_umask
     finally:
         os.umask(original_umask)
 
-    assert stat.S_IMODE(xdg_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(xdg_root.stat().st_mode) == (0o755 if root_exists else 0o700)
     assert stat.S_IMODE(booley_config.stat().st_mode) == 0o700
     assert stat.S_IMODE((booley_config / "locks").stat().st_mode) == 0o700
 
 
-def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, caplog) -> None:
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
-    lock_path = tmp_path / "locks" / "docker-lifecycle.lock"
+def test_host_lifecycle_lock_waits_for_current_owner(lock_path, monkeypatch, caplog) -> None:
     waiting = observe_lifecycle_contention(monkeypatch)
 
     def acquire() -> None:
@@ -91,8 +73,7 @@ def test_host_lifecycle_lock_waits_for_current_owner(tmp_path, monkeypatch, capl
     assert owner == f"pid={os.getpid()} operation=session up\n"
 
 
-def test_host_lifecycle_lock_does_not_reclassify_body_error(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
+def test_host_lifecycle_lock_does_not_reclassify_body_error() -> None:
     body_error = LockContentionError("inner resource is busy")
 
     with (
@@ -104,34 +85,27 @@ def test_host_lifecycle_lock_does_not_reclassify_body_error(tmp_path, monkeypatc
     assert raised.value is body_error
 
 
-def test_host_lifecycle_lock_reports_owner_on_default_timeout(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
-    lock_path = tmp_path / "locks" / "docker-lifecycle.lock"
-    lock_path.parent.mkdir()
-    lock_path.write_text("pid=41 operation=session refresh\n", encoding="utf-8")
-
-    timeouts: list[float] = []
-
-    def timeout(_handle, *, timeout_s, on_wait=None) -> None:
-        del on_wait
-        timeouts.append(timeout_s)
-        raise LockTimeoutError("busy")
-
-    monkeypatch.setattr(lifecycle_lock, "wait_for_file_lock", timeout)
+@pytest.mark.parametrize(
+    ("owner", "shown"),
+    [
+        pytest.param("pid=41 operation=booley init", "pid=41 operation=booley init", id="text"),
+        pytest.param("\0pid=41 operation=booley init", "another Booley command", id="nul"),
+    ],
+)
+def test_host_lifecycle_lock_timeout_names_readable_owner(
+    lock_path: Path, owner: str, shown: str
+) -> None:
+    expected = "another Booley command" if os.name == "nt" else shown
 
     with (
+        held_lifecycle_lock(lock_path, owner),
         pytest.raises(
             lifecycle_lock.LifecycleLockError,
-            match=(
-                r"pid=41 operation=session refresh.*timed out after waiting "
-                rf"{lifecycle_lock.DEFAULT_WAIT_TIMEOUT_SECONDS:g}s"
-            ),
+            match=rf"\({re.escape(expected)}\).*timed out after waiting 0s",
         ),
-        lifecycle_lock.host_lifecycle_lock("session command"),
+        lifecycle_lock.host_lifecycle_lock("session command", wait_timeout_s=0),
     ):
         pass
-
-    assert timeouts == [lifecycle_lock.DEFAULT_WAIT_TIMEOUT_SECONDS]
 
 
 def test_lock_owner_falls_back_when_contended_file_cannot_be_read() -> None:
@@ -139,11 +113,6 @@ def test_lock_owner_falls_back_when_contended_file_cannot_be_read() -> None:
         def seek(self, _offset: int) -> None:
             raise OSError("locked byte cannot be read")
 
+    # Only a Windows byte-range lock makes the contended read raise; no POSIX run of
+    # `host_lifecycle_lock` reaches this fallback.
     assert lifecycle_lock._lock_owner(UnreadableOwner()) == "another Booley command"
-
-
-def test_lock_owner_falls_back_when_windows_returns_partial_locked_content() -> None:
-    assert (
-        lifecycle_lock._lock_owner(StringIO("\0pid=41 operation=booley init\n"))
-        == "another Booley command"
-    )

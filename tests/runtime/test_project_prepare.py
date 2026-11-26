@@ -15,12 +15,15 @@ import pytest
 from tests.pipe_holding_tree import (
     PARENT_SCRIPT,
     heartbeat_tree,
+    start_deadline_after_tree_start,
+    wait_for_tree_start,
     wait_until_heartbeat_stops,
 )
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
 import booley
+from booley.runtime import platform_paths
 from booley.runtime.project_prepare import prepare_project
 
 # ``timeout_s`` is printed raw by ``prepare_project``, so it stays an ``int``.
@@ -180,11 +183,29 @@ def _heartbeat_hook_checkout(tmp_path: Path, paths: dict[str, Path]) -> Path:
 
 
 @pytest.mark.parametrize("logged", [False, True], ids=["captured", "logged"])
-def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, logged: bool) -> None:
+def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, monkeypatch, logged: bool) -> None:
     log = tmp_path / "h.log" if logged else None
     with heartbeat_tree(tmp_path) as paths:
         root = _heartbeat_hook_checkout(tmp_path, paths)
-        started = time.monotonic()
+        began = time.monotonic()
+        if logged:
+            # The logged path starts its deadline before it spawns the hook, so only
+            # its tree kill can wait for the tree to start.  The wait is timed apart
+            # from the timeout, and the kill still runs when the tree never started.
+            real_kill, waited = platform_paths.kill_process_tree, []
+
+            def kill(process: subprocess.Popen) -> None:
+                wait_began = time.monotonic()
+                try:
+                    if not waited:  # the exception cleanup calls the kill a second time
+                        wait_for_tree_start(paths)
+                finally:
+                    waited.append(time.monotonic() - wait_began)
+                    real_kill(process)
+
+            monkeypatch.setattr(platform_paths, "kill_process_tree", kill)
+        else:
+            started = start_deadline_after_tree_start(monkeypatch, paths)
 
         result = prepare_project(
             root, root, slug="s", sim_flow_enabled=False, timeout_s=_HOOK_TIMEOUT_S, log=log
@@ -192,7 +213,8 @@ def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, logged: bool) -> None:
 
         # The timeout plus the helper's fixed 32 s Windows margin, under a scaled
         # bound below the grandchild's self-exit
-        assert time.monotonic() - started < scaled(38)
+        tree_started = began + waited[0] if logged else started[0]
+        assert time.monotonic() - tree_started < scaled(38)
         assert not result.ok
         assert result.error == f"post-setup hook timed out ({_HOOK_TIMEOUT_S}s)"
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"

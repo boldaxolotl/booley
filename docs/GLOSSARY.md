@@ -361,7 +361,8 @@ How a commit is accepted: [ADR
 against metrics their Targets declare, and [ADR
 0091](adr/0091-review-commits-outside-measurement.md) reviews commits outside
 that measurement. `booley measure` checks `metrics.toml` and measures and stores
-runs; Review Runs are not built yet.
+runs; `booley review` stores Review Runs behind the `reviewed-commits` Feature
+Flag until a minor release deletes the flag.
 
 **Metric-Driven Development**:
 Accepting work by measuring a commit against the **Target Metrics** its Project declares, in place of approving a list of criteria for each task. Adoption is optional: a Project that declares no metrics is unaffected.
@@ -387,7 +388,12 @@ A Reviewer focus that a Target declares in `reviews.toml` for one source role (R
 _Avoid_: review kind, review type, Review Goal
 
 **Reviewed Commit**:
-A commit on which a verify **Review Run**, one stored run of its Declared Reviews (the discovery pass over changes since the **Base**, or the verify pass re-checking open findings), left no finding open at or above the Declared Reviews' threshold. It is not reproducible, never gates CI, and is independent of being a **Measured Commit**.
+A commit on which its latest verify **Review Run**, or a discovery **Review
+Run**, left no finding open at or above the Declared Reviews' threshold. A
+**Review Run** is one stored run of its Declared Reviews: the discovery pass
+over changes since the **Base**, or the verify pass re-checking open findings.
+It is not reproducible, never gates CI, and is independent of being a **Measured
+Commit**.
 _Avoid_: approved commit, signed-off commit, clean review; review session, review receipt (for a Review Run)
 
 ## Retired and ambiguous terminology

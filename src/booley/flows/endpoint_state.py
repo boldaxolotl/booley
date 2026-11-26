@@ -68,8 +68,6 @@ class EndpointState(ABC):
     cli_help: ClassVar[CliHelp | None] = None
     # Does this endpoint modify code? If True, the report carries the run's change statistics.
     code_modifying: bool = False
-    # Does this endpoint operate per Target? False suppresses the Target in display headers.
-    config_aware: bool = True
     # Target-aware deterministic Flows override this so both argparse and the
     # generated MCP schema require an explicit selection.
     target_required: bool = False
@@ -101,16 +99,8 @@ class EndpointState(ABC):
 
     @property
     def _selected_target(self) -> str:
-        """The selected Target name used by shared report/display plumbing."""
+        """The selected Target name used by shared report plumbing."""
         return getattr(self.args, "target", "") or ""
-
-    @property
-    def display_tag(self) -> str | None:
-        """Optional tag shown in the endpoint box header (e.g. "rtl", "tb").
-
-        Overrides config_aware when set. Available after arg parsing.
-        """
-        return None
 
     def __init__(self) -> None:
         self._args: Any = None
@@ -345,30 +335,16 @@ class EndpointState(ABC):
         self,
         prepared: PreparedExecution,
         outcome: EndpointOutcome,
-        *,
-        started: float | None,
     ) -> ExecutionResult:
-        return endpoint_session.finish_execution(self, prepared, outcome, started=started)
+        return endpoint_session.finish_execution(self, prepared, outcome)
 
     def _finish_main(
         self,
         result: EndpointOutcome,
-        display_target: str | None,
-        display_label: str | None,
-        started: float | None,
         *,
-        dry_run: bool,
         persist_report: bool,
     ) -> int:
-        return endpoint_reporting._finish_main(
-            self,
-            result,
-            display_target,
-            display_label,
-            started,
-            dry_run=dry_run,
-            persist_report=persist_report,
-        )
+        return endpoint_reporting._finish_main(self, result, persist_report=persist_report)
 
     # Admission class for this endpoint. None = quick endpoint, no admission.
     JOB_CLASS: ClassVar[str | None] = None
@@ -400,12 +376,6 @@ class EndpointState(ABC):
         Specialists and the Mutation Flow override it with a companion claim.
         """
         return measure_memory_claim(project, requests)
-
-    def _resolve_display_config(self) -> str | None:
-        return endpoint_reporting._resolve_display_config(self)
-
-    def _resolve_display_label(self) -> str | None:
-        return endpoint_reporting._resolve_display_label(self)
 
     def _publish_console_report(self, result: EndpointOutcome) -> None:
         return endpoint_reporting._publish_console_report(self, result)

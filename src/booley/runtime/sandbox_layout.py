@@ -22,6 +22,9 @@ PROJECT_DATA_MOUNT_PATH = "/work/.booley"
 # Read-only bind of the issued devcontainer spec; only Session Issuance mounts it.
 DEVCONTAINER_TARGET = "/work/.devcontainer"
 
+# T3 Code's managed policy; Session Issuance mounts the Sandbox's own copy over it.
+T3_POLICY_TARGET = "/etc/t3code/policy.json"
+
 
 def canonical_project_alias_path(path: Path) -> Path:
     """Translate only the protected image alias, preserving every suffix link.

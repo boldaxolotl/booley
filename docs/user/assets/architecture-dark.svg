@@ -32,7 +32,7 @@
   </style>
   <rect class="bg" width="1100" height="1085"/>
   <title id="fig2t">Booley architecture</title>
-  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley devcontainer Sandbox per Project folder, and VS Code attaches to it through Dev Containers. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, Developer Agent sessions (Claude Code or Codex, one per Sandbox terminal) edit the Project's Git worktrees (the main checkout plus one worktree per concurrent session), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has FuseSoC or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes a report. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
+  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley devcontainer Sandbox per Project folder, and VS Code attaches to it through Dev Containers. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, Developer Agent sessions (Claude Code or Codex, one per Sandbox terminal) edit the Project's Git worktrees (the main checkout plus one worktree per T3 Code thread, which Booley prepares), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has FuseSoC or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes a report. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
   <defs>
     <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
   </defs>
@@ -77,14 +77,14 @@
   <text class="t" x="64" y="244">Developer Agent sessions</text>
   <text class="b" x="64" y="282">Claude Code or Codex,</text>
   <text class="b" x="64" y="303">one per Sandbox terminal</text>
-  <text class="s" x="64" y="327">started by booley chat</text>
+  <text class="s" x="64" y="327">started from T3 Code</text>
 
   <path class="ln" d="M390 280 H430" marker-end="url(#f2a)"/>
   <text class="e" x="410" y="271" text-anchor="middle">edit</text>
   <rect class="bx" x="430" y="220" width="620" height="120"/>
   <rect class="hd" x="430" y="220" width="620" height="36"/>
   <text class="t" x="444" y="244">Project Git worktrees</text>
-  <text class="s" x="1036" y="244" text-anchor="end">main checkout + one per concurrent session</text>
+  <text class="s" x="1036" y="244" text-anchor="end">main checkout + one per T3 Code thread</text>
   <text class="b" x="444" y="284">• RTL and testbenches</text>
   <text class="b" x="444" y="310">• <tspan class="k">FuseSoC .core</tspan> Targets</text>
   <text class="b" x="744" y="284">• booley.toml, hooks</text>

@@ -23,6 +23,8 @@
 !src/booley/data/docker/claude-managed-settings.json
 !src/booley/data/docker/t3code-policy.json
 !src/booley/data/docker/session_activity_hook.py
+!src/booley/data/docker/t3code_tool_deny_hook.py
+!src/booley/data/docker/t3code-denied-tools.txt
 !src/booley/data/docker/agent-clis-package.json
 !src/booley/data/docker/agent-clis-package-lock.json
 !src/booley/data/docker/openroad-source-manifest.json

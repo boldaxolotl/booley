@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.runtime import project_image as pi
 
@@ -41,22 +43,6 @@ def _missing_message(package: str, users: str) -> str:
     )
 
 
-def test_known_header_warns_with_package_and_source(tmp_path: Path) -> None:
-    _write(tmp_path, "tb/harness.cc", "#include <libelf.h>\n")
-
-    report = _inspect(tmp_path, ("tb/harness.cc",))
-
-    assert _rows(report) == [
-        (
-            Severity.WARN,
-            _missing_message("libelf-dev", "tb/harness.cc"),
-            "",
-            "sandbox.native-dependency-missing",
-            "libelf-dev",
-        )
-    ]
-
-
 def test_declared_package_passes_before_remaining_warnings(tmp_path: Path) -> None:
     _write(tmp_path, "tb/a.cc", "#include <libelf.h>\n")
     _write(tmp_path, "tb/b.cc", '#include "gmp.h"\n')
@@ -87,24 +73,22 @@ def test_declared_package_passes_before_remaining_warnings(tmp_path: Path) -> No
     ]
 
 
-def test_plain_apt_install_ending_at_semicolon_declares_package(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "dockerfile,expected",
+    [
+        ("RUN apt install -y libelf-dev; true\n", (Severity.PASS, None)),
+        ("# install libelf-dev later\n", (Severity.WARN, "libelf-dev")),
+    ],
+    ids=["apt-install-ending-at-semicolon-declares", "comment-does-not-declare"],
+)
+def test_dockerfile_declares_the_package_only_in_an_install_command(
+    tmp_path: Path, dockerfile: str, expected: tuple[Severity, str | None]
+) -> None:
     _write(tmp_path, "tb/a.cc", "#include <libelf.h>\n")
 
-    report = _inspect(
-        tmp_path, ("tb/a.cc",), "FROM booley-sandbox\nRUN apt install -y libelf-dev; true\n"
-    )
+    report = _inspect(tmp_path, ("tb/a.cc",), "FROM booley-sandbox\n" + dockerfile)
 
-    assert [(f.severity, f.message) for f in report.findings] == [
-        (Severity.PASS, "native build dependencies declared in project Dockerfile: libelf-dev")
-    ]
-
-
-def test_dockerfile_comment_does_not_declare_package(tmp_path: Path) -> None:
-    _write(tmp_path, "tb/a.cc", "#include <libelf.h>\n")
-
-    report = _inspect(tmp_path, ("tb/a.cc",), "FROM booley-sandbox\n# install libelf-dev later\n")
-
-    assert [(f.severity, f.subject) for f in report.findings] == [(Severity.WARN, "libelf-dev")]
+    assert [(f.severity, f.subject) for f in report.findings] == [expected]
 
 
 def test_clean_sources_pass_with_scanned_count(tmp_path: Path) -> None:

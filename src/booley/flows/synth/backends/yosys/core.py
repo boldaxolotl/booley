@@ -510,8 +510,6 @@ def _build_abc_command(
         abc = f"{abc_base} -script +strash;balance;rewrite;rewrite,-z;refactor;{map_step}{pstats}"
     elif abc_recipe == "balanced":
         abc = f"{abc_base} -script +strash;ifraig;balance;rewrite;rewrite,-z;balance;refactor;balance;rewrite;{map_step}{pstats}"
-    elif abc_recipe and abc_recipe.startswith("+"):
-        abc = f"{abc_base} -script {abc_recipe}"
     else:
         abc = abc_base
     return abc + "; opt"

@@ -2,122 +2,80 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from tests.diagnostic_helpers import (
-    _record_audit,
-)
 
-from booley.audit import (
-    agent_schema,
-    flow_schema,
-    project_schema,
-)
+from booley.audit import agent_schema, flow_schema, project_schema
+from booley.audit.config_common import ConfigFindingSeverity, ConfigTableAudit
+from booley.audit.diagnostic_results import Severity
+from booley.harness.setup import readiness
 
 
-def test_validate_one_flow_table_rejects_retired_default_target():
-    fails: list[str] = []
-    warns: list[str] = []
-
-    def _fail(msg: str, fix: str = "") -> None:
-        fails.append(msg)
-
-    def _warn(msg: str) -> None:
-        warns.append(msg)
-
-    ok = _record_audit(
-        flow_schema.audit_flow_table("lint", {"default_target": "lint_core"}),
-        warned=_warn,
-        failed=_fail,
-    )
-    assert ok is False
-    assert any("[flows.lint].default_target is retired" in m for m in fails)
-
-
-def test_validate_one_flow_table_rejects_retired_target_key():
-    fails: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_table("lint", {"target": "ibex_top#lint"}),
-        warned=lambda _msg: None,
-        failed=lambda msg, fix="": fails.append(f"{msg} {fix}"),
+def _texts(audit: ConfigTableAudit, severity: ConfigFindingSeverity) -> str:
+    """Message and fix of every finding of one severity, one per line."""
+    return "\n".join(
+        f"{finding.message} {finding.fix}"
+        for finding in audit.findings
+        if finding.severity is severity
     )
 
-    assert ok is False
-    assert any("[flows.lint].target is retired" in message for message in fails)
-    assert any("Flow calls require an explicit target" in message for message in fails)
 
-
-def test_validate_one_flow_table_rejects_retired_selftest_table():
-    fails: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_table("sim", {"selftest": {"good": "main", "bad": "known_bad"}}),
-        warned=lambda _msg: None,
-        failed=lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any("[flows.sim.selftest] is retired" in message for message in fails)
-    assert any("bad-overlay" in message for message in fails)
-
-
-@pytest.mark.parametrize("key", ["builtin", "custom"])
-def test_validate_flow_tables_rejects_retired_allowlists(key):
-    fails: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_tables({"tools": {key: ["sim"]}}, ("sim", "lint", "synth")),
-        warned=lambda _msg: None,
-        failed=lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any("retired" in message and "enabled = false" in message for message in fails)
-
-
-@pytest.mark.parametrize("retired", ["elab", "elaborate"])
-def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
-    fails: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_tables(
-            {"flows": {retired: {"standalone_frontend": "iverilog"}, "sim": {}}},
-            ("sim", "lint", "synth"),
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param(
+            {"flows": {"lint": {"default_target": "lint_core"}}},
+            ["[flows.lint].default_target is retired"],
+            id="default-target",
         ),
-        warned=lambda _msg: None,
-        failed=lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
+        pytest.param(
+            {"flows": {"lint": {"target": "ibex_top#lint"}}},
+            ["[flows.lint].target is retired", "Flow calls require an explicit target"],
+            id="target",
+        ),
+        pytest.param(
+            {"flows": {"sim": {"selftest": {"good": "main", "bad": "known_bad"}}}},
+            ["[flows.sim.selftest] is retired", "bad-overlay"],
+            id="selftest",
+        ),
+        pytest.param({"tools": {"builtin": ["sim"]}}, ["[tools] is retired"], id="tools"),
+        pytest.param(
+            {"flows": {"custom": ["sim"]}},
+            ["[flows].custom is retired", "enabled = false"],
+            id="custom",
+        ),
+        pytest.param(
+            {"flows": {"elab": {"standalone_frontend": "iverilog"}}},
+            ["[flows.elab] is retired", "sim --mode elab-only", "delete standalone_frontend"],
+            id="elab",
+        ),
+        pytest.param(
+            {"flows": {"elaborate": {"standalone_frontend": "iverilog"}}},
+            ["[flows.elaborate] is retired"],
+            id="elaborate",
+        ),
+        pytest.param(
+            {"flows": {"synth": {"flatten": True}}},
+            ["Target build input(s): flatten", ".core Target"],
+            id="synth-flatten",
+        ),
+        pytest.param(
+            {"flows": {"fpga": {"part": "xc7a35tcsg324-1"}}},
+            ["Target build input(s): part", ".core Target"],
+            id="fpga-part",
+        ),
+    ],
+)
+def test_retired_and_target_owned_flow_settings_fail_with_their_migration(
+    data: dict[str, Any], expected: list[str]
+) -> None:
+    audit = flow_schema.audit_flow_tables(data, ())
 
-    assert ok is False
-    assert any(
-        f"[flows.{retired}] is retired" in message
-        and "sim --mode elab-only" in message
-        and "delete standalone_frontend" in message
-        for message in fails
-    )
-
-
-def test_validate_one_flow_table_accepts_lint_timeout_ms():
-    """Lint reads the same persistent timeout policy as every other built-in Flow."""
-    fails: list[str] = []
-    warns: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_table("lint", {"timeout_ms": 900000}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert warns == []
-
-    # simulate DOES read timeout_ms → no set-but-ignored warning.
-    warns.clear()
-    _record_audit(
-        flow_schema.audit_flow_table("sim", {"timeout_ms": 900000}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert not any("timeout_ms" in m for m in warns)
+    assert not audit.is_valid
+    failures = _texts(audit, ConfigFindingSeverity.FAIL)
+    for text in expected:
+        assert text in failures
 
 
 @pytest.mark.parametrize(
@@ -129,244 +87,111 @@ def test_validate_one_flow_table_accepts_lint_timeout_ms():
         ("fail_on_timing_violation", "synth", "lint", True),
         ("timing_report_paths", "synth", "lint", 10),
         ("warnings_as_errors", "lint", "sim", False),
-        # trace_files declares the TB's own dump path; only simulate reads it.
         ("trace_files", "sim", "lint", ["fpu.vcd"]),
-        # Only synth reads output_dir; the retired sim key is reported as retired.
-        ("output_dir", "synth", "sim", "util/sim"),
+        ("output_dir", "synth", "lint", "util/synth"),
+        ("expected_latches", "synth", "lint", 1),
+        ("expected_latches", "fpga", "sim", 1),
+        ("expected_comb_loops", "synth", "lint", 1),
+        ("expected_comb_loops", "fpga", "sim", 1),
+        ("pre_run_commands", "sim", "lint", ["make prep CASE=$BOOLEY_TEST_NAME"]),
     ],
 )
-def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, value):
-    """Every selective knob warns under a Flow that ignores it, stays quiet under its own.
+def test_flow_knob_warns_only_under_a_flow_that_ignores_it(
+    knob: str, reader: str, non_reader: str, value: object
+) -> None:
+    """A knob added to a Flow without a registered reader would be accepted under every Flow."""
 
-    A knob added to a Flow without an entry here is silently accepted anywhere,
-    which is the exact failure mode ``_SELECTIVE_FLOW_KNOBS`` exists to prevent.
-    """
-    fails: list[str] = []
-    warns: list[str] = []
+    def ignored(flow: str) -> tuple[bool, set[str | None]]:
+        audit = flow_schema.audit_flow_table(flow, {knob: value})
+        return audit.is_valid, {
+            f.subject for f in audit.findings if f.check_id == "config.flow-knob-ignored"
+        }
 
-    _record_audit(
-        flow_schema.audit_flow_table(non_reader, {knob: value}),
-        warned=lambda msg, fix="": warns.append(msg),
-        failed=lambda msg, fix="": fails.append(msg),
+    assert ignored(reader) == (True, set())
+    assert ignored(non_reader) == (True, {f"{non_reader}.{knob}"})
+
+
+@pytest.mark.parametrize("value", ["make prep", ["make prep", ""]])
+def test_pre_run_commands_must_be_a_list_of_nonempty_strings(value: object) -> None:
+    audit = flow_schema.audit_flow_table("sim", {"pre_run_commands": value})
+
+    assert not audit.is_valid
+    assert "pre_run_commands must be a list of strings, none empty" in _texts(
+        audit, ConfigFindingSeverity.FAIL
     )
-    # The retired sim output_dir is reported as retired, not as an ignored knob.
-    non_reader_message = "is retired" if knob == "output_dir" else "ignores it"
-    assert any(f"[flows.{non_reader}].{knob}" in m and non_reader_message in m for m in warns)
-
-    warns.clear()
-    _record_audit(
-        flow_schema.audit_flow_table(reader, {knob: value}),
-        warned=lambda msg, fix="": warns.append(msg),
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert not any(knob in m and ("ignores it" in m or "is retired" in m) for m in warns)
 
 
-def test_structural_allowance_knobs_accepted_only_under_their_flows():
-    """Each structural allowance is silent under synth and fpga, flagged under the rest."""
-    for knob in ("expected_latches", "expected_comb_loops"):
-        for flow in ("synth", "fpga"):
-            warns: list[str] = []
-            _record_audit(
-                flow_schema.audit_flow_table(flow, {knob: 1}),
-                warned=lambda msg, fix="", sink=warns: sink.append(msg),
-                failed=lambda msg, fix="": None,
-            )
-            assert not any(knob in m for m in warns), (knob, flow)
-        for flow in ("lint", "sim"):
-            warns = []
-            _record_audit(
-                flow_schema.audit_flow_table(flow, {knob: 1}),
-                warned=lambda msg, fix="", sink=warns: sink.append(msg),
-                failed=lambda msg, fix="": None,
-            )
-            assert any(f"[flows.{flow}].{knob}" in m and "ignores it" in m for m in warns), (
-                knob,
-                flow,
-            )
-
-
-def test_sim_output_dir_is_retired_without_failing_doctor():
+def test_sim_output_dir_is_retired_without_failing_doctor() -> None:
     """``[flows.sim].output_dir`` never changed a run: Doctor warns once, never fails."""
-    fails: list[str] = []
-    warns: list[str] = []
     audit = flow_schema.audit_flow_tables(
         {"flows": {"sim": {"output_dir": "util/sim"}, "lint": {}, "synth": {}}},
         ("sim", "lint", "synth"),
     )
 
-    ok = _record_audit(
-        audit,
-        warned=lambda msg, fix="": warns.append(msg),
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-
-    assert ok is True
-    assert fails == []
-    assert len(warns) == 1
-    assert "[flows.sim].output_dir is retired" in warns[0]
-    (finding,) = [f for f in audit.findings if f.check_id == "config.flow-key-retired"]
+    assert audit.is_valid
+    (finding,) = [f for f in audit.findings if f.severity is ConfigFindingSeverity.WARN]
+    assert "[flows.sim].output_dir is retired" in finding.message
+    assert finding.check_id == "config.flow-key-retired"
     assert finding.subject == "sim.output_dir"
     assert "delete [flows.sim].output_dir" in finding.fix
 
 
-@pytest.mark.parametrize(
-    ("flow_name", "knob", "value"),
-    [
-        ("synth", "flatten", True),
-        ("synth", "frontend", "slang"),
-        ("synth", "sdc", "constraints/top.sdc"),
-        ("fpga", "part", "xc7a35tcsg324-1"),
-        ("fpga", "ppa_profile", "compact"),
-        ("fpga", "out_of_context", True),
-        ("fpga", "strategy", "Flow_PerfOptimized_high"),
-    ],
-)
-def test_target_build_inputs_are_rejected_from_flow_tables(flow_name, knob, value):
-    fails: list[str] = []
-
-    ok = _record_audit(
-        flow_schema.audit_flow_table(flow_name, {knob: value}),
-        warned=lambda _msg: None,
-        failed=lambda msg, fix="": fails.append(f"{msg} {fix}"),
-    )
-
-    assert ok is False
-    assert any(knob in message and ".core Target" in message for message in fails)
-
-
-def test_validate_one_flow_table_pre_run_commands_shape():
-    """[flows.sim].pre_run_commands must be a list of strings (ADR 0039)."""
-    fails: list[str] = []
-    warns: list[str] = []
-
-    # A scalar (or a list with non-string entries) fails the shape check.
-    ok = _record_audit(
-        flow_schema.audit_flow_table("sim", {"pre_run_commands": "make prep"}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is False
-    assert any("[flows.sim].pre_run_commands must be a" in m for m in fails)
-
-    fails.clear()
-    ok = _record_audit(
-        flow_schema.audit_flow_table("sim", {"pre_run_commands": ["make prep", 3]}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is False
-
-    # An empty entry would run an empty shell line before every sim run.
-    fails.clear()
-    ok = _record_audit(
-        flow_schema.audit_flow_table("sim", {"pre_run_commands": ["make prep", ""]}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is False
-    assert any("none empty" in m for m in fails)
-
-    # A well-formed list passes, with no inert-knob warning on simulate.
-    fails.clear()
-    warns.clear()
-    ok = _record_audit(
-        flow_schema.audit_flow_table(
-            "sim", {"pre_run_commands": ["make prep CASE=$BOOLEY_TEST_NAME"]}
-        ),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert fails == []
-    assert not any("pre_run_commands" in m for m in warns)
-
-    # Only simulate reads it: set on lint it is inert → warn, not fail.
-    ok = _record_audit(
-        flow_schema.audit_flow_table("lint", {"pre_run_commands": ["make prep"]}),
-        warned=warns.append,
-        failed=lambda msg, fix="": fails.append(msg),
-    )
-    assert ok is True
-    assert any("[flows.lint].pre_run_commands" in m and "ignores it" in m for m in warns)
-
-
-def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):
+def test_windows_rejects_host_provisioning_during_config_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from booley.eda.provisioning import configuration as eda_config
 
-    passes: list[str] = []
-    warns: list[str] = []
-    fails: list[str] = []
     monkeypatch.setattr(eda_config.sys, "platform", "win32")
 
-    valid = _record_audit(
-        project_schema.audit_eda_config({"eda": {"vivado": {"provisioning": "host"}}}),
-        passed=passes.append,
-        warned=warns.append,
-        failed=lambda message, fix="": fails.append(message),
+    audit = project_schema.audit_eda_config({"eda": {"vivado": {"provisioning": "host"}}})
+
+    assert not audit.is_valid
+    assert "host provisioning is unsupported on Windows" in _texts(
+        audit, ConfigFindingSeverity.FAIL
     )
 
-    assert valid is False
-    assert any("host provisioning is unsupported on Windows" in message for message in fails)
+
+@pytest.mark.parametrize(
+    ("data", "valid", "expected"),
+    [
+        pytest.param({"agent": {"provider": "cluade"}}, False, ["'cluade'"], id="typo"),
+        pytest.param({"agent": "claude"}, False, ["[agent] must be a table"], id="not-a-table"),
+        pytest.param(
+            {"agent": {"provider": "codex"}},
+            True,
+            ["booley.toml [agent] default: codex"],
+            id="valid",
+        ),
+        pytest.param({}, True, [], id="absent"),
+        pytest.param({"agent": {}}, True, [], id="empty"),
+    ],
+)
+def test_agent_table_fails_only_a_present_and_wrong_value(
+    data: dict[str, Any], valid: bool, expected: list[str]
+) -> None:
+    """The provider may come from BOOLEY_PRIMARY_PROVIDER; only a present wrong value fails."""
+    audit = agent_schema.audit_agent_table(data)
+
+    assert audit.is_valid is valid
+    messages = [finding.message for finding in audit.findings]
+    assert len(messages) == len(expected)
+    for text, message in zip(expected, messages, strict=True):
+        assert text in message
 
 
-class TestValidateAgentTable:
-    """A typo'd provider is fatal, not advisory: `parse_agent_section` raises rather
-    than run a backend the project never chose, so every agent run dies with a
-    BackendConfigError. Doctor must be where that surfaces."""
-
-    @staticmethod
-    def _run(agent_section):
-        passes: list[str] = []
-        fails: list[str] = []
-        valid = _record_audit(
-            agent_schema.audit_agent_table(
-                {"agent": agent_section} if agent_section is not None else {}
-            ),
-            passed=passes.append,
-            failed=lambda msg, fix="": fails.append(msg),
-        )
-        return valid, passes, fails
-
-    def test_fails_on_an_invalid_provider(self):
-        valid, _passes, fails = self._run({"provider": "cluade"})
-        assert not valid
-        assert any("cluade" in m for m in fails)
-
-    def test_fails_when_agent_is_not_a_table(self):
-        valid, _passes, fails = self._run("claude")
-        assert not valid
-        assert any("[agent] must be a table" in m for m in fails)
-
-    def test_passes_and_names_a_valid_provider(self):
-        valid, passes, fails = self._run({"provider": "codex"})
-        assert valid and not fails
-        assert any("codex" in m for m in passes)
-
-    @pytest.mark.parametrize("section", [None, {}])
-    def test_absent_or_empty_agent_is_not_an_error(self, section):
-        # The provider may legitimately come from BOOLEY_PRIMARY_PROVIDER or the
-        # container's BOOLEY_AGENT_APP; only a present-and-wrong value fails.
-        valid, passes, fails = self._run(section)
-        assert valid and not fails and not passes
-
-
-def test_doctor_booley_toml_validation_names_retired_standalone_frontend(tmp_path):
+def test_doctor_stops_on_retired_standalone_frontend_with_its_own_migration(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Doctor stops on the retired key with its own migration text, not the EDA fix."""
-    from booley.audit.diagnostic_results import Findings
-    from booley.harness.setup import readiness
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_bytes(b'[flows.sim]\nstandalone_frontend = "auto"\n')
 
-    findings = Findings()
+    result = readiness.load_project(tmp_path)
 
-    valid = readiness._validate_booley_toml(
-        {"flows": {"sim": {"standalone_frontend": "auto"}}}, tmp_path, findings
-    )
-
-    assert valid is False
-    failures = findings.report().findings
-    assert len(failures) == 1
-    only = failures[0]
-    assert "[flows.sim].standalone_frontend is retired" in only.message
-    assert "each Target's simulator" in only.message
-    assert "booley.toml booley.toml" not in only.message
-    assert "commercial-EDA" not in only.fix
+    (finding,) = [f for f in result.report.findings if f.severity is Severity.FAIL]
+    assert finding.message.startswith("booley.toml [flows.sim].standalone_frontend is retired")
+    assert "each Target's simulator" in finding.message
+    assert "commercial-EDA" not in finding.fix
+    assert result.project is None

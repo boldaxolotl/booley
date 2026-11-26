@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -24,6 +25,7 @@ from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult
 from booley.runtime.skill_links import Outcome, SkillLinkEvent, SkillLinkReport
 from tests.conftest import require_symlinks
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.python_modules import set_importable
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +62,7 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     from booley.config import editor
 
     calls: list[str] = []
+    set_importable(monkeypatch, ensurepip=True)
     route_bounded_capture_through_subprocess_run(monkeypatch, bootstrap)
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: ())
     monkeypatch.setattr(
@@ -200,6 +203,55 @@ def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
     assert "base-image" not in calls
     assert "sidecars" not in calls
     assert result.findings[-1].resource == "image-capacity"
+
+
+@pytest.mark.parametrize(
+    ("importable", "planned", "blocked"),
+    [
+        pytest.param({}, True, True, id="missing-ensurepip"),
+        pytest.param({"virtualenv": True}, True, False, id="virtualenv"),
+        pytest.param({"ensurepip": True}, True, False, id="ensurepip"),
+        pytest.param({}, False, False, id="release-wheel"),
+    ],
+)
+def test_missing_ensurepip_stops_bootstrap_before_any_image_build(
+    monkeypatch: pytest.MonkeyPatch, importable: dict[str, bool], planned: bool, blocked: bool
+) -> None:
+    calls = _wire_current(monkeypatch)
+    set_importable(monkeypatch, **{"ensurepip": False, "virtualenv": False, **importable})
+    request = DockerBuildRequest("Sandbox Image", "sandbox")
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _i: (request,) * planned)
+    monkeypatch.setattr(
+        bootstrap, "ensure_docker_build_capacity", lambda *_a, **_k: calls.append("capacity")
+    )
+
+    result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
+
+    last = result.findings[-1]
+    assert (last.resource == "python-venv") is blocked
+    assert ("base-image" in calls) is not blocked
+    if blocked:
+        version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        assert f"apt install python{version}-venv" in last.detail
+        assert (result.exit_status, "capacity" in calls) == (2, False)
+
+
+def test_check_only_reports_missing_ensurepip_for_a_planned_wheel_build(
+    monkeypatch, tmp_path, capsys
+):
+    _inspection_environment(monkeypatch, tmp_path)
+    set_importable(monkeypatch, ensurepip=False, virtualenv=False)
+    request = DockerBuildRequest("Sandbox Image", "sandbox")
+    monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (request,))
+
+    status, output = _run_inspection(capsys)
+
+    rows = [line for line in output.splitlines() if " python-venv:" in line]
+    assert len(rows) == 1, f"python-venv rows: {rows}"
+    (row,) = rows
+    assert row.lstrip().startswith("\u2717")
+    assert f"apt install python{sys.version_info.major}.{sys.version_info.minor}-venv" in row
+    assert status == 2
 
 
 def test_bootstrap_threads_aggregate_plan_through_every_build(
@@ -855,16 +907,16 @@ _PROBE_ROWS = [
     _row(
         "vscode-gui-app",
         "vscode",
-        _CURRENT,
-        ("Visual Studio Code.app",),
+        bootstrap.BootstrapState.WARNING,
+        ("Visual Studio Code.app", "shell command"),
         command=None,
         app=Path("Visual Studio Code.app"),
     ),
     _row(
         "vscode-no-editor",
         "vscode",
-        _ERROR,
-        ("compatible editor is required",),
+        bootstrap.BootstrapState.WARNING,
+        ("optional",),
         command=None,
         app=None,
     ),
@@ -1049,21 +1101,33 @@ def test_dev_containers_reconciliation(monkeypatch, intent, replies, state, expe
         assert seen == argv
 
 
-def test_dev_containers_need_an_extension_management_command(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.parametrize(
+    ("app", "fragment"),
+    [(None, "optional"), (Path("Visual Studio Code.app"), "shell command")],
+    ids=["no-editor", "app-without-cli"],
+)
+def test_bootstrap_without_editor_command_warns_and_continues(monkeypatch, app, fragment):
+    from booley.audit.diagnostic_results import Findings, Severity
     from booley.config import editor
+    from booley.harness import host_diagnostics
 
     calls = _wire_current(monkeypatch)
+    # Host boundary: these two are where Booley looks for an editor installed on this machine.
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
-    monkeypatch.setattr(editor, "resolve_editor_install", lambda: Path("Visual Studio Code.app"))
+    monkeypatch.setattr(editor, "resolve_editor_install", lambda: app)
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
-    assert result.findings[-1].resource == "vscode-dev-containers"
-    assert result.findings[-1].state is _ERROR
-    assert "management command" in result.findings[-1].detail
-    assert calls == []
+    assert result.exit_status == 0
+    assert calls == ["skills", "nangate45", "base-image", "sidecars"]
+    checked = bootstrap.inspect_bootstrap(include_images=False)  # the --check-only path
+    for findings in (result.findings, checked.findings):
+        assert [item.resource for item in findings if "vscode" in item.resource] == ["vscode"]
+    report = Findings()
+    # private: Doctor's public inspect_host also probes Python, the package and the install.
+    host_diagnostics._add_bootstrap(result, report)
+    (warning,) = (item for item in report.report().findings if item.severity is Severity.WARN)
+    assert warning.message.startswith("Host Bootstrap vscode:") and fragment in warning.message
 
 
 _CONFLICT = _skill_event("conflict", "`x` is not Booley's")
@@ -1514,6 +1578,7 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
     from booley.config import editor
 
     # Other modules' check-only tests call this helper: route the probes in any of them.
+    set_importable(monkeypatch, ensurepip=True)
     route_bounded_capture_through_subprocess_run(monkeypatch, bootstrap)
     home = tmp_path / "home"
     home.mkdir()

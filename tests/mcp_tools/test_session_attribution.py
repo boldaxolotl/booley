@@ -250,30 +250,18 @@ _NEEDS_PROC = pytest.mark.skipif(
             "mcp-test|codex:cx-1",
             id="codex",
         ),
-        pytest.param(
-            "codex-mcp-client",
-            "cx-2",
-            "chat",
-            None,
-            ("codex", "cx-2"),
-            "mcp-test|codex:cx-2",
-            id="codex-chat",
-        ),
     ],
 )
 async def test_job_records_the_agent_client_and_thread(
     tmp_path, monkeypatch, client_name, thread_meta, peer, t3_thread, expected, owner
 ):
     from booley.mcp import session_observer
-    from booley.runtime import chat_sessions
     from booley.runtime.pid import capture_process_identity
-    from booley.runtime.session_activity import process_session_key
     from booley.runtime.session_paths import session_jobs_dir
-    from tests.runtime.test_chat_sessions import process
 
     proc = tmp_path / "proc"
     # A peer is a real process with, or without, the thread variable of T3 Code in its
-    # environment; a Booley chat tab's peer sits under a marked launch in a fake /proc.
+    # environment.
     environment = {k: v for k, v in os.environ.items() if k != "T3CODE_THREAD_ID"}
     environment.update({} if t3_thread is None else {"T3CODE_THREAD_ID": t3_thread})
     child = (
@@ -284,13 +272,9 @@ async def test_job_records_the_agent_client_and_thread(
         else None
     )
     try:
-        launch = process(proc, 100, 1, executable="node") if peer == "chat" else None
-        if launch is not None:
-            chat_sessions.reserve_codex_chat(tmp_path, launch)
         identity = {
             None: None,
             "child": None if child is None else capture_process_identity(child.pid),
-            "chat": process(proc, 101, 100) if launch is not None else None,
         }[peer]
         monkeypatch.setattr(session_observer, "observed_peer", lambda _request: identity)
         await _start_job(tmp_path, monkeypatch, proc, client_name, thread_meta)
@@ -301,8 +285,6 @@ async def test_job_records_the_agent_client_and_thread(
     (rec,) = job_records.list_records(session_jobs_dir())
     assert (rec.client, rec.thread) == expected
     assert rec.owner == (owner or f"mcp-test|{rec.session_key}")
-    if launch is not None:
-        assert rec.session_key == process_session_key(launch)
 
 
 @_NEEDS_PROC

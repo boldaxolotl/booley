@@ -11,11 +11,6 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.flows.endpoint_events import (
-    _endpoint_end_event,
-    _endpoint_progress_event,
-    _write_display_event,
-)
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
@@ -200,17 +195,10 @@ def _contains_whole_line_block(
 
 
 def emit_progress(endpoint: EndpointState, line: str) -> None:
-    """Write progress independently to the event transport and optional CLI sink."""
+    """Show one progress line on the optional CLI sink."""
     observer = endpoint.terminal_progress
     if observer is not None:
         observer.stage_changed(line)
-    _write_display_event(
-        _endpoint_progress_event(
-            endpoint.name,
-            line,
-            identity=endpoint._display_identity,
-        )
-    )
 
 
 def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool = False) -> None:
@@ -218,15 +206,6 @@ def emit_completion(endpoint: EndpointState, line: str, *, repeats_at_end: bool 
     observer = endpoint.terminal_progress
     if observer is not None and not repeats_at_end:
         observer.stage_changed(line)
-    _write_display_event(
-        _endpoint_progress_event(
-            endpoint.name,
-            line,
-            completion=True,
-            repeats_at_end=repeats_at_end,
-            identity=endpoint._display_identity,
-        )
-    )
 
 
 def _next_invocation_dir(endpoint: EndpointState, report_dir: Path) -> Path:
@@ -452,18 +431,6 @@ def _stamp_git_diff_stats(endpoint: EndpointState, result: EndpointOutcome) -> N
         pass
 
 
-def _resolve_display_config(endpoint: EndpointState) -> str | None:
-    """Resolve the config tag shown in display events."""
-    return endpoint.display_tag or (
-        (endpoint._selected_target or None) if endpoint.config_aware else None
-    )
-
-
-def _resolve_display_label(endpoint: EndpointState) -> str | None:
-    """Return an optional human label without changing endpoint semantics."""
-    return None
-
-
 def _publish_report(endpoint: EndpointState, result: EndpointOutcome) -> None:
     if endpoint.write_report(result) is None:
         endpoint._warn_no_report_artifact()
@@ -538,53 +505,24 @@ def report_root_removed(endpoint: EndpointState) -> bool:
     )
 
 
-def _finish_main(
-    endpoint: EndpointState,
-    result: EndpointOutcome,
-    display_target: str | None,
-    display_label: str | None,
-    started: float | None,
-    *,
-    dry_run: bool,
-    persist_report: bool,
-) -> int:
-    """Post-run bookkeeping + the endpoint_end event, shared by every exit path."""
-    duration = (time.monotonic() - started) if started is not None else 0.0
+def _finish_main(endpoint: EndpointState, result: EndpointOutcome, *, persist_report: bool) -> int:
+    """Post-run bookkeeping shared by every exit path."""
     try:
         if persist_report:
             _publish_report_with_recovery(endpoint, result)
     finally:
         try:
-            try:
-                observer = endpoint.terminal_progress
-                if observer is not None:
-                    observer.close()
-                endpoint._publish_console_report(result)
-                if observer is not None:
-                    sys.stdout.flush()
-                    observer.footer()
-            except OSError as exc:
-                logger.debug("Endpoint console publication failed", exc_info=True)
-                normalize_completion_error(result, exc, "publish console diagnosis")
-                _recover_report_publication(endpoint, result)
-        finally:
-            try:
-                _write_display_event(
-                    _endpoint_end_event(
-                        endpoint.name,
-                        display_target,
-                        result,
-                        duration,
-                        display_label=display_label,
-                        dry_run=dry_run,
-                        identity=endpoint._display_identity,
-                    ),
-                )
-            except Exception:
-                if "completion_error" in result.detail:
-                    logger.debug("Failed to publish endpoint-end event", exc_info=True)
-                else:
-                    raise
+            observer = endpoint.terminal_progress
+            if observer is not None:
+                observer.close()
+            endpoint._publish_console_report(result)
+            if observer is not None:
+                sys.stdout.flush()
+                observer.footer()
+        except OSError as exc:
+            logger.debug("Endpoint console publication failed", exc_info=True)
+            normalize_completion_error(result, exc, "publish console diagnosis")
+            _recover_report_publication(endpoint, result)
     return result.exit_code
 
 

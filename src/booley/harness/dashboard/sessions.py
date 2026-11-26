@@ -75,6 +75,8 @@ class SessionFacts:
     notices: tuple[str, ...] = ()
     #: The measurement line shown under the row, and the report Enter on it opens.
     measurement: str = ""
+    #: The review part, kept whole when the line is cut: ``Reviewed 1a2b3c4``.
+    review: str = ""
     report: str = ""
 
 
@@ -212,6 +214,14 @@ def _measurement_key(facts: SessionFacts) -> str:
     return HEADER_PREFIX + MEASUREMENT_PREFIX + facts.key
 
 
+def _measurement_text(facts: SessionFacts, width: int) -> str:
+    """The line under a row, cut in its measurement part so the review part survives."""
+    if not facts.review:
+        return cut("  " + facts.measurement, width)
+    tail = (" · " if facts.measurement else "") + facts.review
+    return cut("  " + facts.measurement, width - cell_len(tail)) + tail
+
+
 def build(
     sessions: Sequence[SessionFacts],
     standalone: Sequence[StandaloneJob],
@@ -220,7 +230,7 @@ def build(
 ) -> Overview:
     """Group, order and fit every row for a list ``width`` cells wide."""
     grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = {name: [] for name in GROUP_ORDER}
-    lines_of = {facts.key: facts for facts in sessions if facts.measurement}
+    lines_of = {facts.key: facts for facts in sessions if facts.measurement or facts.review}
     for facts in sorted(sessions, key=order_key):
         grouped[group_of(facts)].append(
             (
@@ -251,5 +261,5 @@ def build(
             lines.append(_line(widths, cells, dim))
             if key in lines_of:
                 keys.append(_measurement_key(lines_of[key]))
-                lines.append(Text(cut("  " + lines_of[key].measurement, width), style=dim))
+                lines.append(Text(_measurement_text(lines_of[key], width), style=dim))
     return Overview(_line(widths, LABELS, "bold"), keys, lines)

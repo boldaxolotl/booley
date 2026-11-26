@@ -718,8 +718,8 @@ def test_disabled_duplicate_custom_flows_do_not_reject_the_catalog(project):
 
 
 def test_gated_tool_exists_only_while_its_flag_is_on(project, monkeypatch, feature_flags):
-    # `booley_poll` is an existing utility. Production registers no gate and no
-    # public entry point adds one, so the test gates it directly.
+    # `booley_poll` is an existing utility. The gate mechanism outlives any one flag, so
+    # the test gates it with a flag of its own.
     monkeypatch.setitem(catalog.GATED_MCP_TOOLS, "booley_poll", "test-flag")
     feature_flags.register("test-flag")
     toml = project / "booley.toml"
@@ -739,6 +739,27 @@ def test_gated_tool_exists_only_while_its_flag_is_on(project, monkeypatch, featu
             toml.write_bytes(b"[flows.sim]\nenabled = true\n")
             with pytest.raises(MCPError, match="Unknown MCP tool"):
                 await client.call_tool("booley_poll", {"run_id": "absent"})
+
+    asyncio.run(exercise())
+
+
+def test_booley_review_exists_only_while_reviewed_commits_is_on(project, feature_flags):
+    """ADR 0095: with the flag off the tool is absent and a call is an unknown tool."""
+    (project / "booley.toml").write_bytes(b"[flows.sim]\nenabled = true\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            assert "booley_review" not in await tools(client)
+            with pytest.raises(MCPError, match="Unknown MCP tool"):
+                await client.call_tool("booley_review", {})
+
+            feature_flags.enable(project, "reviewed-commits")
+            assert "booley_review" in await tools(client)
+            # Known now: the schema refuses the call before any Job starts.
+            refused = await client.call_tool("booley_review", {"json": "yes"})
+            assert refused.is_error
+            assert "Unknown MCP tool" not in refused.content[0].text
 
     asyncio.run(exercise())
 

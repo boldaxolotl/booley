@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path, PurePosixPath
 
 from booley.core.booley_dir import (
@@ -14,7 +13,6 @@ from booley.core.booley_dir import (
     resolve_booley_dir,
     resolve_checkout_booley_dir,
 )
-from booley.core.booley_layout import BooleyLayoutError
 from booley.runtime import platform_paths, sandbox_layout
 
 
@@ -117,27 +115,3 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
     if ambient:
         _require_ambient_booley_dir(own, ambient)
     return relative
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Print the checkout's Booley Directory relative to its root, for the worktree script.
-
-    ``<root> --ambient`` applies :func:`worktree_booley_dir` to the checkout being
-    branched from.
-    """
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    roots = [a for a in arguments if a != "--ambient"]
-    if len(roots) != 1 or "--ambient" not in arguments:
-        print("usage: worktree_paths <root> --ambient", file=sys.stderr)
-        return 2
-    try:
-        relative = worktree_booley_dir(Path(roots[0]))
-    except (ValueError, BooleyLayoutError, OSError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    print(relative)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

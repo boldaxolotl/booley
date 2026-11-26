@@ -15,7 +15,7 @@ in the wrong place stops and prints how to run it in the right one.
 
 | Location | Public commands, in order |
 |---|---|
-| Sandbox | `chat`, `dashboard`, `flow`, `measure`, `specialist`, `worktree` |
+| Sandbox | `dashboard`, `flow`, `measure`, `specialist`, `worktree` |
 | Either | `cheat`, `coverage`, `doctor`, `help`, `init`, `resources`, `targets` |
 | Host-only | `auth`, `bootstrap`, `eda`, `projects` |
 
@@ -25,7 +25,8 @@ the host inside an initialized Project. `booley targets` lists Targets
 anywhere; showing one Target in full detail needs the Sandbox.
 `booley cheat --metrics` lists a Project's Targets, so it needs an initialized Project.
 
-`booley help` and `booley --help` print the same command list.
+`booley help`, `booley --help` and bare `booley` print the same command list;
+on the host, bare `booley` adds a getting-started hint.
 `booley --version` prints the version, plus its commit and that commit's UTC
 date when known. [A few more commands](#commands-for-skills) serve the agent's
 skills and stay out of that list.
@@ -50,14 +51,6 @@ Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 ### Work in the Sandbox · container
 
 ```bash
-booley                            # open the Developer Agent (same as booley chat)
-booley chat --cli codex           # open another Agent CLI your Project allows
-booley chat --name uart-fix       # label the session: the tab and Dashboard show S3 · uart-fix
-booley chat --new-worktree        # start in a new worktree s<N> even if the main checkout is free
-booley chat --here                # start in the main checkout even if it is in use (in a linked worktree: stay there)
-booley chat --resume <id>         # Claude: arguments after chat and its options go to the agent CLI
-booley chat resume --last         # Codex: the same, with its own subcommands
-booley chat -- --help             # the agent CLI's help (Booley's is booley chat --help)
 booley dashboard                  # sessions and Jobs; see Usage
 booley dashboard --web            # serve each worktree's Jobs page and JSON (--port PORT, default 8090)
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
@@ -68,14 +61,6 @@ booley measure --target <name>    # measure one Target's tables only
 booley measure --validate         # check .booley/metrics.toml; measures nothing
 ```
 
-- Booley's `chat` options are read only before the agent's own arguments.
-  Claude's own `--name` is `booley chat -- --name <name>`.
-- `--new-worktree` and `--here` are mutually exclusive.
-- `--name` takes 1-32 ASCII letters, digits, spaces, `.`, `_` or `-`, starting
-  with a letter or digit; an invalid name exits with status 2.
-- `--new-worktree` is refused when you run it from inside a linked worktree.
-- If Booley cannot reserve a session handle for a worktree launch, it exits
-  with status 2 and suggests `--here`.
 - `booley dashboard --web` serves a page and JSON on `127.0.0.1` until you
   stop it, on port 8090 unless `--port` names another; `--port` needs `--web`.
   Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
@@ -98,14 +83,11 @@ by itself when you attach to the container; see
 ### Worktrees
 
 ```bash
-booley worktree new <name>               # a linked worktree for parallel work
-booley worktree list                     # each worktree's branch, changes, and use
-booley worktree rm <name> [--force]      # remove a worktree, keeping its evidence and branches
-booley worktree gc [--older-than AGE]    # remove idle worktrees (default: a week), where safe
+booley worktree prepare [PATH]           # give a worktree made with Git or T3 Code its own Booley Directory
 ```
 
-Run them in a container terminal. What each one creates, checks, and keeps is
-in [Worktrees](WORKTREES.md).
+Run it in a container terminal. What it creates, checks, and keeps is in
+[Worktrees](WORKTREES.md).
 
 ### Run a Flow or a Specialist · container
 

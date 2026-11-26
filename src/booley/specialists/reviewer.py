@@ -117,6 +117,13 @@ SEVERITY_MAJOR = "MAJOR"
 SEVERITY_MINOR = "MINOR"
 # ``--fail-on`` compares open findings by this rank: higher is more severe.
 _SEVERITY_RANK = {SEVERITY_MINOR: 1, SEVERITY_MAJOR: 2, SEVERITY_CRITICAL: 3}
+
+
+def at_or_above(severity: str, threshold: str) -> bool:
+    """Whether *severity* is at or above *threshold*; an unknown severity ranks below all."""
+    return _SEVERITY_RANK.get(severity.upper(), 0) >= _SEVERITY_RANK[threshold.upper()]
+
+
 ALL_SEVERITIES = frozenset({SEVERITY_CRITICAL, SEVERITY_MAJOR, SEVERITY_MINOR})
 _SEVERITY_TAG = {SEVERITY_CRITICAL: "C", SEVERITY_MAJOR: "M", SEVERITY_MINOR: "m"}
 
@@ -957,7 +964,6 @@ class ReviewerSpecialist(Specialist):
         example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
     )
     code_modifying: bool = False
-    config_aware: bool = False
     accepts_target: bool = False
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True
@@ -991,8 +997,18 @@ class ReviewerSpecialist(Specialist):
         "SlashCommand",
     ]
 
-    def __init__(self) -> None:
+    def __init__(
+        self, change: ReviewChange | None = None, recheck: RecheckInput | None = None
+    ) -> None:
+        """*change* is a change the caller already resolved (``booley review``).
+
+        It replaces ``--base``: the Reviewer reviews that change and runs no Git query
+        of its own. *recheck* is a re-check input the caller already built
+        (``booley review --verify``); it replaces the ``--recheck`` evidence file.
+        """
         super().__init__()
+        self._given_change = change
+        self._given_recheck = recheck
         self._tb_project_policy: TbProjectPolicy | None = None
         self._scope_contract: ReviewScopeContract | None = None
         self._non_corrective_issues: list[ReviewIssue] = []
@@ -1037,14 +1053,6 @@ class ReviewerSpecialist(Specialist):
     def _diff_scoped(self) -> bool:
         """Whether this run reviews a change (``--base``) rather than whole files."""
         return self._review_change is not None
-
-    @property
-    def display_tag(self) -> str | None:
-        if not self._args:
-            return None
-        if self.args.recheck and not self.args.category:
-            return "recheck"  # the evidence file has not been read yet
-        return f"{self.args.category}/{next(iter(self._parse_focus()), '?')}"
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -1391,8 +1399,13 @@ match the strength of the evidence.
         # the spec's own numbers and whether its expected-value model is
         # independent of the implementation, and neither is answerable without
         # the spec in hand. Absence is not fatal on the TB side — the checks
-        # that need it simply go unreported.
-        if SPEC_FOCUS in focus_header.split(", ") or self.args.category == "tb":
+        # that need it simply go unreported. A change the caller resolved comes
+        # with the spec its review declares, for every focus.
+        if (
+            SPEC_FOCUS in focus_header.split(", ")
+            or self.args.category == "tb"
+            or self._given_change is not None
+        ):
             spec_section = self._build_spec_section()
             if spec_section:
                 sections.append(spec_section)
@@ -1625,7 +1638,8 @@ object, even after calling the capability.
         self._simulation_context = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
         self._review_evidence_written = False
-        if self.args.waive and not self.args.recheck:
+        rechecking = bool(self.args.recheck) or self._given_recheck is not None
+        if self.args.waive and not rechecking:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=(
@@ -1633,7 +1647,7 @@ object, even after calling the capability.
                     "an earlier Reviewer evidence file"
                 ),
             )
-        if self.args.recheck:
+        if rechecking:
             return self._run_recheck()
         if error := self._prepare_invocation():
             return error
@@ -1676,13 +1690,9 @@ object, even after calling the capability.
         fail_on = getattr(self.args, "fail_on", None)
         if fail_on is None:
             return EXIT_SUCCESS
-        threshold = _SEVERITY_RANK[fail_on.upper()]
         return (
             EXIT_FAILURE
-            if any(
-                _SEVERITY_RANK.get(severity.upper(), 0) >= threshold
-                for severity in open_severities
-            )
+            if any(at_or_above(severity, fail_on) for severity in open_severities)
             else EXIT_SUCCESS
         )
 
@@ -1760,18 +1770,18 @@ object, even after calling the capability.
             )
         if spec_error := self._validate_review_spec():
             return spec_error
-        return self._narrow_scope_to_change(self.args.base) if self.args.base else None
+        if self._given_change is not None:
+            return self._narrow_scope_to_change(self._given_change)
+        return self._narrow_scope_to_base(self.args.base) if self.args.base else None
 
-    def _narrow_scope_to_change(self, base: str) -> McpToolResult | None:
+    def _narrow_scope_to_base(self, base: str) -> McpToolResult | None:
         """Restrict the validated scope to the files changed since *base*.
 
         Returns a finished result when the base is unusable or nothing in scope
-        changed (no model call, no state); otherwise narrows the scope, scope
-        contract, source digest and finding filter to the changed files.
+        changed (no model call, no state); otherwise narrows to the changed files.
         """
-        scope = self._parse_scope()
         try:
-            change = resolve_review_change(Path(self.args.work_dir), base, scope)
+            change = resolve_review_change(Path(self.args.work_dir), base, self._parse_scope())
         except ReviewChangeError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         if not change.changed:
@@ -1782,6 +1792,11 @@ object, even after calling the capability.
                     "nothing to review."
                 ),
             )
+        return self._narrow_scope_to_change(change)
+
+    def _narrow_scope_to_change(self, change: ReviewChange) -> McpToolResult | None:
+        """Narrow the scope, scope contract, source digest and finding filter to *change*."""
+        scope = self._parse_scope()
         self._review_change = change
         self._full_scope = tuple(scope)
         self._resolved_scope = list(change.changed)
@@ -2523,6 +2538,8 @@ object, even after calling the capability.
                     f"remove {', '.join(conflicts)}"
                 ),
             )
+        if self._given_recheck is not None:
+            return self._given_recheck
         try:
             return load_recheck_input(
                 Path(self.args.work_dir) / self.args.recheck,

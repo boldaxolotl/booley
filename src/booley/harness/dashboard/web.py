@@ -13,8 +13,8 @@ With the flag on, ``POST /api/run/command``, ``/check`` and ``/submit`` take a J
 and refusal, and the start of a Standalone Job. Each requires a page of this server (an ``Origin``
 of ``http://127.0.0.1:<port>``, the Host's own) and a JSON body, so no other site can launch;
 errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or Specialist), 422 (the form or the
-parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the Job record cannot be
-written).
+parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the argument check itself
+failed, or the Job record cannot be written).
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.core.boundary import require_dict
 from booley.core.resources import package_data_dir
 from booley.harness.dashboard import web_run
+from booley.harness.dashboard.git_worktrees import WorktreeGitError, worktree_registrations
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.model import read_occupants
@@ -47,7 +48,6 @@ from booley.harness.dashboard.specialist_form import SimRun
 from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.harness.dashboard.web_snapshot import find_report, finished_sim_runs, read_snapshot
-from booley.harness.worktree_list import WorktreeListError, worktree_registrations
 from booley.runtime import job_slots, loopback_http
 
 HOST = "127.0.0.1"
@@ -80,7 +80,7 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
         raise _RefusalError(400, "worktree must be an absolute path")
     try:
         registrations = worktree_registrations(main)
-    except WorktreeListError as exc:
+    except WorktreeGitError as exc:
         raise _RefusalError(503, f"Git could not list the worktrees: {exc}") from exc
     try:
         real = Path(value).resolve()
@@ -190,6 +190,7 @@ def _run_posts(
         web_run.InvalidRunError: 400,
         web_run.UnknownEntryError: 404,
         web_run.RunRefusedError: 422,
+        web_run.CheckFailedError: 500,
     }
 
     def posted(
@@ -202,11 +203,7 @@ def _run_posts(
                 worktree, _branch = _accepted_worktree(main, request.query_params.get("worktree"))
                 try:
                     return work(worktree, web_run.run_request(body))
-                except (
-                    web_run.InvalidRunError,
-                    web_run.UnknownEntryError,
-                    web_run.RunRefusedError,
-                ) as exc:
+                except tuple(statuses) as exc:
                     raise _RefusalError(statuses[type(exc)], str(exc)) from exc
 
             return JSONResponse(await run_in_threadpool(answer))

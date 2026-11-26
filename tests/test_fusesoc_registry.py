@@ -7,7 +7,6 @@ import shutil
 import sys
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -24,10 +23,6 @@ from booley.fusesoc.fusesoc_registry import (
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
-    _enumerate_all,
-    _sim_target_has_untagged_tb,
-    _target_referenced_files,
-    _target_source_files,
     all_referenced_files,
     core_schema_errors,
     core_setup_hazards,
@@ -38,7 +33,6 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_flow_option,
     core_target_is_doctor_selftest,
     core_target_names,
-    core_target_uses_legacy_fusesoc_api,
     discover_cores,
     missing_target_sources_for_ref,
     parse_edam,
@@ -47,15 +41,21 @@ from booley.fusesoc.fusesoc_registry import (
     read_core,
     resolve_target_handle,
     setup_command_for_handle,
+    target_fileset_names,
     target_parameter_definitions,
+    target_parameter_specs,
     target_source_files_for_ref,
     vendored_files,
 )
-from booley.fusesoc.fusesoc_registry import (
-    _resolve_ref as resolve_ref,
-)
 from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import AmbiguousTargetError, UnknownTargetError
+from booley.targets.domain import (
+    AmbiguousTargetError,
+    CoreSources,
+    TargetHandle,
+    TargetRef,
+    UnknownTargetError,
+    flow_can_drive,
+)
 from booley.targets.target_surface import collect_surface
 from booley.targets.target_surface import detail_payload as _detail_payload
 from booley.targets.target_surface import surface_payload as _surface_payload
@@ -82,12 +82,22 @@ def _stealth_root(project: Path) -> Path:
     return project / ".booley" / STATE_CORES_SUBDIR
 
 
-def enumerate_targets(project_root: Path | str):
-    return {name: refs[0] for name, refs in _enumerate_all(project_root).items()}
-
-
-def _handle(project: Path | str, name: str = "sim"):
+def _handle(project: Path | str, name: str = "sim") -> TargetHandle:
     return TargetCatalog.build(project).select(name)
+
+
+def _handles(project: Path | str) -> dict[str, TargetHandle]:
+    return {handle.name: handle for handle in TargetCatalog.build(project).list()}
+
+
+def _ref(project: Path, name: str = "sim") -> TargetRef:
+    """The declaration a selected handle names, as resolution passes it to the registry."""
+    handle = _handle(project, name)
+    return TargetRef(handle.name, handle.vlnv, handle.core_file)
+
+
+def _sources(project: Path, name: str = "sim", **options: bool) -> CoreSources:
+    return target_source_files_for_ref(project, _ref(project, name), **options)
 
 
 def _setup_cmd(project: Path, name: str = "sim") -> list[str]:
@@ -95,11 +105,15 @@ def _setup_cmd(project: Path, name: str = "sim") -> list[str]:
 
 
 def _missing_sources(project: Path, name: str = "sim") -> list[str]:
-    return missing_target_sources_for_ref(project, resolve_ref(project, name))
+    return missing_target_sources_for_ref(project, _ref(project, name))
 
 
 def available_targets(project_root: Path | str) -> list[str]:
-    return sorted(handle.name for handle in TargetCatalog.build(project_root).list())
+    return sorted(_handles(project_root))
+
+
+def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
+    return {name: handle.eda_tool for name, handle in _handles(project_root).items()}
 
 
 def doctor_target_selectors(project_root: Path | str, flow_name: str) -> list[str]:
@@ -120,16 +134,50 @@ def doctor_target_seed(project_root: Path | str) -> list[str]:
     )
 
 
-@pytest.mark.parametrize(
-    "name",
-    ("AmbiguousTargetError", "IncompatibleTargetError", "UnknownTargetError"),
-)
-def test_selection_errors_are_not_reexported(name: str) -> None:
-    assert not hasattr(fusesoc_registry, name)
+def _fusesoc_cmd() -> list[str]:
+    """The real FuseSoC: its console script, else the importable module."""
+    if shutil.which("fusesoc"):
+        return list(DEFAULT_FUSESOC_CMD)
+    return [sys.executable, "-c", "from fusesoc.main import main; main()"]
 
 
-def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
-    return {handle.name: handle.eda_tool for handle in TargetCatalog.build(project_root).list()}
+def _root_core(name: str, dep_key: str) -> str:
+    """A selectable-Target core whose fileset depends on *dep_key*."""
+    return textwrap.dedent(
+        f"""\
+        CAPI=2:
+        name: acme:lib:{name}:0
+        filesets:
+          rtl:
+            files:
+              - rtl/{name}.sv: {{file_type: systemVerilogSource}}
+            depend: [{dep_key}]
+        targets:
+          sim:
+            flow: sim
+            flow_options: {{tool: verilator}}
+            filesets: [rtl]
+            toplevel: {name}
+        """
+    )
+
+
+def _leaf_core(name: str, extra: str = "") -> str:
+    """A plain dependency core: no selectable Target; *extra* adds a fileset key line."""
+    return textwrap.dedent(
+        f"""\
+        CAPI=2:
+        name: acme:lib:{name}:0
+        filesets:
+          rtl:
+            {extra}
+            files:
+              - rtl/{name}.sv: {{file_type: systemVerilogSource}}
+        targets:
+          default:
+            filesets: [rtl]
+        """
+    )
 
 
 def test_malformed_unselected_core_does_not_hide_valid_targets(tmp_path: Path) -> None:
@@ -137,13 +185,6 @@ def test_malformed_unselected_core_does_not_hide_valid_targets(tmp_path: Path) -
     (tmp_path / "legacy.core").write_text("targets: [unterminated", encoding="utf-8")
 
     assert "sim" in available_targets(tmp_path)
-
-
-def test_possible_expression_values_supports_fusesoc_247_parser(monkeypatch) -> None:
-    modern_exprs = SimpleNamespace(parse=lambda _value: ["modern-value"])
-    monkeypatch.setattr(fusesoc_registry, "_fusesoc_exprs", modern_exprs, raising=False)
-
-    assert fusesoc_registry._possible_expression_values("anything") == ["modern-value"]
 
 
 # Exactly the shape `fusesoc run --setup` emits (captured from the spike).
@@ -176,6 +217,12 @@ _EDAM_TEXT = textwrap.dedent(
 )
 
 
+def _parsed(tmp_path: Path, text: str, target: str, vlnv: str) -> ResolvedTarget:
+    edam = tmp_path / "parsed.eda.yml"
+    edam.write_text(text, encoding="utf-8")
+    return parse_edam(edam, target=target, vlnv=vlnv)
+
+
 # ---------------------------------------------------------------------------
 # discover_cores / read_core / core_target_names
 # ---------------------------------------------------------------------------
@@ -189,45 +236,34 @@ class TestDiscovery:
         assert len(found) == 2
         assert all(p.suffix == ".core" for p in found)
 
-    def test_skips_build_and_runtime_trees(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("skipped", "marker"),
+        [
+            (("build/demo_core_0", ".runtime/x"), None),  # generated artifacts
+            ((".git/objects/ab",), None),
+            # FuseSoC's scanner convention: a FUSESOC_IGNORE file excludes its tree.
+            (("vendored", "vendored/nested"), "vendored"),
+            # Per-ticket / baseline worktrees under .booley/ carry stale VLNV-colliding
+            # copies that would shadow the Project Root's cores and drop its Targets.
+            ((".booley/worktrees/scalar_1bfe1733", ".booley/.baseline-wt-123-abc"), None),
+        ],
+        ids=["build-and-runtime", "git-internals", "fusesoc-ignore", "booley-state"],
+    )
+    def test_skips_generated_and_ignored_trees(
+        self, tmp_path: Path, skipped: tuple[str, ...], marker: str | None
+    ):
         _write_core(tmp_path / "ip")
-        _write_core(tmp_path / "build" / "demo_core_0")  # generated artifact
-        _write_core(tmp_path / ".runtime" / "x")  # generated artifact
-        found = discover_cores(tmp_path)
-        assert [p.parent.name for p in found] == ["ip"]
-
-    def test_skips_git_internal_trees(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        _write_core(tmp_path / ".git" / "objects" / "ab")
-
-        found = discover_cores(tmp_path)
-
-        assert [path.parent.name for path in found] == ["ip"]
-
-    def test_skips_fusesoc_ignore_trees(self, tmp_path: Path):
-        # Mirrors FuseSoC's scanner convention: a FUSESOC_IGNORE marker file
-        # excludes that directory and everything below it.
-        _write_core(tmp_path / "ip")
-        _write_core(tmp_path / "vendored")
-        _write_core(tmp_path / "vendored" / "nested")
-        (tmp_path / "vendored" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        found = discover_cores(tmp_path)
-        assert [p.parent.name for p in found] == ["ip"]
-
-    def test_skips_booley_directory_state_tree(self, tmp_path: Path):
-        # Per-ticket / baseline git worktrees under .booley/ carry stale
-        # VLNV-colliding copies of the project's cores; they must never be
-        # enumerated (they'd shadow the source at the Project Root and drop its Targets).
-        _write_core(tmp_path / "ip")
-        _write_core(tmp_path / ".booley" / "worktrees" / "scalar_1bfe1733")
-        _write_core(tmp_path / ".booley" / ".baseline-wt-123-abc")
-        found = discover_cores(tmp_path)
-        assert [p.parent.name for p in found] == ["ip"]
+        for directory in skipped:
+            _write_core(tmp_path / directory)
+        if marker is not None:
+            (tmp_path / marker / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        assert [p.parent.name for p in discover_cores(tmp_path)] == ["ip"]
 
     def test_read_core_parses_capi2_header(self, tmp_path: Path):
         doc = read_core(_write_core(tmp_path))
         assert doc["name"] == "::demo_core:0"
         assert set(doc["targets"]) == {"default", "sim"}
+        assert core_target_names(doc) == ["sim"]
 
     def test_read_core_resolves_inheritance_like_fusesoc(self, tmp_path: Path):
         core = _write_core(tmp_path, INHERITED_CORE_TEXT)  # #5077
@@ -255,10 +291,6 @@ class TestDiscovery:
         with pytest.raises(FuseSocError, match=r"could not read \.core .*bad\.core"):
             read_core(bad)
 
-    def test_target_names_excludes_default(self, tmp_path: Path):
-        doc = read_core(_write_core(tmp_path))
-        assert core_target_names(doc) == ["sim"]
-
 
 class TestCoreSetupHazards:
     def test_reports_provider_block(self, tmp_path: Path):
@@ -280,34 +312,24 @@ class TestCoreSetupHazards:
         assert "ancestor" in hazards[0].detail
         assert hazards[0].target == tmp_path.resolve()
 
-    def test_fusesoc_ignore_suppresses_recursive_link(self, tmp_path: Path):
-        library = tmp_path / "lib"
-        library.mkdir()
-        (library / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        symlink_or_skip(library / "repo", tmp_path, target_is_directory=True)
-        assert core_setup_hazards(tmp_path) == []
-
-    def test_fusesoc_ignore_at_project_scan_root_suppresses_recursive_link(self, tmp_path: Path):
-        (tmp_path / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        library = tmp_path / "lib"
-        library.mkdir()
-        symlink_or_skip(library / "repo", tmp_path, target_is_directory=True)
-        assert core_setup_hazards(tmp_path) == []
-
-    def test_fusesoc_ignore_at_state_cores_root_suppresses_recursive_link(self, tmp_path: Path):
-        stealth_root = _stealth_root(tmp_path)
-        library = stealth_root / "lib"
-        library.mkdir(parents=True)
-        (stealth_root / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
-        symlink_or_skip(library / "cores", stealth_root, target_is_directory=True)
-        assert core_setup_hazards(tmp_path) == []
-
-    def test_non_recursive_directory_link_is_not_reported(self, tmp_path: Path):
-        source = tmp_path / "source"
-        source.mkdir()
-        links = tmp_path / "links"
-        links.mkdir()
-        symlink_or_skip(links / "source", source, target_is_directory=True)
+    @pytest.mark.parametrize(
+        ("marker", "link", "target"),
+        [
+            ("lib", "lib/repo", "."),
+            (".", "lib/repo", "."),  # marker at the Project scan root
+            (".booley/cores", ".booley/cores/lib/cores", ".booley/cores"),  # at the state root
+            (None, "links/source", "source"),  # a link that is not recursive
+        ],
+        ids=["library-marker", "project-marker", "state-root-marker", "non-recursive"],
+    )
+    def test_no_hazard_for_ignored_or_non_recursive_link(
+        self, tmp_path: Path, marker: str | None, link: str, target: str
+    ):
+        (tmp_path / target).mkdir(parents=True, exist_ok=True)
+        (tmp_path / link).parent.mkdir(parents=True, exist_ok=True)
+        if marker is not None:
+            (tmp_path / marker / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        symlink_or_skip(tmp_path / link, tmp_path / target, target_is_directory=True)
         assert core_setup_hazards(tmp_path) == []
 
 
@@ -320,10 +342,6 @@ class TestStealthCores:
     """Stealth projects (Booley usage invisible to the host repo) author their
     cores under .booley/cores/ — the one state-dir subtree scanned as
     a second discovery root and handed to FuseSoC as a second --cores-root."""
-
-    def test_default_stealth_root_is_structural(self, tmp_path: Path):
-        # ADR 0036: <Booley Directory>/cores, with no [project].dir override.
-        assert core_projection.stealth_core_root(tmp_path) == tmp_path / ".booley" / "cores"
 
     def test_stealth_cores_discovered_worktrees_still_skipped(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
@@ -352,20 +370,15 @@ class TestStealthCores:
         (_stealth_root(tmp_path) / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         assert discover_cores(tmp_path) == []
 
-    def test_cross_root_vlnv_collision_is_fatal(self, tmp_path: Path):
-        # Same logical VLNV in both roots = the worktree-shadowing bug reborn
-        # as an authoring mistake; enumeration refuses rather than pick a side.
+    @pytest.mark.parametrize("stealth_vlnv", ["::demo_core:0", "::demo_core:1"])
+    def test_cross_root_vlnv_collision_is_fatal(self, tmp_path: Path, stealth_vlnv: str):
+        # Same logical VLNV in both roots, whatever the version segment = the
+        # worktree-shadowing bug reborn as an authoring mistake; the catalog refuses
+        # rather than pick a side.
         _write_core(tmp_path / "ip")
-        _write_core(_stealth_root(tmp_path))  # identical ::demo_core:0
+        _write_core(_stealth_root(tmp_path), _CORE_TEXT.replace("::demo_core:0", stealth_vlnv))
         with pytest.raises(CoreCollisionError, match="both core roots"):
-            enumerate_targets(tmp_path)
-
-    def test_cross_root_collision_ignores_version_segment(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        other_version = _CORE_TEXT.replace("::demo_core:0", "::demo_core:1")
-        _write_core(_stealth_root(tmp_path), other_version)
-        with pytest.raises(CoreCollisionError, match="both core roots"):
-            enumerate_targets(tmp_path)
+            TargetCatalog.build(tmp_path)
 
     def test_same_zone_version_dedup_stays_legal(self, tmp_path: Path):
         # Two *versions* of one core in the SAME zone keep first-wins semantics.
@@ -373,8 +386,7 @@ class TestStealthCores:
         stealth_v1 = _CORE_TEXT.replace("::demo_core:0", "::stealth:1")
         _write_core(_stealth_root(tmp_path) / "a", stealth_v0)
         _write_core(_stealth_root(tmp_path) / "b", stealth_v1)
-        refs = enumerate_targets(tmp_path)
-        assert set(refs) == {"sim"}
+        assert available_targets(tmp_path) == ["sim"]
 
     def test_setup_command_adds_second_cores_root(self, tmp_path: Path):
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
@@ -409,7 +421,7 @@ class TestStealthCores:
         assert cmd.count("--cores-root") == 1
         assert projected.is_file()
         assert discover_cores(tmp_path) == [canonical]
-        sources = _target_source_files(tmp_path, "sim")
+        sources = _sources(tmp_path)
         assert sources.rtl_source_files == ("counter_pkg.sv", "counter.sv")
         assert sources.tb_files == ("tb_counter.sv",)
         assert _missing_sources(tmp_path) == []
@@ -453,93 +465,29 @@ class TestStealthCores:
 
 
 # ---------------------------------------------------------------------------
-# enumerate_targets
+# Target enumeration through the catalog
 # ---------------------------------------------------------------------------
 
 
 class TestEnumerate:
     def test_maps_name_to_core_and_vlnv(self, tmp_path: Path):
         core = _write_core(tmp_path / "ip")
-        refs = enumerate_targets(tmp_path)
-        assert set(refs) == {"sim"}
-        assert refs["sim"].vlnv == "::demo_core:0"
-        assert refs["sim"].core_file == core
-        assert "default" not in refs  # implicit target is never selectable
-
-    def test_duplicate_name_across_distinct_cores_is_legal(self, tmp_path: Path):
-        # ADR 0030: two distinct cores declaring the same bare Target name is
-        # legal FuseSoC (ibex: 'lint' on 54 cores). enumerate_targets never
-        # raises — it exposes a first-wins view; _enumerate_all keeps both.
-        _write_core(tmp_path / "a")  # ::demo_core:0 declares 'sim'
-        second = _CORE_TEXT.replace("::demo_core:0", "::other:0")
-        _write_core(tmp_path / "b", second)  # ::other:0 also declares 'sim'
-
-        # First-wins view (discover_cores order: a/ before b/).
-        refs = enumerate_targets(tmp_path)
-        assert set(refs) == {"sim"}
-        assert refs["sim"].vlnv == "::demo_core:0"
-
-        # _enumerate_all keeps every declaring core, both distinct VLNVs.
-        allrefs = _enumerate_all(tmp_path)
-        assert {r.vlnv for r in allrefs["sim"]} == {"::demo_core:0", "::other:0"}
-
-        # A bare name is now ambiguous; each vlnv#name qualifier resolves.
-        with pytest.raises(AmbiguousTargetError, match="declared by 2 cores"):
-            resolve_ref(tmp_path, "sim")
-        assert resolve_ref(tmp_path, "demo_core#sim").vlnv == "::demo_core:0"
-        assert resolve_ref(tmp_path, "other#sim").vlnv == "::other:0"
+        handles = _handles(tmp_path)
+        assert set(handles) == {"sim"}  # implicit default target is never selectable
+        assert handles["sim"].vlnv == "::demo_core:0"
+        assert handles["sim"].core_file == core.resolve()
+        assert handles["sim"].eda_tool == "verilator"
 
     def test_core_without_name_is_skipped(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         nameless = _CORE_TEXT.replace("name: ::demo_core:0\n", "")
         _write_core(tmp_path / "nameless", nameless)
-        refs = enumerate_targets(tmp_path)
-        assert set(refs) == {"sim"}
-
-    def test_target_eda_tool_read_from_flow_options(self, tmp_path: Path):
-        """TargetRef.eda_tool carries the declared flow_options.eda_tool (decision 11)."""
-        _write_core(tmp_path / "ip")
-        refs = enumerate_targets(tmp_path)
-        assert refs["sim"].eda_tool == "verilator"
-
-
-# ---------------------------------------------------------------------------
-# core_target_eda_tool — declared EDA tool, read from .core YAML
-# ---------------------------------------------------------------------------
-
-
-class TestCoreTargetEdaTool:
-    def test_prefers_upstream_flow_options_tool(self):
-        doc = {"targets": {"sim": {"flow_options": {"tool": "verilator"}}}}
-        assert core_target_eda_tool(doc, "sim") == "verilator"
-
-    def test_falls_back_to_upstream_default_tool(self):
-        doc = {"targets": {"syn": {"default_tool": "yosys"}}}
-        assert core_target_eda_tool(doc, "syn") == "yosys"
-
-    def test_none_when_target_absent_or_without_eda_tool(self):
-        assert core_target_eda_tool({"targets": {"sim": {}}}, "sim") is None
-        assert core_target_eda_tool({"targets": {}}, "missing") is None
-
-
-# ---------------------------------------------------------------------------
-# available_targets / target_eda_tools (decision 10/11)
-# ---------------------------------------------------------------------------
-
-
-class TestAvailableTargets:
-    def test_enumerates_core_targets_sorted(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
         assert available_targets(tmp_path) == ["sim"]
 
     def test_empty_when_no_core(self, tmp_path: Path):
         """No .core authored → no selectable Targets (the legacy configs.toml
         fallback was removed with decision 23's retirement)."""
         assert available_targets(tmp_path) == []
-
-    def test_target_eda_tools_maps_name_to_eda_tool(self, tmp_path: Path):
-        _write_core(tmp_path / "ip")
-        assert target_eda_tools(tmp_path) == {"sim": "verilator"}
 
     def test_doctor_selftest_is_resolvable_but_not_public(self, tmp_path: Path, monkeypatch):
         (tmp_path / "doctor.core").write_text(
@@ -550,8 +498,6 @@ class TestAvailableTargets:
             encoding="utf-8",
         )
 
-        ref = resolve_ref(tmp_path, "lint_selftest_bad")
-        assert ref.doctor_selftest
         assert available_targets(tmp_path) == []
         assert target_eda_tools(tmp_path) == {}
         with pytest.raises(UnknownTargetError, match="Unknown target"):
@@ -560,6 +506,25 @@ class TestAvailableTargets:
         monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
         handle = TargetCatalog.build(tmp_path).select("lint_selftest_bad")
         assert handle.selector == "lint_selftest_bad"
+
+
+# ---------------------------------------------------------------------------
+# core_target_eda_tool — declared EDA tool, read from .core YAML
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ({"flow_options": {"tool": "verilator"}}, "verilator"),  # upstream flow_options.tool
+        ({"default_tool": "yosys"}, "yosys"),  # upstream default_tool fallback
+        ({}, None),
+        (None, None),  # target absent
+    ],
+)
+def test_core_target_eda_tool(target: dict[str, object] | None, expected: str | None):
+    doc = {"targets": {} if target is None else {"sim": target}}
+    assert core_target_eda_tool(doc, "sim") == expected
 
 
 class TestDoctorTargetMetadata:
@@ -728,7 +693,7 @@ class TestDoctorTargetMetadata:
 
 
 # ---------------------------------------------------------------------------
-# resolve_ref — bare-unique / vlnv#name / shortest-unambiguous VLNV (ADR 0030)
+# Target selection — bare-unique / vlnv#name / shortest-unambiguous VLNV (ADR 0030)
 # ---------------------------------------------------------------------------
 
 
@@ -741,94 +706,65 @@ def _min_core(vlnv: str, targets: list[str]) -> str:
     return f"CAPI=2:\nname: {vlnv}\nfilesets:\n  rtl: {{files: []}}\ntargets:\n" + body
 
 
-class TestResolveRef:
-    """resolve_ref disambiguation surface: the crux of ADR 0030."""
+_IBEX = "lowrisc:ibex:ibex_top:0.1"
 
-    @staticmethod
-    def _multi(root: Path) -> None:
-        # Two cores share 'lint' (ambiguous); only ibex declares 'sim' (unique).
-        _write_core(
-            root / "ibex",
-            _min_core("lowrisc:ibex:ibex_top:0.1", ["lint", "sim"]),
-            create_sources=False,
-        )
-        _write_core(
-            root / "prim",
-            _min_core("lowrisc:prim:lfsr:0", ["lint"]),
-            create_sources=False,
-        )
 
-    def test_bare_unique_resolves(self, tmp_path: Path):
-        self._multi(tmp_path)
-        ref = resolve_ref(tmp_path, "sim")
-        assert ref.name == "sim"
-        assert ref.vlnv == "lowrisc:ibex:ibex_top:0.1"
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("sim", _IBEX),  # bare and unique
+        ("lowrisc:ibex:ibex_top#lint", _IBEX),  # full VLNV qualifier
+        ("ibex:ibex_top#lint", _IBEX),  # shortened library:name qualifier
+        ("ibex_top#lint", _IBEX),  # the VLNV name segment alone
+        # A bare name two cores declare names every candidate so the user can qualify.
+        ("lint", (AmbiguousTargetError, rf"2 cores: {_IBEX}, lowrisc:prim:lfsr:0")),
+        ("nope", (UnknownTargetError, "Unknown target")),
+        # The name exists but no core matches the qualifier: nothing to disambiguate.
+        ("zzz#lint", (UnknownTargetError, "no Target 'lint'")),
+    ],
+)
+def test_selector_resolves_one_declaring_core(
+    tmp_path: Path, token: str, expected: str | tuple[type[Exception], str]
+):
+    # Two cores share 'lint' (ambiguous); only ibex declares 'sim' (unique).
+    _write_core(tmp_path / "ibex", _min_core(_IBEX, ["lint", "sim"]), create_sources=False)
+    _write_core(
+        tmp_path / "prim", _min_core("lowrisc:prim:lfsr:0", ["lint"]), create_sources=False
+    )
+    if isinstance(expected, str):
+        assert _handle(tmp_path, token).vlnv == expected
+    else:
+        with pytest.raises(expected[0], match=expected[1]):
+            _handle(tmp_path, token)
 
-    def test_bare_ambiguous_lists_candidate_vlnvs(self, tmp_path: Path):
-        self._multi(tmp_path)
-        with pytest.raises(AmbiguousTargetError) as exc:
-            resolve_ref(tmp_path, "lint")
-        msg = str(exc.value)
-        # The message names every candidate VLNV so the user can qualify.
-        assert "lowrisc:ibex:ibex_top:0.1" in msg
-        assert "lowrisc:prim:lfsr:0" in msg
 
-    def test_full_vlnv_qualifier_resolves(self, tmp_path: Path):
-        self._multi(tmp_path)
-        ref = resolve_ref(tmp_path, "lowrisc:ibex:ibex_top#lint")
-        assert ref.vlnv == "lowrisc:ibex:ibex_top:0.1"
+def test_too_short_qualifier_matching_two_cores_is_ambiguous(tmp_path: Path):
+    # Two distinct cores share the VLNV name segment 'ibex_top' and 'lint'.
+    _write_core(
+        tmp_path / "a",
+        _min_core("lowrisc:ibex:ibex_top:0", ["lint"]),
+        create_sources=False,
+    )
+    _write_core(
+        tmp_path / "b",
+        _min_core("acme:other:ibex_top:0", ["lint"]),
+        create_sources=False,
+    )
+    with pytest.raises(AmbiguousTargetError, match="matches 2 cores"):
+        _handle(tmp_path, "ibex_top#lint")
+    # A longer (library-qualified) form disambiguates.
+    assert _handle(tmp_path, "ibex:ibex_top#lint").vlnv == "lowrisc:ibex:ibex_top:0"
 
-    def test_shortened_library_name_qualifier_resolves(self, tmp_path: Path):
-        self._multi(tmp_path)
-        ref = resolve_ref(tmp_path, "ibex:ibex_top#lint")
-        assert ref.vlnv == "lowrisc:ibex:ibex_top:0.1"
 
-    def test_name_only_qualifier_resolves(self, tmp_path: Path):
-        self._multi(tmp_path)
-        # The shortest form — the VLNV name segment alone — resolves when unique.
-        ref = resolve_ref(tmp_path, "ibex_top#lint")
-        assert ref.vlnv == "lowrisc:ibex:ibex_top:0.1"
-
-    def test_too_short_qualifier_matching_two_cores_is_ambiguous(self, tmp_path: Path):
-        # Two distinct cores share the VLNV name segment 'ibex_top' and 'lint'.
-        _write_core(
-            tmp_path / "a",
-            _min_core("lowrisc:ibex:ibex_top:0", ["lint"]),
-            create_sources=False,
-        )
-        _write_core(
-            tmp_path / "b",
-            _min_core("acme:other:ibex_top:0", ["lint"]),
-            create_sources=False,
-        )
-        with pytest.raises(AmbiguousTargetError, match="matches 2 cores"):
-            resolve_ref(tmp_path, "ibex_top#lint")
-        # A longer (library-qualified) form disambiguates.
-        assert resolve_ref(tmp_path, "ibex:ibex_top#lint").vlnv == ("lowrisc:ibex:ibex_top:0")
-
-    def test_unknown_name_raises_unknown(self, tmp_path: Path):
-        self._multi(tmp_path)
-        with pytest.raises(UnknownTargetError, match="Unknown target"):
-            resolve_ref(tmp_path, "nope")
-
-    def test_qualifier_naming_no_core_raises_unknown(self, tmp_path: Path):
-        # The name exists ('lint') but no core matches the qualifier → Unknown,
-        # not Ambiguous (nothing to disambiguate between).
-        self._multi(tmp_path)
-        with pytest.raises(UnknownTargetError, match="no Target 'lint'"):
-            resolve_ref(tmp_path, "zzz#lint")
-
-    def test_same_vlnv_two_versions_collapse_to_first(self, tmp_path: Path):
-        """Two *versions* of one logical core (same vendor:library:name) collapse
-        to the first discovered — not a distinct-core ambiguity (ADR 0030)."""
-        _write_core(tmp_path / "v0")  # ::demo_core:0 declares 'sim'
-        _write_core(tmp_path / "v1", _CORE_TEXT.replace("::demo_core:0", "::demo_core:1"))
-        refs = enumerate_targets(tmp_path)
-        assert set(refs) == {"sim"}
-        # One logical core → a bare name is NOT ambiguous; it resolves.
-        assert resolve_ref(tmp_path, "sim").vlnv.startswith("::demo_core:")
-        # _enumerate_all also collapses the two versions to a single entry.
-        assert len(_enumerate_all(tmp_path)["sim"]) == 1
+def test_same_vlnv_two_versions_collapse_to_first(tmp_path: Path):
+    """Two *versions* of one logical core (same vendor:library:name) collapse
+    to the first discovered — not a distinct-core ambiguity (ADR 0030)."""
+    _write_core(tmp_path / "v0")  # ::demo_core:0 declares 'sim'
+    _write_core(tmp_path / "v1", _CORE_TEXT.replace("::demo_core:0", "::demo_core:1"))
+    catalog = TargetCatalog.build(tmp_path)
+    assert catalog.declaration_count("sim") == 1
+    # One logical core → a bare name is NOT ambiguous; it resolves.
+    assert catalog.select("sim").vlnv.startswith("::demo_core:")
 
 
 # ---------------------------------------------------------------------------
@@ -837,13 +773,8 @@ class TestResolveRef:
 
 
 class TestParseEdam:
-    def _resolved(self, tmp_path: Path) -> ResolvedTarget:
-        edam = tmp_path / "demo_core_0.eda.yml"
-        edam.write_text(_EDAM_TEXT, encoding="utf-8")
-        return parse_edam(edam, target="sim", vlnv="::demo_core:0")
-
     def test_core_fields(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
+        r = _parsed(tmp_path, _EDAM_TEXT, "sim", "::demo_core:0")
         assert r.name == "sim"
         assert r.vlnv == "::demo_core:0"
         assert r.toplevel == "tb_counter"
@@ -879,38 +810,54 @@ class TestParseEdam:
         declared: str | None,
         configured: str | None,
     ) -> None:
-        edam = tmp_path / "tool-shape.eda.yml"
-        edam.write_text(
+        resolved = _parsed(
+            tmp_path,
             f"name: demo\ntoplevel: tb\nfiles: []\nparameters: {{}}\n{edam_fields}",
-            encoding="utf-8",
+            "sim",
+            "::demo:0",
         )
-
-        resolved = parse_edam(edam, target="sim", vlnv="::demo:0")
 
         assert resolved.eda_tool == declared
         assert resolved.configured_eda_tool == configured
 
     def test_rtl_tb_partition_by_tag(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
+        r = _parsed(tmp_path, _EDAM_TEXT, "sim", "::demo_core:0")
         assert [f.name.split("/")[-1] for f in r.rtl_files] == [
             "counter_pkg.sv",
             "counter.sv",
         ]
         assert [f.name.split("/")[-1] for f in r.tb_files] == ["tb_counter.sv"]
-        assert all(not f.is_tb for f in r.rtl_files)
-        assert all(f.is_tb for f in r.tb_files)
-
-    def test_file_absolute_path(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
-        first = r.files[0]
         assert (
-            first.absolute(r.build_root)
+            r.files[0].absolute(r.build_root)
             == (tmp_path / "src/demo_core_0/rtl/counter_pkg.sv").resolve()
         )
 
     def test_missing_edam_is_resolution_error(self, tmp_path: Path):
         with pytest.raises(TargetResolutionError):
             parse_edam(tmp_path / "nope.eda.yml", target="sim", vlnv="::x:0")
+
+    def test_rtl_hdl_source_files_drop_user_files(self, tmp_path: Path):
+        """Dependency cores contribute non-HDL EDAM entries (`user` .vmem data,
+        copyto'd scripts); rtl_hdl_source_files keeps them out of sv2v/yosys
+        (ibex: a dep's check_tool_requirements.py crashed sv2v)."""
+        edam_text = _EDAM_TEXT + textwrap.dedent(
+            """\
+            - file_type: user
+              name: src/demo_core_0/util/check_tool_requirements.py
+              core: '::eda_tool_check:0'
+            - file_type: user
+              name: src/demo_core_0/sw/firmware.vmem
+              core: '::demo_core:0'
+            """
+        )
+        r = _parsed(tmp_path, edam_text, "sim", "::demo_core:0")
+        # Fingerprint-facing slice still sees the data files...
+        names = [f.name.split("/")[-1] for f in r.rtl_source_files]
+        assert "check_tool_requirements.py" in names
+        assert "firmware.vmem" in names
+        # ...but the HDL slice fed to sv2v/yosys does not.
+        hdl = [f.name.split("/")[-1] for f in r.rtl_hdl_source_files]
+        assert hdl == ["counter_pkg.sv", "counter.sv"]
 
 
 # ---------------------------------------------------------------------------
@@ -949,19 +896,11 @@ _EDAM_WITH_INCLUDE = textwrap.dedent(
 
 
 class TestIncludePartition:
-    def _resolved(self, tmp_path: Path):
-        edam = tmp_path / "syn_demo_0.eda.yml"
-        edam.write_text(_EDAM_WITH_INCLUDE, encoding="utf-8")
-        return parse_edam(edam, target="syn", vlnv="::syn_demo:0")
-
-    def test_is_include_flag_parsed(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
+    def test_includes_stay_out_of_the_compiled_set(self, tmp_path: Path):
+        r = _parsed(tmp_path, _EDAM_WITH_INCLUDE, "syn", "::syn_demo:0")
         by_name = {f.name.split("/")[-1]: f for f in r.files}
         assert by_name["defs.svh"].is_include is True
         assert by_name["dut.sv"].is_include is False
-
-    def test_rtl_source_files_exclude_includes(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
         # rtl_files keeps headers; rtl_source_files (the compiled set) drops them.
         assert [f.name.split("/")[-1] for f in r.rtl_files] == [
             "defs.svh",
@@ -973,9 +912,6 @@ class TestIncludePartition:
             "pkg.sv",
             "dut.sv",
         ]
-
-    def test_rtl_include_dirs_deduped_and_absolute(self, tmp_path: Path):
-        r = self._resolved(tmp_path)
         # Two headers share one dir → a single de-duplicated, absolute include dir.
         assert r.rtl_include_dirs == ((tmp_path / "src/syn_demo_0/rtl/include").resolve(),)
 
@@ -991,9 +927,7 @@ class TestIncludePartition:
               core: '::syn_demo:0'
             """
         )
-        edam = tmp_path / "syn_demo_0.eda.yml"
-        edam.write_text(edam_text, encoding="utf-8")
-        r = parse_edam(edam, target="syn", vlnv="::syn_demo:0")
+        r = _parsed(tmp_path, edam_text, "syn", "::syn_demo:0")
         # tb_defs.svh is tb-tagged → not a synth source, and its tb/ dir is not a
         # synth include dir (only the rtl/include dir survives).
         assert all("tb_defs" not in f.name for f in r.rtl_source_files)
@@ -1014,9 +948,7 @@ class TestIncludePartition:
               core: '::syn_demo:0'
             """
         )
-        edam = tmp_path / "syn_demo_0.eda.yml"
-        edam.write_text(edam_text, encoding="utf-8")
-        r = parse_edam(edam, target="syn", vlnv="::syn_demo:0")
+        r = _parsed(tmp_path, edam_text, "syn", "::syn_demo:0")
         sdc_names = [f.name.split("/")[-1] for f in r.sdc_files]
         assert sdc_names == ["constraints.sdc"]  # tb.sdc excluded
         # An SDC is not (System)Verilog, so it must not reach the HDL source set.
@@ -1024,7 +956,7 @@ class TestIncludePartition:
 
 
 # ---------------------------------------------------------------------------
-# resolve_target_handle — CLI invocation (mocked) + command shape
+# resolve_target_handle — the FuseSoC setup command replaced by the shared runner fake
 # ---------------------------------------------------------------------------
 
 
@@ -1131,8 +1063,8 @@ class TestResolveTargetHandleMocked:
     def test_setup_failure_names_unprovided_dependency(self, tmp_path: Path):
         def fail_message(name: str, depend: str) -> str:
             project = tmp_path / name
-            _write_core(project / "ip", TestSelectableCoreClosure._root("top", depend))
-            _write_core(project / "dep", TestSelectableCoreClosure._leaf("dep"))
+            _write_core(project / "ip", _root_core("top", depend))
+            _write_core(project / "dep", _leaf_core("dep"))
             with pytest.raises(TargetResolutionError) as excinfo:
                 resolve_target_handle(
                     _handle(project),
@@ -1161,6 +1093,88 @@ class TestResolveTargetHandleMocked:
                 build_root=tmp_path / "build",
                 runner=fusesoc_setup_runner(error=FileNotFoundError("fusesoc")),
             )
+
+    def test_explicit_tb_tag_is_restored_when_nonstrict_inventory_skips_core(self, tmp_path: Path):
+        # FuseSoC 2.4.7's EDAM writer drops the tb tag; the authored one comes back even
+        # though a malformed sibling Target makes strict classification refuse the core.
+        (tmp_path / "tb.sv").touch()
+        (tmp_path / "design.core").write_text(
+            "CAPI=2:\nname: ::explicit:0\nfilesets:\n"
+            "  tb: {files: [tb.sv], tags: [tb]}\n"
+            "targets:\n  sim: {filesets: [tb], toplevel: tb}\n"
+            "  malformed: {filesets: [42]}\n",
+            encoding="utf-8",
+        )
+        build_root = tmp_path / "build"
+        edam = (
+            build_root / "explicit_0" / "sim" / "explicit_0.eda.yml",
+            "name: explicit_0\ntoplevel: tb\n"
+            "files:\n- {name: tb.sv, file_type: systemVerilogSource}\n",
+        )
+
+        resolved = resolve_target_handle(
+            _handle(tmp_path), build_root=build_root, runner=fusesoc_setup_runner(edam=edam)
+        )
+
+        assert resolved.files[0].is_tb
+        with pytest.raises(FuseSocError, match=r"design\.core"):
+            fusesoc_registry.classified_sources(tmp_path, strict=True)
+
+    def test_resolving_target_runs_no_extra_core_graph_inspection(self, tmp_path, monkeypatch):
+        from booley.fusesoc import target_inspection
+
+        (tmp_path / "plain.core").write_text(
+            "CAPI=2:\nname: acme:ip:plain:1.0\nparameters:\n"
+            "  W: {datatype: int, paramtype: vlogparam, default: 8}\n"
+            "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+            "    parameters: [W]\n    toplevel: top\n"
+        )
+        handle = TargetCatalog.build(tmp_path).select("sim")
+        inspected = []
+        # private: resolution has no output that shows whether it ran the FuseSoC
+        # core-graph inspection; only a spy on the inspector's one graph read can (#1646).
+        original = target_inspection._TargetSourceInspector._cores
+
+        def spy(self, **kwargs):
+            inspected.append(kwargs["identity"])
+            return original(self, **kwargs)
+
+        monkeypatch.setattr(target_inspection._TargetSourceInspector, "_cores", spy)
+        build_root = tmp_path / "build"
+        edam = (
+            build_root / "acme_ip_plain_1.0" / "sim" / "acme_ip_plain_1.0.eda.yml",
+            "name: plain\ntoplevel: top\nfiles: []\n",
+        )
+        resolve_target_handle(
+            handle, build_root=build_root, runner=fusesoc_setup_runner(edam=edam)
+        )
+        assert inspected == []
+
+    def test_fusesoc_setup_sees_the_checkouts_booley_dir(self, tmp_path, monkeypatch):
+        """Generators run by ``fusesoc run --setup`` read the checkout's inputs, not Main's."""
+        from booley.runtime import booley_dir
+
+        project = tmp_path / "proj"
+        _write_core(project / "ip")
+        (project / ".booley").mkdir(parents=True)
+        main = tmp_path / "main-booley"
+        main.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(main))
+        booley_dir.reset_cache()
+        build_root = tmp_path / "build"
+
+        calls: list[dict[str, object]] = []
+
+        try:
+            resolve_target_handle(
+                _handle(project),
+                build_root=build_root,
+                runner=fusesoc_setup_runner(edam=_edam_at(build_root), calls=calls),
+            )
+        finally:
+            booley_dir.reset_cache()
+
+        assert calls[0]["env"]["BOOLEY_DIR"] == str((project / ".booley").resolve())
 
 
 class TestMissingSourcePreflight:
@@ -1232,10 +1246,6 @@ class TestMissingSourcePreflight:
             )
         assert f"git worktree add {quote_arg(root)} <commit-ish>" in str(exc_info.value)
 
-    def test_missing_source_is_a_target_resolution_error(self):
-        # Callers' existing `except TargetResolutionError` handlers must catch it.
-        assert issubclass(MissingSourceError, TargetResolutionError)
-
     def test_no_worktree_hint_for_plain_missing_paths(self, tmp_path: Path):
         core = textwrap.dedent(
             """\
@@ -1254,19 +1264,15 @@ class TestMissingSourcePreflight:
         )
         _write_core(tmp_path, core, create_sources=False)
         with pytest.raises(MissingSourceError) as exc_info:
-            preflight_target_sources_for_ref(tmp_path, resolve_ref(tmp_path, "sim_plain"))
+            preflight_target_sources_for_ref(tmp_path, _ref(tmp_path, "sim_plain"))
         msg = str(exc_info.value)
         assert "  - rtl/gone.sv" in msg
         assert "git worktree add" not in msg
 
-    def test_passes_when_all_sources_exist(self, tmp_path: Path):
-        _write_core(tmp_path)  # default fixture creates the declared sources
-        preflight_target_sources_for_ref(tmp_path, resolve_ref(tmp_path, "sim"))  # must not raise
-        assert _missing_sources(tmp_path) == []
-
     def test_paths_resolve_relative_to_core_dir_not_project_root(self, tmp_path: Path):
         # Core nested under ip/: its rtl/ lives beside the .core, not at root.
         _write_core(tmp_path / "ip")
+        preflight_target_sources_for_ref(tmp_path, _ref(tmp_path))  # must not raise
         assert _missing_sources(tmp_path) == []
 
     def test_glob_and_conditional_entries_are_not_hard_failed(self, tmp_path: Path):
@@ -1292,6 +1298,33 @@ class TestMissingSourcePreflight:
         # Only the literal path is checked; the glob and the conditional
         # fileset are left for FuseSoC itself to judge.
         assert _missing_sources(tmp_path, "sim_glob") == []
+
+    def test_missing_target_sources_walks_filesets_append(self, tmp_path: Path):
+        """An appended fileset's missing file must be reported, or every built-in's
+        fail-fast preflight silently skips it."""
+        text = textwrap.dedent(
+            """\
+            CAPI=2:
+            name: ::demo_core:0
+            filesets:
+              rtl:
+                files:
+                  - rtl/counter.sv: {file_type: systemVerilogSource}
+              fw:
+                files:
+                  - sw/firmware.vmem: {file_type: user}
+            targets:
+              default: &default_target
+                filesets: [rtl]
+              sim:
+                <<: *default_target
+                filesets_append: [fw]
+                toplevel: counter
+            """
+        )
+        _write_core(tmp_path, text, create_sources=False)  # nothing on disk
+        missing = _missing_sources(tmp_path)
+        assert "sw/firmware.vmem" in missing  # the appended path is walked
 
 
 # ---------------------------------------------------------------------------
@@ -1341,16 +1374,11 @@ class TestResolveTargetHandleReal:
             "    toplevel: top\n",
             encoding="utf-8",
         )
-        cmd = (
-            list(DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
 
         resolved = resolve_target_handle(
             _handle(project, "synth"),
             build_root=project / "out",
-            fusesoc_cmd=cmd,
+            fusesoc_cmd=_fusesoc_cmd(),
         )
 
         assert resolved.sdc_files[0].name == physical.resolve().as_posix()
@@ -1376,16 +1404,11 @@ class TestResolveTargetHandleReal:
             "module tb_counter; counter dut(.clk(1'b0)); endmodule\n", encoding="utf-8"
         )
         _write_core(project / ".booley" / "cores", create_sources=False)
-        cmd = (
-            list(DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
 
         resolved = resolve_target_handle(
             _handle(project, "sim"),
             build_root=project / "out",
-            fusesoc_cmd=cmd,
+            fusesoc_cmd=_fusesoc_cmd(),
         )
 
         assert resolved.toplevel == "tb_counter"
@@ -1409,16 +1432,11 @@ class TestResolveTargetHandleReal:
             "CAPI=2:\nname: ::broken:0\nfilesets:\n  bad:\n    files: []\n    depend:\n",
             encoding="utf-8",
         )
-        cmd = (
-            list(DEFAULT_FUSESOC_CMD)
-            if shutil.which("fusesoc")
-            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        )
 
         resolved = resolve_target_handle(
             _handle(project, "sim"),
             build_root=project / "out",
-            fusesoc_cmd=cmd,
+            fusesoc_cmd=_fusesoc_cmd(),
         )
 
         assert resolved.toplevel == "tb_counter"
@@ -1441,16 +1459,10 @@ class TestResolveTargetHandleReal:
         )
         _write_core(project)
 
-        # Prefer the console script; otherwise invoke the importable module.
-        if shutil.which("fusesoc"):
-            cmd = list(DEFAULT_FUSESOC_CMD)
-        else:
-            cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-
         result = resolve_target_handle(
             _handle(project, "sim"),
             build_root=tmp_path / "build",
-            fusesoc_cmd=cmd,
+            fusesoc_cmd=_fusesoc_cmd(),
         )
         assert result.toplevel == "tb_counter"
         assert result.eda_tool == "verilator"
@@ -1459,68 +1471,134 @@ class TestResolveTargetHandleReal:
         assert (result.build_root / "Makefile").exists()
 
 
+def test_declared_string_inspection_remains_read_only(tmp_path: Path):
+    (tmp_path / "top.sv").write_text('module top #(parameter string NAME="X")(); endmodule\n')
+    (tmp_path / "proof.core").write_text("""CAPI=2:
+name: proof:string:inspection:1
+filesets:
+  rtl:
+    files: [top.sv]
+    file_type: systemVerilogSource
+parameters:
+  NAME: {datatype: str, paramtype: vlogparam, default: '"MAC"'}
+targets:
+  synth:
+    flow: generic
+    flow_options: {tool: yosys, arch: xilinx}
+    filesets: [rtl]
+    parameters: [NAME]
+    toplevel: top
+""")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("synth", for_flow="synth"))
+    assert inspection.parameters["NAME"]["datatype"] == "str"
+    assert inspection.parameters["NAME"]["default"] == '"MAC"'
+    assert {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    } == before
+
+
 # ---------------------------------------------------------------------------
-# _target_source_files — pre-resolve RTL/TB partition from the .core (dec 13)
+# target_source_files_for_ref — pre-resolve RTL/TB partition from the .core (dec 13)
 # ---------------------------------------------------------------------------
 
 
-class TestTargetSourceFiles:
-    def test_partitions_sim_target_by_tb_tag(self, tmp_path: Path):
-        _write_core(tmp_path)
-        src = _target_source_files(tmp_path, "sim")
-        assert src.rtl_source_files == (
-            "rtl/counter_pkg.sv",
-            "rtl/counter.sv",
-        )
-        assert src.tb_files == ("tb/tb_counter.sv",)
+@pytest.mark.parametrize(
+    ("filesets", "target", "rtl", "tb"),
+    [
+        pytest.param(
+            "  rtl:\n    files:\n      - rtl/dut.sv: {file_type: systemVerilogSource}\n",
+            "sim: {default_tool: yosys, filesets: [rtl], toplevel: dut}",
+            ("rtl/dut.sv",),
+            (),
+            id="rtl-only",
+        ),
+        pytest.param(
+            "  rtl:\n    files:\n"
+            "      - rtl/defs.svh: {file_type: systemVerilogSource, is_include_file: true}\n"
+            "      - rtl/dut.sv: {file_type: systemVerilogSource}\n"
+            "  tb:\n    files: [tb/tb_dut.sv]\n    tags: [tb]\n",
+            "sim: {filesets: [rtl, tb], toplevel: tb_dut}",
+            ("rtl/dut.sv",),  # the include header is not a compiled source
+            ("tb/tb_dut.sv",),
+            id="include-header",
+        ),
+        pytest.param(
+            "  src:\n    files:\n"
+            "      - rtl/dut.sv: {file_type: systemVerilogSource}\n"
+            "      - tb/tb_dut.sv: {file_type: systemVerilogSource, tags: [tb]}\n",
+            "sim: {filesets: [src], toplevel: tb_dut}",
+            ("rtl/dut.sv",),
+            ("tb/tb_dut.sv",),
+            id="per-file-tb-tag",
+        ),
+        pytest.param(
+            "  rtl:\n    files: [rtl/dut.sv]\n  tb:\n    files: [tb/tb_dut.sv]\n",
+            "sim: {filesets: [rtl, tb], toplevel: tb_dut}",
+            ("rtl/dut.sv", "tb/tb_dut.sv"),  # no tags: [tb] → the testbench reads as RTL
+            (),
+            id="untagged-tb-fileset",
+        ),
+        pytest.param(
+            # CAPI2 `filesets_append` (the `<<: *default_target` idiom) is walked like
+            # `filesets`: ibex's booley_sim adds its tb-tagged .vmem fileset that way.
+            "  rtl:\n    files: [rtl/counter.sv]\n"
+            "  fw:\n    files: [{sw/firmware.vmem: {file_type: user}}]\n    tags: [tb]\n",
+            "default: &default_target {filesets: [rtl]}\n"
+            "  sim: {<<: *default_target, flow: sim, flow_options: {tool: verilator},"
+            " filesets_append: [fw], toplevel: counter}",
+            ("rtl/counter.sv",),
+            ("sw/firmware.vmem",),
+            id="filesets-append",
+        ),
+    ],
+)
+def test_target_sources_partition_by_tb_tag(
+    tmp_path: Path, filesets: str, target: str, rtl: tuple[str, ...], tb: tuple[str, ...]
+):
+    text = f"CAPI=2:\nname: ::demo:0\nfilesets:\n{filesets}targets:\n  {target}\n"
+    _write_core(tmp_path, text)
+    sources = _sources(tmp_path)
+    assert sources.rtl_source_files == rtl
+    assert sources.tb_files == tb
 
-    def test_rtl_only_target_has_no_tb(self, tmp_path: Path):
-        core = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::syn_demo:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/dut.sv: {file_type: systemVerilogSource}
-            targets:
-              synth:
-                default_tool: yosys
-                filesets: [rtl]
-                toplevel: dut
-            """
-        )
-        _write_core(tmp_path, core)
-        src = _target_source_files(tmp_path, "synth")
-        assert src.tb_files == ()
-        assert src.rtl_source_files == ("rtl/dut.sv",)
 
-    def test_unknown_target_raises(self, tmp_path: Path):
-        _write_core(tmp_path)
-        with pytest.raises(UnknownTargetError):
-            _target_source_files(tmp_path, "nope")
+def test_target_sources_follow_the_given_declaration(tmp_path: Path):
+    """Sources come from the declaration passed in, not a fresh lookup of its bare name."""
+    _write_core(tmp_path / "a")
+    _write_core(tmp_path / "b", _CORE_TEXT.replace("::demo_core:0", "::other_core:0"))
 
-    def test_ref_partition_bypasses_selector_rescan(self, tmp_path: Path, monkeypatch):
-        from booley.fusesoc import fusesoc_registry
+    sources = _sources(tmp_path, "other_core#sim")
 
-        _write_core(tmp_path / "a")
-        _write_core(
-            tmp_path / "b",
-            _CORE_TEXT.replace("::demo_core:0", "::other_core:0"),
-        )
-        refs = _enumerate_all(tmp_path)["sim"]
+    assert sources.rtl_source_files == ("b/rtl/counter_pkg.sv", "b/rtl/counter.sv")
+    assert sources.tb_files == ("b/tb/tb_counter.sv",)
 
-        with pytest.raises(AmbiguousTargetError):
-            _target_source_files(tmp_path, "sim")
-        qualified = _target_source_files(tmp_path, "other_core#sim")
 
-        monkeypatch.setattr(
-            fusesoc_registry,
-            "_enumerate_all",
-            lambda _root: pytest.fail("ref-based partition rescanned the registry"),
-        )
+def test_explicit_target_sources_report_only_authored_tb_tags(tmp_path: Path):
+    """Doctor's raw tag inventory: an untagged testbench fileset stays RTL, and a
+    dependency core contributes its default Target's files."""
+    _write_core(
+        tmp_path,
+        "CAPI=2:\nname: ::untagged:0\nfilesets:\n"
+        "  rtl: {files: [rtl/dut.sv], depend: [acme:lib:dep]}\n"
+        "  tb: {files: [tb/tb_dut.sv]}\n"
+        "  tagged: {files: [tb/tb_tagged.sv], tags: [tb]}\n"
+        "targets:\n"
+        '  sim: {filesets: [rtl, tb, tagged, "tool_x ? (absent)"], toplevel: tb_dut}\n',
+    )
+    _write_core(tmp_path / "dep", _leaf_core("dep"))
 
-        assert target_source_files_for_ref(tmp_path, refs[1]) == qualified
+    sources = fusesoc_registry.explicit_target_sources(tmp_path, _handle(tmp_path))
+
+    assert sources.rtl_source_files == ("dep/rtl/dep.sv", "rtl/dut.sv", "tb/tb_dut.sv")
+    assert sources.tb_files == ("tb/tb_tagged.sv",)
 
 
 class TestTargetSourceFilesDependencyClosure:
@@ -1531,7 +1609,14 @@ class TestTargetSourceFilesDependencyClosure:
     read returned no RTL at all and the Mutation Flow failed before injection.
     """
 
-    def _layered_repo(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("include_dependencies", "rtl"),
+        [(False, ()), (True, ("vendor/core/rtl/dut.sv", "vendor/core/rtl/dut_pkg.sv"))],
+        ids=["root-only", "closure"],
+    )
+    def test_closure_read_finds_the_transitive_dut(
+        self, tmp_path: Path, include_dependencies: bool, rtl: tuple[str, ...]
+    ):
         harness = textwrap.dedent(
             """\
             CAPI=2:
@@ -1564,33 +1649,16 @@ class TestTargetSourceFilesDependencyClosure:
                 filesets: [rtl]
             """
         )
-        dep_dir = tmp_path / "vendor" / "core"
-        dep_dir.mkdir(parents=True)
-        dep_core = dep_dir / "dut.core"
+        dep_core = tmp_path / "vendor" / "core" / "dut.core"
+        dep_core.parent.mkdir(parents=True)
         dep_core.write_text(dut, encoding="utf-8")
         touch_declared_sources(dep_core)
 
-    def test_root_only_read_misses_the_transitive_dut(self, tmp_path: Path):
-        """The default stays root-only — this documents why that is not enough."""
-        self._layered_repo(tmp_path)
-        src = _target_source_files(tmp_path, "sim")
-        assert src.rtl_source_files == ()
-        assert src.tb_files == ("tb/harness.cpp", "tb/tb_top.sv")
+        src = _sources(tmp_path, include_dependencies=include_dependencies)
 
-    def test_closure_read_finds_the_transitive_dut(self, tmp_path: Path):
-        self._layered_repo(tmp_path)
-        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
-        assert "vendor/core/rtl/dut.sv" in src.rtl_source_files
-        assert "vendor/core/rtl/dut_pkg.sv" in src.rtl_source_files
+        assert src.rtl_source_files == rtl
         # Both inferred C++ harness and explicitly tagged HDL remain TB.
-        assert src.rtl_source_files[0] == "vendor/core/rtl/dut.sv"
         assert src.tb_files == ("tb/harness.cpp", "tb/tb_top.sv")
-
-    def test_closure_read_does_not_duplicate_shared_dependencies(self, tmp_path: Path):
-        """A file reachable twice must not be mutated or counted twice."""
-        self._layered_repo(tmp_path)
-        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
-        assert len(src.rtl_source_files) == len(set(src.rtl_source_files))
 
     def test_unresolvable_dependency_does_not_break_the_read(self, tmp_path: Path):
         core = textwrap.dedent(
@@ -1609,86 +1677,76 @@ class TestTargetSourceFilesDependencyClosure:
             """
         )
         _write_core(tmp_path, core)
-        src = _target_source_files(tmp_path, "sim", include_dependencies=True)
+        src = _sources(tmp_path, include_dependencies=True)
         assert src.rtl_source_files == ("rtl/top.sv",)
 
-    def test_excludes_include_headers_from_rtl_sources(self, tmp_path: Path):
-        core = textwrap.dedent(
+    def test_target_source_files_rebases_stealth_core_paths(self, tmp_path: Path):
+        """A CAPI2 fileset path is relative to its .core's directory. For a
+        state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
+        so returned paths must be re-based project-relative — consumers join
+        them onto the root (doctor's sentinel scan, the Mutation Flow's DUT list)
+        and used to silently read the wrong file, or none at all."""
+        state_cores = tmp_path / ".booley" / "cores"
+        state_cores.mkdir(parents=True)
+        text = textwrap.dedent(
             """\
             CAPI=2:
-            name: ::inc_demo:0
+            name: ::demo-booley:0
             filesets:
               rtl:
                 files:
-                  - rtl/defs.svh: {file_type: systemVerilogSource, is_include_file: true}
-                  - rtl/dut.sv: {file_type: systemVerilogSource}
+                  - rtl/counter.sv: {file_type: systemVerilogSource}
               tb:
                 files:
-                  - tb/tb_dut.sv: {file_type: systemVerilogSource}
+                  - tb_directed.sv: {file_type: systemVerilogSource}
                 tags: [tb]
             targets:
               sim:
+                flow: sim
+                flow_options: {tool: verilator}
                 filesets: [rtl, tb]
-                toplevel: tb_dut
+                toplevel: tb
             """
         )
-        _write_core(tmp_path, core)
-        src = _target_source_files(tmp_path, "sim")
-        # The include header is not a compiled source; the tb file is tb-tagged.
-        assert src.rtl_source_files == ("rtl/dut.sv",)
-        assert src.tb_files == ("tb/tb_dut.sv",)
+        _write_core(state_cores, text)
+        src = _sources(tmp_path)
+        assert src.rtl_source_files == (".booley/cores/rtl/counter.sv",)
+        assert src.tb_files == (".booley/cores/tb_directed.sv",)
 
-    def test_per_file_tb_tag_in_mixed_fileset(self, tmp_path: Path):
-        core = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::mixed_demo:0
-            filesets:
-              src:
-                files:
-                  - rtl/dut.sv: {file_type: systemVerilogSource}
-                  - tb/tb_dut.sv: {file_type: systemVerilogSource, tags: [tb]}
-            targets:
-              sim:
-                filesets: [src]
-                toplevel: tb_dut
-            """
+    def test_target_source_files_resolves_every_in_project_symlink(self, tmp_path: Path):
+        """RTL and TB resolution links collapse to their tracked repo paths."""
+        require_symlinks(tmp_path)
+        rtl = tmp_path / "rtl"
+        tb = tmp_path / "tb"
+        rtl.mkdir()
+        tb.mkdir()
+        (rtl / "counter.sv").write_text("module counter; endmodule\n")
+        (tb / "tb_counter.sv").write_text("module tb_counter; endmodule\n")
+        state_cores = tmp_path / ".booley" / "cores"
+        state_cores.mkdir(parents=True)
+        (state_cores / "rtl").symlink_to(rtl, target_is_directory=True)
+        (state_cores / "tb").symlink_to(tb, target_is_directory=True)
+        _write_core(
+            state_cores,
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: ::demo_core:0
+                filesets:
+                  rtl: {files: [rtl/counter.sv]}
+                  tb:
+                    files: [tb/tb_counter.sv]
+                    tags: [tb]
+                targets:
+                  sim: {filesets: [rtl, tb], toplevel: tb_counter}
+                """
+            ),
         )
-        _write_core(tmp_path, core)
-        src = _target_source_files(tmp_path, "sim")
-        assert src.rtl_source_files == ("rtl/dut.sv",)
-        assert src.tb_files == ("tb/tb_dut.sv",)
 
+        src = _sources(tmp_path)
 
-class TestSimTargetHasUntaggedTb:
-    def test_false_when_tb_is_tagged(self, tmp_path: Path):
-        _write_core(tmp_path)  # sim target's tb fileset carries tags: [tb]
-        assert _sim_target_has_untagged_tb(tmp_path, "sim") is False
-
-    def test_true_when_tb_fileset_untagged(self, tmp_path: Path):
-        core = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::untagged_demo:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/dut.sv: {file_type: systemVerilogSource}
-              tb:
-                files:
-                  - tb/tb_dut.sv: {file_type: systemVerilogSource}
-            targets:
-              sim:
-                filesets: [rtl, tb]
-                toplevel: tb_dut
-            """
-        )
-        _write_core(tmp_path, core)
-        # tb fileset has no tags:[tb] → its file mis-classifies as RTL.
-        src = _target_source_files(tmp_path, "sim")
-        assert "tb/tb_dut.sv" in src.rtl_source_files
-        assert src.tb_files == ()
-        assert _sim_target_has_untagged_tb(tmp_path, "sim") is True
+        assert src.rtl_source_files == ("rtl/counter.sv",)
+        assert src.tb_files == ("tb/tb_counter.sv",)
 
 
 # ---------------------------------------------------------------------------
@@ -1698,88 +1756,48 @@ class TestSimTargetHasUntaggedTb:
 
 
 class TestCoreSchemaErrors:
-    def test_clean_core_has_no_errors(self, tmp_path: Path):
-        core = _write_core(tmp_path)
-        assert core_schema_errors(core) == []
+    @pytest.mark.parametrize(
+        "files",
+        [
+            "[rtl/foo.sv]",  # a plain path string carries no attrs — nothing to reject
+            # Every CAPI2-valid per-file key passes (fusesoc 2.4.6 json_schema.py's
+            # ``files`` $def allowlist).
+            "[{rtl/foo.sv: {file_type: systemVerilogSource, is_include_file: false,"
+            " include_path: rtl, logical_name: work, copyto: build/foo.sv, tags: [synth],"
+            " define: {WIDTH: 8}}}]",
+        ],
+        ids=["bare-string", "every-per-file-key"],
+    )
+    def test_valid_core_has_no_errors(self, tmp_path: Path, files: str):
+        assert core_schema_errors(_write_core(tmp_path)) == []
+        text = f"CAPI=2:\nname: ::demo:0\nfilesets:\n  rtl: {{files: {files}}}\n"
+        text += "targets:\n  sim: {flow: sim, filesets: [rtl]}\n"
+        assert core_schema_errors(_write_core(tmp_path / "valid", text)) == []
 
-    def test_scalar_depend_flagged(self, tmp_path: Path):
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              tb:
-                files:
-                  - tb/tb.sv: {file_type: systemVerilogSource}
-                depend: not_a_list
-            targets:
-              sim: {flow: sim, filesets: [tb]}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert "filesets.tb.depend must be array" in core_schema_errors(core)
-
-    def test_empty_depend_none_flagged(self, tmp_path: Path):
-        # A bare ``depend:`` parses to None — FuseSoC still rejects it (the exact
-        # upstream trap: it passed plain doctor and exploded only at --deep).
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              tb:
-                files:
-                  - tb/tb.sv: {file_type: systemVerilogSource}
-                depend:
-            targets:
-              sim: {flow: sim, filesets: [tb]}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert "filesets.tb.depend must be array" in core_schema_errors(core)
-
-    def test_scalar_target_filesets_append_flagged(self, tmp_path: Path):
-        # A scalar filesets_append passed the audit and then splat into
-        # per-character fileset names ["r","t","l"] inside
-        # target_fileset_names — the exact drift this table exists to stop.
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              rtl: {files: []}
-            targets:
-              sim: {flow: sim, filesets: [rtl], filesets_append: rtl}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert "targets.sim.filesets_append must be array" in core_schema_errors(core)
-
-    def test_scalar_target_filesets_flagged(self, tmp_path: Path):
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              rtl: {files: []}
-            targets:
-              sim: {flow: sim, filesets: rtl}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert "targets.sim.filesets must be array" in core_schema_errors(core)
-
-    def test_scalar_target_parameters_append_flagged(self, tmp_path: Path):
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              sim: {flow: sim, parameters_append: WIDTH=8}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert "targets.sim.parameters_append must be array" in core_schema_errors(core)
+    @pytest.mark.parametrize(
+        ("fileset", "target", "error"),
+        [
+            ("{files: [], depend: not_a_list}", "{filesets: [rtl]}", "filesets.rtl.depend"),
+            # A bare ``depend:`` parses to None — FuseSoC still rejects it (the exact
+            # upstream trap: it passed plain doctor and exploded only at --deep).
+            ("{files: [], depend: }", "{filesets: [rtl]}", "filesets.rtl.depend"),
+            # A scalar filesets_append splat into per-character fileset names
+            # ["r","t","l"] inside target_fileset_names.
+            (
+                "{files: []}",
+                "{filesets: [rtl], filesets_append: rtl}",
+                "targets.sim.filesets_append",
+            ),
+            ("{files: []}", "{filesets: rtl}", "targets.sim.filesets"),
+            ("{files: []}", "{parameters_append: WIDTH=8}", "targets.sim.parameters_append"),
+        ],
+    )
+    def test_scalar_array_field_flagged(
+        self, tmp_path: Path, fileset: str, target: str, error: str
+    ):
+        text = f"CAPI=2:\nname: ::demo:0\nfilesets:\n  rtl: {fileset}\n"
+        text += f"targets:\n  sim: {target}\n"
+        assert f"{error} must be array" in core_schema_errors(_write_core(tmp_path, text))
 
     def test_unreadable_core_reports_error(self, tmp_path: Path):
         core = tmp_path / "broken.core"
@@ -1808,66 +1826,21 @@ class TestCoreSchemaErrors:
             errors
         )
 
-    def test_all_valid_per_file_keys_accepted(self, tmp_path: Path):
-        # Every CAPI2-valid per-file key must pass (no false positives). Mirrors
-        # fusesoc 2.4.6 json_schema.py's ``files`` $def allowlist.
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/foo.sv:
-                      file_type: systemVerilogSource
-                      is_include_file: false
-                      include_path: rtl
-                      logical_name: work
-                      copyto: build/foo.sv
-                      tags: [synth]
-                      define: {WIDTH: 8}
-            targets:
-              sim: {flow: sim, filesets: [rtl]}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert core_schema_errors(core) == []
-
-    def test_bare_string_file_entry_not_flagged(self, tmp_path: Path):
-        # A file given as a plain path string carries no attrs — nothing to reject.
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/foo.sv
-            targets:
-              sim: {flow: sim, filesets: [rtl]}
-            """
-        )
-        core = _write_core(tmp_path, text)
-        assert core_schema_errors(core) == []
-
-
-class TestTargetSchemaFieldRegistry:
-    """Golden drift-guard between the schema table and its readers.
-
-    The array-field table (:data:`_CAPI2_TARGET_ARRAY_FIELDS`) and the
-    pre-resolve readers that splat target-def lists are maintained by hand in
-    two places; ``filesets_append`` once existed only on the reader side, so a
-    malformed scalar passed the audit and splat into per-character fileset
-    names. This test derives the consumed keys from the reader itself, so the
-    two can never drift apart again.
-    """
-
-    def test_target_fileset_names_keys_are_schema_audited(self):
-        from booley.fusesoc.fusesoc_registry import (
-            _CAPI2_TARGET_ARRAY_FIELDS,
-            target_fileset_names,
-        )
-
+    @pytest.mark.parametrize(
+        ("reader", "target_def"),
+        [
+            (target_fileset_names, {"filesets": ["rtl"]}),
+            (target_parameter_specs, {"parameters": ["WIDTH=8"]}),
+        ],
+        ids=["filesets", "parameters"],
+    )
+    def test_every_target_key_a_reader_splats_is_schema_audited(
+        self, tmp_path: Path, reader, target_def: dict[str, object]
+    ):
+        """Drift guard: the pre-resolve readers and the schema's array-field table are
+        kept by hand in two places; ``filesets_append`` once existed only on the reader
+        side, so a malformed scalar passed the audit and splat into per-character
+        names. The consumed keys come from the reader itself."""
         consumed: set[str] = set()
 
         class _Recorder(dict):
@@ -1876,33 +1849,16 @@ class TestTargetSchemaFieldRegistry:
                 return super().get(key, default)
 
         # Non-empty so the reader's `target_def or {}` guard keeps the recorder.
-        target_fileset_names(_Recorder({"filesets": ["rtl"]}))
+        reader(_Recorder(target_def))
 
         assert consumed, "reader consumed no keys — recorder wiring broken"
-        missing = consumed - set(_CAPI2_TARGET_ARRAY_FIELDS)
-        assert not missing, (
-            f"target_fileset_names() consumes target-def keys {sorted(missing)} that "
-            "core_schema_errors() does not audit as arrays — add them to "
-            "_CAPI2_TARGET_ARRAY_FIELDS or a scalar will splat into per-character names"
-        )
-
-    def test_target_parameter_specs_keys_are_schema_audited(self):
-        from booley.fusesoc.fusesoc_registry import (
-            _CAPI2_TARGET_ARRAY_FIELDS,
-            target_parameter_specs,
-        )
-
-        consumed: set[str] = set()
-
-        class _Recorder(dict):
-            def get(self, key, default=None):
-                consumed.add(key)
-                return super().get(key, default)
-
-        target_parameter_specs(_Recorder({"parameters": ["WIDTH=8"]}))
-
-        assert consumed
-        assert consumed <= set(_CAPI2_TARGET_ARRAY_FIELDS)
+        for key in sorted(consumed):
+            core = tmp_path / f"{key}.core"
+            core.write_text(
+                f"CAPI=2:\nname: ::demo:0\ntargets:\n  sim: {{{key}: scalar}}\n",
+                encoding="utf-8",
+            )
+            assert f"targets.sim.{key} must be array" in core_schema_errors(core)
 
 
 def test_possible_target_parameters_preserve_values_and_conditionals() -> None:
@@ -1928,111 +1884,66 @@ def test_target_parameter_definitions_return_only_local_declarations() -> None:
     }
 
 
-class TestCoreTargetFlowOption:
-    def test_reads_arch(self, tmp_path: Path):
-        doc = read_core(
-            _write_core(
-                tmp_path,
-                textwrap.dedent(
-                    """\
-            CAPI=2:
-            name: ::demo:0
-            filesets: {rtl: {files: []}}
-            targets:
-              synth:
-                flow: generic
-                flow_options: {tool: yosys, arch: xilinx}
-                filesets: [rtl]
-            """
-                ),
-            )
-        )
-        assert core_target_flow_option(doc, "synth", "arch") == "xilinx"
-        assert core_target_flow_option(doc, "synth", "missing") is None
-        assert core_target_flow_option(doc, "nope", "arch") is None
+def test_core_target_flow_option() -> None:
+    doc = {"targets": {"synth": {"flow": "generic", "flow_options": {"arch": "xilinx"}}}}
+    assert core_target_flow_option(doc, "synth", "arch") == "xilinx"
+    assert core_target_flow_option(doc, "synth", "missing") is None
+    assert core_target_flow_option(doc, "nope", "arch") is None
 
 
-class TestAllReferencedFiles:
-    def test_lists_every_fileset_file(self, tmp_path: Path):
-        _write_core(tmp_path)
-        files = all_referenced_files(tmp_path)
-        assert "rtl/counter_pkg.sv" in files
-        assert "rtl/counter.sv" in files
-        assert "tb/tb_counter.sv" in files
-
-    def test_includes_data_files(self, tmp_path: Path):
-        # A file_type: user data file (e.g. firmware hex) must be surfaced so the
-        # untracked-file doctor check can see it.
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              tb:
-                files:
-                  - tb/tb.sv: {file_type: systemVerilogSource}
-                  - firmware/firmware.hex: {file_type: user}
-                tags: [tb]
-            targets:
-              sim: {flow: sim, filesets: [tb]}
-            """
-        )
-        _write_core(tmp_path, text)
-        assert "firmware/firmware.hex" in all_referenced_files(tmp_path)
+# A stealth core's paths are re-based onto the Project Root, as doctor's tracked-file
+# check joins them there: its `fw/boot.hex` is `.booley/cores/fw/boot.hex`.
+@pytest.mark.parametrize("location", ["", ".booley/cores/"], ids=["project-root", "stealth"])
+def test_all_referenced_files_lists_every_fileset_file_including_data(
+    tmp_path: Path, location: str
+):
+    # A file_type: user data file (e.g. firmware hex) must be surfaced so the
+    # untracked-file doctor check can see it.
+    text = _CORE_TEXT.replace(
+        "      - tb/tb_counter.sv: {file_type: systemVerilogSource}\n",
+        "      - tb/tb_counter.sv: {file_type: systemVerilogSource}\n"
+        "      - firmware/firmware.hex: {file_type: user}\n",
+    )
+    _write_core(tmp_path / location, text)
+    assert sorted(all_referenced_files(tmp_path)) == [
+        f"{location}firmware/firmware.hex",
+        f"{location}rtl/counter.sv",
+        f"{location}rtl/counter_pkg.sv",
+        f"{location}tb/tb_counter.sv",
+    ]
 
 
-class TestVendoredFiles:
-    def test_collects_vendored_annotated_paths(self, tmp_path: Path):
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              fw:
-                files:
-                  - tb/test.elf: {file_type: user, tags: [vendored]}
-                  - firmware/firmware.hex: {file_type: user}
-            targets:
-              sim: {flow: sim, filesets: [fw]}
-            """
-        )
-        _write_core(tmp_path, text)
-        assert vendored_files(tmp_path) == {"tb/test.elf"}
-
-    def test_no_annotation_yields_empty_set(self, tmp_path: Path):
-        _write_core(tmp_path)
-        assert vendored_files(tmp_path) == set()
-
-    def test_bare_vendored_key_is_not_honored(self, tmp_path: Path):
-        # QA-3: the vendored marker is the CAPI2-valid ``tags: [vendored]``, not
-        # a bare ``vendored: true`` (which real fusesoc rejects). The reader must
-        # honor only the tag, so a stray bare key marks nothing.
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            filesets:
-              fw:
-                files:
-                  - tb/test.elf: {file_type: user, vendored: true}
-            targets:
-              sim: {flow: sim, filesets: [fw]}
-            """
-        )
-        _write_core(tmp_path, text)
-        assert vendored_files(tmp_path) == set()
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ("{file_type: user, tags: [vendored]}", {"tb/test.elf"}),
+        ("{file_type: user}", set()),
+        # QA-3: the marker is the CAPI2-valid ``tags: [vendored]``; a bare
+        # ``vendored: true`` (which real fusesoc rejects) marks nothing.
+        ("{file_type: user, vendored: true}", set()),
+    ],
+    ids=["tag", "no-annotation", "bare-key"],
+)
+def test_vendored_files(tmp_path: Path, attrs: str, expected: set[str]):
+    text = textwrap.dedent(
+        f"""\
+        CAPI=2:
+        name: ::demo:0
+        filesets:
+          fw:
+            files:
+              - tb/test.elf: {attrs}
+              - firmware/firmware.hex: {{file_type: user}}
+        targets:
+          sim: {{flow: sim, filesets: [fw]}}
+        """
+    )
+    _write_core(tmp_path, text)
+    assert vendored_files(tmp_path) == expected
 
 
 # ---------------------------------------------------------------------------
-# [fusesoc] target_cores / target_filter scope knobs — RETIRED (ADR 0030).
-# Identity is per-(VLNV, name) and ownership derives from [flows.*]; the scope
-# knobs answered nothing that isn't already answered, so they were removed.
-# Disambiguation is now tested in TestResolveRef, not here.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# selectable_core_closure — scope host-side .core audits to reachable cores
+# core_closure — scope host-side .core audits to reachable cores
 # ---------------------------------------------------------------------------
 
 
@@ -2040,44 +1951,6 @@ class TestSelectableCoreClosure:
     """A 208-core monorepo must not fold every unselectable core into the
     host-side .core audits; the closure walks the selectable Targets' CAPI2
     depend graph so only reachable cores are in scope (SETUP-19)."""
-
-    @staticmethod
-    def _root(name: str, dep_key: str) -> str:
-        # A selectable-Target core whose fileset depends on `dep_key`.
-        return textwrap.dedent(
-            f"""\
-            CAPI=2:
-            name: acme:lib:{name}:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/{name}.sv: {{file_type: systemVerilogSource}}
-                depend: [{dep_key}]
-            targets:
-              sim:
-                flow: sim
-                flow_options: {{tool: verilator}}
-                filesets: [rtl]
-                toplevel: {name}
-            """
-        )
-
-    @staticmethod
-    def _leaf(name: str) -> str:
-        # A plain dependency core: no selectable Target, no depends of its own.
-        return textwrap.dedent(
-            f"""\
-            CAPI=2:
-            name: acme:lib:{name}:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/{name}.sv: {{file_type: systemVerilogSource}}
-            targets:
-              default:
-                filesets: [rtl]
-            """
-        )
 
     def test_none_without_seed(self, tmp_path: Path):
         # No seed Targets (ADR 0030) → None → caller audits every core.
@@ -2087,16 +1960,11 @@ class TestSelectableCoreClosure:
 
     def test_closure_reaches_transitive_depends(self, tmp_path: Path):
         # top --depend--> dep --depend--> deep; a fourth, unrelated core stays out.
-        top = _write_core(tmp_path / "top", self._root("top", "acme:lib:dep"))
-        dep = _write_core(
-            tmp_path / "dep",
-            self._leaf("dep").replace(
-                "filesets:\n  rtl:\n    files:",
-                "filesets:\n  rtl:\n    depend: [acme:lib:deep]\n    files:",
-            ),
-        )
-        deep = _write_core(tmp_path / "deep", self._leaf("deep"))
-        _write_core(tmp_path / "island", self._leaf("island"))  # unreachable
+        top = _write_core(tmp_path / "top", _root_core("top", "acme:lib:dep"))
+        dep = _write_core(tmp_path / "dep", _leaf_core("dep", "depend: [acme:lib:deep]"))
+        # A dependency core needs no targets: the walk reads its filesets alone.
+        deep = _write_core(tmp_path / "deep", "CAPI=2:\nname: acme:lib:deep:0\nfilesets: {}\n")
+        _write_core(tmp_path / "island", _leaf_core("island"))  # unreachable
 
         # Seed the project's declared Target (`sim`, declared only by top).
         catalog = TargetCatalog.build(tmp_path)
@@ -2105,8 +1973,8 @@ class TestSelectableCoreClosure:
 
     def test_version_independent_depend_match(self, tmp_path: Path):
         # A versioned/operator-qualified depend still reaches the dep core.
-        top = _write_core(tmp_path / "top", self._root("top", "(>=acme:lib:dep:1.0)"))
-        dep = _write_core(tmp_path / "dep", self._leaf("dep"))
+        top = _write_core(tmp_path / "top", _root_core("top", "(>=acme:lib:dep:1.0)"))
+        dep = _write_core(tmp_path / "dep", _leaf_core("dep"))
         catalog = TargetCatalog.build(tmp_path)
         assert catalog.core_closure([catalog.select("sim")]) == frozenset({top, dep})
 
@@ -2115,15 +1983,9 @@ class TestSelectableCoreClosure:
         # identity; an unprovided one is named as written, every spelling of it.
         _write_core(
             tmp_path / "top",
-            self._root("top", '(>=acme:lib:dep:1.0), "tool_verilator? (>=::vlog_tb_utils:1.1)"'),
+            _root_core("top", '(>=acme:lib:dep:1.0), "tool_verilator? (>=::vlog_tb_utils:1.1)"'),
         )
-        _write_core(
-            tmp_path / "dep",
-            self._leaf("dep").replace(
-                "filesets:\n  rtl:\n    files:",
-                "filesets:\n  rtl:\n    depend: ['::vlog_tb_utils:2.0']\n    files:",
-            ),
-        )
+        _write_core(tmp_path / "dep", _leaf_core("dep", "depend: ['::vlog_tb_utils:2.0']"))
         catalog = TargetCatalog.build(tmp_path)
         assert catalog.unprovided_dependencies(catalog.select("sim")) == (
             "::vlog_tb_utils:2.0",
@@ -2135,17 +1997,11 @@ class TestSelectableCoreClosure:
         # directly and through a Project core.
         _write_core(
             tmp_path / "top",
-            self._root("top", "acme:lib:dep").replace(
+            _root_core("top", "acme:lib:dep").replace(
                 "    depend:", "    depend_append: ['::appended:0']\n    depend:"
             ),
         )
-        _write_core(
-            tmp_path / "dep",
-            self._leaf("dep").replace(
-                "filesets:\n  rtl:\n    files:",
-                "filesets:\n  rtl:\n    depend_append: ['::deep_appended:0']\n    files:",
-            ),
-        )
+        _write_core(tmp_path / "dep", _leaf_core("dep", "depend_append: ['::deep_appended:0']"))
         catalog = TargetCatalog.build(tmp_path)
         assert catalog.unprovided_dependencies(catalog.select("sim")) == (
             "::appended:0",
@@ -2160,7 +2016,7 @@ class TestSelectableCoreClosure:
     def test_unselectable_sibling_target_does_not_widen_closure(self, tmp_path: Path):
         # top's seeded `sim` depends on dep; its *unseeded* `alt` target depends on
         # rogue — rogue must NOT enter the closure (precise per-Target seeding).
-        top_text = self._root("top", "acme:lib:dep") + textwrap.dedent(
+        top_text = _root_core("top", "acme:lib:dep") + textwrap.dedent(
             """\
               alt:
                 flow: sim
@@ -2176,8 +2032,8 @@ class TestSelectableCoreClosure:
             1,
         )
         top = _write_core(tmp_path / "top", top_text)
-        dep = _write_core(tmp_path / "dep", self._leaf("dep"))
-        _write_core(tmp_path / "rogue", self._leaf("rogue"))
+        dep = _write_core(tmp_path / "dep", _leaf_core("dep"))
+        _write_core(tmp_path / "rogue", _leaf_core("rogue"))
         # Seed only `sim` (not `alt`), so rogue stays out of the closure.
         catalog = TargetCatalog.build(tmp_path)
         closure = catalog.core_closure([catalog.select("sim")])
@@ -2214,8 +2070,6 @@ class TestSetupCommandEdaToolFlag:
         assert "--flag" not in cmd  # legacy API sets tool_verilator natively
 
     def test_handle_setup_transports_backend_options_after_vlnv(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import setup_command_for_handle
-
         _write_core(tmp_path / "ip")
         handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
 
@@ -2234,295 +2088,12 @@ class TestSetupCommandEdaToolFlag:
         assert injected[-1] == "--make_options=-j4 VM_PARALLEL_BUILDS=1"
 
 
-class TestHdlSourceSlice:
-    """Dependency cores contribute non-HDL EDAM entries (`user` .vmem data,
-    copyto'd scripts); rtl_hdl_source_files keeps them out of sv2v/yosys
-    (ibex: a dep's check_tool_requirements.py crashed sv2v)."""
-
-    def test_rtl_hdl_source_files_drop_user_files(self, tmp_path: Path):
-        edam_text = _EDAM_TEXT + textwrap.dedent(
-            """\
-            - file_type: user
-              name: src/demo_core_0/util/check_tool_requirements.py
-              core: '::eda_tool_check:0'
-            - file_type: user
-              name: src/demo_core_0/sw/firmware.vmem
-              core: '::demo_core:0'
-            """
-        )
-        edam = tmp_path / "demo_core_0.eda.yml"
-        edam.write_text(edam_text, encoding="utf-8")
-        r = parse_edam(edam, target="sim", vlnv="::demo_core:0")
-        # Fingerprint-facing slice still sees the data files...
-        names = [f.name.split("/")[-1] for f in r.rtl_source_files]
-        assert "check_tool_requirements.py" in names
-        assert "firmware.vmem" in names
-        # ...but the HDL slice fed to sv2v/yosys does not.
-        hdl = [f.name.split("/")[-1] for f in r.rtl_hdl_source_files]
-        assert hdl == ["counter_pkg.sv", "counter.sv"]
-
-
-class TestFilesetsAppend:
-    """CAPI2 `filesets_append` (the YAML-anchor idiom: `<<: *default_target`
-    + filesets_append) must be walked like `filesets` — ibex's booley_sim
-    adds its tb-tagged .vmem fileset that way and doctor's tagged-TB audit
-    falsely failed it."""
-
-    def test_target_source_files_walks_filesets_append(self, tmp_path: Path):
-        from booley.fusesoc.fusesoc_registry import _target_source_files
-
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo_core:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/counter.sv: {file_type: systemVerilogSource}
-              fw:
-                files:
-                  - sw/firmware.vmem: {file_type: user}
-                tags: [tb]
-            targets:
-              default: &default_target
-                filesets: [rtl]
-              sim:
-                <<: *default_target
-                flow: sim
-                flow_options: {tool: verilator}
-                filesets_append: [fw]
-                toplevel: counter
-            """
-        )
-        _write_core(tmp_path, text)
-        src = _target_source_files(tmp_path, "sim")
-        assert src.tb_files == ("sw/firmware.vmem",)
-        assert src.rtl_source_files == ("rtl/counter.sv",)
-
-    def test_target_source_files_rebases_stealth_core_paths(self, tmp_path: Path):
-        """A CAPI2 fileset path is relative to its .core's directory. For a
-        state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
-        so returned paths must be re-based project-relative — consumers join
-        them onto the root (doctor's sentinel scan, the Mutation Flow's DUT list)
-        and used to silently read the wrong file, or none at all."""
-        from booley.fusesoc.fusesoc_registry import _target_source_files
-
-        state_cores = tmp_path / ".booley" / "cores"
-        state_cores.mkdir(parents=True)
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo-booley:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/counter.sv: {file_type: systemVerilogSource}
-              tb:
-                files:
-                  - tb_directed.sv: {file_type: systemVerilogSource}
-                tags: [tb]
-            targets:
-              sim:
-                flow: sim
-                flow_options: {tool: verilator}
-                filesets: [rtl, tb]
-                toplevel: tb
-            """
-        )
-        _write_core(state_cores, text)
-        src = _target_source_files(tmp_path, "sim")
-        assert src.rtl_source_files == (".booley/cores/rtl/counter.sv",)
-        assert src.tb_files == (".booley/cores/tb_directed.sv",)
-
-    def test_target_source_files_resolves_every_in_project_symlink(self, tmp_path: Path):
-        """RTL and TB resolution links collapse to their tracked repo paths."""
-        require_symlinks(tmp_path)
-        rtl = tmp_path / "rtl"
-        tb = tmp_path / "tb"
-        rtl.mkdir()
-        tb.mkdir()
-        (rtl / "counter.sv").write_text("module counter; endmodule\n")
-        (tb / "tb_counter.sv").write_text("module tb_counter; endmodule\n")
-        state_cores = tmp_path / ".booley" / "cores"
-        state_cores.mkdir(parents=True)
-        (state_cores / "rtl").symlink_to(rtl, target_is_directory=True)
-        (state_cores / "tb").symlink_to(tb, target_is_directory=True)
-        _write_core(
-            state_cores,
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: ::demo_core:0
-                filesets:
-                  rtl: {files: [rtl/counter.sv]}
-                  tb:
-                    files: [tb/tb_counter.sv]
-                    tags: [tb]
-                targets:
-                  sim: {filesets: [rtl, tb], toplevel: tb_counter}
-                """
-            ),
-        )
-
-        src = _target_source_files(tmp_path, "sim")
-
-        assert src.rtl_source_files == ("rtl/counter.sv",)
-        assert src.tb_files == ("tb/tb_counter.sv",)
-
-    def test_all_referenced_files_rebases_stealth_core_paths(self, tmp_path: Path):
-        """Same re-basing for the every-fileset sweep doctor's tracked-file
-        check drives — a stealth core's `fw/boot.hex` is at
-        `.booley/cores/fw/boot.hex`, not `<root>/fw/boot.hex`."""
-        from booley.fusesoc.fusesoc_registry import all_referenced_files
-
-        state_cores = tmp_path / ".booley" / "cores"
-        state_cores.mkdir(parents=True)
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo-booley:0
-            filesets:
-              fw:
-                files:
-                  - fw/boot.hex: {file_type: user, copyto: boot.hex}
-            targets:
-              sim: {flow: sim, filesets: [fw]}
-            """
-        )
-        _write_core(state_cores, text)
-        assert all_referenced_files(tmp_path) == [".booley/cores/fw/boot.hex"]
-
-    def test_target_referenced_files_include_conditionals_and_dependencies(
-        self, tmp_path: Path
-    ) -> None:
-        top = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: acme:demo:top:0
-            filesets:
-              harness:
-                files: [tb/top.sv]
-                depend: ["flag_fw ? (acme:demo:firmware)"]
-              generated:
-                files:
-                  - generated/boot.hex: {file_type: user}
-                  - "flag_extra ? (generated/test.hex)": {file_type: user}
-            targets:
-              sim:
-                flow: sim
-                flow_options: {tool: verilator}
-                filesets: [harness, "tool_verilator ? (generated)"]
-                toplevel: top
-            """
-        )
-        _write_core(tmp_path, top, create_sources=False)
-        (tmp_path / "tb").mkdir()
-        (tmp_path / "tb" / "top.sv").touch()
-        generated = tmp_path / "generated"
-        generated.mkdir()
-        (generated / "boot.hex").touch()
-        (generated / "test.hex").touch()
-
-        dependency = tmp_path / "deps" / "firmware"
-        dependency.mkdir(parents=True)
-        _write_core(
-            dependency,
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: acme:demo:firmware:0
-                filesets:
-                  images:
-                    files:
-                      - images/rom.hex: {file_type: user}
-                targets:
-                  default: {filesets: [images]}
-                """
-            ),
-            create_sources=False,
-        )
-        (dependency / "images").mkdir()
-        (dependency / "images" / "rom.hex").touch()
-
-        assert _target_referenced_files(tmp_path, "sim") == (
-            "tb/top.sv",
-            "generated/boot.hex",
-            "generated/test.hex",
-            "deps/firmware/images/rom.hex",
-        )
-
-    def test_target_referenced_files_exclude_nonconsumed_globs_and_dependency_filesets(
-        self, tmp_path: Path
-    ) -> None:
-        _write_core(
-            tmp_path,
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: acme:demo:top:0
-                filesets:
-                  harness:
-                    files: [generated/*.hex]
-                    depend: [acme:demo:unused]
-                targets:
-                  sim: {filesets: [harness]}
-                """
-            ),
-            create_sources=False,
-        )
-        dependency = tmp_path / "deps" / "unused"
-        dependency.mkdir(parents=True)
-        _write_core(
-            dependency,
-            textwrap.dedent(
-                """\
-                CAPI=2:
-                name: acme:demo:unused:0
-                filesets:
-                  data:
-                    files: [data/not-consumed.hex]
-                """
-            ),
-            create_sources=False,
-        )
-
-        assert _target_referenced_files(tmp_path, "sim") == ()
-
-    def test_missing_target_sources_walks_filesets_append(self, tmp_path: Path):
-        """The source-existence preflight (`_literal_target_source_paths`) shares
-        the blind spot: an appended fileset's missing file must be reported, or
-        every built-in's fail-fast preflight silently skips it."""
-        text = textwrap.dedent(
-            """\
-            CAPI=2:
-            name: ::demo_core:0
-            filesets:
-              rtl:
-                files:
-                  - rtl/counter.sv: {file_type: systemVerilogSource}
-              fw:
-                files:
-                  - sw/firmware.vmem: {file_type: user}
-            targets:
-              default: &default_target
-                filesets: [rtl]
-              sim:
-                <<: *default_target
-                filesets_append: [fw]
-                toplevel: counter
-            """
-        )
-        _write_core(tmp_path, text, create_sources=False)  # nothing on disk
-        missing = _missing_sources(tmp_path)
-        assert "sw/firmware.vmem" in missing  # the appended path is walked
-
-
 # ---------------------------------------------------------------------------
-# core_target_uses_legacy_fusesoc_api (F-6)
+# Legacy tools-section Target (F-6)
 # ---------------------------------------------------------------------------
 
 
-class TestCoreTargetUsesLegacyFuseSocApi:
+class TestLegacyToolsSectionTarget:
     """Legacy Targets declare no Flow, though their EDA tool remains readable."""
 
     _LEGACY = """\
@@ -2537,47 +2108,13 @@ targets:
     toplevel: tb
     tools:
       icarus: {iverilog_options: [-g2012]}
-  modern:
-    filesets: [rtl]
-    flow: sim
-    flow_options: {tool: icarus}
-    toplevel: tb
 """
-
-    def _doc(self, tmp_path: Path):
-        _write_core(tmp_path, self._LEGACY)
-        return read_core(tmp_path / "design.core")
-
-    def test_upstream_default_tool_target_is_legacy(self, tmp_path: Path):
-        assert core_target_uses_legacy_fusesoc_api(self._doc(tmp_path), "sim") is True
-
-    def test_flow_api_target_is_not_legacy(self, tmp_path: Path):
-        assert core_target_uses_legacy_fusesoc_api(self._doc(tmp_path), "modern") is False
-
-    def test_missing_target_is_not_legacy(self, tmp_path: Path):
-        assert core_target_uses_legacy_fusesoc_api(self._doc(tmp_path), "nope") is False
 
     def test_legacy_target_still_reports_its_eda_tool(self, tmp_path: Path):
         # The EDA tool is readable (via the upstream default_tool mirror); only flow is absent.
-        doc = self._doc(tmp_path)
+        doc = read_core(_write_core(tmp_path, self._LEGACY))
         assert core_target_eda_tool(doc, "sim") == "icarus"
         assert core_target_flow(doc, "sim") is None
-
-    def test_a_flow_wins_even_with_a_legacy_fusesoc_section(self, tmp_path: Path):
-        text = """\
-CAPI=2:
-name: ::x:0
-filesets:
-  rtl: {files: [rtl/i2c.v], file_type: verilogSource}
-targets:
-  hybrid:
-    filesets: [rtl]
-    flow: sim
-    tools: {icarus: {iverilog_options: []}}
-"""
-        _write_core(tmp_path, text)
-        doc = read_core(tmp_path / "design.core")
-        assert core_target_uses_legacy_fusesoc_api(doc, "hybrid") is False
 
 
 @pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
@@ -2592,9 +2129,9 @@ def test_mixed_lint_enumeration_provenance(tmp_path, eda_tool, options):
         "CAPI=2:\n"
         + yaml.safe_dump({"name": "acme:ip:mixed:1.0", "targets": {"lint_mixed": target}})
     )
-    ref = next(iter(enumerate_targets(tmp_path).values()))
-    assert ref.eda_tool == eda_tool
-    assert ref.lint_flow_eda_tool_missing
+    handle = _handles(tmp_path)["lint_mixed"]
+    assert handle.eda_tool == eda_tool
+    assert handle.lint_flow_eda_tool_missing
     command = _setup_cmd(tmp_path, "lint_mixed")
     assert f"tool_{eda_tool}" in command
 
@@ -2621,110 +2158,21 @@ def test_mixed_lint_authored_selection_controls(tmp_path, flow, eda_tool):
         "CAPI=2:\n"
         + yaml.safe_dump({"name": "acme:ip:control:1.0", "targets": {"control": target}})
     )
-    ref = next(iter(enumerate_targets(tmp_path).values()))
-    assert ref.eda_tool == eda_tool
-    assert ref.lint_flow_eda_tool_missing is (flow == "lint")
+    handle = _handles(tmp_path)["control"]
+    assert handle.eda_tool == eda_tool
+    assert handle.lint_flow_eda_tool_missing is (flow == "lint")
 
 
 @pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint", "slang"])
 def test_explicit_lint_option_precedence_control(tmp_path, eda_tool):
-    from booley.targets.domain import flow_can_drive
-
     (tmp_path / "control.core").write_text(
         "CAPI=2:\nname: acme:ip:control:1.0\ntargets:\n  lint_control:\n    flow: lint\n    default_tool: yosys\n"
         + f"    flow_options: {{tool: {eda_tool}}}\n"
     )
-    ref = next(iter(enumerate_targets(tmp_path).values()))
-    assert ref.eda_tool == eda_tool
-    assert ref.lint_flow_eda_tool_missing is False
-    assert flow_can_drive("lint", ref) is (eda_tool != "slang")
-
-
-@pytest.mark.parametrize("missing", [False, True])
-def test_resolved_handle_copies_lint_provenance(tmp_path, monkeypatch, missing):
-    from booley.fusesoc import fusesoc_registry
-
-    selection = "default_tool: verible" if missing else "flow_options: {tool: verible}"
-    (tmp_path / "mixed.core").write_text(
-        "CAPI=2:\nname: acme:ip:mixed:1.0\ntargets:\n  lint_mixed:\n    flow: lint\n"
-        + f"    {selection}\n"
-    )
-    handle = TargetCatalog.build(tmp_path).select("lint_mixed")
-    copied = []
-    monkeypatch.setattr(
-        fusesoc_registry, "preflight_target_sources_for_ref", lambda root, ref: copied.append(ref)
-    )
-    monkeypatch.setattr(
-        fusesoc_registry, "_run_setup_command", lambda *args, **kwargs: kwargs["source_ref"]
-    )
-    resolved_ref = fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
-    assert copied[0].lint_flow_eda_tool_missing is missing
-    assert resolved_ref.lint_flow_eda_tool_missing is missing
-    assert resolved_ref.eda_tool == "verible"
-
-
-def test_declared_string_inspection_remains_read_only(tmp_path):
-    from booley.targets.catalog import TargetCatalog
-
-    (tmp_path / "top.sv").write_text('module top #(parameter string NAME="X")(); endmodule\n')
-    (tmp_path / "proof.core").write_text("""CAPI=2:
-name: proof:string:inspection:1
-filesets:
-  rtl:
-    files: [top.sv]
-    file_type: systemVerilogSource
-parameters:
-  NAME: {datatype: str, paramtype: vlogparam, default: '"MAC"'}
-targets:
-  synth:
-    flow: generic
-    flow_options: {tool: yosys, arch: xilinx}
-    filesets: [rtl]
-    parameters: [NAME]
-    toplevel: top
-""")
-    before = {
-        path.relative_to(tmp_path): path.read_bytes()
-        for path in tmp_path.rglob("*")
-        if path.is_file()
-    }
-    catalog = TargetCatalog.build(tmp_path)
-    inspection = catalog.inspect(catalog.select("synth", for_flow="synth"))
-    assert inspection.parameters["NAME"]["datatype"] == "str"
-    assert inspection.parameters["NAME"]["default"] == '"MAC"'
-    assert {
-        path.relative_to(tmp_path): path.read_bytes()
-        for path in tmp_path.rglob("*")
-        if path.is_file()
-    } == before
-
-
-def test_restore_explicit_tb_tag_when_nonstrict_inventory_skips_core(tmp_path):
-    from booley.fusesoc.fusesoc_registry import ResolvedFile, _restore_tb_tags
-    from booley.targets.domain import TargetRef
-
-    core = tmp_path / "design.core"
-    core.write_text(
-        "CAPI=2:\nname: ::explicit:0\nfilesets:\n"
-        "  tb: {files: [tb.sv], tags: [tb]}\n"
-        "targets:\n  sim: {filesets: [tb], toplevel: tb}\n"
-        "  malformed: {filesets: [42]}\n"
-    )
-    ref = TargetRef("sim", "::explicit:0", core)
-    resolved = ResolvedTarget(
-        name="sim",
-        vlnv=ref.vlnv,
-        toplevel="tb",
-        eda_tool="verilator",
-        files=(ResolvedFile("tb.sv", "systemVerilogSource"),),
-        parameters={},
-        build_root=tmp_path,
-        edam_path=tmp_path / "unused.eda.yml",
-    )
-    restored = _restore_tb_tags(resolved, project_root=tmp_path, source_ref=ref)
-    assert restored.files[0].is_tb
-    with pytest.raises(FuseSocError, match=r"design\.core"):
-        fusesoc_registry.classified_sources(tmp_path, strict=True)
+    handle = _handles(tmp_path)["lint_control"]
+    assert handle.eda_tool == eda_tool
+    assert handle.lint_flow_eda_tool_missing is False
+    assert flow_can_drive("lint", handle) is (eda_tool != "slang")
 
 
 # ---------------------------------------------------------------------------
@@ -3012,8 +2460,8 @@ class TestRelocatedBooleyDirectory:
     def test_cross_root_collision_names_the_relocated_zone(self, tmp_path: Path):
         project, _state = _relocated_stealth_project(tmp_path)
         _write_core(project / "ip", _CORE_TEXT.replace("::demo_core:0", "::stealth:0"))
-        with pytest.raises(CoreCollisionError, match="both core roots"):
-            enumerate_targets(project)
+        with pytest.raises(CoreCollisionError, match=r"both core roots.*\(state/cores/\)"):
+            TargetCatalog.build(project)
 
     def test_snapshot_id_tracks_relocated_config(self, tmp_path: Path):
         project, state = _relocated_stealth_project(tmp_path)
@@ -3026,8 +2474,8 @@ class TestRelocatedBooleyDirectory:
         worktree = state / "worktrees" / "w"
         worktree.mkdir(parents=True)
         symlink_or_skip(worktree / "self", worktree, target_is_directory=True)
-        ignored = fusesoc_registry._core_library_ignored_dirs(project)
-        assert str(state.resolve()) in ignored
+        plan = fusesoc_registry.prepare_core_library_plan(project)
+        assert str(state.resolve()) in plan.ignored_dirs[0]
         assert core_setup_hazards(project) == []
 
     @pytest.mark.parametrize("mode", sorted(_SYMLINK_MODES))
@@ -3046,60 +2494,10 @@ class TestRelocatedBooleyDirectory:
         assert not (project / ".booley").exists()
 
     def test_private_mirror_marker_names_the_relocated_core(self, tmp_path: Path):
-        project, _state = _relocated_stealth_project(tmp_path, _SYMLINK_MODES["isolated"])
+        project, state = _relocated_stealth_project(tmp_path, _SYMLINK_MODES["isolated"])
         plan = fusesoc_registry.build_library_plan(project, tmp_path / "build")
         assert plan is not None
-        (mirror,) = [m for _core, m in plan._operational_cores]
+        mirror = plan.operational_core(state / "cores" / "design.core")
         assert (
             mirror.read_text(encoding="utf-8").splitlines()[1].endswith(" state/cores/design.core")
         )
-
-
-def test_resolving_target_runs_no_extra_core_graph_inspection(tmp_path, monkeypatch):
-    from booley.fusesoc import target_inspection
-
-    (tmp_path / "plain.core").write_text(
-        "CAPI=2:\nname: acme:ip:plain:1.0\nparameters:\n"
-        "  W: {datatype: int, paramtype: vlogparam, default: 8}\n"
-        "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
-        "    parameters: [W]\n    toplevel: top\n"
-    )
-    handle = TargetCatalog.build(tmp_path).select("sim")
-    inspected = []
-    original = target_inspection._TargetSourceInspector._cores
-
-    def spy(self, **kwargs):
-        inspected.append(kwargs["identity"])
-        return original(self, **kwargs)
-
-    monkeypatch.setattr(target_inspection._TargetSourceInspector, "_cores", spy)
-    monkeypatch.setattr(fusesoc_registry, "_run_setup_command", lambda *a, **k: k["source_ref"])
-    fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
-    assert inspected == []
-
-
-def test_fusesoc_setup_sees_the_checkouts_booley_dir(tmp_path, monkeypatch):
-    """Generators run by ``fusesoc run --setup`` read the checkout's inputs, not Main's."""
-    from booley.runtime import booley_dir
-
-    project = tmp_path / "proj"
-    _write_core(project / "ip")
-    (project / ".booley").mkdir(parents=True)
-    main = tmp_path / "main-booley"
-    main.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(main))
-    booley_dir.reset_cache()
-    build_root = tmp_path / "build"
-
-    calls: list[dict[str, object]] = []
-
-    try:
-        resolve_target_handle(
-            _handle(project),
-            build_root=build_root,
-            runner=fusesoc_setup_runner(edam=_edam_at(build_root), calls=calls),
-        )
-    finally:
-        booley_dir.reset_cache()
-
-    assert calls[0]["env"]["BOOLEY_DIR"] == str((project / ".booley").resolve())

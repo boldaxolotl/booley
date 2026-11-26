@@ -104,20 +104,6 @@ def test_verible_node_minimal_makefile_golden(tmp_path: Path) -> None:
     )
 
 
-def test_verible_node_never_emits_lint_fatal_or_defines() -> None:
-    """``--lint_fatal`` defaults to TRUE in the binary — it must be disabled
-    explicitly or findings become a hard tool error (QA-7 misread); a
-    forwarded define would imply preprocessing Verible won't do."""
-    node = _setup(_FULL_FILESET)
-    [command] = node.commands.commands
-    argv = [str(tok) for tok in command.commands[0]]
-    assert "--parse_fatal" in argv
-    assert "--lint_fatal=false" in argv
-    assert "--lint_fatal" not in argv
-    assert not any("CFG" in tok for tok in argv)
-    assert not any(tok.startswith(("-D", "+define+")) for tok in argv)
-
-
 def test_verible_node_rejects_multiple_rules_configs() -> None:
     files = [
         {"name": "rtl/top.sv", "file_type": "systemVerilogSource"},

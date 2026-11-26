@@ -69,7 +69,9 @@ from booley.harness.dashboard.targets import (
     WorktreeChoice,
     enabled_flows,
     first_line,
+    runs_problem,
     targets_for,
+    targets_problem,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,13 +88,8 @@ LOADING_TARGETS, LOADING_RUNS = "Loading Targets…", "Loading Test Runs…"
 LOADING_COVERAGE_RECORDS = "Loading Coverage Records…"
 JOBS_NOT_READ = "The Dashboard has not read the Jobs yet; type a coverage.json path."
 NO_TARGET_YET = "Choose a Target first; or type Test Runs in the extra arguments."
-TYPE_TARGETS = "Type Targets in the extra arguments."
-TYPE_RUNS = "Type Test Runs in the extra arguments."
 # What Enter on the Target row says when a Target detail opened the wizard.
 PRESET_TARGET = "The Target comes from the Target detail; Esc goes back to it."
-NO_FITTING_TARGET = (
-    "No Target here can be driven by this Flow; type Targets in the extra arguments."
-)
 BUILDING = "Building the form…"
 EXTRA_LABEL, REVIEW = "Extra arguments", "Review the command"
 LOADING = "Loading worktrees…"
@@ -678,11 +675,8 @@ class RunWizard(ModalScreen[str | None]):
         listing = self._listing
         if listing is None:
             return LOADING_TARGETS, rows
-        if listing.problem:
-            return f"Targets unavailable: {listing.problem}. {TYPE_TARGETS}", rows
-        fitting = targets_for(listing, self._name)
-        rows += [(selector, selector) for selector in fitting]
-        return (field.hint if fitting else NO_FITTING_TARGET), rows
+        rows += [(selector, selector) for selector in targets_for(listing, self._name)]
+        return targets_problem(listing, self._name) or field.hint, rows
 
     def _tests_picker(self, field: Field) -> tuple[str, list[tuple[str, str]]]:
         runs = self._runs
@@ -691,7 +685,7 @@ class RunWizard(ModalScreen[str | None]):
         if runs is None:
             return LOADING_RUNS, []
         if runs.problem:
-            return f"{runs.problem}. {TYPE_RUNS}", []
+            return runs_problem(runs), []
         chosen = self._picked.get(field.dest, ())
         rows = [(f"[{'x' if run in chosen else ' '}] {run}", run) for run in runs.runs]
         return field.hint, rows

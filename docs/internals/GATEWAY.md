@@ -51,11 +51,10 @@ and the gateway-valued `model_provider` and `model`.
   `BOOLEY_GATEWAY_TOKEN_COMMAND`, as every Sandbox shell does. So a `booley`
   command run from a Codex shell tool works with the command and fails with a
   static token.
-- In a Booley-issued Sandbox, Claude's `settings.json`, Claude SDK runs, and
-  `booley chat --cli claude` get every `BOOLEY_GATEWAY_*` variable blanked.
-  This keeps the token out of Claude's environment; it is not isolation,
-  because anything in the Sandbox that can run the token command can get a
-  token.
+- In a Booley-issued Sandbox, Claude's `settings.json` and Claude SDK runs get
+  every `BOOLEY_GATEWAY_*` variable blanked. This keeps the token out of
+  Claude's environment; it is not isolation, because anything in the Sandbox
+  that can run the token command can get a token.
 
 ## Codex version
 

@@ -12,49 +12,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from booley.runtime._retry import transcript_path_for_attempt, transcript_path_for_label
 
-# ---------------------------------------------------------------------------
-# transcript_path_for_label
-# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("base", "label", "expected"),
+    [
+        (None, "developer", None),
+        ("/x/run_001.jsonl", None, "/x/run_001.jsonl"),
+        ("/x/run_001.jsonl", "", "/x/run_001.jsonl"),
+        ("/x/run_003.jsonl", "developer", "/x/developer.run_003.jsonl"),
+        ("/x/run_003-retry2.jsonl", "developer", "/x/developer.run_003-retry2.jsonl"),
+        # Specialist bases (no run tag) keep the plain label swap.
+        ("/x/whatever.jsonl", "reviewer_round2", "/x/reviewer_round2.jsonl"),
+        ("/x/whatever-retry3.jsonl", "reviewer", "/x/reviewer-retry3.jsonl"),
+        # Only bare run_NNN[-retryN] stems count as run-indexed.
+        ("/x/run_abc.jsonl", "developer", "/x/developer.jsonl"),
+        ("/x/rerun_001.jsonl", "developer", "/x/developer.jsonl"),
+    ],
+)
+def test_transcript_path_for_label(base, label, expected):
+    path = transcript_path_for_label(None if base is None else Path(base), label)
+    assert path == (None if expected is None else Path(expected))
 
 
-class TestTranscriptPathForLabel:
-    def test_none_base_or_label_passthrough(self):
-        assert transcript_path_for_label(None, "developer") is None
-        base = Path("/x/run_001.jsonl")
-        assert transcript_path_for_label(base, None) == base
-        assert transcript_path_for_label(base, "") == base
-
-    def test_run_indexed_base_preserves_run_tag(self):
-        base = Path("/x/run_003.jsonl")
-        assert transcript_path_for_label(base, "developer") == Path("/x/developer.run_003.jsonl")
-
-    def test_run_indexed_base_preserves_retry_suffix(self):
-        base = Path("/x/run_003-retry2.jsonl")
-        assert transcript_path_for_label(base, "developer") == Path(
-            "/x/developer.run_003-retry2.jsonl"
-        )
-
-    def test_retry_suffix_applied_after_relabel_keeps_run_tag(self):
-        """Backends relabel first, then suffix per attempt — both must compose."""
-        labeled = transcript_path_for_label(Path("/x/run_003.jsonl"), "developer")
-        assert transcript_path_for_attempt(labeled, 2) == Path("/x/developer.run_003-retry2.jsonl")
-
-    def test_non_run_indexed_base_keeps_legacy_behavior(self):
-        # Specialist bases (no run tag) keep the plain label swap
-        base = Path("/x/whatever.jsonl")
-        assert transcript_path_for_label(base, "reviewer_round2") == Path(
-            "/x/reviewer_round2.jsonl"
-        )
-
-    def test_non_run_indexed_base_keeps_retry_suffix(self):
-        base = Path("/x/whatever-retry3.jsonl")
-        assert transcript_path_for_label(base, "reviewer") == Path("/x/reviewer-retry3.jsonl")
-
-    def test_run_like_but_not_run_indexed_stems_are_legacy(self):
-        # Only bare run_NNN[-retryN] stems count as run-indexed
-        base = Path("/x/run_abc.jsonl")
-        assert transcript_path_for_label(base, "developer") == Path("/x/developer.jsonl")
-        base = Path("/x/rerun_001.jsonl")
-        assert transcript_path_for_label(base, "developer") == Path("/x/developer.jsonl")
+def test_retry_suffix_applied_after_relabel_keeps_run_tag():
+    """Backends relabel first, then suffix per attempt — both must compose."""
+    labeled = transcript_path_for_label(Path("/x/run_003.jsonl"), "developer")
+    assert transcript_path_for_attempt(labeled, 2) == Path("/x/developer.run_003-retry2.jsonl")

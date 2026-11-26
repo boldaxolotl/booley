@@ -23,7 +23,7 @@ from booley.harness.init_cmd import (
     METRICS_TOML_SKELETON,
     TESTS_TOML_SKELETON,
 )
-from booley.harness.setup.scaffold import ScaffoldChoices, _booley_toml
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import docs_links, packaged_docs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -185,7 +185,9 @@ def _scanned_texts() -> list[tuple[str, str, bool]]:
         for path in sorted((DATA / "refs").rglob("*.md"))
         if path.name != "CHANGELOG.md"
     )
-    scaffold = _booley_toml(ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None))
+    scaffold = scaffold_files(
+        ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None)
+    )[".booley/booley.toml"]
     texts.extend(
         [
             ("BOOLEY_TOML_SKELETON", BOOLEY_TOML_SKELETON, False),
@@ -265,7 +267,9 @@ def test_setup_step0_and_booley_toml_cite_the_fixed_path() -> None:
     assert "docs/user/" not in step0
     assert fixed("CONFIG.md") in setup
     assert fixed("FLOW-SIM.md") in BOOLEY_TOML_SKELETON
-    scaffold = _booley_toml(ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None))
+    scaffold = scaffold_files(
+        ScaffoldChoices("my_ip", "verilator", "sv", "verilator", True, None)
+    )[".booley/booley.toml"]
     assert f"# Knob reference: {fixed('CONFIG.md')}" in scaffold
     heal = (SKILLS / "booley-heal/SKILL.md").read_text(encoding="utf-8")
     assert fixed("TROUBLESHOOTING.md") in heal

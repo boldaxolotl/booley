@@ -13,7 +13,6 @@ from booley.harness.terminal_status import section_header
 from booley.presentation import colors
 
 PUBLIC_COMMANDS: list[str] = [
-    "chat",
     "dashboard",
     "flow",
     "measure",
@@ -34,9 +33,9 @@ PUBLIC_COMMANDS: list[str] = [
 
 
 GROUPS = {
-    "Sandbox": PUBLIC_COMMANDS[:6],
-    "Host or Sandbox": PUBLIC_COMMANDS[6:13],
-    "Host": PUBLIC_COMMANDS[13:],
+    "Sandbox": PUBLIC_COMMANDS[:5],
+    "Host or Sandbox": PUBLIC_COMMANDS[5:12],
+    "Host": PUBLIC_COMMANDS[12:],
 }
 
 
@@ -137,9 +136,9 @@ def test_cli_reference_has_the_same_public_inventory() -> None:
         re.M,
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
-        ("Sandbox", PUBLIC_COMMANDS[:6]),
-        ("Either", PUBLIC_COMMANDS[6:13]),
-        ("Host-only", PUBLIC_COMMANDS[13:]),
+        ("Sandbox", PUBLIC_COMMANDS[:5]),
+        ("Either", PUBLIC_COMMANDS[5:12]),
+        ("Host-only", PUBLIC_COMMANDS[12:]),
     ]
 
 
@@ -153,11 +152,11 @@ def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
 
 
 COMMAND_LOCATION_TABLE = [
-    ("chat", "Sandbox"),
     ("dashboard", "Sandbox"),
     ("flow", "Sandbox"),
     ("specialist", "Sandbox"),
     ("measure", "Sandbox"),
+    ("review", "Sandbox"),
     ("worktree", "Sandbox"),
     ("cheat", "either"),
     ("coverage", "either"),
