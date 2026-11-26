@@ -148,7 +148,8 @@ def test_flow_form_places_every_option_with_the_extra_arguments(world, feature_f
     ).items()
     assert "'Lint options'" in lint["problem"]
     assert lint["fields"] == []
-    assert lint["extra"] == {"hint": run_form.NO_FORM.extra_hint(), "options": []}
+    hint = "Typed as on the command line; quote a value with spaces."
+    assert lint["extra"] == {"hint": hint, "options": []}
 
 
 def test_specialist_forms_follow_the_values_given(world, feature_flags):
@@ -297,13 +298,15 @@ def test_a_coverage_records_read_that_fails_lists_none(world, feature_flags, mon
     def crash(*_args):
         raise OSError("unreadable")
 
-    monkeypatch.setattr(web_run, "finished_coverage_records", crash)
     with _client(world, feature_flags) as client:
+        none_finished = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
+        monkeypatch.setattr(web_run, "finished_coverage_records", crash)
         coverage = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
 
-    assert coverage["coverage_records"] == []
-    record_field = coverage["fields"][0]
-    assert (record_field["dest"], record_field["hint"]) == ("coverage_record", NO_COVERAGE_RECORDS)
+    for answered in (none_finished, coverage):
+        assert answered["coverage_records"] == []
+        field = answered["fields"][0]
+        assert (field["dest"], field["hint"]) == ("coverage_record", NO_COVERAGE_RECORDS)
 
 
 REVIEWER = _run("reviewer", values={"focus": "bugs", "scope": "fifo.v"})
@@ -582,6 +585,7 @@ def test_a_form_that_cannot_be_built_launches_a_flow_from_its_extra_arguments(
         monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
         run = _run("lint", extra="--dry-run")
     else:
+        # No public entry point makes a Specialist's form fail to build.
         monkeypatch.setattr(launch.Launcher, "form", _crash)
         run = _run("reviewer")
     with _client(world, feature_flags) as client:
@@ -1113,6 +1117,7 @@ def test_a_failed_read_for_an_older_target_is_not_shown_beside_the_newer_tests(
 def test_a_flow_whose_form_cannot_be_built_launches_from_the_page(
     world, feature_flags, tmp_path, monkeypatch
 ):
+    # No public entry point builds a Flow with an unplaced group.
     monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
     lint = _run("lint", values={}, extra="")
     typed = {**lint, "extra": NUL_EXTRA}

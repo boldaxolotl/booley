@@ -138,7 +138,7 @@ def _built(
     try:
         return launcher.form(kind, name, worktree), ""
     except Exception as exc:
-        logger.exception("Run form build failed")
+        logger.exception("Run form build failed for %s %s in %s", kind, name, worktree)
         return NO_FORM if kind == "flow" else None, _problem(exc)
 
 
@@ -249,12 +249,12 @@ def _refusal(facts: RunFacts) -> str:
     return agent_refusal(facts.specialist) if facts.specialist is not None else ""
 
 
-def _checked(check_run: Callable[[], _T]) -> _T:
+def _checked(worktree: Path, run: RunRequest, check_run: Callable[[], _T]) -> _T:
     """Run an argument check; ``CheckFailedError`` when it raises, in the wizard's wording."""
     try:
         return check_run()
     except Exception as exc:
-        logger.exception("Run argument check failed")
+        logger.exception("Run argument check failed for %s %s in %s", run.kind, run.name, worktree)
         raise CheckFailedError(f"Argument check failed: {exc}") from exc
 
 
@@ -267,7 +267,9 @@ def check(
     ``CheckFailedError`` when the check itself raises.
     """
     argv = _argv(launcher, worktree, run)
-    checked = _checked(lambda: review_check(launcher, worktree, run.kind, run.name, argv))
+    checked = _checked(
+        worktree, run, lambda: review_check(launcher, worktree, run.kind, run.name, argv)
+    )
     if checked.facts is None:
         raise RunRefusedError(checked.error)
     return {
@@ -287,7 +289,7 @@ def submit(
     record cannot be written.
     """
     argv = _argv(launcher, worktree, run)
-    checked = _checked(lambda: launcher.check(worktree, run.kind, run.name, argv))
+    checked = _checked(worktree, run, lambda: launcher.check(worktree, run.kind, run.name, argv))
     if checked.facts is None:
         raise RunRefusedError(checked.error or NO_FACTS)
     refusal = _refusal(checked.facts)
