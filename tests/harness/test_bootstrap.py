@@ -1112,6 +1112,7 @@ def test_bootstrap_without_editor_command_warns_and_continues(monkeypatch, app, 
     from booley.harness import host_diagnostics
 
     calls = _wire_current(monkeypatch)
+    # Host boundary: these two are where Booley looks for an editor installed on this machine.
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
     monkeypatch.setattr(editor, "resolve_editor_install", lambda: app)
 

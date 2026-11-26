@@ -120,15 +120,15 @@ Each is a Booley behavior that the QA Host works around:
 
 - **`/.dockerenv`:** Booley treats any process that sees it as inside a
   Sandbox and refuses host commands, so the entrypoint deletes it (#5584).
-- **VS Code:** Host Bootstrap needs no editor. `code-stub.sh` still answers the
-  two commands Bootstrap runs when it finds a VS Code CLI; a follow-up to #5603
-  removes it.
 - **`python3-venv`:** a development wheel builds itself in a venv while
   building the Sandbox Image; without `ensurepip` Bootstrap fails only after
   building the runtime base (#5585).
 - **Relay port:** the relay listens on the container's loopback. The
   entrypoint forwards ports 3780-3784 from the container's interface with
   `socat`.
+
+`code-stub.sh` still stands in for a VS Code CLI that Host Bootstrap does not
+need; #5634 removes it.
 
 The reaper's fixed `/var/run/docker.sock` mount (#5565) is the inner daemon's
 socket here, so it needs no workaround. It would on a rootless daemon.

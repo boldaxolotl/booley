@@ -62,11 +62,11 @@ Then recreate each Project's Sandbox and run the upgrade review; see
 ## Host Bootstrap
 
 Host Bootstrap (`booley bootstrap`) prepares this machine once for every Booley
-Project. It checks Git, Docker, and your agent CLI, installs the Dev Containers
-extension when it finds VS Code's `code` shell command, installs Booley's skills
-for Claude Code and Codex, and downloads or builds the Sandbox Image. Without VS
-Code or its `code` command, it warns and skips the extension. It does not touch
-any Project; you connect one later in [Setup](SETUP.md).
+Project. It checks Git, Docker, and your agent CLI, installs Booley's skills for
+Claude Code and Codex, and downloads or builds the Sandbox Image. If it finds
+the shell command of VS Code or a compatible editor, such as `code`, it also
+installs the Dev Containers extension. It does not touch any Project; you
+connect one later in [Setup](SETUP.md).
 
 Run it again with `--update` after every upgrade. Other useful options:
 
