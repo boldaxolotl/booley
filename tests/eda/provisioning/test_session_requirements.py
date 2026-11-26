@@ -2,155 +2,85 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
+from tests import eda_grant_support
+from tests.relay_docker_fake import RelayDocker
 
-from booley.eda.config import EdaConfig, EdaConfigError
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as requirements
-from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
 from booley.eda.provisioning.policies.vivado import wrapper_path
 
 
-def test_lease_translates_authority_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setattr(
-        requirements,
-        "load_eda_config",
-        lambda _project: {"vivado": EdaConfig("vivado", "host")},
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    root = tmp_path / "project"
+    (root / ".git").mkdir(parents=True)
+    (root / ".booley").mkdir()
+    (root / ".booley" / "booley.toml").write_text(
+        '[eda.vivado]\nprovisioning = "image"\n', encoding="utf-8"
     )
+    return root
 
-    @contextmanager
-    def unavailable(*_args, **_kwargs):
-        raise authority.AuthorityError("grant unavailable")
-        yield None, None  # pragma: no cover
 
-    monkeypatch.setattr(authority, "resolve_for_issuance", unavailable)
+def _grant_license(project: Path) -> authority.LicenseProfile:
+    profile = eda_grant_support.register_license()
+    eda_grant_support.add_grant(project, license_profile=profile.name)
+    return profile
 
+
+def test_requested_license_treats_absent_authority_as_unlicensed(project: Path) -> None:
+    assert requirements.requested_license(project) is None  # no authority directory
+    authority.ensure_state_dir()
+    assert requirements.requested_license(project) is None  # no registry
+    profile = eda_grant_support.register_license()
+    assert requirements.requested_license(project) is None  # no grant for this Project
+
+    eda_grant_support.add_grant(project, license_profile=profile.name)
+
+    assert requirements.requested_license(project) == profile
+
+
+def test_corrupt_authority_fails_requirements(project: Path) -> None:
+    _grant_license(project)
+    authority.state_path().write_text("{}", encoding="utf-8")
+
+    with pytest.raises(requirements.SessionRequirementsError, match="invalid top-level schema"):
+        requirements.requested_license(project)
     with (
-        pytest.raises(requirements.SessionRequirementsError, match="grant unavailable"),
+        pytest.raises(requirements.SessionRequirementsError, match="invalid top-level schema"),
         requirements.lease_requirements(project, vivado_enabled=True),
     ):
         pass
 
 
-def test_lease_opens_authority_for_prior_eda_when_flow_disabled(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    profile = SimpleNamespace(name="site", lmgrd_port=27000)
-    opened: list[bool] = []
-    monkeypatch.setattr(
-        requirements,
-        "load_eda_config",
-        lambda _project: {"vivado": EdaConfig("vivado", "host")},
-    )
-    monkeypatch.setattr(
-        requirements, "resources_for_session", lambda _p: SimpleNamespace(private_network="net")
-    )
+def test_requested_license_translates_config_failure(project: Path) -> None:
+    (project / ".booley" / "booley.toml").write_text("[eda.quartus]\n", encoding="utf-8")
 
-    @contextmanager
-    def spy(_project, host_provisioning):
-        opened.append(host_provisioning)
-        yield None, profile
-
-    monkeypatch.setattr(authority, "resolve_for_issuance", spy)
-
-    with requirements.lease_requirements(project, vivado_enabled=False) as idle:
-        assert idle.license_profile is None
-    assert opened == []
-    with requirements.lease_requirements(project, vivado_enabled=False, prior_eda=True) as prior:
-        assert prior.license_profile is profile
-    assert opened == [False]
-
-
-def test_requested_license_translates_config_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setattr(
-        requirements,
-        "load_eda_config",
-        lambda _project: (_ for _ in ()).throw(EdaConfigError("invalid EDA config")),
-    )
-
-    with pytest.raises(requirements.SessionRequirementsError, match="invalid EDA config"):
+    with pytest.raises(requirements.SessionRequirementsError, match="unsupported EDA kind"):
         requirements.requested_license(project, vivado_enabled=True)
 
 
-def test_requested_license_returns_optional_active_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    profile = SimpleNamespace(name="site")
-    monkeypatch.setattr(
-        requirements,
-        "load_eda_config",
-        lambda _project: {"vivado": EdaConfig("vivado")},
-    )
-    monkeypatch.setattr(requirements, "_optional_license", lambda _project: profile)
+def test_lease_opens_authority_for_prior_eda_when_flow_disabled(project: Path) -> None:
+    profile = _grant_license(project)
 
-    assert requirements.requested_license(project, vivado_enabled=True) is profile
+    with requirements.lease_requirements(project, vivado_enabled=False) as idle:
+        assert idle.license_profile is None
+    with requirements.lease_requirements(project, vivado_enabled=False, prior_eda=True) as prior:
+        assert prior.license_profile == profile
+        assert prior.license_environment == "27000@booley-license-xilinx"
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        "no exact licence grant",
-        "authority directory is missing",
-        "authority registry is missing",
-    ],
-)
-def test_optional_license_treats_absent_authority_as_unlicensed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    message: str,
-) -> None:
-    monkeypatch.setattr(
-        authority,
-        "resolve_license",
-        lambda _project: (_ for _ in ()).throw(authority.AuthorityError(message)),
-    )
+def test_relay_identity_translates_docker_failure(project: Path) -> None:
+    _grant_license(project)
+    needs_relay = requirements.inspect_build_requirements(project, vivado_enabled=True)
+    docker = RelayDocker(fail_prefix=("image", "inspect"))
 
-    assert requirements._optional_license(tmp_path) is None
-
-
-def test_optional_license_translates_unexpected_authority_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        authority,
-        "resolve_license",
-        lambda _project: (_ for _ in ()).throw(authority.AuthorityError("registry corrupt")),
-    )
-
-    with pytest.raises(requirements.SessionRequirementsError, match="registry corrupt"):
-        requirements._optional_license(tmp_path)
-
-
-def test_relay_identity_translates_docker_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        requirements,
-        "resolve_relay_image_id",
-        lambda **_kwargs: (_ for _ in ()).throw(RelayDockerError("daemon unavailable")),
-    )
-
-    with pytest.raises(requirements.SessionRequirementsError, match="daemon unavailable"):
-        requirements._relay_image_id(lambda *_args: pytest.fail("runner must only be passed on"))
+    with pytest.raises(
+        requirements.SessionRequirementsError, match="cannot resolve immutable FlexNet relay image"
+    ):
+        requirements.with_relay_identity(needs_relay, runner=docker)
 
 
 def test_missing_runtime_wrapper_is_reported(tmp_path: Path) -> None:

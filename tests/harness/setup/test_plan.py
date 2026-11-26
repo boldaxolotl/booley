@@ -55,30 +55,33 @@ def _write_target(path: Path, content: bytes = b"managed\n") -> InitTarget:
     )
 
 
-def test_plan_classifies_absent_current_stale_and_user_owned(tmp_path: Path) -> None:
-    absent = tmp_path / "absent.txt"
-    current = tmp_path / "current.txt"
-    stale = tmp_path / "stale.txt"
-    foreign = tmp_path / "foreign.txt"
-    current.write_bytes(b"managed\n")
-    stale.write_bytes(b"managed old\n")
-    foreign.write_bytes(b"personal\n")
+def test_plan_classifies_every_ownership_and_blocks_foreign_content(tmp_path: Path) -> None:
+    contents = {
+        "absent": None,
+        "current": b"managed\n",
+        "stale": b"managed old\n",
+        "foreign": b"personal\n",
+        "tracked-match": b"managed\n",
+        "tracked-conflict": b"different\n",
+    }
+    paths = [tmp_path / f"{name}.txt" for name in contents]
+    for path, content in zip(paths, contents.values(), strict=True):
+        if content is not None:
+            path.write_bytes(content)
 
     plan = plan_init_filesystem(
-        InitFilesystemRequest(
-            root=tmp_path,
-            targets=tuple(_write_target(path) for path in (absent, current, stale, foreign)),
-        ),
-        _Probe(),
+        InitFilesystemRequest(root=tmp_path, targets=tuple(_write_target(p) for p in paths)),
+        _Probe(frozenset(paths[-2:])),
     )
 
-    assert [action.ownership for action in plan.actions] == [
-        Ownership.ABSENT,
-        Ownership.MANAGED_CURRENT,
-        Ownership.MANAGED_STALE,
-        Ownership.USER_OWNED,
+    assert [(action.ownership, bool(action.blocker)) for action in plan.actions] == [
+        (Ownership.ABSENT, False),
+        (Ownership.MANAGED_CURRENT, False),
+        (Ownership.MANAGED_STALE, False),
+        (Ownership.USER_OWNED, True),
+        (Ownership.TRACKED_MATCH, False),
+        (Ownership.CONFLICT, True),
     ]
-    assert plan.actions[-1].blocker
 
 
 def test_blocker_prevents_every_planned_mutation(tmp_path: Path) -> None:
@@ -151,26 +154,6 @@ def test_unreadable_existing_target_aborts_planning(
             InitFilesystemRequest(root=tmp_path, targets=(_write_target(target),)),
             _Probe(),
         )
-
-
-def test_tracked_matching_and_conflicting_files_are_explicit(tmp_path: Path) -> None:
-    matching = tmp_path / "matching.txt"
-    conflicting = tmp_path / "conflicting.txt"
-    matching.write_bytes(b"managed\n")
-    conflicting.write_bytes(b"different\n")
-    probe = _Probe(frozenset({matching, conflicting}))
-
-    plan = plan_init_filesystem(
-        InitFilesystemRequest(
-            root=tmp_path,
-            targets=(_write_target(matching), _write_target(conflicting)),
-        ),
-        probe,
-    )
-
-    assert plan.actions[0].ownership is Ownership.TRACKED_MATCH
-    assert plan.actions[1].ownership is Ownership.CONFLICT
-    assert plan.actions[1].blocker
 
 
 def test_target_cannot_escape_through_symlinked_parent(tmp_path: Path) -> None:

@@ -1875,16 +1875,11 @@ def test_tracked_bundle_reports_untrack_command(
 
 
 def _paired_hook_fixture(tmp_path, monkeypatch):
-    from booley.harness import worktree_cmd
-    from tests.harness.test_worktree_cmd import _new, python_outer, versioned_project
+    from tests.harness.test_worktree_cmd import _git_worktree, _prepare, versioned_project
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
     root = versioned_project.__wrapped__(tmp_path)
-    # Default runtime worktrees lie inside Project state; the existing push
-    # guard rejects their physical path independently of bundle resolution.
-    monkeypatch.setattr(worktree_cmd, "worktree_path", lambda _root, name: tmp_path / name)
-    python_outer.__wrapped__(monkeypatch)
     data = root / ".booley"
     for owner in (root, data):
         _tracking_git(owner, "config", "user.name", "Fixture")
@@ -1900,8 +1895,8 @@ def _paired_hook_fixture(tmp_path, monkeypatch):
     ctx = InitContext(project_root=root)
     step_project_git_hooks(ctx)
     assert ctx.results[-1].status == "ok"
-    assert _new("policy-fallback", root) == 0
-    linked = worktree_cmd.worktree_path(root, "policy-fallback")
+    linked = _git_worktree(root, "policy-fallback")
+    assert _prepare(linked) == 0
     paired_data = linked / ".booley"
     assert (paired_data / ".git").is_file()
     assert not (paired_data / ".managed/project-git-hooks.pyz").exists()

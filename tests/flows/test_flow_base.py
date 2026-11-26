@@ -22,6 +22,7 @@ from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.endpoint_execution import ExecutionResult
 from tests.memory_budget_support import fail_budget
+from tests.subprocess_budget import STALL_DUMP_S
 from tests.time_budget import hang_guard_s, scaled
 
 # A grandchild must outlive the tree wait, the flow timeout, the kill and the death poll,
@@ -175,7 +176,8 @@ class TestResourceEvidence:
         script = (
             "import custom_helper, subprocess, sys; "
             "assert custom_helper.VALUE == 7; "
-            f"raise SystemExit(subprocess.run([sys.executable, '-m', 'pytest', '--lf', "
+            f"raise SystemExit(subprocess.run([sys.executable, '-m', 'pytest', "
+            f"'-o', 'faulthandler_timeout={STALL_DUMP_S:g}', '--lf', "
             f"'-q', {str(nested)!r}]).returncode)"
         )
 

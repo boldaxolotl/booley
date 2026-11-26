@@ -37,48 +37,40 @@ def test_stable_version_parser_rejects_ambiguous_versions(value: str) -> None:
         changelog.parse_stable_version(value)
 
 
-def test_release_entries_are_exact_and_newest_first() -> None:
-    entries = changelog.parse_releases(_history())
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_release_entries_are_exact_newest_first_and_keep_line_endings(newline: str) -> None:
+    text = _history().replace("\n", newline)
+
+    entries = changelog.parse_releases(text)
 
     assert [str(entry.version) for entry in entries] == ["1.2.0", "1.1.0"]
+    assert changelog.release_entry(text, "1.2.0") == entries[0]
     assert entries[0].heading == "## 1.2.0 - 31 AUG 2026"
-    assert entries[0].body.startswith("\n### New features")
+    assert entries[0].body.startswith(f"{newline}### New features")
     assert "Old fix" not in entries[0].body
 
 
-def test_crlf_headings_are_accepted_without_normalizing_body() -> None:
-    text = _history().replace("\n", "\r\n")
-
-    entry = changelog.release_entry(text, "1.2.0")
-
-    assert entry.heading == "## 1.2.0 - 31 AUG 2026"
-    assert entry.body.startswith("\r\n### New features")
-
-
-def test_duplicate_and_misordered_entries_are_rejected() -> None:
-    duplicate = _history() + "\n## 1.2.0 - 29 AUG 2026\n"
-    with pytest.raises(changelog.ChangelogError, match="duplicate"):
-        changelog.parse_releases(duplicate)
-
-    misordered = _history().replace("1.2.0", "1.0.0")
-    with pytest.raises(changelog.ChangelogError, match="newest first"):
-        changelog.parse_releases(misordered)
-
-
 @pytest.mark.parametrize(
-    "heading",
+    ("text", "match"),
     [
-        "## v1.2.0 - 31 AUG 2026",
-        "## 1.2 - 31 AUG 2026",
-        "## 01.2.0 - 31 AUG 2026",
-        "## 1.2.0",
-        "## 1.2.0 - 31 August 2026",
-        "## 1.2.0 - 31 FEB 2026",
+        (_history() + "\n## 1.2.0 - 29 AUG 2026\n", "duplicate"),
+        (_history().replace("1.2.0", "1.0.0"), "newest first"),
+        *(
+            (f"# Changelog\n\n{heading}\n", r"release (heading|date)")
+            for heading in (
+                "## v1.2.0 - 31 AUG 2026",
+                "## 1.2 - 31 AUG 2026",
+                "## 01.2.0 - 31 AUG 2026",
+                "## 1.2.0",
+                "## 1.2.0 - 31 August 2026",
+                "## 1.2.0 - 31 FEB 2026",
+            )
+        ),
     ],
 )
-def test_malformed_release_like_headings_are_rejected(heading: str) -> None:
-    with pytest.raises(changelog.ChangelogError, match=r"release (heading|date)"):
-        changelog.parse_releases(f"# Changelog\n\n{heading}\n")
+def test_invalid_release_headings_are_rejected(text: str, match: str) -> None:
+    with pytest.raises(changelog.ChangelogError, match=match):
+        changelog.parse_releases(text)
 
 
 def test_release_range_is_oldest_first_and_reports_history_boundary() -> None:

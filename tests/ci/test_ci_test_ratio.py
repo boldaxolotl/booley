@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 import yaml
@@ -14,10 +12,7 @@ from tests.git_support import git, repository
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-
-def _script() -> ModuleType:
-    return importlib.import_module("ci_test_ratio")
-
+import ci_test_ratio
 
 _EXEMPT = "ci\ntest-ratio-exempt"
 
@@ -40,7 +35,7 @@ def _commit(repo: Path, files: dict[str, str | None]) -> str:
 
 
 def _run(repo: Path, base: str, head: str, labels: str = "") -> int:
-    return _script().main(
+    return ci_test_ratio.main(
         ["--repo", str(repo), "--base", base, "--head", head, "--labels", labels]
     )
 
@@ -180,7 +175,7 @@ def test_git_failure_fails_the_check(tmp_path: Path, capsys: pytest.CaptureFixtu
 
 def test_malformed_hunk_header_is_rejected() -> None:
     with pytest.raises(ValueError, match="malformed hunk header"):
-        _script().parse_diff("--- a/x\n+++ b/x\n@@ nonsense @@\n")
+        ci_test_ratio.parse_diff("--- a/x\n+++ b/x\n@@ nonsense @@\n")
 
 
 def test_workflow_reads_labels_live_on_every_pull_request() -> None:

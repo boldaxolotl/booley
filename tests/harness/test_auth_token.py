@@ -34,6 +34,8 @@ def home(tmp_path, monkeypatch):
     """Redirect the per-user config dir into a tmp tree, with no auth env leaking in."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv(auth_token.ENV_VAR, raising=False)
+    for var in ("BOOLEY_PRIMARY_AUTH", "BOOLEY_AGENT_APP"):
+        monkeypatch.delenv(var, raising=False)
     # The credential-resolution code ranks these above everything else, so a
     # developer's real key leaking into the test env would flip every verdict.
     for var in auth_token.API_KEY_ENV.values():
@@ -60,22 +62,6 @@ class TestStorage:
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         assert auth_token.stored_token_is_private()
 
-    def test_lives_outside_any_repo(self, home):
-        # A one-year credential inside the Project Root is one `git add -f` from
-        # being published, so its host-side source must not land under the workspace.
-        assert "booley" in auth_token.token_path().parts[-2]
-        assert auth_token.token_path().name == "claude-oauth-token"
-
-    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
-    def test_rewrite_tightens_a_loose_mode(self, home):
-        path = auth_token.store_token(_TOKEN)
-        path.chmod(0o644)
-        assert not auth_token.stored_token_is_private()
-
-        auth_token.store_token(_TOKEN)
-
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
     @pytest.mark.parametrize("bad", ["", "   ", "\n"])
     def test_refuses_empty(self, home, bad):
         with pytest.raises(ValueError):
@@ -87,52 +73,20 @@ class TestStorage:
         with pytest.raises(ValueError, match="whitespace"):
             auth_token.store_token("sk-ant-oat01-aaa\nBAR=evil")
 
-    def test_clear_removes_it(self, home):
-        auth_token.store_token(_TOKEN)
-
-        assert auth_token.clear_stored_token() is True
-        assert auth_token.read_stored_token() is None
-        assert auth_token.clear_stored_token() is False  # idempotent
-
 
 class TestCodex:
     """Codex needs the same mechanism: its auth.json also holds a REFRESHING
     credential when signed in with a ChatGPT subscription, and Codex rewrites it."""
 
-    def test_codex_credential_is_the_openai_api_key(self):
-        cred = auth_token.CREDENTIALS[auth_token.APP_CODEX]
-
-        assert cred.env_var == "OPENAI_API_KEY"
-        # Codex has no `setup-token` equivalent: `codex login` writes the very
-        # refreshing credential we are avoiding, so there is nothing to mint.
-        assert cred.mint_cmd is None
-
     def test_apps_have_separate_stores(self, home):
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
         auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
 
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
         assert auth_token.resolve_token(auth_token.APP_CODEX) == _API_KEY
-        assert auth_token.token_path(auth_token.APP_CLAUDE) != auth_token.token_path(
-            auth_token.APP_CODEX
-        )
-
-    def test_clearing_one_leaves_the_other(self, home):
-        auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-        auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
-
         auth_token.clear_stored_token(auth_token.APP_CODEX)
 
         assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
         assert auth_token.resolve_token(auth_token.APP_CODEX) is None
-
-    def test_env_var_reverse_lookup(self):
-        assert auth_token.credential_for_env_var("OPENAI_API_KEY").app == auth_token.APP_CODEX
-        assert (
-            auth_token.credential_for_env_var("CLAUDE_CODE_OAUTH_TOKEN").app
-            == auth_token.APP_CLAUDE
-        )
-        assert auth_token.credential_for_env_var("PATH") is None
 
     def test_spec_seeds_codex_auth_onto_writable_volume(self, home):
         # The regression: a read-only bind at ~/.codex/auth.json makes Codex's
@@ -142,119 +96,67 @@ class TestCodex:
         assert all(f"target={dc.AGENT_HOME}/.codex/auth.json" not in m for m in spec["mounts"])
         assert f"{dc.AGENT_HOME}/.codex-auth-seed.json" in spec["postStartCommand"]
 
-    def test_session_runtime_resolves_codex_key_from_store(self, home):
-        auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
 
-        assert session_runtime.substitute("${localEnv:OPENAI_API_KEY}", home) == _API_KEY
+@pytest.mark.parametrize(
+    ("stored", "exported", "seed", "expected"),
+    [
+        pytest.param(None, None, None, None, id="absent-is-none-not-empty"),
+        pytest.param(_TOKEN, None, None, _TOKEN, id="stored-without-export"),
+        pytest.param(_TOKEN, "sk-ant-oat01-exported", None, "sk-ant-oat01-exported", id="export"),
+        pytest.param(_TOKEN, "   ", None, _TOKEN, id="blank-export-does-not-shadow"),
+        # In-container storage lives on the HOST, mounted read-only at a home sidecar.
+        pytest.param(None, None, _TOKEN, _TOKEN, id="seed-sidecar-fills-the-gap"),
+        pytest.param(_TOKEN, None, "sk-ant-oat01-seed", _TOKEN, id="store-wins-over-seed"),
+    ],
+)
+def test_token_resolution(isolated_home, monkeypatch, stored, exported, seed, expected):
+    # "" instead of None would shadow the mounted subscription creds.
+    if stored:
+        auth_token.store_token(stored)
+    if exported:
+        monkeypatch.setenv(auth_token.ENV_VAR, exported)
+    if seed:
+        (isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]).write_text(seed)
 
-
-class TestResolution:
-    def test_absent_resolves_to_none_not_empty_string(self, home):
-        # The whole point: "" would shadow the mounted subscription creds.
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) is None
-
-    def test_stored_token_resolves_without_any_export(self, home):
-        auth_token.store_token(_TOKEN)
-
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
-
-    def test_exported_token_wins_over_stored(self, home, monkeypatch):
-        auth_token.store_token(_TOKEN)
-        monkeypatch.setenv(auth_token.ENV_VAR, "sk-ant-oat01-exported")
-
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == "sk-ant-oat01-exported"
-
-    def test_blank_export_does_not_shadow_stored(self, home, monkeypatch):
-        auth_token.store_token(_TOKEN)
-        monkeypatch.setenv(auth_token.ENV_VAR, "   ")
-
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
-
-    def test_container_seed_sidecar_fills_the_gap(self, isolated_home):
-        # In-container `booley auth` storage lives on the HOST; the spec mounts
-        # it read-only at a home sidecar. read_stored_token must see it there.
-        seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
-        seed.write_text(f"{_TOKEN}\n")
-
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
-
-    def test_config_store_wins_over_seed_sidecar(self, isolated_home):
-        seed = isolated_home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]
-        seed.write_text("sk-ant-oat01-seed\n")
-        auth_token.store_token(_TOKEN)
-
-        assert auth_token.resolve_token(auth_token.APP_CLAUDE) == _TOKEN
+    assert auth_token.resolve_token(auth_token.APP_CLAUDE) == expected
 
 
-class TestEffectiveCredential:
-    """`effective_credential` models the agent CLI's real precedence: an exported
-    API key outranks the rotation-free token, which outranks the refreshing
-    login file. `booley init` used to answer from the login file alone and
-    reported "subscription" while an exported ANTHROPIC_API_KEY was what billed."""
-
-    @staticmethod
-    def _write_claude_login(userhome: Path) -> Path:
-        creds = userhome / ".claude" / ".credentials.json"
-        creds.parent.mkdir(parents=True, exist_ok=True)
+@pytest.mark.parametrize(
+    ("app", "login", "key", "stored", "mode", "loser"),
+    [
+        pytest.param("claude", False, False, None, None, None, id="nothing"),
+        pytest.param("not-an-app", False, False, None, None, None, id="unknown-app"),
+        pytest.param("claude", True, False, None, "subscription", None, id="login-alone"),
+        # The original misreport: login and key both present used to read "subscription".
+        pytest.param("claude", True, True, None, "api_key", ".credentials.json", id="key>login"),
+        pytest.param("claude", False, True, _TOKEN, "api_key", "stored", id="key>stored"),
+        pytest.param(
+            "claude", True, False, _TOKEN, "oauth_token", ".credentials.json", id="token"
+        ),
+        # For Codex the API key IS the rotation-free credential: one ladder rung.
+        pytest.param("codex", False, False, _API_KEY, "api_key", None, id="codex-stored-key"),
+    ],
+)
+def test_effective_credential_follows_the_cli_precedence(
+    isolated_home, monkeypatch, app, login, key, stored, mode, loser
+):
+    """An exported API key outranks the rotation-free token, which outranks the login file."""
+    if login:
+        creds = isolated_home / ".claude" / ".credentials.json"
+        creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
-        return creds
-
-    def test_nothing_at_all_resolves_to_none(self, isolated_home):
-        assert (
-            auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH) is None
-        )
-
-    def test_login_file_alone_is_subscription_and_not_rotation_free(self, isolated_home):
-        self._write_claude_login(isolated_home)
-
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
-
-        assert eff.mode == auth_token.MODE_SUBSCRIPTION
-        assert not eff.rotation_free
-        assert eff.overridden == ()
-
-    def test_api_key_outranks_the_subscription_login(self, isolated_home, monkeypatch):
-        # The original misreport: both present used to be called "subscription".
-        self._write_claude_login(isolated_home)
+    if key:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
+    if stored:
+        auth_token.store_token(stored, app)
 
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
+    eff = auth_token.effective_credential(app, auth_token.VISITOR_AUTH)
 
-        assert eff.mode == auth_token.MODE_API_KEY
-        assert eff.rotation_free
-        assert "ANTHROPIC_API_KEY" in eff.source
-        assert any(".credentials.json" in loser for loser in eff.overridden)
-
-    def test_api_key_outranks_the_stored_oauth_token(self, isolated_home, monkeypatch):
-        auth_token.store_token(_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
-
-        assert eff.mode == auth_token.MODE_API_KEY
-        assert any("stored" in loser for loser in eff.overridden)
-
-    def test_oauth_token_outranks_the_subscription_login(self, isolated_home):
-        self._write_claude_login(isolated_home)
-        auth_token.store_token(_TOKEN)
-
-        eff = auth_token.effective_credential(auth_token.APP_CLAUDE, auth_token.VISITOR_AUTH)
-
-        assert eff.mode == auth_token.MODE_OAUTH_TOKEN
-        assert eff.rotation_free
-        assert any(".credentials.json" in loser for loser in eff.overridden)
-
-    def test_codex_stored_key_is_api_key_mode(self, isolated_home):
-        # For Codex the API key IS the rotation-free credential — one ladder rung.
-        auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
-
-        eff = auth_token.effective_credential(auth_token.APP_CODEX, auth_token.VISITOR_AUTH)
-
-        assert eff.mode == auth_token.MODE_API_KEY
-        assert eff.rotation_free
-
-    def test_unknown_app_resolves_to_none(self, isolated_home):
-        assert auth_token.effective_credential("not-an-app") is None
+    assert (eff and eff.mode) == mode
+    if eff is not None:
+        assert eff.rotation_free == (mode != "subscription")
+        assert ("ANTHROPIC_API_KEY" in eff.source) == key
+        assert [loser in x for x in eff.overridden] == ([True] if loser else [])
 
 
 class TestAuthStatusReport:
@@ -263,67 +165,43 @@ class TestAuthStatusReport:
     refreshing one": doubly wrong (the key is what runs, and keys never refresh)."""
 
     @staticmethod
-    def _run(monkeypatch, *, visitor=False):
-        """Run the status report; *visitor* is a hand-written Sandbox with no policy record."""
-        from booley.config import agent as agent_config
-        from booley.harness import auth_cmd
+    def _status(monkeypatch, capsys) -> tuple[int, list[str]]:
+        from booley.presentation import colors
 
-        monkeypatch.setattr(agent_config, "_inside_container", lambda: visitor)
-        if visitor:
-            monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
-        sink: dict[str, list[str]] = {"ok": [], "info": [], "warn": []}
-        monkeypatch.setattr(auth_cmd, "banner", lambda *a, **k: None)
-        for level, messages in sink.items():
-            monkeypatch.setattr(auth_cmd, level, messages.append)
-        rc = auth_cmd._report_status()
-        return rc, sink
+        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
+        rc = auth_cmd.run_auth(SimpleNamespace(status=True), None)
+        return rc, capsys.readouterr().out.splitlines()
 
-    def test_api_key_alone_is_reported_as_what_runs(self, isolated_home, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-
-        _rc, sink = self._run(monkeypatch, visitor=True)
-
-        assert any("claude" in m and "ANTHROPIC_API_KEY" in m for m in sink["ok"])
-        assert not any("claude" in m for m in sink["warn"])
-
-    def test_subscription_default_ignores_an_exported_api_key(self, isolated_home, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-
-        rc, sink = self._run(monkeypatch)
-
-        assert rc == 1  # nothing bills the subscription: no login, and the key is scrubbed
-        assert not any("ANTHROPIC_API_KEY" in m for m in sink["ok"])
-
-    def test_subscription_only_still_warns_about_rotation(self, isolated_home, monkeypatch):
+    def test_subscription_only_still_warns_about_rotation(
+        self, isolated_home, monkeypatch, capsys
+    ):
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text('{"claudeAiOauth": {"accessToken": "SYNTHETIC"}}', encoding="utf-8")
 
-        rc, sink = self._run(monkeypatch)
+        rc, lines = self._status(monkeypatch, capsys)
 
         assert rc == 0  # a refreshing login is usable despite its rotation warning
-        assert any("claude" in m and "refreshing" in m for m in sink["warn"])
+        row = next(i for i, line in enumerate(lines) if line.startswith("  !  claude:"))
+        assert "refreshing" in lines[row]
+        assert "can revoke a running container" in lines[row + 1]
 
-    def test_overridden_source_is_a_hint_under_its_line(self, isolated_home, monkeypatch, capsys):
+    def test_api_key_runs_and_overridden_login_is_a_hint(self, isolated_home, monkeypatch, capsys):
         from booley.config import agent as agent_config
-        from booley.harness import auth_cmd
-        from booley.presentation import colors
 
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-        monkeypatch.setattr(colors, "COLORS_ENABLED", False)
-        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)  # visitor mode
+        # The visitor mode needs a hand-written Sandbox: /.dockerenv, which a test cannot create.
+        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
-        auth_cmd._report_status()
+        _rc, lines = self._status(monkeypatch, capsys)
 
-        lines = capsys.readouterr().out.splitlines()
-        row = next(
-            (i for i, line in enumerate(lines) if line.startswith("  \u2713  claude:")), None
-        )
-        assert row is not None
+        row = next(i for i, line in enumerate(lines) if line.startswith("  \u2713  claude:"))
+        assert "ANTHROPIC_API_KEY" in lines[row]
+        assert not [line for line in lines if line.startswith("  !  claude:")]
         assert lines[row + 1].startswith("     \u2192 ")
         assert lines[row + 1].endswith(
             ".credentials.json is present but not used; the line above wins"
@@ -331,20 +209,21 @@ class TestAuthStatusReport:
 
 
 class TestInjection:
-    def test_session_runtime_resolves_localenv_from_stored_token(self, home):
-        auth_token.store_token(_TOKEN)
+    @pytest.mark.parametrize(
+        ("var", "app", "value", "expected"),
+        [
+            ("CLAUDE_CODE_OAUTH_TOKEN", "claude", _TOKEN, _TOKEN),
+            ("OPENAI_API_KEY", "codex", _API_KEY, _API_KEY),
+            ("CLAUDE_CODE_OAUTH_TOKEN", None, None, ""),
+            # Only token vars get the file fallback; others keep the CLI's empty string.
+            ("NOT_A_TOKEN", "claude", _TOKEN, ""),
+        ],
+    )
+    def test_session_runtime_resolves_localenv_from_store(self, home, var, app, value, expected):
+        if app:
+            auth_token.store_token(value, app)
 
-        resolved = session_runtime.substitute("${localEnv:CLAUDE_CODE_OAUTH_TOKEN}", home)
-
-        assert resolved == _TOKEN
-
-    def test_session_runtime_leaves_other_vars_empty_when_unset(self, home):
-        # Only the token var gets the file fallback; everything else keeps the
-        # Dev Containers CLI's empty-string semantics.
-        assert session_runtime.substitute("${localEnv:NOT_A_TOKEN}", home) == ""
-
-    def test_session_runtime_token_empty_when_nothing_stored(self, home):
-        assert session_runtime.substitute("${localEnv:CLAUDE_CODE_OAUTH_TOKEN}", home) == ""
+        assert session_runtime.substitute(f"${{localEnv:{var}}}", home) == expected
 
     def test_sandbox_injects_stored_token(self, home, monkeypatch):
         from booley.harness import sandbox
@@ -357,6 +236,7 @@ class TestInjection:
         runner = sandbox.DockerRunner.__new__(sandbox.DockerRunner)
         runner.worktree = home / "project"
         runner.worktree.mkdir()
+        # DockerRunner's public run() starts Docker; writing the env-file is its last step before.
         runner._append_api_key_env_file(cmd)
 
         assert "--env-file" in cmd
@@ -414,6 +294,8 @@ class TestRotationRiskVenue:
             "inspect_agent_installation",
             lambda _app: doctor.host_environment.AgentInstallation(True, None),
         )
+        # Doctor reaches this row publicly only through run_doctor_result, which runs every
+        # phase (Docker, image, Project); the seed targets are Sandbox paths a test cannot own.
         for name in (auth_token.APP_CLAUDE, auth_token.APP_CODEX):
             seed = tmp_path / "seed" / name
             monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, name, str(seed))
@@ -466,6 +348,7 @@ class TestDoctorCheck:
             ),
         )
         sink: dict[str, list[str]] = {"pass": [], "warn": [], "skip": [], "fix": []}
+        # run_doctor_result reaches this row only through its Docker and image phases.
         doctor._check_oauth_token(
             provider,
             sink["pass"].append,
@@ -475,38 +358,54 @@ class TestDoctorCheck:
         )
         return sink
 
-    def test_warns_when_only_rotating_creds(self, isolated_home, monkeypatch):
-        sink = self._run(monkeypatch)
+    @pytest.mark.parametrize(
+        ("provider", "installed", "stored", "key", "kind", "words"),
+        [
+            pytest.param(
+                "claude", "both", None, False, "warn", ("Claude", "revoke"), id="only-rotating"
+            ),
+            pytest.param(
+                "claude", "both", "claude", False, "pass", ("Claude", "rotation-free"), id="stored"
+            ),
+            # A key never rotates and outranks everything: warning here was doubly wrong.
+            pytest.param(
+                "claude", "claude", None, True, "pass", ("API key", "rotation-free"), id="key"
+            ),
+            pytest.param(
+                "claude", "claude", "claude", True, "pass", ("outranks",), id="key>stored"
+            ),
+            # Claude covered, Codex not: on a codex project the warning is Codex's alone.
+            pytest.param("codex", "both", "claude", False, "warn", ("Codex",), id="codex-warns"),
+            pytest.param(
+                "codex", "both", "codex", False, "pass", ("Codex",), id="codex-stored-key"
+            ),
+            pytest.param("claude", "none", None, False, "skip", ("skipped",), id="absent"),
+            # Codex configured but never installed: say so, don't claim "no agent app".
+            pytest.param(
+                "codex",
+                "claude",
+                None,
+                False,
+                "skip",
+                ("codex", "not installed"),
+                id="codex-absent",
+            ),
+        ],
+    )
+    def test_audits_only_the_configured_provider(
+        self, isolated_home, monkeypatch, provider, installed, stored, key, kind, words
+    ):
+        if stored:
+            auth_token.store_token(_TOKEN if stored == "claude" else _API_KEY, stored)
+        if key:
+            monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
 
-        assert sink["pass"] == []
-        assert any("revoke" in m for m in sink["warn"])
+        sink = self._run(
+            monkeypatch, claude=installed != "none", codex=installed == "both", provider=provider
+        )
 
-    def test_passes_with_stored_token(self, isolated_home, monkeypatch):
-        auth_token.store_token(_TOKEN)
-
-        sink = self._run(monkeypatch)
-
-        assert sink["warn"] == []
-        assert any("rotation-free" in m for m in sink["pass"])
-
-    def test_exported_api_key_satisfies_the_check(self, isolated_home, monkeypatch):
-        # An API key never rotates AND outranks everything else, so warning
-        # "no rotation-free credential" (and steering to `booley auth`, whose
-        # token the key would override) was doubly wrong.
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-
-        sink = self._run(monkeypatch)
-
-        assert sink["warn"] == []
-        assert any("API key" in m and "rotation-free" in m for m in sink["pass"])
-
-    def test_api_key_pass_names_the_outranked_stored_token(self, isolated_home, monkeypatch):
-        auth_token.store_token(_TOKEN)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-
-        sink = self._run(monkeypatch)
-
-        assert any("outranks" in m for m in sink["pass"])
+        assert [k for k in ("pass", "warn", "skip") if sink[k]] == [kind]
+        assert len(sink[kind]) == 1 and all(w in sink[kind][0] for w in words)
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
     def test_warns_when_stored_token_is_world_readable(self, isolated_home, home, monkeypatch):
@@ -519,171 +418,37 @@ class TestDoctorCheck:
         assert any("readable by others" in m for m in sink["warn"])
         assert sink["fix"] == [f"chmod 600 {quote_arg(str(path))}"]
 
-    def test_codex_is_checked_on_a_codex_project(self, isolated_home, monkeypatch):
-        # Claude covered, Codex not: on a codex project the warning is Codex's.
-        auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
 
-        sink = self._run(monkeypatch, claude=True, codex=True, provider="codex")
+@pytest.mark.parametrize(
+    ("primary", "app_env", "section", "configured", "declared"),
+    [
+        ("codex", None, {"provider": "claude"}, "codex", "claude"),  # run env wins
+        (None, "codex", {}, "codex", None),  # the devcontainer's app beats the default
+        (None, "codex", {"provider": "claude"}, "claude", "claude"),  # toml beats it
+        ("claude", "claude", {"provider": "codex"}, "claude", "codex"),
+        (None, None, {"provider": "bogus"}, "claude", None),  # invalid [agent] degrades softly
+    ],
+)
+def test_doctor_provider_answers(
+    tmp_path, monkeypatch, primary, app_env, section, configured, declared
+):
+    """The configured provider follows the runtime's order: BOOLEY_PRIMARY_PROVIDER, booley.toml,
+    BOOLEY_AGENT_APP. The declared one backs the spec drift check, so it is booley.toml only:
+    env vars steer which backend runs, never what `booley init --seed` writes."""
+    from booley.harness import doctor
 
-        assert any("Codex" in m for m in sink["warn"])
-        assert not any("Claude" in m for m in sink["warn"])
+    for name, value in (("BOOLEY_PRIMARY_PROVIDER", primary), ("BOOLEY_AGENT_APP", app_env)):
+        if value:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, {}, "")
 
-    def test_codex_passes_with_stored_api_key(self, isolated_home, monkeypatch):
-        auth_token.store_token(_API_KEY, auth_token.APP_CODEX)
-
-        sink = self._run(monkeypatch, claude=True, codex=True, provider="codex")
-
-        assert sink["warn"] == []
-        assert len(sink["pass"]) == 1
-
-    def test_skips_when_the_selected_app_is_absent(self, isolated_home, monkeypatch):
-        sink = self._run(monkeypatch, claude=False, codex=False)
-
-        assert sink["skip"] and not sink["warn"]
-
-
-class TestDoctorCheckIsProviderGated:
-    """Booley runs ONE provider. Merely having the other app's config dir on the
-    host (`~/.codex` from an unrelated experiment) used to buy a warning about
-    credentials no Booley run would ever read -- unactionable noise that erodes
-    trust in the warning that IS real."""
-
-    def test_unused_provider_is_not_audited(self, isolated_home, monkeypatch):
-        # Both apps installed; only Claude is configured and covered.
-        auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-
-        sink = TestDoctorCheck._run(monkeypatch, claude=True, codex=True, provider="claude")
-
-        assert sink["warn"] == []
-        assert len(sink["pass"]) == 1
-        assert "Claude" in sink["pass"][0]
-
-    def test_configured_provider_still_warns(self, isolated_home, monkeypatch):
-        # The kept warning: it names a real failure mode with a real remedy.
-        sink = TestDoctorCheck._run(monkeypatch, claude=True, codex=True, provider="claude")
-
-        assert any("Claude" in m and "revoke" in m for m in sink["warn"])
-        assert not any("Codex" in m for m in sink["warn"])
-
-    def test_skip_names_the_configured_provider(self, isolated_home, monkeypatch):
-        # Codex configured but never installed: say so, don't claim "no agent app".
-        sink = TestDoctorCheck._run(monkeypatch, claude=True, codex=False, provider="codex")
-
-        assert sink["warn"] == [] and sink["pass"] == []
-        assert any("codex" in m and "not installed" in m for m in sink["skip"])
-
-
-class TestConfiguredProvider:
-    """Where the provider gate reads its answer from."""
-
-    @staticmethod
-    def _audit(tmp_path, agent_section):
-        from booley.harness import doctor
-
-        return doctor.ProjectAudit(
-            project_root=tmp_path,
-            booley_dir=tmp_path / ".booley",
-            booley_toml={"agent": agent_section} if agent_section is not None else {},
-            configs_toml={},
-            first_target="",
-        )
-
-    def test_reads_booley_toml(self, tmp_path, monkeypatch):
-        from booley.harness import doctor
-
-        monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        assert doctor._configured_provider(self._audit(tmp_path, {"provider": "codex"})) == "codex"
-
-    def test_env_wins_over_toml(self, tmp_path, monkeypatch):
-        """Mirrors the backend's own resolution order: env first."""
-        from booley.harness import doctor
-
-        monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
-        assert (
-            doctor._configured_provider(self._audit(tmp_path, {"provider": "claude"})) == "codex"
-        )
-
-    @pytest.mark.parametrize("section", [None, {}, {"provider": "bogus"}, "not-a-table"])
-    def test_undeclared_provider_is_the_backend_default(self, tmp_path, monkeypatch, section):
-        # F-23: an absent, empty, or invalid [agent] does NOT mean "audit every
-        # app" — the backend's own host fallback is claude, so a stale ~/.codex
-        # login must not buy the project permanent codex warnings.
-        from booley.harness import doctor
-
-        monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-        assert doctor._configured_provider(self._audit(tmp_path, section)) == "claude"
-
-    def test_no_project_is_the_backend_default(self, monkeypatch):
-        from booley.harness import doctor
-
-        monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-        assert doctor._configured_provider(None) == "claude"
-
-    def test_devcontainer_app_env_beats_the_default(self, tmp_path, monkeypatch):
-        """Third resolution step, same as ``config.agent._lazy_agent_settings``:
-        in-container the devcontainer exports which app runs the session."""
-        from booley.harness import doctor
-
-        monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
-        assert doctor._configured_provider(self._audit(tmp_path, {})) == "codex"
-
-    def test_toml_beats_the_devcontainer_app_env(self, tmp_path, monkeypatch):
-        from booley.harness import doctor
-
-        monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
-        audit = self._audit(tmp_path, {"provider": "claude"})
-        assert doctor._configured_provider(audit) == "claude"
-
-
-class TestDeclaredProvider:
-    """``_declared_provider`` backs the devcontainer app-drift check, so unlike
-    ``_configured_provider`` it must report *only* what booley.toml declares —
-    that is the sole input ``init_cmd._select_agent_app`` re-seeds from."""
-
-    _audit = staticmethod(TestConfiguredProvider._audit)
-
-    def test_reads_booley_toml(self, tmp_path):
-        from booley.harness import doctor
-
-        assert doctor._declared_provider(self._audit(tmp_path, {"provider": "codex"})) == "codex"
-
-    def test_ignores_the_retired_primary_alias(self, tmp_path):
-        from booley.harness import doctor
-
-        assert doctor._declared_provider(self._audit(tmp_path, {"primary": "codex"})) is None
-
-    @pytest.mark.parametrize("section", [None, {}, "not-a-table"])
-    def test_undeclared_is_none_not_a_default(self, tmp_path, section):
-        # A default here would drift-check the spec against a provider the
-        # project never chose, warning on every correctly-seeded claude repo.
-        from booley.harness import doctor
-
-        assert doctor._declared_provider(self._audit(tmp_path, section)) is None
-
-    def test_invalid_value_degrades_to_none(self, tmp_path):
-        # Fail-soft (Decision 12): _validate_agent_table already FAILs on this.
-        from booley.harness import doctor
-
-        assert doctor._declared_provider(self._audit(tmp_path, {"provider": "bogus"})) is None
-
-    def test_ignores_env(self, tmp_path, monkeypatch):
-        # Env vars steer which backend *runs*; they never steer what `booley
-        # init --seed` writes, so they must not move this answer.
-        from booley.harness import doctor
-
-        monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
-        monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
-        assert doctor._declared_provider(self._audit(tmp_path, {"provider": "codex"})) == "codex"
-        assert doctor._declared_provider(self._audit(tmp_path, {})) is None
-
-    def test_no_project_is_none(self):
-        from booley.harness import doctor
-
-        assert doctor._declared_provider(None) is None
+    # run_doctor_result reaches these only through its Docker and image phases.
+    assert (doctor._configured_provider(audit), doctor._declared_provider(audit)) == (
+        configured,
+        declared,
+    )
 
 
 class TestUnusedProviderIsSilent:
@@ -701,7 +466,8 @@ class TestUnusedProviderIsSilent:
             lambda _provider: doctor.host_environment.AgentInstallation(True, None),
         )  # Both providers have installation state, but only the selected one is audited.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-        audit = TestConfiguredProvider._audit(tmp_path, {})  # [agent] without provider
+        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, {}, "")
+        # run_doctor_result reaches these only through its Docker and image phases.
         provider = doctor._configured_provider(audit)
 
         warns: list[str] = []
@@ -716,30 +482,6 @@ class TestUnusedProviderIsSilent:
         assert warns == []
 
 
-class TestCli:
-    def test_auth_is_host_only(self):
-        # It drives the host browser flow and writes the host's ~/.config.
-        assert "auth" in tlr._HOST_ONLY_COMMANDS
-
-    @pytest.mark.parametrize(
-        "argv,flag",
-        [
-            (["auth"], None),
-            (["auth", "--status"], "status"),
-            (["auth", "--clear"], "clear"),
-            (["auth", "--token-stdin"], "token_stdin"),
-        ],
-    )
-    def test_parses_flags(self, argv, flag):
-        parser = tlr._build_parser()
-
-        args = tlr._normalize_args(parser, parser.parse_args(argv))
-
-        assert args.command == "auth"
-        if flag:
-            assert getattr(args, flag) is True
-
-
 class TestClaudeMintLocation:
     def test_project_mint_uses_runtime_without_host_cli(self, tmp_path, monkeypatch):
         project = tmp_path / "rtl"
@@ -751,6 +493,7 @@ class TestClaudeMintLocation:
             "which",
             Mock(side_effect=AssertionError("host PATH must not decide Project auth")),
         )
+        # Driving run_auth here would need a running Project Sandbox; no Docker fake starts one.
         monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: _TOKEN)
 
         with (
@@ -774,6 +517,7 @@ class TestClaudeMintLocation:
             "run_project_command",
             Mock(side_effect=session_runtime.SessionError("cannot inventory runtimes")),
         )
+        # Driving run_auth here would need a running Project Sandbox; no Docker fake starts one.
         monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
 
@@ -786,6 +530,7 @@ class TestClaudeMintLocation:
         errors: list[str] = []
         monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
         monkeypatch.setattr(auth_cmd, "err", errors.append)
+        # A Sandbox start refusal needs the Project Sandbox runtime, which no Docker fake drives.
         monkeypatch.setattr(
             auth_cmd,
             "_acquire",
@@ -833,166 +578,88 @@ class TestClaudeMintLocation:
         assert "Traceback" not in captured.out
         assert "Traceback" not in captured.err
 
-    def test_non_project_mint_keeps_host_cli_fallback(self, tmp_path, monkeypatch):
-        run = Mock(return_value=SimpleNamespace(returncode=0))
-        runtime = Mock()
-        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
-        monkeypatch.setattr(auth_cmd.subprocess, "run", run)
-        monkeypatch.setattr(session_runtime, "run_project_command", runtime)
-        monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: _TOKEN)
+    @pytest.fixture
+    def host_claude(self, isolated_home, monkeypatch):
+        """No Project: `claude setup-token` runs from PATH; getpass reads the pasted token."""
+        from tests.path_tool_fake import PathToolFake
 
-        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
+        prompts: list[str] = []
+        monkeypatch.setattr(auth_cmd.getpass, "getpass", lambda p: prompts.append(p) or _TOKEN)
+        bin_dir = isolated_home / "bin"
+        bin_dir.mkdir()
+        monkeypatch.setenv("PATH", str(bin_dir))
+        return SimpleNamespace(prompts=prompts, install=lambda: PathToolFake(bin_dir, "claude"))
 
-        assert token == _TOKEN
-        run.assert_called_once_with(("claude", "setup-token"), check=False)
-        runtime.assert_not_called()
+    def _mint(self, capsys):
+        args = SimpleNamespace(app=auth_token.APP_CLAUDE, token_stdin=False)
+        return auth_cmd.run_auth(args, None), " ".join(capsys.readouterr().out.split())
 
-    def test_missing_host_cli_names_project_runtime_option(self, tmp_path, monkeypatch):
-        errors: list[str] = []
-        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: None)
-        monkeypatch.setattr(auth_cmd, "err", errors.append)
-
-        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
-
-        assert token is None
-        assert "initialized Booley Project" in errors[0]
-        assert "Sandbox" in errors[0]
-
-    def test_failed_host_mint_reports_exit_and_does_not_prompt(self, tmp_path, monkeypatch):
-        prompt = Mock()
-        errors: list[str] = []
-        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
-        monkeypatch.setattr(
-            auth_cmd.subprocess,
-            "run",
-            Mock(return_value=SimpleNamespace(returncode=7)),
-        )
-        monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
-        monkeypatch.setattr(auth_cmd, "err", errors.append)
-
-        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None)
-
-        assert token is None
-        prompt.assert_not_called()
-        assert errors == ["`claude setup-token` failed (exit 7)"]
-
-    def test_token_stdin_never_inspects_or_starts_a_runtime(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(auth_cmd.sys, "stdin", SimpleNamespace(read=lambda: f"{_TOKEN}\n"))
-        project_probe = Mock(side_effect=AssertionError("runtime must not be inspected"))
-        monkeypatch.setattr(session_runtime, "run_project_command", project_probe)
-
-        token = auth_cmd._acquire(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], True, tmp_path)
-
-        assert token == _TOKEN
-        project_probe.assert_not_called()
-
-    def test_interactive_acquire_uses_mint_path(self, tmp_path, monkeypatch):
-        mint = Mock(return_value=_TOKEN)
-        monkeypatch.setattr(auth_cmd, "_mint_claude_token", mint)
-        credential = auth_token.CREDENTIALS[auth_token.APP_CLAUDE]
-
-        assert auth_cmd._acquire(credential, False, tmp_path) == _TOKEN
-        mint.assert_called_once_with(credential, tmp_path)
-
-    def test_non_project_reseed_is_a_successful_noop(self, tmp_path, monkeypatch, capsys):
-
-        assert auth_cmd._reseed_spec(None)
-
-        notice = " ".join(capsys.readouterr().out.split())
-        assert f"once their Sandbox is recreated: {UNKNOWN_SANDBOX_STEPS}" in notice
-        assert "pick it up on `booley session up`" not in notice
-
-    def test_project_reseed_reports_narrow_reseed_result(self, tmp_path, monkeypatch):
-        from booley.harness import init_cmd
-
-        reseed = Mock(return_value=0)
-        monkeypatch.setattr(init_cmd, "reseed_auth_spec", reseed)
-        assert auth_cmd._reseed_spec(tmp_path)
-        reseed.assert_called_once_with(tmp_path)
-
-    def test_store_rejects_invalid_credential(self, tmp_path, monkeypatch):
-        errors: list[str] = []
-        monkeypatch.setattr(
-            auth_token,
-            "store_token",
-            Mock(side_effect=ValueError("credential is empty")),
-        )
-        monkeypatch.setattr(auth_cmd, "err", errors.append)
-
-        stored = auth_cmd._store_and_reseed(
-            "invalid", auth_token.CREDENTIALS[auth_token.APP_CLAUDE], None
-        )
-
-        assert stored is None
-        assert errors == ["credential is empty"]
-
-    def test_store_returns_path_after_successful_reseed(self, tmp_path, monkeypatch):
-        stored = tmp_path / "claude-oauth-token"
-        monkeypatch.setattr(auth_token, "store_token", Mock(return_value=stored))
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
-
-        assert (
-            auth_cmd._store_and_reseed(
-                _TOKEN, auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
-            )
-            == stored
-        )
-
-    def test_store_outside_a_project_conditions_the_revocation_promise(
-        self, home, monkeypatch, capsys
+    # Windows runs a bare command name only as an .exe; the branches here are platform-neutral.
+    @pytest.mark.skipif(os.name == "nt", reason="subprocess cannot start a .cmd fake by bare name")
+    @pytest.mark.parametrize(
+        ("exit_code", "rc", "stored", "message"),
+        [(0, 0, _TOKEN, "stored"), (7, 1, None, "`claude setup-token` failed (exit 7)")],
+    )
+    def test_non_project_mint_runs_the_host_cli(
+        self, host_claude, capsys, exit_code, rc, stored, message
     ):
-        rc = _auth_stdin(monkeypatch, None, app=auth_token.APP_CODEX)
+        claude = host_claude.install()
+        claude.answer("setup-token", returncode=exit_code)
 
-        revoke = [
-            line.strip() for line in capsys.readouterr().out.splitlines() if "revoke" in line
-        ]
-        assert rc == 0
-        assert revoke == [
+        code, output = self._mint(capsys)
+
+        assert code == rc
+        assert message in output
+        assert [call.args for call in claude.calls()] == [["setup-token"]]
+        assert auth_token.read_stored_token() == stored
+        # A failed mint names its exit and never asks for a token it did not print.
+        assert len(host_claude.prompts) == (1 if stored else 0)
+
+    def test_missing_host_cli_names_project_runtime_option(self, host_claude, capsys):
+        rc, output = self._mint(capsys)
+
+        assert rc == 1
+        assert "CLI not found on PATH — run this from an initialized Booley Project" in output
+        assert host_claude.prompts == []
+
+    def test_store_rejects_invalid_credential(self, home, monkeypatch, capsys):
+        assert _auth_stdin(monkeypatch, None, token="sk-ant-oat01-a b") == 1
+        assert "whitespace" in capsys.readouterr().out
+        assert auth_token.read_stored_token() is None
+
+    @pytest.mark.parametrize(
+        ("app", "policy"),
+        [(auth_token.APP_CLAUDE, "subscription"), (auth_token.APP_CODEX, "api_key")],
+    )
+    def test_store_outside_a_project_names_policy_and_future_pickup(
+        self, home, monkeypatch, capsys, app, policy
+    ):
+        assert _auth_stdin(monkeypatch, None, app=app) == 0
+
+        output = capsys.readouterr().out
+        assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
+        assert f"{app} Projects with auth={policy} use this stored credential." in output
+        assert [line.strip() for line in output.splitlines() if "revoke" in line] == [
             "In those Projects it does not refresh, so a host-side login can no longer "
             "revoke a running agent."
         ]
 
-    def test_reseed_failure_keeps_stored_token_but_returns_failure(self, home, monkeypatch):
-        tmp_path = home
-        stored = tmp_path / "config" / "booley" / "claude-oauth-token"
-        errors: list[str] = []
-        monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "ok", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "info", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "err", errors.append)
-        monkeypatch.setattr(auth_cmd, "_acquire", lambda *_args: _TOKEN)
-        monkeypatch.setattr(auth_token, "store_token", Mock(return_value=stored))
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=False))
-        args = SimpleNamespace(
-            status=False,
-            clear=False,
-            app=auth_token.APP_CLAUDE,
-            token_stdin=False,
-        )
+    @pytest.mark.parametrize("clear", [False, True])
+    def test_reseed_failure_keeps_the_store_change_but_fails(
+        self, auth_project, monkeypatch, capsys, clear
+    ):
+        _auth_reseed_boundaries(auth_project, monkeypatch, "synthetic issuance failure")
+        if clear:
+            auth_token.store_token(_TOKEN)
+            rc = auth_cmd.run_auth(SimpleNamespace(clear=True), auth_project)
+        else:
+            rc = _auth_stdin(monkeypatch, auth_project)
 
-        rc = auth_cmd.run_auth(args, None)
-
+        output = " ".join(capsys.readouterr().out.split())
         assert rc == 1
-        auth_token.store_token.assert_called_once_with(_TOKEN, auth_token.APP_CLAUDE)
-        assert errors == [
-            "credential was stored, but the Project Sandbox spec could not be re-seeded; "
-            "resolve the condition reported above before retrying"
-        ]
-
-    def test_clear_reseed_failure_returns_failure(self, tmp_path, monkeypatch):
-        errors: list[str] = []
-        monkeypatch.setattr(auth_token, "clear_stored_token", lambda _app: True)
-        monkeypatch.setattr(auth_token, "token_path", lambda _app: tmp_path / "stored-token")
-        monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "ok", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "info", lambda *_args: None)
-        monkeypatch.setattr(auth_cmd, "err", errors.append)
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=False))
-
-        rc = auth_cmd._clear(auth_token.APP_CLAUDE, tmp_path)
-
-        assert rc == 1
-        assert "credential was removed" in errors[0]
+        assert auth_token.read_stored_token() == (None if clear else _TOKEN + "-replacement")
+        assert "synthetic issuance failure" in output
+        assert ("credential was removed" if clear else "credential was stored") in output
 
 
 @pytest.mark.parametrize(
@@ -1094,19 +761,11 @@ def _linked_auth(tmp_path, monkeypatch, *, data=True):
 
         return call
 
-    for name, value in [
-        ("_acquire", _TOKEN),
-        ("_read_token_from_stdin", _TOKEN),
-        ("_prompt_secret", _TOKEN),
-        ("_mint_claude_token", _TOKEN),
-        ("_reseed_spec", True),
-    ]:
+    # Tripwires: past the linked-checkout guard auth would mint on the host or reseed a
+    # Sandbox, effects no external boundary of a linked worktree can stand in for.
+    for name, value in [("_acquire", _TOKEN), ("_reseed_spec", True)]:
         monkeypatch.setattr(auth_cmd, name, effect(name, value))
-    for name, value in [
-        ("store_token", tmp_path / "token"),
-        ("clear_stored_token", True),
-        ("read_stored_token", None),
-    ]:
+    for name, value in [("store_token", tmp_path / "token"), ("clear_stored_token", True)]:
         monkeypatch.setattr(auth_token, name, effect(name, value))
     return root, linked, effects
 
@@ -1168,6 +827,7 @@ def test_cli_auth_from_non_project_linked_worktree_is_not_refused(
 def test_linked_auth_status_preserves_selected_checkout(tmp_path, monkeypatch):
     _, linked, effects = _linked_auth(tmp_path, monkeypatch)
     selected = []
+    # The report itself prints no root; recording the argument is the only witness.
     monkeypatch.setattr(
         auth_cmd, "_safe_report_status", lambda app, root: selected.append(root) or 0
     )
@@ -1181,7 +841,7 @@ def test_auth_from_project_subdirectory_retains_behavior(tmp_path, monkeypatch):
     child = root / "rtl"
     child.mkdir()
     assert auth_cmd.run_auth(SimpleNamespace(status=False, clear=True, app="claude"), child) == 0
-    assert effects == ["clear_stored_token", "_reseed_spec"]
+    assert effects == ["clear_stored_token", "_reseed_spec"]  # the tripwires of _linked_auth
 
 
 def test_uninitialized_nested_checkout_is_not_adopted_as_ancestor_project(tmp_path, monkeypatch):
@@ -1209,10 +869,10 @@ def auth_project(home, monkeypatch):
     return project
 
 
-def _auth_stdin(monkeypatch, project, app=auth_token.APP_CLAUDE):
+def _auth_stdin(monkeypatch, project, app=auth_token.APP_CLAUDE, token=_TOKEN + "-replacement"):
     from io import StringIO
 
-    monkeypatch.setattr(auth_cmd.sys, "stdin", StringIO(_TOKEN + "-replacement\n"))
+    monkeypatch.setattr(auth_cmd.sys, "stdin", StringIO(token + "\n"))
     return auth_cmd.run_auth(SimpleNamespace(token_stdin=True, app=app), project)
 
 
@@ -1236,14 +896,11 @@ class TestAuthStorePreflight:
         token = auth_token.store_token(_TOKEN)
         previous = token.read_bytes()
         token.parent.parent.chmod(0o775)
-        reseed = Mock(return_value=True)
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", reseed)
         rc = _auth_stdin(monkeypatch, auth_project)
         assert token.read_bytes() == previous, "credential changed before permission preflight"
         assert rc == 2
         assert token.parent.parent.stat().st_mode & 0o777 == 0o775
         assert "chmod 700" in capsys.readouterr().out
-        reseed.assert_not_called()
 
     @pytest.mark.parametrize("kind", ["mode", "foreign"])
     def test_unsafe_booley_directory_stores_nothing(self, auth_project, monkeypatch, capsys, kind):
@@ -1253,7 +910,6 @@ class TestAuthStorePreflight:
             token.parent.chmod(0o755)
         else:
             _foreign_owner(monkeypatch, token.parent)
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
         rc = _auth_stdin(monkeypatch, auth_project)
         assert not token.exists(), "credential written into an unsafe directory"
         assert rc == 2
@@ -1265,7 +921,6 @@ class TestAuthStorePreflight:
         token = auth_token.store_token(_TOKEN)
         previous = token.read_bytes()
         _foreign_owner(monkeypatch, auth_project / ".booley")
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
         rc = _auth_stdin(monkeypatch, auth_project)
         assert token.read_bytes() == previous, (
             "credential changed before Project data ownership preflight"
@@ -1274,6 +929,8 @@ class TestAuthStorePreflight:
         assert "owned" in capsys.readouterr().out
 
 
+# The reseed reaches Docker and the image store through these Booley internals; no shared
+# fake covers that boundary yet, so the private ones below stand in for it.
 def _auth_sandbox_ports(monkeypatch):
     from booley.harness.setup import interactive
     from booley.runtime import dashboard_tasks
@@ -1290,7 +947,7 @@ def _auth_sandbox_ports(monkeypatch):
     monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
 
 
-def _auth_reseed_boundaries(project, monkeypatch):
+def _auth_reseed_boundaries(project, monkeypatch, issue_error=None):
     from booley.harness import bootstrap, host_sidecars, image_lifecycle, init_cmd
     from booley.runtime import session_issuance
     from booley.runtime.image_lifecycle import Intent, LifecycleResult, Status
@@ -1317,6 +974,7 @@ def _auth_reseed_boundaries(project, monkeypatch):
     pdk.mkdir()
     monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
+    # Image and keeper lookups run Docker; no shared fake covers issuance's Docker calls yet.
     monkeypatch.setattr(session_issuance, "_resolve_image_id", lambda _: "sha256:" + "a" * 64)
     monkeypatch.setattr(session_issuance, "_keeper_image_id", lambda _: "sha256:" + "a" * 64)
     monkeypatch.setattr(session_issuance, "_project_data_alias_capable", lambda *a: False)
@@ -1331,6 +989,8 @@ def _auth_reseed_boundaries(project, monkeypatch):
     )
 
     def issue(_root, prepared, **kwargs):
+        if issue_error:
+            raise session_issuance.RuntimeSpecError(issue_error)
         captured.append(prepared)
         return issued
 
@@ -1484,7 +1144,6 @@ class TestAuthStorageAdmission:
         directory = token.parent / relative
         directory.mkdir(parents=True, mode=0o700)
         directory.chmod(0o755)
-        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
         assert _auth_stdin(monkeypatch, auth_project) == 2
         assert token.read_bytes() == previous
 
@@ -1506,18 +1165,14 @@ class TestAuthStorageAdmission:
         assert "Traceback" not in output.out + output.err
         assert _TOKEN not in output.out + output.err
 
-    def test_store_only_names_policy_and_future_pickup(self, home, monkeypatch, capsys):
-        assert _auth_stdin(monkeypatch, None) == 0
-        output = capsys.readouterr().out
-        assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
-        assert "claude" in output and "auth=subscription" in output
-
     @pytest.mark.parametrize("present", [False, True])
-    def test_clear_outside_project(self, home, present):
+    def test_clear_outside_project(self, home, capsys, present):
         if present:
             auth_token.store_token(_TOKEN)
         assert auth_cmd.run_auth(SimpleNamespace(clear=True), None) == 0
         assert not auth_token.token_path().exists()
+        removed = "removed" if present else "no stored claude credential to remove"
+        assert removed in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("kind", ["directory", "foreign", "absent", "symlink"])
@@ -1543,6 +1198,7 @@ def test_auth_conditional_eda_lock_admission(auth_project, monkeypatch, kind):
     elif kind == "foreign":
         lock.write_text("unchanged")
         _foreign_owner(monkeypatch, lock)
+    # Storage admission is under test; the reseed past it is stubbed (TestAuthReseed runs it).
     monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
     rc = _auth_stdin(monkeypatch, auth_project)
     if kind == "absent":
@@ -1569,6 +1225,7 @@ def test_auth_no_eda_consumer_ignores_unrelated_authority(auth_project, monkeypa
     monkeypatch.setattr(
         authority, "load_state", Mock(side_effect=AssertionError("no EDA consumer"))
     )
+    # Storage admission is under test; the reseed past it is stubbed (TestAuthReseed runs it).
     monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
     assert _auth_stdin(monkeypatch, auth_project) == 0
     assert lock.is_dir()

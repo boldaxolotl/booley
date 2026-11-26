@@ -2,7 +2,7 @@
 
 A checkout's root ``booley.toml`` may set a relative ``[project].dir``. Every reader
 then takes its configuration from that directory, in the main checkout and in a
-worktree made by ``booley worktree new``.
+worktree prepared by ``booley worktree prepare``.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def _write(path: Path, text: str) -> None:
 
 @pytest.fixture
 def relocated_checkouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A main checkout and a ``booley worktree new`` worktree, both with ``dir = "state"``."""
+    """A main checkout and a prepared worktree, both with ``dir = "state"``."""
     from booley.harness import worktree_cmd
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
@@ -82,8 +82,12 @@ def relocated_checkouts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     _write(state / "tests.toml", "[tests]\n")
     _write(state / "rtl_style_guide.md", "relocated style\n")
     _write(state / "AGENTS.md", "guidance\n")
-    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="demo"), root) == 0
-    worktree = state / "worktrees" / "demo"
+    worktree = tmp_path / "demo"
+    _git(root, "worktree", "add", "-q", "-b", "demo", str(worktree), "HEAD")
+    assert (
+        worktree_cmd.run(argparse.Namespace(worktree_command="prepare", path=worktree), worktree)
+        == 0
+    )
     _write(
         worktree / "state" / "booley.toml",
         _STATE_TOML.format(name="worktree-name", lint="true", stealth="true", clis='["codex"]'),

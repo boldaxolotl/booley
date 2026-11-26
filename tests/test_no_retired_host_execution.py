@@ -88,6 +88,7 @@ def test_production_has_no_retired_host_execution_symbols() -> None:
 
 
 def test_yosys_configure_surface_has_no_run_action() -> None:
+    # private: the argparse parser has no public builder; this pins that it has no ``run`` action.
     from booley.flows.synth.backends.configure import _build_parser
 
     with pytest.raises(SystemExit):

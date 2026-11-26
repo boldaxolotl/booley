@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 import yaml
-from tests.subprocess_budget import run_bounded_child
+from tests.git_support import git, repository
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
+
+import ci_docs_tests
 
 _WORKFLOW = _ROOT / ".github/workflows/test.yml"
 
@@ -37,32 +37,23 @@ _BASE_FILES = {
 }
 
 
-def _script() -> ModuleType:
-    """Import the derivation script inside each test so a missing script fails the test body."""
-    return importlib.import_module("ci_docs_tests")
-
-
 def _tracked_repo(tmp_path: Path, files: dict[str, str]) -> Path:
     """Create a Git repository whose index holds ``_BASE_FILES`` plus ``files``."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    init = run_bounded_child(["git", "-C", str(repo), "init", "-q", "-b", "main"])
-    assert init.returncode == 0, init.stderr
+    repo = repository(tmp_path / "repo")
     for relative, text in {**_BASE_FILES, **files}.items():
         target = repo / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    staged = run_bounded_child(["git", "-C", str(repo), "add", "-A"])
-    assert staged.returncode == 0, staged.stderr
+    git(repo, "add", "-A")
     return repo
 
 
 def test_repository_derivation_includes_the_named_content_tests() -> None:
-    derived = set(_script().derive(_ROOT))
+    derived = set(ci_docs_tests.derive(_ROOT))
 
     assert set(_NAMED_CONTENT_TESTS) <= derived
     # The derivation fails loudly if it ever loses one of the pinned modules.
-    assert set(_NAMED_CONTENT_TESTS) <= set(_script().REQUIRED_CONTENT_TESTS)
+    assert set(_NAMED_CONTENT_TESTS) <= set(ci_docs_tests.REQUIRED_CONTENT_TESTS)
     # A reader found only through the derivation rules, not the named list.
     assert "tests/qa/test_missions.py" in derived
 
@@ -92,7 +83,7 @@ def test_derivation_fails_when_a_required_content_test_is_missing(
 ) -> None:
     repo = _tracked_repo(tmp_path, {"tests/docs/test_other.py": "def test_x(): pass\n"})
 
-    assert _script().main(["--repo", str(repo)]) == 2
+    assert ci_docs_tests.main(["--repo", str(repo)]) == 2
 
     assert "tests/test_site_contract.py" in capsys.readouterr().err
 
@@ -100,7 +91,7 @@ def test_derivation_fails_when_a_required_content_test_is_missing(
 def test_derivation_fails_outside_a_git_repository(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert _script().main(["--repo", str(tmp_path)]) == 2
+    assert ci_docs_tests.main(["--repo", str(tmp_path)]) == 2
     error = capsys.readouterr().err
     assert error
     # A scratch directory inside some Git checkout would exit 2 through the
@@ -113,7 +104,7 @@ def test_unparsable_python_is_reported_not_silently_dropped(
 ) -> None:
     repo = _tracked_repo(tmp_path, {"tests/test_broken.py": "def (:\n"})
 
-    _script().derive(repo)
+    ci_docs_tests.derive(repo)
 
     assert "tests/test_broken.py" in capsys.readouterr().err
 
@@ -193,7 +184,7 @@ def test_new_content_reader_is_derived(
 ) -> None:
     repo = _tracked_repo(tmp_path, files)
 
-    assert expected in _script().derive(repo)
+    assert expected in ci_docs_tests.derive(repo)
 
 
 def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
@@ -208,6 +199,6 @@ def test_unrelated_test_is_not_derived(tmp_path: Path) -> None:
         },
     )
 
-    derived = set(_script().derive(repo))
+    derived = set(ci_docs_tests.derive(repo))
     assert "tests/test_unrelated.py" not in derived
     assert "tests/test_words.py" not in derived

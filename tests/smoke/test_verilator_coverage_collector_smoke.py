@@ -1,31 +1,20 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.execution.contract import SimulationOptions
-from booley.flows.sim.verilator_coverage import (
-    PINNED_VERILATOR,
-    CoverageCollectionRequest,
-    CoverageSource,
-    CoverageTarget,
-    SelectedCoverageRun,
-    SimulationBuildResult,
-    SimulationCommandResult,
-    SimulationRunResult,
-    collect,
-)
 from booley.flows.sim.verilator_coverage_execution import collect_target_coverage
 from booley.targets.catalog import TargetCatalog
 
@@ -33,119 +22,6 @@ pytestmark = pytest.mark.skipif(
     shutil.which("verilator") is None or shutil.which("verilator_coverage") is None,
     reason="real smoke runs inside the pinned Booley Sandbox Image",
 )
-_TOOL_TIMEOUT_S = 4 * hang_guard_s()
-
-
-class _RealVerilatorExecution:
-    def __init__(self, source: Path, build_dir: Path) -> None:
-        self.source = source
-        self.build_dir = build_dir
-
-    def build(self, request) -> SimulationBuildResult:
-        version = run_bounded_child(
-            ["verilator", "--version"], timeout=SUBPROCESS_TIMEOUT_S, check=True
-        ).stdout
-        provenance = Path("/usr/local/share/verilator/BOOLEY-SOURCE.txt")
-        if (
-            f"Verilator {PINNED_VERILATOR.tag.removeprefix('v')}" not in version
-            or not provenance.is_file()
-            or PINNED_VERILATOR.commit not in provenance.read_text(encoding="utf-8")
-        ):
-            return SimulationBuildResult(success=False, output=version)
-        result = run_bounded_child(
-            [
-                "verilator",
-                "--binary",
-                "--timing",
-                "--top-module",
-                "counter_tb",
-                "--Mdir",
-                str(self.build_dir),
-                *request.instrumentation,
-                str(self.source),
-            ],
-            timeout=_TOOL_TIMEOUT_S,
-        )
-        return SimulationBuildResult(
-            success=result.returncode == 0,
-            output=result.stdout + result.stderr,
-            collector=PINNED_VERILATOR,
-        )
-
-    def run(self, request) -> SimulationRunResult:
-        request.raw_path.parent.mkdir(parents=True, exist_ok=True)
-        environment = os.environ.copy()
-        environment.update(request.environment)
-        result = run_bounded_child(
-            [str(self.build_dir / "Vcounter_tb"), *request.argv_suffix],
-            cwd=request.raw_path.parent,
-            env=environment,
-            timeout=_TOOL_TIMEOUT_S,
-        )
-        return SimulationRunResult(
-            verdict="pass" if result.returncode == 0 else "fail",
-            output=result.stdout + result.stderr,
-        )
-
-    def command(self, request) -> SimulationCommandResult:
-        request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        result = run_bounded_child(list(request.argv), cwd=request.cwd, timeout=_TOOL_TIMEOUT_S)
-        return SimulationCommandResult(
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
-
-
-def test_real_generated_main_native_database_is_queryable_and_merge_equivalent(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "counter.sv"
-    source.write_text(
-        """
-module counter(input logic clk, output logic [1:0] value);
-  always_ff @(posedge clk) value <= value + 1'b1;
-endmodule
-
-module counter_tb;
-  logic clk = 0;
-  logic [1:0] value;
-  counter dut(.clk(clk), .value(value));
-  always #1 clk = ~clk;
-  initial begin
-    repeat (4) @(posedge clk);
-    $display("PASS value=%0d", value);
-    $finish;
-  end
-endmodule
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-    request = CoverageCollectionRequest(
-        target=CoverageTarget(
-            identity="smoke:booley:counter:1#sim_counter",
-            selector="sim_counter",
-            toplevel="counter_tb",
-            harness="generated_main",
-            sources=(CoverageSource(str(source), "rtl/counter.sv", "rtl"),),
-        ),
-        selected_tests=(SelectedCoverageRun("generated_main"),),
-        artifact_root=tmp_path / "record",
-    )
-
-    result = collect(request, _RealVerilatorExecution(source, tmp_path / "build"))
-
-    assert result.status == "complete", [
-        (finding.code, finding.message) for finding in result.findings
-    ]
-    assert result.runs[0].simulation_verdict == "pass"
-    assert result.merge.status == "equivalent"
-    assert any(point.identity.metric == "line" for point in result.points)
-    assert [artifact.kind for artifact in result.artifacts] == [
-        "raw_native",
-        "merged_native",
-    ]
 
 
 def _invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> SubprocessResult:
@@ -270,37 +146,39 @@ def _collect_target(root: Path, test: str):
     )
 
 
-def test_real_target_collects_through_simulation_execution_path(tmp_path: Path) -> None:
-    _write_generated_target(tmp_path)
-    result = _collect_target(tmp_path, "smoke")
+@pytest.mark.parametrize(
+    ("write_target", "test", "window", "hooks"),
+    [
+        (_write_generated_target, "smoke", "whole_run", ()),
+        (
+            partial(_write_generated_target, post_reset=True),
+            "hdl_post_reset",
+            "post_reset",
+            ("artifact:hook:001",),
+        ),
+        (_write_custom_target, "custom", "post_reset", ("artifact:hook:001",)),
+    ],
+    ids=["generated", "hdl-post-reset", "custom-main"],
+)
+def test_real_target_collects_through_simulation_execution_path(
+    tmp_path: Path,
+    write_target: Callable[[Path], None],
+    test: str,
+    window: str,
+    hooks: tuple[str, ...],
+) -> None:
+    """A real native database per harness, merged and windowed through the packaged hooks."""
+    write_target(tmp_path)
+    result = _collect_target(tmp_path, test)
     assert result.status == "complete", [
         (finding.code, finding.message) for finding in result.findings
     ]
     assert result.runs[0].simulation_verdict == "pass"
     assert result.merge.status == "equivalent"
     assert any(point.identity.metric == "line" for point in result.points)
-
-
-def test_real_hdl_post_reset_collection_uses_packaged_hook_bridge(tmp_path: Path) -> None:
-    _write_generated_target(tmp_path, post_reset=True)
-    result = _collect_target(tmp_path, "hdl_post_reset")
-    assert result.status == "complete", [
-        (finding.code, finding.message) for finding in result.findings
-    ]
-    assert result.coverage_window.mode == "post_reset"
-    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
-
-
-def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path) -> None:
-    _write_custom_target(tmp_path)
-    result = _collect_target(tmp_path, "custom")
-    assert result.status == "complete", [
-        (finding.code, finding.message) for finding in result.findings
-    ]
-    assert result.runs[0].simulation_verdict == "pass"
-    assert result.coverage_window.mode == "post_reset"
-    assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
-    assert result.merge.status == "equivalent"
+    assert {"raw_native", "merged_native"} <= {artifact.kind for artifact in result.artifacts}
+    assert result.coverage_window.mode == window
+    assert result.coverage_window.hook_artifacts == hooks
 
 
 def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:

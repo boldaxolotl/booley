@@ -518,6 +518,7 @@ def _track_flow_invocations(request: pytest.FixtureRequest) -> Iterator[None]:
         return
 
     stacks = request.node.stash.setdefault(_FLOW_PUBLICATIONS, [])
+    # private: autouse tracking of every Flow publication; no public hook fires per invocation.
     start = getattr(BuiltinFlow, "_start_invocation", None)
     if start is None:  # a Flow without an invocation-start hook has no stack to track
         yield
@@ -528,6 +529,7 @@ def _track_flow_invocations(request: pytest.FixtureRequest) -> Iterator[None]:
         stacks.append((flow.name, flow.publication_resources))
 
     with pytest.MonkeyPatch.context() as patch:
+        # private: same hook as above, wrapped for this test only.
         patch.setattr(BuiltinFlow, "_start_invocation", tracking_start)
         yield
 
@@ -650,6 +652,7 @@ def _isolate_bwave_sessions(
     except ModuleNotFoundError:  # minimal CI images lack optional dependencies
         return
     store = sessions.SessionStore(tmp_path / "bwave-sessions" / "bwave_sessions.json", None)
+    # private: autouse isolation of the process-wide bwave session store.
     monkeypatch.setattr(sessions, "_temporary_store", lambda: store)
 
 
@@ -719,6 +722,7 @@ def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
         from booley.targets.catalog import TargetCatalog
     except ModuleNotFoundError:  # minimal CI images lack FuseSoC dependencies
         return
+    # private: autouse isolation of the process-wide Target catalog cache.
     monkeypatch.setattr(TargetCatalog, "_cache", {})
 
 
@@ -779,6 +783,7 @@ def _isolate_agent_session_markers(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from booley.runtime import runtime_context
 
+    # private: autouse isolation; the marker table is the only list of agent-session variables.
     for markers in dict(runtime_context._AGENT_SESSION_MARKERS).values():
         for marker in markers:
             monkeypatch.delenv(marker, raising=False)
@@ -893,6 +898,7 @@ def _point_mountinfo_at(
 
     mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
     mountinfo.write_bytes(text.encode())
+    # private: no public seam points the container probe at a fixture mountinfo file.
     monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
 
 

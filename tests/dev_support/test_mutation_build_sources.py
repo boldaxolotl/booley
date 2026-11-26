@@ -20,11 +20,11 @@ from booley.flows.mutation.build_sources import (
     validate_mutation_closure,
 )
 from booley.flows.mutation.flow import (
-    _RUNTIME_INPUTS_MARKER,
+    _RUNTIME_INPUTS_MARKER,  # private: marker file name, only written by _record_build_markers
     MutationFlow,
     MutationSpec,
     UnsupportedSimTargetError,
-    _record_build_markers,
+    _record_build_markers,  # private: needs a full Session runtime via run_with_claims
 )
 from booley.flows.mutation.variants import MutationVariantError, MutationVariantPlan
 
@@ -240,6 +240,7 @@ def _ignore_native_layout(tmp_path: Path, monkeypatch, layout: str) -> tuple[Pat
 @pytest.mark.parametrize("layout", ["main", "symlinked-booley-dir", "linked-worktree"])
 def test_ignore_native_cores_mutation_writes_only_private_export(tmp_path, monkeypatch, layout):
     root, build_path = _ignore_native_layout(tmp_path, monkeypatch, layout)
+    # private: the ignore_native_cores mirror is reached only through this method
     resolve = MutationFlow._resolve_elab_target
     # First use projects the shared registry; that is not a mutation side effect.
     resolve("sim", root, tmp_path / "pristine-build")
@@ -279,6 +280,7 @@ def test_isolated_mutant_marker_skips_uncopied_user_files(tmp_path, monkeypatch)
     core.write_text("CAPI=2:\n" + yaml.safe_dump(body), encoding="utf-8")
     spec = MutationSpec(1, "literal", "rtl/inc/message.svh", 1, "BASELINE", "MUTANT")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/inc/message.svh"])
+    # private: run_with_claims needs a full Session runtime; these three are its only seam
     _handle, prepared = MutationFlow._resolve_elab_target("sim", root, build_path, (variants, 1))
     _record_build_markers(build_path, prepared, root)
     marker = build_path / _RUNTIME_INPUTS_MARKER
@@ -295,6 +297,7 @@ def test_pinned_build_fallback_refuses_in_isolated_project(tmp_path, monkeypatch
     image.write_text("built\n", encoding="utf-8")
     specialist = MutationFlow.__new__(MutationFlow)
     with pytest.raises(UnsupportedSimTargetError, match="baseline build marker missing"):
+        # private: the pinned-build fallback is reached only through this method
         specialist._pinned_build("sim", root, build_path)
     assert image.read_text(encoding="utf-8") == "built\n"
 
@@ -311,5 +314,6 @@ def test_ignore_native_cores_guard_refuses_out_of_checkout_source(tmp_path, monk
     spec = MutationSpec(1, "literal", "rtl/ext.sv", 1, "$finish", "$stop")
     variants = MutationVariantPlan.resolve([spec], root, ["rtl/ext.sv"])
     with pytest.raises(MutationVariantError, match="absolute mutation export"):
+        # private: the ignore_native_cores guard is reached only through this method
         MutationFlow._resolve_elab_target("sim", root, build_path, (variants, 1))
     assert outside.read_text(encoding="utf-8") == _DUT

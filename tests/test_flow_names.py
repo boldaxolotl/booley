@@ -11,17 +11,12 @@ def test_long_names_map_to_short_public_names():
     assert canonical("lint") == "lint"
 
 
-def test_legacy_config_section_is_not_read():
-    flows = {"simulate": {"timeout_ms": 1000}}
-    assert config_section(flows, "sim") == {}
-
-
-def test_canonical_config_wins_when_both_spellings_exist():
-    flows = {
-        "sim": {"timeout_ms": 2000},
-        "simulate": {"timeout_ms": 1000},
+def test_config_section_reads_only_the_canonical_spelling():
+    legacy_only = {"simulate": {"timeout_ms": 1000}}
+    assert config_section(legacy_only, "sim") == {}
+    assert config_section({"sim": {"timeout_ms": 2000}, **legacy_only}, "sim") == {
+        "timeout_ms": 2000
     }
-    assert config_section(flows, "sim") == {"timeout_ms": 2000}
 
 
 def test_whole_config_normalization_covers_tables():

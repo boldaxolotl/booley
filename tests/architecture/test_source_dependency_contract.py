@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-import importlib
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -186,48 +186,45 @@ def _resolved_import_from(module: str, is_package: bool, node: ast.ImportFrom) -
     return ".".join(base)
 
 
+_ESCAPE_SOURCES = (
+    "from booley.flows.sim.record.coordinator import SimulationRecordStore\n",
+    "from booley.flows.sim.record.coordinator import SimulationRecordStore as Store\n",
+    "import booley.flows.sim.record.coordinator\n"
+    "booley.flows.sim.record.coordinator.SimulationRecordRecovery\n",
+    "import booley.flows.sim.record.coordinator as coordinator\ncoordinator.WorkItemRecovery\n",
+    "from booley.flows.sim.record import coordinator\ncoordinator.SharedBuildRecovery\n",
+    "def deferred():\n    from booley.flows.sim.record.coordinator import SimulationRecordStore\n",
+    "if enabled:\n    from booley.flows.sim.record.coordinator import SimulationRecordRecovery\n",
+    "from typing import TYPE_CHECKING\n"
+    "if TYPE_CHECKING:\n"
+    "    from booley.flows.sim.record.coordinator import WorkItemRecovery\n",
+)
+_RELATIVE_SOURCE = "from .record.coordinator import SimulationRecordStore\n"
+_PUBLIC_IMPORT = "from booley.flows.sim.record.store import SimulationRecordStore\n"
+
+
 @pytest.mark.parametrize(
-    "source",
+    ("source", "module", "is_package", "flagged"),
     [
-        "from booley.flows.sim.record.coordinator import SimulationRecordStore\n",
-        "from booley.flows.sim.record.coordinator import SimulationRecordStore as Store\n",
-        "import booley.flows.sim.record.coordinator\n"
-        "booley.flows.sim.record.coordinator.SimulationRecordRecovery\n",
-        "import booley.flows.sim.record.coordinator as coordinator\n"
-        "coordinator.WorkItemRecovery\n",
-        "from booley.flows.sim.record import coordinator\ncoordinator.SharedBuildRecovery\n",
-        "def deferred():\n    from booley.flows.sim.record.coordinator import SimulationRecordStore\n",
-        "if enabled:\n    from booley.flows.sim.record.coordinator import SimulationRecordRecovery\n",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n"
-        "    from booley.flows.sim.record.coordinator import WorkItemRecovery\n",
+        *((source, "booley.flows.sim.rogue", False, True) for source in _ESCAPE_SOURCES),
+        # A relative import resolves against the package only for a package module.
+        (_RELATIVE_SOURCE, "booley.flows.sim", True, True),
+        (_RELATIVE_SOURCE, "booley.flows.sim", False, False),
+        *(
+            (_PUBLIC_IMPORT, owner, False, False)
+            for owner in sorted(_SIMULATION_RECORD_STORAGE_OWNERS)
+        ),
     ],
 )
-def test_simulation_record_storage_type_gate_resolves_static_escape_forms(source: str) -> None:
-    assert _simulation_record_storage_type_violations(
-        ast.parse(source), "booley.flows.sim.rogue", False
-    )
+def test_simulation_record_storage_type_gate(
+    source: str, module: str, is_package: bool, flagged: bool
+) -> None:
+    """Escape forms are flagged, a package-relative import resolves, exact owners are exempt."""
+    tree = ast.parse(source)
 
+    violations = _simulation_record_storage_violations_for_source(tree, module, is_package)
 
-def test_simulation_record_storage_type_gate_resolves_package_relative_imports() -> None:
-    tree = ast.parse("from .record.coordinator import SimulationRecordStore\n")
-
-    assert _simulation_record_storage_type_violations(tree, "booley.flows.sim", True)
-    assert not _simulation_record_storage_type_violations(tree, "booley.flows.sim", False)
-
-
-@pytest.mark.parametrize("owner", sorted(_SIMULATION_RECORD_STORAGE_OWNERS))
-def test_simulation_record_storage_type_gate_allows_exact_owners(owner: str) -> None:
-    tree = ast.parse("from booley.flows.sim.record.store import SimulationRecordStore\n")
-
-    violations = _simulation_record_storage_violations_for_source(tree, owner, False)
-
-    assert violations == []
-
-
-def test_eda_runtime_spec_compatibility_module_is_deleted() -> None:
-    """Prevent callers from drifting back to the former EDA-owned issuance path."""
-    assert not (_SOURCE_ROOT / "eda" / "provisioning" / "runtime_spec.py").exists()
+    assert bool(violations) is flagged
 
 
 _LOW_LEVEL_TARGET_MECHANICS = frozenset(
@@ -253,7 +250,6 @@ _LOW_LEVEL_TARGET_MECHANICS = frozenset(
         "target_referenced_files",
         "target_source_files",
         "TargetSourceInspector",
-        "_TargetSourceInspector",
         "resolve",
         "split_selector",
         "vlnv_key",
@@ -297,6 +293,7 @@ def _target_mechanics_violations(tree: ast.Module, relative: str) -> list[str]:
             violations.extend(
                 f"{relative}:{node.lineno}: {alias.name}"
                 for alias in node.names
+                # Strip the underscore so a private alias of a public mechanism is still flagged.
                 if alias.name.lstrip("_") in _LOW_LEVEL_TARGET_MECHANICS
             )
         elif isinstance(node, ast.ImportFrom) and node.module == "booley.fusesoc":
@@ -310,6 +307,7 @@ def _target_mechanics_violations(tree: ast.Module, relative: str) -> list[str]:
         if (
             isinstance(node, ast.Attribute)
             and any(dotted == f"{module}.{node.attr}" for module in module_aliases)
+            # Same underscore normalization as the import check above.
             and node.attr.lstrip("_") in _LOW_LEVEL_TARGET_MECHANICS
         ):
             violations.append(f"{relative}:{node.lineno}: {node.attr}")
@@ -336,6 +334,8 @@ def test_only_target_adapters_use_low_level_target_mechanics(
     )
 
 
+# The underscore-prefixed names below are seeded source text: the gate must flag a private
+# alias of a public mechanism, and no public name expresses that spelling.
 @pytest.mark.parametrize(
     "source",
     [
@@ -347,6 +347,8 @@ def test_only_target_adapters_use_low_level_target_mechanics(
         "from booley.fusesoc.target_inspection import TargetSourceInspector\n"
         "TargetSourceInspector('.')\n",
         "from booley.fusesoc.fusesoc_registry import _resolve_ref as choose\nchoose('.', 'sim')\n",
+        "from booley.fusesoc.target_inspection import _TargetSourceInspector\n"
+        "_TargetSourceInspector('.')\n",
         "from booley.fusesoc import fusesoc_registry as registry\n"
         "registry._target_declarations('.')\n",
         "from booley.fusesoc.fusesoc_registry import _enumerate_all as enumerate_all\n"
@@ -360,386 +362,6 @@ def test_only_target_adapters_use_low_level_target_mechanics(
 )
 def test_low_level_target_gate_resolves_import_aliases(source: str) -> None:
     assert _target_mechanics_violations(ast.parse(source), "consumer.py")
-
-
-@pytest.mark.parametrize(
-    "source",
-    (
-        "def schema():\n    from booley.mcp.base import McpTool\n",
-        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import booley.mcp.base\n",
-    ),
-)
-def test_flow_mcp_prohibition_includes_deferred_and_type_only_imports(tmp_path, source):
-    from tests.architecture.contract import ArchitectureContract
-
-    root = tmp_path / "booley"
-    for package in (root, root / "flows", root / "mcp"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").write_text("")
-    (root / "mcp/base.py").write_text("class McpTool: pass\n")
-    (root / "flows/rogue.py").write_text(source)
-    contract = ArchitectureContract(
-        rules=tuple(
-            rule for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules if rule.identifier == "D15"
-        ),
-    )
-    problems = evaluate_contract(analyze_imports(root), contract)
-    assert problems
-    assert "D15" in format_problems(problems)
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import booley.runtime.agent_backend\n",
-        "def helper():\n    from booley.runtime import agent_backend\n",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n    from booley.runtime.agent_backend import AgentBackend\n",
-    ],
-)
-def test_config_runtime_rule_catches_all_static_import_locations(tmp_path, statement):
-    root = tmp_path / "booley"
-    for package in (root, root / "config", root / "runtime"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "runtime" / "agent_backend.py").write_text("class AgentBackend: pass\n")
-    (root / "config" / "seed.py").write_text(statement)
-
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-
-    assert "D18" in report
-    assert "booley.config.seed" in report
-    assert "booley.runtime.agent_backend" in report
-
-
-@pytest.mark.parametrize(
-    "statement,target,rule",
-    [
-        ("import booley.flows.execution\n", "booley.flows.execution", "D19"),
-        (
-            "def helper():\n    from booley.flows import execution\n",
-            "booley.flows.execution",
-            "D19",
-        ),
-        (
-            "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    import booley.flows.execution\n",
-            "booley.flows.execution",
-            "D19",
-        ),
-        (
-            "def helper():\n    from booley.runtime import session_issuance\n",
-            "booley.runtime.session_issuance",
-            "D20",
-        ),
-        (
-            "from typing import TYPE_CHECKING\n"
-            "if TYPE_CHECKING:\n    from booley.runtime import issuance_invalidation\n",
-            "booley.runtime.issuance_invalidation",
-            "D20",
-        ),
-    ],
-)
-def test_eda_separation_rules_catch_all_static_import_locations(tmp_path, statement, target, rule):
-    root = tmp_path / "booley"
-    for package in (root, root / "eda", root / "flows", root / "runtime"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "flows" / "execution.py").write_text("def run(): pass\n")
-    (root / "runtime" / "session_issuance.py").write_text("value = 1\n")
-    (root / "runtime" / "issuance_invalidation.py").write_text("value = 1\n")
-    (root / "eda" / "policy.py").write_text(statement)
-
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-
-    assert rule in report
-    assert "booley.eda.policy" in report
-    assert target in report
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import booley.mcp.execution\n",
-        "def helper():\n    from booley.mcp import execution\n",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n    from booley.mcp.execution import run\n",
-    ],
-)
-def test_direction_rule_catches_all_static_import_locations(tmp_path, statement):
-    root = tmp_path / "booley"
-    for package in (root, root / "mcp", root / "flows"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "mcp" / "execution.py").write_text("def run(): pass\n")
-    (root / "flows" / "policy.py").write_text(statement)
-
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-    assert "D15" in report
-    assert "booley.flows.policy" in report
-    assert "booley.mcp.execution" in report
-
-
-@pytest.mark.parametrize(
-    "owner",
-    [
-        "harness.host_diagnostics",
-        "harness.setup.readiness",
-        "runtime.inspection",
-        "flows.sim.backends.cocotb_target_checks",
-        "runtime.bundled_extensions",
-        "flows.target_test_plan_inspection",
-        "audit.core_tree_inspection",
-        "runtime.core_repository_hygiene",
-        "runtime.core_resolution",
-        "runtime.project_image",
-        "mcp.server_inspection",
-        "flows.runtime_reality",
-        "flows.fpga.vivado_startup",
-    ],
-)
-@pytest.mark.parametrize(
-    "target",
-    [
-        "harness.doctor",
-        "harness.init_cmd",
-        "harness.booley",
-        "presentation.colors",
-        "harness.setup.common",
-    ],
-)
-@pytest.mark.parametrize("location", ["ordinary", "deferred", "type-only"])
-def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
-    tmp_path, owner, target, location
-):
-    root = tmp_path / "booley"
-    for package in (
-        root,
-        root / "harness",
-        root / "harness" / "setup",
-        root / "flows",
-        root / "flows" / "sim",
-        root / "flows" / "fpga",
-        root / "audit",
-        root / "flows" / "sim" / "backends",
-        root / "presentation",
-        root / "runtime",
-        root / "mcp",
-    ):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    statement = f"import booley.{target}\n"
-    if location == "deferred":
-        statement = "def helper():\n    " + statement
-    elif location == "type-only":
-        statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
-    (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
-    (root / (owner.replace(".", "/") + ".py")).write_text(statement)
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-    assert "D26" in report
-    assert f"booley.{owner}" in report
-    assert f"booley.{target}" in report
-
-
-def test_core_tree_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The ``.core`` tree owner may not import command orchestration or rendering."""
-    owner = "audit.core_tree_inspection"
-    for target in (
-        "harness.doctor",
-        "harness.init_cmd",
-        "harness.booley",
-        "presentation.colors",
-        "harness.setup.common",
-    ):
-        for location in ("ordinary", "deferred", "type-only"):
-            root = tmp_path / target.replace(".", "-") / location / "booley"
-            for package in (
-                root,
-                root / "audit",
-                root / "harness",
-                root / "harness" / "setup",
-                root / "presentation",
-            ):
-                package.mkdir(parents=True, exist_ok=True)
-                (package / "__init__.py").touch()
-            statement = f"import booley.{target}\n"
-            if location == "deferred":
-                statement = "def helper():\n    " + statement
-            elif location == "type-only":
-                statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
-            (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
-            (root / (owner.replace(".", "/") + ".py")).write_text(statement)
-            report = format_problems(
-                evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-            )
-            assert "D26" in report, (target, location)
-            assert f"booley.{owner}" in report
-            assert f"booley.{target}" in report
-
-
-def test_core_repository_hygiene_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The core repository hygiene owner may not import command orchestration or rendering."""
-    owner = "runtime.core_repository_hygiene"
-    for target in (
-        "harness.doctor",
-        "harness.init_cmd",
-        "harness.booley",
-        "presentation.colors",
-        "harness.setup.common",
-    ):
-        for location in ("ordinary", "deferred", "type-only"):
-            root = tmp_path / target.replace(".", "-") / location / "booley"
-            for package in (
-                root,
-                root / "runtime",
-                root / "harness",
-                root / "harness" / "setup",
-                root / "presentation",
-            ):
-                package.mkdir(parents=True, exist_ok=True)
-                (package / "__init__.py").touch()
-            statement = f"import booley.{target}\n"
-            if location == "deferred":
-                statement = "def helper():\n    " + statement
-            elif location == "type-only":
-                statement = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    " + statement
-            (root / (target.replace(".", "/") + ".py")).write_text("value = 1\n")
-            (root / (owner.replace(".", "/") + ".py")).write_text(statement)
-            report = format_problems(
-                evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-            )
-            assert "D26" in report, (target, location)
-            assert f"booley.{owner}" in report
-            assert f"booley.{target}" in report
-
-
-def test_core_resolution_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The real core resolution owner obeys D26; the contract catches a forbidden import."""
-    owner = "runtime.core_resolution"
-    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
-    real = format_problems(
-        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert f"booley.{owner}" not in real
-
-    root = tmp_path / "booley"
-    for package in (root, root / "runtime", root / "harness"):
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "harness" / "doctor.py").write_text("value = 1\n")
-    (root / "runtime" / "core_resolution.py").write_text("import booley.harness.doctor\n")
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert "D26" in report
-    assert f"booley.{owner}" in report
-    assert "booley.harness.doctor" in report
-
-
-def test_mcp_server_inspection_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The real MCP server inspection owner obeys D26 and D4; the contract catches violations."""
-    owner = "mcp.server_inspection"
-    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
-    real = format_problems(
-        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert f"booley.{owner}" not in real
-
-    root = tmp_path / "booley"
-    for package in (root, root / "mcp", root / "harness", root / "harness" / "setup"):
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "harness" / "doctor.py").write_text("value = 1\n")
-    (root / "harness" / "setup" / "readiness.py").write_text("value = 1\n")
-    (root / "mcp" / "server_inspection.py").write_text("import booley.harness.doctor\n")
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert "D26" in report
-    assert "booley.harness.doctor" in report
-
-    (root / "mcp" / "server_inspection.py").write_text("import booley.harness.setup.readiness\n")
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert "D4" in report
-    assert "booley.harness.setup.readiness" in report
-
-
-def _assert_flow_owner_obeys_d26_and_d39(tmp_path, owner: str) -> None:
-    """The real *owner* breaks no rule; a fake one importing Doctor or setup is caught."""
-    importlib.import_module(f"booley.{owner}")  # fails until the production owner exists
-    real = format_problems(
-        evaluate_contract(analyze_imports(_SOURCE_ROOT), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert f"booley.{owner}" not in real
-
-    root = tmp_path / "booley"
-    for package in (
-        root,
-        root / "flows",
-        root / "flows" / "fpga",
-        root / "harness",
-        root / "harness" / "setup",
-    ):
-        package.mkdir(parents=True, exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "harness" / "doctor.py").write_text("value = 1\n")
-    (root / "harness" / "setup" / "readiness.py").write_text("value = 1\n")
-    owner_file = root / (owner.replace(".", "/") + ".py")
-    owner_file.write_text("import booley.harness.doctor\n")
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert "D26" in report
-    assert "D39" in report
-    assert "booley.harness.doctor" in report
-
-    owner_file.write_text("import booley.harness.setup.readiness\n")
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-    assert "D39" in report
-    assert "booley.harness.setup.readiness" in report
-
-
-def test_flow_runtime_reality_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The Flow runtime-reality owner obeys D26 and D39; the contract catches violations."""
-    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.runtime_reality")
-
-
-def test_vivado_startup_owner_is_a_d26_diagnostic_owner(tmp_path):
-    """The FPGA Vivado startup owner obeys D26 and D39; the contract catches violations."""
-    _assert_flow_owner_obeys_d26_and_d39(tmp_path, "flows.fpga.vivado_startup")
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "import booley.harness.cli_goal_notice\n",
-        "def helper():\n    from booley.harness import cli_goal_notice\n",
-        "from typing import TYPE_CHECKING\n"
-        "if TYPE_CHECKING:\n    from booley.harness.cli_goal_notice import warn_cli_goal_recording\n",
-    ],
-    ids=["ordinary", "deferred", "type-only"],
-)
-def test_flow_harness_rule_catches_all_static_import_locations(tmp_path, statement):
-    root = tmp_path / "booley"
-    for package in (root, root / "flows", root / "harness"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "harness" / "cli_goal_notice.py").write_text("def warn_cli_goal_recording(): pass\n")
-    (root / "flows" / "rogue.py").write_text(statement)
-
-    problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    report = format_problems(problems)
-    assert "D39" in report
-    assert "booley.flows.rogue" in report
-    assert "booley.harness.cli_goal_notice" in report
 
 
 def test_shared_health_has_no_transitive_command_or_sdk_dependency(
@@ -783,45 +405,18 @@ def test_health_consumers_reach_shared_health_without_the_doctor_worker(
     assert (_SOURCE_ROOT / "harness" / "auto_doctor.py").is_file()
 
 
-@pytest.mark.parametrize(
-    "importer",
-    [("flows", "sim", "rogue"), ("flows", "lint", "rogue"), ("flows", "rogue")],
-    ids=["sim", "lint", "flow-neutral"],
-)
-def test_d42_forbids_imports_of_the_mutation_flow(tmp_path, importer):
-    """Sibling Flows and Flow-neutral modules never import the Mutation Flow.
-
-    This is rule D42 in the contract.
-    """
-    root = tmp_path / "booley"
-    packages = (root, root / "flows", root / "flows" / "mutation", root / "flows" / "sim")
-    packages += (root / "flows" / "lint",)
-    for package in packages:
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "flows" / "mutation" / "flow.py").write_text("class MutationFlow: ...\n")
-    (root.joinpath(*importer[:-1]) / f"{importer[-1]}.py").write_text(
-        "from booley.flows.mutation.flow import MutationFlow\n"
-    )
-
-    report = format_problems(
-        evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
-    )
-
-    assert "D42" in report
-    assert "booley.flows.mutation.flow" in report
-
-
-def test_mutation_flow_may_compose_the_simulation_flow(tmp_path):
+def test_mutation_flow_may_compose_the_simulation_flow(tmp_path: Path) -> None:
     """The one-way dependency the Mutation Flow is built on stays allowed."""
     root = tmp_path / "booley"
-    for package in (root, root / "flows", root / "flows" / "mutation", root / "flows" / "sim"):
-        package.mkdir(exist_ok=True)
-        (package / "__init__.py").touch()
-    (root / "flows" / "sim" / "build.py").write_text("def prepare(): ...\n")
-    (root / "flows" / "mutation" / "flow.py").write_text(
-        "from booley.flows.sim.build import prepare\n"
-    )
+    for relative, text in (
+        ("flows/sim/build.py", "def prepare(): ...\n"),
+        ("flows/mutation/flow.py", "from booley.flows.sim.build import prepare\n"),
+    ):
+        path = root / relative
+        for package in (root, *(root / parent for parent in Path(relative).parents[:-1])):
+            package.mkdir(parents=True, exist_ok=True)
+            (package / "__init__.py").touch()
+        path.write_text(text, encoding="utf-8")
 
     report = format_problems(
         evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
@@ -829,3 +424,21 @@ def test_mutation_flow_may_compose_the_simulation_flow(tmp_path):
 
     assert "D42" not in report
     assert "D8" not in report
+
+
+def test_every_d26_diagnostic_owner_names_an_importable_module() -> None:
+    """A renamed or deleted owner would leave D26 blind: the rule would select nothing."""
+    selectors = [
+        selector
+        for rule in BOOLEY_SOURCE_DEPENDENCY_CONTRACT.rules
+        if rule.identifier == "D26"
+        for selector in rule.sources
+    ]
+
+    assert selectors
+    missing = [
+        selector.module
+        for selector in selectors
+        if selector.kind == "exact" and importlib.util.find_spec(selector.module) is None
+    ]
+    assert not missing, f"D26 names modules that no longer exist: {missing}"

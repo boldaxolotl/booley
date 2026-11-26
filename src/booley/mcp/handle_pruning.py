@@ -3,15 +3,15 @@
 A Job handle lives while its Job runs and for 24 h after it ends. A Session handle
 lives while a registry row names it (or one of its aliases), while a live Job
 names it as owner, while its worktree ``worktrees/s<N>`` exists in the Main Booley
-Directory, or, for a ``booley chat`` tab, while its process is not proven dead.
-Everything else goes; a map left empty restarts numbering at 1, and allocation
-then skips every number a worktree or branch still occupies.
+Directory, or, for a process-keyed Session, while its process is not proven dead.
+Everything else goes; a map left empty restarts numbering at 1.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -31,13 +31,23 @@ from booley.runtime.handles import (
 from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
 from booley.runtime.session_activity import process_identity_from_session_key
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
-from booley.runtime.worktree_usage import handle_worktree
 
 logger = logging.getLogger(__name__)
 
 # Both maps are written by short-lived reservations; a prune that cannot get the
 # lock this fast is skipped and retried at the next server start.
 LOCK_WAIT_SECONDS = 1.0
+
+_SESSION_LABEL = re.compile(r"S([0-9]+)")
+
+
+def _handle_worktree(common: Path, label: str) -> Path | None:
+    """Return the worktree directory a Session handle *label* is tied to, else ``None``.
+
+    ``S<N>`` maps to ``<common>/worktrees/s<N>``; any other label (a Job handle) has none.
+    """
+    match = _SESSION_LABEL.fullmatch(label)
+    return None if match is None else common / "worktrees" / f"s{match[1]}"
 
 
 def _read_job_records(
@@ -110,7 +120,7 @@ def _session_select(
     """Choose the Session entries nothing keeps alive; runs under the Session writer lock."""
 
     def worktree_exists(label: str) -> bool:
-        worktree = handle_worktree(booley_dir, label)
+        worktree = _handle_worktree(booley_dir, label)
         return worktree is not None and os.path.lexists(worktree)
 
     def select(handles: HandleMap) -> set[str]:

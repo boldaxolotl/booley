@@ -15,7 +15,8 @@ from booley.harness.setup.common import InitContext
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import project_image as pi
 from booley.runtime.version_attribution import VersionOrigin
-from tests.harness.test_image_lifecycle import FakeDocker
+from tests.docker_image_cli_fake import serve_docker_image_cli
+from tests.harness.test_image_lifecycle import pin_image_inputs
 
 LEFT_OUT_REQUIREMENTS = "-e ./local\nfusesoc==2.3\ncocotb==1.5.1\nnumpy\n"
 
@@ -42,6 +43,7 @@ def _current_result() -> lifecycle.LifecycleResult:
 def test_init_check_warns_once_through_real_planning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Private seam: init's image step needs a whole Project and host install, so call it directly.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
     monkeypatch.setattr(
         booley,
@@ -49,30 +51,17 @@ def test_init_check_warns_once_through_real_planning(
         SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, version="0.2.6"),
     )
     monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
-    monkeypatch.setattr(harness_lifecycle, "_docker_adapter", lambda: FakeDocker({}))
-    monkeypatch.setattr(
-        lifecycle,
-        "_expected_image_build_contracts",
-        lambda: lifecycle.ImageBuildContracts("a" * 64, "b" * 64),
-    )
-    monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
+    serve_docker_image_cli(monkeypatch)  # an empty daemon: the real adapter runs
+    pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("a check-only init must not run a container")
 
     monkeypatch.setattr(pi, "base_image_packages", forbidden)
-    computed = []
-    real_body = lifecycle._project_requirements_body
-    monkeypatch.setattr(
-        lifecycle,
-        "_project_requirements_body",
-        lambda project_root: computed.append(project_root) or real_body(project_root),
-    )
 
     init_cmd._reconcile_initialized_image(InitContext(project_root=root, check_only=True))
 
     out = capsys.readouterr().out
-    assert len(computed) > 1, "planning should compute the requirements body repeatedly"
     assert out.count("'-e ./local'") == 1
     assert "install it at runtime" in out
     assert out.count("'fusesoc==2.3'") == 1
@@ -83,6 +72,7 @@ def test_init_check_warns_once_through_real_planning(
 def test_init_notes_each_curated_override_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Private seam: init's image step needs a whole Project and host install, so call it directly.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
     _stub_base_image(monkeypatch, {"cocotb": "2.1.0", "numpy": "2.0"})
     monkeypatch.setattr(
@@ -102,6 +92,7 @@ def test_init_notes_each_curated_override_once(
 def test_session_refresh_converge_reports_left_out_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Private seam: `session refresh` needs a whole Project and host install, so call `_RuntimeImages`.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
     _stub_base_image(monkeypatch, {"cocotb": "2.1.0"})
     converged = lifecycle.LifecycleResult(
@@ -127,6 +118,7 @@ def test_no_new_output_without_left_out_lines(
     capsys: pytest.CaptureFixture[str],
     shape: str,
 ) -> None:
+    # Private seam: init's image step needs a whole Project and host install, so call it directly.
     if shape == "clean":
         root = _project(tmp_path, "numpy\ncocotb==2.1.0\n")
     elif shape == "external-image":

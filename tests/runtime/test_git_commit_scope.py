@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.git_support import git, repository
+from tests.git_support import git, no_live_git_processes, repository
 
 from booley.runtime.agent_errors import BlockingError
 from booley.runtime.git import commit_scope
@@ -30,7 +30,10 @@ def _worktree(tmp_path: Path, stealth: str) -> Path:
     return wt
 
 
-def test_commit_scope_removes_a_stale_index_lock_and_commits(tmp_path: Path) -> None:
+def test_commit_scope_removes_a_stale_index_lock_and_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_live_git_processes(monkeypatch)
     wt = _worktree(tmp_path, _EXPLICIT)
     lock = Path(git(wt, "rev-parse", "--absolute-git-dir")) / "index.lock"
     lock.write_bytes(b"")

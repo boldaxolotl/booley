@@ -367,13 +367,34 @@ session history is kept across rebuilds.
 
 Booley's tools and skills work in every listed CLI, so a plain `claude` or
 `codex` in a Sandbox terminal has them. The Developer Agent's window uses the
-`default` CLI; Specialists use whichever listed CLI their model needs.
+`default` CLI; Specialists use whichever listed CLI their model needs. T3 Code
+in the Sandbox offers threads only for the listed CLIs.
 
 After changing `clis`, `auth`, or `default`,
 [apply the change](#after-changing-sandbox-settings). Until you do, a changed
 CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
 to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
 edits before you apply them.
+
+## T3 Code tools turned off in the Sandbox
+
+T3 Code gives every agent thread a set of tools of its own: starting threads,
+delegating, rendering HTML, the preview browser, and more. In the Sandbox,
+Claude and Codex threads that T3 Code starts cannot use the following tools.
+If Claude reports `No such tool available` for one of them, or Codex reports
+`The Booley Sandbox turns off the T3 Code tool`, this is why:
+
+- **Scheduled tasks:** `schedule_task`, `delete_scheduled_task`,
+  `list_scheduled_tasks`, `run_scheduled_task_now`.
+- **Linking machines:** `t3_environment_link`, `t3_environment_links`,
+  `t3_environment_unlink`.
+- **Moving a thread:** `t3_thread_transfer`.
+- **Managing T3 Code projects:** `t3_project_create`, `t3_project_delete`,
+  `t3_project_clone`.
+- **Devices:** `device_open`, `device_close`, `device_list`,
+  `device_screenshot`.
+- **Secrets:** `request_secret`. Booley
+  [forwards your agent logins](#agent-cli-logins-in-the-sandbox) itself.
 
 ## Editor credential forwarding
 

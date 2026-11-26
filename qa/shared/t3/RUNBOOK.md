@@ -167,11 +167,12 @@ it refreshes (every 3 s).
 
 **Threads.** A Developer Agent is a new T3 Code thread on the Project: choose
 the provider (Claude or Codex) and the checkout in the T3 Code UI, then send
-the prompt. Until T3 Code owns worktree creation (#4564), make a worktree
-first with `booley session enter -- booley worktree new <name>` and start the
-thread on it, as
-[DEVELOPER-CHILD.md](../DEVELOPER-CHILD.md) says. Approve or reject the
-agent's permission requests in the thread.
+the prompt. For a child, start the thread in a new worktree, as
+[DEVELOPER-CHILD.md](../DEVELOPER-CHILD.md) says: T3 Code creates it under
+`t3-worktrees/` in the Booley Directory, names its branch, and runs
+`booley worktree prepare` before the first turn; if that fails, the thread
+does not start. Approve or reject the agent's permission requests in the
+thread.
 
 ## 6. Interaction rules
 
@@ -269,7 +270,7 @@ No run has used this runbook yet. The first run confirms, and records in its
 - `preview_open` reaches the host relay at `127.0.0.1:<port>` and pairing
   completes in the preview tab.
 - What the address bar holds after pairing (step 4.3).
-- T3 Code can start a thread on a worktree that `booley worktree new` made.
+- T3 Code creates and prepares a thread's new worktree in the Sandbox.
 - The preview panel loads the Dashboard at Sandbox `127.0.0.1:8090`, and
   whether its DOM is readable from your tab.
 - How long the local base and Project image builds take.

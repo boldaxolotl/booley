@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from tests.harness.agent_auth_support import pin_venue
 
 from booley import config
 from booley.config import agent as agent_config
@@ -20,9 +21,11 @@ def gateway_container(monkeypatch):
         "BOOLEY_GATEWAY_TOKEN",
         "BOOLEY_GATEWAY_TOKEN_COMMAND",
         "BOOLEY_DIR",
+        "BOOLEY_AGENT_CLIS",
+        "BOOLEY_PRIMARY_PROVIDER",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    pin_venue(monkeypatch, inside=True)
     agent_config.set_agent_settings(None)
     yield monkeypatch
     agent_config.set_agent_settings(None)
@@ -50,78 +53,62 @@ def test_gateway_policy_accepts_token_command_alone():
     assert "gateway-login" not in repr(settings)
 
 
-def test_gateway_policy_rejects_both_token_and_token_command():
-    with pytest.raises(ValueError, match="exactly one of BOOLEY_GATEWAY_TOKEN and"):
-        config.gateway.gateway_settings_from_env(
-            {
-                "BOOLEY_GATEWAY_URL": _URL,
-                "BOOLEY_GATEWAY_TOKEN": _TOKEN,
-                "BOOLEY_GATEWAY_TOKEN_COMMAND": "gateway-login",
-            }
-        )
-
-
-def test_gateway_policy_rejects_neither_token_nor_token_command():
-    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_TOKEN or BOOLEY_GATEWAY_TOKEN_COMMAND"):
-        config.gateway.gateway_settings_from_env({"BOOLEY_GATEWAY_URL": _URL})
-
-
-def test_gateway_policy_rejects_unparsable_token_command_without_echoing_it():
-    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_TOKEN_COMMAND") as caught:
-        config.gateway.gateway_settings_from_env(
-            {"BOOLEY_GATEWAY_URL": _URL, "BOOLEY_GATEWAY_TOKEN_COMMAND": "'SYNTHETIC_UNTERMINATED"}
-        )
-    assert "SYNTHETIC" not in str(caught.value)
-
-
-def test_gateway_policy_rejects_missing_url():
-    with pytest.raises(ValueError, match="needs BOOLEY_GATEWAY_URL"):
-        config.gateway.gateway_settings_from_env({"BOOLEY_GATEWAY_TOKEN": _TOKEN})
-
-
-def test_gateway_policy_rejects_http_url():
-    with pytest.raises(ValueError, match="BOOLEY_GATEWAY_URL must be an https://"):
-        config.gateway.gateway_settings_from_env(
-            {"BOOLEY_GATEWAY_URL": "http://gateway.example/v1", "BOOLEY_GATEWAY_TOKEN": _TOKEN}
-        )
-
-
-def test_gateway_policy_rejects_missing_token():
-    with pytest.raises(ValueError, match="needs BOOLEY_GATEWAY_TOKEN"):
-        config.gateway.gateway_settings_from_env(
-            {"BOOLEY_GATEWAY_URL": _URL, "BOOLEY_GATEWAY_TOKEN": "  "}
-        )
+_COMMAND = "BOOLEY_GATEWAY_TOKEN_COMMAND"
+_WITH_URL = {"BOOLEY_GATEWAY_URL": _URL}
 
 
 @pytest.mark.parametrize(
-    "url",
+    ("environ", "match"),
     [
-        "https://user:SYNTHETIC_PASSWORD@gateway.example/v1",
-        "https:///v1",
-        "https://gateway.example/v1 extra",
-        "https://gateway.example/v1?api_key=SYNTHETIC_QUERY",
+        (
+            {**_WITH_URL, "BOOLEY_GATEWAY_TOKEN": _TOKEN, _COMMAND: "gateway-login"},
+            "exactly one of BOOLEY_GATEWAY_TOKEN and",
+        ),
+        (_WITH_URL, "BOOLEY_GATEWAY_TOKEN or BOOLEY_GATEWAY_TOKEN_COMMAND"),
+        ({**_WITH_URL, _COMMAND: "'SYNTHETIC_UNTERMINATED"}, _COMMAND),
+        ({"BOOLEY_GATEWAY_TOKEN": _TOKEN}, "needs BOOLEY_GATEWAY_URL"),
+        (
+            {"BOOLEY_GATEWAY_URL": "http://gateway.example/v1", "BOOLEY_GATEWAY_TOKEN": _TOKEN},
+            "BOOLEY_GATEWAY_URL must be an https://",
+        ),
+        ({**_WITH_URL, "BOOLEY_GATEWAY_TOKEN": "  "}, "needs BOOLEY_GATEWAY_TOKEN"),
+        *(
+            ({"BOOLEY_GATEWAY_URL": url, "BOOLEY_GATEWAY_TOKEN": _TOKEN}, None)
+            for url in (
+                "https://user:SYNTHETIC_PASSWORD@gateway.example/v1",
+                "https:///v1",
+                "https://gateway.example/v1 extra",
+                "https://gateway.example/v1?api_key=SYNTHETIC_QUERY",
+            )
+        ),
     ],
 )
-def test_gateway_policy_rejects_unsafe_url_without_echoing_it(url):
-    with pytest.raises(ValueError) as caught:
-        config.gateway.gateway_settings_from_env(
-            {"BOOLEY_GATEWAY_URL": url, "BOOLEY_GATEWAY_TOKEN": _TOKEN}
-        )
+def test_gateway_policy_rejects_invalid_config_without_echoing_secrets(environ, match):
+    with pytest.raises(ValueError, match=match) as caught:
+        config.gateway.gateway_settings_from_env(environ)
     assert "SYNTHETIC" not in str(caught.value)
 
 
-def test_gateway_handoff_reaches_loaded_agent_settings(gateway_container, tmp_path):
-    """The MCP server's toml-only loader must see the env-only policy."""
+@pytest.mark.parametrize(
+    "toml",
+    [
+        b'[agent]\nprovider = "codex"\nauth = "subscription"\n',
+        b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n',
+    ],
+)
+def test_gateway_handoff_reaches_loaded_agent_settings(gateway_container, tmp_path, toml):
+    """The MCP server's toml-only loader must see the env-only policy, with no CLI record."""
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
-    (project / ".booley" / "booley.toml").write_text(
-        '[agent]\nprovider = "codex"\nauth = "subscription"\n', encoding="utf-8"
-    )
+    (project / ".booley" / "booley.toml").write_bytes(toml)
     gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
 
     settings = agent_config.load_agent_settings(project)
 
     assert settings.auth_for("codex") == "gateway"
+    assert agent_config.gateway_handoff_active()
+    assert agent_config.sandbox_cli_policy("claude") == "gateway"
+    assert not agent_config.issued_codex_gateway()
 
 
 def test_gateway_handoff_with_surrounding_whitespace_is_one_policy_everywhere(gateway_container):
@@ -130,30 +117,6 @@ def test_gateway_handoff_with_surrounding_whitespace_is_one_policy_everywhere(ga
 
     assert agent_config.env_auth_handoff() == "gateway"
     assert agent_config.get_agent_settings().auth_for("codex") == "gateway"
-
-
-def test_handwritten_gateway_spec_without_record_routes_codex(gateway_container, tmp_path):
-    """No ``BOOLEY_AGENT_CLIS``: the Sandbox-wide hand-off still turns Codex's gateway on."""
-    gateway_container.delenv("BOOLEY_AGENT_CLIS", raising=False)
-    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
-    project = tmp_path / "project"
-    (project / ".booley").mkdir(parents=True)
-    (project / ".booley" / "booley.toml").write_bytes(
-        b'[agent]\nclis = ["claude", "codex"]\ndefault = "claude"\n'
-    )
-
-    settings = agent_config.load_agent_settings(project)
-
-    assert settings.auth_for("codex") == "gateway"
-    assert agent_config.gateway_handoff_active()
-
-
-def test_handwritten_spec_has_no_record_so_claude_keeps_its_environment(gateway_container):
-    gateway_container.delenv("BOOLEY_AGENT_CLIS", raising=False)
-    gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
-
-    assert agent_config.sandbox_cli_policy("claude") == "gateway"
-    assert not agent_config.issued_codex_gateway()
 
 
 def test_cli_record_accepts_codex_gateway_and_refuses_claude_gateway():
@@ -180,14 +143,6 @@ def test_issued_record_rules_per_cli_and_hides_nothing_without_codex_gateway(gat
     assert not agent_config.issued_codex_gateway()
 
 
-def test_issued_codex_gateway_is_false_outside_a_sandbox(gateway_container):
-    gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
-    gateway_container.setattr(agent_config, "_inside_container", lambda: False)
-
-    assert not agent_config.issued_codex_gateway()
-    assert not agent_config.gateway_handoff_active()
-
-
 def test_record_policies_apply_per_cli_over_the_handoff(gateway_container):
     """With a record, ``_auth_policies`` applies it per CLI; the hand-off does not widen it."""
     gateway_container.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
@@ -202,7 +157,7 @@ def test_record_policies_apply_per_cli_over_the_handoff(gateway_container):
 
 
 def test_gateway_policy_is_not_honored_outside_a_sandbox(gateway_container, tmp_path):
-    gateway_container.setattr(agent_config, "_inside_container", lambda: False)
+    pin_venue(gateway_container, inside=False)
     gateway_container.setenv("BOOLEY_AGENT_CLIS", "claude=subscription,codex=gateway")
     project = tmp_path / "project"
     (project / ".booley").mkdir(parents=True)
@@ -211,3 +166,5 @@ def test_gateway_policy_is_not_honored_outside_a_sandbox(gateway_container, tmp_
     )
 
     assert agent_config.load_agent_settings(project).auth_for("codex") == "subscription"
+    assert not agent_config.issued_codex_gateway()
+    assert not agent_config.gateway_handoff_active()

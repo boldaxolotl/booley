@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, warn
@@ -209,20 +210,16 @@ def _installed_image_version() -> str | None:
 
 
 def _image_is_stale(
-    fingerprint: str | None,
+    fingerprint: str,
     expected_version: str | None = None,
 ) -> bool:
     """Whether the present sandbox image no longer matches the local source.
 
-    - ``fingerprint is None`` (no source tree to compare): no source-staleness
-      verdict. Init checks release compatibility separately before calling here.
     - no fingerprint label: an image built before this guard existed (the exact
       stale-image bug this fixes) -> stale.
     - ``pulled:*`` label: current only when it names *expected_version*.
     - otherwise: stale iff the stamped hash differs from the current source.
     """
-    if fingerprint is None:
-        return False
     label = _image_label(DOCKER_IMAGE, LABEL_FINGERPRINT)
     if label is None:
         return True
@@ -848,6 +845,20 @@ def _wheel_build_stamp(booley_root: Path, *, preserve_stamp: bool):
     if not isinstance(commit, str) or not commit:
         raise OSError("verified development build commit is missing")
     return contextlib.nullcontext(commit)
+
+
+def wheel_build_environment_error() -> str | None:
+    """Name the fix when this Python cannot create the wheel build's environment."""
+    # pypa build makes its isolated environment with virtualenv when importable,
+    # otherwise with venv, which needs ensurepip (pythonX.Y-venv on Debian/Ubuntu).
+    if find_spec("virtualenv") is not None or find_spec("ensurepip") is not None:
+        return None
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return (
+        f"Python {version} ({sys.executable}) cannot build the Booley wheel: neither "
+        f"ensurepip nor virtualenv is importable; run `sudo apt install "
+        f"python{version}-venv`, or reinstall Booley on a uv-managed Python, then retry"
+    )
 
 
 def _docker_build_wheel(

@@ -8,6 +8,7 @@ from tests.config_docs_support import CONFIG_PAGES
 
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
 from booley.config import agent as bc
+from booley.config.agent import AgentSettings
 
 USER_DOCS = Path(__file__).resolve().parents[2] / "docs/user"
 CONFIG_REFERENCE = USER_DOCS / "CONFIG.md"
@@ -20,7 +21,8 @@ def _config_pages_text() -> str:
 # Project [interactive] recognizes migration inputs only: policy and app are
 # rejected, and no field supplies a current setting. Recognition stays intact;
 # tests/harness/test_doctor.py proves each field's user-visible replacement.
-MIGRATION_ONLY_TABLES = {"interactive"}
+# [worktree] is recognized so a leftover key gets one warning; it has no setting.
+MIGRATION_ONLY_TABLES = {"interactive", "worktree"}
 
 
 @pytest.mark.parametrize("table", sorted(KNOWN_BOOLEY_TOML_TABLES - MIGRATION_ONLY_TABLES))
@@ -44,22 +46,12 @@ def test_config_reference_lists_specialist_model_keys_exactly() -> None:
 
 def test_default_model_table_matches_builtin_defaults() -> None:
     """The default-model table shows each Agent CLI's built-in Specialist model."""
-    rows = {
-        "Specialists": "_DEFAULT_SPECIALIST_MODEL",
-    }
-    documented: dict[str, dict[str, str]] = {}
+    documented: dict[str, str] = {}
     for line in CONFIG_REFERENCE.read_text(encoding="utf-8").splitlines():
         cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
-        if len(cells) == 3 and cells[0] in rows:
-            documented[rows[cells[0]]] = {"claude": cells[1], "codex": cells[2]}
-    assert set(documented) == set(rows.values()), "CONFIG.md default-model table not found"
-    for attribute, models in documented.items():
-        assert models == getattr(bc, attribute), attribute
-
-
-def test_worktrees_section_documents_every_worktree_key() -> None:
-    text = CONFIG_REFERENCE.read_text(encoding="utf-8")
-    section = text.split("\n## Worktrees\n", 1)[1].split("\n## ", 1)[0]
-
-    assert "[worktree]\nchat = " in section
-    assert "gc_older_than = " in section
+        if len(cells) == 3 and cells[0] == "Specialists":
+            documented = {"claude": cells[1], "codex": cells[2]}
+    assert documented, "CONFIG.md default-model table not found"
+    for cli, model in documented.items():
+        settings = AgentSettings(default_cli=cli)
+        assert {settings.model_for_specialist(name) for name in bc.SPECIALISTS} == {model}, cli

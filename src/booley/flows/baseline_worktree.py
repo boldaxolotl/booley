@@ -118,7 +118,7 @@ def baseline_worktree(
 
 
 def _run_post_setup(wt_dir: Path, ref: str) -> None:
-    """Run the Project's post-setup hook in the baseline checkout, as ``booley worktree new`` does."""
+    """Run the Project's post-setup hook in the baseline checkout, as ``booley worktree prepare`` does."""
     hook = find_post_setup_hook(wt_dir)
     if hook is None:
         return

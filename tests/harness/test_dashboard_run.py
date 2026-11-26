@@ -25,11 +25,11 @@ from textual.worker import WorkerFailed
 from booley.core.booley_layout import BooleyLayoutError
 from booley.harness.dashboard import app as dashboard_app
 from booley.harness.dashboard.app import DashboardApp, Navigation
+from booley.harness.dashboard.git_worktrees import WorktreeGitError
 from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.dashboard.topbar import TopBar
 from booley.harness.standalone_job import standalone_jobs_dir, standalone_request_path
-from booley.harness.worktree_list import WorktreeListError
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime import detached_job, job_records
 from booley.runtime.job_slots import MemoryClaim, SlotStore, slots_dir
@@ -1412,7 +1412,7 @@ async def test_review_shows_no_warnings_for_a_quiet_worktree(checkout, tmp_path)
     ("launcher_args", "snapshot_read", "expected"),
     [
         (
-            {"uncommitted": WorktreeListError("git status failed")},
+            {"uncommitted": WorktreeGitError("git status failed")},
             True,
             "Cannot check uncommitted changes: git status failed",
         ),

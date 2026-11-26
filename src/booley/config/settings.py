@@ -1,7 +1,6 @@
 """Harness configuration — MCP capability sets and re-exports.
 
 Submodules own their concerns; this facade re-exports for backward compat:
-  - _limits: iteration caps
   - agent: AgentSettings, SandboxConfig, and validated config loading
 """
 
@@ -35,21 +34,6 @@ from .editor import (  # noqa: F401 — re-exported as public API of configurati
     VSCODE_EDITOR,
     ResolvedEditor,
     resolve_editor,
-)
-
-# --- Re-exports: harness limits (owned by _limits.py) ---
-from .limits import (  # noqa: F401 — re-exported as public API of configuration settings
-    HARD_MAX_COMPILE_RETRIES,
-    HARD_MAX_DEBUG_ROUNDS,
-    HARD_MAX_MUTATION_ITERATIONS,
-    MAX_COMPILE_RETRIES,
-    MAX_DEBUG_ROUNDS,
-    MAX_FIX_LINES,
-    MAX_JUDGE_RETRIES,
-    MAX_LINT_ITERATIONS,
-    MAX_MUTATION_ITERATIONS,
-    MAX_POST_REVIEW_SIM_ITERATIONS,
-    MUTATION_TESTING_PASS_THRESHOLD,
 )
 
 # --- booley.toml loader ---

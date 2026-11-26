@@ -24,6 +24,13 @@ client. It preserves Findings, a running log, owned-resource cleanup state, and
 local evidence under its run directory.
 _Avoid_: Scenario Run, Qualification, certification
 
+**QA Host**:
+A privileged Docker-in-Docker container with its own Docker daemon, `HOME`,
+and config home, where a candidate Booley build runs host commands without
+replacing the canonical host install. Persistent volumes keep its images and
+install for reuse ([RUNBOOK.md](shared/qa-host/RUNBOOK.md)).
+_Avoid_: QA VM, candidate host, test daemon
+
 **Operator**:
 The agent that executes a QA Run from the host. It drives Booley, records
 Findings, and owns the run's cleanup; it starts Developer Agent children but

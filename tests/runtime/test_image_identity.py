@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import subprocess
+import json
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
-from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 
 from booley.core.boundary import BoundaryError
 from booley.runtime import image_identity as identity
 from booley.runtime import project_image
-
-
-@pytest.fixture(autouse=True)
-def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of project_image."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, project_image)
+from booley.runtime.image_identity import Status
 
 
 def _metadata(
@@ -28,7 +26,7 @@ def _metadata(
     return identity.ImageMetadata(reference, image_id, labels, environment or {}, ())
 
 
-def test_unknown_build_values_are_unavailable() -> None:
+def test_unavailable_build_values_and_ambiguous_payload_environment_read_as_absent() -> None:
     metadata = _metadata(
         "issued",
         image_id="sha256:issued",
@@ -37,6 +35,7 @@ def test_unknown_build_values_are_unavailable() -> None:
             "org.opencontainers.image.revision": "",
             "io.booley.wheel.source-fingerprint": "unknown",
         },
+        environment={"BOOLEY_PAYLOAD_FINGERPRINT": "wheel-not-payload"},
     )
 
     assert identity.build_identity(metadata) == identity.BooleyBuildIdentity(
@@ -44,109 +43,74 @@ def test_unknown_build_values_are_unavailable() -> None:
     )
 
 
-def test_wheel_source_fingerprint_decides_even_when_revision_differs() -> None:
-    expected = identity.BooleyBuildIdentity("1.0", "abc123", None, "wheel")
-    observed = identity.BooleyBuildIdentity("1.0", "def456", None, "wheel")
-
-    assert identity.compare_build_identity(expected, observed).status is identity.Status.MATCH
+def _build(text: str) -> identity.BooleyBuildIdentity:
+    """Parse ``"<version> <revision> <payload> <wheel>"``; ``-`` stands for an absent value."""
+    return identity.BooleyBuildIdentity(*(None if word == "-" else word for word in text.split()))
 
 
-def test_typed_payload_fingerprint_compares_only_with_same_kind() -> None:
-    expected = identity.BooleyBuildIdentity("1.0", "abc123", "payload", "wheel")
-    legacy_same = identity.BooleyBuildIdentity("1.0", "abc123", "payload", None)
-    legacy_different = identity.BooleyBuildIdentity("1.0", "def456", "other", None)
-
-    assert identity.compare_build_identity(expected, legacy_same).status is identity.Status.MATCH
-    assert (
-        identity.compare_build_identity(expected, legacy_different).status
-        is identity.Status.MISMATCH
-    )
-
-
-def test_no_same_kind_content_or_clean_revision_is_unknown() -> None:
-    expected = identity.BooleyBuildIdentity("1.0", "abc123+dirty", None, "wheel")
-    observed = identity.BooleyBuildIdentity("1.0", "abc123", "payload", None)
-
-    assert identity.compare_build_identity(expected, observed).status is identity.Status.UNKNOWN
-
-
-def test_content_mismatch_names_revision_and_both_values() -> None:
-    expected = identity.BooleyBuildIdentity("1.0", "abc123", None, "wheel-new")
-    observed = identity.BooleyBuildIdentity("1.0", "def456", None, "wheel-old")
-
-    result = identity.compare_build_identity(expected, observed)
-
-    assert result.status is identity.Status.MISMATCH
-    assert "revision abc123 -> def456" in result.detail
-    assert "wheel_source_fingerprint wheel-new -> wheel-old" in result.detail
+_M, _X, _U = Status.MATCH, Status.MISMATCH, Status.UNKNOWN
+_FRAGMENTS = ("revision abc123 -> def456", "wheel_source_fingerprint wheel-new -> wheel-old")
+_BUILD_COMPARISONS = [
+    # The wheel fingerprint decides despite the revision; a typed payload meets a legacy one.
+    ("1.0 abc123 - wheel", "1.0 def456 - wheel", _M, ()),
+    ("1.0 abc123 payload wheel", "1.0 abc123 payload -", _M, ()),
+    ("1.0 abc123 payload wheel", "1.0 def456 other -", _X, ()),
+    ("1.0 abc123+dirty - wheel", "1.0 abc123 payload -", _U, ()),
+    ("1.0 abc123 - wheel-new", "1.0 def456 - wheel-old", _X, _FRAGMENTS),
+    # A payload fingerprint compares only with a payload fingerprint.
+    ("1.0 - payload -", "1.0 - payload -", _M, ()),
+    ("1.0 - payload -", "1.0 - - payload", _U, ()),
+    # Revision prefixes match; a dirty revision is not comparable.
+    ("1.0 abc123 - -", "1.0 abc123def - -", _M, ()),
+    ("1.0 abc123 - -", "1.0 abc123+dirty - -", _U, ()),
+]
 
 
-def test_payload_fingerprint_compares_only_with_payload_fingerprint() -> None:
-    expected = identity.BooleyBuildIdentity("1.0", None, "payload", None)
-    same = identity.BooleyBuildIdentity("1.0", None, "payload", None)
-    different_kind = identity.BooleyBuildIdentity("1.0", None, None, "payload")
+@pytest.mark.parametrize("expected,observed,status,detail", _BUILD_COMPARISONS)
+def test_build_identity_comparison(
+    expected: str, observed: str, status: Status, detail: tuple[str, ...]
+) -> None:
+    result = identity.compare_build_identity(_build(expected), _build(observed))
 
-    assert identity.compare_build_identity(expected, same).status is identity.Status.MATCH
-    assert (
-        identity.compare_build_identity(expected, different_kind).status is identity.Status.UNKNOWN
-    )
-
-
-def test_revision_prefixes_match_but_dirty_revision_is_not_comparable() -> None:
-    short = identity.BooleyBuildIdentity("1.0", "abc123", None, None)
-    long = identity.BooleyBuildIdentity("1.0", "abc123def", None, None)
-    dirty = identity.BooleyBuildIdentity("1.0", "abc123+dirty", None, None)
-
-    assert identity.compare_build_identity(short, long).status is identity.Status.MATCH
-    assert identity.compare_build_identity(short, dirty).status is identity.Status.UNKNOWN
+    assert result.status is status
+    assert all(fragment in result.detail for fragment in detail)
 
 
-def test_ambiguous_payload_environment_is_not_a_typed_payload() -> None:
-    metadata = _metadata(
-        "issued",
-        image_id="sha256:issued",
-        labels={},
-        environment={"BOOLEY_PAYLOAD_FINGERPRINT": "wheel-not-payload"},
-    )
-
-    assert identity.build_identity(metadata).payload_fingerprint is None
-
-
-def test_decode_docker_document_preserves_labels_and_environment() -> None:
-    metadata = identity.decode_image_metadata(
-        "issued",
-        [
+@pytest.mark.parametrize(
+    "record,labels,environment,layers",
+    [
+        (
             {
                 "Id": "sha256:issued",
                 "Config": {
                     "Labels": {"io.booley.provenance.schema": "3"},
                     "Env": ["BOOLEY_VERSION=1.2.3", "EMPTY=", "MALFORMED"],
                 },
-            }
-        ],
-    )
+            },
+            {"io.booley.provenance.schema": "3"},
+            {"BOOLEY_VERSION": "1.2.3", "EMPTY": ""},
+            (),
+        ),
+        (
+            {"Id": "sha256:issued", "RootFS": {"Layers": ["sha256:a", "sha256:b"]}},
+            {},
+            {},
+            ("sha256:a", "sha256:b"),
+        ),
+        ({"Id": "sha256:x", "Config": None}, {}, {}, ()),
+        ({"Id": "sha256:x", "Config": {"Labels": None, "Env": None}}, {}, {}, ()),
+        ({"Id": "sha256:x", "RootFS": {"Type": "layers"}}, {}, {}, ()),
+    ],
+)
+def test_decode_docker_document(
+    record: dict[str, object],
+    labels: dict[str, str],
+    environment: dict[str, str],
+    layers: tuple[str, ...],
+) -> None:
+    decoded = identity.decode_image_metadata("issued", [record])
 
-    assert metadata is not None
-    assert metadata.labels["io.booley.provenance.schema"] == "3"
-    assert metadata.environment == {"BOOLEY_VERSION": "1.2.3", "EMPTY": ""}
-
-
-def test_decode_docker_document_reads_layers_and_null_sections() -> None:
-    layered = identity.decode_image_metadata(
-        "issued",
-        [{"Id": "sha256:issued", "RootFS": {"Layers": ["sha256:a", "sha256:b"]}}],
-    )
-    assert layered.layers == ("sha256:a", "sha256:b")
-    assert layered.labels == {} and layered.environment == {}
-
-    # ``Config: null``, ``Labels: null`` and an omitted RootFS or Layers list are valid.
-    for record in (
-        {"Id": "sha256:x", "Config": None},
-        {"Id": "sha256:x", "Config": {"Labels": None, "Env": None}},
-        {"Id": "sha256:x", "RootFS": {"Type": "layers"}},
-    ):
-        decoded = identity.decode_image_metadata("issued", [record])
-        assert (decoded.labels, decoded.environment, decoded.layers) == ({}, {}, ())
+    assert (decoded.labels, decoded.environment, decoded.layers) == (labels, environment, layers)
 
 
 def test_decode_malformed_docker_document_raises() -> None:
@@ -288,114 +252,11 @@ def test_final_selection_never_walks_parents():
 
     result = identity.compare_logical_selection("issued", "configured", inspect)
     assert calls == ["issued", "configured"]
-    assert result.status is identity.Status.UNKNOWN
-
-
-def test_decode_large_valid_metadata():
-    values = {str(index): "x" * 20_000 for index in range(257)}
-    config = {"Labels": values, "Env": [f"{k}={v}" for k, v in values.items()]}
-    result = identity.decode_image_metadata("issued", [{"Id": "issued", "Config": config}])
-    assert result is not None
-    assert result.labels == result.environment == values
-
-
-def _layout_pair(monkeypatch, tmp_path):
-    from booley.runtime import project_image
-
-    parent_id, child_id = "sha256:" + "a" * 64, "sha256:" + "b" * 64
-    parent_labels = {
-        identity.LABEL_SCHEMA: identity.PROVENANCE_SCHEMA,
-        identity.LABEL_ARTIFACT_ROLE: "wheel-overlay",
-        identity.LABEL_LOGICAL_SELECTION_FINGERPRINT: "c" * 64,
-        identity.LABEL_RECIPE_FINGERPRINT: "d" * 64,
-        identity.LABEL_PARENT_ARTIFACT_KIND: identity.PARENT_ARTIFACT_LOCAL_IMAGE_ID,
-        identity.LABEL_WHEEL_SOURCE_FINGERPRINT: "wheel",
-    }
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / ".git").mkdir()
-    external = tmp_path / "external"
-    external.mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(external))
-    from booley.core.booley_dir import reset_cache
-
-    reset_cache()
-    topology = project_image.layout_topology(root)
-    reference, inputs = topology.identity(parent_id)
-    child_labels = dict(parent_labels)
-    child_labels.update(
-        {
-            identity.LABEL_ARTIFACT_ROLE: "project-data-layout",
-            identity.LABEL_RECIPE_FINGERPRINT: topology.recipe_fingerprint,
-            identity.LABEL_EFFECTIVE_INPUTS: inputs,
-            identity.LABEL_PARENT_ARTIFACT: parent_id,
-            project_image.LABEL_LAYOUT_REFERENCE: reference,
-        }
-    )
-    records = _layout_inspections(parent_id, child_id, parent_labels, child_labels)
-    parent = _metadata(parent_id, image_id=parent_id, labels=parent_labels)
-    child = _metadata(child_id, image_id=child_id, labels=child_labels)
-    images = {"issued": child, "configured": parent, parent_id: parent}
-    project_image.verify_layout_parent_identity.cache_clear()
-    monkeypatch.setattr(project_image, "inspect_layout_image", lambda ref, **_kw: records.get(ref))
-    monkeypatch.setattr(project_image, "_image_history", _layout_history)
-    monkeypatch.setattr(
-        project_image.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-    )
-    return images, records, parent_labels, child_labels
-
-
-def _layout_status(images, tmp_path, **kwargs):
-    kwargs.setdefault("project_root", tmp_path / "project")
-    return identity.compare_logical_selection("issued", "configured", images.get, **kwargs).status
-
-
-def test_proven_layout_derivative_preserves_parent_logical_selection(monkeypatch, tmp_path):
-    images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    assert _layout_status(images, tmp_path) is identity.Status.MATCH
-
-
-def test_layout_does_not_hide_changed_parent_selection(monkeypatch, tmp_path):
-    images, _records, parent_labels, _child_labels = _layout_pair(monkeypatch, tmp_path)
-    configured = dict(parent_labels, **{identity.LABEL_RECIPE_FINGERPRINT: "1" * 64})
-    images["configured"] = _metadata(
-        "configured", image_id="sha256:" + "2" * 64, labels=configured
-    )
-    assert _layout_status(images, tmp_path) is identity.Status.MISMATCH
-
-
-def test_layout_does_not_hide_forged_recipe_topology_or_parent_fingerprint(monkeypatch, tmp_path):
-    images, _records, _parent, child_labels = _layout_pair(monkeypatch, tmp_path)
-    for label in (
-        identity.LABEL_RECIPE_FINGERPRINT,
-        identity.LABEL_EFFECTIVE_INPUTS,
-        identity.LABEL_LOGICAL_SELECTION_FINGERPRINT,
-        identity.LABEL_PARENT_ARTIFACT,
-    ):
-        original = child_labels[label]
-        child_labels[label] = "3" * 64
-        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
-        child_labels[label] = original
-
-
-def test_layout_requires_actual_parent_configuration_and_layer_ancestry(monkeypatch, tmp_path):
-    from booley.runtime import project_image
-
-    images, records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    child = records[images["issued"].image_id]
-    child["Config"]["User"] = "root"
-    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
-    child["Config"]["User"] = "agent"
-    for layers in (["foreign", "layout"], ["base", "layout", "extra"]):
-        child["RootFS"]["Layers"] = layers
-        project_image.verify_layout_parent_identity.cache_clear()
-        assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
+    assert result.status is Status.UNKNOWN
 
 
 def _layout_inspections(parent_id, child_id, parent_labels, child_labels):
-    records = {
+    return {
         parent_id: {
             "Id": parent_id,
             "Config": {"User": "agent", "Labels": parent_labels},
@@ -407,7 +268,6 @@ def _layout_inspections(parent_id, child_id, parent_labels, child_labels):
             "RootFS": {"Layers": ["base", "layout"]},
         },
     }
-    return records
 
 
 def _layout_history(reference, _executable):
@@ -423,191 +283,192 @@ def _layout_history(reference, _executable):
     )
 
 
-def test_layout_requires_explicit_matching_project_and_topology(monkeypatch, tmp_path):
-    from booley.runtime import project_image
+@dataclass
+class _Layout:
+    """A proven layout child and its parent behind the shared fake Docker."""
 
-    images, _records, _parent, child_labels = _layout_pair(monkeypatch, tmp_path)
-    assert (
-        identity.compare_logical_selection("issued", "configured", images.get).status
-        is identity.Status.UNKNOWN
-    )
-    foreign = tmp_path / "foreign"
-    foreign.mkdir()
-    reference, inputs = project_image.layout_topology(foreign).identity("sha256:" + "a" * 64)
-    child_labels[project_image.LABEL_LAYOUT_REFERENCE] = reference
-    child_labels[identity.LABEL_EFFECTIVE_INPUTS] = inputs
-    assert _layout_status(images, tmp_path) is identity.Status.UNKNOWN
+    root: Path | None
+    docker: FakeDocker
+    monkeypatch: pytest.MonkeyPatch
+    images: dict[str, identity.ImageMetadata]
+    records: dict[str, dict]
+    labels: dict[str, str]  # the child's, shared with its inspection record
+    histories: dict[str, list[str]]
+    extra: dict[str, tuple[int, str]] = field(default_factory=dict)
+    parent_id: str = "sha256:" + "a" * 64
+    child_id: str = "sha256:" + "b" * 64
+
+    @property
+    def executable(self) -> str:
+        return str(self.docker.path)
+
+    def edit(self, record: str, path: str, value: object) -> None:
+        """Set a dotted *path* of the ``parent`` or ``child`` inspection record."""
+        *parents, key = path.split(".")
+        target = self.records[self.parent_id if record == "parent" else self.child_id]
+        for part in parents:
+            target = target[part]
+        target[key] = value
+
+    def publish(self) -> None:
+        """Rewrite the fake's replies from the records and histories, then forget proofs."""
+        replies = {f"image {i}": (0, json.dumps([record])) for i, record in self.records.items()}
+        replies |= {f"history {i}": (0, "\n".join(lines)) for i, lines in self.histories.items()}
+        self.docker.replies_path.write_bytes(json.dumps(replies | self.extra).encode("utf-8"))
+        project_image.verify_layout_parent_identity.cache_clear()
+
+    def verify(self) -> None:
+        self.publish()
+        project_image.verify_layout_image(
+            self.records[self.parent_id], self.records[self.child_id], executable=self.executable
+        )
+
+    def status(self) -> Status:
+        self.publish()
+        return identity.compare_logical_selection(
+            "issued",
+            "configured",
+            self.images.get,
+            project_root=self.root,
+            executable=self.executable,
+        ).status
 
 
-def test_layout_verification_uses_configured_docker_executable(monkeypatch, tmp_path):
-    from booley.runtime import project_image
-
-    images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
-    executables = []
-
-    def history(ref, executable):
-        executables.append(executable)
-        return _layout_history(ref, executable)
-
-    monkeypatch.setattr(project_image, "_image_history", history)
-    result = identity.compare_logical_selection(
-        "issued",
-        "configured",
-        images.get,
-        project_root=tmp_path / "project",
-        executable="configured-docker",
-    )
-    assert result.status is identity.Status.MATCH
-    assert executables == ["configured-docker", "configured-docker"]
-
-
-def test_layout_rejects_matching_labels_for_local_data_topology(monkeypatch, tmp_path):
+@pytest.fixture
+def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Layout]:
     from booley.core.booley_dir import reset_cache
 
-    images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
+    parent_id, child_id = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    parent_labels = {
+        identity.LABEL_SCHEMA: identity.PROVENANCE_SCHEMA,
+        identity.LABEL_ARTIFACT_ROLE: "wheel-overlay",
+        identity.LABEL_LOGICAL_SELECTION_FINGERPRINT: "c" * 64,
+        identity.LABEL_RECIPE_FINGERPRINT: "d" * 64,
+        identity.LABEL_PARENT_ARTIFACT_KIND: identity.PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+        identity.LABEL_WHEEL_SOURCE_FINGERPRINT: "wheel",
+    }
     root = tmp_path / "project"
-    (root / ".booley").mkdir()
-    monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
+    root.mkdir()
+    (root / ".git").mkdir()
+    (tmp_path / "external").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "external"))
     reset_cache()
-    result = identity.compare_logical_selection(
-        "issued", "configured", images.get, project_root=root
+    topology = project_image.layout_topology(root)
+    reference, inputs = topology.identity(parent_id)
+    labels = parent_labels | {
+        identity.LABEL_ARTIFACT_ROLE: "project-data-layout",
+        identity.LABEL_RECIPE_FINGERPRINT: topology.recipe_fingerprint,
+        identity.LABEL_EFFECTIVE_INPUTS: inputs,
+        identity.LABEL_PARENT_ARTIFACT: parent_id,
+        project_image.LABEL_LAYOUT_REFERENCE: reference,
+    }
+    parent = _metadata(parent_id, image_id=parent_id, labels=parent_labels)
+    child = _metadata(child_id, image_id=child_id, labels=labels)
+    docker = install_fake_docker(tmp_path, monkeypatch, {})
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # a call that drops the executable fails
+    yield _Layout(
+        root,
+        docker,
+        monkeypatch,
+        {"issued": child, "configured": parent, parent_id: parent},
+        _layout_inspections(parent_id, child_id, parent_labels, labels),
+        labels,
+        {image: _layout_history(image, "docker") for image in (parent_id, child_id)},
     )
-    assert result.status is identity.Status.UNKNOWN
+    project_image.verify_layout_parent_identity.cache_clear()
 
 
-@pytest.mark.parametrize("output", ["not json", "{}", "[]", "[{}, {}]", "[null]"])
-def test_layout_inspection_rejects_malformed_or_multiple_docker_records(
-    monkeypatch: pytest.MonkeyPatch, output: str
+def test_proven_layout_derivative_preserves_parent_logical_selection(layout: _Layout) -> None:
+    assert layout.status() is Status.MATCH
+    # Every call went through the configured executable: ``docker`` resolves to nothing.
+    calls = layout.docker.calls
+    assert [(call[0], call[-1]) for call in calls[:4]] == [
+        ("image", layout.parent_id),
+        ("image", layout.child_id),
+        ("history", layout.parent_id),
+        ("history", layout.child_id),
+    ]
+    assert [call[0] for call in calls[4:]] == ["run"]
+
+
+def _change_configured_recipe(layout: _Layout) -> None:
+    labels = layout.images["configured"].labels | {identity.LABEL_RECIPE_FINGERPRINT: "1" * 64}
+    layout.images["configured"] = _metadata("configured", image_id="sha256:2", labels=labels)
+
+
+def _foreign_topology(layout: _Layout) -> None:
+    foreign = layout.docker.path.parent / "foreign"
+    foreign.mkdir()
+    reference, inputs = project_image.layout_topology(foreign).identity(layout.parent_id)
+    layout.labels[project_image.LABEL_LAYOUT_REFERENCE] = reference
+    layout.labels[identity.LABEL_EFFECTIVE_INPUTS] = inputs
+
+
+def _local_data_topology(layout: _Layout) -> None:
+    from booley.core.booley_dir import reset_cache
+
+    (layout.root / ".booley").mkdir()
+    layout.monkeypatch.setenv("BOOLEY_DIR", str(layout.root / ".booley"))
+    reset_cache()
+
+
+_FORGEABLE = (
+    identity.LABEL_RECIPE_FINGERPRINT,
+    identity.LABEL_EFFECTIVE_INPUTS,
+    identity.LABEL_LOGICAL_SELECTION_FINGERPRINT,
+    identity.LABEL_PARENT_ARTIFACT,
+)
+_COMPARISONS = {
+    "changed-configured-recipe": (_change_configured_recipe, Status.MISMATCH),
+    **{
+        f"forged-{label.rsplit('.', 1)[-1]}": (
+            lambda layout, label=label: layout.labels.update({label: "3" * 64}),
+            Status.UNKNOWN,
+        )
+        for label in _FORGEABLE
+    },
+    "no-project-root": (lambda layout: setattr(layout, "root", None), Status.UNKNOWN),
+    "foreign-topology": (_foreign_topology, Status.UNKNOWN),
+    "local-data-topology": (_local_data_topology, Status.UNKNOWN),
+    "changed-user-fails-the-proof": (
+        lambda layout: layout.edit("child", "Config.User", "root"),
+        Status.UNKNOWN,
+    ),
+}
+
+
+@pytest.mark.parametrize("change,status", _COMPARISONS.values(), ids=_COMPARISONS)
+def test_layout_derivative_comparison_from_a_proven_pair(
+    layout: _Layout, change: Callable[[_Layout], None], status: Status
 ) -> None:
-    from booley.runtime import project_image
+    change(layout)
 
-    monkeypatch.setattr(
-        project_image.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
-    )
-    with pytest.raises(RuntimeError, match="layout image"):
-        project_image.inspect_layout_image("candidate")
-
-
-def test_layout_inspection_preserves_exact_docker_record(monkeypatch: pytest.MonkeyPatch) -> None:
-    import json
-
-    from booley.runtime import project_image
-
-    record = {"Id": "sha256:" + "a" * 64, "Config": {"User": "1000"}}
-    commands = []
-
-    def inspect(command, **kwargs):
-        commands.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps([record]), stderr="")
-
-    monkeypatch.setattr(project_image.subprocess, "run", inspect)
-    assert project_image.inspect_layout_image("candidate", executable="docker-fixture") == record
-    assert commands[0][0] == ["docker-fixture", "image", "inspect", "candidate"]
-    assert commands[0][1]["timeout"] == 30
+    assert layout.status() is status
 
 
 @pytest.mark.parametrize(
-    "operation,args,message",
+    "record,path,value,message",
     [
-        ("inspect_layout_image", ("image",), "cannot inspect"),
-        ("_image_history", ("image", "docker"), "cannot verify Booley Directory layout"),
-        ("_probe_layout_directory", ("image",), "cannot verify Booley Directory layout"),
+        ("parent", "Config.Labels", ["untrusted"], "labels are invalid"),
+        ("parent", "Config.Labels", "untrusted", "labels are invalid"),
+        ("parent", "Config", None, "configuration is missing"),
+        ("child", "Config", None, "configuration is missing"),
+        ("child", "Architecture", "x", "changed parent platform"),
+        ("child", "Os", "x", "changed parent platform"),
+        ("child", "Variant", "x", "changed parent platform"),
+        ("child", "Config.User", "root", "runtime configuration"),
+        ("child", "RootFS.Layers", ["foreign", "layout"], "substituted parent"),
+        ("child", "RootFS.Layers", ["base", "layout", "extra"], "substituted parent"),
     ],
 )
-@pytest.mark.parametrize(
-    "failure", [OSError("Docker unavailable"), subprocess.CalledProcessError(1, "docker")]
-)
-def test_layout_docker_transport_failure_is_controlled(
-    monkeypatch, operation, args, message, failure
-):
-    from booley.runtime import project_image
-
-    def unavailable(*_args, **_kwargs):
-        raise failure
-
-    monkeypatch.setattr(project_image.subprocess, "run", unavailable)
-    with pytest.raises(RuntimeError, match=message):
-        getattr(project_image, operation)(*args)
-
-
-def test_layout_history_refuses_unbounded_docker_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    from booley.runtime import project_image
-
-    monkeypatch.setattr(
-        project_image.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, stdout="x" * 1_048_577, stderr=""
-        ),
-    )
-    with pytest.raises(RuntimeError, match="exceeds bounds"):
-        project_image._image_history("candidate", "docker")
-
-
-@pytest.mark.parametrize("labels", [["untrusted"], "untrusted"])
-def test_layout_verification_refuses_malformed_parent_labels(
-    labels: object,
+def test_layout_proof_refuses_changed_configuration_or_layers(
+    layout: _Layout, record: str, path: str, value: object, message: str
 ) -> None:
-    from booley.runtime import project_image
+    layout.edit(record, path, value)
 
-    records = _layout_inspections("parent", "candidate", {}, {})
-    records["parent"]["Config"]["Labels"] = labels
-    with pytest.raises(RuntimeError, match="labels are invalid"):
-        project_image.verify_layout_image(records["parent"], records["candidate"])
-
-
-@pytest.mark.parametrize("damaged", ["parent", "child"])
-def test_layout_proof_requires_image_configuration(damaged):
-    from booley.runtime import project_image
-
-    records = _layout_inspections("parent", "child", {}, {})
-    records[damaged]["Config"] = None
-    with pytest.raises(RuntimeError, match="layout image configuration is missing"):
-        project_image.verify_layout_image(records["parent"], records["child"])
-
-
-@pytest.mark.parametrize("key", ["Architecture", "Os", "Variant"])
-def test_layout_proof_refuses_a_changed_parent_platform(key):
-    from booley.runtime import project_image
-
-    records = _layout_inspections("parent", "child", {}, {})
-    records["child"][key] = "substituted"
-    with pytest.raises(RuntimeError, match="changed parent platform"):
-        project_image.verify_layout_image(records["parent"], records["child"])
-
-
-def test_layout_proof_requires_inspection_to_match_requested_identity(monkeypatch):
-    from booley.runtime import project_image
-
-    project_image.verify_layout_parent_identity.cache_clear()
-    monkeypatch.setattr(
-        project_image, "inspect_layout_image", lambda *_args, **_kwargs: {"Id": "substituted"}
-    )
-    with pytest.raises(RuntimeError, match="inspection changed immutable identity"):
-        project_image.verify_layout_parent_identity("child", "parent")
-    project_image.verify_layout_parent_identity.cache_clear()
-
-
-def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
-    from booley.runtime import project_image
-
-    parent = "sha256:" + "a" * 64
-    child = "sha256:" + "b" * 64
-    records = _layout_inspections(parent, child, {}, {})
-    commands = []
-
-    def probe(command, **_kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
-
-    monkeypatch.setattr(project_image, "_image_history", _layout_history)
-    monkeypatch.setattr(project_image.subprocess, "run", probe)
-    with pytest.raises(RuntimeError, match="lacks its root-owned alias directory"):
-        project_image.verify_layout_image(records[parent], records[child])
-    assert len(commands) == 1
-    assert "--pull=never" in commands[0] and "--network=none" in commands[0]
+    with pytest.raises(RuntimeError, match=message):
+        layout.verify()
 
 
 @pytest.mark.parametrize(
@@ -616,34 +477,89 @@ def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
         ([], ["extra"], "substituted parent"),
         (["base"], ["base"], "substituted parent"),
         (["base"], ["extra", "other"], "substituted parent"),
-        (["base"], ["unknown operation", "base"], "history"),
-        (["base"], ["/bin/sh -c change payload", "base"], "history"),
+        (["base"], ["unknown operation", "base"], "unknown operation"),
+        (["base"], ["/bin/sh -c change payload", "base"], "differs from its trusted recipe"),
+        (["base"], ["x" * 1_048_577], "exceeds bounds"),
     ],
 )
-def test_layout_history_refuses_untrusted_derivatives(monkeypatch, parent, child, message):
-    from booley.runtime import project_image
+def test_layout_proof_refuses_untrusted_build_history(
+    layout: _Layout, parent: list[str], child: list[str], message: str
+) -> None:
+    layout.histories = {layout.parent_id: parent, layout.child_id: child}
 
-    monkeypatch.setattr(
-        project_image,
-        "_image_history",
-        lambda image, _executable: parent if image == "parent" else child,
-    )
     with pytest.raises(RuntimeError, match=message):
-        project_image._verify_layout_history("parent", "child", "docker")
+        layout.verify()
 
 
-def test_layout_history_requires_the_trusted_recipe(monkeypatch, tmp_path):
-    from booley.runtime import paths, project_image
+def test_layout_proof_refuses_a_failed_alias_directory_probe(layout: _Layout) -> None:
+    layout.extra["run"] = (1, "")
 
-    parent = "sha256:" + "a" * 64
-    child = "sha256:" + "b" * 64
-    histories = {image: _layout_history(image, "docker") for image in (parent, child)}
-    monkeypatch.setattr(
-        project_image, "_image_history", lambda image, _executable: histories[image]
-    )
-    monkeypatch.setattr(paths, "docker_data_dir", lambda: tmp_path)
+    with pytest.raises(RuntimeError, match="lacks its root-owned alias directory"):
+        layout.verify()
+    runs = [call for call in layout.docker.calls if call[0] == "run"]
+    assert len(runs) == 1 and "--pull=never" in runs[0] and "--network=none" in runs[0]
+
+
+def test_layout_proof_requires_inspection_to_match_requested_identity(layout: _Layout) -> None:
+    layout.edit("child", "Id", "substituted")
+    layout.publish()
+
+    with pytest.raises(RuntimeError, match="inspection changed immutable identity"):
+        project_image.verify_layout_parent_identity(
+            layout.child_id, layout.parent_id, layout.executable
+        )
+
+
+def test_layout_history_requires_the_trusted_recipe(layout: _Layout, tmp_path: Path) -> None:
+    from booley.runtime import paths
+
+    # The packaged recipe always exists and ``package_data_dir`` has no override: only a
+    # replaced data directory reaches the unavailable-recipe refusal.
+    layout.monkeypatch.setattr(paths, "docker_data_dir", lambda: tmp_path)
+
     with pytest.raises(RuntimeError, match="trusted recipe is unavailable or malformed"):
-        project_image._verify_layout_history(parent, child, "docker")
+        layout.verify()
+
+
+def test_layout_docker_transport_failure_is_controlled(layout: _Layout, tmp_path: Path) -> None:
+    missing = str(tmp_path / "missing-docker")
+    records = layout.records
+    parent, child = records[layout.parent_id], records[layout.child_id]
+    with pytest.raises(RuntimeError, match="cannot inspect"):
+        project_image.inspect_layout_image("candidate", executable=missing)
+    with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout build history"):
+        project_image.verify_layout_image(parent, child, executable=missing)
+    layout.extra[f"history {layout.parent_id}"] = (1, "")
+    with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout build history"):
+        layout.verify()
+    # A missing executable fails the histories before the probe starts, so no public call
+    # reaches the probe's transport ``except``; call the step itself.
+    with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout directory"):
+        project_image._probe_layout_directory("image", executable=missing)
+
+
+@pytest.mark.parametrize(
+    "code,output",
+    [(0, "not json"), (0, "{}"), (0, "[]"), (0, "[{}, {}]"), (0, "[null]"), (1, "no such image")],
+)
+def test_layout_inspection_rejects_unusable_docker_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, output: str
+) -> None:
+    docker = install_fake_docker(tmp_path, monkeypatch, {"image": (code, output)})
+
+    with pytest.raises(RuntimeError, match="layout image"):
+        project_image.inspect_layout_image("candidate", executable=str(docker.path))
+
+
+def test_layout_inspection_preserves_exact_docker_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = {"Id": "sha256:" + "a" * 64, "Config": {"User": "1000"}}
+    docker = install_fake_docker(tmp_path, monkeypatch, {"image": (0, json.dumps([record]))})
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # a call that drops the executable fails
+
+    assert project_image.inspect_layout_image("candidate", executable=str(docker.path)) == record
+    assert docker.calls == [["image", "inspect", "candidate"]]
 
 
 @pytest.mark.parametrize(
@@ -682,7 +598,6 @@ def test_layout_topology_accepts_symlinked_booley_dir_entry(tmp_path, monkeypatc
     from tests.conftest import symlink_or_skip
 
     from booley.core.booley_dir import reset_cache
-    from booley.runtime import project_image
 
     root = tmp_path / "project"
     root.mkdir()

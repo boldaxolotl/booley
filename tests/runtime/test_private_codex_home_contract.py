@@ -1,14 +1,15 @@
-"""Nested Codex HOME environment and destination preservation."""
+"""Nested Codex HOME: login link, scoped environment, destination handling and races."""
 
+import asyncio
 import json
 import os
 import shutil
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
 import pytest
+from tests.codex_cli_fake import codex_report, install_fake_codex, write_codex_login
 from tests.conftest import require_symlinks
 from tests.owned_scratch_support import (
     complete_runs,
@@ -18,95 +19,104 @@ from tests.owned_scratch_support import (
 )
 from tests.time_budget import scaled
 
+from booley.runtime import _codex_backend as cb
 from booley.runtime import auth_token
 
 
-def _isolate_scratch(tmp_path, monkeypatch) -> Path:
-    """Point the system temp directory (and the login home) inside *tmp_path*."""
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Path.home() on Windows
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    return scratch
+@pytest.fixture
+def fake_codex(tmp_path, monkeypatch):
+    """A Sandbox-like process: nested homes under *tmp_path*, a fake ``codex`` on ``PATH``."""
+    install_fake_codex(tmp_path, monkeypatch)
 
 
-def _real_login(tmp_path) -> Path:
-    login = tmp_path / "home" / ".codex" / "auth.json"
-    login.parent.mkdir(parents=True)
-    login.write_text('{"tokens":{"access_token":"SYNTHETIC_OLD"}}', encoding="utf-8")
-    return login
+def _config(report: dict) -> Path:
+    return Path(report["home"]) / "config.toml"
 
 
-def test_nested_codex_auth_links_real_login(tmp_path, monkeypatch):
-    """AC1: the nested home holds a link to the real login, never a copy."""
-    from booley.runtime import _codex_backend as cb
-
+@pytest.mark.asyncio
+async def test_nested_codex_home_links_the_real_login_and_carries_scoped_environment(
+    fake_codex, tmp_path
+):
+    """The nested home holds a link to the real login, never a copy, and the scoped MCP env."""
     require_symlinks(tmp_path)
-    _isolate_scratch(tmp_path, monkeypatch)
-    login = _real_login(tmp_path)
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    nested = Path(cb._ensure_nested_codex_home("link", ["lint"]))
+    login = write_codex_login(tmp_path)
+    scoped = {
+        "label": "coverage_analyst",
+        "nested_mcp_tools": ["coverage_evidence"],
+        "nested_mcp_env": {"BOOLEY_COVERAGE_RECORD": "/reports/coverage.json"},
+    }
+
+    report = await codex_report(tmp_path, **scoped)
+
+    nested = Path(report["home"]).parent
     try:
         auth = nested / ".codex" / "auth.json"
         assert auth.is_symlink()
         assert auth.resolve() == login.resolve()
         assert [p for p in nested.rglob("auth.json") if not p.is_symlink()] == []
-    finally:
-        shutil.rmtree(nested, ignore_errors=True)
-
-
-def test_refresh_through_nested_home_reaches_real_login(tmp_path, monkeypatch):
-    """AC2: a token refresh written through the nested path lands in the real login."""
-    from booley.runtime import _codex_backend as cb
-
-    require_symlinks(tmp_path)
-    _isolate_scratch(tmp_path, monkeypatch)
-    login = _real_login(tmp_path)
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    nested = Path(cb._ensure_nested_codex_home("refresh", ["lint"]))
-    try:
+        # A token refresh written through the nested path lands in the real login.
         refreshed = '{"tokens":{"access_token":"SYNTHETIC_REFRESHED"}}'
-        (nested / ".codex" / "auth.json").write_text(refreshed, encoding="utf-8")
+        auth.write_text(refreshed, encoding="utf-8")
         assert login.read_text(encoding="utf-8") == refreshed
+        config = _config(report).read_text(encoding="utf-8")
+        assert 'BOOLEY_COVERAGE_RECORD = "/reports/coverage.json"' in config
+        assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
+        # A cache hit leaves the destination untouched.
+        with _config(report).open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write("# user edit\n")
+        before = _config(report).read_bytes()
+        again = await codex_report(tmp_path, **scoped)
+        assert again["home"] == report["home"]
+        assert _config(report).read_bytes() == before
     finally:
         shutil.rmtree(nested, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="nested homes exist only in the Linux Sandbox")
+@pytest.mark.parametrize("auth_mode", ["api_key", "gateway"])
+async def test_nested_codex_home_leaves_the_login_out_for_a_non_subscription_mode(
+    fake_codex, tmp_path, monkeypatch, auth_mode
+):
+    """A mode that must not use the stored login gets a nested home without it (#1537)."""
+    require_symlinks(tmp_path)
+    write_codex_login(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_OPENAI")
+    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_TOKEN")
+    report = await codex_report(tmp_path, auth_mode=auth_mode, nested_mcp_tools=["lint"])
+    try:
+        assert report["auth_json_exists"] is False
+    finally:
+        shutil.rmtree(Path(report["home"]).parent, ignore_errors=True)
 
 
 @pytest.mark.parametrize("policy", [auth_token.VISITOR_AUTH, "subscription", "api_key", "gateway"])
-def test_missing_login_leaves_no_auth_entry(tmp_path, monkeypatch, policy):
+def test_missing_login_leaves_no_auth_entry(tmp_path, policy):
     """No login, or a policy that excludes it: no file and no dangling link."""
-    from booley.runtime import _codex_backend as cb
-
     require_symlinks(tmp_path)
-    _isolate_scratch(tmp_path, monkeypatch)
-    monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example.test/v1")
-    monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC")
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    login = tmp_path / "home" / ".codex" / "auth.json"
+    auth = tmp_path / "private" / "auth.json"
+    auth.parent.mkdir()
 
-    def ensure() -> Path:
-        cb._NESTED_HOMES.clear()
-        return Path(cb._ensure_nested_codex_home("missing", ["lint"], auth_mode=policy))
-
-    auth = ensure() / ".codex" / "auth.json"
+    auth_token.link_codex_auth(login, auth, policy)
     assert not os.path.lexists(auth)
-    login = _real_login(tmp_path)
-    ensure()
+    write_codex_login(tmp_path)
+    auth_token.link_codex_auth(login, auth, policy)
     # Only the policies that may use the login link it.
     assert auth.is_symlink() is (policy in {auth_token.VISITOR_AUTH, "subscription"})
     login.unlink()
-    ensure()
+    auth_token.link_codex_auth(login, auth, policy)
     assert not os.path.lexists(auth)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="nested homes exist only in the Linux Sandbox")
 def test_completed_runs_leave_no_nested_home(tmp_path):
-    """AC3: after several completed runs in one process, no nested home remains."""
+    """After several completed runs in one process, no nested home remains."""
     require_symlinks(tmp_path)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    _real_login(tmp_path)
+    write_codex_login(tmp_path)
     repo = make_repo(tmp_path / "repo")
     homes = complete_runs(repo, scratch, tmp_path / "home")
     try:
@@ -117,93 +127,51 @@ def test_completed_runs_leave_no_nested_home(tmp_path):
             shutil.rmtree(home, ignore_errors=True)
 
 
-def test_nested_codex_home_includes_scoped_environment(tmp_path, monkeypatch):
-    from booley.runtime import _codex_backend as cb
-
-    _isolate_scratch(tmp_path, monkeypatch)
-    monkeypatch.setenv("BOOLEY_SLUG", "coverage")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "existing",
+    [
+        'broken="',
+        'suppress_unstable_features_warning="bad"',
+        "suppress_unstable_features_warning=false\n",
+    ],
+)
+async def test_private_codex_writer_invalid_destination(fake_codex, tmp_path, existing, caplog):
+    write_codex_login(tmp_path)
+    config = _config(await codex_report(tmp_path, nested_mcp_tools=["lint"]))
+    config.write_text(existing, encoding="utf-8")
+    # Private on purpose: only a new process regenerates a home, and no public entry point
+    # empties this process's cache. The fake parses the config, so no call may run on the
+    # broken text without this.
     cb._NESTED_HOMES.clear()
 
-    home = Path(
-        cb._ensure_nested_codex_home(
-            "coverage_analyst",
-            ["coverage_evidence"],
-            {"BOOLEY_COVERAGE_RECORD": "/reports/coverage.json"},
-        )
-    )
-
-    config = (home / ".codex/config.toml").read_text(encoding="utf-8")
-    assert 'BOOLEY_COVERAGE_RECORD = "/reports/coverage.json"' in config
-    assert 'BOOLEY_NESTED_MCP_TOOLS = "coverage_evidence"' in config
-
-
-@pytest.mark.parametrize("preference", [None, True, False])
-@pytest.mark.parametrize("toml11", [False, True])
-def test_private_codex_writers_preserve_destination_choice(
-    tmp_path, monkeypatch, preference, toml11, caplog
-):
-    from booley.runtime import _codex_backend as cb
-
-    _isolate_scratch(tmp_path, monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    create = cb._ensure_nested_codex_home
-    home = Path(create("test", ["lint"]))
-    config = home / ".codex/config.toml"
-    assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
-    if preference is not None or toml11:
-        choice = (
-            ""
-            if preference is None
-            else f"suppress_unstable_features_warning={str(preference).lower()}\n"
-        )
-        config.write_text(choice + ("features={\n mcp_2026_07_28=true,\n}\n" if toml11 else ""))
-    before = config.read_bytes()
-    assert Path(create("test", ["lint"])) == home
-    assert config.read_bytes() == before
-    cb._NESTED_HOMES.clear()
-    assert Path(create("test", ["lint"])) == home
-    parsed = tomllib.loads(config.read_text())
-    assert "malformed" not in caplog.text
-    assert parsed["suppress_unstable_features_warning"] is (
-        True if preference is None else preference
-    )
-    assert parsed["features"]["mcp_2026_07_28"] is True
-    env = parsed["mcp_servers"]["booley"]["env"]
-    assert env["BOOLEY_NESTED_MCP_TOOLS"] == "lint"
-
-
-@pytest.mark.parametrize("existing", ['broken="', 'suppress_unstable_features_warning="bad"'])
-def test_private_codex_writer_invalid_destination(tmp_path, monkeypatch, existing, caplog):
-    from booley.runtime import _codex_backend as cb
-
-    _isolate_scratch(tmp_path, monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    create = cb._ensure_nested_codex_home
-    config = Path(create("test", ["lint"])) / ".codex/config.toml"
-    config.write_text(existing)
-    cb._NESTED_HOMES.clear()
     if existing.startswith("broken"):
-        create("test", ["lint"])
-        assert tomllib.loads(config.read_text())["suppress_unstable_features_warning"] is True
+        await codex_report(tmp_path, nested_mcp_tools=["lint"])
+        assert (
+            tomllib.loads(config.read_text(encoding="utf-8"))["suppress_unstable_features_warning"]
+            is True
+        )
         assert "malformed" in caplog.text
+    elif "false" in existing:
+        # The destination's own preference survives regeneration.
+        await codex_report(tmp_path, nested_mcp_tools=["lint"])
+        parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+        assert parsed["suppress_unstable_features_warning"] is False
+        assert parsed["mcp_servers"]["booley"]["env"]["BOOLEY_NESTED_MCP_TOOLS"] == "lint"
     else:
         with pytest.raises(ValueError, match="boolean"):
-            create("test", ["lint"])
-        assert config.read_text() == existing
+            await codex_report(tmp_path, nested_mcp_tools=["lint"])
+        assert config.read_text(encoding="utf-8") == existing
 
 
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="nested homes exist only in the Linux Sandbox"
 )
-def test_parallel_callers_share_one_home_per_cache_key(tmp_path, monkeypatch):
-    """AC1 and AC3: parallel callers get one home per key, created exactly once."""
-    from booley.runtime import _codex_backend as cb
+def test_parallel_callers_share_one_home_per_cache_key(fake_codex, tmp_path, monkeypatch):
+    """Parallel callers get one home per key, created exactly once."""
     from booley.runtime.pid import capture_process_identity
 
-    _isolate_scratch(tmp_path, monkeypatch)
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+    write_codex_login(tmp_path)
     # "Created exactly once" is not visible in a home's contents and no public
     # entry point reaches the cache, so record each creation's marking.
     marked: list[Path] = []
@@ -215,10 +183,20 @@ def test_parallel_callers_share_one_home_per_cache_key(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cb, "mark_owned", spy)
     gate_marker_publishes(monkeypatch, 2, scaled(1.0))
+    calls = iter(range(8))
+
+    def call(tool: str) -> Path:
+        transcript = tmp_path / f"transcript-{next(calls)}.jsonl"
+        report = asyncio.run(
+            codex_report(
+                tmp_path, label="race", nested_mcp_tools=[tool], transcript_path=transcript
+            )
+        )
+        return Path(report["home"]).parent
 
     homes = run_together(
-        *[lambda: cb._ensure_nested_codex_home("race", ["lint"])] * 4,
-        *[lambda: cb._ensure_nested_codex_home("race", ["sim"])] * 4,
+        *[lambda: call("lint")] * 4,
+        *[lambda: call("sim")] * 4,
     )
 
     lint, sim = set(homes[:4]), set(homes[4:])

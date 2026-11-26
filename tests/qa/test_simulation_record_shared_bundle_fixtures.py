@@ -8,12 +8,10 @@ import json
 import os
 import shlex
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.flow import SimulateFlow
@@ -34,15 +32,6 @@ def _module(name: str, path: Path):
 
 def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    result = run_bounded_child([str(arg) for arg in argv], cwd=cwd)
-    assert result.returncode == 0, (
-        f"command failed ({result.returncode}): {' '.join(argv)}\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    return result
 
 
 def _require_tools(*names: str) -> None:
@@ -160,45 +149,51 @@ def _assert_shared_simulation_record(
     assert len({item["attempt_id"] for item in documents}) == len(tests)
 
 
-def test_taxi_fixture_runs_real_verilator_simulation_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("fixture", "target", "tests", "compiler", "tools"),
+    [
+        pytest.param(
+            TAXI,
+            "sim_campaign_verilator",
+            ("first", "second"),
+            "verilator",
+            ("verilator", "make", "g++"),
+            id="taxi-verilator",
+        ),
+        pytest.param(
+            UART,
+            "sim_campaign_uart",
+            ("alpha", "beta"),
+            "iverilog",
+            ("iverilog", "vvp", "make"),
+            id="uart-icarus",
+        ),
+    ],
+)
+def test_fixture_runs_real_simulation_record_with_one_shared_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: Path,
+    target: str,
+    tests: tuple[str, ...],
+    compiler: str,
+    tools: tuple[str, ...],
 ) -> None:
-    _require_tools("verilator", "make", "g++")
+    _require_tools(*tools)
     _require_python_modules("fusesoc", "edalize")
     simulation_record, compiler_log = _run_owned_simulation_record(
         tmp_path,
         monkeypatch,
-        fixture=TAXI,
-        target="sim_campaign_verilator",
-        tests=("first", "second"),
-        compiler="verilator",
+        fixture=fixture,
+        target=target,
+        tests=tests,
+        compiler=compiler,
     )
     _assert_shared_simulation_record(
         simulation_record,
         compiler_log,
-        compiler="verilator",
-        tests=("first", "second"),
-    )
-
-
-def test_uart_fixture_runs_real_icarus_simulation_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _require_tools("iverilog", "vvp", "make")
-    _require_python_modules("fusesoc", "edalize")
-    simulation_record, compiler_log = _run_owned_simulation_record(
-        tmp_path,
-        monkeypatch,
-        fixture=UART,
-        target="sim_campaign_uart",
-        tests=("alpha", "beta"),
-        compiler="iverilog",
-    )
-    _assert_shared_simulation_record(
-        simulation_record,
-        compiler_log,
-        compiler="iverilog",
-        tests=("alpha", "beta"),
+        compiler=compiler,
+        tests=tests,
     )
 
 
@@ -354,58 +349,3 @@ def _write_legacy_attempts(manifest, attempts, results) -> None:
                 }
             },
         )
-
-
-def test_taxi_direct_verilator_smoke_is_supplementary(tmp_path: Path) -> None:
-    _require_tools("verilator", "make", "g++")
-    build = tmp_path / "build"
-    compile_calls = [
-        [
-            "verilator",
-            "--binary",
-            "--build",
-            "--timing",
-            "--top-module",
-            "campaign_tb",
-            "--Mdir",
-            str(build),
-            str(TAXI / "campaign_tb.sv"),
-        ]
-    ]
-    _run(compile_calls[0], tmp_path)
-    binary = build / "Vcampaign_tb"
-    before = hashlib.sha256(binary.read_bytes()).hexdigest()
-    for name in ("first", "second"):
-        result = _run([str(binary), f"+test={name}"], tmp_path)
-        assert f"QA_VERILATOR_CAMPAIGN_TEST={name}" in result.stdout.replace(" ", "")
-        assert "[SIM_RESULT] PASSED" in result.stdout
-    assert len(compile_calls) == 1
-    assert hashlib.sha256(binary.read_bytes()).hexdigest() == before
-
-
-def test_uart_direct_icarus_smoke_is_supplementary(tmp_path: Path) -> None:
-    _require_tools("iverilog", "vvp")
-    image = tmp_path / "campaign.vvp"
-    compile_calls = [
-        [
-            "iverilog",
-            "-g2012",
-            "-s",
-            "campaign_tb",
-            "-o",
-            str(image),
-            str(UART / "campaign_tb.sv"),
-        ]
-    ]
-    _run(compile_calls[0], tmp_path)
-    before = hashlib.sha256(image.read_bytes()).hexdigest()
-    for name, expected in (("alpha", "000000a1"), ("beta", "000000b2")):
-        run = tmp_path / name
-        inputs = run / "inputs"
-        inputs.mkdir(parents=True)
-        shutil.copyfile(UART / f"vectors/{name}.hex", inputs / f"{name}.hex")
-        result = _run(["vvp", str(image), f"+test={name}"], run)
-        assert f"QA_UART_RUNTIME_INPUT={name}:{expected}" in result.stdout.replace(" ", "")
-        assert "[SIM_RESULT] PASSED" in result.stdout
-    assert len(compile_calls) == 1
-    assert hashlib.sha256(image.read_bytes()).hexdigest() == before

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_nested_pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +17,6 @@ _SPLIT_PREFIX = (
 )
 _BOOLEY_DIR_DEPENDENTS = (
     "tests/harness/test_cheatsheet.py::TestCheatCommand::test_commands_are_grouped_by_execution_location",
-    "tests/harness/test_image_lifecycle.py::test_incremental_adapter_prepare_and_policy_helpers",
     "tests/harness/test_session_runtime.py::"
     "test_enter_preserves_container_credentials_without_literal_placeholder_overrides",
     "tests/harness/setup/test_git_hooks.py::TestProjectCommitMsgHookVendoring::"
@@ -47,11 +45,8 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         "PYTEST_XDIST_TESTRUNUID",
     ):
         environment.pop(name, None)
-    result = run_bounded_child(
+    result = run_nested_pytest(
         [
-            sys.executable,
-            "-m",
-            "pytest",
             "-v",
             "-p",
             "no:xdist",
@@ -67,7 +62,6 @@ def test_booley_dir_dependents_pass_without_harness_conftest(tmp_path: Path) -> 
         ],
         cwd=REPO_ROOT,
         env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
     )
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-2000:]
     passed = [

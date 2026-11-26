@@ -108,7 +108,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         ".runtime/mutation_tester/": _SOURCE_TIED,
         ".runtime/flow-reports/": _SOURCE_TIED,
         ".runtime/mcp-tool-reports/": _SOURCE_TIED,
-        ".runtime/display.jsonl": _SOURCE_TIED,
         ".runtime/prompts/": _SOURCE_TIED,
         # bwave's session store: its sessions name this checkout's traces (#3483).
         ".runtime/bwave/": _SOURCE_TIED,
@@ -129,6 +128,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "result-cache/": _COMMON,
         "measurements/": _COMMON,
         "worktrees/": _COMMON,
+        "t3-worktrees/": _COMMON,
         ".baseline-wt-*/": _COMMON,
         "directory-layout.lock": _COMMON,
         ".directory-relocation.json": _COMMON,
@@ -147,7 +147,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,
         "runtime/synth_probe.json": _COMMON,
-        "runtime/chat-main.lock": _COMMON,
         ".runtime/sandbox-mounts.json": _COMMON,
         "runtime/resources/": _COMMON,
         ".runtime/executions/": _COMMON,

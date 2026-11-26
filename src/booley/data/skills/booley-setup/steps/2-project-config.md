@@ -71,9 +71,9 @@ python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 
 Two project-side extension points:
 
 - **`post-setup` hook** — `.booley/hooks/post-setup.sh`, `….py`, or
-  extensionless `post-setup` runs in each new sandboxed worktree that
-  `booley worktree new` creates, and a failure removes the
-  worktree again; make it idempotent. It may install/build dependencies, copy
+  extensionless `post-setup` runs in each worktree that
+  `booley worktree prepare` prepares, and a failure removes what the run
+  created; make it idempotent. It may install/build dependencies, copy
   files, create symlinks, or prepare generated inputs. `booley measure` also
   runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that
@@ -240,11 +240,10 @@ Authoring rules:
   `SIM:{target}` / `LINT:{target}` / `SYNTH:{target}` and the value a
   Booley Flow passes as `--target`. The axis leads because nothing in CAPI2
   distinguishes an ASIC Target from an FPGA one — both resolve as `generic`.
-  `booley doctor` notes names that don't. Do not author a `default` target
-  unless another `.core` `depend:`s on this one — it is FuseSoC's
-  dependency-build fallback, never a selectable config, and doctor flags a
-  dead one (drop it from a depended-on core and that core silently
-  contributes zero filesets).
+  Do not author a `default` target unless another `.core` `depend:`s on this
+  one — it is FuseSoC's dependency-build fallback, never a selectable config
+  (drop it from a depended-on core and that core silently contributes zero
+  filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
   `fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
@@ -398,8 +397,8 @@ Step 4's final gate:
 - EDA-tool-API Targets (`default_tool:` + `tools:` blocks) should be
   converted to the flow API (`flow:` + `flow_options:`). Booley falls back to
   the declared EDA-tool family, but that cannot express whether a multi-purpose
-  EDA tool such as Verilator means sim or lint. Doctor names the ambiguity and the
-  rewrite shape is in `../CORE_TEMPLATE.yaml`.
+  EDA tool such as Verilator means sim or lint. The rewrite shape is in
+  `../CORE_TEMPLATE.yaml`.
 - `depend:` keys must be YAML **arrays** — an empty scalar `depend:` parses
   fine and then kills target resolution with a truncated fusesoc error.
 - **Delete the `provider:` block.** A published core often carries

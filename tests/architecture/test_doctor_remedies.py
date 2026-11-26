@@ -90,7 +90,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists."',
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists] must be a tabl"',
     'fail - audit/project_schema.py::audit_stealth_table "booley.toml [stealth].ignore_native_core"',
-    'fail - audit/project_schema.py::audit_worktree_table "booley.toml"',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup: runtime did "',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup:"',
     'fail - harness/doctor.py::_check_git_conflicts "git operation in progress:"',
@@ -383,6 +382,14 @@ def test_non_doctor_printer_entry_must_name_a_printer(tmp_path: Path) -> None:
     ]
 
 
+def _untraced_in(tmp_path: Path, source: str) -> list[str]:
+    """Run the sink-value scan over *source* written as a one-module package."""
+    package = tmp_path / "booley"
+    package.mkdir()
+    (package / "m.py").write_bytes(source.encode())
+    return scan.untraced_sink_values(package, [package / "m.py"])
+
+
 def test_every_sink_value_is_traced(tmp_path: Path) -> None:
     assert scan.untraced_sink_values(_PACKAGE, _source_files()) == []
     source = (
@@ -391,10 +398,7 @@ def test_every_sink_value_is_traced(tmp_path: Path) -> None:
         "    holder.sink = reporter.warn_\n"
         "    return registry\n"
     )
-    package = tmp_path / "booley"
-    package.mkdir()
-    (package / "m.py").write_bytes(source.encode())
-    assert scan.untraced_sink_values(package, [package / "m.py"]) == ["m.py:2", "m.py:3"]
+    assert _untraced_in(tmp_path, source) == ["m.py:2", "m.py:3"]
 
 
 _KEYWORD_SOURCE = """
@@ -433,7 +437,4 @@ def test_keyword_callback_to_unknown_callee_is_untraced(tmp_path: Path) -> None:
         "    known(fail=reporter.warn_)\n"
         "\n\ndef known(fail):\n    fail('x')\n"
     )
-    package = tmp_path / "booley"
-    package.mkdir()
-    (package / "m.py").write_bytes(source.encode())
-    assert scan.untraced_sink_values(package, [package / "m.py"]) == ["m.py:2"]
+    assert _untraced_in(tmp_path, source) == ["m.py:2"]

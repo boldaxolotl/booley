@@ -197,7 +197,7 @@ def test_unsupported_agent_launch_pattern_matches_launch_forms_only() -> None:
         "run `booley session enter -- codex` (or `claude`)",
         "A bare `claude` or `codex` session is not a supported workflow",
         "`codex` and `claude` each get Booley's MCP tools",
-        "booley session enter -- booley worktree new <area>",
+        "with `git worktree add` and run `booley worktree prepare` in it",
         "../../shared/t3/RUNBOOK.md",
     ]
     assert all(UNSUPPORTED_AGENT_LAUNCH.search(text) for text in launches)

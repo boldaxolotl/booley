@@ -1118,16 +1118,6 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
         )
 
 
-def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
-    """Regenerate, pin, and stamp the Session spec after an image refresh."""
-    ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
-    pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
-    _step_sandbox(ctx, nangate_pdk_root=pdk_root, runtime_image_id=image_id)
-    failures = [result.detail for result in ctx.results if result.status == "err"]
-    if failures:
-        raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
-
-
 def _dashboard_enabled(booley_dir: Path) -> bool:
     from booley.runtime.dashboard_tasks import enabled
 
@@ -1188,26 +1178,20 @@ def _mask_source_dir() -> Path:
     return auth_token.config_dir() / "empty-mask"
 
 
-def _select_agent_app(
-    project_root: Path | None = None, project_data_source: Path | None = None
-) -> str:
+def _select_agent_app(project_root: Path, project_data_source: Path | None = None) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
-    if project_root is not None:
-        config_path = resolve_toml(
-            project_data_source or authorized_project_data_source(project_root)
-        )
-        if config_path.is_file():
-            try:
-                import tomllib
+    config_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
+    if config_path.is_file():
+        import tomllib
 
-                with config_path.open("rb") as config_file:
-                    config = tomllib.load(config_file)
-                agent = config.get("agent", {})
-                provider = parse_agent_section(agent if isinstance(agent, dict) else {}).default
-            except (OSError, ValueError):
-                provider = None
-            if provider in AGENT_CLIS:
-                return provider
+        # `_credential_plans` read this file first, so an unreadable or malformed one
+        # has already stopped the step.
+        with config_path.open("rb") as config_file:
+            config = tomllib.load(config_file)
+        agent = config.get("agent", {})
+        provider = parse_agent_section(agent if isinstance(agent, dict) else {}).default
+        if provider in AGENT_CLIS:
+            return provider
     return dc.APP_NONE
 
 
@@ -2471,7 +2455,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ctx.record(name, "err", finding.detail)
         elif finding.state in {BootstrapState.PENDING, BootstrapState.WARNING}:
             warn(f"{finding.resource}: {finding.detail}")
-            ctx.record(name, "warn", finding.detail)
+            # The editor is optional: its absence is not pending work for `--check-only`.
+            ctx.record(name, "skip" if finding.resource == "vscode" else "warn", finding.detail)
         elif finding.state is BootstrapState.CHANGED:
             ok(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "ok", finding.detail)

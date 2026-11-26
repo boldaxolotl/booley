@@ -4,73 +4,58 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import platform_paths
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.worktree_paths import worktree_creation_config
+from tests.conftest import symlink_or_skip
+from tests.git_command_fake import answer_git_version
+
+ABSOLUTE = ("-c", "worktree.useRelativePaths=false")
+SUPPORTED = "git version 2.48.0\n"
 
 
-def test_old_git_repair_omits_unsupported_mode_flags(monkeypatch):
-    from booley.runtime import worktree_paths, worktree_repair
-
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
-    assert worktree_repair._metadata_flag(True) == ()
-    assert worktree_repair._metadata_flag(False) == ()
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
-    assert worktree_repair._metadata_flag(True) == ("--relative-paths",)
-    assert worktree_repair._metadata_flag(False) == ("--no-relative-paths",)
-
-
-def test_unsupported_git_and_linked_root_use_explicit_creation_fallback(tmp_path, monkeypatch):
-    from booley.runtime import worktree_paths
-
+@pytest.fixture
+def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Project Root whose selected Booley Directory is its own ``.booley``."""
     root = tmp_path / "project"
-    state = root / ".booley"
-    state.mkdir(parents=True)
-    monkeypatch.setenv("BOOLEY_DIR", str(state))
+    (root / ".booley").mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
     # Another test in this worker may have cached a different Booley Directory.
     reset_cache()
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
-    assert worktree_paths.worktree_creation_config(root) == (
-        "-c",
-        "worktree.useRelativePaths=false",
-    )
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
-    assert worktree_paths.worktree_creation_config(root) == ()
-    (root / ".git").write_text("gitdir: /linked/owner\n")
-    assert worktree_paths.worktree_creation_config(root) == (
-        "-c",
-        "worktree.useRelativePaths=false",
-    )
+    return root
 
 
-def test_external_state_never_enables_relative_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("reply", "relative"),
+    [
+        (SUPPORTED, True),
+        ("git version 2.47.9\n", False),
+        ("git version unknown\n", False),
+        (OSError("Git unavailable"), False),
+    ],
+    ids=["supported", "unsupported", "unparsable", "unavailable"],
+)
+def test_relative_metadata_needs_git_2_48(
+    root: Path, monkeypatch: pytest.MonkeyPatch, reply: str | OSError, relative: bool
 ) -> None:
-    from booley.runtime import worktree_paths
+    answer_git_version(monkeypatch, reply)
 
-    root = tmp_path / "project"
-    root.mkdir()
+    assert worktree_creation_config(root) == (() if relative else ABSOLUTE)
+
+
+def test_linked_root_or_external_state_keeps_absolute_metadata(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer_git_version(monkeypatch, SUPPORTED)
+    (root / ".git").write_text("gitdir: /linked/owner\n")
+    assert worktree_creation_config(root) == ABSOLUTE
+
+    (root / ".git").unlink()
+    (root / ".booley").rmdir()
     external = tmp_path / "external"
     external.mkdir()
     monkeypatch.setenv("BOOLEY_DIR", str(external))
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
     reset_cache()
-    assert not worktree_paths.relative_worktree_paths(root)
-    assert worktree_paths.worktree_creation_config(root) == (
-        "-c",
-        "worktree.useRelativePaths=false",
-    )
-
-
-def test_git_version_transport_failure_keeps_absolute_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from booley.runtime import worktree_paths
-
-    def unavailable(*_args, **_kwargs) -> None:
-        raise OSError("Git unavailable")
-
-    monkeypatch.setattr(platform_paths, "run_captured_bounded", unavailable)
-    assert not worktree_paths._git_supports_relative_paths()
+    assert worktree_creation_config(root) == ABSOLUTE
 
 
 @pytest.mark.parametrize("inside", [False, True], ids=["target_outside", "target_inside"])
@@ -78,19 +63,13 @@ def test_symlinked_booley_dir_entry_uses_absolute_worktree_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool
 ) -> None:
     """Git writes relative metadata from physical paths, so only an in-root target is portable."""
-    from booley.runtime import worktree_paths
-    from tests.conftest import symlink_or_skip
-
     root = tmp_path / "project"
     root.mkdir()
     target = root / "control" if inside else tmp_path / "booley-state"
     target.mkdir()
     symlink_or_skip(root / ".booley", target)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
+    answer_git_version(monkeypatch, SUPPORTED)
     reset_cache()
 
-    assert worktree_paths.relative_worktree_paths(root) is inside
-    assert worktree_paths.worktree_creation_config(root) == (
-        () if inside else ("-c", "worktree.useRelativePaths=false")
-    )
+    assert worktree_creation_config(root) == (() if inside else ABSOLUTE)

@@ -24,7 +24,6 @@ from booley.audit.resource_policy import (
     cgroup_swap_limit_bytes,
     parse_meminfo,
 )
-from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES
 from booley.runtime.pid import capture_process_identity
 
 # A process found running whose memory cannot be read still reserves 1 GiB.
@@ -36,6 +35,15 @@ DASHBOARD_SOCKET_PREFIX = "@booley-dashboard:"
 _MAX_PROCESSES = 8192
 _MAX_FDS_PER_PROCESS = 4096
 _CLAUDE_NAMES = frozenset({"claude", "claude.exe"})
+_CODEX_NAMES = frozenset(
+    {
+        "codex",
+        "codex-x86_64-unknown-linux-musl",
+        "codex-aarch64-unknown-linux-musl",
+        "codex-x86_64-unknown-linux-gnu",
+        "codex-aarch64-unknown-linux-gnu",
+    }
+)
 _MCP_SERVER_MODULE = "booley.mcp.server"
 _MCP_SERVER_SCRIPT = "booley-mcp"
 _T3_EXECUTABLE = "t3"
@@ -207,7 +215,7 @@ def _classify(proc_root: Path, pid: int) -> ReserveRole | None:
     if (
         _read_comm(proc_root, pid) == "claude"
         or executable in _CLAUDE_NAMES
-        or executable in CODEX_NATIVE_NAMES
+        or executable in _CODEX_NAMES
     ):
         return ReserveRole.DEVELOPER_AGENT
     if executable == _HEADLESS_CHROME_NAME:

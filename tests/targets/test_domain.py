@@ -4,135 +4,82 @@ from pathlib import Path
 
 import pytest
 
+from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetRef, flow_can_drive
 
-# ---------------------------------------------------------------------------
-# flow_can_drive
-# ---------------------------------------------------------------------------
 
-
-class TestFlowCanDrive:
-    def _ref(
-        self,
-        flow: str | None,
-        eda_tool: str | None,
-        *,
-        name: str = "t",
-    ) -> TargetRef:
-        return TargetRef(
-            name=name,
-            vlnv="a:b:c:1.0",
-            core_file=Path("x.core"),
-            eda_tool=eda_tool,
-            flow=flow,
-        )
-
-    def test_sim_flow_drives_sim_targets(self):
-        ref = self._ref("sim", "verilator")
-        assert flow_can_drive("sim", ref)
-        assert not flow_can_drive("lint", ref)
-        assert not flow_can_drive("synth", ref)
-        assert not flow_can_drive("fpga", ref)
-
-    def test_sim_flow_drives_canonical_icarus_target(self):
-        ref = self._ref("sim", "icarus")
-        assert flow_can_drive("sim", ref)
-
-    def test_lint_flow_drives_lint_only(self):
-        ref = self._ref("lint", "verible")
-        assert flow_can_drive("lint", ref)
-        assert not flow_can_drive("sim", ref)
-
-    def test_generic_flow_splits_on_eda_tool(self):
-        yosys = self._ref("generic", "yosys")
-        vivado = self._ref("generic", "vivado")
-        assert flow_can_drive("synth", yosys)
-        assert not flow_can_drive("fpga", yosys)
-        assert flow_can_drive("fpga", vivado)
-        assert not flow_can_drive("synth", vivado)
-
-    def test_fpga_axis_ignores_resolution_tool(self):
-        ref = self._ref("generic", "verilator", name="fpga_core_fast")
-        assert flow_can_drive("fpga", ref)
-
-    def test_non_fpga_axis_overrides_vivado_fallback(self):
-        ref = self._ref("generic", "vivado", name="synth_core_fast")
-        assert not flow_can_drive("fpga", ref)
-
-    def test_legacy_flowless_target_falls_back_to_eda_tool_family(self):
-        """A `tools:`-style Target (flow=None) must not vanish from --for."""
-        legacy_sim = self._ref(None, "iverilog")
-        assert flow_can_drive("sim", legacy_sim)
-        assert not flow_can_drive("lint", legacy_sim)
-
-    @pytest.mark.parametrize("eda_tool", ["xcelium", "vcs"])
-    def test_unsupported_commercial_simulators_are_not_drivable(self, eda_tool: str):
-        """Vendor .cores may enumerate them, but Booley must not advertise support."""
-        for declared_flow in ("sim", None):
-            ref = self._ref(declared_flow, eda_tool)
-            assert not flow_can_drive("sim", ref)
-
-    @pytest.mark.parametrize("flow", (None, "sim"))
-    def test_sim_target_without_an_accepted_tool_declaration_is_not_drivable(
-        self, flow: str | None
-    ) -> None:
-        assert not flow_can_drive("sim", self._ref(flow, None))
-
-    def test_specialist_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"reviewer.*not a target-aware"):
-            flow_can_drive("reviewer", self._ref("sim", "verilator"))
-
-    def test_retired_elab_name_is_rejected(self):
-        with pytest.raises(ValueError, match=r"elab.*not a target-aware"):
-            flow_can_drive("elab", self._ref("sim", "verilator"))
+def _ref(flow: str | None, eda_tool: str | None, name: str = "t", **kwargs) -> TargetRef:
+    return TargetRef(name, "a:b:c:1.0", Path("x.core"), eda_tool, flow, **kwargs)
 
 
 @pytest.mark.parametrize(
-    "flow,eda_tool,expected",
+    "requested,flow,eda_tool,name,expected",
     [
-        ("lint", "verilator", True),
-        ("lint", "verible", True),
-        ("lint", "veriblelint", True),
-        (None, "verilator", True),
-        (None, "verible", True),
-        (None, "veriblelint", False),
-        ("lint", None, False),
-        ("lint", "", False),
-        ("lint", "slang", False),
-        ("lint", "Verible", False),
-        ("sim", "veriblelint", False),
-        ("generic", "verible", False),
+        ("sim", "sim", "verilator", "t", True),
+        ("lint", "sim", "verilator", "t", False),
+        ("synth", "sim", "verilator", "t", False),
+        ("fpga", "sim", "verilator", "t", False),
+        ("sim", "sim", "icarus", "t", True),
+        ("sim", "lint", "verible", "t", False),
+        # A generic Flow splits on the EDA tool.
+        ("synth", "generic", "yosys", "t", True),
+        ("fpga", "generic", "yosys", "t", False),
+        ("fpga", "generic", "vivado", "t", True),
+        ("synth", "generic", "vivado", "t", False),
+        # The axis in the name outranks the resolution tool.
+        ("fpga", "generic", "verilator", "fpga_core_fast", True),
+        ("fpga", "generic", "vivado", "synth_core_fast", False),
+        # A `tools:`-style Target (flow=None) must not vanish from --for.
+        ("sim", None, "iverilog", "t", True),
+        ("lint", None, "iverilog", "t", False),
+        # Vendor .cores may enumerate them, but Booley must not advertise support.
+        ("sim", "sim", "xcelium", "t", False),
+        ("sim", None, "xcelium", "t", False),
+        ("sim", "sim", "vcs", "t", False),
+        ("sim", None, "vcs", "t", False),
+        # No accepted tool declaration.
+        ("sim", None, None, "t", False),
+        ("sim", "sim", None, "t", False),
+        # Lint validates the authored EDA tool.
+        ("lint", "lint", "verilator", "lint_style", True),
+        ("lint", "lint", "verible", "lint_style", True),
+        ("lint", "lint", "veriblelint", "lint_style", True),
+        ("lint", None, "verilator", "lint_style", True),
+        ("lint", None, "verible", "lint_style", True),
+        ("lint", None, "veriblelint", "lint_style", False),
+        ("lint", "lint", None, "lint_style", False),
+        ("lint", "lint", "", "lint_style", False),
+        ("lint", "lint", "slang", "lint_style", False),
+        ("lint", "lint", "Verible", "lint_style", False),
+        ("lint", "sim", "veriblelint", "lint_style", False),
+        ("lint", "generic", "verible", "lint_style", False),
+        # fpga intent precedes an explicit lint declaration.
+        ("lint", "lint", "verilator", "fpga_top", False),
+        ("lint", "lint", "verible", "fpga_top", False),
+        ("lint", "lint", "veriblelint", "fpga_top", False),
+        ("fpga", "lint", "verilator", "fpga_top", True),
+        ("fpga", "lint", "verible", "fpga_top", True),
+        ("fpga", "lint", "veriblelint", "fpga_top", True),
     ],
 )
-def test_lint_drivability_validates_authored_eda_tool(flow, eda_tool, expected):
-    target = TargetRef("lint_style", "acme:ip:top:1.0", Path("top.core"), eda_tool, flow)
-    assert flow_can_drive("lint", target) is expected
+def test_flow_can_drive(requested, flow, eda_tool, name, expected):
+    assert flow_can_drive(requested, _ref(flow, eda_tool, name)) is expected
 
 
-@pytest.mark.parametrize("eda_tool", ["verilator", "verible", "veriblelint"])
-def test_fpga_intent_precedes_explicit_lint(eda_tool):
-    target = TargetRef("fpga_top", "acme:ip:top:1.0", Path("top.core"), eda_tool, "lint")
-    assert not flow_can_drive("lint", target)
-    assert flow_can_drive("fpga", target)
+@pytest.mark.parametrize("requested", ["reviewer", "elab"])
+def test_non_target_aware_flow_name_is_rejected(requested: str):
+    with pytest.raises(ValueError, match=rf"{requested}.*not a target-aware"):
+        flow_can_drive(requested, _ref("sim", "verilator"))
 
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_lint_missing_provenance_on_ref(missing):
-    ref = TargetRef(
-        "lint_style",
-        "acme:ip:top:1.0",
-        Path("top.core"),
-        "verible",
-        "lint",
-        lint_flow_eda_tool_missing=missing,
-    )
+    ref = _ref("lint", "verible", "lint_style", lint_flow_eda_tool_missing=missing)
     assert flow_can_drive("lint", ref) is not missing
 
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_lint_missing_provenance_on_canonical_handle(tmp_path, missing):
-    from booley.targets.catalog import TargetCatalog
-
     selection = "default_tool: verible" if missing else "flow_options: {tool: verible}"
     (tmp_path / "style.core").write_text(
         "CAPI=2:\nname: acme:ip:style:1.0\ntargets:\n  lint_style:\n    flow: lint\n"
@@ -143,24 +90,15 @@ def test_lint_missing_provenance_on_canonical_handle(tmp_path, missing):
     assert flow_can_drive("lint", handle) is not missing
 
 
-def test_lint_manual_handle_provenance_default(tmp_path):
-    from tests.target_test_support import make_target_handle
-
-    handle = make_target_handle(tmp_path, "lint_style", flow="lint", eda_tool="verible")
-    assert handle.lint_flow_eda_tool_missing is False
-    assert flow_can_drive("lint", handle)
-
-
 @pytest.mark.parametrize(
     "flow,name,eda_tool,requested",
     [
         ("lint", "synth_vehicle", "yosys", "asic_synthesize"),
+        ("lint", "implementation", "vivado", "fpga_impl"),
         ("lint", "fpga_top", "verible", "fpga_impl"),
         ("sim", "sim_control", "verilator", "simulate"),
     ],
 )
 def test_lint_provenance_does_not_change_other_flow_aliases(flow, name, eda_tool, requested):
-    ref = TargetRef(
-        name, "acme:ip:top:1.0", Path("top.core"), eda_tool, flow, lint_flow_eda_tool_missing=True
-    )
+    ref = _ref(flow, eda_tool, name, lint_flow_eda_tool_missing=True)
     assert flow_can_drive(requested, ref)

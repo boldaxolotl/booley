@@ -11,7 +11,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import project_resources
-from tests.harness.test_image_lifecycle import FakeDocker
+from tests.docker_image_cli_fake import serve_docker_image_cli
 
 
 def _id(char: str) -> str:
@@ -59,17 +59,16 @@ def test_only_images_dropped_from_project_tags_become_owned(root: Path) -> None:
 def test_init_removes_unused_superseded_images_after_keeper_reissue(
     root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Private seam: init's step runner needs a whole Project, so call the step with its result.
     unused, running, shared = _id("1"), _id("2"), _id("3")
-    docker = FakeDocker(
-        {
-            unused: (unused, {}),
-            running: (running, {}),
-            shared: (shared, {}),
-            "other-project-booley-sandbox:latest": (shared, {}),
-        }
-    )
-    docker.used_image_ids = frozenset({running})
-    monkeypatch.setattr(lifecycle, "_docker_adapter", lambda: docker)
+    docker = serve_docker_image_cli(monkeypatch)
+    docker.images = {
+        unused: unused,
+        running: running,
+        shared: shared,
+        "other-project-booley-sandbox:latest": shared,
+    }
+    docker.containers = {"running-container": running}
     lifecycle.OwnedImages(root).record({}, (unused, running, shared))
     ctx = InitContext(project_root=root)
     result = lifecycle.LifecycleResult(
@@ -78,9 +77,12 @@ def test_init_removes_unused_superseded_images_after_keeper_reissue(
 
     init_cmd._step_retire_superseded_images(ctx, result)
 
-    assert docker.image_ids() == {running, shared}
+    assert set(docker.images.values()) == {running, shared}
     output = capsys.readouterr().out
-    assert f"{running}: retained (conflict: unable to delete {running})" in output
+    assert (
+        f"{running}: retained (could not remove retained tag {running}: "
+        f"conflict: unable to delete {running}"
+    ) in output
     assert f"{shared}: retained (tag/keeper)" in output
     assert [(row.name, row.status) for row in ctx.results] == [("superseded_images", "warn")]
 
@@ -88,9 +90,10 @@ def test_init_removes_unused_superseded_images_after_keeper_reissue(
 def test_init_reports_full_removal_and_cleanup_failure(
     root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # Private seam: init's step runner needs a whole Project, so call the step with its result.
     unused = _id("1")
-    docker = FakeDocker({unused: (unused, {})})
-    monkeypatch.setattr(lifecycle, "_docker_adapter", lambda: docker)
+    docker = serve_docker_image_cli(monkeypatch)
+    docker.images = {unused: unused}
     lifecycle.OwnedImages(root).record({}, (unused,))
     result = lifecycle.LifecycleResult(
         "image", _id("9"), lifecycle.Status.CHANGED, superseded=(unused,)
@@ -99,15 +102,15 @@ def test_init_reports_full_removal_and_cleanup_failure(
 
     init_cmd._step_retire_superseded_images(ctx, result)
 
-    assert docker.image_ids() == frozenset()
+    assert docker.images == {}
     assert f"removed superseded Sandbox Images: {unused}" in capsys.readouterr().out
 
-    def broken(_root: Path) -> tuple[str, ...]:
-        raise lifecycle.ImageLifecycleError("ownership store unreadable")
-
-    monkeypatch.setattr(lifecycle, "cleanup_owned_images", broken)
+    # The first cleanup emptied the record, which returns before any inventory read.
+    lifecycle.OwnedImages(root).record({}, (unused,))
+    docker.images = {unused: unused}
+    docker.answer("image", "ls", "--quiet", code=1)
     init_cmd._step_retire_superseded_images(ctx, result)
-    assert "ownership store unreadable" in capsys.readouterr().out
+    assert "cannot inventory immutable image IDs" in capsys.readouterr().out
     assert [(row.name, row.status) for row in ctx.results] == [
         ("superseded_images", "ok"),
         ("superseded_images", "warn"),

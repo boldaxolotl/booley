@@ -3,7 +3,9 @@
 Given a base commit and the declared review scope, answer which scope files
 changed since the merge-base of the base and HEAD (uncommitted changes
 included), which unchanged scope files use them, and what the Reviewer is told
-about the change: its diff and the commit messages of the range. Everything
+about the change: its diff and the commit messages of the range.
+:func:`committed_review_change` answers the same for a commit that is already
+known to have changed some files, as ``booley review`` reviews it. Everything
 here is Git and lexical text; nothing elaborates HDL.
 """
 
@@ -11,7 +13,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -222,5 +224,65 @@ def resolve_review_change(work_dir: Path, base: str, scope: Sequence[str]) -> Re
         changed=changed,
         context=_users_of(work_dir, changed, unchanged),
         diff=_diff_text(work_dir, merge_base, changed, untracked),
+        commits=_cap(commits.strip(), MAX_COMMITS_CHARS, "COMMITS"),
+    )
+
+
+def under_folder(path: str, folder: str) -> bool:
+    return path == folder or path.startswith(f"{folder}/")
+
+
+def committed_review_change(
+    repository: Path,
+    checkout: Path,
+    base: str,
+    commit: str,
+    scope: Sequence[str],
+    changed: Collection[str],
+    submodules: Collection[str] = (),
+) -> ReviewChange:
+    """Describe what *commit* changed in *scope* since *base* (already a merge-base).
+
+    *changed* holds the paths the commit changed; *submodules* the paths of the
+    submodules whose pin moved. The diff and the commit messages come from the Git
+    objects of *repository*; the unchanged files that use a changed one are read from
+    *checkout*, the exported tree the Reviewer reads. A changed file inside a moved
+    submodule has no diff in the superproject, so it gets a note instead.
+    """
+    entries = sorted({normalize_scope_path(entry) for entry in scope})
+    touched = [entry for entry in entries if entry in changed]
+    unchanged = [entry for entry in entries if entry not in changed]
+    parts: list[str] = []
+    plain: list[str] = []
+    for path in touched:
+        inside = next(
+            (folder for folder in sorted(submodules) if under_folder(path, folder)), None
+        )
+        if inside is None:
+            plain.append(path)
+        else:
+            parts.append(f"{path}: changed inside submodule {inside} (no diff; read it in full)\n")
+    if plain:
+        diff = _git(
+            repository,
+            "--literal-pathspecs",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            base,
+            commit,
+            "--",
+            *plain,
+        )
+        parts.insert(0, diff)
+    commits = _git(repository, "log", "--reverse", "--format=commit %h%n%B", f"{base}..{commit}")
+    return ReviewChange(
+        base=base,
+        merge_base=base,
+        changed=tuple(touched),
+        context=_users_of(checkout, touched, unchanged),
+        diff=_cap_per_file("".join(parts), MAX_DIFF_CHARS),
         commits=_cap(commits.strip(), MAX_COMMITS_CHARS, "COMMITS"),
     )

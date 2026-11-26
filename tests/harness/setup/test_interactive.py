@@ -4,118 +4,105 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
 from booley.harness.setup import interactive
 from booley.runtime import session_issuance
+from booley.runtime.booley_dir import reset_cache
+from booley.runtime.git import add_git_excludes
+from tests.git_support import repository
 
 
-def _request(tmp_path: Path, builder: Mock) -> interactive.InteractiveInitRequest:
-    return interactive.InteractiveInitRequest(tmp_path, builder)
-
-
-def _prepared(tmp_path: Path) -> session_issuance.PreparedSessionSpec:
+def _prepared(root: Path) -> session_issuance.PreparedSessionSpec:
     return session_issuance.PreparedSessionSpec(
         {"image": "sha256:prepared", "runArgs": []},
         "prepared-digest",
-        session_issuance.SessionSpecInputs(tmp_path, (), (), None, None),
+        session_issuance.SessionSpecInputs(root, (), (), None, None),
         SimpleNamespace(),
     )
 
 
-def test_inspect_returns_one_complete_pending_plan(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    builder = Mock()
-    prepared = _prepared(tmp_path)
-    monkeypatch.setattr(
-        interactive.session_issuance, "preview", lambda *_args, **_kwargs: prepared
+@pytest.fixture
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A Git checkout on a host without Docker; Booley's exclude writer falls back to files."""
+    root = repository(tmp_path / "project")
+    (root / ".booley").mkdir()
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
+    reset_cache()
+    return root
+
+
+def _enable_stealth(project: Path, enabled: bool) -> None:
+    (project / ".booley" / "booley.toml").write_text(
+        f"[stealth]\nenabled = {str(enabled).lower()}\n", encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize("stealth", [False, True])
+def test_inspect_returns_one_complete_pending_plan(
+    project: Path, monkeypatch: pytest.MonkeyPatch, stealth: bool
+) -> None:
+    _enable_stealth(project, stealth)
+    add_git_excludes(project, (".devcontainer", ".claude"))  # a non-Stealth init's exclusions
+    prepared = _prepared(project)
+    monkeypatch.setattr(interactive.session_issuance, "preview", lambda *_a, **_kw: prepared)
     monkeypatch.setattr(
         interactive.session_issuance,
         "inspect_prepared",
         Mock(side_effect=session_issuance.RuntimeSpecError("spec drifted")),
     )
-    monkeypatch.setattr(interactive, "git_excludes_pending", lambda *_args: True)
-    monkeypatch.setattr(interactive.shutil, "which", lambda _name: None)
+    # Stopped-Sandbox planning reads Docker state; `session_runtime`'s tests own it.
     runtime_plan = Mock(return_value=SimpleNamespace(pending=True))
     monkeypatch.setattr(
-        interactive.session_runtime,
-        "plan_stopped_headless_runtime_reconciliation",
-        runtime_plan,
+        interactive.session_runtime, "plan_stopped_headless_runtime_reconciliation", runtime_plan
     )
 
-    plan = interactive.inspect(_request(tmp_path, builder))
+    plan = interactive.inspect(interactive.InteractiveInitRequest(project, Mock()))
 
     assert plan.prepared is prepared
     assert plan.pending_details == (
         "Sandbox specification/issuance (spec drifted)",
-        "Git exclusions",
+        *(["Git exclusions"] if stealth else []),
         "stopped Sandbox resources",
     )
-    runtime_plan.assert_called_once_with(tmp_path, prepared.prospective_issuance)
-
-
-def test_apply_persists_the_exact_prepared_plan_without_rebuilding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    builder = Mock()
-    prepared = _prepared(tmp_path)
-    request = _request(tmp_path, builder)
-    plan = interactive.InteractiveInitPlan(request, prepared, None, "missing")
-    issuance = SimpleNamespace(license_profile=None)
-    persist = Mock(return_value=issuance)
-    monkeypatch.setattr(interactive.session_issuance, "issue_prepared", persist)
-    monkeypatch.setattr(interactive.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(
-        interactive.session_runtime,
-        "reconcile_stopped_headless_runtime",
-        lambda *_args: False,
-    )
-    monkeypatch.setattr(interactive, "add_git_excludes", lambda *_args: False)
-
-    changes = interactive.apply(plan)
-
-    persist.assert_called_once_with(tmp_path, prepared, force_dependencies=False)
-    builder.assert_not_called()
-    assert changes.issuance is issuance
-    assert changes.issued is True
+    runtime_plan.assert_called_once_with(project, prepared.prospective_issuance)
 
 
 @pytest.mark.parametrize("stealth", [False, True])
-def test_inspect_and_apply_use_the_same_history_visibility_policy(tmp_path, monkeypatch, stealth):
-    prepared = _prepared(tmp_path)
+@pytest.mark.parametrize("current", [False, True], ids=["missing", "current"])
+def test_apply_issues_only_a_missing_plan_and_excludes_the_history_policy_names(
+    project: Path, monkeypatch: pytest.MonkeyPatch, current: bool, stealth: bool
+) -> None:
+    _enable_stealth(project, stealth)
+    prepared = _prepared(project)
     issuance = SimpleNamespace(license_profile=None)
-    monkeypatch.setattr(interactive, "stealth_enabled", lambda _root: stealth)
-    monkeypatch.setattr(interactive.session_issuance, "preview", lambda *_a, **_kw: prepared)
-    monkeypatch.setattr(interactive, "_inspect_issuance", lambda *_a: (issuance, ""))
-    monkeypatch.setattr(interactive.shutil, "which", lambda _name: None)
+    persist = Mock(return_value=issuance)
+    monkeypatch.setattr(interactive.session_issuance, "issue_prepared", persist)
+    # Stopped-Sandbox removal drives Docker; `session_runtime`'s tests own it.
     monkeypatch.setattr(
-        interactive.session_runtime,
-        "plan_stopped_headless_runtime_reconciliation",
-        lambda *_a: SimpleNamespace(pending=False),
+        interactive.session_runtime, "reconcile_stopped_headless_runtime", lambda *_a: False
     )
-    monkeypatch.setattr(
-        interactive.session_runtime,
-        "reconcile_stopped_headless_runtime",
-        lambda *_a: False,
-    )
-    inspect_exclusions = Mock(return_value=False)
-    apply_exclusions = Mock(return_value=False)
-    monkeypatch.setattr(interactive, "git_excludes_pending", inspect_exclusions)
-    monkeypatch.setattr(interactive, "add_git_excludes", apply_exclusions)
-    plan = interactive.inspect(_request(tmp_path, Mock()))
-    interactive.apply(plan)
-    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
-    inspect_exclusions.assert_called_once_with(tmp_path, expected)
-    apply_exclusions.assert_called_once_with(tmp_path, expected)
+    builder = Mock()
+    request = interactive.InteractiveInitRequest(project, builder)
+    plan = interactive.InteractiveInitPlan(request, prepared, issuance if current else None)
+
+    changes = interactive.apply(plan)
+
+    builder.assert_not_called()
+    expected_issue = [] if current else [call(project, prepared, force_dependencies=False)]
+    assert persist.call_args_list == expected_issue
+    assert (changes.issuance, changes.issued) == (issuance, not current)
+    excluded = (project / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    hidden = ["/.devcontainer", "/.claude", *(["/.booley"] if stealth else [])]
+    assert [line for line in excluded.splitlines() if line.startswith("/")] == hidden
 
 
 def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path, monkeypatch):
+    # private: `_RuntimeImages` is the refresh adapter `booley session refresh` builds inside a
+    # Docker image rebuild; `_current_sources` reads the image's build sources from Docker.
     from booley.harness.session_refresh import _RuntimeImages
     from booley.runtime.session_refresh import RefreshImage
 
@@ -134,12 +121,11 @@ def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path
 
 
 def test_exclude_names_cover_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):
-    from booley.runtime.booley_dir import reset_cache
-
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "tools/booley"\n')
     (tmp_path / "tools/booley").mkdir(parents=True)
+    (tmp_path / "tools/booley/booley.toml").write_bytes(b"[stealth]\nenabled = true\n")
     reset_cache()
-    monkeypatch.setattr(interactive, "stealth_enabled", lambda _root: True)
 
     assert interactive.exclude_names(tmp_path) == (
         ".devcontainer",

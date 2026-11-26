@@ -9,17 +9,18 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 from collections.abc import Callable
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 # Standalone script run as /work/tests/docker/agent_policy_probe.py: put the repository
-# root on sys.path so the shared time-budget policy imports.
+# root on sys.path so the shared time-budget policy imports, and the CI scripts folder so
+# the shared fake model API does.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".github/scripts"))
 
+from fake_model_api import FakeModelApi
 from tests.time_budget import hang_guard_s
 
 from booley.runtime import dockerfile_syntax
@@ -219,143 +220,8 @@ def _assert_booley_configuration(root: Path) -> dict[str, str]:
     return statuses
 
 
-def _sse_event(event: str, data: dict[str, Any]) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
-
-
-def _message_start() -> bytes:
-    message = {
-        "id": "msg_policy_probe",
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-sonnet-4-5",
-        "content": [],
-        "stop_reason": None,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 1, "output_tokens": 0},
-    }
-    return _sse_event("message_start", {"type": "message_start", "message": message})
-
-
-def _tool_response(canary: Path) -> bytes:
-    start = {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {
-            "type": "tool_use",
-            "id": "toolu_policy_probe",
-            "name": "Read",
-            "input": {},
-        },
-    }
-    delta = {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {
-            "type": "input_json_delta",
-            "partial_json": json.dumps({"file_path": str(canary)}),
-        },
-    }
-    return b"".join(
-        [
-            _message_start(),
-            _sse_event("content_block_start", start),
-            _sse_event("content_block_delta", delta),
-            _sse_event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "tool_use"},
-                    "usage": {"output_tokens": 1},
-                },
-            ),
-            _sse_event("message_stop", {"type": "message_stop"}),
-        ]
-    )
-
-
-def _final_response() -> bytes:
-    start = {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {"type": "text", "text": ""},
-    }
-    delta = {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {"type": "text_delta", "text": "OK"},
-    }
-    return b"".join(
-        [
-            _message_start(),
-            _sse_event("content_block_start", start),
-            _sse_event("content_block_delta", delta),
-            _sse_event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn"},
-                    "usage": {"output_tokens": 1},
-                },
-            ),
-            _sse_event("message_stop", {"type": "message_stop"}),
-        ]
-    )
-
-
-class _Provider(ThreadingHTTPServer):
-    def __init__(self, canary: Path) -> None:
-        super().__init__(("127.0.0.1", 0), _ProviderHandler)
-        self.canary = canary
-        self.requests: list[dict[str, Any]] = []
-
-
-class _ProviderHandler(BaseHTTPRequestHandler):
-    server: _Provider
-
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", "0"))
-        body = json.loads(self.rfile.read(length) or b"{}")
-        if self.path.rstrip("/").endswith("count_tokens"):
-            self._send_json({"input_tokens": 1})
-            return
-        self.server.requests.append(body)
-        has_result = CANARY_TEXT in json.dumps(body.get("messages", []))
-        self._send_sse(_final_response() if has_result else _tool_response(self.server.canary))
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
-
-    def _send_json(self, body: dict[str, Any]) -> None:
-        encoded = json.dumps(body).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def _send_sse(self, body: bytes) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def _claude_environment(home: Path, provider: _Provider) -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(
-        {
-            "HOME": str(home),
-            "ANTHROPIC_API_KEY": "policy-probe-placeholder",
-            "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{provider.server_port}",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_TELEMETRY": "1",
-        }
-    )
-    return env
+def _claude_environment(home: Path, model_api: FakeModelApi) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home), **model_api.claude_environment()}
 
 
 def _contains_canary_result(requests: list[dict[str, Any]]) -> bool:
@@ -369,9 +235,6 @@ def _run_claude_case(case: str, root: Path, extra_args: list[str]) -> list[str]:
     (project / ".claude").mkdir(parents=True, exist_ok=True)
     canary = project / "canary.txt"
     canary.write_text(CANARY_TEXT, encoding="utf-8")
-    provider = _Provider(canary)
-    thread = threading.Thread(target=provider.serve_forever, daemon=True)
-    thread.start()
     command = [
         "claude",
         "--print",
@@ -382,12 +245,8 @@ def _run_claude_case(case: str, root: Path, extra_args: list[str]) -> list[str]:
         *extra_args,
         "Read canary.txt, then search the web and fetch https://example.com.",
     ]
-    try:
+    with FakeModelApi([("Read", {"file_path": str(canary)})]) as provider:
         _run(command, cwd=project, env=_claude_environment(home, provider), timeout=_HANG_S)
-    finally:
-        provider.shutdown()
-        provider.server_close()
-        thread.join(timeout=_HANG_S)
     assert provider.requests, f"Claude {case} sent no model request"
     tools = {tool["name"] for tool in provider.requests[0].get("tools", [])}
     assert "Read" in tools, f"Claude {case} omitted Read canary: {sorted(tools)}"

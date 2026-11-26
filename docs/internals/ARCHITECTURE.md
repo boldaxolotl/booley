@@ -17,8 +17,8 @@ the agents' claims: it wraps EDA toolchains as **Booley Flows** with
 structured inputs and machine-checkable results, and exposes those Flows and
 LLM-backed **Specialists** to the Developer Agent through MCP.
 
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one worktree per T3 Code thread, which Booley prepares) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one worktree per T3 Code thread, which Booley prepares) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
 
 The diagram reads from the outside in, and so does this page:
 
@@ -26,7 +26,7 @@ The diagram reads from the outside in, and so does this page:
    prepares and supervises one container per Project folder, and all Booley
    work runs inside it.
 2. [Agent sessions](#agent-sessions): VS Code attaches to the Sandbox, and
-   each Developer Agent session runs in one of its terminals; concurrent
+   each Developer Agent session runs as a T3 Code thread; concurrent
    sessions get their own worktrees.
 3. [The MCP server](#the-mcp-server): the one surface through which every
    session reaches Booley.
@@ -146,10 +146,10 @@ one trust domain.
 ## Agent sessions
 
 `booley init` issues the Project's devcontainer specification; reopening the
-folder in the container connects VS Code to the Sandbox. `booley chat` (or bare
-`booley`) starts a Developer Agent session in a Sandbox terminal. The first
-session works in the main checkout, and Booley adds a worktree for each further
-concurrent session. See [SETUP.md](../user/SETUP.md) for the lifecycle and
+folder in the container connects VS Code to the Sandbox. A Developer Agent
+session runs as a T3 Code thread, which T3 Code places in its own worktree
+([ADR 0082](../adr/0082-let-t3-code-own-worktrees.md)). See
+[SETUP.md](../user/SETUP.md) for the lifecycle and
 [USAGE.md](../user/USAGE.md#developer-agent-sessions) for daily use.
 
 The MCP surface is the same for every Agent CLI. A Project lists the Agent CLIs
@@ -164,12 +164,12 @@ sessions and Jobs and can start Booley Flows as Standalone Jobs.
 
 ### Why VS Code
 
-Claude Code and Codex both run in VS Code terminals, so both Agent CLIs share
-one editor and the Sandbox. The Dev Containers extension makes "open this
-repository inside the Booley container" a built-in operation, so Booley didn't
-have to build it. And the editor itself matters: hardware work is not pure
-delegation, and the user reads and edits RTL between agent turns in the same
-workspace.
+Claude Code and Codex both run in the Sandbox that VS Code attaches to, so both
+Agent CLIs share one editor and the Sandbox. The Dev Containers extension makes
+"open this repository inside the Booley container" a built-in operation, so
+Booley didn't have to build it. And the editor itself matters: hardware work is
+not pure delegation, and the user reads and edits RTL between agent turns in the
+same workspace.
 
 ## The MCP server
 

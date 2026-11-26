@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import sys
 import textwrap
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 _SCRIPT = """#!{python}
 import json, sys
@@ -34,3 +40,105 @@ def write_claude_cli(directory: Path, events: list[dict]) -> Path:
     path.write_bytes(textwrap.dedent(text).encode("utf-8"))
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
+
+
+def sdk_result(text: str = "done", **fields: Any) -> Any:
+    """Build a successful ``ResultMessage`` of the loaded Claude Agent SDK.
+
+    Every field the backend reads is set, so the stub SDK a harness-only run
+    loads and the real SDK take the same message.
+    """
+    from claude_agent_sdk import ResultMessage
+
+    values: dict[str, Any] = {
+        "subtype": "success",
+        "duration_ms": 1,
+        "duration_api_ms": 1,
+        "is_error": False,
+        "num_turns": 1,
+        "session_id": "test-session",
+        "result": text,
+        "structured_output": None,
+        "total_cost_usd": None,
+        "usage": None,
+    }
+    values.update(fields)
+    return ResultMessage(**values)
+
+
+def sdk_message(kind: str, **fields: Any) -> Any:
+    """Build an ``AssistantMessage`` or ``UserMessage`` of the loaded SDK with ``fields`` set.
+
+    The harness conftest installs a stub SDK whose message classes take no
+    arguments when the real one was not imported first, so the fields are set
+    directly. Content blocks are plain namespaces: the backend reads them only
+    through ``getattr``.
+    """
+    import claude_agent_sdk
+
+    message = object.__new__(getattr(claude_agent_sdk, kind))
+    message.__dict__.update(fields)
+    return message
+
+
+@dataclass
+class SdkReplay:
+    """What a replayed ``query`` saw: each call's prompt and options, and the task
+    that opened and closed each stream (the real SDK fails when they differ)."""
+
+    prompts: list[Any] = field(default_factory=list)
+    options: list[Any] = field(default_factory=list)
+    opened: list[Any] = field(default_factory=list)
+    closed: list[Any] = field(default_factory=list)
+
+
+def replay_sdk_attempts(monkeypatch: pytest.MonkeyPatch, *attempts: Sequence[Any]) -> SdkReplay:
+    """Replace the Claude Agent SDK's ``query``: call *n* replays ``attempts[n]``.
+
+    The SDK is where Booley hands off to the Claude CLI; the last attempt
+    repeats. Each step is one of: an SDK message (yielded), a number (seconds to
+    wait), an exception (raised), or a callable (called with the call's
+    options, for example to write CLI stderr through ``options.stderr``).
+    """
+    import anyio
+
+    from booley.runtime import _claude_backend
+
+    replay = SdkReplay()
+
+    async def query(*, prompt: Any, options: Any):
+        steps = attempts[min(len(replay.options), len(attempts) - 1)]
+        replay.prompts.append(prompt)
+        replay.options.append(options)
+        replay.opened.append(asyncio.current_task())
+        try:
+            for step in steps:
+                if isinstance(step, BaseException):
+                    raise step
+                if isinstance(step, int | float):
+                    await anyio.sleep(step)
+                elif callable(step):
+                    step(options)
+                else:
+                    yield step
+        finally:
+            replay.closed.append(asyncio.current_task())
+
+    monkeypatch.setattr(_claude_backend, "query", query)
+    return replay
+
+
+def replay_sdk_stream(monkeypatch: pytest.MonkeyPatch, *steps: Any) -> list[Any]:
+    """Replay the same *steps* on every call (see :func:`replay_sdk_attempts`); return each call's options."""
+    return replay_sdk_attempts(monkeypatch, steps).options
+
+
+def record_sdk_options(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Replace the Claude Agent SDK's ``query`` and return the options each call receives.
+
+    The fake answers with one successful result.
+    """
+    return replay_sdk_stream(
+        monkeypatch,
+        sdk_result("", total_cost_usd=0.01, usage={"input_tokens": 1, "output_tokens": 1}),
+    )

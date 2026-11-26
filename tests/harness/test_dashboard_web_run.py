@@ -6,6 +6,8 @@ import json
 import re
 import shutil
 import time
+from html import escape
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from starlette.applications import Starlette
@@ -15,6 +17,8 @@ from booley.config.feature_flags import enabled_features
 from booley.harness import booley as tlr
 from booley.harness.dashboard import launch, model, run_form
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot
+from booley.harness.dashboard.specialist_form import NO_COVERAGE_RECORDS
+from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.standalone_job import standalone_jobs_dir
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import job_records
@@ -143,6 +147,9 @@ def test_flow_form_places_every_option_with_the_extra_arguments(world, feature_f
         f for f in sim["fields"] if f["dest"] == "target"
     ).items()
     assert "'Lint options'" in lint["problem"]
+    assert lint["fields"] == []
+    hint = "Typed as on the command line; quote a value with spaces."
+    assert lint["extra"] == {"hint": hint, "options": []}
 
 
 def test_specialist_forms_follow_the_values_given(world, feature_flags):
@@ -263,16 +270,21 @@ def test_run_routes_refuse_unknown_entries_and_missing_parameters(
 
 
 def test_a_read_that_fails_is_the_problem_not_a_server_error(world, feature_flags, monkeypatch):
-    # A Booley Directory the layout rules refuse: the readers raise instead of listing a problem.
-    (world.wt / "booley.toml").write_bytes(b"[project]\ndir = '.booley_project'\n")
     with _client(world, feature_flags) as client:
+        none_fit = _get(client, "targets", world.wt, flow="sim")
+        # A Booley Directory the layout rules refuse: the readers raise instead of listing a problem.
+        (world.wt / "booley.toml").write_bytes(b"[project]\ndir = '.booley_project'\n")
         listing = _get(client, "targets", world.wt, flow="sim")
         tests = _get(client, "tests", world.wt, target="sim_fifo")
         monkeypatch.setattr(launch.Launcher, "form", _crash)
         built = _get(client, "form", world.wt, kind="specialist", name="reviewer")
 
-    assert listing["targets"] == [] and listing["problem"]
+    no_fit = "No Target here can be driven by this Flow; type Targets in the extra arguments."
+    assert none_fit == {"targets": [], "problem": no_fit}
+    assert listing["targets"] == [] and listing["problem"].startswith("Targets unavailable: ")
+    assert listing["problem"].endswith(". Type Targets in the extra arguments.")
     assert tests["runs"] == [] and tests["problem"].startswith("Tests unavailable: ")
+    assert tests["problem"].endswith(". Type Test Runs in the extra arguments.")
     assert built == {"kind": "specialist", "problem": "RuntimeError: cannot build"}
 
 
@@ -286,12 +298,15 @@ def test_a_coverage_records_read_that_fails_lists_none(world, feature_flags, mon
     def crash(*_args):
         raise OSError("unreadable")
 
-    monkeypatch.setattr(web_run, "finished_coverage_records", crash)
     with _client(world, feature_flags) as client:
+        none_finished = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
+        monkeypatch.setattr(web_run, "finished_coverage_records", crash)
         coverage = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
 
-    assert coverage["coverage_records"] == []
-    assert next(f["dest"] for f in coverage["fields"]) == "coverage_record"
+    for answered in (none_finished, coverage):
+        assert answered["coverage_records"] == []
+        field = answered["fields"][0]
+        assert (field["dest"], field["hint"]) == ("coverage_record", NO_COVERAGE_RECORDS)
 
 
 REVIEWER = _run("reviewer", values={"focus": "bugs", "scope": "fifo.v"})
@@ -502,14 +517,29 @@ def test_a_refused_auth_check_is_returned_and_not_submitted(
     assert spawned == []
 
 
-def test_a_job_record_that_cannot_be_written_is_a_server_error(world, feature_flags, spawned):
-    standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
-    standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
+NUL_EXTRA = "--target 'a\x00b'"  # the argument check itself raises on a NUL byte
+CHECK_FAILED = "Argument check failed: embedded null"  # CPython's next word differs by platform
+
+
+@pytest.mark.parametrize(
+    ("route", "extra", "reason"),
+    [
+        pytest.param("submit", "", "Could not start the Job: ", id="record"),
+        pytest.param("check", NUL_EXTRA, CHECK_FAILED, id="check"),
+        pytest.param("submit", NUL_EXTRA, CHECK_FAILED, id="check-on-submit"),
+    ],
+)
+def test_a_run_that_cannot_start_is_a_server_error_with_its_reason(
+    world, feature_flags, spawned, route, extra, reason
+):
+    if not extra:
+        standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
+        standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
     with _client(world, feature_flags) as client:
-        answer = _post(client, "submit", world.wt, _run("lint"))
+        answer = _post(client, route, world.wt, _run("lint", extra=extra))
 
     assert answer.status_code == 500
-    assert answer.json()["error"].startswith("Could not start the Job: ")
+    assert answer.json()["error"].startswith(reason)
     assert spawned == []
 
 
@@ -546,14 +576,619 @@ def test_a_launch_from_another_origin_or_without_json_starts_nothing(
     assert not list(standalone_jobs_dir(world.booley).glob("*"))
 
 
-def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
-    world, feature_flags, spawned, monkeypatch
+@pytest.mark.parametrize("kind", ["flow", "specialist"])
+def test_a_form_that_cannot_be_built_launches_a_flow_from_its_extra_arguments(
+    world, feature_flags, spawned, monkeypatch, kind
+):
+    if kind == "flow":
+        # No public entry point builds a Flow with an unplaced group.
+        monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
+        run = _run("lint", extra="--dry-run")
+    else:
+        # No public entry point makes a Specialist's form fail to build.
+        monkeypatch.setattr(launch.Launcher, "form", _crash)
+        run = _run("reviewer")
+    with _client(world, feature_flags) as client:
+        answers = [_post(client, route, world.wt, run) for route in POSTS]
+
+    statuses = [answer.status_code for answer in answers]
+    if kind == "specialist":
+        assert statuses == [422] * 3
+        assert [a.json() for a in answers] == [{"error": "RuntimeError: cannot build"}] * 3
+        assert spawned == []
+        return
+    assert statuses == [200] * 3
+    command, _checked, submitted = (answer.json() for answer in answers)
+    assert command["command"].endswith("booley flow lint --dry-run")
+    record = job_records.read_record(submitted["run_id"], standalone_jobs_dir(world.booley))
+    assert record is not None and record.argv == ["booley", "flow", "lint", "--dry-run"]
+    assert len(spawned) == 1
+
+
+def _probe(
+    client, wt, tmp_path, calls, steps, *, responses=None, reject=None, held=(), copy_fails=False
+):
+    """Run the served page for *wt* through *steps*, answered as *client* answers *calls*.
+
+    A call is ``(route, query, body)``: a GET of the Run route, or a POST of *body*. The page must
+    send exactly those requests in that order. Returns the probe's output and the real answers.
+    """
+    page = client.get("/", params={"worktree": str(wt)})
+    refs = web_tests._References()
+    refs.feed(page.text)
+    scripts = [client.get(url).text for url in refs.urls if url.endswith(".js")]
+    routes: dict = {}
+    answers = []
+    for index, (route, query, body) in enumerate(calls):
+        params = {"worktree": str(wt), **query}
+        reply = (
+            client.get(f"/api/run/{route}", params=params)
+            if body is None
+            else _post(client, route, wt, body)
+        )
+        is_json = reply.headers["content-type"].startswith("application/json")
+        answers.append(
+            {
+                "status": reply.status_code,
+                **({"body": reply.json()} if is_json else {"text": reply.text}),
+            }
+        )
+        sent = {"reject": "refused"} if index == reject else answers[-1]
+        sent = {**sent, "held": index in held}
+        routes.setdefault(f"/api/run/{route}", []).append(sent)
+    scenario = {
+        "search": web_tests._search(wt),
+        "hidden": refs.hidden,
+        "responses": [r or web_tests._reply(client, wt) for r in responses or [None]],
+        "routes": routes,
+        "steps": steps,
+        "copyFails": copy_fails,
+    }
+    probe = web_tests._run_page(";\n".join(scripts), scenario, tmp_path)
+    asked = [
+        (
+            f.get("method") or "GET",
+            urlparse(f["url"]).path,
+            {key: value for key, [value] in parse_qs(urlparse(f["url"]).query).items()},
+            f.get("body"),
+        )
+        for f in probe["fetches"]
+        if "/api/run/" in f["url"]
+    ]
+    expected = [
+        (
+            "GET" if body is None else "POST",
+            f"/api/run/{route}",
+            {"worktree": str(wt), **query},
+            body,
+        )
+        for route, query, body in calls
+    ]
+    assert asked == expected
+    return probe, answers
+
+
+def _edit(dest, value, kind="text", **target):
+    event = "input" if kind == "text" else "change"
+    target = {"dataset": {"dest": dest}, "type": kind, "value": value, **target}
+    return {event: "run-fields", "target": target}
+
+
+def _choose(entry):
+    return {"change": "run-entry", "target": {"value": entry}}
+
+
+def _option_values(markup, dest=None):
+    if dest:
+        markup = re.search(rf'<select data-dest="{dest}">(.*?)</select>', markup)[1]
+    return re.findall(r'<option value="([^"]*)"', markup)
+
+
+ENTRIES = ("entries", {}, None)
+RUN = {"click": "run-button"}
+REVIEW = {"click": "run-check"}
+SUBMIT = {"click": "run-submit"}
+
+
+@pytest.mark.parametrize("case", ["on", "off", "refused", "unanswered"])
+def test_run_button_is_the_top_bar_primary_action_only_while_the_flag_is_on(
+    world, feature_flags, tmp_path, case
+):
+    wt = tmp_path / "nowhere" if case == "refused" else world.wt
+    calls, steps = ([ENTRIES], []) if case == "off" else ([ENTRIES, ENTRIES], [RUN])
+    with _client(world, feature_flags) as on, TestClient(_app(world, frozenset())) as off:
+        page = on.get("/", params={"worktree": str(world.wt)}).text
+        css = on.get("/assets/dashboard.css").text
+        probe, answers = _probe(
+            off if case == "off" else on,
+            wt,
+            tmp_path,
+            calls,
+            steps,
+            reject=0 if case == "unanswered" else None,
+        )
+
+    top_bar = r'<header id="topbar" class="topbar" hidden>.*?<button id="run-button" class="primary".*?</header>'
+    assert re.search(top_bar + r"\s*<section id=\"run\".*?<main>", page, re.S)
+    assert "<dialog" not in page
+    assert re.search(r"button\.primary \{[^}]*var\(--primary\)", css)
+    assert re.search(r"button\.primary:disabled \{[^}]*opacity", css)  # Submit looks disabled
+    loaded, *clicked = probe["views"]
+    assert loaded["run-button"]["hidden"] is loaded["topbar"]["hidden"] is (case == "off")
+    if case != "off":
+        (opened,) = clicked
+        body = answers[-1]["body"]
+        assert opened["run"]["hidden"] is False
+        assert opened["run-button"]["attributes"]["aria-expanded"] == "true"
+        assert opened["run-problem"]["text"] == body.get("error", "")
+        assert _option_values(opened["run-entry"]["html"]) == [
+            *([""] if case != "refused" else []),
+            *(f"flow:{flow['name']}" for flow in body.get("flows", [])),
+            *(f"specialist:{item['name']}" for item in body.get("specialists", [])),
+        ]
+
+
+@pytest.mark.parametrize("reviewed", [False, True], ids=["form", "reviewed"])
+@pytest.mark.parametrize(
+    "close", [{"key": "Escape"}, {"click": "run-cancel"}], ids=["escape", "cancel"]
+)
+def test_run_form_opens_in_place_survives_polls_and_closes_without_side_effects(
+    world, feature_flags, tmp_path, close, reviewed
+):
+    write_picker_project(world.wt)
+    lint = _run("lint", values={}, extra="")
+    typed = {**lint, "extra": "--dry-run"}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "lint"}, None),
+        ("targets", {"flow": "lint"}, None),
+        ("command", {}, lint),
+        ("command", {}, typed),
+        *[("check", {}, typed)] * reviewed,
+        ENTRIES,
+    ]
+    steps = [
+        RUN,
+        _choose("flow:lint"),
+        _edit("extra", "--dry-run"),
+        {"poll": True},
+        *[REVIEW] * reviewed,
+        close,
+        RUN,
+    ]
+    with _client(world, feature_flags) as client:
+        first = web_tests._reply(client, world.wt)
+        _job(world, "run-new", world.wt, target="t_new", ended="2026-10-08T10:00:10Z")
+        responses = [first, web_tests._reply(client, world.wt)]
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps, responses=responses)
+
+    _loaded, _opened, _chosen, typing, polled, *shown, closed, reopened = probe["views"]
+    assert [view["run-review"]["hidden"] for view in shown] == [False] * reviewed
+    assert "t_new" not in typing["results"]["html"]
+    assert "t_new" in polled["results"]["html"]
+    assert all(polled[id_]["html"] == typing[id_]["html"] for id_ in ("run-entry", "run-fields"))
+    assert not any(view["live"]["hidden"] for view in probe["views"])
+    assert closed["run"]["hidden"] is True
+    assert closed["run-button"]["attributes"]["aria-expanded"] == "false"
+    assert closed["run-fields"]["html"] == closed["run-entry"]["html"] == ""
+    assert (closed["run-review"]["html"], closed["run-review"]["hidden"]) == ("", True)
+    assert closed["run-submit"]["disabled"] is True
+    assert probe["focused"][-2:] == ["run-button", "run-entry"]
+    assert reopened["run-entry"]["html"].startswith('<option value="" selected>')
+    assert reopened["run-fields"]["html"] == ""
+
+
+def test_flow_form_offers_the_api_choices_and_quotes_the_command(world, feature_flags, tmp_path):
+    write_picker_project(world.wt)
+    sim = _run("sim", values={}, extra="")
+    picked = {**sim, "values": {"target": "sim_fifo"}}
+    ticked = {**picked, "values": {"target": "sim_fifo", "test": ["stress+short"]}}
+    seeded = {**ticked, "extra": "--seed 3"}
+    commands = [("command", {}, body) for body in (sim, picked, ticked, seeded)]
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "sim"}, None),
+        ("targets", {"flow": "sim"}, None),
+        commands[0],
+        ("tests", {"target": "sim_fifo"}, None),
+        *commands[1:],
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _edit("target", "sim_fifo", "select-one"),
+        _edit("test", "stress+short", "checkbox", checked=True),
+        _edit("extra", "--seed 3"),
+        {"release": "/api/run/command"},
+        {"click": "run-copy"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={8})
+
+    _loaded, _opened, chosen, targeted, ticking, waiting, seeding, _copied = probe["views"]
+    fields = chosen["run-fields"]["html"]
+    assert _option_values(fields, "target") == ["", *TARGETS_BY_FLOW["sim"]]
+    assert (
+        re.findall(r'data-dest="test" value="([^"]*)"', targeted["run-fields"]["html"])
+        == SIM_FIFO_RUNS
+    )
+    dests = set(re.findall(r'data-dest="(\w+)"', targeted["run-fields"]["html"]))
+    assert dests == {f["dest"] for f in answers[2]["body"]["fields"]} | {"extra"}
+    assert "worktree" not in dests
+    shown = [view["run-command"]["text"] for view in (chosen, targeted, ticking, seeding)]
+    assert shown == [answers[i]["body"]["command"] for i in (4, 6, 7, 8)]
+    assert shown[-1].endswith("booley flow sim --target sim_fifo --test stress+short --seed 3")
+    # Until the command for an edit arrives, Copy offers no command of the older inputs.
+    assert (ticking["run-copy"]["disabled"], waiting["run-copy"]["disabled"]) == (False, True)
+    assert seeding["run-copy"]["disabled"] is False
+    assert probe["clipboard"] == [shown[-1]]
+
+
+def test_review_shows_the_checks_facts_and_submit_starts_the_job_listed_as_yours(
+    world, feature_flags, spawned, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(model, "namespace", lambda: SCOPE)
+    _queued_world(world)
+    _connected_session(world)
+    (world.wt / "notes.txt").write_bytes(b"draft\n")
+    synth = _run("synth", values={}, extra="")
+    wrong = {**synth, "extra": "--no-such-option"}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "synth"}, None),
+        ("targets", {"flow": "synth"}, None),
+        ("command", {}, synth),
+        ("command", {}, wrong),
+        ("check", {}, wrong),
+        ("command", {}, synth),
+        ("check", {}, synth),
+        ("submit", {}, synth),
+    ]
+    steps = [
+        RUN,
+        _choose("flow:synth"),
+        _edit("extra", "--no-such-option"),
+        REVIEW,
+        SUBMIT,
+        _edit("extra", ""),
+        REVIEW,
+        {"click": "run-copy"},
+        SUBMIT,
+        REVIEW,
+        SUBMIT,
+        {"release": "/api/run/submit"},
+        {"poll": True},
+    ]
+    with _client(world, feature_flags) as client:
+        first = web_tests._reply(client, world.wt)
+        responses = [first, None]
+        probe, answers = _probe(
+            client, world.wt, tmp_path, calls, steps, responses=responses, held={9}
+        )
+
+    _loaded, _opened, _chosen, _typed, invalid, _unsent, _cleared, reviewed, copied, pending = (
+        probe["views"][:10]
+    )
+    released, polled = probe["views"][-2:]
+    assert "unrecognized arguments: --no-such-option" in invalid["run-error"]["text"]
+    assert (invalid["run-review"]["hidden"], invalid["run-submit"]["disabled"]) == (True, True)
+    lines = answers[8]["body"]["lines"]
+    assert lines == [
+        ADMITTED_BY_MEMORY,
+        WORK_UNIT_TIMEOUT,
+        "Warning: session S1 Interactive is connected to this worktree",
+        "Warning: 2 unfinished Jobs in this worktree (run-r, run-q)",
+        "Warning: 1 uncommitted change in this worktree",
+    ]
+    assert reviewed["run-review"]["html"] == "".join(f"<li>{escape(line)}</li>" for line in lines)
+    assert reviewed["run-review"]["hidden"] is False
+    command = answers[8]["body"]["command"]
+    assert (reviewed["run-command"]["text"], copied["run-copy"]["disabled"]) == (command, False)
+    assert probe["clipboard"] == [command]
+    assert (pending["run-submit"]["disabled"], pending["run-check"]["disabled"]) == (True, True)
+    handle = answers[9]["body"]["handle"]
+    assert (released["run"]["hidden"], handle in released["live"]["html"]) == (True, False)
+    assert re.search(
+        rf"<h2>Now</h2>((?!<h2>).)*?{handle}</span>(<span>[^<]*</span>)*?<span>you</span>",
+        polled["live"]["html"],
+        re.S,
+    )
+
+
+@pytest.mark.parametrize("case", ["refused", "lost"])
+def test_a_failed_submit_shows_on_the_form_and_needs_a_new_review(
+    world, feature_flags, spawned, tmp_path, case
+):
+    if case == "refused":
+        standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
+        standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
+    synth = _run("synth", values={}, extra="")
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "synth"}, None),
+        ("targets", {"flow": "synth"}, None),
+        ("command", {}, synth),
+        ("check", {}, synth),
+        ("submit", {}, synth),
+        ("check", {}, synth),
+    ]
+    steps = [RUN, _choose("flow:synth"), REVIEW, SUBMIT, SUBMIT, REVIEW]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(
+            client, world.wt, tmp_path, calls, steps, reject=6 if case == "lost" else None
+        )
+
+    *_before, reviewed, failed, again, renewed = probe["views"]
+    assert reviewed["run-submit"]["disabled"] is False
+    error = "refused" if case == "lost" else answers[6]["body"]["error"]
+    assert case == "lost" or error.startswith("Could not start the Job: ")
+    for view in (failed, again):
+        assert (view["run"]["hidden"], view["run-error"]["text"]) == (False, error)
+        assert (view["run-review"]["hidden"], view["run-submit"]["disabled"]) == (True, True)
+        assert view["run-check"]["disabled"] is False
+    assert (renewed["run-review"]["hidden"], renewed["run-submit"]["disabled"]) == (False, False)
+    assert renewed["run-error"]["hidden"] is True
+    assert len(spawned) == (case == "lost")  # the lost answer still started its Job
+
+
+def _reviewer_calls(*more_calls):
+    """The reads and commands of choosing the reviewer, scoping it and focusing it on bugs."""
+    reviewer = {"kind": "specialist", "name": "reviewer", "extra": ""}
+    base = {"category": "rtl"}
+    scoped = {**base, "scope": "fifo.v"}
+    bugs = {**scoped, "focus": "bugs"}
+
+    def form(**values):
+        return ("form", {"kind": "specialist", "name": "reviewer", **values}, None)
+
+    def command(values):
+        return ("command", {}, {**reviewer, "values": values})
+
+    steps = [
+        RUN,
+        _choose("specialist:reviewer"),
+        _edit("scope", "fifo.v"),
+        _edit("focus", "bugs", "select-one"),
+    ]
+    calls = [*[ENTRIES] * 2, form(), command(base), command(scoped), form(**bugs)]
+    return [*calls, command(bugs), command(bugs)], steps, (reviewer, bugs, form, command)
+
+
+def test_a_reloaded_specialist_form_clears_the_review_made_while_it_was_loading(
+    world, feature_flags, empty_home, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    write_config(world.wt, '[agent]\nauth = "api_key"\n')
+    calls, steps, (reviewer, bugs, form, command) = _reviewer_calls()
+    more = {**bugs, "more": "on"}
+    calls += [
+        form(**more),
+        command(more),
+        ("check", {}, {**reviewer, "values": more}),
+        command(more),
+    ]
+    steps += [_edit("more", "", "checkbox", checked=True), REVIEW, {"release": "/api/run/form"}]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={8})
+
+    reviewed, released = probe["views"][-2:]
+    assert (answers[10]["body"]["refusal"], reviewed["run-submit"]["disabled"]) == ("", False)
+    assert (reviewed["run-review"]["hidden"], released["run-review"]["hidden"]) == (False, True)
+    assert (released["run-review"]["html"], released["run-submit"]["disabled"]) == ("", True)
+    assert released["run-command"]["text"] == answers[11]["body"]["command"]
+
+
+def test_a_failed_copy_keeps_the_refusal_it_follows(world, feature_flags, empty_home, tmp_path):
+    write_config(world.wt, '[agent]\nauth = "api_key"\n')
+    calls, steps, (reviewer, bugs, _form, _command) = _reviewer_calls()
+    calls.append(("check", {}, {**reviewer, "values": bugs}))
+    steps += [REVIEW, {"click": "run-copy"}]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, copy_fails=True)
+
+    refusal = answers[8]["body"]["refusal"]
+    assert refusal.startswith("Refused:")
+    assert probe["views"][-1]["run-error"]["text"] == f"{refusal} Copy failed: select the command"
+    assert probe["clipboard"] == []
+
+
+def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_error(
+    world, feature_flags, empty_home, tmp_path
+):
+    write_config(world.wt, '[agent]\nauth = "api_key"\n')
+    run = _job(world, "run-cov", world.wt, report={})
+    write_coverage_record(run.parent / "flow-reports" / "sim" / "run-cov", "uart")
+    reviewer = {"kind": "specialist", "name": "reviewer", "extra": ""}
+    analyst = {"kind": "specialist", "name": "coverage_analyst", "extra": "", "values": {}}
+    base = {"category": "rtl"}
+    more = {**base, "more": "on"}
+    scoped = {**more, "scope": "fifo.v"}
+    bugs = {**scoped, "focus": "bugs"}
+
+    def form(name, **values):
+        return ("form", {"kind": "specialist", "name": name, **values}, None)
+
+    def command(values):
+        return ("command", {}, {**reviewer, "values": values})
+
+    calls = [
+        *[ENTRIES] * 2,
+        form("reviewer"),
+        command(base),
+        form("reviewer", **more),
+        command(more),
+        command(scoped),
+        command(scoped),
+        form("reviewer", **bugs),
+        command(bugs),
+        command(bugs),
+        ("check", {}, {**reviewer, "values": bugs}),
+        form("coverage_analyst"),
+        ("command", {}, analyst),
+    ]
+    steps = [
+        RUN,
+        _choose("specialist:reviewer"),
+        _edit("more", "", "checkbox", checked=True),
+        _edit("scope", "fifo.v"),
+        {"focus": "scope", "at": 6},
+        {"release": "/api/run/form"},
+        _edit("focus", "bugs", "select-one"),
+        REVIEW,
+        {"release": "/api/run/command"},
+        SUBMIT,
+        _choose("specialist:coverage_analyst"),
+    ]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps, held={4, 10})
+
+    _loaded, _opened, chosen, opening, _typing, _focus, released, focused, *_review = probe[
+        "views"
+    ]
+    _checked, refused, _submitted, analysing = _review
+    for view in (chosen, opening):
+        assert re.search(
+            r'<select data-dest="focus"><option value="" selected disabled>',
+            view["run-fields"]["html"],
+        )
+        assert "max_turns" not in view["run-fields"]["html"]
+        assert view["run-error"]["text"] == answers[3]["body"]["error"] == "Choose a focus"
+    assert 'data-dest="scope" value="fifo.v"' in released["run-fields"]["html"]
+    assert all(
+        f'data-dest="{dest}"' in released["run-fields"]["html"]
+        for dest in ("max_turns", "timeout")
+    )
+    # The rebuilt form puts the caret back where the user was typing, and has no Textual hint.
+    assert "field:scope" in probe["focused"]
+    assert probe["selections"][0] == ["scope", 6, 6]
+    assert "Enter shows" not in released["run-fields"]["html"]
+    assert focused["run-error"]["hidden"] is True
+    assert focused["run-command"]["text"].endswith(
+        "booley specialist reviewer --category rtl --focus bugs --scope fifo.v"
+    )
+    for fact in ("Model: ", "Uses model tokens on the claude Agent CLI"):
+        assert fact in refused["run-review"]["html"]
+    assert refused["run-error"]["text"] == answers[11]["body"]["refusal"]
+    assert refused["run-error"]["text"].startswith("Refused:")
+    assert (refused["run-submit"]["disabled"], analysing["run-review"]["hidden"]) == (True, True)
+    (record,) = answers[-2]["body"]["coverage_records"]
+    assert (
+        f'<datalist id="run-records"><option value="{escape(record["path"])}"'
+        in analysing["run-fields"]["html"]
+    )
+
+
+def test_a_failed_read_for_an_older_target_is_not_shown_beside_the_newer_tests(
+    world, feature_flags, tmp_path
+):
+    write_picker_project(world.wt)
+    sim = _run("sim", values={}, extra="")
+    wide = {**sim, "values": {"target": "sim_wide"}}
+    fifo = {**sim, "values": {"target": "sim_fifo"}}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "sim"}, None),
+        ("targets", {"flow": "sim"}, None),
+        ("command", {}, sim),
+        ("tests", {"target": "sim_wide"}, None),
+        ("command", {}, wide),
+        ("tests", {"target": "sim_fifo"}, None),
+        ("command", {}, fifo),
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _edit("target", "sim_wide", "select-one"),
+        _edit("target", "sim_fifo", "select-one"),
+        {"release": "/api/run/tests"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps, reject=5, held={5})
+
+    *_before, newer, released = probe["views"]
+    assert (
+        re.findall(r'data-dest="test" value="([^"]*)"', newer["run-fields"]["html"])
+        == SIM_FIFO_RUNS
+    )
+    assert released["run-problem"]["hidden"] is True
+    assert released["run-fields"]["html"] == newer["run-fields"]["html"]
+
+
+def test_a_flow_whose_form_cannot_be_built_launches_from_the_page(
+    world, feature_flags, tmp_path, monkeypatch
 ):
     # No public entry point builds a Flow with an unplaced group.
     monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
+    lint = _run("lint", values={}, extra="")
+    typed = {**lint, "extra": NUL_EXTRA}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "lint"}, None),
+        ("targets", {"flow": "lint"}, None),
+        ("command", {}, lint),
+        ("command", {}, typed),
+        ("check", {}, typed),
+    ]
+    steps = [RUN, _choose("flow:lint"), _edit("extra", NUL_EXTRA), REVIEW]
     with _client(world, feature_flags) as client:
-        answers = [_post(client, route, world.wt, _run("lint")) for route in POSTS]
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps)
 
-    assert [answer.status_code for answer in answers] == [422] * 3
-    assert all("'Lint options'" in answer.json()["error"] for answer in answers)
-    assert spawned == []
+    *_before, chosen, typing, reviewed = probe["views"]
+    problem = f"The form cannot be built: {answers[2]['body']['problem']}"
+    assert chosen["run-problem"]["text"] == problem
+    assert re.findall(r'data-dest="(\w+)"', chosen["run-fields"]["html"]) == ["extra"]
+    assert typing["run-command"]["text"] == answers[5]["body"]["command"]
+    assert "booley flow lint --target " in typing["run-command"]["text"]
+    assert reviewed["run-error"]["text"] == answers[6]["body"]["error"]
+    assert reviewed["run-error"]["text"].startswith(CHECK_FAILED)
+
+
+def test_a_failed_target_listing_advises_and_its_reread_keeps_the_typed_values(
+    world, feature_flags, tmp_path, monkeypatch
+):
+    write_picker_project(world.wt)
+    read_listing, failures = TargetsReader.listing, [RuntimeError("listing boom")] * 2
+
+    def listing(reader, worktree):
+        if failures:
+            raise failures.pop()
+        return read_listing(reader, worktree)
+
+    # No public entry point makes one listing fail and the next succeed within a probe's answers.
+    monkeypatch.setattr(TargetsReader, "listing", listing)
+    sim = _run("sim", values={}, extra="")
+    seeded = {**sim, "values": {"seed": "3"}}
+    targets = ("targets", {"flow": "sim"}, None)
+    opened = [("form", {"kind": "flow", "name": "sim"}, None), targets, ("command", {}, sim)]
+    calls = [
+        *[ENTRIES] * 2,
+        *opened * 2,
+        ("command", {}, seeded),
+        ("command", {}, {**seeded, "extra": "--no-kill"}),
+        targets,
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _choose(""),
+        _choose("flow:sim"),
+        _edit("seed", "3"),
+        _edit("extra", "--no-kill"),
+        {"click": "run-reread"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps)
+
+    _loaded, _opened, failed, unchosen, *_typed, reread = probe["views"]
+    assert unchosen["run-reread"]["hidden"] is True
+    assert failed["run-problem"]["text"] == (
+        "Targets unavailable: RuntimeError: listing boom. Type Targets in the extra arguments."
+    )
+    assert failed["run-reread"]["hidden"] is False
+    no_target = "Choose a Target first; or type Test Runs in the extra arguments."
+    assert no_target in failed["run-fields"]["html"]
+    fields = reread["run-fields"]["html"]
+    assert _option_values(fields, "target") == ["", *TARGETS_BY_FLOW["sim"]]
+    assert 'data-dest="seed" value="3"' in fields
+    assert 'data-dest="extra" value="--no-kill"' in fields
+    assert reread["run-problem"]["hidden"] is reread["run-reread"]["hidden"] is True

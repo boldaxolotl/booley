@@ -162,11 +162,9 @@ from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
-from booley.targets import target_naming
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
     LINT_EDA_TOOL_FAMILIES,
-    CoreSources,
     FuseSocError,
     TargetHandle,
     TargetInspection,
@@ -1010,6 +1008,7 @@ def _run_project_phase(
         reporter.diagnostics(readiness.check_guidance(project))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
+    _check_kept_worktree_branches(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(
@@ -1099,7 +1098,7 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
 def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> None:
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
-    ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
+    ``booley worktree prepare`` gives such a worktree a Paired Checkout. A copy
     made by hand looks healthy, but it records no paired revision, and measurements of
     its commits read the copy's live files instead of versioned ones.
     """
@@ -1122,9 +1121,39 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
         f"{versioned}; measurements will not use its committed revisions",
-        "save any work in this worktree, then recreate it with `booley worktree new <name>` "
-        f"from {primary}",
+        f"save any work in {local}, move it out of the worktree, then run "
+        f"`booley worktree prepare` in {project_root}",
     )
+
+
+def _check_kept_worktree_branches(project_root: Path, reporter: _Reporter) -> None:
+    """Warn about each ``booley-worktree/*`` branch that has no worktree.
+
+    ``booley worktree prepare`` deletes such a branch once all its commits are on the
+    Booley Directory's branch, so one still listed may hold work to merge or discard.
+    """
+    from booley.core.booley_dir import resolve_main_checkout_root
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.project_worktree_pairing import (
+        ProjectPairingError,
+        kept_paired_branches,
+        project_pairing_source,
+    )
+
+    try:
+        source = project_pairing_source(resolve_main_checkout_root(project_root))
+        if source is None:
+            return
+        branches = kept_paired_branches(source)
+    except (ProjectPairingError, BooleyLayoutError, OSError):
+        return  # Git layout problems are reported by the Git state checks.
+    repository = f"git -C {quote_arg(str(source))}"
+    for branch in branches:
+        _warning_sink(reporter.warn_, "project-data.worktree-branch-kept", subject=branch)(
+            f"{branch} in {source} has no worktree",
+            f"merge it with `{repository} merge {quote_arg(branch)}` or delete it with "
+            f"`{repository} branch -D {quote_arg(branch)}`",
+        )
 
 
 _COMMON_STATE_CHECK_ID = "project-data.common-state-in-worktree"
@@ -1676,7 +1705,7 @@ def _check_worktree_core_shadow_guard(
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
-    ``booley init`` and ``booley worktree new`` drop the marker that suppresses
+    ``booley init`` and ``booley worktree prepare`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """
@@ -1965,13 +1994,21 @@ def _check_runtime_location(
     means a stale pre-ADR-0028 image; and the shared slot store every process
     arbitrates admission through must be writable. Host-side, verify the
     sandbox image bakes the marker so the container sessions it spawns detect
-    correctly.
+    correctly. ``BOOLEY_CONTAINER=0`` in a container declares it a Booley host.
     """
     _warn = _warning_sink(_warn, "sandbox.runtime-marker")
 
     from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
+        if os.environ.get("BOOLEY_CONTAINER") == "0" and runtime_context.container_marker_file():
+            _pass(
+                warning(
+                    "sandbox.runtime-marker",
+                    "BOOLEY_CONTAINER=0 set: this container counts as a Booley host "
+                    "(explicit override)",
+                )
+            )
         _check_host_agent_session(_pass)
         _check_image_bakes_runtime_marker(
             docker_exe,
@@ -2727,7 +2764,7 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     error = hooks_error()
     if error:
         _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity or worktree conversation records are unavailable: {error}; "
+            f"Dashboard session activity is unavailable: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
         return
@@ -4350,30 +4387,6 @@ def _run_flow_runtime_inspection(
         _diagnostics(runtime_reality.inspect_flow_runtime_reality(request))
 
 
-def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
-    """Return the exact ``(core_file, Target)`` pairs selected by Doctor metadata.
-
-    A native core can contain dozens of historical board and example Targets
-    while Booley selects only one newly modernized Target from it.  Core-level
-    ownership is therefore too broad for modernization advice: selecting one
-    Target must not turn every unrelated declaration in that file into a WARN.
-    State-zone cores remain wholly Booley-authored and are handled separately by
-    each caller.
-    """
-    selected: set[tuple[Path, str]] = set()
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        return selected
-    for token in _project_target_matrix(project).seed_targets:
-        try:
-            handle = catalog.select(token)
-        except FuseSocError:
-            continue  # target-resolution diagnostics report this elsewhere
-        selected.add((handle.core_file, handle.name))
-    return selected
-
-
 def _doctor_target_incompatibility(
     target: str,
     flow_name: str,
@@ -4502,12 +4515,6 @@ def _check_target_metadata(
 ) -> None:
     """Check Target declarations that do not need source partitions."""
     _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
-    _check_legacy_core_targets(
-        audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
-    )
-    _check_naming_conventions(
-        audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
-    )
     _check_synth_recipe_migrations(refs, audit.warn)
     _check_target_flow_option_defines(audit.root, audit.fail)
     _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
@@ -4780,23 +4787,13 @@ def _check_sim_verdict_setup(
     _pass: Check,
     _warn: Check,
     *,
-    sources: fusesoc_registry.CoreSources | None = None,
+    sources: fusesoc_registry.CoreSources,
     _note: Check | None = None,
 ) -> None:
     """Check that a non-cocotb simulation TB can emit a pass verdict."""
     if ref.cocotb_module:
         return
     sentinels, configured = _sim_pass_sentinels(project)
-    if sources is None:
-        try:
-            catalog = TargetCatalog.build(root)
-            inspection = catalog.inspect(catalog.select(f"{ref.vlnv}#{ref.name}"))
-            sources = CoreSources(
-                rtl_source_files=inspection.rtl_files,
-                tb_files=inspection.tb_files,
-            )
-        except fusesoc_registry.FuseSocError:
-            return
     tb_files = sources.tb_files
     if not tb_files:
         return  # the untagged-TB check already covered "sim Target has no TB"
@@ -4812,195 +4809,6 @@ def _check_sim_verdict_setup(
         )
         return
     _warn_missing_sim_sentinel(name, tb_files, shown, _warn)
-
-
-def _check_legacy_core_targets(
-    project: ProjectAudit,
-    root: Path,
-    refs: dict,
-    _pass: Check,
-    _warn: Check,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Warn on Targets authored with legacy FuseSoC ``default_tool``/``tools`` fields.
-
-    Such a Target declares no ``flow``. Booley can still classify it from the
-    legacy ``default_tool`` family, but the intent is ambiguous for EDA tools such
-    as Verilator that support both sim and lint. Name the modernization for
-    owned cores; keep vendored upstream cores advisory-only.
-    """
-    note_sink = _note or _pass
-    del refs  # audit every declaration, including duplicate bare Target names
-    selected = _selected_core_targets(project, root)
-    legacy = []
-    try:
-        handles = TargetCatalog.build(root).list()
-    except FuseSocError:
-        return  # the structural audit reports enumeration failures
-    docs: dict[Path, Mapping[str, Any]] = {}
-    for handle in handles:
-        try:
-            doc = docs.setdefault(
-                handle.core_file,
-                fusesoc_registry.read_core(handle.core_file),
-            )
-        except FuseSocError:
-            continue
-        if fusesoc_registry.core_target_uses_legacy_fusesoc_api(doc, handle.name):
-            legacy.append((handle.name, handle))
-    if not legacy:
-        _pass(".core Targets use the flow API (no legacy FuseSoC tools-section targets)")
-        return
-    # A configured native Target gets a per-Target WARN because the project
-    # actively drives it.  Every Target in the hidden state-zone adapter is
-    # Booley-authored and gets the same treatment.  Unselected native Targets
-    # are modernization context only: roll them up per core instead of making a
-    # large legacy core fail the setup gate merely because one sibling Target
-    # was selected.
-    native_unselected: dict[Path, list[str]] = {}
-    for name, ref in legacy:
-        is_state_core = fusesoc_registry.is_stealth_core(root, ref.core_file)
-        if is_state_core or (ref.core_file, name) in selected:
-            _warning_sink(_warn, "core.legacy-target", subject=name)(
-                f"Target '{name}' in {ref.core_file.name} is a legacy FuseSoC tools-section "
-                f"target (FuseSoC default_tool/tools fields, no flow) — Booley falls back to "
-                f"the declared EDA-tool family, but the Target's intent is ambiguous; "
-                f"rewrite it to the flow API: flow: <sim|lint|synth> + "
-                f"flow_options: {{tool: {ref.eda_tool or '<eda-tool>'}}} (see CORE_TEMPLATE.yaml)"
-            )
-        else:
-            native_unselected.setdefault(ref.core_file, []).append(name)
-    for core_file, names in native_unselected.items():
-        listed = ", ".join(sorted(names))
-        plural = "targets" if len(names) > 1 else "target"
-        note_sink(
-            f"{core_file.name}: {len(names)} legacy FuseSoC tools-section {plural} ({listed}) "
-            f"— Booley falls back to each declared EDA-tool family; these Targets "
-            f"are not selected by this project, so modernizing them is optional"
-        )
-
-
-def _check_naming_conventions(
-    project: ProjectAudit,
-    root: Path,
-    refs: dict,
-    _pass: Check,
-    _warn: Check,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Both Target-name advisories: the ``<axis>_<subject>`` rule and dead ``default:``."""
-    _check_target_naming(project, root, refs, _pass, _note or _pass)
-    _check_stray_default_targets(project, root, _pass, _warn, _note=_note)
-
-
-def _check_target_naming(
-    project: ProjectAudit,
-    root: Path,
-    refs: dict,
-    _pass: Check,
-    _note: Check,
-) -> None:
-    """Note Booley-authored Targets that break the ``<axis>_<subject>`` convention.
-
-    The Target name is the only place ``synth`` vs ``fpga`` is written down (CAPI2
-    has no synth flow — both resolve as ``generic``), and it is what an agent
-    reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
-    :mod:`booley.targets.target_naming` for the rule.
-
-    A note, never a failure, and only for owned cores
-    (:func:`core_tree_inspection.owned_core_files`): a
-    non-conforming name still runs, and renaming a vendored upstream Target is
-    unfollowable advice for a repo that must stay byte-identical (ADR 0036).
-    """
-    del refs  # qualified duplicate Target names need exact declaration scope
-    selected = _selected_core_targets(project, root)
-    doctor_axes = _project_target_matrix(project).axes()
-    try:
-        handles = TargetCatalog.build(root).list()
-    except FuseSocError:
-        return
-    offenders = [
-        (handle.name, handle)
-        for handle in handles
-        if (
-            fusesoc_registry.is_stealth_core(root, handle.core_file)
-            or (handle.core_file, handle.name) in selected
-        )
-        and target_naming.violation(handle.name)
-    ]
-    if not offenders:
-        _pass("Target names follow the <axis>_<subject> convention")
-        return
-    for name, ref in offenders:
-        # The core name backs a bare axis (``sim`` -> ``sim_<core name>``).
-        core_name = ref.vlnv.split(":")[:3][-1]
-        suggestion = target_naming.suggest_name(name, doctor_axes.get(name), subject=core_name)
-        fix = (
-            f"rename it '{suggestion}'"
-            if suggestion
-            else f"prefix it with the driving Booley Flow's axis ({'/'.join(target_naming.TARGET_AXES)})"
-        )
-        _note(
-            f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys)"
-        )
-
-
-def _check_stray_default_targets(
-    project: ProjectAudit,
-    root: Path,
-    _pass: Check,
-    _warn: Check,
-    *,
-    _note: Check | None = None,
-) -> None:
-    """Warn on a ``default:`` Target in an owned core that nothing depends on.
-
-    ``default`` is FuseSoC's fallback for a core built as a *dependency*
-    (``_get_target`` selects it for any non-toplevel core), and Booley filters it
-    out of the selectable surface (decision 10) — so on a core with no
-    dependents it is a Target nobody can ever ``--target``, quietly drifting out
-    of sync with the real ones. Delete it there.
-
-    On a core that *is* depended upon, ``default`` is load-bearing in the
-    opposite direction: without it FuseSoC contributes zero filesets from that
-    core, silently. Those are left alone.
-    """
-    _warn = _warning_sink(_warn, "core.stray-default-target")
-    note_sink = _note or _pass
-    owned_cores = core_tree_inspection.owned_core_files(
-        root, _project_target_matrix(project).seed_targets
-    )
-    if not owned_cores:
-        return
-    depended = fusesoc_registry.depended_on_core_keys(root)
-    stray: list[tuple[Path, bool]] = []
-    for core_file in sorted(owned_cores):
-        try:
-            doc = fusesoc_registry.read_core(core_file)
-        except fusesoc_registry.FuseSocError:
-            continue
-        targets = doc.get("targets")
-        if not isinstance(targets, Mapping) or "default" not in targets:
-            continue
-        if fusesoc_registry.core_identity_key(doc) not in depended:
-            stray.append((core_file, fusesoc_registry.is_stealth_core(root, core_file)))
-    if not stray:
-        _pass("no dead 'default:' Targets in Booley-authored .core files")
-        return
-    for core_file, is_state_core in stray:
-        message = (
-            f"{core_file.name} declares a 'default:' Target but no other .core "
-            "depends on it — 'default' is FuseSoC's dependency-build fallback and "
-            "is filtered out of Booley's selectable surface, so nothing can ever "
-            "select it; delete it, or give it a real <axis>_<subject> name"
-        )
-        if is_state_core:
-            _warn(message)
-        else:
-            note_sink(message + " (native core; optional modernization)")
 
 
 def _check_yosys_targets_have_arch(

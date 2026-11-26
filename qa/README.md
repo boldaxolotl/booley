@@ -92,6 +92,7 @@ booley bootstrap --with-qa-skills
 | [`shared/coverage/`](shared/coverage/RUNBOOK.md) | Native-coverage fixture Project, expected values, fault injectors, and evaluator |
 | [`shared/mutation/`](shared/mutation/RUNBOOK.md) | Mutation fixture Project, hand-written expected Mutants and outcomes, and fault files; used by the `mutation` mission |
 | [`shared/t3/`](shared/t3/RUNBOOK.md) | T3 Code in a host browser on the picorv32 demo with a candidate build: setup, pairing, threads, the web Dashboard, GUI-vs-CLI oracles, evidence, cleanup; used by the `gui` mission and `booley-gui-check` |
+| [`shared/qa-host/`](shared/qa-host/RUNBOOK.md) | Docker-in-Docker QA Host that runs a candidate build's host commands on its own Docker daemon, leaving the canonical install untouched: stand up, pair, reuse, tear down, measurements |
 
 ## Checking changes
 

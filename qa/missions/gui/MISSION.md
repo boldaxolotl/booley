@@ -107,7 +107,7 @@ Try:
   [`../picorv32/fixtures/metrics.toml`](../picorv32/fixtures/metrics.toml)
   into `.booley/metrics.toml` and commit it in the Booley Directory's
   repository.
-- Make a `zbb` worktree and start a Codex thread on it (DEVELOPER-CHILD), then
+- Start a Codex thread in a new worktree for `zbb` (DEVELOPER-CHILD), then
   send "Implement the design described in .booley/specs/zbb-design.md. Then
   give me a Measured Commit." Approve a `metrics.toml` change when asked.
 - While the child works, start two overlapping Flows from the host:
