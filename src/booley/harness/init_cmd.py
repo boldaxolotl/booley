@@ -2455,7 +2455,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ctx.record(name, "err", finding.detail)
         elif finding.state in {BootstrapState.PENDING, BootstrapState.WARNING}:
             warn(f"{finding.resource}: {finding.detail}")
-            ctx.record(name, "warn", finding.detail)
+            # The editor is optional: its absence is not pending work for `--check-only`.
+            ctx.record(name, "skip" if finding.resource == "vscode" else "warn", finding.detail)
         elif finding.state is BootstrapState.CHANGED:
             ok(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "ok", finding.detail)

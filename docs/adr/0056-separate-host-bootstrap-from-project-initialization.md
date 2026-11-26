@@ -14,15 +14,16 @@ Project mutation and Session Runtime issuance. Booley exposes an idempotent
 before any Project mutation, and aborts without creating Project state when
 bootstrap fails.
 
-Host Bootstrap verifies Git, Docker, and VS Code as required external
-prerequisites, deploys Booley skills, prepares the base Runtime Image and shared
-Nangate45 cache, and owns one host-wide egress network, proxy, and reaper. Their
-policy lives in optional XDG-aware `~/.config/booley/config.toml`; absent
-configuration selects built-in defaults, and Project `[interactive]` fields
-fail with migration instructions rather than silently selecting global policy.
-Host policy is strictly validated before any mutation. Policy or image drift
-recreates sidecars only when no Session Runtime is active; otherwise
-reconciliation fails with the active sessions and repair instructions.
+Host Bootstrap verifies Git and Docker as required external prerequisites, warns
+when no VS Code-compatible editor is installed, deploys Booley skills, prepares
+the base Runtime Image and shared Nangate45 cache, and owns one host-wide egress
+network, proxy, and reaper. Their policy lives in optional XDG-aware
+`~/.config/booley/config.toml`; absent configuration selects built-in defaults,
+and Project `[interactive]` fields fail with migration instructions rather than
+silently selecting global policy. Host policy is strictly validated before any
+mutation. Policy or image drift recreates sidecars only when no Session Runtime
+is active; otherwise reconciliation fails with the active sessions and repair
+instructions.
 
 Project Initialization retains agent provider and authentication policy,
 Project state, Ticket Board, Git integration, selected or derived images, and

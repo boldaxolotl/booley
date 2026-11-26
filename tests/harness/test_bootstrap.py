@@ -907,16 +907,16 @@ _PROBE_ROWS = [
     _row(
         "vscode-gui-app",
         "vscode",
-        _CURRENT,
-        ("Visual Studio Code.app",),
+        bootstrap.BootstrapState.WARNING,
+        ("Visual Studio Code.app", "shell command"),
         command=None,
         app=Path("Visual Studio Code.app"),
     ),
     _row(
         "vscode-no-editor",
         "vscode",
-        _ERROR,
-        ("compatible editor is required",),
+        bootstrap.BootstrapState.WARNING,
+        ("optional",),
         command=None,
         app=None,
     ),
@@ -1101,21 +1101,33 @@ def test_dev_containers_reconciliation(monkeypatch, intent, replies, state, expe
         assert seen == argv
 
 
-def test_dev_containers_need_an_extension_management_command(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.parametrize(
+    ("app", "fragment"),
+    [(None, "optional"), (Path("Visual Studio Code.app"), "shell command")],
+    ids=["no-editor", "app-without-cli"],
+)
+def test_bootstrap_without_editor_command_warns_and_continues(monkeypatch, app, fragment):
+    from booley.audit.diagnostic_results import Findings, Severity
     from booley.config import editor
+    from booley.harness import host_diagnostics
 
     calls = _wire_current(monkeypatch)
+    # Host boundary: these two are where Booley looks for an editor installed on this machine.
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: None)
-    monkeypatch.setattr(editor, "resolve_editor_install", lambda: Path("Visual Studio Code.app"))
+    monkeypatch.setattr(editor, "resolve_editor_install", lambda: app)
 
     result = bootstrap.reconcile_bootstrap(Intent.ENSURE)
 
-    assert result.findings[-1].resource == "vscode-dev-containers"
-    assert result.findings[-1].state is _ERROR
-    assert "management command" in result.findings[-1].detail
-    assert calls == []
+    assert result.exit_status == 0
+    assert calls == ["skills", "nangate45", "base-image", "sidecars"]
+    checked = bootstrap.inspect_bootstrap(include_images=False)  # the --check-only path
+    for findings in (result.findings, checked.findings):
+        assert [item.resource for item in findings if "vscode" in item.resource] == ["vscode"]
+    report = Findings()
+    # private: Doctor's public inspect_host also probes Python, the package and the install.
+    host_diagnostics._add_bootstrap(result, report)
+    (warning,) = (item for item in report.report().findings if item.severity is Severity.WARN)
+    assert warning.message.startswith("Host Bootstrap vscode:") and fragment in warning.message
 
 
 _CONFLICT = _skill_event("conflict", "`x` is not Booley's")
