@@ -932,11 +932,13 @@ def _merged_source_change(tmp_path: Path) -> tuple[Path, str, str]:
 
 
 _TODAYS_LINUX_FULL_COMMAND = (
-    "pytest tests/ -q --tb=short -n 4 --dist=loadscope"
-    ' --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"'
+    "python .github/scripts/ci_pytest_rerun.py"
+    ' --junitxml "${{ runner.temp }}/junit.xml" --basetemp "${{ runner.temp }}/pytest"'
+    " pytest tests/ -q --tb=short -n 4 --dist=loadscope"
+    ' -m "${{ env.TEST_MARK_EXPRESSION }}"'
     " --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8"
     " --timeout-headroom-warn=0.5' || '' }}"
-    ' --durations=30 --junitxml="${{ runner.temp }}/junit.xml" -p ci_pytest_shard'
+    " --durations=30 -p ci_pytest_shard"
     ' --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"'
 )
 

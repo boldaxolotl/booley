@@ -2,8 +2,9 @@
 
 Why the `Tests` workflow (`.github/workflows/test.yml`) runs what it runs. The
 job selection itself is code: read `.github/scripts/ci_changes.py` (categories
-and `required_jobs`), `ci_flake_stress.py`, and `ci_pytest_shard.py` for the
-mechanics. Local checks and the path from branch to `main` are in
+and `required_jobs`), `ci_flake_stress.py`, `ci_pytest_shard.py`, and
+`ci_pytest_rerun.py` for the mechanics. Local checks and the path from branch
+to `main` are in
 [CONTRIBUTING.md](../../docs/internals/CONTRIBUTING.md), the merge queue in
 [merge-queue.md](../../docs/internals/agents/merge-queue.md), Renovate in
 [dependency-updates.md](../../docs/internals/agents/dependency-updates.md), and
@@ -85,6 +86,30 @@ candidate layout can be measured without a code change; `ci_changes.py` rejects
 them outside `workflow_dispatch`. The defaults (four Windows shards, two Ubuntu
 3.11 shards with `loadscope`, six coverage shards) come from measured runs; the
 inputs and their allowed values are in `ci_changes.py`.
+
+## Rerun of failed tests
+
+The pytest steps of `docs-check`, the `Tests` jobs, and the coverage shards run
+through `.github/scripts/ci_pytest_rerun.py`. When a run ends with test
+failures, it reruns only the failed test ids once, in a separate serial pytest
+process (`-n 0`, no shard options). The rerun keeps the mark expression,
+per-test timeout, and time scale. The job passes only when every rerun passes.
+
+- A test that fails once and passes on the rerun is recorded in the step
+  summary ("Passed on rerun") and in `junit.xml` as `flakyFailure` or
+  `flakyError` inside its `testcase`, with the failure counts reduced. A test
+  that fails again keeps its failure and gains `rerunFailure` or `rerunError`;
+  the log shows both failures.
+- No rerun starts, and the step summary says why, after a collection error, a
+  shard selection or other non-test exit, a missing or malformed JUnit report,
+  or more than `MAX_RERUN_FAILURES` (5, in `ci_pytest_rerun.py`) failed tests,
+  which likely means a deterministic break. A coverage shard also skips the
+  rerun after a crashed worker, because that worker's coverage data is lost.
+- The rerun's coverage data is combined into the shard's one `.coverage.<index>`
+  file, so lines only the failed attempt ran stay counted.
+- `flake-stress` never reruns: its job is to expose flakiness.
+- The rerun runs inside the step's existing time limit; a slow rerun fails the
+  step as a deterministic break would.
 
 ## Test time budgets
 
