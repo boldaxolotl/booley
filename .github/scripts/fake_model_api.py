@@ -1,8 +1,9 @@
-"""Loopback stand-in for the Anthropic Messages API, for probes that run the installed ``claude``.
+"""Loopback stand-in for the Anthropic Messages and OpenAI Responses APIs, for the CLI probes.
 
-``FakeModelApi`` answers each model request that offers tools with the next tool call of a
-script, then with the text ``OK``. It records every request body, so a probe can read the tools
-Claude offered the model and the results it sent back.
+``FakeModelApi`` answers each Messages request that offers tools with the next tool call of a
+script, then with the text ``OK``. A Responses request (``codex``) gets the next item of a second
+script. It records every request body, so a probe can read the tools a CLI offered the model and
+the results it sent back.
 
 Standard library only: the Sandbox image's Python runs the probes without Booley installed.
 """
@@ -13,6 +14,7 @@ import json
 import threading
 from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
@@ -78,11 +80,38 @@ def tool_results(body: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def call_outputs(body: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the tool call outputs of a Responses request, in input order."""
+    return [item for item in body.get("input", []) if item["type"].endswith("_call_output")]
+
+
+def _responses_reply(items: Sequence[dict[str, Any]], done: int) -> bytes:
+    if done < len(items):
+        item = {**items[done], "id": f"item_probe_{done}", "call_id": f"call_probe_{done}"}
+    else:
+        text = {"type": "output_text", "text": "OK"}
+        item = {"type": "message", "id": "msg_probe", "role": "assistant", "content": [text]}
+    response = {"id": f"resp_probe_{done}"}
+    usage = {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    events = [
+        {"type": "response.created", "response": response},
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {"type": "response.completed", "response": {**response, "usage": usage}},
+    ]
+    return b"".join(_sse_event(event["type"], event) for event in events)
+
+
 class _Server(ThreadingHTTPServer):
-    def __init__(self, calls: Sequence[tuple[str, dict[str, Any]]]) -> None:
+    def __init__(
+        self,
+        calls: Sequence[tuple[str, dict[str, Any]]],
+        responses_calls: Sequence[dict[str, Any]],
+    ) -> None:
         super().__init__(("127.0.0.1", 0), _Handler)
         self.calls = calls
+        self.responses_calls = responses_calls
         self.requests: list[dict[str, Any]] = []
+        self.responses_requests: list[dict[str, Any]] = []
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -93,6 +122,11 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         if self.path.rstrip("/").endswith("count_tokens"):
             self._send(b'{"input_tokens":1}', "application/json")
+            return
+        if self.path.rstrip("/").endswith("/responses"):
+            self.server.responses_requests.append(body)
+            reply = _responses_reply(self.server.responses_calls, len(call_outputs(body)))
+            self._send(reply, "text/event-stream")
             return
         self.server.requests.append(body)
         done = len(tool_results(body))
@@ -114,15 +148,37 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class FakeModelApi:
-    """Serve ``calls`` (tool name and arguments) to ``claude`` from a thread, as a context."""
+    """Serve the scripts from a thread, as a context.
 
-    def __init__(self, calls: Sequence[tuple[str, dict[str, Any]]]) -> None:
-        self._server = _Server(calls)
+    ``calls`` (tool name and arguments) are for ``claude``; ``responses_calls`` (Responses
+    output items without their IDs) are for ``codex``.
+    """
+
+    def __init__(
+        self,
+        calls: Sequence[tuple[str, dict[str, Any]]],
+        responses_calls: Sequence[dict[str, Any]] = (),
+    ) -> None:
+        self._server = _Server(calls, responses_calls)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     @property
     def requests(self) -> list[dict[str, Any]]:
         return self._server.requests
+
+    @property
+    def responses_requests(self) -> list[dict[str, Any]]:
+        return self._server.responses_requests
+
+    def codex_config(self, home: Path) -> None:
+        """Create the Codex home *home* whose model provider is this API."""
+        home.mkdir()
+        (home / "config.toml").write_text(
+            'model_provider = "probe"\n[model_providers.probe]\nname = "probe"\n'
+            f'base_url = "http://127.0.0.1:{self._server.server_port}/v1"\n'
+            'wire_api = "responses"\n',
+            encoding="utf-8",
+        )
 
     def claude_environment(self) -> dict[str, str]:
         return {

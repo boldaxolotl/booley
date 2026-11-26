@@ -171,7 +171,7 @@ def test_t3code_runtime_check(tmp_path: Path, fake: dict[str, Any], failure: str
     ],
 )
 def test_claude_tool_list_comparison(offered: set[str], problems: list[str]) -> None:
-    compare = importlib.import_module("verify_t3code_claude_tools").compare_tool_lists
+    compare = importlib.import_module("verify_t3code_agent_tools").compare_tool_lists
 
     assert compare(offered, denied={"schedule_task"}, kept={"html_render"}) == problems
 
@@ -180,7 +180,7 @@ def test_claude_tool_list_comparison(offered: set[str], problems: list[str]) -> 
 def test_claude_shim_exits_with_claude_while_its_stdin_stays_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_shim = importlib.import_module("verify_t3code_claude_tools")._write_claude_shim
+    write_shim = importlib.import_module("verify_t3code_agent_tools")._write_claude_shim
     real, bin_dir, capture = tmp_path / "real", tmp_path / "bin", tmp_path / "capture.jsonl"
     real.mkdir()
     bin_dir.mkdir()
