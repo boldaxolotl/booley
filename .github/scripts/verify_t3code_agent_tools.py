@@ -1,15 +1,17 @@
-"""Check which T3 Code tools a Claude thread gets in the Sandbox image (#4782).
+"""Check which T3 Code tools Claude and Codex threads get in the Sandbox image (#4782, #5511).
 
 CI runs this as the Sandbox user with no network inside ``bwave-smoke``. It starts ``t3 serve``
-and one Claude thread against a loopback fake model API, so the installed ``claude`` reads the
-image's managed settings. The thread calls one denied and one kept T3 Code tool. The check fails
-when
+and one Claude and one Codex thread against a loopback fake model API, so the installed
+``claude`` and ``codex`` read the image's managed policies. Each thread calls denied and kept
+T3 Code tools. The check fails when
 
-- T3 Code offers a tool that is neither denied in the managed settings nor in ``_KEPT``, or a
-  listed name that T3 Code no longer offers (``compare_tool_lists``): T3 Code changed its tools,
-  so classify them;
+- T3 Code offers a tool that is neither in the shared denied list nor in ``_KEPT``, or a listed
+  name that T3 Code no longer offers (``compare_tool_lists``): T3 Code changed its tools, so
+  classify them;
 - Claude's own tool list differs from ``_KEPT``;
-- the denied call is not refused with "No such tool available", or the kept call fails.
+- Claude's denied call is not refused with "No such tool available", or its kept call fails;
+- Codex's denied call under ``t3-code`` is not blocked by the deny hook, its denied call under
+  ``t3-code-direct`` is not refused or that server is not offered, or its kept call fails.
 
 Claude hides the tools it denies, so its list cannot show a denied tool that T3 Code stopped
 offering. The unfiltered list therefore comes from T3 Code's MCP server: a pass-through
@@ -32,7 +34,7 @@ from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any
 
-from fake_model_api import FakeModelApi, tool_results
+from fake_model_api import FakeModelApi, call_outputs, tool_results
 from verify_t3code_runtime import (
     command_output,
     fail,
@@ -42,7 +44,7 @@ from verify_t3code_runtime import (
     wait_until_ready,
 )
 
-_MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json"
+_DENIED_TOOLS = "/usr/local/libexec/booley/t3code-denied-tools.txt"
 _PREFIX = "mcp__t3-code__"
 _DENIED_CALL = "list_scheduled_tasks"
 _KEPT_CALL = "orchestrator_capabilities"
@@ -50,8 +52,12 @@ _COMMAND_TIMEOUT_S = 60
 _THREAD_TIMEOUT_S = 300
 _TEXT_LIMIT = 300
 _MODEL = "claude-haiku-5-5"
+# A model of the pinned Codex catalog: like its current models, it calls MCP tools from the
+# JavaScript of Codex's ``exec`` tool, and only ``t3-code-direct``'s tools directly.
+_CODEX_MODEL = "gpt-6.1-sol"
+_DIRECT_NAMESPACE = "mcp__t3_code_direct"
 # At the pinned T3 Code version, in a top-level thread with linked environments on and a
-# project whose Git remote is a forge: every tool T3 Code offers, less the managed denials.
+# project whose Git remote is a forge: every tool T3 Code offers, less the shared denials.
 _KEPT_NAMES = """
 ci_logs ci_rerun comment_on_issue create_issue create_threads delegate_task html_preview
 html_render link_issue link_pull_request link_pull_requests list_issues list_thread_issues
@@ -109,11 +115,6 @@ def compare_tool_lists(
     return problems
 
 
-def _denied_tools(settings: Path) -> frozenset[str]:
-    rules = json.loads(settings.read_text(encoding="utf-8"))["permissions"]["deny"]
-    return frozenset(rule.removeprefix(_PREFIX) for rule in rules if rule.startswith(_PREFIX))
-
-
 def _write_claude_shim(bin_dir: Path, capture: Path) -> None:
     real = shutil.which("claude")
     if real is None:
@@ -158,7 +159,7 @@ def _rpc(server: dict[str, Any], body: dict[str, Any], session: str | None) -> t
 
 def _offered_tools(capture: Path) -> frozenset[str]:
     server = _t3_server(capture)
-    client = {"name": "verify_t3code_claude_tools", "version": "0"}
+    client = {"name": "verify_t3code_agent_tools", "version": "0"}
     initialize = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -178,11 +179,10 @@ def _offered_tools(capture: Path) -> frozenset[str]:
     return names
 
 
-def _result_text(result: dict[str, Any]) -> str:
-    content = result.get("content")
+def _joined_text(content: object) -> str:
     if isinstance(content, list):
         content = "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
-    return str(content)[:_TEXT_LIMIT]
+    return str(content)
 
 
 def _judge_claude(model_api: FakeModelApi) -> tuple[list[str], list[str], list[dict[str, Any]]]:
@@ -205,7 +205,10 @@ def _judge_claude(model_api: FakeModelApi) -> tuple[list[str], list[str], list[d
     if len(results) != 2:
         return view, [*problems, f"Claude made {len(results)} tool calls; expected 2"], []
     denied, kept = (
-        {"is_error": bool(result.get("is_error")), "text": _result_text(result)}
+        {
+            "is_error": bool(result.get("is_error")),
+            "text": _joined_text(result.get("content"))[:_TEXT_LIMIT],
+        }
         for result in results
     )
     if not denied["is_error"] or "No such tool available" not in denied["text"]:
@@ -215,14 +218,72 @@ def _judge_claude(model_api: FakeModelApi) -> tuple[list[str], list[str], list[d
     return view, problems, [denied, kept]
 
 
-def _run_thread(root: Path, model_api: FakeModelApi, capture: Path) -> tuple[frozenset[str], str]:
-    """Start T3 Code and one Claude thread; return the tools T3 Code offers and its reply."""
+def _codex_exec(tool: str) -> dict[str, Any]:
+    code = f"text(await tools.mcp__t3_code__{tool}({{}}))"
+    return {"type": "custom_tool_call", "name": "exec", "input": code}
+
+
+def _codex_calls() -> list[dict[str, Any]]:
+    """The denied call under each T3 Code server, then the kept call."""
+    direct = {"type": "function_call", "namespace": _DIRECT_NAMESPACE, "name": _DENIED_CALL}
+    return [_codex_exec(_DENIED_CALL), {**direct, "arguments": "{}"}, _codex_exec(_KEPT_CALL)]
+
+
+def _judge_codex(model_api: FakeModelApi) -> tuple[list[str], list[str], dict[str, str]]:
+    """Return the MCP servers Codex offered directly, the problems and the call outputs."""
+    requests = model_api.responses_requests
+    namespaces = sorted(
+        {
+            tool["name"]
+            for request in requests
+            for item in request.get("input", [])
+            if item["type"] == "additional_tools"
+            for tool in item["tools"]
+            if tool["name"].startswith("mcp__")
+        }
+    )
+    outputs = max((call_outputs(request) for request in requests), key=len, default=[])
+    if len(outputs) != 3:
+        return namespaces, [f"Codex made {len(outputs)} tool calls; expected 3"], {}
+    denied, direct, kept = (_joined_text(item.get("output")) for item in outputs)
+    problems: list[str] = []
+    if _DIRECT_NAMESPACE not in namespaces:
+        problems.append(f"Codex did not offer {_DIRECT_NAMESPACE}: {namespaces}")
+    if f"turns off the T3 Code tool {_DENIED_CALL}" not in denied:
+        problems.append(f"Codex ran or never reached the denied {_DENIED_CALL}: {denied}")
+    if "unsupported call" not in direct:
+        problems.append(f"the denied {_DENIED_CALL} was not refused directly: {direct}")
+    if '"isError":false' not in kept:
+        problems.append(f"Codex's kept tool {_KEPT_CALL} failed: {kept}")
+    labels = ("t3-code denied", "t3-code-direct denied", "t3-code kept")
+    texts = (text[:_TEXT_LIMIT] for text in (denied, direct, kept))
+    return namespaces, problems, dict(zip(labels, texts, strict=True))
+
+
+def _start_thread(root: Path, provider: str, model: str) -> str:
+    """Run one thread of *provider* to its end and return the reply ``t3`` prints."""
+    thread = run_t3(
+        *["thread", "start", "--base-dir", str(root / "home"), "--provider", provider],
+        *["--model", model, "--wait", "--json", str(root / "project"), "probe"],
+        timeout_s=_THREAD_TIMEOUT_S,
+    )
+    if thread.returncode:
+        fail(f"t3 thread start failed for {provider}", command_output(thread))
+    return thread.stdout.strip()
+
+
+def _run_threads(
+    root: Path, model_api: FakeModelApi, capture: Path
+) -> tuple[frozenset[str], dict[str, str]]:
+    """Run a Claude and a Codex thread; return the tools T3 Code offers and the replies."""
     bin_dir = root / "bin"
     bin_dir.mkdir()
     _write_claude_shim(bin_dir, capture)
+    model_api.codex_config(root / "codex-home")
     os.environ.update(
         {
             **model_api.claude_environment(),
+            "CODEX_HOME": str(root / "codex-home"),
             "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
             # Every MCP tool in the model request, none deferred behind tool search.
             "ENABLE_TOOL_SEARCH": "false",
@@ -235,14 +296,10 @@ def _run_thread(root: Path, model_api: FakeModelApi, capture: Path) -> tuple[fro
         added = run_t3("project", "add", "--base-dir", str(home), str(project))
         if added.returncode:
             fail("t3 project add failed", command_output(added))
-        thread = run_t3(
-            *["thread", "start", "--base-dir", str(home), "--provider", "claudeAgent"],
-            *["--model", _MODEL, "--wait", "--json", str(project), "probe"],
-            timeout_s=_THREAD_TIMEOUT_S,
-        )
-        if thread.returncode:
-            fail("t3 thread start failed", command_output(thread))
-        return _offered_tools(capture), thread.stdout.strip()
+        replies = {"claude": _start_thread(root, "claudeAgent", _MODEL)}
+        offered = _offered_tools(capture)
+        replies["codex"] = _start_thread(root, "codex", _CODEX_MODEL)
+        return offered, replies
     finally:
         stop_server(server)
 
@@ -267,20 +324,24 @@ def _prepare_project(root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--managed-settings", type=Path, default=Path(_MANAGED_SETTINGS))
+    parser.add_argument("--denied-tools", type=Path, default=Path(_DENIED_TOOLS))
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args()
-    denied = _denied_tools(args.managed_settings)
+    denied = frozenset(args.denied_tools.read_text(encoding="utf-8").split())
     calls = [(f"{_PREFIX}{_DENIED_CALL}", {}), (f"{_PREFIX}{_KEPT_CALL}", {})]
-    with tempfile.TemporaryDirectory(prefix="t3code-tools-") as tmp, FakeModelApi(calls) as api:
+    with (
+        tempfile.TemporaryDirectory(prefix="t3code-tools-") as tmp,
+        FakeModelApi(calls, _codex_calls()) as api,
+    ):
         root = Path(tmp)
         _prepare_project(root)
-        offered, reply = _run_thread(root, api, root / "mcp-servers.jsonl")
+        offered, replies = _run_threads(root, api, root / "mcp-servers.jsonl")
         view, claude_problems, results = _judge_claude(api)
-    problems = compare_tool_lists(offered, denied, _KEPT) + claude_problems
+        namespaces, codex_problems, codex_outputs = _judge_codex(api)
+    problems = compare_tool_lists(offered, denied, _KEPT) + claude_problems + codex_problems
     if problems:
         fail(
-            "T3 Code's tools for Claude are not as the managed settings say",
+            "T3 Code's tools for Claude and Codex are not as the shared denied list says",
             "\n".join([*problems, f"offered: {sorted(offered)}"]),
         )
     evidence = {
@@ -289,7 +350,9 @@ def main() -> int:
         "kept": sorted(_KEPT),
         "claude_view": view,
         "calls": dict(zip((_DENIED_CALL, _KEPT_CALL), results, strict=True)),
-        "thread_reply": reply,
+        "codex_namespaces": namespaces,
+        "codex_calls": codex_outputs,
+        "thread_replies": replies,
     }
     text = json.dumps(evidence, indent=2, sort_keys=True)
     print(text)

@@ -8,8 +8,8 @@ link under the base URL that ``booley session up`` will print. The file named by
 ``--policy`` holds the expected values: ``organization``, ``limits`` and optional
 ``settings``, each a ``{"value", "locked"}`` entry as T3 Code's policy file writes it.
 
-``verify_t3code_claude_tools.py`` reuses its helpers for the check of the tools T3 Code offers
-Claude. Standard library only: the image's Python runs it without Booley installed.
+``verify_t3code_agent_tools.py`` reuses its helpers for the check of the tools T3 Code offers
+Claude and Codex. Standard library only: the image's Python runs it without Booley installed.
 """
 
 from __future__ import annotations

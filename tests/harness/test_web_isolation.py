@@ -26,37 +26,17 @@ def test_shipped_managed_policies_disable_provider_web_tools() -> None:
     assert set(claude["permissions"]["deny"]) >= web_isolation.CLAUDE_WEB_CAPABILITIES
 
 
-def test_shipped_claude_policy_denies_riskier_t3code_tools() -> None:
-    # The maintainer's decision on #4782: a Claude thread started by T3 Code cannot schedule
-    # tasks, link machines, transfer threads, manage T3 Code projects, use devices or ask for secrets.
+def test_shipped_claude_policy_denies_the_shared_t3code_tool_list() -> None:
+    # The maintainer chose the tools on #4782; Codex's hook reads the same file (#5511).
+    shared = (_docker_data() / "t3code-denied-tools.txt").read_text(encoding="utf-8").split()
     claude = json.loads(
         (_docker_data() / "claude-managed-settings.json").read_text(encoding="utf-8")
     )
-    prefix = "mcp__t3-code__"
+    rules = claude["permissions"]["deny"]
 
-    denied = {
-        rule.removeprefix(prefix)
-        for rule in claude["permissions"]["deny"]
-        if rule.startswith(prefix)
-    }
-
-    assert denied == {
-        "schedule_task",
-        "delete_scheduled_task",
-        "list_scheduled_tasks",
-        "run_scheduled_task_now",
-        "t3_environment_link",
-        "t3_environment_links",
-        "t3_environment_unlink",
-        "t3_thread_transfer",
-        "t3_project_create",
-        "t3_project_delete",
-        "t3_project_clone",
-        "device_open",
-        "device_close",
-        "device_list",
-        "device_screenshot",
-        "request_secret",
+    assert len(rules) == len(set(rules))
+    assert set(rules) == web_isolation.CLAUDE_WEB_CAPABILITIES | {
+        f"mcp__t3-code__{name}" for name in shared
     }
 
 
