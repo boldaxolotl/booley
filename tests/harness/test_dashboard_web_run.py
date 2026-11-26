@@ -17,6 +17,8 @@ from booley.config.feature_flags import enabled_features
 from booley.harness import booley as tlr
 from booley.harness.dashboard import launch, model, run_form
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot
+from booley.harness.dashboard.specialist_form import NO_COVERAGE_RECORDS
+from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.standalone_job import standalone_jobs_dir
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import job_records
@@ -145,6 +147,8 @@ def test_flow_form_places_every_option_with_the_extra_arguments(world, feature_f
         f for f in sim["fields"] if f["dest"] == "target"
     ).items()
     assert "'Lint options'" in lint["problem"]
+    assert lint["fields"] == []
+    assert lint["extra"] == {"hint": run_form.NO_FORM.extra_hint(), "options": []}
 
 
 def test_specialist_forms_follow_the_values_given(world, feature_flags):
@@ -265,16 +269,21 @@ def test_run_routes_refuse_unknown_entries_and_missing_parameters(
 
 
 def test_a_read_that_fails_is_the_problem_not_a_server_error(world, feature_flags, monkeypatch):
-    # A Booley Directory the layout rules refuse: the readers raise instead of listing a problem.
-    (world.wt / "booley.toml").write_bytes(b"[project]\ndir = '.booley_project'\n")
     with _client(world, feature_flags) as client:
+        none_fit = _get(client, "targets", world.wt, flow="sim")
+        # A Booley Directory the layout rules refuse: the readers raise instead of listing a problem.
+        (world.wt / "booley.toml").write_bytes(b"[project]\ndir = '.booley_project'\n")
         listing = _get(client, "targets", world.wt, flow="sim")
         tests = _get(client, "tests", world.wt, target="sim_fifo")
         monkeypatch.setattr(launch.Launcher, "form", _crash)
         built = _get(client, "form", world.wt, kind="specialist", name="reviewer")
 
-    assert listing["targets"] == [] and listing["problem"]
+    no_fit = "No Target here can be driven by this Flow; type Targets in the extra arguments."
+    assert none_fit == {"targets": [], "problem": no_fit}
+    assert listing["targets"] == [] and listing["problem"].startswith("Targets unavailable: ")
+    assert listing["problem"].endswith(". Type Targets in the extra arguments.")
     assert tests["runs"] == [] and tests["problem"].startswith("Tests unavailable: ")
+    assert tests["problem"].endswith(". Type Test Runs in the extra arguments.")
     assert built == {"kind": "specialist", "problem": "RuntimeError: cannot build"}
 
 
@@ -293,7 +302,8 @@ def test_a_coverage_records_read_that_fails_lists_none(world, feature_flags, mon
         coverage = _get(client, "form", world.wt, kind="specialist", name="coverage_analyst")
 
     assert coverage["coverage_records"] == []
-    assert next(f["dest"] for f in coverage["fields"]) == "coverage_record"
+    record_field = coverage["fields"][0]
+    assert (record_field["dest"], record_field["hint"]) == ("coverage_record", NO_COVERAGE_RECORDS)
 
 
 REVIEWER = _run("reviewer", values={"focus": "bugs", "scope": "fifo.v"})
@@ -504,14 +514,29 @@ def test_a_refused_auth_check_is_returned_and_not_submitted(
     assert spawned == []
 
 
-def test_a_job_record_that_cannot_be_written_is_a_server_error(world, feature_flags, spawned):
-    standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
-    standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
+NUL_EXTRA = "--target 'a\x00b'"  # the argument check itself raises on a NUL byte
+CHECK_FAILED = "Argument check failed: embedded null"  # CPython's next word differs by platform
+
+
+@pytest.mark.parametrize(
+    ("route", "extra", "reason"),
+    [
+        pytest.param("submit", "", "Could not start the Job: ", id="record"),
+        pytest.param("check", NUL_EXTRA, CHECK_FAILED, id="check"),
+        pytest.param("submit", NUL_EXTRA, CHECK_FAILED, id="check-on-submit"),
+    ],
+)
+def test_a_run_that_cannot_start_is_a_server_error_with_its_reason(
+    world, feature_flags, spawned, route, extra, reason
+):
+    if not extra:
+        standalone_jobs_dir(world.booley).parent.mkdir(parents=True)
+        standalone_jobs_dir(world.booley).write_bytes(b"")  # a file where the records belong
     with _client(world, feature_flags) as client:
-        answer = _post(client, "submit", world.wt, _run("lint"))
+        answer = _post(client, route, world.wt, _run("lint", extra=extra))
 
     assert answer.status_code == 500
-    assert answer.json()["error"].startswith("Could not start the Job: ")
+    assert answer.json()["error"].startswith(reason)
     assert spawned == []
 
 
@@ -548,17 +573,32 @@ def test_a_launch_from_another_origin_or_without_json_starts_nothing(
     assert not list(standalone_jobs_dir(world.booley).glob("*"))
 
 
-def test_a_form_that_cannot_be_built_is_refused_not_a_server_error(
-    world, feature_flags, spawned, monkeypatch
+@pytest.mark.parametrize("kind", ["flow", "specialist"])
+def test_a_form_that_cannot_be_built_launches_a_flow_from_its_extra_arguments(
+    world, feature_flags, spawned, monkeypatch, kind
 ):
-    # No public entry point builds a Flow with an unplaced group.
-    monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
+    if kind == "flow":
+        # No public entry point builds a Flow with an unplaced group.
+        monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
+        run = _run("lint", extra="--dry-run")
+    else:
+        monkeypatch.setattr(launch.Launcher, "form", _crash)
+        run = _run("reviewer")
     with _client(world, feature_flags) as client:
-        answers = [_post(client, route, world.wt, _run("lint")) for route in POSTS]
+        answers = [_post(client, route, world.wt, run) for route in POSTS]
 
-    assert [answer.status_code for answer in answers] == [422] * 3
-    assert all("'Lint options'" in answer.json()["error"] for answer in answers)
-    assert spawned == []
+    statuses = [answer.status_code for answer in answers]
+    if kind == "specialist":
+        assert statuses == [422] * 3
+        assert [a.json() for a in answers] == [{"error": "RuntimeError: cannot build"}] * 3
+        assert spawned == []
+        return
+    assert statuses == [200] * 3
+    command, _checked, submitted = (answer.json() for answer in answers)
+    assert command["command"].endswith("booley flow lint --dry-run")
+    record = job_records.read_record(submitted["run_id"], standalone_jobs_dir(world.booley))
+    assert record is not None and record.argv == ["booley", "flow", "lint", "--dry-run"]
+    assert len(spawned) == 1
 
 
 def _probe(
@@ -1068,3 +1108,82 @@ def test_a_failed_read_for_an_older_target_is_not_shown_beside_the_newer_tests(
     )
     assert released["run-problem"]["hidden"] is True
     assert released["run-fields"]["html"] == newer["run-fields"]["html"]
+
+
+def test_a_flow_whose_form_cannot_be_built_launches_from_the_page(
+    world, feature_flags, tmp_path, monkeypatch
+):
+    monkeypatch.delitem(run_form.GROUP_PLACEMENT, "Lint options")
+    lint = _run("lint", values={}, extra="")
+    typed = {**lint, "extra": NUL_EXTRA}
+    calls = [
+        *[ENTRIES] * 2,
+        ("form", {"kind": "flow", "name": "lint"}, None),
+        ("targets", {"flow": "lint"}, None),
+        ("command", {}, lint),
+        ("command", {}, typed),
+        ("check", {}, typed),
+    ]
+    steps = [RUN, _choose("flow:lint"), _edit("extra", NUL_EXTRA), REVIEW]
+    with _client(world, feature_flags) as client:
+        probe, answers = _probe(client, world.wt, tmp_path, calls, steps)
+
+    *_before, chosen, typing, reviewed = probe["views"]
+    problem = f"The form cannot be built: {answers[2]['body']['problem']}"
+    assert chosen["run-problem"]["text"] == problem
+    assert re.findall(r'data-dest="(\w+)"', chosen["run-fields"]["html"]) == ["extra"]
+    assert typing["run-command"]["text"] == answers[5]["body"]["command"]
+    assert "booley flow lint --target " in typing["run-command"]["text"]
+    assert reviewed["run-error"]["text"] == answers[6]["body"]["error"]
+    assert reviewed["run-error"]["text"].startswith(CHECK_FAILED)
+
+
+def test_a_failed_target_listing_advises_and_its_reread_keeps_the_typed_values(
+    world, feature_flags, tmp_path, monkeypatch
+):
+    write_picker_project(world.wt)
+    read_listing, failures = TargetsReader.listing, [RuntimeError("listing boom")] * 2
+
+    def listing(reader, worktree):
+        if failures:
+            raise failures.pop()
+        return read_listing(reader, worktree)
+
+    # No public entry point makes one listing fail and the next succeed within a probe's answers.
+    monkeypatch.setattr(TargetsReader, "listing", listing)
+    sim = _run("sim", values={}, extra="")
+    seeded = {**sim, "values": {"seed": "3"}}
+    targets = ("targets", {"flow": "sim"}, None)
+    opened = [("form", {"kind": "flow", "name": "sim"}, None), targets, ("command", {}, sim)]
+    calls = [
+        *[ENTRIES] * 2,
+        *opened * 2,
+        ("command", {}, seeded),
+        ("command", {}, {**seeded, "extra": "--no-kill"}),
+        targets,
+    ]
+    steps = [
+        RUN,
+        _choose("flow:sim"),
+        _choose(""),
+        _choose("flow:sim"),
+        _edit("seed", "3"),
+        _edit("extra", "--no-kill"),
+        {"click": "run-reread"},
+    ]
+    with _client(world, feature_flags) as client:
+        probe, _answers = _probe(client, world.wt, tmp_path, calls, steps)
+
+    _loaded, _opened, failed, unchosen, *_typed, reread = probe["views"]
+    assert unchosen["run-reread"]["hidden"] is True
+    assert failed["run-problem"]["text"] == (
+        "Targets unavailable: RuntimeError: listing boom. Type Targets in the extra arguments."
+    )
+    assert failed["run-reread"]["hidden"] is False
+    no_target = "Choose a Target first; or type Test Runs in the extra arguments."
+    assert no_target in failed["run-fields"]["html"]
+    fields = reread["run-fields"]["html"]
+    assert _option_values(fields, "target") == ["", *TARGETS_BY_FLOW["sim"]]
+    assert 'data-dest="seed" value="3"' in fields
+    assert 'data-dest="extra" value="--no-kill"' in fields
+    assert reread["run-problem"]["hidden"] is reread["run-reread"]["hidden"] is True

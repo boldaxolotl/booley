@@ -5,8 +5,8 @@ Textual wizard offers (Flows, Specialists, Targets, Tests, forms) from the same 
 quote, check and start a run as the wizard's review and Submit do. ``UnknownEntryError`` names
 a Flow, Specialist or form kind that does not exist; any other trouble reading a worktree is a
 ``problem`` text beside what could still be read, as in the wizard. ``InvalidRunError`` is a
-request body of the wrong shape and ``RunRefusedError`` a run the form, the parser or the Agent
-CLI's sign-in check refuses.
+request body of the wrong shape, ``RunRefusedError`` a run the form, the parser or the Agent
+CLI's sign-in check refuses and ``CheckFailedError`` an argument check that itself raised.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from booley.core.boundary import is_str_list
 from booley.harness.dashboard.launch import (
@@ -27,25 +27,31 @@ from booley.harness.dashboard.launch import (
     shell_command,
 )
 from booley.harness.dashboard.review import Occupants, agent_refusal, review_lines
-from booley.harness.dashboard.run_form import FormError, RunForm, form_argv
+from booley.harness.dashboard.run_form import NO_FORM, FormError, RunForm, form_argv
 from booley.harness.dashboard.specialist_form import (
     COVERAGE_ANALYST,
+    NO_COVERAGE_RECORDS,
     REVIEWER,
     CoverageRecordChoice,
     SimRun,
+    SpecialistForm,
     finished_coverage_records,
 )
 from booley.harness.dashboard.targets import (
+    RunChoices,
     TargetListing,
     TargetsReader,
     enabled_flows,
     first_line,
+    runs_problem,
     targets_for,
+    targets_problem,
 )
 from booley.harness.dashboard.web_snapshot import job_label
 from booley.runtime.handles import HandleStore
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class UnknownEntryError(LookupError):
@@ -58,6 +64,10 @@ class InvalidRunError(ValueError):
 
 class RunRefusedError(ValueError):
     """The form, the argument check or the Agent CLI's sign-in check refuses to run the request."""
+
+
+class CheckFailedError(RuntimeError):
+    """The argument check itself raised, so it neither passed nor rejected the arguments."""
 
 
 def _cause(exc: Exception) -> str:
@@ -89,7 +99,7 @@ def targets(
     except Exception as exc:
         logger.exception("Run Targets read failed")
         listing = TargetListing(worktree, (), _cause(exc))
-    return {"targets": list(targets_for(listing, flow)), "problem": listing.problem}
+    return {"targets": list(targets_for(listing, flow)), "problem": targets_problem(listing, flow)}
 
 
 def tests(reader: TargetsReader, worktree: Path, selector: str) -> dict[str, Any]:
@@ -98,8 +108,8 @@ def tests(reader: TargetsReader, worktree: Path, selector: str) -> dict[str, Any
         choices = reader.test_runs(worktree, selector)
     except Exception as exc:
         logger.exception("Run Test Runs read failed")
-        return {"runs": [], "problem": f"Tests unavailable: {_cause(exc)}"}
-    return {"runs": list(choices.runs), "problem": choices.problem}
+        choices = RunChoices(worktree, selector, (), f"Tests unavailable: {_cause(exc)}")
+    return {"runs": list(choices.runs), "problem": runs_problem(choices)}
 
 
 def _known(launcher: Launcher, kind: str, name: str) -> None:
@@ -117,6 +127,21 @@ def _problem(exc: Exception) -> str:
     return str(exc) if isinstance(exc, FormError) else _cause(exc)
 
 
+def _built(
+    launcher: Launcher, worktree: Path, kind: str, name: str
+) -> tuple[RunForm | SpecialistForm | None, str]:
+    """The endpoint's form and why it could not be built (empty when it was).
+
+    A Flow that cannot be built is ``NO_FORM``: its extra arguments alone, as the wizard
+    launches it. A Specialist that cannot be built is ``None``.
+    """
+    try:
+        return launcher.form(kind, name, worktree), ""
+    except Exception as exc:
+        logger.exception("Run form build failed")
+        return NO_FORM if kind == "flow" else None, _problem(exc)
+
+
 def form(
     launcher: Launcher,
     worktree: Path,
@@ -130,14 +155,13 @@ def form(
     *coverage_records* reads the finished Simulation Jobs, called only for the coverage analyst.
     """
     _known(launcher, kind, name)
-    try:
-        built = launcher.form(kind, name, worktree)
-    except Exception as exc:
-        logger.exception("Run form build failed")
-        return {"kind": kind, "problem": _problem(exc)}
+    built, problem = _built(launcher, worktree, kind, name)
+    if built is None:
+        return {"kind": kind, "problem": problem}
     if isinstance(built, RunForm):
         return {
             "kind": kind,
+            "problem": problem,
             "fields": [asdict(field) for field in built.fields],
             "extra": {"hint": built.extra_hint(), "options": built.extras},
         }
@@ -148,11 +172,15 @@ def form(
             records = finished_coverage_records(worktree, coverage_records())
         except Exception:  # a crashed read lists none, as the wizard's picker does
             logger.exception("Run Coverage Records read failed")
+    fields = [asdict(field) for field in built.fields(chosen)]
+    for field in fields:
+        if field["kind"] == "coverage_record" and not records:
+            field["hint"] = NO_COVERAGE_RECORDS
     return {
         "kind": kind,
         "note": built.note,
         "values": chosen,
-        "fields": [asdict(field) for field in built.fields(chosen)],
+        "fields": fields,
         "coverage_records": [asdict(record) for record in records],
     }
 
@@ -187,11 +215,9 @@ def _argv(launcher: Launcher, worktree: Path, run: RunRequest) -> tuple[str, ...
     text the endpoint's form does not take, ``RunRefusedError`` for the form's own error.
     """
     _known(launcher, run.kind, run.name)
-    try:
-        built = launcher.form(run.kind, run.name, worktree)
-    except Exception as exc:
-        logger.exception("Run form build failed")
-        raise RunRefusedError(_problem(exc)) from exc
+    built, problem = _built(launcher, worktree, run.kind, run.name)
+    if built is None:
+        raise RunRefusedError(problem)
     chosen: Mapping[str, str | tuple[str, ...]]
     if isinstance(built, RunForm):
         tests = {field.dest for field in built.fields if field.kind == "tests"}
@@ -223,15 +249,25 @@ def _refusal(facts: RunFacts) -> str:
     return agent_refusal(facts.specialist) if facts.specialist is not None else ""
 
 
+def _checked(check_run: Callable[[], _T]) -> _T:
+    """Run an argument check; ``CheckFailedError`` when it raises, in the wizard's wording."""
+    try:
+        return check_run()
+    except Exception as exc:
+        logger.exception("Run argument check failed")
+        raise CheckFailedError(f"Argument check failed: {exc}") from exc
+
+
 def check(
     launcher: Launcher, worktree: Path, run: RunRequest, occupants: Callable[[], Occupants]
 ) -> dict[str, Any]:
     """The review screen of the run: its command, its lines and why it may not launch.
 
-    ``RunRefusedError`` when the endpoint's own parser rejects the arguments.
+    ``RunRefusedError`` when the endpoint's own parser rejects the arguments,
+    ``CheckFailedError`` when the check itself raises.
     """
     argv = _argv(launcher, worktree, run)
-    checked = review_check(launcher, worktree, run.kind, run.name, argv)
+    checked = _checked(lambda: review_check(launcher, worktree, run.kind, run.name, argv))
     if checked.facts is None:
         raise RunRefusedError(checked.error)
     return {
@@ -247,10 +283,11 @@ def submit(
     """Start the run as a Standalone Job and name its row as the next snapshot lists it.
 
     ``RunRefusedError`` for a parser rejection or an Agent CLI that cannot sign in, which
-    start nothing; ``OSError`` when the Job record cannot be written.
+    start nothing; ``CheckFailedError`` when the check itself raises; ``OSError`` when the Job
+    record cannot be written.
     """
     argv = _argv(launcher, worktree, run)
-    checked = launcher.check(worktree, run.kind, run.name, argv)
+    checked = _checked(lambda: launcher.check(worktree, run.kind, run.name, argv))
     if checked.facts is None:
         raise RunRefusedError(checked.error or NO_FACTS)
     refusal = _refusal(checked.facts)
