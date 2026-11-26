@@ -2,10 +2,10 @@
 
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
-Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard, Git submodules and worktree hooks, and feedback redaction. Settings
-for one Flow, the Sandbox, or Stealth Mode live on their own pages; the table
-below says where.
+Specialists off, Job limits, the Agent CLIs and their billing, models, Git
+submodules and worktree hooks, and feedback redaction. Settings for one Flow,
+the Sandbox, or Stealth Mode live on their own pages; the table below says
+where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
 [setup](SETUP.md), and afterwards you ask the Developer Agent to change a

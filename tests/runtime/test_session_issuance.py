@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 from tests import eda_grant_support
+from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_host_support import fake_docker_host
 from tests.harness.session_docker_fake import serve_sandbox_docker
@@ -590,6 +591,21 @@ def issued_preview(
 def issued(issued_preview):
     project, prepared, path, stamp = issued_preview
     return project, prepared.spec, path, stamp
+
+
+def test_issuance_refuses_a_symlinked_devcontainer_spec(issued_preview, tmp_path: Path) -> None:
+    project, prepared, path, _stamp = issued_preview
+    destination = tmp_path / "outside-devcontainer.json"
+    destination.write_bytes(b"{}\n")
+    path.unlink()
+    symlink_or_skip(path, destination)
+    planted_target = path.readlink()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="symlinked"):
+        runtime_spec.issue_prepared(project, prepared)
+
+    assert destination.read_bytes() == b"{}\n"
+    assert path.readlink() == planted_target
 
 
 def test_issued_spec_seals_pinned_image_identity(issued) -> None:

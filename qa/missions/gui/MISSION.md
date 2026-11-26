@@ -86,8 +86,8 @@ Try:
 - Runbook steps 1-5 with `<sha>` = the candidate. Record in `log.md`: click on
   "Create codespace", state `Available`, trust prompt, Dashboard visible,
   `booley --version` correct, first Flow passing.
-- Follow `START-HERE.md` as a new user would: does it open on its own in the
-  Markdown preview, render cleanly, and lead through sign-in (steps 1-2)?
+- Follow `START-HERE.md` as a new user would: does it open on its own, render
+  cleanly in the Markdown preview, and lead through sign-in (steps 1-2)?
   Finish `booley-demo-claim` only if area 3 is in scope (it spends demo
   allowance); otherwise stop at its "Type yes" notice with Ctrl+C. Restricted
   Mode and the trust prompt: is it clear why, and what to click?

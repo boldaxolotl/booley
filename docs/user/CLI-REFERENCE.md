@@ -76,8 +76,7 @@ booley measure --validate         # check .booley/metrics.toml; measures nothing
 
 Sessions and parallel work are explained in
 [Several agents at once](USAGE.md#several-agents-at-once), and measuring in
-[Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md). The Dashboard is
-described in [The dashboard](USAGE.md#the-dashboard).
+[Metric-Driven Development](METRIC-DRIVEN-DEVELOPMENT.md).
 
 ### Worktrees
 

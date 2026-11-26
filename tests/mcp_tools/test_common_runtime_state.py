@@ -161,6 +161,9 @@ def test_dashboard_handles_use_main(worktree, monkeypatch):
     from booley.harness.dashboard import command
 
     main, tree = worktree
+    # The view is interactive and blocks, so no public entry point shows which Booley
+    # Directory it reads: stub its socket, probe server and terminal label, and observe
+    # the argument at the reader.
     owner = MagicMock()
     owner.__enter__.return_value = owner
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
