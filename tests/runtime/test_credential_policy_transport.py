@@ -35,11 +35,15 @@ def transport_image():
     if found.returncode:
         pytest.skip("Docker daemon or local booley-sandbox:latest unavailable")
     image = f"booley-auth-transport-{uuid.uuid4().hex[:12]}:test"
-    # The available image predates the canonical .booley alias; change only that link.
+    # The available image may predate the canonical .booley alias and the T3 Code policy
+    # Session Issuance reads out of it; change that link and add only a missing policy.
     # Kept on subprocess.run: feeds the Dockerfile on stdin.
     built = subprocess.run(
         ["docker", "build", "--network", "none", "--pull=false", "-t", image, "-"],
-        input="FROM booley-sandbox:latest\nUSER root\nRUN ln -sfn /work/.booley /booley\n",
+        input="FROM booley-sandbox:latest\nUSER root\nRUN ln -sfn /work/.booley /booley && "
+        "mkdir -p /etc/t3code && { test -f /etc/t3code/policy.json || "
+        """echo '{"limits":{"providers":{"allowedDrivers":["claudeAgent","codex"]}}}' """
+        "> /etc/t3code/policy.json; }\n",
         capture_output=True,
         text=True,
         timeout=SUBPROCESS_TIMEOUT_S,

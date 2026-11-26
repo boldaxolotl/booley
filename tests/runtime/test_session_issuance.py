@@ -21,6 +21,7 @@ from tests.devcontainer_spec_support import build_spec
 from tests.docker_host_support import fake_docker_host
 from tests.harness.session_docker_fake import serve_sandbox_docker
 from tests.session_issuance_support import (
+    SHIPPED_T3_POLICY,
     damaged,
     fixed,
     install_trusted_validator,
@@ -3938,6 +3939,64 @@ def _set_toml(project: Path, request, toml: str) -> None:
     (project / ".booley" / "booley.toml").write_text(toml)
     reset_cache()
     request.addfinalizer(reset_cache)
+
+
+_CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
+
+
+def test_reissue_after_a_clis_change_rewrites_the_t3_code_policy(issued, monkeypatch, request):
+    image_policy = SHIPPED_T3_POLICY.replace(b'"auto"', b'"approval"')
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    prepared, _, _ = issue_built(project, fixed(spec), monkeypatch, image_policy)
+    policy_file = project.resolve() / ".devcontainer" / "t3code-policy.json"
+    mount = (
+        f"source={docker_mount_path(policy_file)},"
+        "target=/etc/t3code/policy.json,type=bind,readonly"
+    )
+    assert mount in prepared.spec["mounts"]
+    narrowed = policy_file.read_bytes()
+    limits = json.loads(narrowed)["limits"]
+    assert limits["providers"]["allowedDrivers"] == ["claudeAgent"]
+    assert limits["maxRuntimeMode"] == "approval"
+
+    def writable(tampered: dict) -> None:
+        tampered["mounts"][tampered["mounts"].index(mount)] = mount.removesuffix(",readonly")
+
+    stub_keeper(monkeypatch)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="exact read-only"):
+        runtime_spec.issue_prepared(
+            project, damaged(prepared, writable), reconcile_dashboard=False
+        )
+    assert policy_file.read_bytes() == narrowed
+
+    _, both, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_AND_CODEX)
+    reissued, _, _ = issue_built(project, fixed(both), monkeypatch, image_policy)
+    assert reissued.spec["image"] == prepared.spec["image"]
+    assert policy_file.read_bytes() == image_policy
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a Windows privilege")
+def test_issuance_refuses_a_symlinked_t3_code_policy(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    link = project / ".devcontainer" / "t3code-policy.json"
+    link.symlink_to(project / "elsewhere.json")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="refusing to write through symlinked"):
+        _issue_spec(project, spec, monkeypatch)
+    assert link.is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("image_policy", "message"),
+    [(None, "has no T3 Code policy"), (b"not json", "limits.providers.allowedDrivers")],
+    ids=["missing", "unusable"],
+)
+def test_issuance_refuses_an_image_without_a_usable_t3_code_policy(
+    issued, monkeypatch, request, image_policy, message
+):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=message):
+        issue_built(project, fixed(spec), monkeypatch, image_policy)
+    assert not (project / ".devcontainer" / "t3code-policy.json").exists()
 
 
 def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request):

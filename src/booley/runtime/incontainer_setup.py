@@ -61,6 +61,7 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.runtime_context import in_hand_written_sandbox
+from booley.runtime.sandbox_layout import T3_POLICY_TARGET
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -251,10 +252,14 @@ def ensure_t3_server(project_root: Path) -> str:
 
     Returns ``"running"`` (already up: nothing is started or registered),
     ``"started"``, ``"unregistered"`` (serving, but the Project is not
-    registered), or ``"failed"``. Never raises, so MCP registration still runs.
+    registered), ``"policy-rejected"`` (``t3 policy check`` did not accept the
+    policy, so nothing is started), or ``"failed"``. Never raises, so MCP
+    registration still runs.
     """
     if _port_is_serving(T3_PORT):
         return "running"
+    if not _t3_policy_accepted():
+        return "policy-rejected"
     try:
         runtime = runtime_dir(project_root)
         base = runtime / "t3"
@@ -286,6 +291,29 @@ def ensure_t3_server(project_root: Path) -> str:
     if started != "started":
         return started
     return "started" if _register_t3_project(base, project_root) else "unregistered"
+
+
+def _t3_policy_accepted() -> bool:
+    """Run ``t3 policy check`` on the mounted policy; report why it did not pass."""
+    failure = f"T3 Code not started: `t3 policy check` of {T3_POLICY_TARGET}"
+    try:
+        result = subprocess.run(
+            ["t3", "policy", "check", T3_POLICY_TARGET],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"{failure} could not run: {type(exc).__name__}", file=sys.stderr)
+        return False
+    if result.returncode == 0:
+        return True
+    detail = f"{result.stdout}{result.stderr}".strip()
+    print(f"{failure} failed (exit {result.returncode}): {detail}", file=sys.stderr)
+    return False
 
 
 def _register_t3_project(base: Path, project_root: Path) -> bool:
