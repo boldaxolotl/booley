@@ -3953,9 +3953,7 @@ def test_reissue_after_a_clis_change_rewrites_the_t3_code_policy(issued, monkeyp
 
     stub_keeper(monkeypatch)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="exact read-only"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, writable), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, writable))
     assert policy_file.read_bytes() == narrowed
 
     _, both, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_AND_CODEX)
@@ -3999,7 +3997,7 @@ def test_interrupted_policy_copy_leaves_the_issued_spec_alone(issued, monkeypatc
     monkeypatch.setattr("booley.runtime.host_docker._run_docker", interrupted)
     before = dc.devcontainer_path(project).read_bytes()
     with pytest.raises(KeyboardInterrupt):
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
     assert dc.devcontainer_path(project).read_bytes() == before
 
 
