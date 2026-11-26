@@ -9,25 +9,17 @@ from pathlib import Path
 
 import pytest
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.vivado_release_fake import fake_vivado_release, requires_linux_x86_64
 
 from booley.eda.provisioning.policies import vivado
 
-_REAL_HOST_ARCHITECTURE = vivado._host_architecture
-
 
 @pytest.fixture
-def release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    root = tmp_path / "Xilinx" / "2025.2"
-    launcher = root / "Vivado" / "bin" / "vivado"
-    launcher.parent.mkdir(parents=True)
-    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
-    launcher.chmod(0o755)
-    (root / "tps").mkdir()
-    monkeypatch.setattr(vivado, "_detect_version", lambda _launcher: "2025.2")
-    monkeypatch.setattr(vivado, "_host_architecture", lambda: "linux-x86_64")
-    return root
+def release(tmp_path: Path) -> Path:
+    return fake_vivado_release(tmp_path / "Xilinx" / "2025.2")
 
 
+@requires_linux_x86_64
 def test_inspection_uses_observed_identity_and_exact_layout(release: Path) -> None:
     observed = vivado.inspect_installation(release)
     assert observed == vivado.Inspection(release.resolve(), "2025.2", "linux-x86_64")
@@ -39,13 +31,14 @@ def test_rejects_relative_broad_and_mount_grammar_sources(bad: Path) -> None:
         vivado.inspect_installation(bad)
 
 
+@requires_linux_x86_64
 def test_rejects_missing_release_sibling(release: Path) -> None:
     (release / "tps").rmdir()
     with pytest.raises(vivado.VivadoPolicyError, match="tps"):
         vivado.inspect_installation(release)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX executable mode bit")
+@requires_linux_x86_64
 def test_rejects_non_executable_launcher(release: Path) -> None:
     launcher = release / "Vivado" / "bin" / "vivado"
     launcher.chmod(0o644)
@@ -53,6 +46,7 @@ def test_rejects_non_executable_launcher(release: Path) -> None:
         vivado.inspect_installation(release)
 
 
+@requires_linux_x86_64
 def test_rejects_project_overlap(release: Path) -> None:
     project = release / "project"
     project.mkdir()
@@ -60,19 +54,20 @@ def test_rejects_project_overlap(release: Path) -> None:
         vivado.inspect_installation(release, project_root=project)
 
 
-def test_rejects_unvalidated_version(release: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(vivado, "_detect_version", lambda _launcher: "2024.2")
+@requires_linux_x86_64
+def test_rejects_unvalidated_version(tmp_path: Path) -> None:
+    older = fake_vivado_release(tmp_path / "Xilinx" / "2024.2", "2024.2")
     with pytest.raises(vivado.VivadoPolicyError, match="not validated"):
-        vivado.inspect_installation(release)
+        vivado.inspect_installation(older)
 
 
+@requires_linux_x86_64
 def test_rejects_non_linux_x86_64_with_future_support_message(
     release: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(vivado.sys, "platform", "win32")
-    monkeypatch.setattr(vivado.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(vivado.platform, "machine", lambda: "aarch64")
     with pytest.raises(vivado.VivadoPolicyError, match=r"Linux x86-64 only.*future"):
-        _REAL_HOST_ARCHITECTURE()
+        vivado.inspect_installation(release)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable-bit policy")

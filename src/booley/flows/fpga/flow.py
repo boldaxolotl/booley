@@ -1004,10 +1004,6 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
                     logger.debug("fpga_impl: could not read %s", runlog, exc_info=True)
         return "\n".join(parts)
 
-    def _collect_route_reports(self, work_root: Path, *, min_mtime: float | None = None) -> str:
-        """Compatibility alias for callers collecting all Vivado evidence."""
-        return self._collect_vivado_evidence(work_root, min_mtime=min_mtime)
-
     @staticmethod
     def _classify_vivado_failure(result: SubprocessResult, evidence: str) -> EdaFailure | None:
         """Separate narrowly evidenced HDL rejection from execution failure."""

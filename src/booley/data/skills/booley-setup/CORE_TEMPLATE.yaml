@@ -47,8 +47,7 @@ targets:
   # Target names follow <axis>_<subject>: an axis token for the driving Booley Flow
   # (sim | lint | synth | fpga) then a distinguishing subject, coarse to fine —
   # `sim_soc`, `synth_matmul_b8`. The axis alone (`sim`) is not a name.
-  # `booley doctor` notes names that do not follow it. Do NOT declare a `default:`
-  # target unless another .core `depend:`s on this one.
+  # Do NOT declare a `default:` target unless another .core `depend:`s on this one.
   sim_dut:                   # one target per (EDA tool, intent); name == the --target
     flow: sim
     flow_options:

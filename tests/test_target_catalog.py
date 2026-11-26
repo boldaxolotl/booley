@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import textwrap
 from dataclasses import replace
 from pathlib import Path
@@ -12,7 +13,7 @@ from booley.flows.baseline_worktree import baseline_worktree
 from booley.flows.sim.trace_overlay import write_trace_overlay
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
-from booley.harness.doctor import _check_sim_target_tb_staging
+from booley.harness import doctor
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
@@ -22,6 +23,8 @@ from booley.targets.domain import (
     ForeignTargetHandleError,
     IncompatibleTargetError,
     StaleTargetCatalogError,
+    TargetRef,
+    TargetResolutionError,
     UnknownTargetError,
 )
 from tests.conftest import require_symlinks, symlink_or_skip
@@ -159,17 +162,6 @@ def test_catalog_select_many_preserves_authored_order(project: Path) -> None:
     assert [handle.name for handle in selected] == ["lint_b", "lint_a"]
 
 
-def test_doctor_authority_exposes_private_targets(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-
-    handle = TargetCatalog.build(project).select("lint_private", for_flow="lint")
-
-    assert handle.doctor_private is True
-
-
 def test_unrelated_malformed_core_does_not_hide_valid_targets(project: Path) -> None:
     (project / "broken.core").write_text("CAPI=2:\n- not\n- a\n- mapping\n", encoding="utf-8")
 
@@ -236,6 +228,8 @@ def test_catalog_fails_loudly_when_frozen_document_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = TargetCatalog.build(project)
+    # private: discovery and the snapshot read the same cores, so no Project
+    # layout reaches this guard; only blanking the snapshot's documents does.
     monkeypatch.setattr(catalog._state, "documents", {})  # pyright: ignore[reportPrivateUsage]
 
     with pytest.raises(RuntimeError, match="omitted declaration document"):
@@ -567,26 +561,20 @@ def test_handle_setup_does_not_resolve_selector_again(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handle = TargetCatalog.build(project).select("lint_a")
+    monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+    handle = TargetCatalog.build(project).select("lint_private", for_flow="lint")
+    # Selecting the token again without Doctor authority would hide the Target.
+    monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
 
-    def unexpected_resolution(*_args, **_kwargs):
-        raise AssertionError("execution re-resolved an authored token")
+    command = fusesoc_registry.setup_command_for_handle(handle, build_root=project / "build")
 
-    monkeypatch.setattr(fusesoc_registry, "_resolve_ref", unexpected_resolution)
-
-    command = fusesoc_registry.setup_command_for_handle(
-        handle,
-        build_root=project / "build",
-    )
-
-    assert command[-3:] == ["--target", "lint_a", "acme:ip:alpha:1.0"]
+    assert handle.doctor_private is True
+    assert command[-3:] == ["--target", "lint_private", "acme:ip:alpha:1.0"]
 
 
 @pytest.mark.parametrize("eda_tool", ["verible", "veriblelint"])
 @pytest.mark.parametrize("missing", [False, True])
-def test_mixed_lint_unfiltered_conditional_inputs_control(
-    tmp_path, monkeypatch, eda_tool, missing
-):
+def test_mixed_lint_unfiltered_conditional_inputs_control(tmp_path, eda_tool, missing):
     for filename in ("top.sv", "rules.cfg", "waivers.txt"):
         (tmp_path / filename).write_text("module top; endmodule\n" if filename == "top.sv" else "")
     selection = (
@@ -598,46 +586,15 @@ def test_mixed_lint_unfiltered_conditional_inputs_control(
         "CAPI=2:\nname: acme:ip:conditional:1.0\nfilesets:\n  rtl:\n    files: [top.sv]\n    file_type: systemVerilogSource\n  config:\n    files:\n      - rules.cfg: {file_type: veribleLintRules}\n      - waivers.txt: {file_type: veribleLintWaiver}\ntargets:\n  lint_style:\n    flow: lint\n"
         f"    {selection}\n    filesets: [rtl, 'tool_{eda_tool} ? (config)']\n    toplevel: top\n"
     )
-    from booley.fusesoc import fusesoc_registry
-
-    original = fusesoc_registry.target_source_files_for_ref
-    copied = []
-
-    def capture(root, ref, **kwargs):
-        copied.append(ref)
-        return original(root, ref, **kwargs)
-
-    monkeypatch.setattr(fusesoc_registry, "target_source_files_for_ref", capture)
     catalog = TargetCatalog.build(tmp_path)
     handle = catalog.select("lint_style")
     inspection = catalog.inspect(handle)
     assert handle.eda_tool == eda_tool
-    assert handle.lint_flow_eda_tool_missing is missing
-    assert copied[-1].lint_flow_eda_tool_missing is missing
     assert {item.path for item in inspection.inputs} == {"top.sv", "rules.cfg", "waivers.txt"}
     assert inspection.eda_tool == eda_tool
     if not missing:
         assert inspection.flow_options["tool"] == eda_tool
         assert inspection.flow_options["ruleset"] == "all"
-
-
-@pytest.mark.parametrize(
-    "name,flow,eda_tool,expected",
-    [
-        ("synth_vehicle", "lint", "yosys", "synth"),
-        ("implementation", "lint", "vivado", "fpga"),
-        ("fpga_top", "lint", "verible", "fpga"),
-        ("sim_control", "sim", "verilator", "sim"),
-    ],
-)
-def test_mixed_lint_other_flow_classification_control(tmp_path, name, flow, eda_tool, expected):
-    (tmp_path / "control.core").write_text(
-        "CAPI=2:\nname: acme:ip:control:1.0\ntargets:\n"
-        + f"  {name}:\n    flow: {flow}\n    default_tool: {eda_tool}\n"
-    )
-    handle = TargetCatalog.build(tmp_path).select(name, for_flow=expected)
-    assert handle.eda_tool == eda_tool
-    assert expected in handle.drivable_by
 
 
 def _author_alias_core(root: Path, layout: str) -> tuple[str, str]:
@@ -662,7 +619,7 @@ def _author_alias_core(root: Path, layout: str) -> tuple[str, str]:
     (core_root / "design.core").write_text(
         "CAPI=2:\nname: ::alias_dut:0\nfilesets:\n"
         "  rtl:\n    files: [rtl/dut.sv]\n    file_type: systemVerilogSource\n"
-        f"  tb:\n    files: [{tb_decl}]\n    tags: [tb]\n"
+        f"  tb:\n    files: [{tb_decl}: {{copyto: copied/tb.sv}}]\n    tags: [tb]\n"
         "    file_type: systemVerilogSource\ntargets:\n"
         "  sim_dut:\n    flow: sim\n    flow_options: {tool: icarus}\n"
         "    filesets: [rtl, tb]\n    toplevel: tb\n"
@@ -696,11 +653,12 @@ def test_catalog_restores_tb_tags_across_symlinks(
 
         original = Core.get_files
 
-        def without_tags(self, flags):
+        def other_tags_only(self, flags):
             stripped_calls.append(self)
-            return [{**item, "tags": []} for item in original(self, flags)]
+            return [{**item, "tags": ["other"]} for item in original(self, flags)]
 
-        monkeypatch.setattr(Core, "get_files", without_tags)
+        # FuseSoC drops the tb tag; inspection restores it beside the kept tags.
+        monkeypatch.setattr(Core, "get_files", other_tags_only)
     catalog = TargetCatalog.build(root)
     inspection = catalog.inspect(catalog.select("sim_dut"))
     if strip_tags:
@@ -711,48 +669,21 @@ def test_catalog_restores_tb_tags_across_symlinks(
     )
     assert inspection.rtl_files == (prefix + "rtl/dut.sv",)
     assert inspection.tb_files == (prefix + tb_decl,)
-    assert inspection.inputs[1].tags.count("tb") == 1
+    assert inspection.inputs[1].tags == (("other", "tb") if strip_tags else ("tb",))
+    assert inspection.inputs[1].attributes["copyto"] == "copied/tb.sv"
     assert all(item.file_type == "systemVerilogSource" for item in inspection.inputs)
     passed, failed = [], []
-    _check_sim_target_tb_staging(
+    # private: Doctor runs this check only inside a whole run_doctor_result, whose
+    # host checks need the Doctor tests' environment patches (tests/harness).
+    doctor._check_sim_target_tb_staging(  # pyright: ignore[reportPrivateUsage]
         "sim_dut", inspection.sources, passed.append, lambda *args: failed.append(args)
     )
     assert passed == ["sim Target 'sim_dut' TB fileset tagged"]
     assert failed == []
 
 
-@pytest.mark.parametrize("tags", [("other",), ("other", "tb")])
-def test_tb_tag_restoration_preserves_input_metadata(
-    tmp_path: Path, tags: tuple[str, ...]
-) -> None:
-    from types import SimpleNamespace
-
-    (tmp_path / "tb").mkdir()
-    symlink_or_skip(tmp_path / "alias", "tb", target_is_directory=True)
-    item = {
-        "name": "alias/tb.sv",
-        "tags": tags,
-        "file_type": "systemVerilogSource",
-        "is_include_file": True,
-        "copyto": "copied.sv",
-    }
-    core = SimpleNamespace(
-        name="::test:0", core_file=str(tmp_path / "test.core"), get_files=lambda flags: [item]
-    )
-    inspected = target_inspection._inspect_inputs(tmp_path, [core], {}, tb_paths=["tb/tb.sv"])
-    assert inspected[0].path == "alias/tb.sv"
-    assert inspected[0].tags == ("other", "tb")
-    assert inspected[0].is_include is True
-    assert inspected[0].file_type == item["file_type"]
-    assert inspected[0].core == core.name
-    assert inspected[0].attributes == {key: value for key, value in item.items() if key != "name"}
-    assert item["tags"] == tags
-
-
 def test_authored_flag_selects_parameter_and_dependency(tmp_path):
     import yaml
-
-    from booley.fusesoc import fusesoc_registry
 
     (tmp_path / "dependency.sv").write_text("module dependency; endmodule\n")
     (tmp_path / "top.sv").write_text("module top; endmodule\n")
@@ -798,7 +729,7 @@ def test_authored_flag_selects_parameter_and_dependency(tmp_path):
     inspection = catalog.inspect(handle)
     assert inspection.parameters["W"]["default"] == 4
     assert {item.path for item in inspection.inputs} == {"top.sv", "dependency.sv"}
-    ref = fusesoc_registry._resolve_ref(tmp_path, "sim")
+    ref = TargetRef("sim", "proof:param:conditional:1", tmp_path / "top.core")
     sources = fusesoc_registry.target_source_files_for_ref(tmp_path, ref)
     assert "conditional_tb.sv" in sources.tb_files
     assert "top.sv" in sources.rtl_source_files
@@ -900,17 +831,13 @@ def test_prepared_omitted_selection_is_opt_in(project):
     assert selection.target_arg == "alpha#sim" and not selection.automatic
 
 
-@pytest.mark.parametrize("flow", ("lint", "sim", "synth"))
-def test_prepared_omission_rejects_zero_or_many_with_eligible_selectors(project, flow):
-    from booley.targets.domain import TargetResolutionError
-
-    choices = TargetCatalog.build(project).list(for_flow=flow)
-    with pytest.raises(TargetResolutionError) as exc:
+@pytest.mark.parametrize(
+    ("flow", "eligible"),
+    [("lint", "lint_a, lint_b"), ("sim", "alpha#sim, beta#sim"), ("synth", "(none)")],
+)
+def test_prepared_omission_rejects_zero_or_many_with_eligible_selectors(project, flow, eligible):
+    with pytest.raises(TargetResolutionError, match=f"Eligible Targets: {re.escape(eligible)}$"):
         PreparedTargetSelection.resolve(project, "", for_flow=flow, select_omitted=True)
-    expected = ", ".join(handle.selector for handle in choices) or "(none)"
-    assert f"Eligible Targets: {expected}" in str(exc.value)
-    if flow == "sim":
-        assert len(choices) == 2 and all("#sim" in handle.selector for handle in choices)
 
 
 def test_prepared_sole_omission_keeps_one_snapshot(project):

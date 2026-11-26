@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.subprocess_budget import run_bounded_child
 
 CORE = """CAPI=2:
@@ -16,6 +18,11 @@ filesets:
 targets:
   top: {filesets: [rtl, constraints], toplevel: top, default_tool: verilator}
 """.replace(" targets:", "targets:")
+
+
+def no_live_git_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report no live Git process, so a stale-lock test never starts PowerShell or reads /proc."""
+    monkeypatch.setattr("booley.runtime.git._iter_git_process_cmdlines", list)
 
 
 def git(cwd: Path, *args: str) -> str:

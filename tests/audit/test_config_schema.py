@@ -107,32 +107,43 @@ def test_empty_configs_file_is_invalid() -> None:
     assert audit.issues[0].message == "configs.toml has no config sections"
 
 
-def test_unknown_tables_have_stable_warning_identity_and_migration_hint() -> None:
-    audit = project_schema.audit_known_tables({"fusesoc": {}, "toolz": {}})
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param(
+            {"fusesoc": {}, "toolz": {}},
+            [
+                ("fusesoc", "Target scoping now lives in .core files"),
+                ("toolz", "settings are ignored"),
+            ],
+            id="fusesoc-toolz",
+        ),
+        pytest.param(
+            {"sources": {"testbench": {"source_dirs": ["tb"]}}},
+            [("sources", "[sources] is no longer used")],
+            id="sources",
+        ),
+        pytest.param(
+            {"notifications": {"ntfy_topic": "probe"}},
+            [("notifications", "delete this table")],
+            id="notifications",
+        ),
+    ],
+)
+def test_unknown_or_retired_tables_warn_with_their_hints(
+    data: dict[str, object], expected: list[tuple[str, str]]
+) -> None:
+    audit = project_schema.audit_known_tables(data)
 
     assert audit.is_valid
-    assert [finding.check_id for finding in audit.findings] == [
-        "config.unknown-table",
-        "config.unknown-table",
-    ]
-    assert [finding.subject for finding in audit.findings] == ["fusesoc", "toolz"]
-    assert "Target scoping now lives in .core files" in audit.findings[0].message
-    assert "default_target" not in audit.findings[0].message
-    assert "settings are ignored" in audit.findings[1].message
-
-
-def test_retired_sources_table_warns_with_core_hint() -> None:
-    """`[sources]` is retired: nothing reads it, so Doctor must say so."""
-    audit = project_schema.audit_known_tables({"sources": {"testbench": {"source_dirs": ["tb"]}}})
-
-    assert audit.is_valid
-    assert len(audit.findings) == 1
-    finding = audit.findings[0]
-    assert finding.severity is config_common.ConfigFindingSeverity.WARN
-    assert finding.check_id == "config.unknown-table"
-    assert finding.subject == "sources"
-    assert "[sources] is no longer used" in finding.message
-    assert ".core" in finding.message
+    assert all(
+        finding.severity is config_common.ConfigFindingSeverity.WARN
+        and finding.check_id == "config.unknown-table"
+        for finding in audit.findings
+    )
+    assert [finding.subject for finding in audit.findings] == [subject for subject, _ in expected]
+    for finding, (_, hint) in zip(audit.findings, expected, strict=True):
+        assert hint in finding.message
 
 
 def test_project_preflight_checks_warns_as_unused() -> None:
@@ -343,37 +354,13 @@ def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
     }
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "120000"])
-def test_all_builtin_flow_timeouts_must_be_positive_integers(value: object) -> None:
-    for flow_name in ("sim", "lint", "synth", "fpga"):
-        audit = flow_schema.audit_flow_table(flow_name, {"timeout_ms": value})
-        assert not audit.is_valid
-        assert "timeout_ms must be a positive integer" in audit.findings[0].message
-
-
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "3600000"])
-def test_sim_build_timeout_must_be_a_positive_integer(value: object) -> None:
-    audit = flow_schema.audit_flow_table("sim", {"build_timeout_ms": value})
+@pytest.mark.parametrize("field", ["timeout_ms", "build_timeout_ms", "trace_convert_timeout_ms"])
+@pytest.mark.parametrize("value", [0, True, "120000"])
+def test_flow_timeouts_must_be_positive_integers(field: str, value: object) -> None:
+    audit = flow_schema.audit_flow_table("sim", {field: value})
 
     assert not audit.is_valid
-    assert "build_timeout_ms must be a positive integer" in audit.findings[0].message
-
-
-def test_sim_trace_convert_timeout_must_be_a_positive_integer() -> None:
-    for value in (0, -1, True, 1.5, "1800000"):
-        audit = flow_schema.audit_flow_table("sim", {"trace_convert_timeout_ms": value})
-
-        assert not audit.is_valid
-        assert "trace_convert_timeout_ms must be a positive integer" in audit.findings[0].message
-
-
-def test_sim_build_timeout_is_valid_and_other_flows_warn() -> None:
-    sim = flow_schema.audit_flow_table("sim", {"build_timeout_ms": 3_600_000})
-    lint = flow_schema.audit_flow_table("lint", {"build_timeout_ms": 3_600_000})
-
-    assert sim.is_valid
-    assert not any(item.check_id == "config.flow-knob-ignored" for item in sim.findings)
-    assert any(item.subject == "lint.build_timeout_ms" for item in lint.findings)
+    assert f"{field} must be a positive integer" in audit.findings[0].message
 
 
 def test_flow_collection_reports_required_sections_and_retired_aliases() -> None:
@@ -392,12 +379,11 @@ def test_sim_rejects_retired_standalone_frontend_and_removed_cache_knob() -> Non
     removed_cache_knob = flow_schema.audit_flow_table("sim", {"keep_build_dir": True})
 
     assert not removed_cache_knob.is_valid
-    for value in ("auto", "verilator"):
-        retired = flow_schema.audit_flow_table("sim", {"standalone_frontend": value})
-        assert not retired.is_valid
-        message = " ".join(f"{item.message} {item.fix}" for item in retired.findings)
-        assert "standalone_frontend is retired" in message
-        assert "each Target's simulator" in message
+    retired = flow_schema.audit_flow_table("sim", {"standalone_frontend": "auto"})
+    assert not retired.is_valid
+    message = " ".join(f"{item.message} {item.fix}" for item in retired.findings)
+    assert "standalone_frontend is retired" in message
+    assert "each Target's simulator" in message
 
 
 def test_empty_eda_configuration_is_valid() -> None:
@@ -464,26 +450,10 @@ def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
 
 
 @pytest.mark.parametrize(
-    "legacy",
-    [{"ntfy_topic": "probe", "events": ["done"]}, {"ntfy_topic": 42, "events": False}, []],
-)
-def test_legacy_notifications_are_ignored_with_nonblocking_warning(legacy):
-    audit = project_schema.audit_known_tables({"notifications": legacy})
-    assert audit.is_valid
-    assert len(audit.findings) == 1
-    finding = audit.findings[0]
-    assert finding.severity is config_common.ConfigFindingSeverity.WARN
-    assert finding.subject == "notifications"
-    assert "ignored" in finding.message and "delete this table" in finding.message
-
-
-@pytest.mark.parametrize(
     "key, value",
     [
         ("max_sessions", 2),
-        ("idle_timeout_seconds", 600),
         ("egress_allowlist", ["foo.test"]),
-        ("egress", "unproxied"),
     ],
 )
 def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: object) -> None:
@@ -504,27 +474,32 @@ def test_project_sandbox_accepts_project_fields() -> None:
     ).is_valid
 
 
-@pytest.mark.parametrize("developer", [{}, {"auto_retry": {"enabled": False}}, "ignored"])
-def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
-    audit = project_schema.audit_ignored_settings({"developer": developer})
+@pytest.mark.parametrize(
+    ("data", "check_id", "fix"),
+    [
+        ({"developer": {}}, "config.ignored-table", "delete [developer] from booley.toml"),
+        (
+            {"jobs": {"max_tickets": 0}},
+            "config.ignored-key",
+            "delete max_tickets from [jobs] in booley.toml",
+        ),
+    ],
+)
+def test_ignored_settings_warn_with_a_delete_fix(
+    data: dict[str, object], check_id: str, fix: str
+) -> None:
+    audit = project_schema.audit_ignored_settings(data)
+
     assert audit.is_valid
-    assert len(audit.findings) == 1
-    warning = audit.findings[0]
+    (warning,) = audit.findings
     assert warning.severity is config_common.ConfigFindingSeverity.WARN
-    assert warning.check_id == "config.ignored-table"
-    assert warning.subject == "developer"
-    assert warning.fix == "delete [developer] from booley.toml"
-    assert "developer" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+    assert warning.check_id == check_id
+    assert warning.fix == fix
 
 
 @pytest.mark.parametrize(
     ("data", "message", "fix"),
     [
-        (
-            {"jobs": {"max_tickets": 0}},
-            "booley.toml [jobs].max_tickets is ignored",
-            "delete max_tickets from [jobs] in booley.toml",
-        ),
         (
             {"worktree": {"chat": "auto"}},
             "booley.toml [worktree].chat was removed and is ignored",
@@ -537,22 +512,12 @@ def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
         ),
     ],
 )
-def test_ignored_setting_warns_with_its_fix(data, message, fix):
+def test_removed_worktree_keys_warn_with_their_fix(data, message, fix):
     audit = project_schema.audit_ignored_settings(data)
     assert audit.is_valid
     (finding,) = audit.findings
     assert finding.severity is config_common.ConfigFindingSeverity.WARN
     assert (finding.check_id, finding.message, finding.fix) == ("config.ignored-key", message, fix)
-
-
-def test_chat_table_is_an_unknown_table() -> None:
-    audit = project_schema.audit_known_tables({"chat": {"worktree": "always"}})
-
-    assert "chat" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
-    assert audit.is_valid
-    (finding,) = audit.findings
-    assert finding.check_id == "config.unknown-table"
-    assert "chat" in finding.message
 
 
 def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:

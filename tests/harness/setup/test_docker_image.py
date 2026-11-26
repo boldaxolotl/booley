@@ -1,17 +1,17 @@
-"""Tests for the sandbox-image staleness guard (build-fingerprint label).
+"""Tests for the Sandbox Image init step: staleness, release refresh, pull and local build.
 
-Covers the source-drift detection that makes ``booley init`` rebuild an image
-built from now-stale source instead of skipping it — the failure that let a
-container run an image predating the container-side skill deployment.
+The step runs against the shared fake of its two command boundaries, the Docker CLI
+and the wheel build (``tests/harness/sandbox_image_docker_fake.py``), so the real
+fingerprints, labels, capacity plan, runtime-base acquisition and build runner execute.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -20,426 +20,709 @@ from booley.harness import init_cmd
 from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import host_base_acquisition as owner
-from booley.runtime import host_docker
+from booley.runtime.build_stamp import (
+    resolve_payload_fingerprint,
+    resolve_wheel_source_fingerprint,
+)
 from booley.runtime.docker_build import DockerBuildResult
-from booley.runtime.packaged_docs import MissingShippedDocError
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
+from booley.runtime.packaged_docs import SHIPPED_DOCS
+from tests.git_support import git, repository
+from tests.harness.sandbox_image_docker_fake import (
+    Build,
+    Reply,
+    SandboxImageDocker,
+    serve_sandbox_image_docker,
+)
+from tests.subprocess_budget import run_bounded_child
+
+VERSION = "0.2.6"
+SANDBOX = init_docker_image.DOCKER_IMAGE
+BASE = init_docker_image.LOCAL_RUNTIME_BASE_IMAGE
+RELEASE_TAG = f"ghcr.io/boldaxolotl/booley-sandbox:{VERSION}"
+FINGERPRINT = init_docker_image.LABEL_FINGERPRINT
+OCI_VERSION = init_docker_image.LABEL_VERSION
+WHEEL_SOURCE = init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT
+#: Label placeholders that resolve to the checkout's own current fingerprints.
+CURRENT = "<current>"
+CURRENT_WHEEL = "<current-wheel>"
+
+#: The tracked files the local build reads; the wheel step writes to its checkout, so the
+#: tests build in a copy of these, never in the live repository.
+_CHECKOUT_FILES = (
+    ".dockerignore",
+    "VERSION",
+    "pyproject.toml",
+    "src/booley/data/docker",
+    "src/booley/data/edalize/verible.py",
+    "src/booley/runtime/docker_base_contract.py",
+    "crates/bwave/Cargo.toml",
+    "crates/bwave/Cargo.lock",
+    "crates/bwave/src",
+    "crates/bwave/schema",
+    "crates/bwave/docs",
+    *SHIPPED_DOCS,
+)
 
 
-@pytest.fixture(autouse=True)
-def _docker_helper_uses_subprocess_run(monkeypatch):
-    """This module fakes the Docker CLI through ``subprocess.run``."""
-    route_docker_helper_through_subprocess_run(monkeypatch)
+@pytest.fixture
+def docker(monkeypatch: pytest.MonkeyPatch) -> SandboxImageDocker:
+    return serve_sandbox_image_docker(monkeypatch)
+
+
+@pytest.fixture(scope="session")
+def _checkout_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    repo = Path(__file__).resolve().parents[3]
+    listed = run_bounded_child(
+        ["git", "ls-files", "-z", "--", *_CHECKOUT_FILES], cwd=repo, check=True
+    ).stdout
+    template = tmp_path_factory.mktemp("checkout-template")
+    for name in filter(None, listed.split("\0")):
+        (template / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(repo / name, template / name)
+    return template
+
+
+@pytest.fixture
+def source_checkout(
+    _checkout_template: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A plain copy of the files the local build reads, safe for the wheel step to write to."""
+    root = tmp_path / "checkout"
+    shutil.copytree(_checkout_template, root)
+    # No enclosing repository may supply a source revision to a copy that has none.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    return root
 
 
 def _seed_source(root: Path) -> None:
-    """Minimal repo layout that :func:`_image_build_fingerprint` hashes."""
+    """Minimal checkout the payload fingerprint hashes (no Dockerfile: a build stops early)."""
     pkg = root / "src" / "booley"
     pkg.mkdir(parents=True)
     (pkg / "incontainer_register.py").write_text("x = 1\n", encoding="utf-8")
     (root / ".dockerignore").write_text(".git\n", encoding="utf-8")
     (root / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    (root / "VERSION").write_text(f"{VERSION}\n", encoding="utf-8")
     bwave = root / "crates" / "bwave"
     (bwave / "src").mkdir(parents=True)
     (bwave / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
     (bwave / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# _image_build_fingerprint
-# ---------------------------------------------------------------------------
-
-
-class TestFingerprint:
-    def test_none_without_source_tree(self, tmp_path):
-        # No src/booley -> can't fingerprint -> None (disables the guard).
-        assert init_cmd._image_build_fingerprint(tmp_path) is None
-
-    def test_stable_and_hex(self, tmp_path):
-        _seed_source(tmp_path)
-        fp1 = init_cmd._image_build_fingerprint(tmp_path)
-        fp2 = init_cmd._image_build_fingerprint(tmp_path)
-        assert fp1 == fp2
-        assert fp1 and len(fp1) == 64  # sha256 hexdigest
-
-    def test_changes_when_source_changes(self, tmp_path):
-        _seed_source(tmp_path)
-        before = init_cmd._image_build_fingerprint(tmp_path)
-        (tmp_path / "src" / "booley" / "incontainer_register.py").write_text(
-            "x = 2\n", encoding="utf-8"
-        )
-        assert init_cmd._image_build_fingerprint(tmp_path) != before
-
-    def test_changes_on_new_file(self, tmp_path):
-        _seed_source(tmp_path)
-        before = init_cmd._image_build_fingerprint(tmp_path)
-        (tmp_path / "src" / "booley" / "new_mod.py").write_text("y = 1\n", encoding="utf-8")
-        assert init_cmd._image_build_fingerprint(tmp_path) != before
-
-    def test_changes_when_dockerignore_changes(self, tmp_path):
-        _seed_source(tmp_path)
-        before = init_cmd._image_build_fingerprint(tmp_path)
-        (tmp_path / ".dockerignore").write_text(".git\ndist\n", encoding="utf-8")
-        assert init_cmd._image_build_fingerprint(tmp_path) != before
-
-    def test_ignores_pycache(self, tmp_path):
-        _seed_source(tmp_path)
-        before = init_cmd._image_build_fingerprint(tmp_path)
-        cache = tmp_path / "src" / "booley" / "__pycache__"
-        cache.mkdir()
-        (cache / "incontainer_register.cpython-313.pyc").write_bytes(b"\x00compiled")
-        assert init_cmd._image_build_fingerprint(tmp_path) == before
-
-    def test_ignores_bwave_target(self, tmp_path):
-        # The huge target/ build dir must not enter the hash (only src + manifests).
-        _seed_source(tmp_path)
-        before = init_cmd._image_build_fingerprint(tmp_path)
-        target = tmp_path / "crates" / "bwave" / "target" / "release"
-        target.mkdir(parents=True)
-        (target / "bwave").write_bytes(b"\x00binary")
-        assert init_cmd._image_build_fingerprint(tmp_path) == before
-
-
-def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypatch):
-    monkeypatch.setattr(init_docker_image, "resolve_build_commit", lambda _root: "abc123")
+def _point_at(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """Make *root* the Booley tree the step inspects; the install location is the host's."""
     monkeypatch.setattr(
-        init_docker_image,
-        "resolve_source_updated_at",
-        lambda _root: "2026-08-10T10:00:00Z",
-    )
-    monkeypatch.setattr(init_docker_image, "_read_version", lambda: "1.2.3")
-    (tmp_path / "VERSION").write_text("1.2.3\n", encoding="utf-8")
-    (tmp_path / ".git").mkdir()
-
-    args = init_docker_image._image_build_metadata_args(tmp_path)
-    values = set(args[1::2])
-
-    assert "BOOLEY_VERSION=1.2.3" in values
-    assert "BOOLEY_SOURCE_REVISION=abc123" in values
-    assert "BOOLEY_SOURCE_UPDATED_AT=2026-08-10T10:00:00Z" in values
-    assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
-
-
-def test_docker_build_command_reuses_local_parent_labels(tmp_path):
-    dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
-    parent_id = "sha256:" + "a" * 64
-    direct_spec = init_docker_image._DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=tmp_path,
-        exists=False,
-        image="project-image",
-        parent_artifact=parent_id,
-    )
-
-    direct_command = init_docker_image._docker_build_command(direct_spec)
-
-    assert (
-        f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}="
-        f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}"
-    ) in direct_command
-    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in direct_command
-
-    labeled_spec = init_docker_image._DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=tmp_path,
-        exists=False,
-        image="project-image",
-        labels=(("io.booley.wheel.sha256", "f" * 64),),
-    )
-    assert "io.booley.wheel.sha256=" + "f" * 64 in init_docker_image._docker_build_command(
-        labeled_spec
-    )
-
-    context_spec = init_docker_image._DockerBuildSpec(
-        dockerfile=dockerfile,
-        context=tmp_path,
-        exists=False,
-        image="project-image",
-        build_contexts=(("booley-runtime-base", "docker-image://base-image"),),
-    )
-    context_command = init_docker_image._docker_build_command(context_spec)
-    flag_at = context_command.index("--build-context")
-    assert context_command[flag_at + 1] == "booley-runtime-base=docker-image://base-image"
-
-
-def _matching_runtime_base_build(tmp_path, monkeypatch):
-    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
-    docker_dir.mkdir(parents=True)
-    (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
-    (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
-    calls = []
-
-    monkeypatch.setattr(
-        init_docker_image,
-        "_docker_build_wheel",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: True)
-    monkeypatch.setattr(init_docker_image.idk, "image_id", lambda _image: "sha256:runtime-base")
-    monkeypatch.setattr(
-        init_docker_image,
-        "_image_label",
-        lambda image, label: (
-            "contract"
-            if image == "sha256:runtime-base"
-            and label == init_docker_image.LABEL_RUNTIME_BASE_CONTRACT
-            else None
-        ),
-    )
-    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
-    monkeypatch.setattr(
-        init_docker_image,
-        "source_image_build_contracts",
-        lambda _root: SimpleNamespace(runtime_base="contract"),
-    )
-
-    def fake_build(*args, **kwargs):
-        calls.append((args, kwargs))
-        return 0
-
-    monkeypatch.setattr(init_docker_image, "_docker_build_image", fake_build)
-    return docker_dir, calls
-
-
-def test_local_build_reuses_matching_runtime_base_for_candidate(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    docker_dir, calls = _matching_runtime_base_build(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        init_docker_image, "_acquire_runtime_base", lambda *_args, **_kwargs: "sha256:runtime-base"
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
-
-    assert all(call[0][1].dockerfile.name != "Dockerfile.base" for call in calls)
-    candidate = calls[0][0][1]
-    assert candidate.dockerfile.name == "Dockerfile"
-    assert candidate.build_contexts == (
-        ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
-    )
-    assert candidate.parent_artifact == "sha256:runtime-base"
-    assert candidate.build_args == (
-        "--build-arg",
-        "BOOLEY_RUNTIME_BASE_IMAGE=sha256:runtime-base",
+        init_docker_image, "docker_data_dir", lambda: root / "src" / "booley" / "data" / "docker"
     )
 
 
-def test_local_candidate_rejects_runtime_base_retag_during_build(tmp_path, monkeypatch) -> None:
-    resolved_ids = iter(("sha256:approved", "sha256:changed"))
-    monkeypatch.setattr(
-        init_docker_image.idk,
-        "image_id",
-        lambda _image: next(resolved_ids),
-    )
-    monkeypatch.setattr(init_docker_image, "_docker_build_image", lambda *_args: 0)
-    ctx = InitContext(project_root=tmp_path)
-
-    result = init_docker_image._build_local_sandbox_candidate(
-        ctx,
-        tmp_path / "Dockerfile",
-        tmp_path,
-        exists=True,
-        fingerprint="fingerprint",
-        runtime_base_id="sha256:approved",
-    )
-
-    assert result is None
-    assert ctx.results[-1].detail == "runtime-base identity changed"
+def _run_step(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    *,
+    check_only: bool = False,
+    force: bool = False,
+    version: str = VERSION,
+    **step_kwargs: bool,
+) -> InitContext:
+    """Run the Docker image step for the Booley tree at *root* (empty: a release install)."""
+    monkeypatch.setattr(booley, "__version__", version)
+    _point_at(monkeypatch, root)
+    ctx = InitContext(project_root=root, check_only=check_only, force=force)
+    # private: no public function reaches the step with a Docker client to fake. Its only
+    # caller, ``image_lifecycle``, runs it inside a plan of the whole Project image chain.
+    init_docker_image._step_docker_image(ctx, **step_kwargs)
+    return ctx
 
 
-def test_local_candidate_reports_runtime_base_inspect_failure(tmp_path, monkeypatch) -> None:
-    """A Docker failure is reported as such, never as a changed runtime-base identity."""
-
-    def docker_missing(*_args: object, **_kwargs: object) -> object:
-        raise FileNotFoundError("docker")
-
-    # Fail every Docker seam (the shared helper and raw subprocess); an empty PATH
-    # does not hide `docker` on Windows.
-    monkeypatch.setattr(init_docker_image.subprocess, "run", docker_missing)
-    monkeypatch.setattr(host_docker, "_run_docker", docker_missing)
-    monkeypatch.setattr(
-        init_docker_image,
-        "_docker_build_image",
-        lambda *_args: pytest.fail("candidate built without a verified runtime base"),
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    result = init_docker_image._build_local_sandbox_candidate(
-        ctx,
-        tmp_path / "Dockerfile",
-        tmp_path,
-        exists=True,
-        fingerprint="fingerprint",
-        runtime_base_id="sha256:approved",
-    )
-
-    assert result is None
-    assert ctx.results[-1].status == "err"
-    assert "cannot inspect Docker image" in ctx.results[-1].detail
-    assert "identity changed" not in ctx.results[-1].detail
+def _verdict(ctx: InitContext) -> tuple[str, str]:
+    return ctx.results[-1].status, ctx.results[-1].detail
 
 
-def test_local_candidate_reports_runtime_base_inspect_failure_after_build(
-    tmp_path, monkeypatch
-) -> None:
-    lookups = iter(("sha256:approved", init_docker_image.idk.ImageInspectError("daemon down")))
-
-    def image_id(_image: str) -> str:
-        value = next(lookups)
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    monkeypatch.setattr(init_docker_image.idk, "image_id", image_id)
-    monkeypatch.setattr(init_docker_image, "_docker_build_image", lambda *_args: 0)
-    ctx = InitContext(project_root=tmp_path)
-
-    result = init_docker_image._build_local_sandbox_candidate(
-        ctx,
-        tmp_path / "Dockerfile",
-        tmp_path,
-        exists=True,
-        fingerprint="fingerprint",
-        runtime_base_id="sha256:approved",
-    )
-
-    assert result is None
-    assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == "daemon down"
+def _add_image(docker: SandboxImageDocker, name: str, root: Path, labels: dict[str, str]) -> None:
+    """Add an image whose ``CURRENT`` and ``CURRENT_WHEEL`` labels name *root*'s fingerprints."""
+    current = {
+        CURRENT: resolve_payload_fingerprint(root),
+        CURRENT_WHEEL: resolve_wheel_source_fingerprint(root),
+    }
+    docker.add(name, {key: current.get(value, value) or "" for key, value in labels.items()})
 
 
-def test_local_build_records_capacity_check_inspect_failure(tmp_path, monkeypatch) -> None:
-    docker_dir, _calls = _matching_runtime_base_build(tmp_path, monkeypatch)
-
-    def fail(*_args, **_kwargs):
-        raise init_docker_image.ImageLifecycleError("cannot inspect Docker image: daemon down")
-
-    monkeypatch.setattr(init_docker_image, "_local_build_capacity_requests", fail)
-    monkeypatch.setattr(
-        init_docker_image,
-        "_acquire_runtime_base",
-        lambda *_args, **_kwargs: pytest.fail("built after a failed capacity check"),
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
-
-    assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == (
-        "Sandbox Image capacity check failed: cannot inspect Docker image: daemon down"
-    )
-
-
-def test_local_candidate_rejects_runtime_base_retag_before_build(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        init_docker_image.idk,
-        "image_id",
-        lambda _image: "sha256:changed",
-    )
-    monkeypatch.setattr(
-        init_docker_image,
-        "_docker_build_image",
-        lambda *_args: pytest.fail("candidate built from an unapproved runtime base"),
-    )
-    ctx = InitContext(project_root=tmp_path)
-
-    result = init_docker_image._build_local_sandbox_candidate(
-        ctx,
-        tmp_path / "Dockerfile",
-        tmp_path,
-        exists=True,
-        fingerprint="fingerprint",
-        runtime_base_id="sha256:approved",
-    )
-
-    assert result is None
-    assert ctx.results[-1].detail == "runtime-base identity changed"
-
-
-def test_local_capacity_plan_omits_reusable_runtime_base(tmp_path, monkeypatch) -> None:
-    base = tmp_path / "Dockerfile.base"
-    sandbox = tmp_path / "Dockerfile"
-    base.write_text("FROM scratch\n", encoding="utf-8")
-    sandbox.write_text("FROM scratch\n", encoding="utf-8")
-    monkeypatch.setattr(
-        init_docker_image,
-        "source_image_build_contracts",
-        lambda _root: SimpleNamespace(runtime_base="contract"),
-    )
-    monkeypatch.setattr(init_docker_image.idk, "image_id", lambda _image: "sha256:base")
-    monkeypatch.setattr(init_docker_image, "_image_label", lambda *_args: "contract")
-
-    requests = init_docker_image._local_build_capacity_requests(
-        base,
-        sandbox,
-        tmp_path,
-        "payload",
-        rebuild_runtime_base=False,
-    )
-
-    assert [request.managed_image for request in requests] == ["Sandbox Image"]
-
-
-def test_local_capacity_plan_orders_runtime_base_before_sandbox(tmp_path, monkeypatch) -> None:
-    base = tmp_path / "Dockerfile.base"
-    sandbox = tmp_path / "Dockerfile"
-    base.write_text("FROM scratch\n", encoding="utf-8")
-    sandbox.write_text("FROM scratch\n", encoding="utf-8")
-    monkeypatch.setattr(
-        init_docker_image,
-        "source_image_build_contracts",
-        lambda _root: SimpleNamespace(runtime_base="contract"),
-    )
-    monkeypatch.setattr(init_docker_image.idk, "image_id", lambda _image: None)
-
-    requests = init_docker_image._local_build_capacity_requests(
-        base,
-        sandbox,
-        tmp_path,
-        "payload",
-        rebuild_runtime_base=False,
-    )
-
-    assert [request.managed_image for request in requests] == [
-        "runtime base",
-        "Sandbox Image",
+def _build_tags(docker: SandboxImageDocker, since: int = 0) -> list[str]:
+    return [
+        call[call.index("-t") + 1]
+        for call in docker.calls[since:]
+        if call[:2] == ["docker", "build"]
     ]
 
 
 @pytest.mark.parametrize(
-    ("outcome", "message", "record"),
+    ("fields", "expected"),
     [
-        (
-            "cli-missing",
-            "docker build failed: no docker",
-            "no docker",
+        pytest.param(
+            {"parent_artifact": "sha256:" + "a" * 64},
+            [
+                [
+                    "--label",
+                    f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}="
+                    f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+                ],
+                ["--label", f"{init_docker_image.LABEL_PARENT_ARTIFACT}=sha256:{'a' * 64}"],
+            ],
+            id="parent-labels",
         ),
-        (
-            "timed-out",
-            "docker build timed out after 2h 00m (override with BOOLEY_IMAGE_BUILD_TIMEOUT)",
-            "build timed out",
+        pytest.param(
+            {"labels": (("io.booley.wheel.sha256", "f" * 64),)},
+            [["--label", "io.booley.wheel.sha256=" + "f" * 64]],
+            id="extra-labels",
         ),
-        (
-            "non-zero",
-            "stable runtime-base build failed — re-run with -v for full output",
-            "runtime-base build failed",
+        pytest.param(
+            {"build_contexts": (("booley-runtime-base", "docker-image://base-image"),)},
+            [["--build-context", "booley-runtime-base=docker-image://base-image"]],
+            id="build-contexts",
+        ),
+        pytest.param(
+            {"image": SANDBOX},
+            [
+                ["--build-arg", "BOOLEY_SOURCE_REVISION={revision}"],
+                ["--build-arg", "BOOLEY_SOURCE_UPDATED_AT=2026-08-10T10:00:00+02:00"],
+                ["--build-arg", "BOOLEY_VERSION={version}"],
+                ["--build-arg", "BOOLEY_PAYLOAD_FINGERPRINT={payload}"],
+            ],
+            id="booley-sandbox-provenance",
         ),
     ],
 )
-def test_runtime_base_build_failure_keeps_docker_image_records(
-    tmp_path, monkeypatch, capsys, outcome, message, record
+def test_build_command_carries_provenance_labels_and_contexts(
+    tmp_path, monkeypatch, fields, expected
 ) -> None:
-    monkeypatch.delenv("BOOLEY_IMAGE_BUILD_TIMEOUT", raising=False)
-    results = {
-        "cli-missing": None,
-        "timed-out": DockerBuildResult(None, timed_out=True, diagnostics=("slow",)),
-        "non-zero": DockerBuildResult(1, diagnostics=("boom",)),
+    repo = repository(tmp_path / "repo")
+    (repo / "VERSION").write_text("1.2.3\n", encoding="utf-8")
+    (repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    git(repo, "add", ".")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-08-10T10:00:00+02:00")
+    git(repo, "commit", "-q", "-m", "seed")
+    facts = {
+        "revision": git(repo, "rev-parse", "--short", "HEAD"),
+        "version": "1.2.3",
+        "payload": resolve_payload_fingerprint(repo),
     }
-    failure = owner.RuntimeBaseBuildError("build failed", results[outcome])
-    failure.__cause__ = OSError("no docker")
+    fields = {"image": "project-image", **fields}
+    # private: extra labels and a non-default image come only from ``image_lifecycle`` plans,
+    # which no run of the step reaches, so the command is built from the spec directly.
+    spec = init_docker_image._DockerBuildSpec(
+        dockerfile=repo / "Dockerfile", context=repo, exists=False, **fields
+    )
+    command = init_docker_image._docker_build_command(spec)
+
+    pairs = [command[i : i + 2] for i in range(len(command) - 1)]
+    for fragment in expected:
+        assert [part.format(**facts) for part in fragment] in pairs
+    built_at = [pair for pair in pairs if pair[1].startswith("BOOLEY_IMAGE_BUILT_AT=")]
+    assert bool(built_at) is (fields["image"] == SANDBOX)
+
+
+STALE = ("warn", "would rebuild (stale)")
+PRESENT = ("current", "already present")
+
+
+@pytest.mark.parametrize(
+    ("labels", "force", "expected", "df"),
+    [
+        pytest.param({}, False, STALE, 0, id="no-label"),
+        pytest.param(
+            {FINGERPRINT: CURRENT, OCI_VERSION: VERSION}, False, PRESENT, 1, id="current"
+        ),
+        pytest.param(
+            {FINGERPRINT: CURRENT, OCI_VERSION: "0.1.0"}, False, STALE, 0, id="old-version"
+        ),
+        pytest.param({FINGERPRINT: "other", OCI_VERSION: VERSION}, False, STALE, 0, id="drifted"),
+        pytest.param({FINGERPRINT: f"pulled:{VERSION}"}, False, PRESENT, 1, id="pulled-current"),
+        pytest.param({FINGERPRINT: "pulled:0.1.0"}, False, STALE, 0, id="pulled-old"),
+        pytest.param({FINGERPRINT: "other"}, True, PRESENT, 0, id="forced"),
+        pytest.param(None, False, ("warn", "would build"), 0, id="absent"),
+    ],
+)
+def test_checkout_image_is_rebuilt_only_when_stale(
+    tmp_path, monkeypatch, docker, labels, force, expected, df
+) -> None:
+    _seed_source(tmp_path)
+    if labels is not None:
+        _add_image(docker, SANDBOX, tmp_path, labels)
+
+    # Distribution metadata says 0.1.0; the checkout's VERSION file (0.2.6) must win.
+    ctx = _run_step(monkeypatch, tmp_path, check_only=True, force=force, version="0.1.0")
+
+    assert _verdict(ctx) == expected
+    assert docker.count("pull") == 0
+    assert docker.count("system", "df") == df
+
+
+@pytest.mark.parametrize(
+    ("checkout", "labels", "expected"),
+    [
+        pytest.param(False, {FINGERPRINT: "whatever"}, None, id="no-checkout"),
+        pytest.param(True, {}, None, id="unlabeled"),
+        pytest.param(True, {FINGERPRINT: ""}, None, id="empty-label"),
+        pytest.param(True, None, None, id="image-absent"),
+        pytest.param(True, {FINGERPRINT: "pulled:0.1.0"}, None, id="pulled"),
+        pytest.param(True, {FINGERPRINT: CURRENT, OCI_VERSION: VERSION}, False, id="current"),
+        pytest.param(True, {FINGERPRINT: CURRENT, OCI_VERSION: "0.1.0"}, True, id="old-version"),
+        pytest.param(True, {FINGERPRINT: "other"}, True, id="drifted"),
+        pytest.param(
+            True, {FINGERPRINT: CURRENT, WHEEL_SOURCE: "b" * 64}, True, id="wheel-source-differs"
+        ),
+        pytest.param(
+            True, {FINGERPRINT: "other", WHEEL_SOURCE: CURRENT_WHEEL}, False, id="wheel-matches"
+        ),
+    ],
+)
+def test_source_fingerprint_mismatch_verdicts(
+    tmp_path, monkeypatch, docker, checkout, labels, expected
+) -> None:
+    if checkout:
+        _seed_source(tmp_path)
+    if labels is not None:
+        _add_image(docker, "img", tmp_path, labels)
+    _point_at(monkeypatch, tmp_path)
+
+    assert init_docker_image.source_fingerprint_mismatch("img") is expected
+
+
+@pytest.mark.parametrize(
+    ("labels", "options", "check_only", "expected", "present", "absent", "pulls"),
+    [
+        pytest.param(
+            {FINGERPRINT: "pulled:0.2.3"},
+            {},
+            False,
+            ("ok", "pulled"),
+            (),
+            (),
+            1,
+            id="old-release-pulled",
+        ),
+        pytest.param(
+            {FINGERPRINT: "pulled:0.2.3"},
+            {"pull": Reply(1, stderr="not found")},
+            False,
+            ("warn", "compatible image pull failed"),
+            (
+                "v0.2.3",
+                f"Booley v{VERSION} requires sandbox image v{VERSION}",
+                "may be incompatible",
+            ),
+            (),
+            1,
+            id="pull-fails",
+        ),
+        pytest.param(
+            {FINGERPRINT: f"pulled:{VERSION}"},
+            {},
+            False,
+            ("current", "already present"),
+            (),
+            (),
+            0,
+            id="matching-release",
+        ),
+        pytest.param(
+            {FINGERPRINT: "abc123", OCI_VERSION: "0.2.3"},
+            {},
+            False,
+            ("ok", "pulled"),
+            (),
+            (),
+            1,
+            id="oci-version-without-pull-stamp",
+        ),
+        pytest.param(
+            {},
+            {},
+            True,
+            ("warn", "would pull compatible image"),
+            ("unknown version", f"would pull the Booley v{VERSION} image"),
+            (),
+            0,
+            id="check-only-unverifiable",
+        ),
+        pytest.param(
+            {FINGERPRINT: "pulled:0.2.3"},
+            {"tag": Reply(raises=subprocess.TimeoutExpired(["docker", "tag"], 30))},
+            False,
+            ("warn", "compatible image pull failed"),
+            ("docker tag timed out after 30 seconds",),
+            ("pull timed out",),
+            1,
+            id="tag-times-out",
+        ),
+    ],
+)
+def test_release_install_refreshes_image_to_its_version(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    docker,
+    labels,
+    options,
+    check_only,
+    expected,
+    present,
+    absent,
+    pulls,
+) -> None:
+    # An empty tree is a pip install: no checkout fingerprint, but the release pins the image.
+    docker.add(SANDBOX, labels)
+    for name, reply in options.items():
+        setattr(docker, name, reply)
+
+    ctx = _run_step(monkeypatch, tmp_path, check_only=check_only)
+
+    output = capsys.readouterr().out
+    assert _verdict(ctx) == expected
+    assert all(fragment in output for fragment in present)
+    assert not any(fragment in output for fragment in absent)
+    assert docker.count("pull") == pulls
+    if pulls:
+        assert ["docker", "pull", RELEASE_TAG] in docker.calls
+    if expected == ("ok", "pulled"):
+        # The pulled image, not the stale one, is what the managed name now resolves to.
+        assert docker.images[SANDBOX]["Id"] == docker.images[RELEASE_TAG]["Id"]
+
+
+@pytest.mark.parametrize(
+    ("override", "pull", "timeout", "fragment"),
+    [
+        pytest.param(
+            None,
+            Reply(1),
+            init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
+            "docker exited 1",
+            id="default",
+        ),
+        pytest.param(
+            "900",
+            Reply(raises=subprocess.TimeoutExpired(["docker", "pull"], 900)),
+            900,
+            "BOOLEY_IMAGE_PULL_TIMEOUT",
+            id="override",
+        ),
+        pytest.param(
+            "never",
+            Reply(1),
+            init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
+            "invalid BOOLEY_IMAGE_PULL_TIMEOUT='never'",
+            id="invalid",
+        ),
+    ],
+)
+def test_registry_pull_timeout(
+    tmp_path, monkeypatch, capsys, docker, override, pull, timeout, fragment
+) -> None:
+    monkeypatch.delenv("BOOLEY_IMAGE_PULL_TIMEOUT", raising=False)
+    if override is not None:
+        monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", override)
+    docker.pull = pull
+
+    _run_step(monkeypatch, tmp_path)
+
+    assert [sent["timeout"] for sent in docker.sent("pull")] == [timeout]
+    assert fragment in capsys.readouterr().out
+
+
+def test_checkout_builds_locally_when_pull_is_unavailable(
+    tmp_path, monkeypatch, capsys, docker
+) -> None:
+    _seed_source(tmp_path)
+    docker.pull = Reply(1)
+
+    ctx = _run_step(monkeypatch, tmp_path)
+
+    assert docker.count("pull") == 1
+    assert (
+        "pre-built image unavailable, rebuilding the Sandbox Image locally"
+        in capsys.readouterr().out
+    )
+    # The seeded tree has no Dockerfile, so the local build starts and stops there.
+    assert _verdict(ctx) == ("err", "Dockerfile missing")
+
+
+def test_staged_pull_leaves_canonical_adoption_to_lifecycle(docker) -> None:
+    # private: ``image_lifecycle`` is the only caller of a staged pull and runs it inside a
+    # full plan of the Project image chain.
+    assert init_docker_image._try_pull_image("0.2.0", adopt=False) is True
+
+    assert docker.count("pull") == 1
+    assert docker.count("tag") == 0
+
+
+@pytest.mark.parametrize(
+    ("df", "present", "absent"),
+    [
+        pytest.param(
+            "Images\t2GB\t1GB\nBuild Cache\t29.3GB\t29.3GB\n",
+            (
+                "docker build cache: 29.3GB",
+                "(29.3GB reclaimable)",
+                "docker builder prune",
+                "evict layers",
+            ),
+            (),
+            id="large",
+        ),
+        pytest.param("Build Cache\t10GiB\t1GiB\n", ("docker builder prune",), (), id="gibibytes"),
+        pytest.param(
+            "Build Cache\t512MB\t0B\n", ("docker build cache: 512MB",), ("prune",), id="megabytes"
+        ),
+        pytest.param("Build Cache\t2TB\t0B\n", ("docker builder prune",), (), id="terabytes"),
+        pytest.param(
+            "Build Cache\t9.9GB\t0B\n", ("docker build cache: 9.9GB",), ("prune",), id="below"
+        ),
+        pytest.param("Build Cache\t10GB\t0B\n", ("docker builder prune",), (), id="threshold"),
+        pytest.param(
+            "Build Cache\t10000000kB\t0B\n", ("docker builder prune",), (), id="kilobytes"
+        ),
+        pytest.param("Build Cache\t9000000kB\t0B\n", (), ("prune",), id="kilobytes-below"),
+        pytest.param("Build Cache\t10000000000B\t0B\n", ("docker builder prune",), (), id="bytes"),
+        pytest.param(
+            "Build Cache\tN/A\tN/A\n", ("docker build cache: N/A",), ("prune",), id="unparseable"
+        ),
+        pytest.param(None, (), ("docker build cache",), id="docker-fails"),
+    ],
+)
+def test_current_image_reports_build_cache(
+    tmp_path, monkeypatch, capsys, docker, df, present, absent
+) -> None:
+    _seed_source(tmp_path)
+    _add_image(docker, SANDBOX, tmp_path, {FINGERPRINT: CURRENT, OCI_VERSION: VERSION})
+    docker.system_df = Reply(stdout=df) if df is not None else Reply(1)
+
+    ctx = _run_step(monkeypatch, tmp_path)
+
+    output = capsys.readouterr().out
+    assert _verdict(ctx) == PRESENT
+    assert all(fragment in output for fragment in present)
+    assert not any(fragment in output for fragment in absent)
+
+
+def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
+    """The local build the way ``image_lifecycle`` runs it: a missing image, no pull."""
+    return _run_step(monkeypatch, root, allow_pull=False, rebuild_runtime_base=False, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("runs", "prepare", "status", "detail", "builds"),
+    [
+        pytest.param(1, None, "ok", "built", [BASE, SANDBOX], id="base-absent"),
+        pytest.param(2, None, "ok", "built", [SANDBOX], id="base-reused"),
+        pytest.param(
+            1,
+            lambda docker: docker.failing.add(BASE),
+            "err",
+            "Sandbox Image capacity check failed: cannot inspect",
+            [],
+            id="capacity-check-cannot-inspect",
+        ),
+        pytest.param(
+            1,
+            lambda docker: docker.after.update(wheel=lambda: docker.retag(BASE)),
+            "err",
+            "runtime-base identity changed",
+            [BASE],
+            id="base-retagged-before-candidate",
+        ),
+        pytest.param(
+            1,
+            lambda docker: docker.after.update({SANDBOX: lambda: docker.retag(BASE)}),
+            "err",
+            "runtime-base identity changed",
+            [BASE, SANDBOX],
+            id="base-retagged-during-candidate",
+        ),
+        pytest.param(
+            1,
+            lambda docker: docker.after.update(wheel=lambda: docker.failing.add(BASE)),
+            "err",
+            "cannot inspect Docker image",
+            [BASE],
+            id="base-unreadable-before-candidate",
+        ),
+        pytest.param(
+            1,
+            lambda docker: docker.after.update({SANDBOX: lambda: docker.failing.add(BASE)}),
+            "err",
+            "daemon down",
+            [BASE, SANDBOX],
+            id="base-unreadable-after-candidate",
+        ),
+    ],
+)
+def test_local_build_guards_the_runtime_base(
+    source_checkout, monkeypatch, docker, runs, prepare, status, detail, builds
+) -> None:
+    if prepare is not None:
+        prepare(docker)
+    for _ in range(runs):
+        docker.images.pop(SANDBOX, None)
+        start = len(docker.calls)
+        ctx = _local_build(monkeypatch, source_checkout)
+
+    assert _build_tags(docker, start) == builds
+    assert ctx.results[-1].status == status
+    assert detail in ctx.results[-1].detail
+    if status == "ok":
+        base_id = docker.images[BASE]["Id"]
+        candidate = next(
+            c for c in docker.calls[start:] if c[:2] == ["docker", "build"] and SANDBOX in c
+        )
+        pairs = [candidate[i : i + 2] for i in range(len(candidate) - 1)]
+        assert ["--build-context", f"booley-runtime-base=docker-image://{BASE}"] in pairs
+        assert ["--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={base_id}"] in pairs
+        assert [
+            "--label",
+            f"{init_docker_image.LABEL_PARENT_ARTIFACT}={base_id}",
+        ] in pairs
+        assert [
+            "--label",
+            f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}={init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+        ] in pairs
+
+
+_PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+@pytest.mark.parametrize(
+    ("prepare", "detail", "present", "absent"),
+    [
+        pytest.param(
+            lambda docker, root: docker.builds.update(
+                {BASE: Build(raises=FileNotFoundError("no docker"))}
+            ),
+            "no docker",
+            ("docker build failed: no docker",),
+            (),
+            id="docker-cli-missing",
+        ),
+        pytest.param(
+            lambda docker, root: docker.builds.update({BASE: Build(1, b"boom\n")}),
+            "runtime-base build failed",
+            ("stable runtime-base build failed", "boom"),
+            (),
+            id="runtime-base-exits-1",
+        ),
+        pytest.param(
+            lambda docker, root: docker.builds.update(
+                {SANDBOX: Build(1, b"ERROR: checksum mismatch\n")}
+            ),
+            "build failed",
+            ("docker build failed", "ERROR: checksum mismatch"),
+            (),
+            id="candidate-exits-1",
+        ),
+        pytest.param(
+            lambda docker, root: setattr(
+                docker,
+                "wheel",
+                Reply(1, stdout="* Creating isolated environment\nboom: real cause"),
+            ),
+            "wheel build failed",
+            ("boom: real cause",),
+            (),
+            id="wheel-reports-on-stdout",
+        ),
+        pytest.param(
+            lambda docker, root: setattr(
+                docker, "wheel", Reply(1, stderr="stderr side of the story")
+            ),
+            "wheel build failed",
+            ("stderr side of the story",),
+            (),
+            id="wheel-reports-on-stderr",
+        ),
+        pytest.param(
+            lambda docker, root: setattr(
+                docker,
+                "wheel",
+                Reply(
+                    1,
+                    stdout="* Creating isolated environment: venv+pip...\n"
+                    "The virtual environment was not created successfully because "
+                    "ensurepip is not available.",
+                ),
+            ),
+            "wheel build failed",
+            (f"apt install python{_PYVER}-venv", "--no-isolation"),
+            (),
+            id="wheel-ensurepip-missing",
+        ),
+        pytest.param(
+            lambda docker, root: setattr(
+                docker, "wheel", Reply(1, stdout="No module named build")
+            ),
+            "wheel build failed",
+            ("pip install build",),
+            (),
+            id="wheel-build-module-missing",
+        ),
+        pytest.param(
+            lambda docker, root: (root / SHIPPED_DOCS[0]).unlink(),
+            "wheel build failed",
+            (SHIPPED_DOCS[0],),
+            ("pip install build",),
+            id="shipped-doc-missing",
+        ),
+    ],
+)
+def test_local_build_reports_build_failures(
+    source_checkout, monkeypatch, capsys, docker, prepare, detail, present, absent
+) -> None:
+    prepare(docker, source_checkout)
+
+    ctx = _local_build(monkeypatch, source_checkout)
+
+    output = capsys.readouterr().out
+    assert (ctx.results[-1].name, ctx.results[-1].status) == ("docker_image", "err")
+    assert detail in ctx.results[-1].detail
+    # Each message and the retained Docker output are shown once.
+    assert all(output.count(fragment) == 1 for fragment in present)
+    assert not any(fragment in output for fragment in absent)
+
+
+@pytest.mark.parametrize(
+    ("output", "force"),
+    [
+        pytest.param(b">>> Building \x81 from source\n", False, id="byte-outside-cp1252"),
+        pytest.param(b">>> ok\n", True, id="forced-keeps-layer-cache"),
+    ],
+)
+def test_local_build_streams_docker_output_as_utf8(
+    source_checkout, monkeypatch, docker, output, force
+) -> None:
+    docker.builds[SANDBOX] = Build(0, output)
+
+    ctx = _local_build(monkeypatch, source_checkout, force=force)
+
+    assert _verdict(ctx) == ("ok", "built")
+    builds = docker.sent("build")
+    assert len(builds) == 2
+    # Decoding the pipe with the locale codec (cp1252 on Windows) once killed a long rebuild.
+    assert all(sent["encoding"] == "utf-8" and sent["errors"] == "replace" for sent in builds)
+    # An open pipe leaks a handle (a ResourceWarning, an error under CI) after every build.
+    assert len(docker.children) == 2
+    assert all(child.stdout.closed for child in docker.children)
+    assert not any(
+        "--no-cache" in call for call in docker.calls if call[:2] == ["docker", "build"]
+    )
+
+
+def test_runtime_base_build_timeout_keeps_docker_image_records(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # A real build timeout needs a real wait, so ``acquire`` reports it directly. private: the
+    # runtime-base report is reached only through the local build of a whole Sandbox Image.
+    monkeypatch.delenv("BOOLEY_IMAGE_BUILD_TIMEOUT", raising=False)
+    failure = owner.RuntimeBaseBuildError(
+        "build failed", DockerBuildResult(None, timed_out=True, diagnostics=("slow",))
+    )
 
     def acquire(*_args, **_kwargs):
         raise failure
@@ -449,561 +732,12 @@ def test_runtime_base_build_failure_keeps_docker_image_records(
 
     assert init_docker_image._acquire_runtime_base(ctx, tmp_path, rebuild=False) is None
 
-    assert ctx.results[-1].name == "docker_image"
-    assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == record
+    assert _verdict(ctx) == ("err", "build timed out")
     output = capsys.readouterr().out
-    assert message in output
-    if failure.result is not None:
-        assert failure.result.diagnostics[0] in output
-
-
-# ---------------------------------------------------------------------------
-# _image_is_stale
-# ---------------------------------------------------------------------------
-
-
-class TestIsStale:
-    def test_no_fingerprint_is_not_stale(self, monkeypatch):
-        # None fingerprint disables only source drift; init checks release compatibility.
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "anything")
-        assert init_docker_image._image_is_stale(None) is False
-
-    def test_unlabeled_image_is_stale(self, monkeypatch):
-        # The exact bug: a pre-guard image carries no fingerprint label.
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: None)
-        assert init_docker_image._image_is_stale("abc123") is True
-
-    def test_matching_label_is_current(self, monkeypatch):
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "abc123")
-        assert init_docker_image._image_is_stale("abc123") is False
-
-    def test_matching_source_with_wrong_version_is_stale(self, monkeypatch):
-        labels = {
-            init_docker_image.LABEL_FINGERPRINT: "abc123",
-            init_docker_image.LABEL_VERSION: "0.1.0",
-        }
-        monkeypatch.setattr(
-            init_docker_image, "_image_label", lambda _image, label: labels.get(label)
-        )
-
-        assert init_docker_image._image_is_stale("abc123", expected_version="0.2.0") is True
-
-    def test_differing_label_is_stale(self, monkeypatch):
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "old999")
-        assert init_docker_image._image_is_stale("abc123") is True
-
-    def test_pulled_image_is_left_alone(self, monkeypatch):
-        # A deliberately pulled pre-built image can't match a local fingerprint;
-        # its pulled:* provenance marks it as intentional, not stale.
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "pulled:0.1.0")
-        assert init_docker_image._image_is_stale("abc123") is False
-
-    def test_pulled_image_from_old_release_is_stale(self, monkeypatch):
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "pulled:0.1.0")
-        assert init_docker_image._image_is_stale("abc123", expected_version="0.2.0") is True
-
-
-# ---------------------------------------------------------------------------
-# source_fingerprint_mismatch (advisory probe for session start / doctor)
-# ---------------------------------------------------------------------------
-
-
-class TestSourceFingerprintMismatch:
-    def _patch(self, monkeypatch, *, fingerprint, label):
-        monkeypatch.setattr(
-            init_docker_image, "_image_build_fingerprint", lambda _root: fingerprint
-        )
-        monkeypatch.setattr(init_docker_image, "_image_label", lambda *_a: label)
-
-    def test_no_checkout_gives_no_verdict(self, monkeypatch):
-        # pip-installed Booley: nothing to hash -> None, never a nag.
-        self._patch(monkeypatch, fingerprint=None, label="whatever")
-        assert init_docker_image.source_fingerprint_mismatch("img") is None
-
-    def test_unlabeled_image_gives_no_verdict(self, monkeypatch):
-        # Unlike _image_is_stale (init's rebuild decision), a hand-authored
-        # image without the label must not be nagged at every session start.
-        self._patch(monkeypatch, fingerprint="abc", label=None)
-        assert init_docker_image.source_fingerprint_mismatch("img") is None
-
-    def test_pulled_image_gives_no_verdict(self, monkeypatch):
-        self._patch(monkeypatch, fingerprint="abc", label="pulled:0.1.0")
-        assert init_docker_image.source_fingerprint_mismatch("img") is None
-
-    def test_matching_label_is_current(self, monkeypatch):
-        self._patch(monkeypatch, fingerprint="abc", label="abc")
-        monkeypatch.setattr(init_docker_image, "_source_version", lambda _root: None)
-        assert init_docker_image.source_fingerprint_mismatch("img") is False
-
-    def test_differing_label_is_stale(self, monkeypatch):
-        self._patch(monkeypatch, fingerprint="abc", label="old")
-        assert init_docker_image.source_fingerprint_mismatch("img") is True
-
-    def test_schema_three_wheel_source_is_authoritative(self, monkeypatch):
-        expected = "a" * 64
-        monkeypatch.setattr(
-            init_docker_image,
-            "resolve_wheel_source_fingerprint",
-            lambda _root: expected,
-        )
-        monkeypatch.setattr(
-            init_docker_image,
-            "_image_label",
-            lambda _image, label: (
-                "b" * 64 if label == init_docker_image.LABEL_WHEEL_SOURCE_FINGERPRINT else None
-            ),
-        )
-        monkeypatch.setattr(
-            init_docker_image,
-            "_image_build_fingerprint",
-            lambda _root: (_ for _ in ()).throw(AssertionError("legacy probe must not run")),
-        )
-
-        assert init_docker_image.source_fingerprint_mismatch("img") is True
-
-
-def test_checkout_version_overrides_stale_distribution_metadata(tmp_path, monkeypatch):
-    (tmp_path / "VERSION").write_text("0.2.0\n", encoding="utf-8")
-    monkeypatch.setattr(init_docker_image, "_read_version", lambda: "0.1.0")
-
-    assert init_docker_image._expected_version(tmp_path) == "0.2.0"
-
-
-# ---------------------------------------------------------------------------
-# _image_label parsing
-# ---------------------------------------------------------------------------
-
-
-class TestImageLabel:
-    def _fake_run(self, stdout, returncode=0):
-        class _R:
-            pass
-
-        r = _R()
-        r.stdout = stdout
-        r.returncode = returncode
-        return lambda *a, **k: r
-
-    def test_no_value_sentinel_is_none(self, monkeypatch):
-        # Go template prints "<no value>" for a missing key.
-        monkeypatch.setattr(init_cmd.subprocess, "run", self._fake_run("<no value>\n"))
-        assert init_cmd._image_label("img", "booley.build-fingerprint") is None
-
-    def test_empty_is_none(self, monkeypatch):
-        monkeypatch.setattr(init_cmd.subprocess, "run", self._fake_run("\n"))
-        assert init_cmd._image_label("img", "l") is None
-
-    def test_value_returned(self, monkeypatch):
-        monkeypatch.setattr(init_cmd.subprocess, "run", self._fake_run("abc123\n"))
-        assert init_cmd._image_label("img", "l") == "abc123"
-
-    def test_inspect_failure_is_none(self, monkeypatch):
-        monkeypatch.setattr(init_cmd.subprocess, "run", self._fake_run("", returncode=1))
-        assert init_cmd._image_label("img", "l") is None
-
-
-# ---------------------------------------------------------------------------
-# Installed-package image compatibility
-# ---------------------------------------------------------------------------
-
-
-def _run_pip_image_step(tmp_path, monkeypatch, docker, *, check_only=False):
-    docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
-    monkeypatch.setattr(booley, "__version__", "0.2.6")
-    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
-    monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(init_docker_image.subprocess, "run", docker.run)
-    ctx = InitContext(project_root=tmp_path, check_only=check_only)
-
-    init_docker_image._step_docker_image(ctx)
-    return ctx
-
-
-def test_pip_install_refreshes_existing_image_from_old_release(
-    tmp_path, monkeypatch, release_image_docker
-):
-    """A pip install has no checkout fingerprint, but its release still pins the image."""
-    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"})
-
-    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
-
-    assert ctx.results[-1].status == "ok"
-    assert ctx.results[-1].detail == "pulled"
-    assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
-
-
-def test_pip_install_warns_when_compatible_image_pull_fails(
-    tmp_path, monkeypatch, capsys, release_image_docker
-):
-    docker = release_image_docker(
-        fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"},
-        pull_returncode=1,
-    )
-
-    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
-
-    output = capsys.readouterr().out
-    assert ctx.results[-1].status == "warn"
-    assert ctx.results[-1].detail == "compatible image pull failed"
-    assert "v0.2.3" in output
-    assert "Booley v0.2.6 requires sandbox image v0.2.6" in output
-    assert "may be incompatible" in output
-
-
-def test_pip_install_skips_image_from_matching_release(
-    tmp_path, monkeypatch, release_image_docker
-):
-    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.6"})
-
-    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
-
-    assert ctx.results[-1].status == "current"
-    assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
-
-
-def test_pip_install_uses_oci_version_when_pull_stamp_is_absent(
-    tmp_path, monkeypatch, release_image_docker
-):
-    docker = release_image_docker(
-        fingerprints={init_docker_image.DOCKER_IMAGE: "abc123"},
-        oci_versions={init_docker_image.DOCKER_IMAGE: "0.2.3"},
-    )
-
-    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
-
-    assert ctx.results[-1].detail == "pulled"
-    assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
-
-
-def test_pip_install_check_only_warns_for_unverifiable_image(
-    tmp_path, monkeypatch, capsys, release_image_docker
-):
-    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: None})
-
-    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker, check_only=True)
-
-    output = capsys.readouterr().out
-    assert ctx.results[-1].status == "warn"
-    assert ctx.results[-1].detail == "would pull compatible image"
-    assert "unknown version" in output
-    assert "would pull the Booley v0.2.6 image" in output
-    assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
-
-
-def test_source_step_explains_local_rebuild_after_pull_is_unavailable(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
-    monkeypatch.setattr(init_docker_image, "_docker_cli_ready", lambda _ctx: True)
-    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda: False)
-    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
-    monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "fp")
-    monkeypatch.setattr(init_docker_image, "_expected_version", lambda _root: "0.2.6")
-    monkeypatch.setattr(init_docker_image, "_prepare_existing_base_image", lambda *_a, **_k: False)
-    monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda _version: False)
-    builds = []
-    monkeypatch.setattr(
-        init_docker_image,
-        "_docker_local_build",
-        lambda *_args, **_kwargs: builds.append("local"),
-    )
-
-    init_docker_image._step_docker_image(InitContext(project_root=tmp_path))
-
-    assert builds == ["local"]
     assert (
-        "pre-built image unavailable, rebuilding the Sandbox Image locally"
-        in capsys.readouterr().out
+        "docker build timed out after 2h 00m (override with BOOLEY_IMAGE_BUILD_TIMEOUT)" in output
     )
-
-
-def test_checkout_source_drift_still_rebuilds_instead_of_pulling(tmp_path, monkeypatch):
-    _seed_source(tmp_path)
-    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
-    commands: list[list[str]] = []
-
-    def fake_run(command, **_kwargs):
-        commands.append(command)
-        if command == ["docker", "image", "inspect", init_docker_image.DOCKER_IMAGE]:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[:3] == ["docker", "image", "inspect"]:
-            return subprocess.CompletedProcess(command, 0, "old-fingerprint\n", "")
-        raise AssertionError(f"unexpected Docker command: {command}")
-
-    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
-    monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(init_docker_image.subprocess, "run", fake_run)
-    ctx = InitContext(project_root=tmp_path, check_only=True)
-
-    init_docker_image._step_docker_image(ctx)
-
-    assert ctx.results[-1].status == "warn"
-    assert ctx.results[-1].detail == "would rebuild (stale)"
-    assert not any(command[:2] == ["docker", "pull"] for command in commands)
-
-
-# ---------------------------------------------------------------------------
-# Registry pull timeout
-# ---------------------------------------------------------------------------
-
-
-class TestImagePull:
-    def test_large_image_gets_two_hour_default(self, monkeypatch):
-        calls: list[tuple[list[str], int]] = []
-
-        class _Result:
-            returncode = 1
-
-        def _run(cmd, **kwargs):
-            calls.append((cmd, kwargs["timeout"]))
-            return _Result()
-
-        monkeypatch.delenv("BOOLEY_IMAGE_PULL_TIMEOUT", raising=False)
-        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
-
-        assert init_docker_image._try_pull_image("0.2.0") is False
-        assert calls == [
-            (
-                ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"],
-                init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
-            )
-        ]
-
-    def test_staged_pull_leaves_canonical_adoption_to_lifecycle(self, monkeypatch):
-        calls: list[list[str]] = []
-
-        class _Result:
-            returncode = 0
-
-        def _run(cmd, **_kwargs):
-            calls.append(cmd)
-            return _Result()
-
-        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
-
-        assert init_docker_image._try_pull_image("0.2.0", adopt=False) is True
-        assert calls == [["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"]]
-
-    def test_pull_timeout_can_be_overridden(self, monkeypatch):
-        seen: list[int] = []
-
-        def _run(cmd, **kwargs):
-            seen.append(kwargs["timeout"])
-            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
-
-        monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", "900")
-        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
-
-        assert init_docker_image._try_pull_image("0.2.0") is False
-        assert seen == [900]
-
-    def test_tag_timeout_is_not_reported_as_a_pull_timeout(self, monkeypatch):
-        calls: list[list[str]] = []
-        warnings: list[str] = []
-
-        class _Result:
-            returncode = 0
-
-        def _run(cmd, **kwargs):
-            calls.append(cmd)
-            if cmd[:2] == ["docker", "tag"]:
-                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
-            return _Result()
-
-        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
-        monkeypatch.setattr(init_docker_image, "warn", warnings.append)
-
-        assert init_docker_image._try_pull_image("0.2.0") is False
-        assert [call[:2] for call in calls] == [["docker", "pull"], ["docker", "tag"]]
-        assert any("docker tag timed out after 30 seconds" in message for message in warnings)
-        assert not any("pull timed out" in message for message in warnings)
-
-    def test_invalid_pull_timeout_uses_default(self, monkeypatch):
-        monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", "never")
-        warnings: list[str] = []
-        monkeypatch.setattr(init_docker_image, "warn", warnings.append)
-
-        assert (
-            init_docker_image._image_pull_timeout_seconds()
-            == init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S
-        )
-        assert any("invalid BOOLEY_IMAGE_PULL_TIMEOUT" in message for message in warnings)
-
-
-# ---------------------------------------------------------------------------
-# Build-cache size report (SETUP-24) — _size_to_gb / _report_build_cache
-# ---------------------------------------------------------------------------
-
-
-class TestSizeToGb:
-    def test_parses_units(self):
-        f = init_docker_image._size_to_gb
-        assert abs(f("29.3GB") - 29.3) < 1e-6
-        assert abs(f("512MB") - 0.512) < 1e-6
-        assert abs(f("1.5kB") - 1.5e-6) < 1e-9
-        assert abs(f("2TB") - 2000.0) < 1e-6
-        assert abs(f("800B") - 800e-9) < 1e-9
-
-    def test_gibibyte_suffix_tolerated(self):
-        # docker sometimes prints GiB; the "i" is ignored.
-        assert abs(init_docker_image._size_to_gb("10GiB") - 10.0) < 1e-6
-
-    def test_unparseable_is_zero(self):
-        assert init_docker_image._size_to_gb("N/A") == 0.0
-
-
-class TestReportBuildCache:
-    def _fake_df(self, monkeypatch, stdout, returncode=0):
-        import subprocess as sp
-
-        r = sp.CompletedProcess(["docker"], returncode, stdout=stdout, stderr="")
-        monkeypatch.setattr(init_docker_image.subprocess, "run", lambda *a, **k: r)
-
-    def test_reports_size_and_prune_hint_when_large(self, monkeypatch):
-        self._fake_df(monkeypatch, "Images\t2GB\t1GB\nBuild Cache\t29.3GB\t29.3GB\n")
-        msgs: list[str] = []
-        monkeypatch.setattr(init_docker_image, "info", msgs.append)
-        init_docker_image._report_build_cache(prune_hint_gb=10.0)
-        joined = "\n".join(msgs)
-        assert "docker build cache: 29.3GB" in joined
-        assert "29.3GB reclaimable" in joined
-        assert "docker builder prune" in joined
-        assert "evict layers" in joined
-
-    def test_no_prune_hint_when_small(self, monkeypatch):
-        self._fake_df(monkeypatch, "Build Cache\t2.0GB\t2.0GB\n")
-        msgs: list[str] = []
-        monkeypatch.setattr(init_docker_image, "info", msgs.append)
-        init_docker_image._report_build_cache(prune_hint_gb=10.0)
-        joined = "\n".join(msgs)
-        assert "docker build cache: 2.0GB" in joined
-        assert "prune" not in joined
-
-    def test_silent_on_docker_error(self, monkeypatch):
-        self._fake_df(monkeypatch, "", returncode=1)
-        msgs: list[str] = []
-        monkeypatch.setattr(init_docker_image, "info", msgs.append)
-        init_docker_image._report_build_cache()
-        assert msgs == []
-
-    def test_existing_base_image_still_reports_cache(self, monkeypatch):
-        monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
-        monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda: True)
-        monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "same")
-        monkeypatch.setattr(
-            init_docker_image,
-            "_image_is_stale",
-            lambda _fingerprint, **_kwargs: False,
-        )
-        reports: list[bool] = []
-        monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: reports.append(True))
-
-        init_docker_image._step_docker_image(InitContext(project_root=Path("/tmp/project")))
-
-        assert reports == [True]
-
-
-# ---------------------------------------------------------------------------
-# Build-log decoding
-# ---------------------------------------------------------------------------
-
-
-class TestDockerBuildCommand:
-    """`docker build` output is UTF-8; the console locale is not.
-
-    With a bare ``text=True`` Python decodes the pipe with the locale codec —
-    cp1252 on a Windows host — so the first byte BuildKit emits outside that
-    range raised UnicodeDecodeError and killed a 20-minute image rebuild that
-    was otherwise succeeding.
-    """
-
-    def _run(self, monkeypatch, tmp_path: Path, payload: bytes, *, force: bool = False):
-        import subprocess
-        import sys
-
-        captured: dict = {}
-        real_popen = subprocess.Popen
-        monkeypatch.setattr(
-            "booley.runtime.docker_build.ensure_docker_build_capacity",
-            lambda *_args, **_kwargs: None,
-        )
-
-        def fake_popen(_cmd, **kwargs):
-            captured["cmd"] = list(_cmd)
-            captured.update(kwargs)
-            # Re-issue the *same* kwargs against a child that emits `payload`,
-            # so the real decoding path in _docker_build_image runs on it.
-            code = f"import sys; sys.stdout.buffer.write({payload!r}); sys.stdout.buffer.flush()"
-            proc = real_popen([sys.executable, "-c", code], **kwargs)
-            captured["proc"] = proc
-            return proc
-
-        monkeypatch.setattr(init_docker_image.subprocess, "Popen", fake_popen)
-        ctx = init_cmd.InitContext(project_root=tmp_path, force=force, verbose=False)
-        build = init_docker_image._DockerBuildSpec(
-            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
-        )
-        rc = init_docker_image._docker_build_image(ctx, build)
-        return rc, captured
-
-    def test_undecodable_byte_does_not_kill_the_build(self, monkeypatch, tmp_path: Path):
-        # 0x81 is undefined in cp1252 — the exact byte that aborted the rebuild.
-        rc, _ = self._run(monkeypatch, tmp_path, b">>> Building \x81 from source\n")
-        assert rc == 0
-
-    def test_utf8_progress_glyphs_survive(self, monkeypatch, tmp_path: Path):
-        rc, _ = self._run(monkeypatch, tmp_path, ">>> Building ✓ ─ done\n".encode())
-        assert rc == 0
-
-    def test_pipe_is_decoded_as_utf8_with_replacement(self, monkeypatch, tmp_path: Path):
-        _rc, captured = self._run(monkeypatch, tmp_path, b">>> ok\n")
-        assert captured["encoding"] == "utf-8"
-        assert captured["errors"] == "replace"
-        assert captured["proc"].stdout.closed
-
-    def test_force_rebuild_keeps_docker_layer_cache(self, monkeypatch, tmp_path: Path):
-        _rc, captured = self._run(monkeypatch, tmp_path, b">>> ok\n", force=True)
-
-        assert captured["cmd"][:2] == ["docker", "build"]
-        assert "--no-cache" not in captured["cmd"]
-
-    def test_failure_renders_retained_diagnostics_once(self, monkeypatch, tmp_path, capsys):
-        monkeypatch.setattr(
-            init_docker_image,
-            "run_docker_build",
-            lambda *_args, **_kwargs: DockerBuildResult(
-                1, diagnostics=("ERROR: checksum mismatch",)
-            ),
-            raising=False,
-        )
-        ctx = InitContext(project_root=tmp_path)
-        build = init_docker_image._DockerBuildSpec(
-            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
-        )
-
-        assert init_docker_image._docker_build_image(ctx, build) == 1
-
-        assert capsys.readouterr().out.count("ERROR: checksum mismatch") == 1
-
-    def test_timeout_records_build_failure(self, monkeypatch, tmp_path, capsys):
-        monkeypatch.setattr(
-            init_docker_image,
-            "run_docker_build",
-            lambda *_args, **_kwargs: DockerBuildResult(
-                None, timed_out=True, diagnostics=("last build output",)
-            ),
-        )
-        ctx = InitContext(project_root=tmp_path)
-        build = init_docker_image._DockerBuildSpec(
-            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
-        )
-
-        assert init_docker_image._docker_build_image(ctx, build) is None
-
-        assert ctx.results[-1].status == "err"
-        assert ctx.results[-1].detail == "build timed out"
-        assert "last build output" in capsys.readouterr().out
+    assert "slow" in output
 
 
 # ---------------------------------------------------------------------------
@@ -1149,70 +883,6 @@ def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
 
 
 # ---------------------------------------------------------------------------
-# Wheel-build failure reporting (fpu F-1)
-# ---------------------------------------------------------------------------
-# pypa `build` writes its progress log AND its diagnosis to stdout, leaving
-# stderr empty. A stderr-only report therefore showed the user one useless
-# "Creating isolated environment" line and swallowed the actual cause.
-
-
-def _wheel_failure(ctx, *, stdout: str = "", stderr: str = ""):
-    exc = subprocess.CalledProcessError(1, ["python", "-m", "build"], stdout, stderr)
-    return init_docker_image._report_wheel_failure(ctx, exc)
-
-
-class TestWheelFailureReport:
-    def test_stdout_is_surfaced(self, capsys):
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        # Always returns False — the caller reads it as "wheel step failed".
-        assert not _wheel_failure(ctx, stdout="* Creating isolated environment\nboom: real cause")
-
-        out = capsys.readouterr().out
-        assert "boom: real cause" in out
-        assert ctx.results[-1].status == "err"
-
-    def test_stderr_is_still_surfaced(self, capsys):
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        _wheel_failure(ctx, stderr="stderr side of the story")
-
-        assert "stderr side of the story" in capsys.readouterr().out
-
-    def test_ensurepip_failure_names_its_fix(self, capsys):
-        """The trap that killed the fpu port's first init: Debian splits venv out of the
-        interpreter."""
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        _wheel_failure(
-            ctx,
-            stdout=(
-                "* Creating isolated environment: venv+pip...\n"
-                "The virtual environment was not created successfully because "
-                "ensurepip is not available."
-            ),
-        )
-
-        out = capsys.readouterr().out
-        pyver = f"python{sys.version_info.major}.{sys.version_info.minor}-venv"
-        assert f"apt install {pyver}" in out
-        assert "--no-isolation" in out
-
-    def test_missing_shipped_doc_does_not_blame_the_build_module(self, capsys):
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        init_docker_image._report_wheel_failure(
-            ctx, MissingShippedDocError("shipped doc source is missing: docs/user/X.md")
-        )
-
-        out = capsys.readouterr().out
-        assert "docs/user/X.md" in out
-        assert "pip install build" not in out
-
-    def test_missing_build_module_keeps_its_own_fix(self, capsys):
-        ctx = InitContext(project_root=Path("/tmp/x"))
-        _wheel_failure(ctx, stdout="No module named build")
-
-        assert "pip install build" in capsys.readouterr().out
-
-
-# ---------------------------------------------------------------------------
 # Step-number drift in comments (fpu F-12)
 # ---------------------------------------------------------------------------
 # Banner numbers are allocated at print time from the steps that actually run
@@ -1246,12 +916,12 @@ def test_init_sources_carry_no_hardcoded_step_numbers() -> None:
 def test_build_timeout_uses_human_duration_and_preserves_record(
     monkeypatch, tmp_path, capsys, raises
 ):
-    import subprocess
-
+    # A 3661 s timeout renders as ``1h 01m``; no real wait can reach it, so the runner is
+    # replaced. private: the build step is reached only through a whole local build.
     def build(*_a, **_k):
         if raises:
             raise subprocess.TimeoutExpired("docker build", 3661)
-        return DockerBuildResult(None, timed_out=True)
+        return DockerBuildResult(None, timed_out=True, diagnostics=("last build output",))
 
     monkeypatch.setenv("BOOLEY_IMAGE_BUILD_TIMEOUT", "3661")
     monkeypatch.setattr(init_docker_image, "run_docker_build", build)
@@ -1260,13 +930,8 @@ def test_build_timeout_uses_human_duration_and_preserves_record(
         dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
     )
     assert init_docker_image._docker_build_image(ctx, spec) is None
-    assert "timed out after 1h 01m" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "timed out after 1h 01m" in output
+    assert ("last build output" in output) is not raises
+    assert ctx.results[-1].status == "err"
     assert ctx.results[-1].detail == "build timed out"
-
-
-def test_check_only_records_a_present_image_as_current(tmp_path):
-    ctx = InitContext(project_root=tmp_path, check_only=True)
-
-    init_docker_image._docker_check_only(ctx, True)
-
-    assert ctx.results[-1].status == "current"

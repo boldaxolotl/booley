@@ -31,18 +31,16 @@ CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 
 
-def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]]:
+def get_category_dirs(work_dir: Path) -> dict[str, tuple[str, ...]]:
     """Resolve category source prefixes in *work_dir* from its ``.core`` filesets.
 
-    Reads the worktree's authored cores directly so isolation works even
-    when the shared_infra module's CWD-based resolution would miss it.
-    Falls back to the main Project Root (for git worktrees where
-    .booley/ is gitignored), then shared_infra, then hardcoded defaults.
-    Directory prefixes end in ``/``; root-level flat-repository files are exact
-    paths so snapshot isolation can remove the file itself.
+    Falls back to the main Project Root (for git worktrees where .booley/ is
+    gitignored), then to hardcoded defaults. Directory prefixes end in ``/``;
+    root-level flat-repository files are exact paths so snapshot isolation can
+    remove the file itself.
     """
-    parsed = read_source_dirs_from_toml(work_dir) if work_dir else None
-    if parsed is None and work_dir is not None:
+    parsed = read_source_dirs_from_toml(work_dir)
+    if parsed is None:
         main_root = main_repository_root(work_dir)
         if main_root is not None:
             parsed = read_source_dirs_from_toml(main_root)
@@ -53,30 +51,8 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
                     main_root,
                     work_dir,
                 )
-    if parsed is None and work_dir is not None:
-        # Caller explicitly scoped to work_dir and neither it nor its main
-        # Project Root had usable TOML — use hardcoded defaults rather than
-        # falling back to a CWD-resolved config that may belong to a
-        # different project entirely.
-        return CATEGORY_DIRS_DEFAULT
     if parsed is None:
-        # No work_dir was supplied — caller is operating in pure CWD mode
-        # (legacy human-mode invocation). It is safe to consult the
-        # CWD-resolved shared_infra cache here.
-        try:
-            from booley.runtime.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
-
-            parsed = get_rtl_source_dirs(), get_tb_source_dirs()
-        except (
-            Exception  # legacy CWD fallback must remain best-effort
-        ):  # legacy CWD path unavailable; warn and fall back to default category dirs
-            logger.warning(
-                "Could not resolve category dirs from project config — "
-                "falling back to defaults; isolation may miss project-specific "
-                "TB directories (e.g. verif/)",
-                exc_info=True,
-            )
-            return CATEGORY_DIRS_DEFAULT
+        return CATEGORY_DIRS_DEFAULT
 
     from booley.runtime.shared_infra import source_dir_prefixes
 

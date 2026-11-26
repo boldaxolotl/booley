@@ -15,10 +15,6 @@ from typing import TYPE_CHECKING
 
 from booley.config.jobs import SeatCapError, required_seats
 from booley.core.boundary import as_float
-from booley.flows.endpoint_events import (
-    _endpoint_progress_event,
-    _write_display_event,
-)
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
@@ -337,7 +333,7 @@ def _holder_deadline_seconds() -> float | None:
 
 
 def _narrate_line(endpoint: EndpointState, line: str) -> None:
-    """Narrate one queued-claim *line* on stderr, the log and the display.
+    """Narrate one queued-claim *line* on stderr and the log.
 
     Direct Flow diagnostics run in-process without logging configured and
     without BOOLEY_LOGS_DIR, so stderr is the sink that keeps a queued run from
@@ -345,9 +341,6 @@ def _narrate_line(endpoint: EndpointState, line: str) -> None:
     """
     logger.info("%s: %s", endpoint.name, line)
     print(f"[admission] {endpoint.name}: {line}", file=sys.stderr, flush=True)
-    _write_display_event(
-        _endpoint_progress_event(endpoint.name, line, identity=endpoint._display_identity)
-    )
 
 
 def _memory_narrator(

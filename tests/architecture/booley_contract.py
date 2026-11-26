@@ -276,22 +276,20 @@ DIRECTION_RULES = (
     #   `dedupe` where the check had them). It accepts no Doctor reporting callbacks (a Sandbox
     #   command builder in the request is not one), takes raw inputs, and decides ownership and
     #   severity itself. It never repairs and never issues a Runtime.
-    # - List its module below, and in the D26 test list in
-    #   `test_source_dependency_contract.py`: add it there first and watch it fail. The tests
-    #   import a new owner through a helper (`importlib.import_module`) so the file collects
-    #   before the owner exists. Single-fact helpers (`audit.host_environment`,
+    # - List its module below, and add a row for it (one forbidden target) to the table in
+    #   `test_booley_contract.py::test_every_direction_rule_selector_family_finds_a_forbidden_edge`.
+    #   `test_source_dependency_contract.py::test_every_d26_diagnostic_owner_names_an_importable_module`
+    #   fails when a listed owner stops existing. Single-fact helpers (`audit.host_environment`,
     #   `runtime.host_docker`, `audit.output_excerpt`) and the value module
     #   `audit.diagnostic_results` stay outside D26.
     # - Doctor builds the request, calls the owner, and renders each report with
     #   `_Reporter.diagnostics` at the check's position. A moved check keeps its message, fix
     #   text, severity, check ID, waiver behavior, order, and exit code. An owner exposes one
     #   operation per position at which its checks render.
-    # - Tests assert on the returned report and patch no private Doctor name. If an orchestrator
-    #   in `tests/harness/test_doctor_probe_inventory.py` called the replaced check, change the
-    #   inventory to name the owner call.
+    # - Tests assert on the returned report and patch no private Doctor name.
     # - Rewriting a moved check's reporting calls into `Findings`, text unchanged, is a
     #   mechanical move under principle 18 of CODING_PRINCIPLES.md; the PR body states moved and
-    #   new line counts. Sibling moves edit this same list and the inventory, so land them one
+    #   new line counts. Sibling moves edit this same list, so land them one
     #   at a time, ordered by a `Blocked by` edge.
     DirectionRule(
         "D26",

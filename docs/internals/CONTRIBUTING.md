@@ -87,6 +87,12 @@ packages under the system temporary directory, `.worktrees`, `.runtime`, or
 purpose, install it in a persistent environment and run
 `booley bootstrap --update` from it.
 
+Host Bootstrap from a development wheel builds the wheel again with that
+environment's Python, which needs `ensurepip` or `virtualenv` importable.
+Debian and Ubuntu ship `ensurepip` separately: install `pythonX.Y-venv` for
+that Python's version, or reinstall Booley on a uv-managed Python. Host
+Bootstrap checks this before it builds any image.
+
 ### Agent source-development checks
 
 Agents don't use the `.venv` workflow above. They run the read-only Agent
@@ -254,8 +260,9 @@ made-up output is provisional at best.
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are
   three PRs. Size caps are in
   [coding principle 18](CODING_PRINCIPLES.md#18-pull-requests-stay-small).
-- **Record a user-visible change as a changelog fragment** in `changelog.d/`;
-  never edit `CHANGELOG.md`. The rules are in
+- **Record a user-visible change as a changelog fragment** in `changelog.d/`,
+  and never edit `CHANGELOG.md`. The name, the kinds, and when to hold a
+  fragment for the next minor release are in
   [changelog.d/README.md](../../changelog.d/README.md).
 - **Pyright exclusions and test timeouts** are documented where they are
   configured: `[tool.pyright] exclude` in `pyproject.toml`, and the timeout

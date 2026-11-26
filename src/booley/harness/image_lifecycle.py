@@ -743,6 +743,17 @@ def _verified_source_context(needs_source: bool) -> Iterator[Path | None]:
         yield root
 
 
+def _refuse_unbuildable_wheel(lifecycle_plan: LifecyclePlan) -> None:
+    """Stop before any image build when the planned wheel build cannot start."""
+    from booley.harness.setup import docker_image
+
+    if any(
+        step.role is ImageRole.WHEEL_OVERLAY and step.action is PlanAction.BUILD
+        for step in lifecycle_plan.steps
+    ) and (error := docker_image.wheel_build_environment_error()):
+        raise ImageLifecycleError(error)
+
+
 def prepare(
     lifecycle_plan: LifecyclePlan,
     *,
@@ -750,6 +761,7 @@ def prepare(
     future_requests: tuple[DockerBuildRequest, ...] = (),
 ) -> PreparedConvergence:
     """Build and verify candidates while leaving managed tags unchanged."""
+    _refuse_unbuildable_wheel(lifecycle_plan)
     docker = _docker_adapter()
     lifecycle_build_plan = capacity_plan(lifecycle_plan)
     planned_requests = (

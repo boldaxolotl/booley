@@ -13,7 +13,6 @@ from tests.architecture.import_graph import (
     dependency_graph_snapshot,
     file_fan_out,
     mutual_package_pairs,
-    select_dependencies,
     top_level_package_sccs,
 )
 
@@ -75,25 +74,6 @@ def test_normalizes_absolute_relative_aliased_and_package_imports() -> None:
     )
 
 
-def test_selects_allowed_and_forbidden_prefixes() -> None:
-    dependencies = analyze_imports(_FIXTURE_ROOT)
-
-    allowed = select_dependencies(
-        dependencies,
-        source_prefixes=("booley.absolute_allowed",),
-        target_prefixes=("booley.domain",),
-    )
-    forbidden = select_dependencies(
-        dependencies,
-        source_prefixes=("booley.absolute_forbidden",),
-        target_prefixes=("booley.presentation",),
-    )
-
-    assert [dependency.target for dependency in allowed] == ["booley.domain.model"]
-    assert [dependency.target for dependency in forbidden] == ["booley.presentation.view"]
-    assert forbidden[0].line == 1
-
-
 def test_syntax_failure_is_not_silenced(tmp_path: Path) -> None:
     package = tmp_path / "booley"
     package.mkdir()
@@ -141,21 +121,6 @@ def test_module_file_and_package_name_collision_fails(tmp_path: Path) -> None:
         match=r"multiple source files resolve to module booley\.duplicate",
     ):
         analyze_imports(source_root)
-
-
-def test_every_selected_python_file_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = Path.read_text
-    read_paths: list[Path] = []
-
-    def record_read(path: Path, *args: object, **kwargs: object) -> str:
-        read_paths.append(path)
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", record_read)
-
-    analyze_imports(_FIXTURE_ROOT)
-
-    assert sorted(read_paths) == sorted(_FIXTURE_ROOT.rglob("*.py"))
 
 
 def test_source_tree_analysis_parses_each_module_once_for_graph_and_scans(

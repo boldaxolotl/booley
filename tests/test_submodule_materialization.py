@@ -51,16 +51,6 @@ def _commit_file(repo: Path, text: str, message: str) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
-def test_fixture_commits_do_not_launch_background_maintenance(tmp_path, monkeypatch):
-    """Fixture commits must not launch a pruner beside later worktree creation."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    trace = tmp_path / "commit.trace"
-    monkeypatch.setenv("GIT_TRACE", str(trace))
-    _commit_file(repo, "source\n", "initial")
-    assert "maintenance run" not in trace.read_text(encoding="utf-8")
-
-
 def _add_submodule(parent: Path, dependency: Path, relative: str) -> None:
     _git(
         parent,
@@ -96,6 +86,32 @@ def _set_submodule_url(parent: Path, name: str) -> None:
         f"submodule.{name}.url",
         f"git@example.invalid:private/{name}.git",
     )
+
+
+def _source_with_submodule(
+    tmp_path: Path, relative: str = "vendor/ip", text: str = "stable\n"
+) -> tuple[Path, Path, str]:
+    """``(source, destination, commit)``: *relative* pins a dependency commit holding *text*."""
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    commit = _commit_file(dependency, text, "dependency")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, dependency, relative)
+    _git(source, "commit", "-am", "add submodule")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    return source, destination, commit
+
+
+def _paired_project(project: Path, dependency: Path) -> None:
+    """Make *project* a Versioned Booley Directory whose ``vendor/dependency`` pins *dependency*."""
+    _init_repo(project)
+    _add_submodule(project, dependency, "vendor/dependency")
+    _set_submodule_url(project, "vendor/dependency")
+    (project / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
+    _git(project, "add", ".gitmodules", "booley.toml", "vendor/dependency")
+    _git(project, "commit", "-qm", "project")
 
 
 def _nested_source_repositories(tmp_path: Path) -> tuple[Path, str, str, str]:
@@ -194,12 +210,7 @@ def test_materializes_paired_project_submodules_in_composite_ticket(
     _git(source, "add", ".gitignore")
     _git(source, "commit", "-qm", "outer")
     project = source / ".booley"
-    _init_repo(project)
-    _add_submodule(project, dependency, "vendor/dependency")
-    _set_submodule_url(project, "vendor/dependency")
-    (project / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
-    _git(project, "add", ".gitmodules", "booley.toml", "vendor/dependency")
-    _git(project, "commit", "-qm", "project")
+    _paired_project(project, dependency)
 
     destination = tmp_path / "destination"
     _add_worktree(source, destination, "HEAD")
@@ -259,31 +270,18 @@ def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> No
     assert not any(placeholder.iterdir())
 
 
-def test_rejects_unsafe_configured_path_before_touching_destination(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    _init_repo(source)
-    _commit_file(source, "root\n", "root")
-    destination = tmp_path / "destination"
-    _git(source, "worktree", "add", str(destination))
-    booley_dir = destination / ".booley"
-    booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text(
-        '[submodules]\npaths = ["../../../victim"]\n', encoding="utf-8"
-    )
-    sentinel = tmp_path / "victim"
-    sentinel.write_text("keep\n", encoding="utf-8")
-
-    with pytest.raises(SubmoduleMaterializationError, match="unsafe submodule path"):
-        materialize_submodules(source, destination)
-
-    assert sentinel.read_text(encoding="utf-8") == "keep\n"
-
-
 @pytest.mark.parametrize(
-    "configuration",
-    ['submodules = "invalid"\n', '[submodules]\npaths = "vendor/ip"\n'],
+    ("configuration", "match"),
+    [
+        ('submodules = "invalid"\n', r"\[submodules\]"),
+        ('[submodules]\npaths = "vendor/ip"\n', r"\[submodules\]"),
+        ('[submodules]\npaths = ["../../../victim"]\n', "unsafe submodule path"),
+    ],
+    ids=["not-a-table", "paths-not-a-list", "escaping-path"],
 )
-def test_rejects_invalid_submodule_configuration(tmp_path: Path, configuration: str) -> None:
+def test_rejects_bad_configuration_before_touching_destination(
+    tmp_path: Path, configuration: str, match: str
+) -> None:
     source = tmp_path / "source"
     _init_repo(source)
     _commit_file(source, "root\n", "root")
@@ -292,9 +290,13 @@ def test_rejects_invalid_submodule_configuration(tmp_path: Path, configuration: 
     booley_dir = destination / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text(configuration, encoding="utf-8")
+    sentinel = tmp_path / "victim"
+    sentinel.write_text("keep\n", encoding="utf-8")
 
-    with pytest.raises(SubmoduleMaterializationError, match=r"\[submodules\]"):
+    with pytest.raises(SubmoduleMaterializationError, match=match):
         materialize_submodules(source, destination)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
 
 
 def test_configuration_selects_only_matching_top_level_gitlinks(tmp_path: Path) -> None:
@@ -398,15 +400,7 @@ def test_failure_rolls_back_only_directories_created_by_this_call(tmp_path: Path
 
 
 def test_rejects_broken_destination_symlink_without_following_it(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    _commit_file(dependency, "safe\n", "safe")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "vendor/ip")
-    _git(source, "commit", "-am", "add submodule")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
+    source, destination, _commit = _source_with_submodule(tmp_path)
     placeholder = destination / "vendor/ip"
     placeholder.rmdir()
     placeholder.symlink_to(tmp_path / "missing-target", target_is_directory=True)
@@ -417,24 +411,22 @@ def test_rejects_broken_destination_symlink_without_following_it(tmp_path: Path)
     assert placeholder.is_symlink()
 
 
-def test_rejects_dirty_source_without_mutating_destination(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    _commit_file(dependency, "clean\n", "clean")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "vendor/ip")
-    _git(source, "commit", "-am", "add submodule")
+@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
+def test_rejects_dirty_source_without_mutating_destination(tmp_path: Path, resumed: bool) -> None:
+    """A resumed call revalidates the source, though the destination already matches."""
+    source, destination, _commit = _source_with_submodule(tmp_path, text="clean\n")
+    if resumed:
+        materialize_submodules(source, destination)
     (source / "vendor/ip/source.sv").write_text("dirty\n", encoding="utf-8")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
 
     with pytest.raises(SubmoduleMaterializationError, match=r"vendor/ip.*dirty"):
         materialize_submodules(source, destination)
 
     placeholder = destination / "vendor/ip"
-    assert placeholder.is_dir()
-    assert not any(placeholder.iterdir())
+    if resumed:
+        assert (placeholder / "source.sv").read_text(encoding="utf-8") == "clean\n"
+    else:
+        assert not any(placeholder.iterdir())
 
 
 def test_rejects_source_path_that_crosses_a_symlink(tmp_path: Path) -> None:
@@ -524,15 +516,7 @@ def test_reports_incomplete_local_objects_without_trying_a_remote(tmp_path: Path
 
 
 def test_materialization_is_idempotent_for_matching_clean_checkout(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    commit = _commit_file(dependency, "stable\n", "stable")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "ip core")
-    _git(source, "commit", "-am", "add submodule")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
+    source, destination, commit = _source_with_submodule(tmp_path, "ip core")
 
     materialize_submodules(source, destination)
     materialize_submodules(source, destination)
@@ -540,33 +524,8 @@ def test_materialization_is_idempotent_for_matching_clean_checkout(tmp_path: Pat
     assert _git(destination / "ip core", "rev-parse", "HEAD").stdout.strip() == commit
 
 
-def test_resume_revalidates_source_repository(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    _commit_file(dependency, "stable\n", "stable")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "vendor/ip")
-    _git(source, "commit", "-am", "add submodule")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
-    materialize_submodules(source, destination)
-    (source / "vendor/ip/source.sv").write_text("dirty\n", encoding="utf-8")
-
-    with pytest.raises(SubmoduleMaterializationError, match=r"vendor/ip.*dirty"):
-        materialize_submodules(source, destination)
-
-
 def test_resume_rejects_destination_with_shared_git_pointer(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    _commit_file(dependency, "stable\n", "stable")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "vendor/ip")
-    _git(source, "commit", "-am", "add submodule")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
+    source, destination, _commit = _source_with_submodule(tmp_path)
     materialize_submodules(source, destination)
     materialized = destination / "vendor/ip"
     shared_git = tmp_path / "shared-git"
@@ -578,16 +537,8 @@ def test_resume_rejects_destination_with_shared_git_pointer(tmp_path: Path) -> N
 
 
 def test_accepts_source_with_only_crlf_checkout_smudge(tmp_path: Path) -> None:
-    dependency = tmp_path / "dependency"
-    _init_repo(dependency)
-    _commit_file(dependency, "first\nsecond\n", "stable")
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, dependency, "vendor/ip")
-    _git(source, "commit", "-am", "add submodule")
+    source, destination, _commit = _source_with_submodule(tmp_path, text="first\nsecond\n")
     (source / "vendor/ip/source.sv").write_bytes(b"first\r\nsecond\r\n")
-    destination = tmp_path / "destination"
-    _add_worktree(source, destination)
 
     materialize_submodules(source, destination)
 

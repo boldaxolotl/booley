@@ -1,4 +1,4 @@
-"""Tracked-content-preserving Project Initialization and the Interactive files step."""
+"""Tracked-content-preserving Project Initialization, as `booley session refresh` runs it."""
 
 from __future__ import annotations
 
@@ -7,116 +7,83 @@ from pathlib import Path
 import pytest
 
 from booley.harness import init_cmd
-from booley.harness.setup.common import InitContext
-from booley.runtime import dashboard_tasks
-from booley.runtime.session_issuance import RuntimeSpecError
+from booley.runtime import auth_token
 from tests.subprocess_budget import run_bounded_child
+
+
+def _root(parent: Path, name: str = "proj") -> Path:
+    project = parent / name
+    (project / ".booley").mkdir(parents=True)
+    run_bounded_child(["git", "init", str(project)], check=True)
+    return project
 
 
 @pytest.fixture
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    project = tmp_path / "proj"
-    (project / ".booley").mkdir(parents=True)
-    run_bounded_child(["git", "init", str(project)], check=True)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    return project
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (
+        "BOOLEY_DIR",
+        "BOOLEY_AGENT_APP",
+        "BOOLEY_PRIMARY_PROVIDER",
+        "BOOLEY_PRIMARY_AUTH",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key in auth_token.CREDENTIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    return _root(tmp_path)
 
 
-def _statuses(ctx: InitContext) -> list[tuple[str, str]]:
-    return [(result.name, result.status) for result in ctx.results]
+def _refresh(root: Path) -> list[tuple[str, str, str]]:
+    results = init_cmd.reinitialize_project(root, init_cmd.ProjectFacts(None))
+    return [(result.name, result.status, result.detail) for result in results]
 
 
-def test_preserve_mode_reports_gitignore_backfill_without_appending(root: Path) -> None:
+def _statuses(root: Path) -> list[tuple[str, str]]:
+    return [(name, status) for name, status, _detail in _refresh(root)]
+
+
+def test_refresh_reports_pending_rewrites_without_writing(root: Path) -> None:
     gitignore = root / ".booley" / ".gitignore"
+    config = root / ".booley" / "booley.toml"
     gitignore.write_bytes(b"custom/\n")
-    ctx = InitContext(project_root=root, preserve_tracked_content=True)
+    config.write_bytes(b"[project]\nname = 'x'\n")
 
-    init_cmd._backfill_project_gitignore(root / ".booley", ctx)
+    statuses = _statuses(root)
 
+    assert ("booley_dir", "warn") in statuses
+    assert ("agent_config", "warn") in statuses
     assert gitignore.read_bytes() == b"custom/\n"
-    assert _statuses(ctx) == [("booley_dir", "warn")]
+    assert config.read_bytes() == b"[project]\nname = 'x'\n"
 
 
-def test_preserve_mode_still_creates_a_missing_gitignore(root: Path) -> None:
-    ctx = InitContext(project_root=root, preserve_tracked_content=True)
-
-    init_cmd._backfill_project_gitignore(root / ".booley", ctx)
+def test_refresh_creates_missing_files_once(root: Path) -> None:
+    assert ("interactive_files", "ok") in _statuses(root)
 
     assert (root / ".booley" / ".gitignore").is_file()
+    assert "/.devcontainer" in (root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    assert "interactive_files" not in {name for name, _status in _statuses(root)}
 
 
-def test_preserve_mode_reports_agent_insertion_into_existing_config(root: Path) -> None:
-    config = root / ".booley" / "booley.toml"
-    config.write_bytes(b"[project]\nname = 'x'\n")
-    ctx = InitContext(project_root=root, preserve_tracked_content=True)
-
-    assert init_cmd._step_agent_config(
-        ctx, init_cmd.AgentSelection("claude", "subscription", True, "subscription"), config
-    )
-
-    assert config.read_bytes() == b"[project]\nname = 'x'\n"
-    assert _statuses(ctx) == [("agent_config", "warn")]
-
-
-def test_preserve_mode_still_creates_a_missing_config(root: Path) -> None:
-    config = root / ".booley" / "booley.toml"
-    ctx = InitContext(project_root=root, preserve_tracked_content=True)
-
-    assert init_cmd._step_agent_config(
-        ctx, init_cmd.AgentSelection("claude", "subscription", True, "subscription"), config
-    )
-
-    assert "[agent]" in config.read_text(encoding="utf-8")
-    assert _statuses(ctx) == [("agent_config", "ok")]
-
-
-def test_interactive_files_step_adds_excludes_once(root: Path) -> None:
-    ctx = InitContext(project_root=root)
-
-    init_cmd._step_sandbox_files(ctx)
-    init_cmd._step_sandbox_files(ctx)
-
-    exclude = (root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-    assert "/.devcontainer" in exclude
-    assert _statuses(ctx) == [("interactive_files", "ok")]  # the rerun recorded nothing
-
-
-def test_interactive_files_step_does_nothing_in_check_only(root: Path) -> None:
-    ctx = InitContext(project_root=root, check_only=True)
-
-    init_cmd._step_sandbox_files(ctx)
-
-    assert ctx.results == []
-    assert "/.devcontainer" not in (root / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-
-
-def test_interactive_files_step_records_authorization_failure(
-    root: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("problem", "status", "detail"),
+    [
+        ("unsafe-bind-source", "err", "generated bind source"),
+        ("blocked-vscode-directory", "warn", "Dashboard task unavailable"),
+    ],
+)
+def test_refresh_records_sandbox_file_problems(
+    problem: str, status: str, detail: str, root: Path, tmp_path: Path
 ) -> None:
-    def refuse(_root: Path) -> Path:
-        raise RuntimeSpecError("not authorized")
+    if problem == "unsafe-bind-source":
+        root = _root(tmp_path, "proj,unsafe")  # the bind-source validation refuses a comma
+    else:
+        (root / ".vscode").write_bytes(b"not a directory\n")
 
-    monkeypatch.setattr(init_cmd, "authorized_project_data_source", refuse)
-    ctx = InitContext(project_root=root)
+    results = [row for row in _refresh(root) if row[0] == "interactive_files"]
 
-    init_cmd._step_sandbox_files(ctx)
-
-    assert [(r.name, r.status, r.detail) for r in ctx.results] == [
-        ("interactive_files", "err", "not authorized")
-    ]
-
-
-def test_interactive_files_step_warns_on_dashboard_diagnostics(
-    root: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    plan = dashboard_tasks.TaskPlan(diagnostics=("Dashboard task unavailable: busy",))
-    monkeypatch.setattr(
-        dashboard_tasks, "reconcile", lambda *_args: dashboard_tasks.TaskTransaction(plan)
-    )
-    ctx = InitContext(project_root=root)
-
-    init_cmd._step_sandbox_files(ctx)
-
-    assert [(r.status, r.detail) for r in ctx.results if r.name == "interactive_files"] == [
-        ("warn", "Dashboard task unavailable: busy")
-    ]
+    assert [(name, found) for name, found, _ in results] == [("interactive_files", status)]
+    assert detail in results[0][2]

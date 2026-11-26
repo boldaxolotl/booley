@@ -292,7 +292,7 @@ def test_fixed_dry_run_identifies_given_count(tmp_path, monkeypatch):
     assert "source-size breakdown" not in result.report_text
 
 
-def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
+def test_auto_dry_run_with_long_scope_paths_succeeds(tmp_path, monkeypatch):
     paths = [f"rtl/module_{i:02d}_{'x' * 130}.sv" for i in range(20)]
     for path in paths:
         source = tmp_path / path
@@ -305,7 +305,7 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
     _patch_fake_simulation(monkeypatch)
     _make_endpoint(tmp_path, monkeypatch)  # the run's environment and Target top
 
-    code = MutationFlow().main(
+    result = MutationFlow().execute_cli(
         [
             "--work-dir",
             str(tmp_path),
@@ -321,14 +321,8 @@ def test_auto_dry_run_keeps_complete_long_scope_report(tmp_path, monkeypatch):
         ]
     )
 
-    events = [
-        json.loads(line)
-        for line in (runtime_dir / "display.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    [end] = [event for event in events if event["type"] == "endpoint_end"]
-    assert code == EXIT_SUCCESS
-    assert end["display_lines_truncated"] > 0
-    assert end["summary"].startswith("mutation dry-run:")
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.outcome.summary.startswith("mutation dry-run:")
 
 
 # ---------------------------------------------------------------------------

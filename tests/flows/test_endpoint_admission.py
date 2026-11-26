@@ -482,9 +482,6 @@ def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExe
 
 def _prepared_for(invocation: Any) -> PreparedExecution:
     return PreparedExecution(
-        display_target=None,
-        display_label=None,
-        dry_run=False,
         non_persisting_dry_run=False,
         invocation=invocation,
     )

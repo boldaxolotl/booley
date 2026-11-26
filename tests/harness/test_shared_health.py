@@ -37,6 +37,7 @@ def project(tmp_path, monkeypatch):
 
 
 def _result(severity: Severity) -> doctor.DoctorRunResult:
+    # private: `run_doctor_result` would run every real probe; the reporter renders one result.
     reporter = doctor._Reporter.create()
     observation = DiagnosticFinding(
         severity,
@@ -67,7 +68,6 @@ def _write(root, directory, result, *, age=None):
 def _isolate_mcp_and_dashboard(monkeypatch, root):
     """Leave only the health line of the MCP status card and Dashboard to this test."""
     monkeypatch.chdir(root)
-    monkeypatch.setattr(server, "_interactive_session_id", lambda: "fixture")
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(
@@ -99,15 +99,21 @@ def test_same_observations_reach_doctor_mcp_and_dashboard(
     assert snapshot.due is None
     message = health_presentation.brief_message(snapshot)
     _isolate_mcp_and_dashboard(monkeypatch, root)
+    # private: the status card's only public route, `McpApplication.call_tool("booley_status")`,
+    # needs an application that only the private `server._build_mcp_catalog` assembles (see
+    # `tests/mcp_tools/test_live_catalog.py::build_catalog`), which adds private names.
     assert "Health: " + message in server._format_status_card([], None)
     lines = dashboard.health_lines(root, directory)
     expected = "Doctor: OK" if clean else f"Doctor: 1 {severity.name}"
     assert tuple(line.text for line in lines) == (expected,)
     content = [server.TextContent(type="text", text="Flow result")]
+    # private: `call_tool` reaches the alert only after dispatching a Flow or bwave tool, on
+    # that same privately built application.
     announced = server._prepend_changed_health_alert(content)
     assert len(announced) == (1 if clean else 2)
     if not clean:
         assert announced[0].text == "HEALTH WARNING: " + message
+    # private: see above.
     assert server._prepend_changed_health_alert(content) == content
 
 
@@ -256,9 +262,11 @@ def test_automatic_crash_becomes_shared_machinery_failure(project, monkeypatch):
 
 def test_interpreted_lint_design_findings_remain_healthy(project):
     root, directory = project
+    # private: `run_doctor_result` would run every real probe.
     reporter = doctor._Reporter.create()
     findings = Findings()
     result = subprocess.CompletedProcess(["lint"], 1, "RESULT: WARN (58 warnings)", "")
+    # private: the public flow check runs a Sandbox command; grading its result is all this needs.
     doctor._grade_flow_check_result(
         None,
         "lint",
@@ -296,15 +304,18 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     assert "run `booley doctor`" in message
 
     # Doctor's session start schedules a recheck rather than announcing stale findings.
+    # private: `booley session up`, the public route, starts a Sandbox.
     cli._report_session_health(root)
     assert f"Automatic Doctor is running in the Sandbox ({expired})" in capsys.readouterr().err
     # MCP retains full findings; the Dashboard shows compact counts and freshness.
+    # private: the status card is built only by the private application; see above.
     assert "Health: " + message in server._format_status_card([], None)
     assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
         "Doctor: 1 FAIL · recheck due",
     )
     # A Flow result gains no HEALTH WARNING built from stale findings.
     content = [server.TextContent(type="text", text="Flow result")]
+    # private: the alert is reached only through the privately built application.
     assert server._prepend_changed_health_alert(content) == content
     assert not (health.state_dir(directory) / "announcements.json").exists()
 
@@ -353,26 +364,21 @@ def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
         )
 
 
-def test_report_read_survives_transient_sharing_error(project, monkeypatch):
+@pytest.mark.parametrize(("held", "loads"), [(1, True), (1000, False)])
+def test_report_read_retries_a_sharing_error_before_reporting_unavailable(
+    project, monkeypatch, held, loads
+):
     from tests.sharing_error_support import hold_opens
 
     root, directory = project
     _write(root, directory, _result(Severity.WARN))
     path = health.report_path(directory)
-    attempts = hold_opens(monkeypatch, {path: 1})
-    assert health.load_report(root) is not None
-    assert attempts[path] == 2
-
-
-def test_lasting_report_sharing_error_retries_before_reporting_unavailable(project, monkeypatch):
-    from tests.sharing_error_support import hold_opens
-
-    root, directory = project
-    _write(root, directory, _result(Severity.WARN))
-    path = health.report_path(directory)
-    attempts = hold_opens(monkeypatch, {path: 1000})
-    assert health.load_report(root) is None
-    assert attempts[path] > 1
+    opens = hold_opens(monkeypatch, {path: held})
+    assert (health.load_report(root) is not None) is loads
+    if loads:
+        assert opens[path] == 2
+    else:
+        assert opens[path] > 1
 
 
 def test_upgrade_review_fingerprint_survives_transient_sharing_error(project, monkeypatch):

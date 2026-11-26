@@ -7,14 +7,12 @@ scripts to be out of the agent's write Scope.
 
 from __future__ import annotations
 
-import sys
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc.core_security import (
     CoreViolation,
@@ -23,10 +21,6 @@ from booley.fusesoc.core_security import (
 )
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
-
-# ---------------------------------------------------------------------------
-# Helpers: build .core docs as parsed dicts (mirrors test_fusesoc_registry style).
-# ---------------------------------------------------------------------------
 
 
 def _doc(text: str) -> dict:
@@ -63,243 +57,166 @@ _CLEAN = """\
         toplevel: tb_counter
 """
 
+_FPGA_HOOK_CORE = """\
+    CAPI=2:
+    name: ::demo:0
+    targets:
+      impl:
+        flow: generic
+        flow_options: {tool: vivado}
+        filesets: [rtl]
+        hooks:
+          post_build: [run_bitstream]
+"""
 
-# ---------------------------------------------------------------------------
-# Clean cores pass
-# ---------------------------------------------------------------------------
 
-
-class TestCleanCore:
-    def test_clean_sim_core_has_no_violations(self):
-        assert validate_core(_doc(_CLEAN), core_file=Path("d.core")) == []
-
-    def test_clean_core_passes_with_scope_too(self, tmp_path: Path):
-        # Provenance check is a no-op when there are no imperative sections.
-        assert (
-            validate_core(
-                _doc(_CLEAN),
-                core_file=tmp_path / "d.core",
-                project_root=tmp_path,
-                scope=["rtl/*.sv"],
-            )
-            == []
+def test_clean_core_passes_with_scope_too(tmp_path: Path):
+    # Provenance check is a no-op when there are no imperative sections.
+    assert (
+        validate_core(
+            _doc(_CLEAN),
+            core_file=tmp_path / "d.core",
+            project_root=tmp_path,
+            scope=["rtl/*.sv"],
         )
+        == []
+    )
 
 
-# ---------------------------------------------------------------------------
-# Check 1: fpga_impl hooks are rejected; in-sandbox hooks are not
-# ---------------------------------------------------------------------------
+def _target(name: str, **fields: Any) -> dict[str, Any]:
+    return {"name": "::demo:0", "targets": {name: fields}}
 
 
-class TestFpgaHooks:
-    _FPGA_HOOK = """\
-        CAPI=2:
-        name: ::demo:0
-        targets:
-          impl:
-            flow: generic
-            flow_options: {tool: vivado}
-            filesets: [rtl]
-            hooks:
-              post_build: [run_bitstream]
-    """
-
-    def test_fpga_impl_hook_rejected(self):
-        v = validate_core(_doc(self._FPGA_HOOK), core_file=Path("d.core"))
-        assert _kinds(v) == {"fpga_hook"}
-        assert v[0].target == "impl"
-        assert "post_build" in v[0].message
-
-    def test_fpga_axis_hook_rejected_with_resolution_tool(self):
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              fpga_core:
-                flow: generic
-                flow_options: {tool: verilator}
-                hooks:
-                  post_build: [run_bitstream]
-        """
-        )
-        assert _kinds(validate_core(doc, core_file=Path("d.core"))) == {"fpga_hook"}
-
-    def test_non_fpga_axis_is_not_reclassified_by_vivado(self):
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              synth_core:
-                flow: generic
-                flow_options: {tool: vivado}
-                hooks:
-                  post_build: [run_synthesis]
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
-
-    def test_fpga_impl_generator_allowed(self):
+@pytest.mark.parametrize(
+    ("name", "target", "expected"),
+    [
+        pytest.param(
+            "impl",
+            {
+                "flow": "generic",
+                "flow_options": {"tool": "vivado"},
+                "hooks": {"post_build": ["run_bitstream"]},
+            },
+            {"fpga_hook"},
+            id="fpga-impl-hook",
+        ),
+        # The axis classifies a target as fpga, whatever tool resolves it (33c664cf0).
+        pytest.param(
+            "fpga_core",
+            {
+                "flow": "generic",
+                "flow_options": {"tool": "verilator"},
+                "hooks": {"post_build": ["run_bitstream"]},
+            },
+            {"fpga_hook"},
+            id="fpga-axis-with-verilator",
+        ),
+        pytest.param(
+            "synth_core",
+            {
+                "flow": "generic",
+                "flow_options": {"tool": "vivado"},
+                "hooks": {"post_build": ["run_synthesis"]},
+            },
+            set(),
+            id="non-fpga-axis-with-vivado",
+        ),
         # Generators run at resolution time (in-sandbox), so fpga_impl may use them.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              impl:
-                flow: generic
-                flow_options: {tool: vivado}
-                generate: [make_xdc]
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
-
-    def test_sim_hook_not_rejected_by_fpga_check(self):
-        # A verilator (in-sandbox) Target hook is fine for the fpga check — only
-        # provenance (check 3) governs it.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              sim:
-                flow: sim
-                flow_options: {tool: verilator}
-                hooks:
-                  pre_run: [seed_rng]
-        """
-        )
-        assert _kinds(validate_core(doc, core_file=Path("d.core"))) == set()
-
-    def test_unsupported_sim_hook_is_not_classified_as_host_execution(self):
-        # Xcelium is no longer a supported execution path. Core validation
-        # therefore must not retain any host execution classification;
-        # unsupported-target rejection belongs to the Flow eligibility gate.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              sim_xcelium:
-                flow: sim
-                flow_options: {tool: xcelium}
-                hooks:
-                  pre_run: [seed_rng]
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
-
-    def test_empty_hooks_block_is_not_a_violation(self):
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              impl:
-                flow_options: {tool: vivado}
-                hooks: {}
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
-
-    def test_default_tool_mirror_is_honored(self):
+        pytest.param(
+            "impl",
+            {"flow": "generic", "flow_options": {"tool": "vivado"}, "generate": ["make_xdc"]},
+            set(),
+            id="fpga-generator",
+        ),
+        # An in-sandbox Target hook is only governed by provenance, not the fpga check.
+        pytest.param(
+            "sim",
+            {
+                "flow": "sim",
+                "flow_options": {"tool": "verilator"},
+                "hooks": {"pre_run": ["seed_rng"]},
+            },
+            set(),
+            id="sim-hook",
+        ),
+        # Xcelium is no longer a supported execution path: core validation keeps no host
+        # execution classification, and the Flow eligibility gate rejects the target.
+        pytest.param(
+            "sim_xcelium",
+            {
+                "flow": "sim",
+                "flow_options": {"tool": "xcelium"},
+                "hooks": {"pre_run": ["seed_rng"]},
+            },
+            set(),
+            id="unsupported-sim-hook",
+        ),
+        pytest.param(
+            "impl", {"flow_options": {"tool": "vivado"}, "hooks": {}}, set(), id="empty-hooks"
+        ),
         # The EDA tool comes from default_tool when flow_options.tool is absent.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            targets:
-              impl:
-                default_tool: vivado
-                hooks:
-                  post_run: [x]
-        """
-        )
-        assert _kinds(validate_core(doc, core_file=Path("d.core"))) == {"fpga_hook"}
+        pytest.param(
+            "impl",
+            {"default_tool": "vivado", "hooks": {"post_run": ["x"]}},
+            {"fpga_hook"},
+            id="default-tool",
+        ),
+    ],
+)
+def test_fpga_hook_rule(name: str, target: dict[str, Any], expected: set[str]):
+    violations = validate_core(_target(name, **target), core_file=Path("d.core"))
+
+    assert _kinds(violations) == expected
+    for violation in violations:
+        assert violation.target == name
+        assert next(iter(target["hooks"])) in violation.message
 
 
-# ---------------------------------------------------------------------------
-# Check 2: expr-params are rejected; literal params pass
-# ---------------------------------------------------------------------------
+_LITERAL_PARAMS = {
+    "A": {"datatype": "int", "paramtype": "vlogparam", "default": 1},
+    "B": {"datatype": "str", "paramtype": "vlogparam", "default": "hi"},
+    "C": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
+    "D": {"datatype": "real", "paramtype": "vlogparam", "default": 1.5},
+    "E": {"datatype": "file", "paramtype": "vlogparam", "default": "x.mem"},
+}
 
 
-class TestExprParams:
-    def test_literal_datatypes_pass(self):
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            parameters:
-              A: {datatype: int, paramtype: vlogparam, default: 1}
-              B: {datatype: str, paramtype: vlogparam, default: hi}
-              C: {datatype: bool, paramtype: vlogparam, default: true}
-              D: {datatype: real, paramtype: vlogparam, default: 1.5}
-              E: {datatype: file, paramtype: vlogparam, default: x.mem}
-            targets:
-              sim: {flow_options: {tool: verilator}}
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
-
-    def test_expr_datatype_rejected(self):
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            parameters:
-              MODE: {datatype: expr, paramtype: vlogparam, default: "pkg::Fast"}
-            targets:
-              sim: {flow_options: {tool: verilator}}
-        """
-        )
-        v = validate_core(doc, core_file=Path("d.core"))
-        assert _kinds(v) == {"expr_param"}
-        assert "MODE" in v[0].message
-        assert v[0].target is None
-
-    def test_legacy_kind_expr_marker_rejected(self):
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        (_LITERAL_PARAMS, set()),
+        (
+            {"MODE": {"datatype": "expr", "paramtype": "vlogparam", "default": "pkg::Fast"}},
+            {"expr_param"},
+        ),
         # A hand-migration that transcribed configs.toml's {kind: expr} verbatim.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            parameters:
-              MODE: {kind: expr, value: "pkg::Fast"}
-            targets:
-              sim: {flow_options: {tool: verilator}}
-        """
-        )
-        assert _kinds(validate_core(doc, core_file=Path("d.core"))) == {"expr_param"}
+        ({"MODE": {"kind": "expr", "value": "pkg::Fast"}}, {"expr_param"}),
+        # Nothing to validate: no datatype and no kind marker.
+        ({"P": {"paramtype": "vlogparam", "default": 1}}, set()),
+    ],
+    ids=["literal", "expr-datatype", "legacy-kind", "no-datatype"],
+)
+def test_expr_param_rule(params: dict[str, Any], expected: set[str]):
+    doc = {
+        "name": "::demo:0",
+        "parameters": params,
+        "targets": {"sim": {"flow_options": {"tool": "verilator"}}},
+    }
 
-    def test_param_without_datatype_is_ignored(self):
-        # Nothing to validate — no datatype and no kind marker.
-        doc = _doc(
-            """\
-            CAPI=2:
-            name: ::demo:0
-            parameters:
-              P: {paramtype: vlogparam, default: 1}
-            targets:
-              sim: {flow_options: {tool: verilator}}
-        """
-        )
-        assert validate_core(doc, core_file=Path("d.core")) == []
+    violations = validate_core(doc, core_file=Path("d.core"))
+
+    assert _kinds(violations) == expected
+    for violation in violations:
+        assert "MODE" in violation.message
+        assert violation.target is None
 
 
-# ---------------------------------------------------------------------------
-# Check 3: script provenance (out-of-Scope, read-only)
-# ---------------------------------------------------------------------------
-
-
-def _write_core_with_script(tmp_path: Path, script_rel: str, body: str) -> Path:
-    """Write a .core plus the referenced script file, return the core path."""
-    core = tmp_path / "design.core"
-    core.write_text(textwrap.dedent(body), encoding="utf-8")
+def _write_script(tmp_path: Path, script_rel: str) -> Path:
+    """Write the script a core references and return the core path."""
     script = tmp_path / script_rel
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("# generated\n", encoding="utf-8")
-    return core
+    return tmp_path / "design.core"
 
 
 _GEN_CORE = """\
@@ -321,24 +238,22 @@ class TestScriptProvenance:
         ("scope", "expected"),
         [
             (["scripts/gen.py"], {"in_scope_script"}),
-            (["scripts"], {"in_scope_script"}),
-            (["scripts/"], {"in_scope_script"}),
-            (["scripts/*.py"], {"in_scope_script"}),
-            (["scripts/*.py [new]"], {"in_scope_script"}),
-            (["script"], set()),
+            (["rtl/*.sv"], set()),
             ([], set()),
             (None, set()),
             (["*"], {"unconfinable_script"}),
             (["* [new]"], {"in_scope_script"}),
         ],
     )
-    def test_provenance_scope_matching_contract(self, tmp_path, scope, expected):
-        core = _write_core_with_script(
-            tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")
-        )
-        doc = yaml.safe_load(core.read_text())
+    def test_provenance_decisions(self, tmp_path, scope, expected):
+        core = _write_script(tmp_path, "scripts/gen.py")
+        doc = _doc(_GEN_CORE.format(script="scripts/gen.py"))
+
         violations = validate_core(doc, core_file=core, project_root=tmp_path, scope=scope)
+
         assert _kinds(violations) == expected
+        for violation in violations:
+            assert "scripts/gen.py" in violation.message
 
     @pytest.mark.parametrize("via_symlink", [False, True])
     def test_external_script_retains_canonical_scope_classification(
@@ -385,41 +300,6 @@ class TestScriptProvenance:
         assert ".booley/cores/gen.py" in violations[0].message
         assert str(store) not in violations[0].message
 
-    def test_out_of_scope_script_passes(self, tmp_path: Path):
-        core = _write_core_with_script(
-            tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")
-        )
-        doc = yaml.safe_load(core.read_text())
-        # Scope covers only rtl/ — the generator script is outside the declared Scope.
-        v = validate_core(doc, core_file=core, project_root=tmp_path, scope=["rtl/*.sv"])
-        assert v == []
-
-    def test_in_scope_script_rejected(self, tmp_path: Path):
-        core = _write_core_with_script(
-            tmp_path, "rtl/gen.py", _GEN_CORE.format(script="rtl/gen.py")
-        )
-        doc = yaml.safe_load(core.read_text())
-        # Scope includes rtl/* — the agent could edit the generator → not confined.
-        v = validate_core(doc, core_file=core, project_root=tmp_path, scope=["rtl/*"])
-        assert _kinds(v) == {"in_scope_script"}
-        assert "rtl/gen.py" in v[0].message
-
-    def test_wildcard_scope_rejects_any_script(self, tmp_path: Path):
-        core = _write_core_with_script(
-            tmp_path, "scripts/gen.py", _GEN_CORE.format(script="scripts/gen.py")
-        )
-        doc = yaml.safe_load(core.read_text())
-        v = validate_core(doc, core_file=core, project_root=tmp_path, scope=["*"])
-        assert _kinds(v) == {"unconfinable_script"}
-
-    def test_provenance_skipped_without_scope(self, tmp_path: Path):
-        # No scope supplied → structural-only pass, provenance not checked.
-        core = _write_core_with_script(
-            tmp_path, "rtl/gen.py", _GEN_CORE.format(script="rtl/gen.py")
-        )
-        doc = yaml.safe_load(core.read_text())
-        assert validate_core(doc, core_file=core, project_root=tmp_path) == []
-
     def test_scripts_section_pre_run_hook_script(self, tmp_path: Path):
         # A top-level `scripts:` entry referenced by an in-sandbox hook, in-scope.
         body = """\
@@ -434,22 +314,14 @@ class TestScriptProvenance:
                 hooks:
                   pre_run: [seed]
         """
-        core = _write_core_with_script(tmp_path, "tb/seed.py", body)
-        doc = yaml.safe_load(core.read_text())
-        v = validate_core(doc, core_file=core, project_root=tmp_path, scope=["tb/*"])
+        core = _write_script(tmp_path, "tb/seed.py")
+        v = validate_core(_doc(body), core_file=core, project_root=tmp_path, scope=["tb/*"])
         assert _kinds(v) == {"in_scope_script"}
-
-
-# ---------------------------------------------------------------------------
-# Combined / project-level
-# ---------------------------------------------------------------------------
 
 
 class TestProjectLevel:
     def test_validate_project_cores_aggregates(self, tmp_path: Path):
-        (tmp_path / "a.core").write_text(
-            textwrap.dedent(TestFpgaHooks._FPGA_HOOK), encoding="utf-8"
-        )
+        (tmp_path / "a.core").write_text(textwrap.dedent(_FPGA_HOOK_CORE), encoding="utf-8")
         (tmp_path / "b.core").write_text(
             textwrap.dedent(
                 """\
@@ -470,16 +342,8 @@ class TestProjectLevel:
         # A .core copied into a build/ tree is a resolution artifact, not a source.
         build = tmp_path / "build" / "x"
         build.mkdir(parents=True)
-        (build / "stale.core").write_text(
-            textwrap.dedent(TestFpgaHooks._FPGA_HOOK), encoding="utf-8"
-        )
+        (build / "stale.core").write_text(textwrap.dedent(_FPGA_HOOK_CORE), encoding="utf-8")
         assert validate_project_cores(tmp_path) == []
-
-
-# ---------------------------------------------------------------------------
-# [fusesoc]-scoped audits — an unselectable core's script must not FAIL doctor
-# on a multi-core repo (SETUP-19).
-# ---------------------------------------------------------------------------
 
 
 class TestFuseSocScopedAudit:

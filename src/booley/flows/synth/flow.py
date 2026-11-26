@@ -104,7 +104,7 @@ from booley.flows.synth.backends.yosys.core import (
     load_timing_config,
     resolve_frontend,
 )
-from booley.flows.synth.backends.yosys.parsing import authoritative_stat_section, parse_stat
+from booley.flows.synth.backends.yosys.parsing import parse_stat
 from booley.flows.synth.cli import SynthArguments
 from booley.flows.synth.mode import SynthMode, runs_openroad
 from booley.flows.synth.request import SynthRequest
@@ -555,12 +555,6 @@ class SynthMetrics:
 # ---------------------------------------------------------------------------
 
 
-def _parse_area(output: str) -> tuple[float | None, int | None]:
-    """Extract authoritative Yosys area and cell count."""
-    stat = parse_stat(output)
-    return stat.area_um2, stat.cells
-
-
 def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
     """Build the per-clock timing map from ``STA_PERCLOCK`` markers.
 
@@ -704,11 +698,6 @@ def _parse_wire_count(output: str) -> int:
 def _parse_process_count(output: str) -> int:
     """Extract residual process count from the authoritative final stat."""
     return parse_stat(output).processes
-
-
-def _authoritative_stat_section(output: str) -> str | None:
-    """Compatibility wrapper for final-stat selection."""
-    return authoritative_stat_section(output)
 
 
 def _count_latches(output: str) -> int:

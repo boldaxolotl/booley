@@ -91,7 +91,6 @@ class CoverageAnalystSpecialist(Specialist):
     )
     code_modifying: bool = False
     accepts_target: bool = False
-    config_aware: bool = False
     agent_capabilities: ClassVar[list[str]] = []
     default_timeout: int = 1200
     announce_success_report: bool = True

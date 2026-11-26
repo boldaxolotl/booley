@@ -929,25 +929,10 @@ def test_parallel_pipe_sources_do_not_merge_partial_lines(tmp_path):
     assert "stdout:2: second line" in sink.stream.getvalue()
 
 
-# Captured once from the existing transport writer with the fixed invocation id and timestamp.
-DISPLAY_EVENTS = (
-    b'{"type":"endpoint_progress","endpoint":"lint","line":"checking",'
-    b'"timestamp":"2026-10-05T13:00:00Z","invocation_id":"fixed-invocation",'
-    b'"display_scope":"developer"}\n'
-    b'{"type":"endpoint_progress","endpoint":"lint","line":"done",'
-    b'"timestamp":"2026-10-05T13:00:00Z","completion":true,'
-    b'"invocation_id":"fixed-invocation","display_scope":"developer"}\n'
-)
-
-
-def test_agent_console_and_display_bytes_match_existing_transport(tmp_path, monkeypatch, capsys):
+def test_agent_console_progress_is_silent_and_writes_no_event_log(tmp_path, monkeypatch, capsys):
     from booley.flows.base import BuiltinFlow
 
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("BOOLEY_DISPLAY_INVOCATION_ID", "fixed-invocation")
-    monkeypatch.setattr(
-        "booley.flows.endpoint_events.utc_now_rfc3339", lambda: "2026-10-05T13:00:00Z"
-    )
 
     def execute(flow):
         assert flow.terminal_progress is None
@@ -963,9 +948,7 @@ def test_agent_console_and_display_bytes_match_existing_transport(tmp_path, monk
     assert captured.out == "verdict unchanged\n"
     assert captured.err == ""
     assert result.exit_code == 7
-    # The writer opens the file in text mode, so Windows stores CRLF.
-    written = (tmp_path / "display.jsonl").read_bytes().replace(b"\r\n", b"\n")
-    assert written == DISPLAY_EVENTS
+    assert not list(tmp_path.glob("*.jsonl"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows anonymous pipe compatibility")
