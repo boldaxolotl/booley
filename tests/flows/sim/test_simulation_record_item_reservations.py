@@ -3,8 +3,9 @@
 The Flow keeps one reservation for its
 shared builds, then drops to zero and each later item takes a claim of its own
 (#3773: one lane per core, the claims decide how many run at once).
-The Simulation Record, slot store, Flow claim and foreign Jobs are real; only the
-simulators are fake.
+The Simulation Record, slot store and Flow claim are real and the simulators are fake.
+The slot clock is fake too; the lane step machine's scenarios also control process
+liveness, waits and thread order, with its actors as the foreign Jobs.
 """
 
 from __future__ import annotations
@@ -1028,6 +1029,7 @@ def test_stepped_items_run_in_parallel_each_on_their_own_reservation(
         assert scenario.peak == parties
         _close(machine, scenario, *names[:parties])
         _finish(machine, run)
+        assert scenario.peak == parties  # no later item exceeded it either
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
@@ -1117,6 +1119,7 @@ def test_stepped_lost_item_lease_stops_only_that_item(
         if lost in scenario.idle:
             _close(machine, scenario, lost)
         if siblings:
+            _step_past_waits(machine)  # the failure takes effect while the sibling still runs
             _close(machine, scenario, "t01")
         _finish(machine, run)
         assert scenario.admission.cancellation_cause() is None
@@ -1196,7 +1199,7 @@ def test_stepped_lost_flow_lease_cancels_lanes_and_withdraws_the_queued_claim(
         assert cause is not None and scenario.flow_token.path.name in cause
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
-    # Which lane fails first (a waiting claim, or a cancelled running item) is a race.
+    # Any lane may report the loss: a waiting claim, or a cancelled running item.
     errors = (ClaimAbortedError, ClaimLostError, capacity.SimulationRecordCapacityError)
     assert isinstance(run.error, errors), run.error
     assert sorted(scenario.cancelled) == list(running)
