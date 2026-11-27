@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import runpy
+import subprocess
 import sys
 import threading
 import time
@@ -168,6 +169,16 @@ def test_live_build_shows_progress_and_heartbeat_before_it_ends(
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
+
+
+def test_fake_build_inherits_the_layers_of_a_base_given_by_id(tmp_path: Path, monkeypatch) -> None:
+    docker = install_fake_docker(tmp_path / "bin", monkeypatch, {}, images={"base:v1": "sha256:a"})
+    recipe = tmp_path / "Dockerfile"
+    recipe.write_bytes(b"FROM base:v1\n")
+
+    subprocess.run(["docker", "build", "-f", str(recipe), "-t", "out:v1", "."], check=True)
+
+    assert docker.images["out:v1"]["Layers"] == ["sha256:a"]
 
 
 def test_docker_build_refuses_low_capacity_before_starting(tmp_path: Path, monkeypatch) -> None:
