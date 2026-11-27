@@ -1080,7 +1080,6 @@ def test_a_run_the_bundle_check_refuses_after_exit_records_a_failure(tmp_path, m
             tmp_path,
             (),
             0.0,
-            lambda _boundary: None,
         )
 
     (record,) = _history(tmp_path)
