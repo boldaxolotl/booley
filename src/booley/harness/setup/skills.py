@@ -12,6 +12,7 @@ from booley.runtime.skill_links import (
     QA_MANIFEST_FILENAME,
     SkillLinkReport,
     reconcile_skill_links,
+    withheld_skills,
 )
 
 
@@ -47,7 +48,10 @@ def reconcile_host_skills(
     desired_names: frozenset[str] | None = None,
     adopt_unrecorded: bool = True,
 ) -> tuple[HostSkillReconciliation, ...]:
-    """Reconcile packaged skills across every detected host agent directory."""
+    """Reconcile packaged skills across every detected host agent directory.
+
+    A host skills directory serves no single Project, so every gated skill is left out.
+    """
     return tuple(
         HostSkillReconciliation(
             target,
@@ -59,6 +63,7 @@ def reconcile_host_skills(
                 manifest_name=manifest_name,
                 desired_names=desired_names,
                 adopt_unrecorded=adopt_unrecorded,
+                withheld=withheld_skills(frozenset()),
             ),
         )
         for target in _find_skill_targets()

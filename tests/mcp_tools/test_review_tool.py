@@ -21,8 +21,10 @@ from typing import Any
 import pytest
 
 from booley.mcp import server as mcp_server
+from booley.mcp.review_tool import REVIEW_TOOL_NAME, review_tool_def
 from booley.mcp.server import _JobManager
 from booley.runtime import job_records as jobrec
+from booley.runtime.paths import skills_dir
 from booley.runtime.session_paths import session_jobs_dir
 from tests import mcp_runner_fake
 from tests.conftest import FeatureFlagHelper
@@ -347,3 +349,33 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def test_reviewed_commit_skill_drives_booley_review() -> None:
+    folder = skills_dir() / "booley-reviewed-commit"
+    text = " ".join((folder / "SKILL.md").read_text(encoding="utf-8").split())
+    schema = review_tool_def()["schema"]["properties"]
+    assert f"`{REVIEW_TOOL_NAME}`" in text
+    assert {"verify", "waive", "work_dir"} <= schema.keys()
+    assert {"finding_id", "justification"} <= schema["waive"]["items"]["properties"].keys()
+    for option in ("verify", "waive", "work_dir", "finding_id"):
+        assert f"`{option}`" in text
+    for phrase in (
+        "Commit the work",
+        "Run review discovery",
+        "Resolve each introduced finding",
+        "justification",
+        "run verify once",
+        "booley measure",
+        "is not reviewed",
+        "Review Report",
+        "waivers first",
+        "Never run discovery again after verify",
+        "Never edit the Declared Reviews",
+        "Never call the commit Reviewed while verify left",
+    ):
+        assert phrase.lower() in text.lower()
+    assert "disable-model-invocation: true" in text
+    assert "allow_implicit_invocation: false" in (folder / "agents/openai.yaml").read_text(
+        encoding="utf-8"
+    )
