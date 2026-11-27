@@ -123,9 +123,9 @@ def _old_policy_checkouts(tmp_path, paired):
 
 @pytest.mark.parametrize("paired", [False, True])
 def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypatch, paired):
+    from tests.agent_call_fake import install_agent
     from tests.git_support import git
 
-    from booley.core.models import AgentResult
     from booley.harness import init_cmd
     from booley.harness.setup.common import InitContext
     from booley.runtime import runtime_context
@@ -150,11 +150,7 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
         "BOOLEY_GOAL_RUN_BINDING",
     ):
         monkeypatch.delenv(key, raising=False)
-    # The agent CLI boundary of the otherwise real Reviewer run.
-    monkeypatch.setattr(
-        "booley.specialists.specialist._call_agent_sync",
-        lambda *_a, **_kw: AgentResult(output='{"issues": []}'),
-    )
+    install_agent(monkeypatch, {"issues": []})  # the otherwise real Reviewer run's agent call
     selected_rtl = worktree
     monkeypatch.chdir(worktree)
     from booley.runtime.booley_dir import reset_cache

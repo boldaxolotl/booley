@@ -20,12 +20,13 @@ from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import auth_token, health, issuance_invalidation, runtime_context
 from booley.runtime.agent_errors import UsageLimitError, model_unavailable_error
+from tests.agent_call_fake import install_agent
 from tests.booley_checkouts_support import LAYOUTS, linked_worktree
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.harness.doctor_host_support import (
-    answer_agent_calls,
     answer_doctor_commands,
+    raise_child_peak_rss,
     serve_healthy_doctor_host,
 )
 from tests.harness.git_support import git_stdout
@@ -502,7 +503,8 @@ def _model_probe_run(
             raise RuntimeError("boom")
         return _ACCEPTED
 
-    calls = answer_agent_calls(monkeypatch, answer)
+    calls = install_agent(monkeypatch, answer).calls
+    raise_child_peak_rss(monkeypatch)
     result, record = _deep_run(SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir))
     probed = [call.model for call in calls if call.label == "doctor-model-probe"]
     return result, probed, calls, record
@@ -741,7 +743,8 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
             raise UsageLimitError("usage cap reached", "claude")
         return AgentResult(input_tokens=1, output_tokens=1)
 
-    answer_agent_calls(monkeypatch, answer_call)
+    install_agent(monkeypatch, answer_call)
+    raise_child_peak_rss(monkeypatch)
     return audit
 
 
