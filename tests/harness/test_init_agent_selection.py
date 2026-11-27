@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import builtins
+import re
 import sys
 import warnings
 from contextlib import nullcontext
@@ -477,29 +477,13 @@ def test_seed_stops_when_existing_guidance_cannot_be_inspected(
         assert reached == [tmp_path]
 
 
-def _select_at_terminal(root, monkeypatch, capsys):
-    """Run ``booley init --seed`` at a terminal; return its output."""
-    use_terminal_stdin(monkeypatch)
+def _select_at_terminal(root, monkeypatch, capsys, *answers):
+    """Run ``booley init --seed`` at a terminal holding *answers*; return its output."""
+    use_terminal_stdin(monkeypatch, *answers)
     project_config(root)
     stub_host_images(monkeypatch)
     seed_init(root)
     return capsys.readouterr().out
-
-
-def _answer_prompts(monkeypatch, *answers):
-    """Answer each prompt in turn, then end the input; return the prompts asked."""
-    prompts = []
-    remaining = iter(answers)
-
-    def answer(prompt):
-        prompts.append(prompt)
-        try:
-            return next(remaining)
-        except StopIteration:
-            raise EOFError from None
-
-    monkeypatch.setattr(builtins, "input", answer)
-    return prompts
 
 
 _DEFAULT_CLAUDE = b'[agent]\ndefault = "claude"\nauth = "%s"\n'
@@ -534,9 +518,9 @@ def test_terminal_prompts_resolve_or_abort(
         login(_empty_host, "claude")
     if "key" in credentials:
         api_key(monkeypatch, "claude")
-    asked = _answer_prompts(monkeypatch, *answers)
 
-    output = _select_at_terminal(tmp_path, monkeypatch, capsys)
+    output = _select_at_terminal(tmp_path, monkeypatch, capsys, *answers)
+    asked = re.findall(r"Select agent [^\]]*\]", output)
 
     assert len(asked) == prompts
     if len(asked) == 2:
