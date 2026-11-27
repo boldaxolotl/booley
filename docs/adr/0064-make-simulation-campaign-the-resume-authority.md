@@ -32,10 +32,17 @@ Amendments).
 ## Consequences
 
 Resume names one exact Simulation Campaign Manifest. Workload changes fail
-closed, while execution policy may change. Ordinary HDL tests are independently
-resumable; Cocotb and coverage initially publish coarser work-item results that
-match their real execution granularity. Durable evidence precedes terminal
-results, and terminal results precede the `simulation.json` projection.
+closed, while execution policy may change. To check the workload, resume plans
+the record's frozen command (its Target, Test Runs and trace setting) as a new
+run, and continues the record only when that plan's identity document equals
+the recorded one, comparing only the resumed Target's Tests. The continued
+record keeps its id, creation time and origin. The identity covers the
+checkout's location and the simulator found on the search path, so a moved
+checkout or another simulator refuses. A record with Cycle Count baseline
+prerequisites never resumes. Ordinary HDL tests are independently resumable;
+Cocotb and coverage initially publish coarser work-item results that match
+their real execution granularity. Durable evidence precedes terminal results,
+and terminal results precede the `simulation.json` projection.
 
 ## Amendments (2026-10-21)
 

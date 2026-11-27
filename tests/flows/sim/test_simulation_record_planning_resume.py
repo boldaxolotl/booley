@@ -18,6 +18,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.coordinator import (
+    NewSimulationRecordRunRequest,
     ResumeSimulationRecordPreviewRequest,
     ResumeSimulationRecordRunRequest,
     SimulationRecord,
@@ -28,7 +29,7 @@ from booley.flows.sim.record.coordinator import (
 from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
-from booley.flows.sim.record.planning import manifest_digest
+from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.record.resume import (
     ValidatedManifestNode,
     ValidatedResumeManifest,
@@ -275,49 +276,39 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
     ]
 
 
-def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:
+def test_a_new_run_request_continues_the_record_it_names(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    first_invocation = tmp_path / "reports" / "sim" / "1"
-    store = SimulationRecordStore(first_invocation / "targets" / "sim" / "record")
-    store.publish_manifest(_manifest_for(("smoke",)))
-    preview_request = _resume_request(store, project)
-
-    preview = SimulationRecord().preview(preview_request)
-    assert preview.recovery.pending
-
-    first_executor = _NoEdaExecutor()
-    first_outcome = SimulationRecord(first_executor).run(
-        ResumeSimulationRecordRunRequest(
-            preview_request.validated,
-            preview_request.current_plan,
-            project,
-            None,
-            SimulationRecordPolicy(),
-            tmp_path / "reports" / "sim" / "2",
-            _admission(),
-        )
-    )
-    assert first_executor.calls == 1
-    assert first_outcome.recovery.pending == ()
-
+    (project / ".booley").mkdir(parents=True)
+    store = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record")
+    store.publish_manifest(_manifest_for(("a", "b", "c")))
+    _seed_authenticated_states(store, project, _NoEdaExecutor())  # complete, interrupted
     manifest_bytes = store.manifest_path.read_bytes()
-    second_executor = _NoEdaExecutor()
-    second_outcome = SimulationRecord(second_executor).run(
-        ResumeSimulationRecordRunRequest(
-            preview_request.validated,
-            preview_request.current_plan,
-            project,
-            None,
-            SimulationRecordPolicy(timeout_seconds=42, build_timeout_seconds=17),
-            tmp_path / "reports" / "sim" / "3",
-            _admission(),
-        )
-    )
+    document = json.loads(manifest_bytes)
+    del document["fingerprints"]
+    # What a re-planned new run of the same workload differs in.
+    document |= {
+        "simulation_record_id": str(uuid.uuid4()),
+        "created_at": "2026-11-27T00:00:00Z",
+        "origin": {"execution_id": "", "invocation_id": 2},
+    }
+    replanned = create_simulation_record_plan(finalize_manifest(document))
 
-    assert second_executor.calls == 0
-    assert second_outcome.recovery.completed == first_outcome.recovery.completed
+    for number, ran in ((2, 2), (3, 0)):
+        executor = _NoEdaExecutor()
+        outcome = SimulationRecord(executor).run(
+            NewSimulationRecordRunRequest(
+                replanned,
+                project,
+                None,
+                SimulationRecordPolicy(),
+                tmp_path / f"reports/sim/{number}",
+                _admission(),
+                record_directory=store.root,
+            )
+        )
+        assert executor.calls == ran
+        assert outcome.manifest_path == store.manifest_path
+        assert len(outcome.recovery.completed) == 3
 
     assert store.manifest_path.read_bytes() == manifest_bytes
 

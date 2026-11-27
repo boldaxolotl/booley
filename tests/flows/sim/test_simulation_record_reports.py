@@ -340,10 +340,10 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     # Private seam: the resume needs a typed execution without destination admission or origin
     # locking, so the test replaces `_simulation_record_policy`,
-    # `_lock_simulation_record_resume_origin`, `_resume_simulation_record_plan` and the
-    # ordinary executor.
+    # `_lock_simulation_record_resume_origin`, the ordinary planning and the ordinary
+    # executor.
 
-    from booley.flows.sim import flow_resume
+    from booley.flows.sim import flow as sim_flow
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record.coordinator import SimulationRecordPolicy
     from booley.flows.sim.record.model import create_simulation_record_plan
@@ -369,15 +369,17 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
     # Destination admission and origin locking are outside this typed execution test.
     monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *args: None)
+    planning = sim_flow.OrdinarySimulationRecordPlanning((SimpleNamespace(selector="sim"),), {})
+    monkeypatch.setattr(flow, "_plan_ordinary_simulation_records", lambda *args: planning)
     monkeypatch.setattr(
         flow,
-        "_resume_simulation_record_plan",
+        "_ordinary_simulation_record_plan",
         lambda *args, **kwargs: create_simulation_record_plan(manifest),
     )
-    build = flow_resume.OrdinaryHdlSerialExecutor
+    build = sim_flow.OrdinaryHdlSerialExecutor
     # Each flow keeps its own counters: the executor is chosen by the flow that builds it.
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor",
+        "booley.flows.sim.flow.OrdinaryHdlSerialExecutor",
         lambda *, invoke: (
             _executor(invocation / "build", counters)
             if invoke.__self__ is flow
@@ -419,15 +421,15 @@ def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
 
 def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
     # Private seam: the concurrency test must block the waiter before store admission, and
-    # `_run_validated_resume_simulation_record` is the only point before it.
-    run = flow._run_validated_resume_simulation_record
+    # `_publish_and_run_simulation_record_requests` is the only point before it.
+    run = flow._publish_and_run_simulation_record_requests
 
     def wait_for_owner(*args, **kwargs):
         waiting.set()
         assert completed.wait(hang_guard_s())
         return run(*args, **kwargs)
 
-    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", wait_for_owner)
+    monkeypatch.setattr(flow, "_publish_and_run_simulation_record_requests", wait_for_owner)
 
 
 def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_path, monkeypatch):

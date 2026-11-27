@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,8 +33,7 @@ from .execution import (
     SelectedTestRuns,
 )
 from .record import (
-    ResumeSimulationRecordPreview,
-    ResumeSimulationRecordPreviewRequest,
+    NewSimulationRecordPreviewRequest,
     ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordCancellationError,
@@ -53,10 +53,12 @@ from .record.planning import (
     SimulationRecordWorkloadMismatchError,
     WorkloadDiagnostic,
     verify_workload,
+    workload_diagnostic,
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import _simulation_record_recovery_detail
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
+from .test_selection import _get_test_names
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -66,9 +68,16 @@ if TYPE_CHECKING:
     from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.request import SimRequest
     from booley.flows.target_test_plan import TargetTestPlan
+    from booley.targets.domain import TargetHandle
 
     from .execution import SimulationExecution
+    from .flow import (
+        OrdinarySimulationRecordPlanning,
+        PlannedTarget,
+        PreparedSimulationEndpoint,
+    )
     from .record import SimulationRecordPolicy
+    from .test_run_invocation import TestRunInvocation
 
 
 def _manifest_run_groups(
@@ -101,11 +110,29 @@ class SimulationRecordResumeMixin:
         _held_resume_origins: set[Path]
         _simulation_record_publication_checkpoint: Callable[[str], None] | None
         endpoint_kind: str
+        _args: SimRequest
+        _target_handles: dict[str, TargetHandle]
+        _test_runs: TestRunInvocation
 
         @property
         def args(self) -> SimRequest: ...
         def _target_test_plan(self, target: str) -> TargetTestPlan: ...
-        def _record_simulation_record_tool(self, manifest: SimulationRecordManifest) -> None: ...
+        def _plan_ordinary_simulation_records(
+            self, targets: list[str], test_names_map: dict[str, list[str]]
+        ) -> OrdinarySimulationRecordPlanning | EndpointOutcome: ...
+        def _ordinary_simulation_record_plan(
+            self,
+            planned: PlannedTarget,
+            test_names_map: dict[str, list[str]],
+            *,
+            invocation_id: int,
+            execution_id: str,
+        ) -> SimulationRecordPlan: ...
+        def _ordinary_simulation_record_run(
+            self,
+            planning: OrdinarySimulationRecordPlanning,
+            record_directory: Path | None = None,
+        ) -> _SimulationRecordRun: ...
         def _simulation_record_policy(self) -> SimulationRecordPolicy: ...
         @staticmethod
         def _simulation_record_cancelled_outcome(
@@ -280,10 +307,35 @@ class SimulationRecordResumeMixin:
                 options.append(f" --seed {run.seed}")
         return "".join(options)
 
-    def _resume_simulation_record(
+    def _replay_simulation_record(
         self, validated: ValidatedResumeManifest
+    ) -> tuple[tuple[str, ...], dict[str, list[str]]]:
+        """Replace this resume's request with the new-run request the record froze."""
+        view = SimulationRecordManifestView(validated.manifest)
+        selector = view.target.selector
+        runs = tuple(run for group in view.test_run_groups for run in group)
+        request = replace(
+            self.args,
+            resume_from=None,
+            target=selector,
+            test=tuple(run.name for run in runs if run.test is not None) or None,
+            seed=next((run.seed for run in runs if run.test is None), None),
+            trace=view.trace,
+        )
+        request.slug = self.args.slug  # init=False, so replace() dropped it
+        self._args = request
+        # A resume never resolves tests.toml again nor draws a seed: a removed
+        # frozen Test is a changed workload, not a selection error.
+        self._test_runs.resolved[(str(Path(request.work_dir)), selector)] = runs
+        self._target_handles = {selector: validated.target_handles[0]}
+        return (selector,), _get_test_names(request.work_dir)
+
+    def _resume_simulation_record(
+        self, prepared: PreparedSimulationEndpoint
     ) -> EndpointOutcome | _SimulationRecordRun:
-        """Validate one exact durable record resume: a refusal, a preview or the run."""
+        """Plan the replayed record as a new run: a refusal, a preview or the run."""
+        validated = prepared.resume
+        assert validated is not None, "only a resume reaches this path"
         try:
             observed = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
@@ -291,51 +343,57 @@ class SimulationRecordResumeMixin:
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record integrity failure: {exc}",
             )
+        planning = self._plan_ordinary_simulation_records(
+            list(prepared.selected_targets), prepared.test_names_map
+        )
+        if isinstance(planning, EndpointOutcome):
+            return planning
         if self.args.dry_run:
-            return self._preview_simulation_record_resume(validated, observed)
-        self._record_simulation_record_tool(validated.manifest)
-        return self._resume_simulation_record_run(validated, observed)
+            return self._preview_simulation_record_resume(validated, observed, planning)
+        return self._resume_simulation_record_run(validated, observed, planning)
 
     def _preview_simulation_record_resume(
-        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
+        self,
+        validated: ValidatedResumeManifest,
+        observed: SimulationRecordRecoveryStatus,
+        planning: OrdinarySimulationRecordPlanning,
     ) -> EndpointOutcome:
+        status = _simulation_record_recovery_detail(observed)
         try:
-            current_plan = self._resume_simulation_record_plan(
-                validated, SimulationRecordManifestView(validated.manifest).origin_invocation_id
+            plan = self._ordinary_simulation_record_plan(
+                planning.candidates[0], planning.test_names_map, invocation_id=1, execution_id=""
             )
-            request = ResumeSimulationRecordPreviewRequest(
-                validated,
-                current_plan,
-                Path(self.args.work_dir),
-                self.args.report_dir,
-                self._simulation_record_policy(),
-            )
-            preview = SimulationRecord().preview(request)
+            diagnostic = workload_diagnostic(validated.manifest, plan.manifest)
         except (OSError, ValueError, RuntimeError) as exc:
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,
                 report_text=f"Simulation Record resume preview failed: {exc}",
-                detail=_simulation_record_recovery_detail(observed),
+                detail=status,
             )
-        assert isinstance(preview, ResumeSimulationRecordPreview)
-        status = _simulation_record_recovery_detail(preview.recovery)
-        status.update(preview.diagnostic.detail)
-        status["required_bundle_variants"] = list(preview.required_bundle_variants)
-        areas = preview.diagnostic.areas
-        if not areas:
-            # The real run reports a mismatch before its run_cwd check.
-            refusal = _resume_run_cwd_refusal(request, status)
-            if refusal is not None:
+        status.update(diagnostic.detail)
+        # The real run reports a mismatch before its run_cwd check.
+        if not diagnostic.areas:
+            request = NewSimulationRecordPreviewRequest(
+                plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._simulation_record_policy(),
+                record_directory=validated.path.parent,
+            )
+            if (refusal := _resume_run_cwd_refusal(request, status)) is not None:
                 return refusal
+        areas = diagnostic.areas
         lines = [
             f"manifest: {validated.path}",
-            f"completed: {len(preview.recovery.completed)}",
-            f"interrupted: {len(preview.recovery.interrupted)}",
-            f"pending: {len(preview.recovery.pending)}",
+            f"completed: {len(observed.completed)}",
+            f"interrupted: {len(observed.interrupted)}",
+            *_unfinished_test_run_lines(validated.manifest, observed.interrupted),
+            f"pending: {len(observed.pending)}",
+            *_unfinished_test_run_lines(validated.manifest, observed.pending),
             f"mismatches: {len(areas)}",
         ]
         if areas:
-            lines.append(self._workload_mismatch_report(validated, preview.diagnostic))
+            lines.append(self._workload_mismatch_report(validated, diagnostic))
         return EndpointOutcome(
             exit_code=EXIT_ERROR if areas else EXIT_SUCCESS,
             detail=status,
@@ -343,10 +401,15 @@ class SimulationRecordResumeMixin:
         )
 
     def _resume_simulation_record_run(
-        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
+        self,
+        validated: ValidatedResumeManifest,
+        observed: SimulationRecordRecoveryStatus,
+        planning: OrdinarySimulationRecordPlanning,
     ) -> _SimulationRecordRun:
-        """Describe the exact resume to the shared execution scaffold."""
-        assert self.args.report_dir is not None, "prepared Flow requires a report root"
+        """The ordinary run into the record's own directory, behind its origin lock."""
+        ordinary = self._ordinary_simulation_record_run(
+            planning, record_directory=validated.path.parent
+        )
 
         def start(
             admission: AdmissionContext,
@@ -356,11 +419,18 @@ class SimulationRecordResumeMixin:
             lock_error = self._lock_simulation_record_resume_origin(validated, observed)
             if lock_error is not None:
                 return lock_error
-            return self._resume_ordinary_steps(
-                validated, invocation, admission, manifest_published
-            )
+            steps = ordinary.start(admission, invocation, manifest_published)
+            assert isinstance(steps, _SimulationRecordSteps), "an ordinary start never refuses"
 
-        return _SimulationRecordRun(
+            def run() -> EndpointOutcome:
+                result = steps.run()
+                result.detail.update(_fresh_simulation_record_recovery_detail(validated, observed))
+                return result
+
+            return replace(steps, run=run)
+
+        return replace(
+            ordinary,
             refusal="sim: no admission context",
             refusal_detail=_simulation_record_recovery_detail(observed),
             progress_operation="publish Simulation progress",
@@ -558,8 +628,21 @@ class SimulationRecordResumeMixin:
         )
 
 
+def _unfinished_test_run_lines(
+    manifest: SimulationRecordManifest, work_item_ids: tuple[str, ...]
+) -> list[str]:
+    """One line per Test Run of the named work items, in manifest order."""
+    view = SimulationRecordManifestView(manifest)
+    return [
+        f"  {run.name}"
+        for item_id, group in zip(view.work_item_ids, view.test_run_groups, strict=True)
+        if item_id in work_item_ids
+        for run in group
+    ]
+
+
 def _resume_run_cwd_refusal(
-    request: ResumeSimulationRecordPreviewRequest, status: dict[str, object]
+    request: NewSimulationRecordPreviewRequest, status: dict[str, object]
 ) -> EndpointOutcome | None:
     """Return the real run's failure when a record with work left has an unusable run_cwd."""
     try:
