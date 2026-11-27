@@ -411,10 +411,12 @@ def _machine_admission(
         event=lambda: StepEvent(machine.scheduler),
         take_turn=stepped_turn(machine.scheduler),
     )
-    name = "BoundedSimulationRecordScheduler"
-    monkeypatch.setattr(coordinator, name, stepped)  # boundary: its clock and waits
-    wait = stepped_file_lock_wait
-    monkeypatch.setattr(build_session, "wait_for_file_lock", wait)  # boundary: file-lock wait
+    monkeypatch.setattr(  # boundary: the lane scheduler's clock and waits
+        coordinator, "BoundedSimulationRecordScheduler", stepped
+    )
+    monkeypatch.setattr(  # boundary: the Simulation slot's file-lock wait
+        build_session, "wait_for_file_lock", stepped_file_lock_wait
+    )
     # I7 knows R's machine lanes only; this record's lanes keep theirs in the project.
     machine.scheduler.checks.remove(machine._check_execution_entries)
     return AdmissionContext(
