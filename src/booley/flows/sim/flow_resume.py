@@ -51,6 +51,7 @@ from .record.flow_planning import (
 )
 from .record.planning import (
     SimulationRecordWorkloadMismatchError,
+    WorkloadDiagnostic,
     verify_workload,
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
@@ -161,7 +162,7 @@ class SimulationRecordResumeMixin:
                 "its coverage collection finished, but a coverage run never resumes, "
                 "so start a new run instead:"
             )
-        command, note = self._new_coverage_run_command(validated, view)
+        command, note = self._new_run_command(validated, view)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
@@ -171,19 +172,34 @@ class SimulationRecordResumeMixin:
             detail=_simulation_record_recovery_detail(status),
         )
 
-    def _new_coverage_run_command(
+    def _workload_mismatch_report(
+        self, validated: ValidatedResumeManifest, diagnostic: WorkloadDiagnostic
+    ) -> str:
+        """What changed since the original run, and the command for a new run."""
+        view = SimulationRecordManifestView(validated.manifest)
+        command, note = self._new_run_command(validated, view)
+        return f"{diagnostic.report()}\nStart a new run instead:\n  {command}\n{note}"
+
+    def _new_run_command(
         self, validated: ValidatedResumeManifest, view: SimulationRecordManifestView
     ) -> tuple[str, str]:
         """The command for a new run that repeats the record, and the line after it."""
         selector = view.target.selector
+        coverage = " --coverage" if view.is_coverage else ""
         trace = " --trace" if view.trace else ""
         no_waivers = " --no-waivers" if view.no_waivers else ""
         tests = self._frozen_test_run_options(validated.manifest, selector)
         command = (
-            f"booley flow sim --target {shlex.quote(selector)}{tests or ''} --coverage"
+            f"booley flow sim --target {shlex.quote(selector)}{tests or ''}{coverage}"
             f"{trace}{no_waivers}{self._recorded_report_dir_option(validated)}"
         )
-        if tests is None:
+        if self._unnamed_run_is_replaced(validated.manifest, selector):
+            note = (
+                "This Simulation Record froze the unnamed run of a Target without registered "
+                "Tests. The Target registers Tests now: remove them from tests.toml first, or "
+                "the command runs them instead."
+            )
+        elif tests is None:
             note = "Add the original --test/--tests-file selection if you used one."
         elif tests:
             note = (
@@ -210,6 +226,19 @@ class SimulationRecordResumeMixin:
         except (OSError, RuntimeError, ValueError):
             pass  # the default is unknown, so the command names the root
         return f" --report-dir {shlex.quote(str(root))}"
+
+    def _unnamed_run_is_replaced(self, manifest: SimulationRecordManifest, selector: str) -> bool:
+        """Whether the record froze the unnamed run and the Target now registers Tests.
+
+        ``--test`` cannot name that run, so no command repeats it while they exist.
+        """
+        try:
+            runs = [run for group in _manifest_run_groups(manifest) for run in group]
+            return [run.test for run in runs] == [None] and bool(
+                self._target_test_plan(selector).tests
+            )
+        except (fusesoc_registry.FuseSocError, ValueError):
+            return False
 
     def _frozen_test_run_options(
         self, manifest: SimulationRecordManifest, selector: str
@@ -292,7 +321,8 @@ class SimulationRecordResumeMixin:
         status = _simulation_record_recovery_detail(preview.recovery)
         status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
-        if not preview.mismatches:
+        areas = preview.diagnostic.areas
+        if not areas:
             # The real run reports a mismatch before its run_cwd check.
             refusal = _resume_run_cwd_refusal(request, status)
             if refusal is not None:
@@ -302,12 +332,12 @@ class SimulationRecordResumeMixin:
             f"completed: {len(preview.recovery.completed)}",
             f"interrupted: {len(preview.recovery.interrupted)}",
             f"pending: {len(preview.recovery.pending)}",
-            f"mismatches: {len(preview.mismatches)}",
+            f"mismatches: {len(areas)}",
         ]
-        if preview.mismatches:
-            lines.append(preview.diagnostic.report(verbose=self.args.verbose))
+        if areas:
+            lines.append(self._workload_mismatch_report(validated, preview.diagnostic))
         return EndpointOutcome(
-            exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
+            exit_code=EXIT_ERROR if areas else EXIT_SUCCESS,
             detail=status,
             report_text="\n".join(lines),
         )
@@ -378,7 +408,7 @@ class SimulationRecordResumeMixin:
         message = str(error)
         if isinstance(error, SimulationRecordWorkloadMismatchError):
             detail.update(error.diagnostic.detail)
-            message = error.diagnostic.report(verbose=self.args.verbose)
+            message = self._workload_mismatch_report(validated, error.diagnostic)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=f"Simulation Record resume failed: {message}",

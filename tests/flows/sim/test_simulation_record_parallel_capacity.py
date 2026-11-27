@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import sys
 import threading
-import time
 import uuid
-from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -35,7 +33,6 @@ from booley.flows.sim.record.coordinator import (
 from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
-    ScheduledAttempt,
 )
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
@@ -65,25 +62,20 @@ from booley.runtime.supervised_execution import (
     supervised_execution_scope,
 )
 from tests.flows.sim.simulation_record_test_support import (
-    _PARALLEL_SYNC_TIMEOUT_S,
     _admission,
     _capacity,
     _holder_claim,
-    _item_capacity,
     _managed,
     _outer_claim,
     _parallel_environment,
     _ParallelExecution,
-    _remove_child_lease,
     _remove_slot_entry,
     _scheduled_attempt,
     _three_item_manifest,
     _two_item_manifest,
-    _wait_until,
 )
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
-from tests.sharing_error_support import sharing_error
 from tests.time_budget import hang_guard_s
 
 
@@ -452,37 +444,6 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(managed_ca
             store.release(competitor)
 
 
-def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path, slots) -> None:
-    manifest, simulation_record_store, project = _record_project(tmp_path)
-    registry = ChildExecutionRegistry(manifest, project)
-    slot_store, outer = slots
-    active = 0
-    maximum_active = 0
-    gate = threading.Lock()
-
-    def allocate(item) -> ScheduledAttempt:
-        return replace(
-            _scheduled_attempt(simulation_record_store, item), collision_key="same-run-dir"
-        )
-
-    def execute(_attempt, _child_id) -> None:
-        nonlocal active, maximum_active
-        with gate:
-            active += 1
-            maximum_active = max(maximum_active, active)
-        time.sleep(0.05)
-        with gate:
-            active -= 1
-
-    capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
-    BoundedSimulationRecordScheduler(capacity, allocate=allocate, execute=execute).run(
-        manifest.document["work_items"]
-    )
-
-    assert maximum_active == 1
-    _assert_only_the_outer_claim_remains(slot_store)
-
-
 class _ExitsDuringFinalWait(threading.Event):
     """Lane-exit event that is set just as the owner's timed wait gives up."""
 
@@ -516,23 +477,22 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
-@pytest.mark.parametrize("first_finisher", ["beta", "gamma"])
-@pytest.mark.parametrize("schedule_seed", (0, 3))
-def test_managed_simulation_record_bounds_overlap_keeps_order_and_cleans_child_claims(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    slots,
-    first_finisher: str,
-    schedule_seed: int,
+def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_cleans_child_claims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, first_finisher, schedule_seed)
+    project, state = _parallel_environment(tmp_path)
+    # Nothing orders the items: the lane step machine checks the interleavings.
+    state.barrier = threading.Barrier(1)
+    state.first_finished.set()
     executor = _parallel_executor(monkeypatch, state)
     outcome, slot_store, invocation = _run_parallel_simulation_record(
         tmp_path, manifest, plan, project, executor, slots
     )
-    _assert_parallel_outcome(outcome, plan, state, first_finisher)
+    assert outcome.complete is True
+    assert outcome.aggregate_grade == "fail"
+    assert state.compile_count == 1
     _assert_child_claim_integrity(invocation, slot_store, plan, project / ".booley")
 
 
@@ -566,18 +526,6 @@ def _run_parallel_simulation_record(tmp_path, manifest, plan, project, executor,
     return outcome, slot_store, invocation
 
 
-def _assert_parallel_outcome(outcome, plan, state, first_finisher) -> None:
-    assert outcome.complete is True
-    assert outcome.aggregate_grade == "fail"
-    assert state.compile_count == 1
-    by_name = {name: (start, end) for name, start, end in state.intervals}
-    assert by_name["beta"][0] <= by_name["gamma"][1]
-    assert by_name["gamma"][0] <= by_name["beta"][1]
-    assert state.completion_order.index(first_finisher) < state.completion_order.index(
-        "gamma" if first_finisher == "beta" else "beta"
-    )
-
-
 def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> None:
     store = SimulationRecordStore(invocation / "targets/sim/record")
     summary = json.loads(store.summary_path.read_text())
@@ -598,130 +546,6 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
         record = read_json(lane.record)
         assert record["state"] == "terminal" and record["tree_terminal"] is True
     _assert_only_the_outer_claim_remains(slot_store)
-
-
-@pytest.mark.parametrize(
-    "case", ["record_error", "coverage_scope_stop", "windows_sharing_violation"]
-)
-def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots, case: str
-) -> None:
-    denials_left = 2
-    if case == "windows_sharing_violation":
-        # A transient WinError 32 on the child's entry removal is retried, not raised (#3982).
-        memory_dir = tmp_path / "slots" / CLASS_MEMORY
-        real_unlink = Path.unlink
-        denial_lock = threading.Lock()
-
-        def sharing_violating_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
-            """Deny the first two holder-entry removals, like a concurrent reader's open handle."""
-            nonlocal denials_left
-            if path.parent == memory_dir and path.name.startswith("h-"):
-                with denial_lock:
-                    if denials_left > 0:
-                        denials_left -= 1
-                        raise sharing_error()
-            real_unlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "unlink", sharing_violating_unlink)
-    scope_stop = "coverage" if case == "coverage_scope_stop" else False
-    registry, child_ids = _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop)
-    if case == "windows_sharing_violation":
-        assert denials_left == 0
-    assert len(child_ids) == 1
-    terminal = read_json(
-        execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
-    )
-    assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "record_error")
-    _assert_only_the_outer_claim_remains(slots[0])
-
-
-def _run_lease_loss_scheduler(tmp_path, monkeypatch, slots, scope_stop):
-    """Run two lanes whose first one loses its lease; return what the assertions read."""
-    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
-    manifest, simulation_record_store, project = _record_project(tmp_path)
-    registry = ChildExecutionRegistry(manifest, project)
-    store, outer = slots
-    child_finished = threading.Event()
-    child_ids = []
-
-    execute = _lease_lost_execute(store, child_finished, child_ids, scope_stop, tmp_path)
-
-    # Recovery never completes, so the terminal cause comes from the lane itself.
-    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
-    capacity = _item_capacity(
-        # Keep this cause test within the per-test limit.
-        replace(_managed(store, outer), timeout_seconds=hang_guard_s()),
-        manifest,
-        registry.project_data,
-    )
-    scheduler = BoundedSimulationRecordScheduler(
-        capacity,
-        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
-        execute=execute,
-    )
-    try:
-        with pytest.raises(SimulationRecordCapacityError):
-            scheduler.run(manifest.document["work_items"])
-    finally:
-        child_finished.set()
-    return registry, child_ids
-
-
-def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from booley.runtime.supervised_execution import current_supervised_execution
-
-    first_lane = threading.Lock()
-
-    def execute(_attempt, child_id, *_entry_digest):
-        if not first_lane.acquire(blocking=False):
-            # The other lane works until the first one's lease is lost.
-            assert child_finished.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            return
-        child_ids.append(child_id)
-        scope = current_supervised_execution()
-        assert scope is not None
-        _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[0]) == 3)
-        _remove_child_lease(slots, child_id)
-        _wait_until(scope.cancelled)
-        child_finished.set()
-        if scope_stop == "coverage":
-            try:
-                _execute_pre_cancelled_coverage(tmp_path)
-            except PreSimScopeStoppedError as exc:
-                raise SimulationRecordCapacityError("scope stopped") from exc
-        raise SimulationRecordCapacityError("unrelated publication failure")
-
-    return execute
-
-
-def _execute_pre_cancelled_coverage(tmp_path):
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
-    from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
-    from tests.flows.sim.simulation_record_test_support import (
-        _maximum_hook_selection_plan,
-        _request,
-    )
-
-    plan, _ = _maximum_hook_selection_plan(("alpha",))
-    store = SimulationRecordStore(tmp_path / "coverage-cancel")
-    store.publish_manifest(plan.manifest)
-    request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
-    )
-
-    def must_not_spawn(*_args):
-        pytest.fail("pre-cancelled coverage must not construct or spawn execution")
-
-    executor = CoverageAggregateExecutor(plans={}, execution_factory=must_not_spawn)
-    executor.prepare_attempt(request)
-    try:
-        executor.execute(request)
-    except PreSimScopeStoppedError:
-        assert not list(store.root.glob("**/pre-sim/*.json"))
-        raise
-    pytest.fail("actual coverage scope gate must raise PreSimScopeStoppedError")
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
@@ -750,7 +574,8 @@ def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child
 
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta", 0)
+    project, state = _parallel_environment(tmp_path)
+    state.clock = itertools.count().__next__  # a tick per reading, no wall-clock wait
     # One item at a time: nothing waits for a peer to overlap.
     state.barrier = threading.Barrier(1)
     executor = _parallel_executor(monkeypatch, state)

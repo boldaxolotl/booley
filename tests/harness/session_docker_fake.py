@@ -29,6 +29,7 @@ from booley.runtime import (
     session_admission,
     session_runtime,
 )
+from tests.docker_cli_guard_plugin import allow_docker_cli
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -432,7 +433,9 @@ def install_sandbox_exec(
     *protocol* false it runs only `python3 -I` commands (the cwd and Standalone Job
     probes) and exits 127 for the execution supervisor, a Sandbox without an execution
     protocol. Linux only: the shim has a shebang and the Sandbox processes read `/proc`.
+    Installing it lets the test start `docker`: see `tests/docker_cli_guard_plugin.py`.
     """
+    allow_docker_cli()
     guard = "" if protocol else "if args[start+1]!='-I':sys.exit(127)\n"
     binary = tmp_path / "docker"
     binary.write_text(

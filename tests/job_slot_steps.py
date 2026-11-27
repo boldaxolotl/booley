@@ -655,6 +655,25 @@ class StepEvent(threading.Event):
         return self.is_set()
 
 
+class StepCondition(threading.Condition):
+    """A condition whose timed waits are ``lock_wait`` checkpoints on the owned threads."""
+
+    def __init__(self, scheduler: StepScheduler) -> None:
+        super().__init__()
+        self.scheduler = scheduler
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if timeout is None or not self.scheduler.owns_caller():
+            return super().wait(timeout)
+        advance = self.scheduler.world.advance
+        self.release()  # the key's holder takes the condition while this waiter is parked
+        try:
+            self.scheduler.call("lock_wait", Path("condition"), lambda: advance(timeout))
+        finally:
+            self.acquire()
+        return False
+
+
 def stepped_turn(scheduler: StepScheduler) -> Callable[[threading.Lock, float], bool]:
     """The lane scheduler's ``take_turn`` as one checkpoint, named ``turn``, per attempt."""
 

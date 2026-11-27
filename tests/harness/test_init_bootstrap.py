@@ -21,7 +21,6 @@ from booley.runtime.image_lifecycle import (
     LifecycleResult,
     Status,
 )
-from tests.docker_cli_guard import forbid_docker_cli
 from tests.harness.init_agent_support import (
     empty_host,
     login,
@@ -314,7 +313,6 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     repair: str,
 ) -> None:
     empty_host(tmp_path, monkeypatch)
-    forbid_docker_cli(monkeypatch)
     project_config(tmp_path, b'[agent]\ndefault = "claude"\n')
     spec = tmp_path / ".devcontainer" / "devcontainer.json"
     spec.parent.mkdir()

@@ -11,7 +11,8 @@ supervised process, shrink, renew, close), and a supervisor that runs one
 ``/proc`` scan finds no process with a fresh marker, so it proves every lane tree empty).
 Lock waits are scheduling points too: the record's file lock and the registry's lock.
 The rules never stop the pool after a failed recovery pass. A scenario may run the real lane
-scheduler: its lane threads, start turn, supervisor and deadline are steps on the machine clock.
+scheduler: its lane threads, start turn, collision wait, supervisor and deadline are steps on
+the machine clock.
 Execution recovery scans Linux ``/proc``, so the module runs on Linux only; its fake PIDs are
 above the kernel's PID limit, so no cancellation signal reaches a real process.
 
@@ -48,6 +49,7 @@ from hypothesis.stateful import precondition, rule, run_state_machine_as_test
 
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.execution.contract import PreSimScopeStoppedError
 from booley.flows.sim.record import coordinator
 from booley.flows.sim.record.capacity import (
     ChildPermit,
@@ -55,8 +57,13 @@ from booley.flows.sim.record.capacity import (
     SimulationRecordCapacity,
     SimulationRecordCapacityError,
 )
-from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
+from booley.flows.sim.record.child_protocol import (
+    ChildExecutionRegistry,
+    recover_interrupted_attempts,
+)
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.model import SimulationAttempt
+from booley.flows.sim.record.planning import manifest_digest
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
     SimulationRecordSchedulingError,
@@ -79,6 +86,7 @@ from booley.runtime.job_slots import (
 )
 from tests.flows.sim.simulation_record_test_support import (
     _named_manifest,
+    _own_attempt_run_directory,
     _pinned_lanes,
     _scheduled_attempt,
 )
@@ -89,6 +97,7 @@ from tests.job_slot_steps import (
     Actor,
     ActorKilled,
     FakeProcessWorld,
+    StepCondition,
     StepEvent,
     StepLock,
     Worker,
@@ -200,6 +209,35 @@ class ScheduledRun:
     def lane_workers(self, scheduler: Any) -> list[Worker]:
         """The threads the run started, once each took a step."""
         return [w for w in scheduler.workers if w.root is self.worker and w is not self.worker]
+
+
+def _publish_attempt(manifest: Any, attempt: Any, child_id: str) -> None:
+    published = SimulationAttempt(
+        {
+            "$schema": "booley.simulation-attempt/v2",
+            "simulation_record_id": manifest.document["simulation_record_id"],
+            "manifest_sha256": manifest_digest(manifest),
+            "workload_sha256": manifest.document["fingerprints"]["workload_sha256"],
+            "work_item_id": attempt.item["work_item_id"],
+            "attempt_id": attempt.attempt_id,
+            "attempt_ordinal": attempt.ordinal,
+            "producer_invocation_id": 1,
+            "build_variant_id": "variant:" + "0" * 64,
+            "run_directory": {
+                "kind": "literal",
+                "configured": "run",
+                "resolved": "run",
+                "collision_key": "run",
+                "owned": True,
+            },
+            "child_execution_id": child_id,
+            "child_entry_sha256": None,
+            "pre_sim_build_access": "immutable",
+            "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
+            "started_at": "2026-09-22T14:00:00Z",
+        }
+    )
+    (attempt.directory / "attempt.json").write_bytes(published.canonical_bytes())
 
 
 class RecordProcess(Actor):
@@ -417,12 +455,20 @@ class LaneStepMachine(JobSlotStepMachine):
     # ------------------------------------------------------- lane scheduler
 
     def run_scheduler(
-        self, items: Any = None, *, finish: Callable[[], None] = lambda: None
+        self,
+        items: Any = None,
+        *,
+        finish: Callable[[Lane], None] = lambda _lane: None,
+        collision_key: str | None = None,
     ) -> ScheduledRun:
         """R runs the real lane scheduler; each item idles until ``close``, then *finish*es."""
         record = self.record
         run = ScheduledRun(SimulationRecordStore(Path(self._temporary.name) / "record"))
         run.store.publish_manifest(record.manifest)
+
+        def allocate(item: Any) -> Any:
+            attempt = _scheduled_attempt(run.store, item)
+            return replace(attempt, collision_key=collision_key or attempt.collision_key)
 
         def prepare(attempt: Any, child_id: str) -> None:
             worker = self.scheduler.current_worker()
@@ -430,23 +476,28 @@ class LaneStepMachine(JobSlotStepMachine):
                 lane.superseded |= lane.worker is worker
             item = str(attempt.item["work_item_id"])
             record.lanes.append(Lane(len(record.lanes) + 1, item, worker, str(child_id)))
+            _publish_attempt(record.manifest, attempt, child_id)
 
-        def execute(_attempt: Any, _child_id: str | None) -> None:
+        def execute(_attempt: Any, child_id: str | None) -> None:
             worker = self.scheduler.current_worker()
             lane = next(x for x in record.lanes if x.worker is worker and not x.returned)
+            # Private: no public entry point hands the scheduler's permit to the item it runs.
+            held = record.capacity._held.values()
+            lane.permit = next((p for p in held if str(p.child_execution_id) == child_id), None)
             while self.scheduler.await_command() != "close":
                 pass
-            finish()
+            finish(lane)
             lane.returned = True
 
         pool = BoundedSimulationRecordScheduler(
             record.capacity,
-            allocate=lambda item: _scheduled_attempt(run.store, item),
+            allocate=allocate,
             execute=execute,
             prepare_child=prepare,
             clock=self.world.now,
             event=lambda: StepEvent(self.scheduler),
             take_turn=stepped_turn(self.scheduler),
+            condition=lambda: StepCondition(self.scheduler),
         )
 
         def schedule() -> None:
@@ -635,14 +686,16 @@ class LaneStepMachine(JobSlotStepMachine):
         return float(reserved) if isinstance(reserved, int | float) else 0.0
 
     def _check_one_holder_per_slot(self) -> None:
-        reserved = sum(
-            self._reserved_mb(payload)
+        holders = [
+            payload
             for name, payload in self.read_entries().items()
             if name.startswith("h-") and payload is not None
-        )
-        assert reserved <= _CLAIM.budget_mb, (
-            f"I1: holders reserve {reserved} MB of {_CLAIM.budget_mb} MB"
-        )
+        ]
+        reserved = sum(map(self._reserved_mb, holders))
+        # A scenario's claims may carry a larger Memory Budget than the machine's own.
+        budgets = (p["memory"]["budget_mb"] for p in holders if p.get("memory"))
+        budget = min(budgets, default=_CLAIM.budget_mb)
+        assert reserved <= budget, f"I1: holders reserve {reserved} MB of {budget} MB"
 
     def _begin_checks(self) -> None:
         self._step_reads = {}  # the checks of one step read the directories once between them
@@ -1146,7 +1199,7 @@ def test_the_outer_lane_names_the_lost_slot(
     )
     messages: list[str] = []
 
-    def publish() -> None:
+    def publish(_lane: Lane) -> None:
         try:
             coordinator.raise_if_cancelled_before_publication()
         except SimulationRecordCapacityError as exc:
@@ -1178,6 +1231,260 @@ def test_normal_work_runtime_does_not_consume_the_shutdown_budget(
     assert run.worker is not None and run.worker.state == "parked"  # still supervising
     machine._close_lanes()
     assert run.worker is not None and run.worker.state == "done" and run.error is None
+
+
+def _end_run(machine: LaneStepMachine, run: ScheduledRun) -> None:
+    """Run what is left of *run*, its supervisor included, to the end."""
+    machine.scheduler.drain(until_idle=True)
+    assert run.worker is not None and run.worker.state == "done"
+
+
+def _tick(machine: LaneStepMachine, lane: Lane) -> None:
+    """One renewal tick of the lane's lease, which finds its entry gone."""
+    assert lane.permit is not None
+    record, token = machine.record, lane.permit.token
+    tick = machine.scheduler.start(record, "tick", lambda: record.store.renew(token))
+    machine.scheduler.finish(tick)
+    assert token.lease_health.lost.is_set()
+
+
+def test_equal_collision_keys_never_run_together(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    run = machine.run_scheduler(collision_key="same-run-dir")
+
+    def collided() -> bool:
+        waiting = ("lock_wait", "condition")
+        blocked = any(w.pending == waiting for w in run.lane_workers(machine.scheduler))
+        return len(machine._idle_lanes()) + blocked > 1
+
+    machine.run_lanes(run, collided)
+    (first,) = machine._idle_lanes()
+    machine.command_lane(first, "close")
+    machine.run_lanes(run, lambda: bool(machine._idle_lanes()))
+    assert _lane_record(machine, first)["state"] == "terminal"
+    (second,) = machine._idle_lanes()
+    machine.close_item(run, second)
+    _end_run(machine, run)
+    assert run.error is None
+    assert machine.read_entries() == {}
+
+
+@pytest.mark.parametrize("first", ["first-started", "last-started"])
+def test_overlapping_lanes_finish_in_the_chosen_order_and_leave_no_child_claim(
+    build_machine: Callable[[], LaneStepMachine], first: str
+) -> None:
+    machine = build_machine()
+    run, lanes = machine.start_idle(2)  # both items run at once
+    chosen, other = lanes if first == "first-started" else reversed(lanes)
+    machine.close_item(run, chosen)
+    assert other.idle and _lane_record(machine, other)["state"] == "waiting"
+    machine.close_item(run, other)
+    _end_run(machine, run)
+    assert run.error is None
+    for lane in lanes:
+        assert lane.execution_id is not None
+        assert execution_paths(lane.execution_id, booley_dir=machine.booley_real).context.is_file()
+        record = _lane_record(machine, lane)
+        assert LaneStepMachine._is_terminal_record(record)
+        assert record["terminal_cause"] == "completed"
+    assert machine.read_entries() == {}
+
+
+def _execute_pre_cancelled_coverage(tmp_path):
+    from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
+    from tests.flows.sim.simulation_record_test_support import (
+        _maximum_hook_selection_plan,
+        _request,
+    )
+
+    plan, _ = _maximum_hook_selection_plan(("alpha",))
+    store = SimulationRecordStore(tmp_path / "coverage-cancel")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], tmp_path, invocation=1
+    )
+
+    def must_not_spawn(*_args):
+        pytest.fail("pre-cancelled coverage must not construct or spawn execution")
+
+    executor = CoverageAggregateExecutor(plans={}, execution_factory=must_not_spawn)
+    executor.prepare_attempt(request)
+    try:
+        executor.execute(request)
+    except PreSimScopeStoppedError:
+        assert not list(store.root.glob("**/pre-sim/*.json"))
+        raise
+    pytest.fail("actual coverage scope gate must raise PreSimScopeStoppedError")
+
+
+@pytest.mark.parametrize(
+    "case", ["record_error", "coverage_scope_stop", "windows_sharing_violation"]
+)
+def test_a_lane_that_lost_its_lease_keeps_its_own_terminal_cause(
+    build_machine: Callable[[], LaneStepMachine],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+) -> None:
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # for the coverage executor
+    machine = build_machine()
+    # Recovery never completes, so the terminal cause comes from the lane itself. Patched:
+    # no public entry point makes a child's recovery fail.
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
+    losers: list[Lane] = []
+
+    def finish(lane: Lane) -> None:
+        if lane not in losers:
+            return
+        if case == "coverage_scope_stop":
+            try:
+                _execute_pre_cancelled_coverage(tmp_path)
+            except PreSimScopeStoppedError as exc:
+                raise SimulationRecordCapacityError("scope stopped") from exc
+        raise SimulationRecordCapacityError("unrelated publication failure")
+
+    run, (lost, other) = machine.start_idle(2, finish=finish)
+    losers.append(lost)
+    assert lost.permit is not None and other.worker is not None
+    (machine.memory_dir / lost.permit.token.path.name).unlink()  # as a reaper would
+    _tick(machine, lost)
+    machine.supervise(run)
+    machine.close_item(run, lost)
+    machine.command_lane(other, "close")
+    if case == "windows_sharing_violation":
+        # A transient WinError 32 on the lane's entry removal is retried, not raised (#3982).
+        for _ in range(2):
+            _step_until(machine, other.worker, "unlink", "h-")
+            machine.scheduler.grant(other.worker, fail=True)
+        assert other.worker.faults == 2
+    machine.run_lanes(run, lambda: other.ended)
+    _end_run(machine, run)
+    assert isinstance(run.error, SimulationRecordCapacityError)
+    cause = "lease_lost" if case == "coverage_scope_stop" else "record_error"
+    assert _lane_record(machine, lost)["terminal_cause"] == cause
+    assert _lane_record(machine, other)["terminal_cause"] == "completed"
+    assert machine.read_entries() == {}
+
+
+def test_a_child_token_left_after_terminal_proof_fails_the_record(
+    build_machine: Callable[[], LaneStepMachine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine = build_machine()
+    # Report every token still present, as if the lane's release never landed. Patched:
+    # no public entry point leaves a released token behind.
+    monkeypatch.setattr(machine.record.store, "token_absent", lambda _token: False)
+    items = machine.record.manifest.document["work_items"][:1]
+    run, (lane,) = machine.start_idle(1, items=items)
+    machine.close_item(run, lane)
+    _end_run(machine, run)
+    assert isinstance(run.error, SimulationRecordCapacityError)
+    assert "child token remained after terminal proof" in str(run.error)
+
+
+@pytest.mark.parametrize("reaper", ["record", "other-process"])
+def test_reaping_a_terminal_lane_token_is_not_a_lost_lease(
+    build_machine: Callable[[], LaneStepMachine], reaper: str
+) -> None:
+    machine = build_machine()
+    record = machine.record
+    items = record.manifest.document["work_items"][:1]
+    run, (lane,) = machine.start_idle(1, items=items)
+    assert lane.worker is not None and lane.execution_id is not None
+    machine.command_lane(lane, "close")
+    while _lane_record(machine, lane)["state"] != "terminal":  # not yet released
+        machine.scheduler.grant(lane.worker)
+    if reaper == "record":
+        reap = machine.scheduler.start(record, "reap", lambda: record.store.reap(CLASS_MEMORY))
+    else:
+        reap = machine.start_operation(machine.actors[0], "reap", ROLE_INTERACTIVE, 0)
+    machine.scheduler.finish(reap)
+    assert [c["execution_id"] for c in _execution_claims(machine)] == [_PARENT_EXECUTION]
+    _tick(machine, lane)
+    supervisor = run.worker
+    assert supervisor is not None
+    machine.scheduler.grant(supervisor)  # one pass, up to its end or a lock the lane holds
+    while supervisor.pending is not None and supervisor.pending[0] not in LOCK_WAIT_KINDS:
+        machine.scheduler.grant(supervisor)
+    machine.run_lanes(run, lambda: lane.ended)
+    _end_run(machine, run)
+    assert run.error is None
+    assert _lane_record(machine, lane)["terminal_cause"] == "completed"
+    assert not execution_paths(lane.execution_id, booley_dir=machine.booley_real).cancel.exists()
+    assert record.capacity.cancellation_cause() is None
+    assert machine.read_entries() == {}
+
+
+def test_a_cancel_during_promotion_retires_the_scheduled_lane_as_an_abort(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    cancelled = threading.Event()
+    machine.record.open_capacity(cancellation=cancelled.is_set)
+    claimant = machine.actors[0]
+    for op in ("submit", "refresh"):
+        machine.scheduler.finish(machine.start_operation(claimant, op, ROLE_INTERACTIVE, 0))
+    run = machine.run_scheduler()
+
+    def queued() -> list[Worker]:
+        return [w for w in run.lane_workers(machine.scheduler) if w.pending == ("sleep", "")]
+
+    machine.run_lanes(run, lambda: bool(queued() and machine._idle_lanes()))
+    (waiting,) = queued()
+    (held,) = machine._idle_lanes()
+    # Each attempt is published before its claim queues, naming a lane that still waits.
+    published = [json.loads(p.read_bytes()) for p in run.store.root.rglob("attempt.json")]
+    lanes = machine.record.lanes
+    assert sorted(d["child_execution_id"] for d in published) == sorted(
+        str(lane.execution_id) for lane in lanes
+    )
+    for lane in lanes:
+        assert lane.execution_id is not None
+        assert execution_paths(lane.execution_id, booley_dir=machine.booley_real).context.is_file()
+        assert _lane_record(machine, lane)["state"] == "waiting"
+    machine.scheduler.finish(machine.start_operation(claimant, "release", ROLE_INTERACTIVE, 0))
+    while _holders(machine) < 3:  # the Flow's, the held item's, then the promoted claim
+        machine.scheduler.grant(waiting)
+    cancelled.set()
+    machine.supervise(run)
+    machine.command_lane(held, "close")
+    _end_run(machine, run)
+    assert isinstance(run.error, (ClaimAbortedError, ClaimLostError)), repr(run.error)
+    assert all(LaneStepMachine._is_terminal_record(_lane_record(machine, lane)) for lane in lanes)
+    assert machine.read_entries() == {}
+
+
+def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
+    build_machine: Callable[[], LaneStepMachine],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # for the run directories' checkout
+    machine = build_machine()
+    run, (recoverable, unfinished) = machine.start_idle(2)
+    machine.close_item(run, recoverable)
+    machine.scheduler.kill_and_wait(machine.record)  # the crash leaves the other lane's execution
+    assert _lane_record(machine, unfinished)["state"] == "waiting"
+    attempts: dict[str, dict[str, object]] = {}
+    runs: list[Path] = []
+    for lane in (recoverable, unfinished):  # the recoverable lane's attempt comes first
+        directory, attempts[lane.work_item_id] = _own_attempt_run_directory(
+            tmp_path, run.store, lane.work_item_id, lane.execution_id
+        )
+        runs.append(directory)
+    with monkeypatch.context() as patch:
+        # Patched: no public entry point makes a child's recovery fail.
+        patch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
+        with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
+            recover_interrupted_attempts(
+                machine.record.manifest,
+                attempts,
+                machine.booley_real,
+                booley_dir=machine.booley_real,
+            )
+    assert all(directory.exists() for directory in runs)
 
 
 def test_interleaved_lane_schedules(tmp_path: Path) -> None:

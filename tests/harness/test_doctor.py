@@ -59,6 +59,7 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.agent_call_fake import install_agent
@@ -70,8 +71,6 @@ from tests.diagnostic_helpers import (
     _Rec,
 )
 from tests.docker_cli_guard import (
-    assert_docker_processes_unused,
-    forbid_docker_processes,
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
@@ -84,6 +83,7 @@ from tests.runtime.test_sandbox_remedy_workflows import (
     VSCODE_INIT,
     VSCODE_SEED,
 )
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -244,8 +244,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
 
 
 def _patch_host_environment(monkeypatch, root: Path) -> None:
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
     # a plain host shell is the baseline these fixtures model.
     monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)
@@ -271,7 +270,6 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     # Modules that import this helper lack this module's autouse routing; without
     # it Doctor's container checks start real `docker run`s that can each wait 30 s.
     route_docker_helper_through_subprocess_run(monkeypatch)
-    forbid_docker_processes(monkeypatch)
     fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
@@ -953,7 +951,6 @@ def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
 
     assert len(inspected) == 1
     assert [call for call in calls if call[-3:] == ["python", "-m", "booley.mcp.probe"]]
-    assert_docker_processes_unused()
 
 
 def _history_git(repo: Path, *args: str) -> None:

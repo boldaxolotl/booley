@@ -19,10 +19,11 @@ from typing import Any
 
 import pytest
 
-from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.path_tool_fake import PathToolFake
+from tests.sandbox_venue_fake import place
 
 STALE_TOKEN = "SYNTHETIC_STALE_TOKEN"
 # The login a test writes with ``write_codex_login`` (the real login Booley links).
@@ -118,9 +119,8 @@ def install_fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     # In a Sandbox booley is installed; here it comes from the source tree.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
-    # The container marker is the host/Sandbox boundary: only a Sandbox creates nested homes.
-    monkeypatch.setattr(cb, "_inside_container", lambda: True)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    # Only a Sandbox creates nested homes.
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # The nested-home cache is process-wide state that no public entry point empties.
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
 
@@ -186,6 +186,6 @@ def replay_codex_run(
         return raw, stderr, returncode
 
     monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
-    monkeypatch.setattr(cb, "_inside_container", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(cb, "_codex_run_subprocess", run)
     return launches

@@ -590,8 +590,13 @@ def install_fake_docker(
     for the built image) edits images once after the next build; after a call holding the
     ``remove_after`` words the program deletes itself, so later calls find no Docker CLI.
     A store-backed fake is alone on ``PATH``; installing again in the same folder starts a
-    new call log and state.
+    new call log and state. Installing it lets the test start ``docker``: see
+    ``tests/docker_cli_guard_plugin.py``.
     """
+    # Imported here: the installed program is this file, run with the standard library only.
+    from tests.docker_cli_guard_plugin import allow_docker_cli
+
+    allow_docker_cli()
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "fake_docker_calls.jsonl").write_bytes(b"")
     if os.name == "nt":
