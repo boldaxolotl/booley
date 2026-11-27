@@ -4,8 +4,7 @@ This runbook is for the Operator or the maintainer who needs to run a candidate
 Booley build's host commands (`booley bootstrap`, `booley init`,
 `booley session up`) without replacing the canonical host install. Use it for
 a QA Run or GUI check of an unreleased build. Don't use it to test the
-canonical install itself, or for a Codespace check
-([codespaces/RUNBOOK.md](../codespaces/RUNBOOK.md)).
+canonical install itself.
 
 The QA Host is a privileged Docker-in-Docker container with its own Docker
 daemon, its own `HOME` (`/home/qa`), and its own config home. Booley's base

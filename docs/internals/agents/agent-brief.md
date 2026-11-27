@@ -92,8 +92,8 @@ unbalanced quotes.
 
 ## GUI
 
-The pipeline checks a pull request that touches the GUI in a browser
-Codespace with the `booley-gui-check` skill, and queues it only after a
+The pipeline checks a pull request that touches the GUI in T3 Code in a host
+browser with the `booley-gui-check` skill, and queues it only after a
 passing check on its current head. Without this field, the pipeline's path
 rules decide. The Spec reviewer can flag a change the rules missed.
 
