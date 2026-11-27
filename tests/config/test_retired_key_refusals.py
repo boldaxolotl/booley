@@ -661,6 +661,9 @@ NOT_A_KEY: dict[str, str] = {
         "refuses to recreate a removed checkout, not configuration"
     ),
     "src/booley/flows/cli_selection.py::warn_alias": "a deprecated CLI option alias",
+    "src/booley/flows/sim/cli.py::SimArguments.add_args#removed in the next minor release": (
+        "help for a deprecated CLI flag, not configuration"
+    ),
     "src/booley/flows/sim/cli.py::SimArguments.normalize": "deprecated CLI flags",
     "src/booley/flows/synth/warnings.py::<module>": "a pattern for OpenROAD's own warning text",
     "src/booley/harness/auth_cmd.py::_clear": "reports a removed credential",
