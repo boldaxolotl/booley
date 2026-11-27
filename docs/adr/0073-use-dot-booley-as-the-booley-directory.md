@@ -22,9 +22,9 @@ to upgrade through Booley 0.4.x first:
 - a linked checkout's Git pointer into a missing `.booley_project` path.
 
 `booley init` raises the refusal before it writes anything. Keeping the
-migrator was rejected: its journal, Docker inventory, consumer leases and
-layout lock cost every Project command and worktree change, for a step each
-0.3.x Project takes once.
+migrator was rejected: its journal, Docker inventory, tracking of running
+Booley processes and layout lock cost every Project command and worktree
+change, for a step each 0.3.x Project takes once.
 
 ## In-Sandbox selection
 
