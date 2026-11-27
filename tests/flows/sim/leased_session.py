@@ -9,12 +9,14 @@ are split into those two phases here.
 
 import re
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import replace
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 from unittest.mock import patch
 
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.build import PreparedSimulationBuild
 from booley.flows.sim.build_session import SimulationBuildSession
 
 _MARKER = re.compile(r"BOOLEY_BUILD_STAGE token=(\S+) rc=(\d+)")
@@ -24,18 +26,22 @@ Invoker = Callable[..., SubprocessResult]
 
 
 @contextmanager
-def canned_build_session() -> Iterator[None]:
-    """Keep the leased session real; stub capture, reuse key and authorization."""
-    with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(SimulationBuildSession, "capture_inputs", return_value={})
-        )
-        stack.enter_context(
-            patch.object(SimulationBuildSession, "reusable_key", return_value=None)
-        )
-        stack.enter_context(
-            patch.object(SimulationBuildSession, "authorize_fresh_image", return_value=())
-        )
+def canned_build_session(
+    *, artifacts: tuple[str, ...] = (), reusable_key: str | None = None
+) -> Iterator[None]:
+    """Keep the leased session real; stub capture, reuse key and authorization.
+
+    Authorization returns *artifacts*, named under each prepared build root.
+    """
+
+    def authorize(_self: Any, prepared: PreparedSimulationBuild, *_a: Any) -> tuple[Path, ...]:
+        return tuple(prepared.build_root / name for name in artifacts)
+
+    with (
+        patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
+        patch.object(SimulationBuildSession, "reusable_key", return_value=reusable_key),
+        patch.object(SimulationBuildSession, "authorize_fresh_image", authorize),
+    ):
         yield
 
 
