@@ -64,6 +64,40 @@ module, not per function, so a host-reachable function tested only by
 Sandbox-only tests passes if another test covers its module. Keep tests of help
 text, argument parsing, and config loaders on Windows.
 
+## OS-specific tests
+
+A test module is OS-specific when its subject depends on OS behavior: paths,
+file locks, process trees, signals, subprocess launching, console encoding,
+symlinks, or a platform branch. Register it by that rule in
+`tests/os_specific.py`, the only place that applies the `os_specific` marker.
+The marker skips nothing, and no CI job selects on it.
+
+`tests/architecture/test_os_specific_tests.py` fails on:
+
+- a `test_*.py` module that branches on the platform and is not registered;
+- a production module that branches on the platform with no registered test
+  covering it (mapped as for Sandbox-only tests) and no exemption;
+- an exemption whose module no longer branches on the platform, or that has no
+  reason.
+
+A platform branch is a platform check or an import of a platform-specific
+module. `tests/architecture/platform_branches.py` lists what counts and holds
+the exemptions, `PLATFORM_EXEMPTIONS`, each with its reason.
+
+The guard has these blind spots:
+
+- Detection is syntactic and names a fixed list. Feature probes
+  (`hasattr(os, "getuid")`, `getattr(signal, "SIGKILL", None)`), an aliased
+  `sys` or `os`, and any other platform flag, or `IS_WINDOWS` reached another
+  way, pass unnoticed.
+- A test that fakes the platform (`monkeypatch.setattr(sys, "platform", ...)`)
+  is not detected; register it by its subject.
+- Coverage is per module: one registered test of a module satisfies every branch
+  in it, and a registered test counts even when it is Sandbox-only and Windows
+  skips it.
+- Only `test_*.py` modules are checked; a branch in a support module or
+  `conftest.py` is not attributed to the tests that use it.
+
 ## Shard safety and timing models
 
 `ci_pytest_shard.py` collects the eligible tests on every runner. Timings

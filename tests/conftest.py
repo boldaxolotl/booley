@@ -29,6 +29,7 @@ pytest_plugins = [
     "tests.timeout_evidence",
     "tests.timeout_headroom",
     "tests.sandbox_only",
+    "tests.os_specific",
     "tests.thread_leak_guard",
 ]
 

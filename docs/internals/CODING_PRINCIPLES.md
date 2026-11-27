@@ -249,6 +249,11 @@ Tests that touch time, processes, sockets, or the filesystem also:
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
   (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before
   deleting or renaming files.
+- Register a test module whose subject depends on OS behavior in
+  `tests/os_specific.py`. A guard fails an unregistered platform-branching test
+  module, and platform-branching production code with no registered test or
+  exemption (see
+  [OS-specific tests](../../.github/ci/README.md#os-specific-tests)).
 - **Leave nothing running.** A test ends with every thread, subprocess, and
   detached job it started stopped, including work that tools start on their
   own, such as Git auto-maintenance. Code that starts a background thread

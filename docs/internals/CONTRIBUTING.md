@@ -269,6 +269,9 @@ made-up output is provisional at best.
   budget in `tests/timeout_headroom.py` and `tests/conftest.py`.
 - **Register tests of Sandbox-only code** in `tests/sandbox_only.py`; see
   [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
+- **Register OS-specific tests** in `tests/os_specific.py`: modules whose
+  subject depends on OS behavior; see
+  [OS-specific tests](../../.github/ci/README.md#os-specific-tests).
 - **Keep assertions out of `contextlib.suppress`.** CI runs
   `.github/scripts/check_suppressed_assertions.py`; its docstring and messages
   explain each rule.
