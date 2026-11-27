@@ -2319,7 +2319,7 @@ def _refuse_editor(selected: Sandbox | None, action: str) -> None:
         )
 
 
-def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
+def _select_or_start_project_runtime(workspace: Path) -> tuple[Sandbox, dict[str, str]]:
     """Select the one current runtime, or create/resume the headless Sandbox."""
     request = _validate_up_request(workspace)
     selected = resolve_running_sandbox(workspace)
@@ -2332,7 +2332,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     }
     if selected is not None:
         _validate_selected_runtime(workspace, request, selected)
-        return selected.container_id, command_env
+        return selected, command_env
     if resolve_running_sandbox(workspace) is not None:
         raise SessionError("Sandbox appeared before startup; retry")
     _run_up_transaction(
@@ -2346,7 +2346,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     if selected is None:
         raise SessionError("Sandbox disappeared after startup; retry")
     _validate_selected_runtime(workspace, request, selected)
-    return selected.container_id, command_env
+    return selected, command_env
 
 
 def _probe_command_cwd(container_id: str, cwd: str) -> None:
@@ -2384,21 +2384,24 @@ def run_project_command(
 
     with host_lifecycle_lock("session command"):
         _recover_before_lifecycle(None)
-        name, command_env = _select_or_start_project_runtime(workspace)
+        selected, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
     from booley.runtime.runtime_attachment import run_command
 
     try:
         return run_command(
             workspace,
-            name,
+            selected.container_id,
             list(command),
             tty=tty,
             env=command_env,
             cwd=cwd,
+            sandbox_name=selected.name,
         ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
-        raise SessionError(f"could not attach to Sandbox {name!r}: {exc}") from exc
+        raise SessionError(
+            f"could not attach to Sandbox {selected.container_id!r}: {exc}"
+        ) from exc
 
 
 def enter(

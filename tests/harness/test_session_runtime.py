@@ -2896,6 +2896,7 @@ def test_project_sandbox_resolution_reuses_editor_for_up_and_both_enters(
         "tty": True,
         "env": {"BOOLEY_DIR": "/booley"},
         "cwd": None,
+        "sandbox_name": "editor",
     }
     assert sr.validate(workspace) == fixture.issuance.spec_sha256
     assert all(call[1] in ("ps", "container", "inspect") for call in fixture.calls)
@@ -3346,6 +3347,9 @@ def _replace_file(path, text):
     path.write_text(text)
 
 
+_SELECTED = SimpleNamespace(container_id="immutable-id", name="immutable-name")
+
+
 def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=False):
     from booley.harness import booley as cli
     from booley.runtime.booley_dir import reset_cache
@@ -3430,7 +3434,7 @@ def test_ctrl_c_while_session_enter_prepares_the_sandbox_prints_one_line(
 
 def _linked_attachment(monkeypatch):
     calls = []
-    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: (_SELECTED, {}))
 
     def attach(root, name, command, **kwargs):
         calls.append((root, name, command, kwargs))
@@ -3497,7 +3501,7 @@ def _linked_transport(tmp_path, monkeypatch):
 
     root, linked = _linked_project(tmp_path, monkeypatch)
     (linked / ".booley").mkdir()
-    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: (_SELECTED, {}))
     monkeypatch.setattr(
         sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", "")
     )
@@ -3595,7 +3599,7 @@ def test_enter_rejects_unavailable_mapped_cwd(tmp_path, monkeypatch, problem):
     root, linked = _linked_project(tmp_path, monkeypatch)
     (linked / ".booley").mkdir()
     selected = []
-    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: ("immutable-id", {}))
+    monkeypatch.setattr(sr, "_select_or_start_project_runtime", lambda root: (_SELECTED, {}))
     monkeypatch.setattr(
         sr, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "", problem)
     )
@@ -3890,9 +3894,9 @@ def test_enter_gateway_sandbox_never_overrides_container_gateway_values(
     _export_gateway(monkeypatch)
     monkeypatch.setattr(sr, "container_matches_issuance", lambda *_a, **_k: True)
 
-    container_id, command_env = sr._select_or_start_project_runtime(workspace)
+    selected, command_env = sr._select_or_start_project_runtime(workspace)
 
-    assert container_id == fixture.state["Id"]
+    assert selected.container_id == fixture.state["Id"]
     assert command_env["BOOLEY_DIR"] == "/booley"
     assert not set(command_env) & set(GATEWAY_FORWARDED_ENV)
 
