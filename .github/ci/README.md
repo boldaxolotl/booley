@@ -18,21 +18,30 @@ A pull request covers each Python version and each OS at least once, not every
 combination. That keeps the required gate to many short parallel jobs instead
 of a full OS-by-Python matrix:
 
-- Python 3.14 on Windows runs the suite in four duration-balanced shards,
-  skipping [Sandbox-only tests](#sandbox-only-tests).
+- Python 3.14 on Windows runs the registered [OS-specific](#os-specific-tests)
+  modules in four duration-balanced shards, skipping
+  [Sandbox-only tests](#sandbox-only-tests).
 - Python 3.14 on Ubuntu runs the complete suite under branch coverage in six
   `coverage-shards` jobs, using coverage.py's `sysmon` core (PEP 669) so one
   instrumented run replaces a plain run plus a coverage run.
 - Python 3.11 on Ubuntu runs the complete suite in two duration-balanced shards.
-- Python 3.11 and 3.13 on Windows run a fixed list of focused modules (the
-  `Run focused Windows compatibility suite` step).
+- Python 3.11 and 3.13 on Windows run a fixed list of registered OS-specific
+  modules (the `Run focused Windows compatibility suite` step).
+
+The Windows legs of `Tests` run only OS-specific modules because Windows jobs
+fail from flakes more often than Linux ones, and a test whose result cannot
+differ by OS tells us nothing new there. The `flake-stress` Windows leg likewise
+repeats only the changed modules that are registered, and is absent when none
+is.
 
 The weekly `full-python-matrix.yml` runs the complete suite on Ubuntu and
-Windows for Python 3.11, 3.13, and 3.14. It is the only complete-suite run on
-Python 3.13 and on Windows 3.11.
+Windows for Python 3.11, 3.13, and 3.14, so a Windows failure in an
+unregistered module still shows within a week. It is the only complete-suite run
+on Windows and on Python 3.13.
 
-Every complete-suite run uses `-m "not native_bwave"`; the `bwave-integration`
-job runs the `native_bwave` tests, which need the compiled B-Wave binary.
+Every Linux and weekly complete-suite run uses `-m "not native_bwave"`; the
+`bwave-integration` job runs the `native_bwave` tests, which need the compiled
+B-Wave binary. The Windows `test` legs add `os_specific` to that expression.
 
 ## Main pushes and the nightly run
 
@@ -72,9 +81,8 @@ A test module is OS-specific when its subject depends on OS behavior: paths,
 file locks, process trees, signals, subprocess launching, console encoding,
 symlinks, or a platform branch. Register it by that rule in
 `tests/os_specific.py`, the only place that applies the `os_specific` marker.
-The marker skips nothing, and no CI job selects on it. The registry prepares for
-[#4414](https://github.com/boldaxolotl/booley/issues/4414), which narrows the
-Windows lane to tests whose result can differ by OS.
+The marker skips nothing; the Windows `test` legs select on it (see
+[Which Python and OS runs which tests](#which-python-and-os-runs-which-tests)).
 
 `tests/architecture/test_os_specific_tests.py` fails on:
 
@@ -121,7 +129,10 @@ shards.
 default). Shard timing files are in the `shard-<group>-<index>` artifacts. The
 coverage run's files include tracing overhead, so refresh
 `linux-test-timings.json` from the Ubuntu 3.11 files (`shard-linux-3.11-<index>`),
-not the coverage ones.
+not the coverage ones. `windows-test-timings.json` holds only tests of
+[OS-specific](#os-specific-tests) modules and is refreshed from the
+`shard-windows-<index>` files. `flake-stress` estimates a changed module's run
+time from both models.
 
 ## Shard counts and benchmarks
 
@@ -243,10 +254,11 @@ A test waits on real time in two ways, and both come from
 The factor is `BOOLEY_TEST_TIME_SCALE`. Unset means 1; a value that is not a
 positive finite number fails the pytest session at startup. The Windows legs
 of every pytest job (the test job, flake-stress, and the weekly full matrix)
-set 2 and run `--timeout=120`. Across the 161 tests that both the Windows and
-Linux timing models contain, the Windows to Linux time ratio has
-median 1.06, 90th percentile 1.55, and 95th percentile 2.12, so a factor of 2
-covers the usual Windows tail. Ubuntu legs keep factor 1 and `--timeout=60`.
+set 2 and run `--timeout=120`. Measured on 2026-11-16, when the Windows timing
+model still covered the whole suite, the Windows to Linux time ratio across the
+161 tests both models contained had median 1.06, 90th percentile 1.55, and 95th
+percentile 2.12, so a factor of 2 covers the usual Windows tail. Ubuntu legs
+keep factor 1 and `--timeout=60`.
 
 The Windows legs also pass `--timeout-headroom-warn=0.5`: a passing test that
 uses more than half its per-test timeout is reported in the step log, as a

@@ -7,8 +7,10 @@ branch. Register a test module here by that rule.
 This registry is the only place that applies the ``os_specific`` marker. The guard in
 ``tests/architecture/test_os_specific_tests.py`` fails on an unregistered test module that
 branches on the platform, and on a production module that branches on the platform with no
-registered covering test and no reasoned exemption. The marker skips nothing and no CI job
-selects on it. See ``.github/ci/README.md#os-specific-tests``.
+registered covering test and no reasoned exemption. The marker skips nothing; the Windows
+``test`` legs of the ``Tests`` workflow select on it. See
+``.github/ci/README.md#os-specific-tests``.
+``OS_SPECIFIC_TESTS`` stays a literal tuple: ``ci_flake_stress.py`` reads it without importing.
 """
 
 from __future__ import annotations
