@@ -40,8 +40,7 @@ for the whole suite:
 
 The agent replies with the verdict and the paths to the report and logs.
 
-To run a Flow yourself, use a container terminal (VS Code's terminal after
-**Reopen in Container**, or `booley session enter`):
+To run a Flow yourself, use a Sandbox terminal (`booley session enter`):
 
 ```bash
 booley flow                                   # list the Flows

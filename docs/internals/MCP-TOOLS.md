@@ -341,7 +341,7 @@ back to the session.
 
 To take the agent out of the loop while you debug arguments or result
 handling, run the endpoint from a Sandbox terminal
-([entering the Sandbox](../user/SANDBOX.md#entering-the-sandbox-without-vs-code)):
+([entering the Sandbox](../user/SANDBOX.md#entering-the-sandbox)):
 
 ```bash
 booley flow drc_check --target variant_a --rule-set signoff
