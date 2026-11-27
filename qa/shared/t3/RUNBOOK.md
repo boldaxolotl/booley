@@ -79,7 +79,7 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
 ## 2. Candidate build
 
 Record the canonical host install's revision first
-(`booley --version`): cleanup restores it.
+(`booley --version`) and the tool that installed it: cleanup restores it.
 
 1. Make a detached worktree of `<sha>` outside `.worktrees` and the run
    directory, and build a development wheel from it, as "Building a
@@ -93,8 +93,9 @@ Record the canonical host install's revision first
    booley bootstrap --update
    ```
 
-   Bootstrap builds the base Sandbox Image locally; with a changed base
-   recipe this takes an hour or more. Note the time.
+   Bootstrap builds the base Sandbox Image locally: about 20 minutes on the
+   first run of this runbook, an hour or more with a changed base recipe.
+   Note the time.
 
 Worked when `booley --version` reads `booley <version> (<short>, <date>)` and
 `booley bootstrap --check-only` reports no pending change. A build that fails
@@ -124,7 +125,8 @@ cd $QA_PROJECT && booley init
 grep -v 'pair a browser' <run-dir>/scratch/session-up.txt
 ```
 
-`booley init` builds the Project's Sandbox Image; note its time.
+`booley init` builds the Project's Sandbox Image (about 7 minutes on the
+first run); note its time.
 
 Worked when the filtered output shows `Sandbox ready: <name>` and
 `T3 Code relay: 127.0.0.1:<port>`, and the unfiltered file holds one
@@ -140,17 +142,22 @@ while `session up` still exits 0; that is a setup failure, so stop.
    is the text after `: ` on its one line. Read it with the Read tool, not a
    shell command.
 2. Open it at once with `preview_open` (`reuseExistingTab: false`), then
-   delete `pair.txt`. Call `preview_resize` with `freeform` 1440×900 and
-   confirm the size with `preview_status`.
-3. Check that the URL `preview_status` reports no longer holds the token. If
-   it does, log a finding, and keep the address bar out of every screenshot.
+   delete `pair.txt`. Take one `preview_snapshot` (`save: true`,
+   `includeImage: false`) to make the new tab draw (step 6, "Hidden tab"),
+   then call `preview_resize` with `freeform` 1440×900 and confirm the size
+   with `preview_status`.
+3. Check that the URL `preview_status` reports no longer holds the token; a
+   paired tab shows `/draft/<id>`. If it holds the token, log a finding, and
+   keep the address bar out of every screenshot.
 
 Worked when the page shows the T3 Code UI with the demo Project (`picorv32`)
-in its project list, not "No project" and not a pairing prompt. An expired or
-used link shows a pairing error: make a new one with step 4.1, never reuse
-one. Pair again the same way after `booley session down` and `up`, or when
-the relay reports it moved (`warning: 127.0.0.1:<old> is held by another
-process ...`).
+in its project list, not "No project" and not a pairing prompt. Until #5686
+is fixed, T3 Code lists the Project as `work`, the Sandbox's mount path,
+because Booley registers it without a title: a check that expects `picorv32`
+accepts `work` and notes #5686. An expired or used link shows a pairing
+error: make a new one with step 4.1, never reuse one. Pair again the same way
+after `booley session down` and `up`, or when the relay reports it moved
+(`warning: 127.0.0.1:<old> is held by another process ...`).
 
 ## 5. Dashboard and threads
 
@@ -189,11 +196,15 @@ thread.
   call), never with a fixed sleep. An agent turn can take many minutes: wait
   in a loop and look at the thread between waits.
 - **Hidden tab:** while your tab is not visible (`preview_status` reports
-  `visible: false`) it renders no frames. Take a `preview_snapshot`
-  (`save: true`, `includeImage: false`) first: it forces a repaint.
+  `visible: false`) it renders no frames, and `preview_resize` fails with
+  "desktop did not draw the page", as it does right after `preview_open`.
+  Take a `preview_snapshot` (`save: true`, `includeImage: false`) first: it
+  forces a repaint.
 - **Snapshot timeouts:** `preview_snapshot` can fail or time out several
-  times in a row while `preview_evaluate` still works. Wait a minute and
-  retry, for up to five minutes; if it still fails, see step 9.
+  times in a row while `preview_evaluate` still works. When it fails with
+  "not producing screenshot frames", `preview_navigate` your tab to `/` and
+  take the snapshot again; waiting does not help. Otherwise wait a minute and
+  retry, for up to five minutes. If it still fails, see step 9.
 - **Files:** write them from the host with
   `booley session enter -- sh -c '...'` (heredoc or Python), never by typing
   into an editor view.
@@ -251,7 +262,9 @@ gap in `log.md` the first time you meet it.
 3. Remove the clone's contents and the `<run-dir>/scratch/` link files.
 4. Restore the canonical host install the run started with (the revision you
    recorded in step 2), the same way step 2 installed the candidate, and run
-   `booley bootstrap --update` from it.
+   `booley bootstrap --update` from it. If its original wheel no longer
+   exists, build a development wheel from that revision as step 2.1 does and
+   install that.
 5. Remove the candidate wheel and its detached worktree.
 
 Check: `booley session status`, run in `$QA_PROJECT` before item 3, reports
@@ -264,13 +277,9 @@ path, the candidate revision, and the finding.
 
 ## Not yet verified
 
-No run has used this runbook yet. The first run confirms, and records in its
-`log.md`, each of these; fix this file where it is wrong:
+No run has confirmed these yet. The first run that reaches them records each
+in its `log.md`; fix this file where it is wrong:
 
-- `preview_open` reaches the host relay at `127.0.0.1:<port>` and pairing
-  completes in the preview tab.
-- What the address bar holds after pairing (step 4.3).
 - T3 Code creates and prepares a thread's new worktree in the Sandbox.
 - The preview panel loads the Dashboard at Sandbox `127.0.0.1:8090`, and
   whether its DOM is readable from your tab.
-- How long the local base and Project image builds take.
