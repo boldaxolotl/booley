@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 from tests import eda_grant_support
-from tests.relay_docker_fake import RelayDocker
+from tests.fake_docker_executable import install_fake_docker
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as requirements
+from booley.eda.provisioning.licensing.flexnet_docker import RELAY_IMAGE
 from booley.eda.provisioning.policies.vivado import wrapper_path
 
 
@@ -72,15 +73,21 @@ def test_lease_opens_authority_for_prior_eda_when_flow_disabled(project: Path) -
         assert prior.license_environment == "27000@booley-license-xilinx"
 
 
-def test_relay_identity_translates_docker_failure(project: Path) -> None:
+def test_relay_identity_translates_docker_failure(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _grant_license(project)
     needs_relay = requirements.inspect_build_requirements(project, vivado_enabled=True)
-    docker = RelayDocker(fail_prefix=("image", "inspect"))
+    docker = install_fake_docker(tmp_path / "docker-bin", monkeypatch, {}, images={})
 
     with pytest.raises(
         requirements.SessionRequirementsError, match="cannot resolve immutable FlexNet relay image"
     ):
-        requirements.with_relay_identity(needs_relay, runner=docker)
+        requirements.with_relay_identity(needs_relay, runner=docker.runner)
+
+    docker.images[RELAY_IMAGE] = "sha256:" + "5" * 64
+    resolved = requirements.with_relay_identity(needs_relay, runner=docker.runner)
+    assert resolved.relay_image_id == "sha256:" + "5" * 64
 
 
 def test_missing_runtime_wrapper_is_reported(tmp_path: Path) -> None:

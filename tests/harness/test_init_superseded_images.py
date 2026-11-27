@@ -11,7 +11,7 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime import project_resources
-from tests.docker_image_cli_fake import serve_docker_image_cli
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 
 
 def _id(char: str) -> str:
@@ -56,12 +56,16 @@ def test_only_images_dropped_from_project_tags_become_owned(root: Path) -> None:
     assert lifecycle.OwnedImages(identity).ids == [_id("1"), _id("4")]
 
 
+@pytest.fixture
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
+    return install_fake_docker(tmp_path / "docker-bin", monkeypatch, {}, images={})
+
+
 def test_init_removes_unused_superseded_images_after_keeper_reissue(
-    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    root: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Private seam: init's step runner needs a whole Project, so call the step with its result.
     unused, running, shared = _id("1"), _id("2"), _id("3")
-    docker = serve_docker_image_cli(monkeypatch)
     docker.images = {
         unused: unused,
         running: running,
@@ -88,11 +92,10 @@ def test_init_removes_unused_superseded_images_after_keeper_reissue(
 
 
 def test_init_reports_full_removal_and_cleanup_failure(
-    root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    root: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Private seam: init's step runner needs a whole Project, so call the step with its result.
     unused = _id("1")
-    docker = serve_docker_image_cli(monkeypatch)
     docker.images = {unused: unused}
     lifecycle.OwnedImages(root).record({}, (unused,))
     result = lifecycle.LifecycleResult(
