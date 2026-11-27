@@ -244,7 +244,7 @@ it.
 | `booley doctor` | Verify image + container EDA tools |
 | `booley session up [--no-ui]` | Start the Sandbox; print a link that pairs a browser with T3 Code (the Sandbox's web UI); `--no-ui` starts none |
 | `booley session pair` | Print a new T3 Code pairing link for the running Sandbox |
-| `booley session enter [-- cmd]` | Shell into it, or run one command |
+| `booley session enter [-- cmd]` | Open a shell in it from the host, or run one command; a T3 Code thread's terminal is already inside |
 | `booley session down` | Stop and remove it |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
