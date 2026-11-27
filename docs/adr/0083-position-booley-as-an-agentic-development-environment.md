@@ -1,7 +1,8 @@
 # Position Booley as an agentic development environment
 
 Status: accepted (amended 2026-11-12: the positioning names RTL design and
-verification instead of FPGA and ASIC development, see Amendments)
+verification instead of FPGA and ASIC development; amended 2026-11-27: T3 Code
+replaces VS Code as the user interface; see Amendments)
 
 Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): once
 Goal Mode is removed, read "Goal status" and "Review Package" below as the
@@ -82,3 +83,12 @@ stand.
   Flow tables and SUPPORTED-EDA-TOOLS.
 - The blog post published before this amendment and the CHANGELOG keep their
   wording.
+
+## Amendments (2026-11-27)
+
+T3 Code replaces VS Code as Booley's user interface (UI)
+([ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)): the
+browser app that holds Developer Agent sessions as threads, their terminals,
+and the Booley Dashboard. This replaces the Decision's sentence on VS Code.
+T3 Code is described as Booley's UI, not as the product. The ADE positioning,
+the tagline, and everything else in this ADR stand.
