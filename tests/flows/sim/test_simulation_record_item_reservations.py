@@ -3,17 +3,20 @@
 The Flow keeps one reservation for its
 shared builds, then drops to zero and each later item takes a claim of its own
 (#3773: one lane per core, the claims decide how many run at once).
-The Simulation Record, slot store, Flow claim and foreign Jobs are real; only the
-simulators are fake.
+The Simulation Record, slot store and Flow claim are real and the simulators are fake.
+The slot clock is fake too; the lane step machine's scenarios also control process
+liveness, waits and thread order, with its actors as the foreign Jobs.
 """
 
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
 import os
+import sys
 import threading
-import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -28,14 +31,19 @@ from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
-from booley.flows.memory_admission import MemorySizing, job_thread_count
+from booley.flows.memory_admission import (
+    MemorySizing,
+    job_thread_count,
+    measure_memory_claim,
+)
+from booley.flows.sim import build_session
 from booley.flows.sim.build_session import (
     SimulationBuildLeaseStoppedError,
     SimulationBuildLeaseTimeoutError,
     SimulationBuildSession,
     simulation_build_slot,
 )
-from booley.flows.sim.record import capacity
+from booley.flows.sim.record import capacity, coordinator
 from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacity
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
@@ -49,7 +57,7 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest
-from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt
+from booley.flows.sim.record.scheduler import ScheduledAttempt
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.synth.flow import AsicSynthesizeFlow
@@ -60,8 +68,10 @@ from booley.runtime.endpoint_execution import (
     job_stopped_after_oom,
     note_job_oom_kill,
 )
+from booley.runtime.execution_records import execution_paths
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
+    ROLE_INTERACTIVE,
     ClaimAbortedError,
     ClaimLostError,
     MemoryClaim,
@@ -75,24 +85,44 @@ from tests.flows.sim.simulation_record_test_support import (
     _parallel_environment,
     _ParallelExecution,
     _ParallelGroup,
-    _remove_child_lease,
     _scheduled_attempt,
     _validated_simulation_record,
     _wait_until,
 )
 from tests.flows.test_endpoint_admission import _selection_prepared
+from tests.job_slot_steps import (
+    DRAIN_STEP_CAP,
+    Actor,
+    FakeProcessWorld,
+    StepEvent,
+    Worker,
+    stepped_file_lock_wait,
+    stepped_turn,
+    thread_name,
+)
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
+from tests.test_job_slot_lane_step_machine import (
+    _PARENT_EXECUTION,
+    LaneStepMachine,
+    ScheduledRun,
+    _no_inherited_execution,  # noqa: F401 -- an autouse fixture of the lane step machine
+    _stepped_record_lock,  # noqa: F401 -- an autouse fixture of the lane step machine
+    _waits,
+    build_machine,  # noqa: F401 -- a fixture
+)
 from tests.time_budget import hang_guard_s
 
 NAMES = ("alpha", "beta", "gamma")
 BUDGET_MIB = 1000.0
-_SETTLE_S = 0.3  # time to wait for a wrong extra queued claim to appear
 # History peaks (MiB); the estimator adds 25 %. The build is the largest phase.
 PREPARE_PEAK = 50.0  # FuseSoC setup (#3787): every item runs it, so every item reserves it
 BUILD_PEAK = 400.0
 RUN_PEAKS = {"alpha": 100.0, "beta": 200.0, "gamma": 160.0}
 FLOW_REQUESTS = (JobRequest("sim", "sim", test_runs=NAMES),)
+_machine = pytest.mark.skipif(
+    sys.platform != "linux", reason="the lane step machine's recovery scans Linux /proc"
+)
 
 
 def _record(target: str, phase: str, peak: float, *, test_run: str = "", flags=()) -> dict:
@@ -182,6 +212,12 @@ class _Scenario:
     peak: int = 0
     lanes: set[str] = field(default_factory=set)
     _gate: threading.Lock = field(default_factory=threading.Lock)
+    # Step-machine scenarios: each idle item's thread and scope, the items that closed with a
+    # cancelled scope, the record's outcomes and each lane execution's own token.
+    idle: dict[str, tuple[Worker, Any]] = field(default_factory=dict)
+    cancelled: list[str] = field(default_factory=list)
+    outcomes: list[Any] = field(default_factory=list)
+    item_tokens: dict[str, job_slots.SlotToken] = field(default_factory=dict)
 
     @property
     def flow_token(self) -> job_slots.SlotToken:
@@ -280,10 +316,12 @@ def _scenario(
     history: Sequence[dict] = (),
     cores: int = 1,
     held_at_admission: int = 0,
+    machine: LaneStepMachine | None = None,
 ) -> Iterator[_Scenario]:
     """The Flow of a Simulation Record, admitted under a 1,000 MiB Memory Budget on *cores* cores.
 
     *held_at_admission* 50 MiB claims are held (``early_holders``) when the Flow is admitted.
+    With a *machine*, its Simulation Record process R is the Flow, over the stepped slots.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     project, state = _parallel_environment(tmp_path)
@@ -311,7 +349,6 @@ def _scenario(
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution._run_hook", lambda *_args, **_kwargs: None
     )
-    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     # A fake /proc with no process: ranking never touches the worker's real OOM priority.
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", FakeProc())
     monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", "a" * 32)
@@ -323,6 +360,17 @@ def _scenario(
         if flow_requests is None
         else SimpleNamespace(invocation=SimpleNamespace(job_requests=lambda: tuple(flow_requests)))
     )
+    if machine is not None:
+        assert not held_at_admission
+        admission = _machine_admission(machine, monkeypatch, booley_dir, flow_requests)
+        scenario = _Scenario(tmp_path, project, state, admission, machine.record.store)
+        state.observe, state.running = scenario.observe, scenario.running
+        _remember_item_tokens(monkeypatch, scenario)
+        yield scenario
+        return
+    # A lease clock that never moves: no lease expires and no renewal thread starts.
+    clocked = functools.partial(job_slots.SlotStore, now=FakeProcessWorld().now)
+    monkeypatch.setattr(job_slots, "SlotStore", clocked)  # boundary: the slot stores' clock
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     early = [
         store.acquire(
@@ -340,71 +388,167 @@ def _scenario(
         yield scenario
 
 
-class _ForeignJob:
-    """A Job of another process: it queues for a claim and holds it until released.
+def _machine_admission(
+    machine: LaneStepMachine,
+    monkeypatch: pytest.MonkeyPatch,
+    booley_dir: Path,
+    flow_requests: Sequence[JobRequest] | None,
+) -> AdmissionContext:
+    """R admitted as the Flow: ``AdmissionGate`` would name this process's real PID."""
+    store = machine.record.store
+    assert machine.record.flow_token is not None
+    store.release(machine.record.flow_token)
+    token = store.acquire(
+        CLASS_MEMORY,
+        pid=machine.record.pid,
+        execution_id=_PARENT_EXECUTION,
+        memory=measure_memory_claim(booley_dir, flow_requests).claim,
+    )
+    # Private: the builder AdmissionGate names a lost Flow slot with.
+    cause = endpoint_admission._admission_cancellation_cause(store, token)
+    stepped = functools.partial(
+        coordinator.BoundedSimulationRecordScheduler,
+        clock=machine.world.now,
+        event=lambda: StepEvent(machine.scheduler),
+        take_turn=stepped_turn(machine.scheduler),
+    )
+    monkeypatch.setattr(  # boundary: the lane scheduler's clock and waits
+        coordinator, "BoundedSimulationRecordScheduler", stepped
+    )
+    monkeypatch.setattr(  # boundary: the Simulation slot's file-lock wait
+        build_session, "wait_for_file_lock", stepped_file_lock_wait
+    )
+    # I7 knows R's machine lanes only; this record's lanes keep theirs in the project.
+    machine.scheduler.checks.remove(machine._check_execution_entries)
+    return AdmissionContext(
+        "managed",
+        store,
+        token,
+        ROLE_INTERACTIVE,
+        _PARENT_EXECUTION,
+        None,
+        # The unstepped scope watchers must not scan the stepped slots between steps.
+        lambda: machine.scheduler.owns_caller() and cause() is not None,
+        cause,
+        memory_sizing=MemorySizing(booley_dir),
+    )
 
-    ``started_after`` lists the items finished when its claim started (``None``
-    while it has not started).
-    """
 
-    def __init__(self, scenario: _Scenario, claim: MemoryClaim) -> None:
-        self.started_after: list[str] | None = None
-        self._scenario = scenario
-        self._release = threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(claim,), daemon=True)
-        self._thread.start()
-        _wait_until(lambda: bool(scenario.store.snapshot(CLASS_MEMORY)[1]))
+def _remember_item_tokens(monkeypatch: pytest.MonkeyPatch, scenario: _Scenario) -> None:
+    """Keep each lane's own token: R runs no renewal thread, so a scenario renews it itself."""
+    acquire = scenario.store.acquire
 
-    def _run(self, claim: MemoryClaim) -> None:
-        store = self._scenario.store
+    def remember(*args: Any, **kwargs: Any) -> job_slots.SlotToken:
+        token = acquire(*args, **kwargs)
+        scenario.item_tokens[str(kwargs.get("execution_id"))] = token
+        return token
+
+    monkeypatch.setattr(scenario.store, "acquire", remember)
+
+
+def _step(machine: LaneStepMachine, until: Callable[[], bool]) -> None:
+    """Grant runnable threads before waiting ones, which take turns, until *until*."""
+    turns: Counter[Worker] = Counter()
+    for _ in range(DRAIN_STEP_CAP):
+        if until():
+            return
+        parked = machine.scheduler.parked()
+        if not parked:
+            break
+        worker = min(parked, key=lambda w: (_waits(w), turns[w], thread_name(w)))
+        turns[worker] += _waits(worker)
+        machine.scheduler.grant(worker)
+    raise AssertionError("the schedule did not get there")
+
+
+def _step_past_waits(machine: LaneStepMachine) -> None:
+    """Step until every waiting thread has tried again at least twice."""
+    seen: set[tuple[Worker, int]] = set()
+
+    def tried() -> bool:
+        parked = machine.scheduler.parked()
+        seen.update((w, w.steps) for w in parked if _waits(w))
+        return all(sum(worker is w for worker, _ in seen) > 2 for w in parked)
+
+    _step(machine, tried)
+
+
+def _start_record(
+    machine: LaneStepMachine, scenario: _Scenario, manifests: Sequence[SimulationRecordManifest]
+) -> ScheduledRun:
+    """R publishes and runs a Simulation Record of each manifest."""
+    record = scenario.simulation_record()
+    requests = [scenario.request(manifest, number) for number, manifest in enumerate(manifests, 1)]
+    run = ScheduledRun(scenario.record())
+
+    def work() -> None:
         try:
-            token = store.acquire(
-                CLASS_MEMORY,
-                pid=os.getpid(),
-                memory=claim,
-                poll_interval=0.01,
-                should_abort=self._release.is_set,
-            )
-        except ClaimAbortedError:
-            return  # finished before it ever ran
-        self.started_after = list(self._scenario.state.completion_order)
-        self._release.wait(_PARALLEL_SYNC_TIMEOUT_S)
-        store.release(token)
+            for request in requests:
+                record.publish_new(request)
+            scenario.outcomes.extend(record.run(request) for request in requests)
+        except Exception as exc:  # noqa: BLE001 -- the scenario judges it
+            run.error = exc
 
-    @property
-    def alive(self) -> bool:
-        """True while the Job's thread has neither run nor been refused."""
-        return self._thread.is_alive()
+    run.worker = machine.scheduler.start(machine.record, "record", work)
+    return run
 
-    def release(self) -> None:
-        self._release.set()
 
-    def finish(self) -> None:
-        self._release.set()
-        self._thread.join(_PARALLEL_SYNC_TIMEOUT_S)
-        assert not self._thread.is_alive()
+def _finish(machine: LaneStepMachine, run: ScheduledRun) -> None:
+    assert run.worker is not None
+    worker = run.worker
+    _step(machine, lambda: worker.state == "done")
+
+
+def _idle_until_closed(
+    machine: LaneStepMachine, scenario: _Scenario, name: str
+) -> Callable[[], None]:
+    """A hook that holds item *name* until the scenario closes it."""
+
+    def hook() -> None:
+        scope = current_supervised_execution()
+        assert scope is not None
+        scenario.idle[name] = (machine.scheduler.current_worker(), scope)
+        machine.scheduler.await_command()
+        if scope.cancelled():
+            scenario.cancelled.append(name)
+
+    return hook
+
+
+def _close(machine: LaneStepMachine, scenario: _Scenario, *names: str) -> None:
+    for name in names:
+        machine.scheduler.command(scenario.idle[name][0], "close")
+
+
+def _foreign_job(machine: LaneStepMachine, actor: Actor, claim: MemoryClaim) -> None:
+    """A Job of another process queues for *claim* and holds it until released."""
+
+    def acquire() -> None:
+        actor.store.acquire(
+            CLASS_MEMORY,
+            pid=actor.pid,
+            memory=claim,
+            poll_interval=0.01,
+            on_submitted=actor.tokens.append,
+        )
+
+    machine.scheduler.start(actor, "acquire", acquire)
+
+
+def _release(machine: LaneStepMachine, actor: Actor) -> None:
+    machine.start_operation(actor, "release", ROLE_INTERACTIVE, 0)
+
+
+def _holds(actor: Actor) -> bool:
+    return bool(actor.tokens) and actor.tokens[0].is_holder
+
+
+def _waiting(scenario: _Scenario) -> int:
+    return len(scenario.store.observe(CLASS_MEMORY)[1])
 
 
 def _alone() -> MemoryClaim:
     return MemoryClaim(budget_mb=BUDGET_MIB, run_alone=True)
-
-
-@contextmanager
-def _deadline(scenario: _Scenario) -> Iterator[None]:
-    """Cancel a Simulation Record still waiting after the suite's sync bound (it would hang)."""
-    expired = threading.Event()
-
-    def expire() -> None:
-        expired.set()
-        scenario.store.release(scenario.flow_token)
-
-    timer = threading.Timer(_PARALLEL_SYNC_TIMEOUT_S, expire)
-    timer.start()
-    try:
-        yield
-    finally:
-        timer.cancel()
-        assert not expired.is_set(), "the Simulation Record waited past its deadline"
 
 
 @pytest.mark.parametrize(
@@ -570,9 +714,13 @@ def _private_manifest() -> SimulationRecordManifest:
     return finalize_manifest(document)
 
 
+@_machine
 @pytest.mark.parametrize("case", ["alone", "sized", "private", "several"])
-def test_simulation_record_completes_beside_a_queued_foreign_job(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+def test_stepped_record_completes_beside_a_queued_foreign_job(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
 ) -> None:
     """A foreign run-alone Job queued ahead of the items runs mid-run; the items wait for it."""
     options: dict = {"alone": {"flow_requests": None, "history": ()}}.get(
@@ -581,34 +729,24 @@ def test_simulation_record_completes_beside_a_queued_foreign_job(
     manifests = [_private_manifest() if case == "private" else _manifest_for(NAMES)]
     if case == "several":  # a second Simulation Record, in its own store, with a build of its own
         manifests.append(manifests[0])
-    with _scenario(tmp_path, monkeypatch, **options) as scenario:
+    machine = build_machine()
+    actor = machine.actors[0]
+    with _scenario(tmp_path, monkeypatch, machine=machine, **options) as scenario:
         scenario.state.disclosures = _disclosures()
-        foreign = _ForeignJob(scenario, _alone())
+        _foreign_job(machine, actor, _alone())
+        _step(machine, lambda: _waiting(scenario) == 1)
+        run = _start_record(machine, scenario, manifests)
+        _step(machine, lambda: _holds(actor) and _waiting(scenario) == 1)
+        started_after = list(scenario.state.completion_order)
+        _release(machine, actor)
+        _finish(machine, run)
+        assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
-        def release_once_an_item_waits() -> None:
-            _wait_until(lambda: foreign.started_after is not None)
-            _wait_until(lambda: bool(scenario.store.snapshot(CLASS_MEMORY)[1]))
-            foreign.release()
-
-        try:
-            simulation_record = scenario.simulation_record()
-            requests = [scenario.request(m, number) for number, m in enumerate(manifests, 1)]
-            releaser = threading.Thread(target=release_once_an_item_waits)
-            releaser.start()
-            with _deadline(scenario):
-                for request in requests:
-                    simulation_record.publish_new(request)
-                for request in requests:
-                    outcome = simulation_record.run(request)
-                    assert outcome.complete is True
-            releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
-        finally:
-            foreign.finish()
-
+    assert run.error is None
+    assert [outcome.complete for outcome in scenario.outcomes] == [True] * len(manifests)
     ran = scenario.state.completion_order
     assert len(ran) == 3 * len(manifests)
-    assert foreign.started_after is not None and len(foreign.started_after) < len(ran), case
-    assert scenario.store.observe(CLASS_MEMORY)[1] == []
+    assert len(started_after) < len(ran), case
     if case == "private":
         # Each item builds inside itself, so its claim covers the build too.
         assert [seen["items"] for seen in scenario.seen.values()] == [[500.0]] * 3
@@ -629,9 +767,13 @@ def _flow_claim(scenario: _Scenario):
     return FlowClaim(scenario.admission, scenario.admission.memory_sizing, _sizer)
 
 
+@_machine
 @pytest.mark.parametrize("case", ["coverage-record", "private-build", "shared-build"])
-def test_front_run_alone_record_item_starts_before_a_later_job(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+def test_stepped_front_run_item_starts_before_a_later_job(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
 ) -> None:
     """A Job submitted after the Record does not start before the Record's first building item (#4482).
 
@@ -643,21 +785,26 @@ def test_front_run_alone_record_item_starts_before_a_later_job(
         "private-build": _private_manifest,
         "shared-build": lambda: _manifest_for(NAMES),
     }[case]()
-    record_store = SimulationRecordStore(tmp_path / "record")
+    record_store = SimulationRecordStore(tmp_path / "record-store")
     record_store.publish_manifest(manifest)
-    with _scenario(tmp_path / "scenario", monkeypatch, flow_requests=None) as scenario:
+    machine = build_machine()
+    later = machine.actors[0]
+    started_before_item: list[bool] = []
+    holders: list[object] = []
+    with _scenario(
+        tmp_path / "scenario", monkeypatch, flow_requests=None, machine=machine
+    ) as scenario:
         flow_claim = _flow_claim(scenario)
         flow_claim.expect(record_store.root, manifest, manifest.document["work_items"])
-        capacity = SimulationRecordCapacity(
+        lanes = SimulationRecordCapacity(
             scenario.admission,
             manifest,
             scenario.project / ".booley",
             lambda item: flow_claim.item_claim(record_store.root, manifest, item),
         )
         # No wall-clock estimate: the later Job never jumps ahead of a waiting item.
-        later = _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
-        started_before_item: list[bool] = []
-        holders: list[object] = []
+        _foreign_job(machine, later, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
+        _step(machine, lambda: _waiting(scenario) == 1)
 
         def execute(attempt: ScheduledAttempt, _child_id: str | None) -> None:
             if attempt.build_settled is not None:
@@ -665,30 +812,25 @@ def test_front_run_alone_record_item_starts_before_a_later_job(
                 flow_claim.settle(record_store.root, attempt.item)
                 attempt.build_settled()
             if not started_before_item:
-                started_before_item.append(later.started_after is not None)
+                started_before_item.append(_holds(later))
                 holders.extend(_held(token) for token in scenario.store.observe(CLASS_MEMORY)[0])
 
-        def release_once_started() -> None:
-            _wait_until(lambda: later.started_after is not None, _PARALLEL_SYNC_TIMEOUT_S)
-            later.release()
-
-        releaser = threading.Thread(target=release_once_started)
-        releaser.start()
-        try:
-            with _deadline(scenario):
-                BoundedSimulationRecordScheduler(
-                    capacity,
-                    allocate=lambda item: _scheduled_attempt(record_store, item),
-                    execute=execute,
-                ).run(manifest.document["work_items"][:1])
-            releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
-        finally:
-            later.finish()
+        pool = coordinator.BoundedSimulationRecordScheduler(
+            lanes,
+            allocate=lambda item: _scheduled_attempt(record_store, item),
+            execute=execute,
+        )
+        run = ScheduledRun(record_store)
+        run.worker = machine.scheduler.start(
+            machine.record, "schedule", lambda: pool.run(manifest.document["work_items"][:1])
+        )
+        _step(machine, lambda: _holds(later))
+        _release(machine, later)
+        _finish(machine, run)
 
     assert started_before_item == [False], "the later Job started before the Record's first item"
     # The item ran alone: the Flow reserves nothing and no other claim holds memory.
     assert sorted(map(str, holders)) == ["0", "alone"]
-    assert later.started_after is not None
 
 
 def test_flow_claim_waits_only_for_the_running_simulation_records_builds(
@@ -855,6 +997,7 @@ def _simulation_record_lanes(scenario: _Scenario) -> set[str]:
     return {name for name in scenario.lanes if name.startswith("booley-record-")}
 
 
+@_machine
 @pytest.mark.parametrize(
     ("count", "run_peak", "parties"),
     [
@@ -864,24 +1007,35 @@ def _simulation_record_lanes(scenario: _Scenario) -> set[str]:
         pytest.param(3, 100.0, 3, id="three-items-start-together"),
     ],
 )
-def test_items_run_in_parallel_each_on_their_own_reservation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int, run_peak: float, parties: int
+def test_stepped_items_run_in_parallel_each_on_their_own_reservation(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+    run_peak: float,
+    parties: int,
 ) -> None:
     names = _names(count)
-    with _scenario(tmp_path, monkeypatch, **_sized(names, run_peak, CORES)) as scenario:
-        # The first *parties* items each hold a claim of their own and meet, so exactly that
+    machine = build_machine()
+    sized = _sized(names, run_peak, CORES)
+    with _scenario(tmp_path, monkeypatch, machine=machine, **sized) as scenario:
+        # The first *parties* items each hold a claim of their own and stay, so exactly that
         # many fit at once: the first takes its own when its build settles, then the rest follow.
-        together = _barrier(parties)
         for name in names[:parties]:
-            scenario.hooks[name] = _meet(together)
-        outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
+            scenario.hooks[name] = _idle_until_closed(machine, scenario, name)
+        run = _start_record(machine, scenario, [_manifest_for(names)])
+        _step(machine, lambda: len(scenario.idle) == parties)
+        _step_past_waits(machine)  # a further item gets its chance to start
+        assert scenario.peak == parties
+        _close(machine, scenario, *names[:parties])
+        _finish(machine, run)
+        assert scenario.peak == parties  # no later item exceeded it either
         (still_held,) = scenario.store.observe(CLASS_MEMORY)[0]
         assert _held(still_held) == 0
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
-    assert outcome.complete is True
+    assert run.error is None and scenario.outcomes[0].complete is True
     assert sorted(scenario.state.completion_order) == list(names)
-    assert scenario.peak == parties
     assert len(_simulation_record_lanes(scenario)) <= CORES
     for name in names:
         assert scenario.seen[name]["flow"] == [0], name
@@ -891,39 +1045,87 @@ def test_items_run_in_parallel_each_on_their_own_reservation(
     assert max(len(seen["items"]) for seen in scenario.seen.values()) == parties
 
 
+def _inject_item_fault(
+    machine: LaneStepMachine, scenario: _Scenario, lost: str, fault: str
+) -> list[tuple[Worker, Any]]:
+    """Set up item *lost*'s *fault*; returns its thread and scope once it waits for the slot."""
+    at_slot: list[tuple[Worker, Any]] = []
+
+    def wait_for_the_slot() -> None:
+        at_slot.append((machine.scheduler.current_worker(), current_supervised_execution()))
+        _wait_for_busy_slot(scenario.state.handle)
+
+    def time_out() -> None:
+        _idle_until_closed(machine, scenario, lost)()
+        # This item never reaches the peers' rendezvous; release the peers' wait.
+        scenario.state.first_finished.set()
+        raise SimulationBuildLeaseTimeoutError("Simulation slot busy for 1s (#4843)")
+
+    if fault == "lease-lost-while-waiting":
+        scenario.hooks[lost] = wait_for_the_slot
+    elif fault == "lease-timeout":
+        scenario.hooks[lost] = time_out
+    return at_slot
+
+
+def _lose_item_lease(
+    machine: LaneStepMachine, scenario: _Scenario, run: ScheduledRun, scope: Any
+) -> None:
+    """Reap the item's entry, then let its renewal and the supervisor find the lease lost."""
+    token = scenario.item_tokens[str(scope.execution_id)]
+    token.path.unlink()
+    # One tick of R's renewal thread, which the machine does not run.
+    tick = machine.scheduler.start(machine.record, "tick", lambda: scenario.store.renew(token))
+    machine.scheduler.finish(tick)
+    machine.supervise(run)
+    _step(machine, scope.cancelled)
+
+
+@_machine
 @pytest.mark.parametrize("siblings", [False, True], ids=["one-lane", "other-lanes-run"])
 @pytest.mark.parametrize("fault", ["lost-lease", "lease-timeout", "lease-lost-while-waiting"])
-def test_lost_work_item_lease_stops_only_that_item_while_other_lanes_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, siblings: bool, fault: str
+def test_stepped_lost_item_lease_stops_only_that_item(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    siblings: bool,
+    fault: str,
 ) -> None:
     names = _names(6) if siblings else NAMES
     options = _sized(names, 100.0, CORES) if siblings else {"history": _history("sim")}
     lost = "t02" if siblings else "beta"
     expected = SimulationBuildLeaseTimeoutError if fault == "lease-timeout" else LeaseLostError
-    with _scenario(tmp_path, monkeypatch, **options) as scenario:
-        together = _barrier(2)
+    held = ["t01", lost] if siblings else [lost]  # a sibling lane runs while this item fails
+    machine = build_machine()
+    with _scenario(tmp_path, monkeypatch, machine=machine, **options) as scenario:
+        for name in held:
+            scenario.hooks[name] = _idle_until_closed(machine, scenario, name)
+        at_slot = _inject_item_fault(machine, scenario, lost, fault)
+        run = _start_record(machine, scenario, [_manifest_for(names)])
+        assert run.worker is not None
+        worker = run.worker
 
-        def fail_the_item() -> None:
-            if siblings:
-                together.wait()  # a sibling lane runs while this item fails
-            scope = current_supervised_execution()
-            assert scope is not None
-            if fault == "lease-timeout":
-                # This item never reaches the peers' rendezvous; release the peers' wait.
-                scenario.state.first_finished.set()
-                raise SimulationBuildLeaseTimeoutError("Simulation slot busy for 1s (#4843)")
-            _remove_child_lease(scenario.store, str(scope.execution_id))
-            if fault == "lease-lost-while-waiting":
-                _wait_for_busy_slot(scenario.state.handle)
-            _wait_until(scope.cancelled)
+        def lost_item_is_there() -> bool:
+            there = lost in scenario.idle or any(
+                w.pending == ("lock_wait", "") for w, _ in at_slot
+            )
+            siblings_idle = not siblings or "t01" in scenario.idle
+            return there and siblings_idle and worker.pending == ("lock_wait", "event")
 
+        _step(machine, lost_item_is_there)
+        if fault != "lease-timeout":
+            _worker, scope = at_slot[0] if at_slot else scenario.idle[lost]
+            _lose_item_lease(machine, scenario, run, scope)
+        if lost in scenario.idle:
+            _close(machine, scenario, lost)
         if siblings:
-            scenario.hooks["t01"] = _meet(together)
-        scenario.hooks[lost] = fail_the_item
-        with pytest.raises(expected):
-            scenario.simulation_record().run(scenario.request(_manifest_for(names)))
+            _step_past_waits(machine)  # the failure takes effect while the sibling still runs
+            _close(machine, scenario, "t01")
+        _finish(machine, run)
         assert scenario.admission.cancellation_cause() is None
 
+    assert isinstance(run.error, expected), run.error
+    assert scenario.cancelled == ([lost] if fault == "lost-lease" else [])
     # Every other item ran and finished; the failed one published no result. A lease wait
     # that timed out raised before its simulator ran, so it never completes.
     finished = [name for name in names if name != lost] if fault == "lease-timeout" else names
@@ -948,106 +1150,93 @@ def _wait_for_busy_slot(handle: Any) -> None:
             SimulationBuildSession(handle, wait_s=hang_guard_s()).__enter__()
 
 
+@_machine
 @pytest.mark.parametrize("parallel", [False, True], ids=["one-lane", "running-lanes"])
-def test_lost_flow_lease_cancels_running_lanes_and_withdraws_the_queued_claim(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parallel: bool
+def test_stepped_lost_flow_lease_cancels_lanes_and_withdraws_the_queued_claim(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: bool,
 ) -> None:
     names = _names(8) if parallel else NAMES
     # 400 MiB per item: two run, the third waits (one lane: a foreign Job holds the machine).
     options = _sized(names, 320.0, CORES) if parallel else {"history": _history("sim")}
     running = names[1:3] if parallel else ()  # items that run until the Flow's lease goes
-    with _scenario(tmp_path, monkeypatch, **options) as scenario:
-        foreign = None if parallel else _ForeignJob(scenario, _alone())
-        together = _barrier(2)
-        cancelled: list[str] = []
-
-        def run_until_cancelled(name: str) -> Callable[[], None]:
-            def hook() -> None:
-                together.wait()
-                scope = current_supervised_execution()
-                assert scope is not None
-                _wait_until(scope.cancelled, _PARALLEL_SYNC_TIMEOUT_S)
-                cancelled.append(name)
-
-            return hook
-
+    machine = build_machine()
+    actor = machine.actors[0]
+    with _scenario(tmp_path, monkeypatch, machine=machine, **options) as scenario:
         for name in running:
-            scenario.hooks[name] = run_until_cancelled(name)
-
-        def lose_the_flow_lease() -> None:
-            # The running items run (or the foreign Job starts once the Flow dropped) and the
-            # next item's claim waits: now the Flow's lease goes.
-            if foreign is None:
-                _wait_until(lambda: set(running) <= set(scenario.seen), _PARALLEL_SYNC_TIMEOUT_S)
-            else:
-                _wait_until(lambda: foreign.started_after is not None, _PARALLEL_SYNC_TIMEOUT_S)
-            _wait_until(
-                lambda: bool(scenario.store.snapshot(CLASS_MEMORY)[1]), _PARALLEL_SYNC_TIMEOUT_S
-            )
-            scenario.store.release(scenario.flow_token)
-
-        killer = threading.Thread(target=lose_the_flow_lease)
-        killer.start()
-        try:
-            # Which lane fails first (a waiting claim, or a cancelled running item) is a race.
-            with pytest.raises(
-                (ClaimAbortedError, ClaimLostError, capacity.SimulationRecordCapacityError)
-            ):
-                scenario.simulation_record().run(scenario.request(_manifest_for(names)))
-        finally:
-            killer.join(_PARALLEL_SYNC_TIMEOUT_S)
-            if foreign is not None:
-                foreign.finish()
+            scenario.hooks[name] = _idle_until_closed(machine, scenario, name)
+        if not parallel:
+            _foreign_job(machine, actor, _alone())
+            _step(machine, lambda: _waiting(scenario) == 1)
+        run = _start_record(machine, scenario, [_manifest_for(names)])
+        assert run.worker is not None
+        # The running items run (or the foreign Job starts once the Flow dropped) and the
+        # next item's claim waits: now the Flow's lease goes.
+        _step(
+            machine,
+            lambda: (
+                set(running) <= set(scenario.idle)
+                and (parallel or _holds(actor))
+                and _waiting(scenario) == 1
+            ),
+        )
+        _step_past_waits(machine)  # the claim's own thread now polls for admission
+        _step(machine, lambda: run.worker.pending == ("lock_wait", "event"))
+        scenario.store.release(scenario.flow_token)
+        machine.supervise(run)  # its cancel_waiters pass, before any lane runs again
+        assert _waiting(scenario) == 0
+        for name in running:
+            execution_id = scenario.idle[name][1].execution_id
+            booley_dir = scenario.project / ".booley"
+            assert execution_paths(execution_id, booley_dir=booley_dir).cancel.exists(), name
+        _close(machine, scenario, *running)
+        if not parallel:
+            _release(machine, actor)
+        _finish(machine, run)
         cause = scenario.admission.cancellation_cause()
         assert cause is not None and scenario.flow_token.path.name in cause
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
-    assert sorted(cancelled) == list(running)
+    # Any lane may report the loss: a waiting claim, or a cancelled running item.
+    errors = (ClaimAbortedError, ClaimLostError, capacity.SimulationRecordCapacityError)
+    assert isinstance(run.error, errors), run.error
+    assert sorted(scenario.cancelled) == list(running)
     started = names[:3] if parallel else names[:1]
     assert set(scenario.state.completion_order) <= set(started)
     assert names[0] in scenario.state.completion_order
 
 
-def test_waiting_simulation_record_queues_one_item_claim_in_manifest_order(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@_machine
+def test_stepped_record_queues_one_item_claim_at_a_time(
+    build_machine: Callable[[], LaneStepMachine],  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     names = _names(8)
-    with _scenario(tmp_path, monkeypatch, **_sized(names, 100.0, CORES)) as scenario:
-        alone = _ForeignJob(scenario, _alone())
-        foreign: list[_ForeignJob] = []
-        waiting = lambda: len(scenario.store.snapshot(CLASS_MEMORY)[1])  # noqa: E731
+    machine = build_machine()
+    alone, other = machine.actors[:2]
+    sized = _sized(names, 100.0, CORES)
+    with _scenario(tmp_path, monkeypatch, machine=machine, **sized) as scenario:
+        _foreign_job(machine, alone, _alone())
+        _step(machine, lambda: _waiting(scenario) == 1)
+        run = _start_record(machine, scenario, [_manifest_for(names)])
+        # The foreign Job runs once the first item finished (its claim holds the Flow's queue
+        # place ahead of the run-alone Job). Exactly one item claim queues behind it: the
+        # turn passes on only when that claim is admitted, however many lanes wait.
+        _step(machine, lambda: _holds(alone) and _waiting(scenario) >= 1)
+        _step_past_waits(machine)  # a second queued item claim would show up here
+        (waiter,) = scenario.store.observe(CLASS_MEMORY)[1]
+        assert waiter.pid == machine.record.pid
+        # The other Job's claim queues beside the item claim.
+        _foreign_job(machine, other, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
+        _step(machine, lambda: _waiting(scenario) == 2)
+        assert not _holds(other)
+        _release(machine, alone)
+        _finish(machine, run)
 
-        def release_once_waiting() -> None:
-            # The foreign Job runs once the first item finished (its claim holds the Flow's queue
-            # place ahead of the run-alone Job). Exactly one item claim queues behind
-            # it: the turn passes on only when that claim is admitted, however many lanes wait.
-            _wait_until(lambda: alone.started_after is not None, _PARALLEL_SYNC_TIMEOUT_S)
-            _wait_until(lambda: waiting() >= 1, _PARALLEL_SYNC_TIMEOUT_S)
-            time.sleep(_SETTLE_S)  # a second queued item claim would have shown up by now
-            assert waiting() == 1
-            # The other Job's claim queues beside the item claim.
-            foreign.append(
-                _ForeignJob(scenario, MemoryClaim(budget_mb=BUDGET_MIB, reservation_mb=100.0))
-            )
-            _wait_until(lambda: waiting() == 2, _PARALLEL_SYNC_TIMEOUT_S)
-            assert foreign[0].alive
-            released.set()
-            alone.release()
-
-        released = threading.Event()
-        releaser = threading.Thread(target=release_once_waiting)
-        try:
-            releaser.start()
-            with _deadline(scenario):
-                outcome = scenario.simulation_record().run(scenario.request(_manifest_for(names)))
-            releaser.join(_PARALLEL_SYNC_TIMEOUT_S)
-        finally:
-            alone.finish()
-            for job in foreign:
-                job.finish()
-
-    assert released.is_set()
-    assert outcome.complete is True
+    assert run.error is None and scenario.outcomes[0].complete is True
     assert sorted(scenario.state.completion_order) == list(names)
     # Admitted lanes start items concurrently, so the order they record is a thread race: the
     # turn's order is pinned by the one queued item claim above, not by this list.
@@ -1111,7 +1300,7 @@ def test_oom_killed_item_is_requeued_once_alone_and_never_a_third_time(
     """The first item is killed after its build settled, so it is requeued like the others."""
     with _scenario(tmp_path, monkeypatch, history=_history("sim"), cores=2) as scenario:
         seen = _kill_item_run_beside_another(scenario, killed, "beta", times)
-        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+        with job_attempt(stop_on_oom=True) as flow_attempt:
             outcome = scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
         assert scenario.store.observe(CLASS_MEMORY)[1] == []
 
@@ -1160,7 +1349,6 @@ def _item_killed_then_execution_fails(
         monkeypatch.setattr(record._executor, "execute", execute_then_fail)
         with (
             job_attempt(stop_on_oom=True) as flow_attempt,
-            _deadline(scenario),
             pytest.raises(OSError, match="evidence write failed"),
         ):
             record.run(scenario.request(_manifest_for(NAMES)))
@@ -1187,7 +1375,7 @@ def test_oom_kill_under_the_flow_claim_keeps_the_flow_requeue(
     """The first item's build runs under the Flow's claim: a kill of it is the Flow's."""
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
         scenario.state.kill_build = True  # the OOM killer takes alpha's build
-        with job_attempt(stop_on_oom=True) as flow_attempt, _deadline(scenario):
+        with job_attempt(stop_on_oom=True) as flow_attempt:
             scenario.simulation_record().run(scenario.request(_manifest_for(NAMES)))
 
     attempts = _item_attempts(scenario)
@@ -1223,8 +1411,7 @@ def test_only_items_holding_their_own_claim_are_registered_for_oom_ranking(
     with _scenario(tmp_path, monkeypatch, history=_history("sim")) as scenario:
         for name in NAMES:
             scenario.hooks[name] = record(name)
-        with _deadline(scenario):
-            scenario.simulation_record().run(scenario.request(manifest))
+        scenario.simulation_record().run(scenario.request(manifest))
 
     # The first item took its own claim when its build settled: each item holds one.
     assert registered == {"alpha": 1, "beta": 1, "gamma": 1}
