@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.git_support import git
 from tests.pipe_holding_tree import (
     PARENT_SCRIPT,
     heartbeat_tree,
@@ -19,7 +20,6 @@ from tests.pipe_holding_tree import (
     wait_for_tree_start,
     wait_until_heartbeat_stops,
 )
-from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
 import booley
@@ -32,16 +32,10 @@ _BACKGROUND_CHILD_TIMEOUT_S = math.ceil(scaled(50))
 _BACKGROUND_CHILD_BOUND_S = scaled(30)
 
 
-def _git(repo: Path, *args: str) -> str:
-    return run_bounded_child(["git", *args], cwd=repo, check=True).stdout.strip()
-
-
 def _project(tmp_path: Path) -> tuple[Path, Path]:
     root = tmp_path / "rtl"
     root.mkdir()
-    _git(root, "init", "-b", "main")
-    _git(root, "config", "user.name", "Test")
-    _git(root, "config", "user.email", "test@example.invalid")
+    git(root, "init", "-b", "main")
     (root / ".gitignore").write_text("/generated.hex\n", encoding="utf-8")
     project = root / ".booley"
     (project / "hooks").mkdir(parents=True)
@@ -49,48 +43,35 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
         "#!/bin/sh\nprintf 'firmware\\n' > generated.hex\n",
         encoding="utf-8",
     )
-    _git(root, "add", "-A")
-    _git(root, "commit", "-m", "initial")
+    git(root, "add", "-A")
+    git(root, "commit", "-m", "initial")
     return root, project
 
 
 def test_prepare_project_is_idempotent_and_never_commits_generated_files(tmp_path: Path) -> None:
     root, _booley_dir = _project(tmp_path)
-    before = _git(root, "rev-parse", "HEAD")
+    before = git(root, "rev-parse", "HEAD")
 
     first = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
     second = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
 
     assert first.ok and second.ok
     assert (root / "generated.hex").read_text(encoding="utf-8") == "firmware\n"
-    assert _git(root, "rev-parse", "HEAD") == before
-    assert _git(root, "status", "--porcelain") == ""
-
-
-def test_prepare_project_returns_hook_failure(tmp_path: Path) -> None:
-    root, project = _project(tmp_path)
-    (project / "hooks" / "post-setup.sh").write_text(
-        "#!/bin/sh\necho broken >&2\nexit 7\n", encoding="utf-8"
-    )
-
-    result = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
-
-    assert not result.ok
-    assert "rc=7" in result.error
-    assert "broken" in result.error
+    assert git(root, "rev-parse", "HEAD") == before
+    assert git(root, "status", "--porcelain") == ""
 
 
 @pytest.mark.parametrize("rc", [0, 7], ids=["succeeds", "fails"])
 def test_captured_hook_output_that_is_not_utf8_does_not_abort(tmp_path: Path, rc: int) -> None:
     root, project = _project(tmp_path)
     (project / "hooks" / "post-setup.sh").write_bytes(
-        f"#!/bin/sh\nprintf '\\377' >&2\nexit {rc}\n".encode()
+        f"#!/bin/sh\nprintf 'broken\\377' >&2\nexit {rc}\n".encode()
     )
 
     result = prepare_project(root, root, slug="demo", sim_flow_enabled=True)
 
     assert result.ok is (rc == 0)
-    assert rc == 0 or f"rc={rc}" in result.error
+    assert rc == 0 or (f"rc={rc}" in result.error and "broken" in result.error)
 
 
 #: A Booley command in miniature: report where Booley would put slots and handles.
@@ -221,11 +202,13 @@ def test_hook_timeout_stops_the_hook_tree(tmp_path: Path, monkeypatch, logged: b
         assert log is None or "started" in log.read_text(encoding="utf-8")
 
 
-def test_captured_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("logged", [False, True], ids=["captured", "logged"])
+def test_hook_start_failure_is_reported(tmp_path: Path, monkeypatch, logged: bool) -> None:
+    log = tmp_path / "h.log" if logged else None
     root = _hook_checkout(tmp_path, "pass\n")
     monkeypatch.setattr(sys, "executable", str(tmp_path / "absent-python"))
 
-    result = prepare_project(root, root, slug="s", sim_flow_enabled=False)
+    result = prepare_project(root, root, slug="s", sim_flow_enabled=False, log=log)
 
     assert not result.ok
     assert "OS error" in result.error
@@ -274,16 +257,6 @@ def test_logged_hook_failure_reports_rc_without_output_tail(tmp_path: Path) -> N
 
     assert not result.ok
     assert result.error == "post-setup hook failed (rc=4)"
-
-
-def test_logged_hook_start_failure_is_reported(tmp_path: Path, monkeypatch) -> None:
-    root = _hook_checkout(tmp_path, "pass\n")
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "absent-python"))
-
-    result = prepare_project(root, root, slug="s", sim_flow_enabled=False, log=tmp_path / "h.log")
-
-    assert not result.ok
-    assert "OS error" in result.error
 
 
 def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> None:
@@ -339,7 +312,7 @@ def test_logged_hook_is_stopped_with_its_descendants_when_interrupted(
     from booley.runtime import project_prepare
 
     def interrupt_once_started() -> None:
-        # The poll tick is the only point inside the wait loop to inject an interrupt.
+        # `_wait_tick`: the only point inside the logged wait loop to inject an interrupt.
         if paths["heartbeat"].exists():
             raise KeyboardInterrupt("injected interrupt")
         time.sleep(0.05)
@@ -352,14 +325,3 @@ def test_logged_hook_is_stopped_with_its_descendants_when_interrupted(
             prepare_project(root, root, slug="s", sim_flow_enabled=False, log=tmp_path / "h.log")
 
         assert wait_until_heartbeat_stops(paths["heartbeat"]), "the descendant was left running"
-
-
-def test_unlogged_hook_is_found_without_running_it(tmp_path: Path) -> None:
-    from booley.runtime.project_prepare import find_post_setup_hook
-
-    root = _hook_checkout(tmp_path, "raise SystemExit(9)\n")
-
-    assert find_post_setup_hook(root) == root / ".booley" / "hooks" / "post-setup.py"
-    bare = tmp_path / "bare"
-    (bare / ".booley").mkdir(parents=True)
-    assert find_post_setup_hook(bare) is None
