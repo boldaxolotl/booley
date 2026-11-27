@@ -212,7 +212,7 @@ def test_invalid_newer_cache_does_not_short_circuit_vcd_conversion(
     assert result.conversion is not None
     assert result.conversion.success is True
     assert result.selected == invalid
-    assert result.selected.read_bytes() == MINIMAL_FST_BYTES
+    assert invalid.read_bytes() == MINIMAL_FST_BYTES
     # Converted into the cache only; nothing is published into the work directory.
     assert not (tmp_path / "trace.fst").exists()
 
@@ -245,7 +245,7 @@ def test_discovery_selects(
     assert ("Multiple *.fst files" in result.detail) is (failure_kind == "ambiguous")
     assert result.conversion is None
     if selected is not None:
-        assert result.selected.read_bytes() == _VCD.encode()
+        assert (tmp_path / selected).read_bytes() == _VCD.encode()
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
