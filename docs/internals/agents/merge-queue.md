@@ -144,32 +144,32 @@ ask the maintainer to decide.
 
 ## Schedule stable-base input merges
 
-CI image jobs build on the stable runtime base, the published
-`ghcr.io/boldaxolotl/booley-sandbox-base:main` image that holds the EDA tools.
-The files in
+The `bwave-smoke` and `riscv-image` CI jobs build on the stable runtime base,
+the published `ghcr.io/boldaxolotl/booley-sandbox-base:main` image that holds
+the EDA tools. The files in
 [stable-base-inputs.txt](../../../src/booley/data/docker/stable-base-inputs.txt)
 define it; of `pyproject.toml`, only `[project].dependencies` counts. A PR
-that changes one of them is a base-input PR.
+that changes one of those files, or the entries of that list, is a base-input
+PR.
 
 When a base-input PR merges,
 [docker-base-publish.yml](../../../.github/workflows/docker-base-publish.yml)
 rebuilds the base and moves the `:main` tag to it, usually in 35–50 minutes.
-Until then the published base does not match `main`, so every `bwave-smoke`
-and `riscv-image` job that runs on a tree containing the merge, including
-other PRs' runs and queue candidates, builds the base itself. Such a job shows
-a `Stable runtime base built locally` notice and takes about 30–45 minutes
-longer. Only the publish workflow on `main` may write the shared base,
-so CI never reuses a PR's or a candidate's build. A merge that touches any
-file the workflow watches while a publish runs, even a `pyproject.toml` edit
-outside its dependencies, cancels that publish and starts it over, which
-stretches the window.
+Until then, in the publish window, the published base does not match `main`, so
+every `bwave-smoke` and `riscv-image` job that runs on a tree containing the
+merge, including other PRs' runs and queue candidates, builds the base itself
+and takes about 30–45 minutes longer. Only the publish workflow on `main` may
+write the shared base, so CI never reuses a PR's or a candidate's build. A
+merge that touches any file the workflow watches while a publish runs, even a
+`pyproject.toml` edit outside its dependencies, cancels that publish and starts
+it over, which stretches the window.
 
 Keep these windows few and short:
 
 - Queue base-input PRs together, so they merge close together and share one
   window.
-- Prefer a quiet queue: every image job during the window pays the extra
-  time.
+- Prefer a quiet queue: each of those jobs that runs during the window pays
+  the extra time.
 - Do not queue a base-input PR while a publish runs. Read the newest publish
   run; a `status` other than `completed` means one is running:
 
@@ -235,7 +235,8 @@ every 60 seconds and queue state every ten minutes. While it waits:
   that PR's owner handles recovery.
 - A `bwave-smoke` or `riscv-image` job that runs the step
   `Build changed stable runtime base locally` is slow by design: in a
-  base-input PR's own runs, and after a base-input merge (see
+  base-input PR's own runs, in a queue candidate that contains a base-input
+  PR, and after a base-input merge (see
   [Schedule stable-base input merges](#schedule-stable-base-input-merges)).
 
 To stop the watcher, send SIGINT or SIGTERM: it ends its child read and
