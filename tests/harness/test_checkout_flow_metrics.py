@@ -20,7 +20,7 @@ from booley.flows.sim.backends.cocotb_results import find_import_failure
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime import job_records
-from tests.flows.conftest import _flow_project_root, _set_booley_dir, _set_flow_project_root
+from tests.flows.conftest import _set_flow_project_root
 from tests.flows.lint import linter_run_fake
 from tests.flows.lint.linter_run_fake import stub_resolved
 from tests.flows.lint.test_flow import _REAL_CATALOG_BUILD, _target_handle
@@ -49,8 +49,6 @@ if TYPE_CHECKING:
 
 # The conftest fixtures the Flow tests rely on are imported so they apply here too.
 __all__ = [
-    "_flow_project_root",
-    "_set_booley_dir",
     "_set_flow_project_root",
     "bare_identity_for_targets_without_a_core",
     "declared_trace_files_convert_after_the_run",
