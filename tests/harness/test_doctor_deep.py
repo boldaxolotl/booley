@@ -560,7 +560,6 @@ def _audit(root):
         project_root=root,
         booley_dir=resolve_checkout_booley_dir(root),
         booley_toml={},
-        configs_toml={},
         first_target="",
     )
 

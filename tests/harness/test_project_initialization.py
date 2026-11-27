@@ -111,7 +111,7 @@ def test_project_initialization_runs_without_docker_or_host_private_state(
     project: Path, tmp_path: Path
 ) -> None:
     audit = readiness.ProjectAudit(
-        project, project / ".booley", {"stealth": {"enabled": True}}, {}, ""
+        project, project / ".booley", {"stealth": {"enabled": True}}, ""
     )
 
     def readiness_findings(*, ignore_exclude: bool) -> list[tuple[str | None, str]]:

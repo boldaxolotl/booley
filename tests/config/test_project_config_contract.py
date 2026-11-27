@@ -9,7 +9,6 @@ import pytest
 from booley.config import project_config
 from booley.config.project_config import (
     load_test_configuration,
-    normalize_configs_toml,
     normalize_tests_toml,
     project_name,
 )
@@ -45,43 +44,18 @@ class TestProjectName:
         assert "could not read Project name" in caplog.text
 
 
-def test_configs_toml_resolves_shared_test_list():
-    configs = normalize_configs_toml(
-        {
-            "test_lists": {"rv_tests": ["smoke", "full"]},
-            "fast": {"defines": [], "test_list": "rv_tests"},
-            "slow": {"defines": [], "tests": ["nightly"]},
-        }
-    )
-
-    assert configs == {
-        "fast": {"defines": [], "tests": ["smoke", "full"]},
-        "slow": {"defines": [], "tests": ["nightly"]},
-    }
-
-
 @pytest.mark.parametrize(
-    ("normalize", "section", "match"),
+    ("section", "match"),
     [
-        (normalize_configs_toml, {"defines": [], "test_list": "missing"}, "unknown test list"),
-        (normalize_tests_toml, {"test_list": "missing"}, "unknown test list"),
-        (
-            normalize_configs_toml,
-            {"defines": [], "tests": ["smoke"], "test_list": "rv_tests"},
-            "both tests and test_list",
-        ),
-        (
-            normalize_tests_toml,
-            {"tests": ["smoke"], "test_list": "rv_tests"},
-            "both tests and test_list",
-        ),
-        (normalize_tests_toml, {"tests": [1, 2]}, "must be list"),
+        ({"test_list": "missing"}, "unknown test list"),
+        ({"tests": ["smoke"], "test_list": "rv_tests"}, "both tests and test_list"),
+        ({"tests": [1, 2]}, "must be list"),
     ],
-    ids=["configs-unknown", "tests-unknown", "configs-both", "tests-both", "non-string"],
+    ids=["unknown", "both", "non-string"],
 )
-def test_shared_test_list_refusals(normalize, section, match):
+def test_shared_test_list_refusals(section, match):
     with pytest.raises(ValueError, match=match):
-        normalize({"test_lists": {"rv_tests": ["smoke"]}, "fast": section})
+        normalize_tests_toml({"test_lists": {"rv_tests": ["smoke"]}, "fast": section})
 
 
 class TestTestsTomlNameRules:
@@ -186,15 +160,6 @@ class TestTestsTomlClosedKeySet:
     def test_unknown_key_names_the_qualified_target_section(self):
         with pytest.raises(ValueError, match=r"tests\.toml \[lib:ip:port#sim\] has unknown key"):
             normalize_tests_toml({"lib:ip:port#sim": {"plusargs": ["+a"]}})
-
-    def test_legacy_configs_toml_keeps_free_form_sections(self):
-        raw = {
-            "test_lists": {"any": ["a+b", "default"]},
-            "default": {"defines": [], "test_list": "any", "tb_top": "tb"},
-        }
-        assert normalize_configs_toml(raw) == {
-            "default": {"defines": [], "tb_top": "tb", "tests": ["a+b", "default"]},
-        }
 
 
 def _section(**keys: object) -> dict[str, object]:

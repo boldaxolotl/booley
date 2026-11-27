@@ -54,6 +54,7 @@ from booley.audit.doctor_waivers import (
     warning,
 )
 from booley.audit.output_excerpt import output_excerpt_lines
+from booley.config import flow_knobs
 from booley.config.gateway import (
     GATEWAY_AUTH,
     GATEWAY_EFFORT_ENV,
@@ -72,7 +73,6 @@ from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
-    as_int,
     require_dict,
     require_int,
     require_list,
@@ -85,12 +85,12 @@ from booley.flows.fpga import vivado_startup
 from booley.flows.invocation import default_timeout_ms
 from booley.flows.sim.backends import cocotb_target_checks
 from booley.flows.sim.config import (
-    DEFAULT_SIM_BUILD_TIMEOUT_MS,
-    DEFAULT_SIM_TIMEOUT_MS,
     LITERAL_RUN_CWD_REMEDY,
     literal_run_cwd_error,
     parse_run_cwd_template,
     resolve_run_cwd,
+    resolve_sim_build_timeout_ms,
+    resolve_sim_timeout_ms,
     resolve_trace_files,
 )
 from booley.flows.target_test_plan_inspection import TargetTestPlanInspectionRequest
@@ -5819,12 +5819,11 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     authority. Synthesis and FPGA honor their configured run budget plus
     finalization.
     Simulation validates and reserves its distinct build, Pre-Sim, run, and
-    finalization budgets. Other legacy calculations retain their established
-    fallback behavior for unparseable values.
+    finalization budgets, read with the Flow's own readers.
     """
     if flow_name == "sim":
-        build_s = _configured_sim_build_timeout_s(project)
-        run_s = _configured_sim_timeout_s(project)
+        build_s = max(1, resolve_sim_build_timeout_ms(project.project_root) // 1000)
+        run_s = max(1, resolve_sim_timeout_ms(project.project_root) // 1000)
         planned_s = build_s + DEFAULT_TIMEOUT_S + run_s + _SIM_DEEP_FINALIZE_MARGIN_S
         return max(_DEEP_TIMEOUTS_S["sim"], planned_s)
     timeout_s = _configured_timeout_s(project, flow_name, _DEEP_TIMEOUTS_S[flow_name])
@@ -5833,38 +5832,14 @@ def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
     return timeout_s
 
 
-def _configured_sim_build_timeout_s(project: ProjectAudit) -> int:
-    """Return the validated Project Simulation build budget in whole seconds."""
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
-    raw = section.get("build_timeout_ms", DEFAULT_SIM_BUILD_TIMEOUT_MS)
-    field = "[flows.sim].build_timeout_ms"
-    value = require_int(raw, field=field)
-    if value <= 0:
-        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
-    return max(1, value // 1000)
-
-
-def _configured_sim_timeout_s(project: ProjectAudit) -> int:
-    """Return the validated Project simulator budget in whole seconds."""
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, "sim") if isinstance(flows, dict) else {}
-    raw = section.get("timeout_ms", DEFAULT_SIM_TIMEOUT_MS)
-    field = "[flows.sim].timeout_ms"
-    value = require_int(raw, field=field)
-    if value <= 0:
-        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
-    return max(1, value // 1000)
-
-
 def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> int:
     """``max(floor, [flows.<flow>].timeout_ms)`` in seconds; the floor stands
-    when the knob is absent or unparseable."""
+    when the knob is absent. An invalid value raises ``BoundaryError``."""
     flows = project.booley_toml.get("flows", {})
     section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
     if not isinstance(section, dict):
         return floor
-    configured_ms = as_int(section.get("timeout_ms"))
+    configured_ms = flow_knobs.timeout_ms(flow_name, section, "timeout_ms")
     if configured_ms is None:
         return floor
     return max(floor, configured_ms // 1000)
@@ -6185,9 +6160,6 @@ def _is_simulate_tb_top_skip(
     """
     if flow_name != "sim" or not dry_run:
         return False
-    config = project.configs_toml.get(project.first_target, {})
-    if config.get("tb_top"):
-        return False
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
@@ -6271,11 +6243,10 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
     Without a ``--test``, the Simulation Flow runs the Target's WHOLE test list —
     on a large design that blows the smoke budget (openc910: 16 full-chip C910
     sims vs. one ~190 s case) and turns the deep check into a spurious timeout
-    FAIL. tests.toml is the modern per-Target test registry (ADR 0022 retired
-    configs.toml), so read it first, honoring the ``skip`` list — the first
-    *runnable* test, not a known-hang or a deliberately-failing selftest
-    fixture. Falls back to the legacy configs.toml entry for pre-migration
-    projects, then to None (no --test: the Target's single/default run).
+    FAIL. tests.toml is the per-Target test registry, so read it, honoring the
+    ``skip`` list — the first *runnable* test, not a known-hang or a
+    deliberately-failing selftest fixture. Without an entry, return None (no
+    --test: the Target's single/default run).
     """
     tests_path = project.booley_dir / "tests.toml"
     if tests_path.is_file():
@@ -6297,10 +6268,6 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
                 # All-skip misconfig: fall back to the declared head rather
                 # than silently smoke nothing (mirrors the Simulation Flow).
                 return (runnable or tests)[0]
-    config = project.configs_toml.get(project.first_target, {})
-    tests = config.get("tests")
-    if isinstance(tests, list) and tests and isinstance(tests[0], str):
-        return tests[0]
     return None
 
 
