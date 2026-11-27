@@ -83,7 +83,6 @@ from booley.targets.domain import (
 
 from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
-    baseline_worktree,
     git_full_sha,
 )
 from ..invocation import default_timeout_ms
@@ -586,16 +585,8 @@ class SimulateFlow(
         | EndpointOutcome
     ):
         if self.args.resume_from is not None:
-
-            def revision_root(target: Mapping[str, str]) -> Path:
-                if target["role"] == "candidate":
-                    return Path(self.args.work_dir)
-                return self._shared_baseline_worktree(target["revision"])
-
             resume = validate_resume_manifest(
-                self.args.resume_from,
-                project_root=Path(self.args.work_dir),
-                revision_root=revision_root,
+                self.args.resume_from, project_root=Path(self.args.work_dir)
             )
             return resume.target_handles, resume, (), {}
         requested = self._resolve_requested_targets()
@@ -605,30 +596,6 @@ class SimulateFlow(
             return missing
         selected = [self._target_handle(target) for target in requested]
         return tuple(selected), None, tuple(requested), _get_test_names(self.args.work_dir)
-
-    def _shared_baseline_worktree(self, revision: str) -> Path:
-        """This invocation's one checkout of *revision*, open until publication ends.
-
-        Resume opens it only for a manifest whose own Target role is a Cycle Count
-        baseline: a record that has baseline prerequisites is refused first. The
-        scratch path depends only on the process and revision, so a second opening
-        while the first is held fails in ``git worktree add`` (#1959); callers share
-        this one. Call from the candidate checkout: ``self.args.work_dir`` is the
-        Project Root.
-        """
-        worktrees = self.baseline_worktrees
-        if revision not in worktrees:
-            resources = self.publication_resources
-            worktrees[revision] = resources.enter_context(
-                baseline_worktree(
-                    Path(self.args.work_dir),
-                    revision,
-                    paired_project=self._paired_project_baseline,
-                )
-            )
-            # Unwinds before the worktree is removed: no entry outlives its checkout.
-            resources.callback(worktrees.pop, revision)
-        return worktrees[revision]
 
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
@@ -1672,8 +1639,8 @@ class SimulateFlow(
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle for the active checkout.
 
-        Cycle-count baselines intentionally materialize another checkout, so
-        they reselect and verify the planned selector in that checkout.
+        A handle selected for another checkout is not reused: the selector is
+        selected again in this one.
         """
         root = Path(self.args.work_dir).resolve()
         selected = self._target_handles.get(target)

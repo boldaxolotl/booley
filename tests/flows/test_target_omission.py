@@ -276,7 +276,6 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
         manifest=manifest,
         path=project / "manifest.json",
         candidate=SimpleNamespace(manifest=manifest),
-        binding_for=lambda document: SimpleNamespace(handle=handle),
     )
     # The authenticated manifest boundary already owns an exact Target. Stub
     # its disk authentication and expensive execution, keeping public preflight.

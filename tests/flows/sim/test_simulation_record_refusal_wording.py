@@ -97,10 +97,9 @@ def test_projection_identity_must_be_a_version_four_uuid(tmp_path: Path) -> None
     ("overrides", "message"),
     [
         ({"preview": {"target_identity": "b"}}, "Target facts disagree"),
-        ({"role": "other"}, "role is invalid"),
         ({"revision": ""}, "revision is required"),
     ],
-    ids=["target-facts", "role", "revision"],
+    ids=["target-facts", "revision"],
 )
 def test_ordinary_planning_refusals(
     tmp_path: Path, overrides: dict[str, Any], message: str
@@ -117,7 +116,6 @@ def test_ordinary_planning_refusals(
             invocation_id=1,
             execution_id="",
             trace=False,
-            role=overrides.get("role", "candidate"),
         )
 
 
