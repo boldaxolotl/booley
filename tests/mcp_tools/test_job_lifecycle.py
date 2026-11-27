@@ -663,6 +663,8 @@ def test_child_requeued_reads_the_reason_of_its_own_claim(context):
     claim = {"pid": os.getpid(), "timeout_s": 2 * hang_guard_s(), "memory": _RUN_ALONE}
     rec = job_records.JobRecord("lint-1", "lint", utc_now_rfc3339(), JOB_TIMEOUT, pid=os.getpid())
     jobs = JobLifecycle()
+    # Private seam (both ``_child_requeued`` blocks): the budget reset it drives shows
+    # only as elapsed wall time (covered with a controlled clock below).
     first = store.acquire(job_slots.CLASS_MEMORY, **claim)
     try:
         assert jobs._child_requeued(rec) is False  # a first claim must not reset the budget
@@ -672,9 +674,7 @@ def test_child_requeued_reads_the_reason_of_its_own_claim(context):
         job_slots.CLASS_MEMORY, **claim, queue_reason="requeued after out-of-memory"
     )
     try:
-        # Private seam: the budget reset this drives shows only as elapsed wall time
-        # (covered with a controlled clock below). A Job without a PID owns no claim.
-        assert jobs._child_requeued(rec) is True
+        assert jobs._child_requeued(rec) is True  # a Job without a PID owns no claim
         assert jobs._child_requeued(dataclasses.replace(rec, pid=None)) is False
     finally:
         store.release(token)
