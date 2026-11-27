@@ -4,6 +4,7 @@ import pytest
 
 from booley.core.host_shell import quote_arg
 from booley.runtime import handles, session_runtime
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor
 from tests.harness.test_doctor import _patch_environment, _write_project
@@ -55,13 +56,13 @@ _PREFIX = "restart the Sandbox so its MCP server prunes expired handles at start
     "owner", ["vscode", "headless", "unknown", "inside", "inside-hand-written"]
 )
 def test_handle_map_fix_names_the_restart_for_each_owner(
-    tmp_path, monkeypatch, fake_sandbox_attachment, owner, request
+    tmp_path, monkeypatch, fake_sandbox_attachment, owner
 ):
-    if owner == "inside-hand-written":
-        request.getfixturevalue("hand_written_sandbox")
     _host_with_map(tmp_path, monkeypatch, size=THRESHOLD + 1)
-    if owner.startswith("inside"):
+    if owner == "inside":
         enter_sandbox(monkeypatch)
+    if owner == "inside-hand-written":
+        enter_sandbox(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     attachment = {"vscode": Attachment.VSCODE, "headless": Attachment.HEADLESS}.get(owner)
     fake_sandbox_attachment(attachment)
     name = quote_arg(session_runtime.session_container_name(tmp_path))

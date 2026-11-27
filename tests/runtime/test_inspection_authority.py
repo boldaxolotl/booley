@@ -200,7 +200,7 @@ def test_failed_live_enumeration_is_not_an_empty_success(issued_environment):
 
 @pytest.mark.parametrize("raw", ["[]", "null", "42", "{broken"])
 def test_malformed_spec_returns_independent_configuration_and_issuance_failures(
-    tmp_path, monkeypatch, raw
+    tmp_path, monkeypatch, raw, fake_sandbox_attachment
 ):
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     path = dc.devcontainer_path(tmp_path)
