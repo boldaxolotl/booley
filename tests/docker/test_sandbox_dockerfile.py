@@ -183,6 +183,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         for index, segment in enumerate(segments):
             if not _DOWNLOAD.search(segment):
                 continue
+            for flag in ("--retry 8", "--retry-delay 30", "--retry-all-errors"):
+                assert flag in segment, f"{name}: download without {flag}: {segment[:60]}"
             paths = re.findall(r"\s(?:-o|--output)[\s=]+(\S+)", segment)
             assert paths, f"{name}: download without a named output file: {segment[:60]}"
             for path in paths:
@@ -195,6 +197,42 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         text = (_DOCKER_DIR / name).read_text(encoding="utf-8")
         assert "| bash" not in text, name
         assert "@^" not in text, name
+
+
+_APT = re.compile(r"\bapt-get\s+(?:update|install)\b")
+_GIT_NETWORK = re.compile(r"\bgit\b(?:\s+-c\s+\S+)*\s+(?:fetch|submodule\s+update)\b")
+_APT_RETRIES = "Acquire::Retries"
+
+
+def _network_retry_gaps(text: str) -> list[str]:
+    """Name each apt or git network call in a stage that lacks a retry setup before it."""
+    gaps: list[str] = []
+    apt_ready = helper_ready = False
+    for instruction in logical_instructions(text):
+        if instruction.keyword == "FROM":
+            apt_ready = helper_ready = False
+        if instruction.keyword != "RUN":
+            continue
+        for segment in (part.strip() for part in instruction.value.split("&&")):
+            if _APT_RETRIES in segment and "printf" in segment:
+                apt_ready = True
+            if "/usr/local/bin/booley-retry" in segment:
+                helper_ready = True
+            if _APT.search(segment) and not apt_ready:
+                gaps.append(f"line {instruction.line}: apt without {_APT_RETRIES}")
+            if _GIT_NETWORK.search(segment) and not segment.startswith("booley-retry "):
+                gaps.append(f"line {instruction.line}: git without booley-retry")
+            if segment.startswith("booley-retry ") and not helper_ready:
+                gaps.append(f"line {instruction.line}: booley-retry used before it is written")
+    return gaps
+
+
+def test_image_network_commands_retry_transient_failures() -> None:
+    """Every apt and git network call in an image recipe retries a transient failure."""
+    for path in sorted(_DOCKER_DIR.glob("Dockerfile*")):
+        assert _network_retry_gaps(path.read_text(encoding="utf-8")) == [], path.name
+    bare = "FROM a\nRUN apt-get update && git fetch origin x\n"
+    assert len(_network_retry_gaps(bare)) == 2
 
 
 def test_agent_cli_installs_are_locked_with_integrity_hashes() -> None:

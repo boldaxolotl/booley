@@ -118,7 +118,7 @@ jobs:
         run: |
           checks="${RUNNER_TEMP}/riscv-tooling-checks.sh"
           python .github/scripts/riscv_tooling.py checks > "${checks}"
-          docker pull "${CANDIDATE}"
+          bash .github/scripts/retry.sh docker pull "${CANDIDATE}"
           docker run --rm "${CANDIDATE}" riscv-none-elf-gcc --version
           docker run --rm -i "${CANDIDATE}" bash < "${checks}"
 

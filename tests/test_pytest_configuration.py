@@ -283,7 +283,7 @@ def test_actionlint_download_retries_and_still_verifies_its_checksum() -> None:
     )
     script = " ".join(install["run"].replace("\\\n", " ").split())
 
-    assert "--retry 5 --retry-all-errors --retry-delay 5" in script
+    assert "--retry 8 --retry-all-errors --retry-delay 30" in script
     assert "sha256sum --check --strict" in script
     assert script.index("curl ") < script.index("sha256sum") < script.index("tar ")
 
