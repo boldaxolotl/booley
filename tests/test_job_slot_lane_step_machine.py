@@ -850,10 +850,10 @@ def test_a_cancel_after_a_waiting_lane_is_promoted_retires_it_as_an_abort(
     machine.scheduler.finish(machine.start_supervisor("cancel"))
     machine.command_lane(lane, "close")  # then the lane confirms its lease
     machine.scheduler.finish(worker)
-    assert isinstance(lane.outcome, ClaimAbortedError)
+    assert isinstance(lane.outcome, ClaimAbortedError) and "cancellation" in str(lane.outcome)
     assert not lane.permit.lease_health.lost.is_set()
     assert _lane_record(machine, lane)["terminal_cause"] == "orphan_recovered"
-    assert lane.execution_id not in [claim["execution_id"] for claim in _execution_claims(machine)]
+    assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
 
 
 @pytest.mark.parametrize(
@@ -897,7 +897,7 @@ def test_a_busy_lease_gate_at_lane_confirmation_is_retried(
     machine.scheduler.drain()
     assert type(lane.outcome) is error if error else lane.outcome is None
     assert _lane_record(machine, lane)["terminal_cause"] == cause
-    assert lane.execution_id not in [claim["execution_id"] for claim in _execution_claims(machine)]
+    assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
 
 
 def test_interleaved_lane_schedules(tmp_path: Path) -> None:
