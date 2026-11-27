@@ -1644,8 +1644,8 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
 
 
 def test_identical_icarus_runs_both_build_fresh(stale_icarus: _StaleIcarus) -> None:
-    # A complete fake install (``<bin>/../lib/ivl``), so the old Icarus key would
-    # hash it and hit; a restored Icarus reuse path fails here.
+    # A complete fake install (``<bin>/../lib/ivl``): a reuse key that hashes the
+    # Icarus install would hit on the second run and fail here.
     ivl = stale_icarus.project.parent / "lib" / "ivl"
     ivl.mkdir(parents=True)
     (ivl / "system.vpi").write_bytes(b"module")

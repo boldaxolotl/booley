@@ -618,8 +618,8 @@ available.
 
 A repeat Verilator run skips the build when nothing that goes into it has
 changed: sources, cores, toolchain, flags and environment. Icarus builds
-again on every run, because its builds take seconds. Each Target's result
-says why a build was or wasn't reused.
+again on every run. Each Target's result says why a build was or wasn't
+reused.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
