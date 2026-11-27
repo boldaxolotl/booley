@@ -358,9 +358,9 @@ def test_unlinked_run_lock_still_serializes_waiters(
     _grant_until(scheduler, holder, ("write_text", "A.log"))
     waiter = _start_claim(scheduler, 1, *claims[1], events)
     _grant_until(scheduler, waiter, LOCK_WAIT)
-    scheduler.finish(holder)  # unlinks the lock file the waiter still has open
+    scheduler.finish(holder)  # POSIX unlinks the lock the waiter has open; Windows keeps it
     late = _start_claim(scheduler, 2, *claims[2], events)
-    _grant_until(scheduler, late, ("write_text", "C.log"))  # holds a new lock file
+    _grant_until(scheduler, late, ("write_text", "C.log"))  # holds the lock; a new file on POSIX
     _grant_until(scheduler, waiter, LOCK_WAIT, ("write_text", "B.log"))
     assert waiter.pending == LOCK_WAIT
     _drain_ok(scheduler)
@@ -387,15 +387,14 @@ def test_canonical_collision_keys_serialize_aliased_claims(
 ) -> None:
     literal = tmp_path / "literal"
     literal.mkdir()
-    first, alias = (
-        _run(tmp_path, "c", "t", template=str(configured))[0]
-        for configured in (literal, literal / ".." / "literal")
+    (first, mine), (alias, theirs) = (
+        _run(tmp_path, "c", "t", attempt, str(configured))
+        for attempt, configured in (("a1", literal), ("a2", literal / ".." / "literal"))
     )
-    identity = _run(tmp_path, "c", "t")[1]
     events: list[str] = []
-    owner = _start_claim(scheduler, 0, first, identity, events)
+    owner = _start_claim(scheduler, 0, first, mine, events)
     _grant_until(scheduler, owner, ("write_text", "A.log"))
-    other = _start_claim(scheduler, 1, alias, identity, events)
+    other = _start_claim(scheduler, 1, alias, theirs, events)
     _grant_until(scheduler, other, LOCK_WAIT, ("write_text", "B.log"))
     assert other.pending == LOCK_WAIT
     _drain_ok(scheduler)
