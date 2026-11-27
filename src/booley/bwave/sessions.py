@@ -15,8 +15,6 @@ Consumers:
     and calls a few of them from its CLI dispatch / marker-resolution code.
   - ``booley.flows.sim.bwave_registration`` calls ``register_trace`` to register
     a traced simulation run's waveforms into the run's own checkout store.
-  - ``tests/bwave/test_sessions.py`` imports _load_sessions, _save_sessions,
-    register_trace via the ``bwave`` facade.
 
 Cross-module coupling is one-directional at import time: ``bwave`` imports this
 module eagerly; this module imports ``bwave`` only *lazily* (inside functions)

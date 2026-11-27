@@ -189,6 +189,8 @@ def test_native_open_ended_range_includes_tail_clock_events(
 ) -> None:
     from booley.bwave import cli
 
+    # Private: `_TickResolver` converts the `--time` viewport of scoped `bwave gui`, which
+    # #4757 replaces; no public entry stops before the viewer bridge.
     monkeypatch.setattr(cli, "_load_sessions", lambda *_args: {})
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
     resolver = cli._TickResolver(str(store), "test")
