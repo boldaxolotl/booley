@@ -1,9 +1,8 @@
 # Launch Booley Flows and Specialists from the Dashboard
 
-Status: accepted
-
-[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)
-shows one Dashboard page per worktree, and the Run form is on that page.
+Status: accepted. Amended by
+[ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md):
+one Dashboard page per worktree, with the Run form on that page.
 
 ## Context
 
@@ -23,7 +22,7 @@ it cannot host a run that must outlive the Dashboard.
 - A human may start any Booley Flow, and the built-in `reviewer` and
   `coverage_analyst` Specialists, from the Dashboard. Project custom
   Specialists are not offered. This is the only exception to the Dashboard
-  being observational (ADR 0068): it never cancels, retries or changes a Job
+  being observational: it never cancels, retries or changes a Job
   it did not start, Goal-change approvals stay with chat, and abandoning stays
   on the CLI. Its trust boundary does not change: it runs in the Sandbox with
   a Sandbox shell's rights.

@@ -1,4 +1,4 @@
-"""Session activity reported by agent-client lifecycle hooks (ADR 0068).
+"""Session activity reported by agent-client lifecycle hooks (retired by ADR 0093).
 
 A hook writes the last lifecycle event of one session; the Session Registry
 reads its end marker and prunes old signals.
