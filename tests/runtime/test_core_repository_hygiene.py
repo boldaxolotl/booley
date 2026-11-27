@@ -67,42 +67,6 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def test_untracked_referenced_file_warns(tmp_path):
-    # A real git repo: firmware.hex referenced by the .core but not tracked.
-    _git(tmp_path, "init", "-q")
-    _write(tmp_path / "rtl" / "dut.sv", "module dut; endmodule\n")
-    _write(tmp_path / "firmware" / "firmware.hex", "00\n")
-    _write_core(
-        tmp_path,
-        """\
-CAPI=2:
-name: ::demo:0
-filesets:
-  rtl:
-    files:
-      - rtl/dut.sv: {file_type: systemVerilogSource}
-      - firmware/firmware.hex: {file_type: user}
-targets:
-  sim: {flow: sim, filesets: [rtl]}
-""",
-    )
-    _git(tmp_path, "add", "rtl/dut.sv", "design.core")
-    warns = _warns(_inspect(tmp_path), _CORE_FILE_ID)
-    assert len(warns) == 1
-    assert "untracked" in warns[0].message and "firmware.hex" in warns[0].message
-    assert warns[0].subject == "firmware/firmware.hex"
-
-
-def test_all_referenced_files_tracked_passes(tmp_path):
-    _git(tmp_path, "init", "-q")
-    _write(tmp_path / "rtl" / "dut.sv", "module dut; endmodule\n")
-    _write_core(tmp_path, _GOOD_CORE)
-    _git(tmp_path, "add", "-A")
-    report = _inspect(tmp_path)
-    assert not _warns(report, _CORE_FILE_ID)
-    assert "all 1 .core-referenced on-disk file(s) tracked by git" in _passes(report)
-
-
 def test_submodule_files_count_as_tracked(tmp_path):
     """A .core referencing a vendored submodule's file is NOT the untracked trap.
 
@@ -159,6 +123,20 @@ targets:
     assert "generated.hex" in warns[0].message and "untracked" in warns[0].message
 
 
+def _assert_state_repo_judges(root: Path, state_dir: Path) -> None:
+    """The Booley Directory's own repo decides what its ``cores`` track."""
+    _git(state_dir, "init", "-q")
+    _git(state_dir, "add", "-A")
+    assert not _warns(_inspect(root), _CORE_FILE_ID)
+
+    # The vendored-data trap still fires inside the state zone: a fw image the
+    # nested repo does NOT track would vanish from a fresh clone.
+    _git(state_dir, "rm", "--cached", "-q", "cores/fw/boot.hex")
+    warns = _warns(_inspect(root), _CORE_FILE_ID)
+    assert len(warns) == 1
+    assert "boot.hex" in warns[0].message and "untracked" in warns[0].message
+
+
 def test_stealth_core_files_judged_against_state_repo(tmp_path):
     """ADR 0036: a stealth core's files are tracked by the Booley Directory's OWN
     repo — asking the host repo about them is guaranteed noise. Reach-through
@@ -185,18 +163,7 @@ targets:
   sim: {flow: sim, filesets: [rtl, fw]}
 """,
     )
-    state_dir = tmp_path / ".booley"
-    _git(state_dir, "init", "-q")
-    _git(state_dir, "add", "-A")
-
-    assert not _warns(_inspect(tmp_path), _CORE_FILE_ID)
-
-    # The vendored-data trap still fires inside the state zone: a fw image the
-    # nested repo does NOT track would vanish from a fresh clone.
-    _git(state_dir, "rm", "--cached", "-q", "cores/fw/boot.hex")
-    warns = _warns(_inspect(tmp_path), _CORE_FILE_ID)
-    assert len(warns) == 1
-    assert "boot.hex" in warns[0].message and "untracked" in warns[0].message
+    _assert_state_repo_judges(tmp_path, tmp_path / ".booley")
 
 
 def test_core_files_tracked_judges_relocated_state_repo(tmp_path):
@@ -220,15 +187,7 @@ targets:
   sim: {flow: sim, filesets: [fw]}
 """,
     )
-    _git(state_dir, "init", "-q")
-    _git(state_dir, "add", "-A")
-
-    assert not _warns(_inspect(tmp_path), _CORE_FILE_ID)
-
-    _git(state_dir, "rm", "--cached", "-q", "cores/fw/boot.hex")
-    warns = _warns(_inspect(tmp_path), _CORE_FILE_ID)
-    assert len(warns) == 1
-    assert "boot.hex" in warns[0].message and "untracked" in warns[0].message
+    _assert_state_repo_judges(tmp_path, state_dir)
 
 
 def _readmem_repo(root: Path) -> None:
@@ -252,19 +211,6 @@ targets:
   sim: {flow: sim, filesets: [tb]}
 """,
     )
-
-
-def test_readmemh_untracked_image_warns(tmp_path):
-    # SETUP-12: the memory image is $readmemh'd but listed in no .core fileset,
-    # and it is untracked (gitignored-style). The core-file rule can't see it;
-    # the readmemh rule must.
-    _readmem_repo(tmp_path)
-    _git(tmp_path, "add", "tb/tb.sv", "design.core")
-    warns = _warns(_inspect(tmp_path), _MEMORY_IMAGE_ID)
-    assert len(warns) == 1
-    message = warns[0].message
-    assert "$readmemh" in message and "boot.vmem" in message and "untracked" in message
-    assert warns[0].subject == "fw/boot.vmem"
 
 
 def test_readmemh_tracked_image_passes(tmp_path):
@@ -334,36 +280,26 @@ targets:
     _git(root, "add", "-A")
 
 
-def test_committed_build_artifact_with_sibling_source_warns(tmp_path):
-    _artifact_repo(tmp_path, with_source=True)
-    warns = _warns(_inspect(tmp_path), _ARTIFACT_ID)
-    assert len(warns) == 1
-    assert "built from in-repo source" in warns[0].message
-    assert "firmware.hex" in warns[0].message
-    assert warns[0].subject == "firmware/firmware.hex"
-
-
-def test_committed_opaque_blob_without_source_stays_quiet(tmp_path):
-    # A vendored hex with no sibling source may be the only option — don't nag.
-    _artifact_repo(tmp_path, with_source=False)
-    assert not _warns(_inspect(tmp_path), _ARTIFACT_ID)
-
-
-def test_vendored_annotated_artifact_stays_quiet_despite_sibling_source(tmp_path):
-    # `tags: [vendored]` is the maintainer asserting the blob is upstream-shipped
-    # with no rebuildable in-repo source — exempt even with sibling C/asm around.
-    _artifact_repo(tmp_path, with_source=True, vendored=True)
-    assert not _warns(_inspect(tmp_path), _ARTIFACT_ID)
-
-
-def test_untracked_build_artifact_not_flagged_as_committed(tmp_path):
-    # The artifact exists with sibling source but is NOT git-tracked → nothing to
-    # call committed (the untracked trap is the core-file rule's job, not this).
-    _artifact_repo(tmp_path, with_source=True)
-    _git(tmp_path, "rm", "-q", "--cached", "firmware/firmware.hex")
+@pytest.mark.parametrize(
+    ("with_source", "vendored", "tracked"),
+    [
+        # A vendored hex with no sibling source may be the only option: don't nag.
+        (False, False, True),
+        # `tags: [vendored]` asserts an upstream blob, exempt despite sibling C/asm.
+        (True, True, True),
+        # Nothing to call committed; the untracked file is the core-file rule's job.
+        (True, False, False),
+    ],
+    ids=["opaque-blob", "vendored", "untracked"],
+)
+def test_build_artifact_rule_stays_quiet(tmp_path, with_source, vendored, tracked):
+    _artifact_repo(tmp_path, with_source=with_source, vendored=vendored)
+    if not tracked:
+        _git(tmp_path, "rm", "-q", "--cached", "firmware/firmware.hex")
     report = _inspect(tmp_path)
     assert not _warns(report, _ARTIFACT_ID)
-    assert [w.subject for w in _warns(report, _CORE_FILE_ID)] == ["firmware/firmware.hex"]
+    untracked = [] if tracked else ["firmware/firmware.hex"]
+    assert [w.subject for w in _warns(report, _CORE_FILE_ID)] == untracked
 
 
 def test_report_orders_the_three_rules_and_carries_check_ids(tmp_path):
@@ -402,6 +338,10 @@ targets:
         (Severity.WARN, _MEMORY_IMAGE_ID, "fw/boot.vmem", ""),
         (Severity.WARN, _ARTIFACT_ID, "firmware/firmware.hex", ""),
     ]
+    core_file, memory_image, artifact = (f.message for f in report.findings)
+    assert "dut.sv" in core_file and "untracked" in core_file
+    assert all(part in memory_image for part in ("boot.vmem", "$readmemh", "untracked"))
+    assert "firmware.hex" in artifact and "built from in-repo source" in artifact
 
 
 def test_outside_git_repository_emits_no_warning(tmp_path, monkeypatch):

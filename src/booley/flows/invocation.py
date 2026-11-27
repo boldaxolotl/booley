@@ -13,7 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
-from booley.core.boundary import BoundaryError, require_int
+from booley.config import flow_knobs
+from booley.core.boundary import BoundaryError, require_positive_int
 from booley.targets.flow_names import canonical, config_section
 
 _BUILTIN_TIMEOUT_DEFAULTS_MS: Final[Mapping[str, int]] = MappingProxyType(
@@ -50,24 +51,15 @@ def resolve_timeout_ms(
     """
     field = "timeout_ms"
     if requested is not None:
-        timeout_ms = require_int(requested, field=field)
-    else:
-        from booley.runtime.shared_infra import _load_rtl_config
+        return require_positive_int(requested, field=field)
+    from booley.runtime.shared_infra import _load_rtl_config
 
-        config = _load_rtl_config(work_dir or Path.cwd()) or {}
-        flows = config.get("flows", {})
-        section = config_section(flows, canonical(flow_name)) if isinstance(flows, dict) else {}
-        if field not in section:
-            timeout_ms = default_timeout_ms(flow_name)
-        else:
-            timeout_ms = require_int(
-                section[field],
-                field=f"[flows.{canonical(flow_name)}].{field}",
-            )
-    if timeout_ms <= 0:
-        source = field if requested is not None else f"[flows.{canonical(flow_name)}].{field}"
-        raise BoundaryError(f"{source} must be a positive integer, got {timeout_ms!r}")
-    return timeout_ms
+    config = _load_rtl_config(work_dir or Path.cwd()) or {}
+    flows = config.get("flows", {})
+    name = canonical(flow_name)
+    section = config_section(flows, name) if isinstance(flows, dict) else {}
+    configured = flow_knobs.timeout_ms(name, section, field)
+    return default_timeout_ms(flow_name) if configured is None else configured
 
 
 def requested_timeout_ms(arguments: dict[str, Any]) -> Any:

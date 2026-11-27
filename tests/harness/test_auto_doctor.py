@@ -226,6 +226,17 @@ def test_fingerprint_labels_cover_every_input(tmp_path):
     assert set(health.compute_fingerprint(directory, tmp_path)) == set(health._INPUT_LABELS)
 
 
+def test_configs_toml_changes_only_by_presence(tmp_path):
+    directory = _project(tmp_path)
+    configs = directory / "configs.toml"
+    configs.write_text("one")
+    present = health.compute_fingerprint(directory, tmp_path)
+    configs.write_text("two")
+    assert health.compute_fingerprint(directory, tmp_path) == present
+    configs.unlink()
+    assert health.compute_fingerprint(directory, tmp_path) != present
+
+
 def test_changed_input_names_are_ordered_and_bounded(tmp_path):
     directory = _project(tmp_path)
     _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
