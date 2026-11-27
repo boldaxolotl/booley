@@ -61,6 +61,7 @@ from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
+from tests.agent_call_fake import install_agent
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
@@ -3680,8 +3681,7 @@ class TestDeveloperProbe:
 
     @pytest.fixture
     def probe_backend(self, monkeypatch):
-        """Patch the backend config the probe reads; return a setter for ``call_agent``."""
-        from booley.runtime import agent as agent_mod
+        """Patch the backend config the probe reads; return ``install_agent`` for its script."""
         from booley.runtime import agent_config as config_mod
 
         class _Cfg:
@@ -3697,7 +3697,7 @@ class TestDeveloperProbe:
 
         monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
-        return lambda fake_call: monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+        return lambda script: install_agent(monkeypatch, script)
 
     @pytest.mark.parametrize(
         ("row", "expected", "summary"),
@@ -3799,10 +3799,7 @@ class TestDeveloperProbe:
         from booley.runtime.agent_errors import UsageLimitError
         from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE
 
-        async def limited(_params, **_kw):
-            raise UsageLimitError(FAR_RESET_MESSAGE, provider="claude")
-
-        probe_backend(limited)
+        probe_backend(UsageLimitError(FAR_RESET_MESSAGE, provider="claude"))
         _runtime_setup(tmp_path, monkeypatch, inside=True)
         _deep_synth_writes_complete_report(monkeypatch, tmp_path / ".booley")
 
@@ -3864,7 +3861,6 @@ class TestDeveloperProbe:
     def test_probe_model_access_grades_the_provider_answer(self, tmp_path, monkeypatch, outcome):
         from booley.config.agent import AgentSettings
         from booley.core.models import AgentResult
-        from booley.runtime import agent as agent_mod
         from booley.runtime import agent_config as config_mod
         from booley.runtime.agent_errors import ModelUnavailableError
 
@@ -3875,23 +3871,23 @@ class TestDeveloperProbe:
         monkeypatch.setattr(
             config_mod, "get_backend_config", lambda: SimpleNamespace(settings=AgentSettings())
         )
-        seen = []
-
-        async def fake_call(params, **_kw):
-            seen.append(params.model)
-            if outcome == "refused":
-                raise ModelUnavailableError(
-                    model=params.model, provider="codex", settings=(), detail="model_not_found"
-                )
-            return AgentResult(output="OK", input_tokens=7, timed_out=outcome == "timeout")
-
-        monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+        agent = install_agent(
+            monkeypatch,
+            ModelUnavailableError(
+                model="some-model", provider="codex", settings=(), detail="model_not_found"
+            )
+            if outcome == "refused"
+            else AgentResult(output="OK", input_tokens=7, timed_out=outcome == "timeout"),
+        )
 
         if outcome == "accepted":
             usage = developer_probe.probe_model_access(
                 tmp_path, "some-model", booley_dir=tmp_path / "bd"
             )
-            assert (seen, usage.input_tokens) == (["some-model"], 7)
+            assert ([call.model for call in agent.calls], usage.input_tokens) == (
+                ["some-model"],
+                7,
+            )
             assert loaded == [{"booley_dir": tmp_path / "bd"}]  # same config as the model list
             return
         with pytest.raises(developer_probe.ProbeError) as excinfo:
@@ -3906,12 +3902,11 @@ class TestDeveloperProbe:
     def test_measure_post_call_errors_carry_usage(self, tmp_path, probe_backend, site):
         from booley.core.models import AgentResult
 
-        async def fake_call(params, **_kw):
-            if site == "call":
-                raise RuntimeError("dead backend")
-            return AgentResult(output="OK", input_tokens=10, timed_out=site == "timeout")
-
-        probe_backend(fake_call)
+        probe_backend(
+            RuntimeError("dead backend")
+            if site == "call"
+            else AgentResult(output="OK", input_tokens=10, timed_out=site == "timeout")
+        )
         calls = {"n": 0}
 
         def getrusage(_who):
@@ -3950,21 +3945,17 @@ class TestDeveloperProbe:
         """Without a delta (an earlier child was bigger) the peak is a safe upper bound."""
         from booley.core.models import AgentResult
 
-        seen: list = []
-
-        async def fake_call(params, **_kw):
-            seen.append(params)
-            return AgentResult(
+        agent = probe_backend(
+            AgentResult(
                 output="OK", input_tokens=120, cached_tokens=30, output_tokens=7, cost_usd=0.0031
             )
-
-        probe_backend(fake_call)
+        )
         measurement = developer_probe.measure_developer_rss(tmp_path, getrusage=_rusage(*readings))
         assert measurement.peak_rss_bytes == peak_kib * 1024
         assert measurement.exact is exact
         assert measurement.usage == developer_probe.ProbeUsage(120, 30, 7, 0.0031)
-        assert seen[0].max_turns == 1  # a 1-turn trivial probe, no tools
-        assert seen[0].allowed_agent_capabilities == []
+        assert agent.calls[0].max_turns == 1  # a 1-turn trivial probe, no tools
+        assert agent.calls[0].allowed_agent_capabilities == []
 
 
 # =============================================================

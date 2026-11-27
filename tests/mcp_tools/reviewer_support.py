@@ -1,4 +1,4 @@
-"""Shared fakes for Reviewer tests: one scripted agent behind the public ``call_agent`` seam.
+"""Shared fakes for Reviewer tests: the shared scripted agent, answering per review guide.
 
 ``install_agent`` also fakes the agent workspace snapshot (``specialist.isolated_agent_workspace``).
 """
@@ -6,20 +6,19 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import re
-import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import pytest
 
-from booley.core.models import AgentCallParams, AgentResult
+from booley.core.models import AgentCallParams
 from booley.evidence.review_vocabulary import ORIGIN_PRE_EXISTING
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.agent_call_fake import Script, ScriptedAgent, play
+from tests.agent_call_fake import install_agent as install_scripted
 
-Answer = AgentResult | Exception | dict[str, Any] | str
 _GUIDE_HEADING = re.compile(r"^## Review guide — \S+ \(([^)]+)\)", re.MULTILINE)
 
 
@@ -55,68 +54,23 @@ def open_findings(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _result(answer: Answer) -> AgentResult:
-    if isinstance(answer, AgentResult):
-        return answer
-    if isinstance(answer, str):
-        return AgentResult(output=answer)
-    return AgentResult(output=json.dumps(answer))
+class GuideScriptedAgent(ScriptedAgent):
+    """Also plays a ``{guide: script}`` mapping (``"*"`` for the rest), read at each call."""
 
+    def answer(self, script: Script | Mapping[str, Script]) -> None:
+        guides, seen = script, {}
 
-class ScriptedAgent:
-    """Records every ``AgentCallParams`` and answers from a script.
-
-    ``answer`` takes one answer for every call, a ``{guide: answer}`` mapping, or a
-    list consumed one per call (the last repeats). An answer is a payload dict (the
-    JSON the agent prints), raw output text, an ``AgentResult`` or an exception.
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[AgentCallParams] = []
-        self._script: Answer | Mapping[str, Answer] | Sequence[Answer] = {"issues": []}
-        self._lock = threading.Lock()
-        self._seen: dict[str, int] = {}
-        self.on_call: Callable[[AgentCallParams], None] | None = None
-        self.on_events: list[Any] = []  # the ``on_event`` callback each call received
-
-    def answer(self, script: Answer | Mapping[str, Answer] | Sequence[Answer]) -> None:
-        self._script = script
-
-    def reported(self, *calls: dict[str, Any], output: str = "") -> AgentResult:
-        """An agent result whose ``ReportFindings`` capability was called once per dict."""
-        return AgentResult(
-            output=output, captured_agent_capability_calls={"ReportFindings": list(calls)}
-        )
-
-    def _pick(self, params: AgentCallParams, index: int) -> Answer:
-        script = self._script
-        if isinstance(script, dict) and "issues" not in script:
+        def by_guide(params: AgentCallParams) -> Any:
             guide = guide_of(params)
-            per_guide = script.get(guide, script.get("*", {"issues": []}))
-            index = self._seen[guide] = self._seen.get(guide, -1) + 1
-            script = per_guide
-        if isinstance(script, list):
-            return script[min(index, len(script) - 1)]
-        return script  # type: ignore[return-value]
+            seen[guide] = seen.get(guide, -1) + 1
+            return play(guides.get(guide, guides.get("*", {"issues": []})), params, seen[guide])
 
-    async def __call__(self, params: AgentCallParams, on_event: Any = None) -> AgentResult:
-        with self._lock:
-            index = len(self.calls)
-            self.calls.append(params)
-            self.on_events.append(on_event)
-        if self.on_call is not None:
-            self.on_call(params)
-        with self._lock:
-            answer = self._pick(params, index)
-        if isinstance(answer, Exception):
-            raise answer
-        return _result(answer)
+        super().answer(by_guide if isinstance(guides, dict) and "issues" not in guides else script)
 
 
 def install_agent(monkeypatch: pytest.MonkeyPatch, *, snapshot: bool = False) -> ScriptedAgent:
     """Replace the model with a ScriptedAgent; skip the workspace snapshot unless asked."""
-    agent = ScriptedAgent()
-    monkeypatch.setattr("booley.runtime.agent.call_agent", agent)
+    agent = install_scripted(monkeypatch, {"issues": []}, GuideScriptedAgent)
     if not snapshot:
 
         @contextlib.contextmanager
