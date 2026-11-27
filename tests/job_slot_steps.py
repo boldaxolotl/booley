@@ -10,6 +10,8 @@ produced it. The store's own code runs unchanged.
 The seam is the store's ``root``: a direct ``os.*`` call on a path in
 ``job_slots.py`` would bypass it without failing anything, so a new filesystem
 call there should go through ``Path`` methods.
+
+It fakes process liveness, process identity and the clock for each store.
 """
 
 from __future__ import annotations

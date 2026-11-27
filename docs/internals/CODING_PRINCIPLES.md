@@ -210,7 +210,10 @@ code. When a test needs something replaced:
 - **One shared fake per boundary.** The fake lives in a support module under
   `tests/`, not in a `test_*.py` file, and every test of that boundary uses
   it. A test does not patch `subprocess` or a command runner itself: copies
-  of a stand-in drift apart, and away from the tool they imitate.
+  of a stand-in drift apart, and away from the tool they imitate. The
+  [test fakes catalog](TEST_FAKES.md) names the fake for each boundary: extend
+  it rather than add another. A new fake module, named with `fake` or
+  `double`, needs a catalog row for a boundary no fake covers yet.
 - **Cross a boundary in one place.** New code that runs a command or reads
   the clock does it through one function (principle 9), so a test has one
   name to replace.

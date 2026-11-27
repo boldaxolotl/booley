@@ -1,4 +1,7 @@
-"""Shared Git subprocess helper for Harness tests."""
+"""Shared Git subprocess helper for Harness tests.
+
+``fake_powershell`` fakes the ``powershell`` command.
+"""
 
 from __future__ import annotations
 

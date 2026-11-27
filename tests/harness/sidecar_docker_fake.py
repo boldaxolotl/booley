@@ -1,4 +1,4 @@
-"""Shared fake of the Docker port of the host sidecars (proxy, reaper, network, Sessions).
+"""Shared fake of the Docker CLI boundary for the host sidecars (proxy, reaper, network, Sessions).
 
 ``EgressDocker`` answers the ``docker`` verbs that ``booley.harness.host_sidecars`` and
 Session admission issue, from memory. Tests of Host Bootstrap, Doctor and init that need a

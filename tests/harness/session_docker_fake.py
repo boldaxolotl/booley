@@ -1,4 +1,4 @@
-"""Stateful Docker fake for headless Sessions whose Project directory may be gone."""
+"""Stateful fake of the Docker CLI boundary for headless Sessions whose Project directory may be gone."""
 
 from __future__ import annotations
 

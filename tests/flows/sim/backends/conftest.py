@@ -1,4 +1,7 @@
-"""Shared fixtures for sim unit tests."""
+"""Shared fixtures for sim unit tests.
+
+Stand-ins: the simulator launch, its programs on the search path, and the deadline timer.
+"""
 
 from __future__ import annotations
 
