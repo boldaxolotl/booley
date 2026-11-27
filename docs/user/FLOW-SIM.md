@@ -456,8 +456,7 @@ define along with it.
 ## Elaboration checks
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
-any tests: a fast "does it still build?" check. A later full run can reuse the
-build.
+any tests: a fast "does it still build?" check.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
