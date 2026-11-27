@@ -25,8 +25,19 @@ DIR = pathlib.Path(os.environ["CASE_DIR"])
 
 def attempt(name):
     worker = os.environ.get("PYTEST_XDIST_WORKER", "serial")
-    with (DIR / "log.txt").open("a") as log:
-        log.write(f"{name} {worker}\\n")
+    # One numbered file per attempt, claimed by exclusive create: two workers appending to
+    # one file can overwrite each other's lines on Windows, where an append seeks, then writes.
+    log = DIR / "log"
+    log.mkdir(exist_ok=True)
+    for number in range(10_000):
+        try:
+            with (log / f"{number:05d}").open("x") as entry:
+                entry.write(f"{name} {worker}\\n")
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise RuntimeError("attempt log full")
     marker = DIR / f"{name}.seen"
     first = not marker.exists()
     marker.touch()
@@ -184,8 +195,8 @@ def _run(
 
 def _log(work: Path) -> dict[str, list[str]]:
     seen: dict[str, list[str]] = {}
-    for line in (work / "log.txt").read_text(encoding="utf-8").splitlines():
-        name, worker = line.split()
+    for entry in sorted((work / "log").iterdir()):
+        name, worker = entry.read_text(encoding="utf-8").split()
         seen.setdefault(name, []).append(worker)
     return seen
 
@@ -251,7 +262,7 @@ def test_rerun_is_refused_when_the_failure_is_not_a_test_result(tmp_path: Path, 
 
     assert code != 0
     assert _MESSAGES[case] in summary
-    seen = _log(work) if (work / "log.txt").exists() else {}
+    seen = _log(work) if (work / "log").exists() else {}
     assert all(len(workers) == 1 for workers in seen.values())
 
 
