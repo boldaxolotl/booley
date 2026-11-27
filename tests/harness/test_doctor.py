@@ -297,7 +297,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     forbid_docker_processes(monkeypatch)
     fake_docker_host(monkeypatch)
     # Never probe this machine's own T3 Code port.
-    monkeypatch.setattr(incontainer_setup, "t3_state", lambda _root: "off")
+    monkeypatch.setattr(incontainer_setup, "t3_state", lambda: "off")
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
@@ -6541,7 +6541,7 @@ def test_doctor_checks_the_pinned_t3_code_version(
     if inside:
         _prepare_row(monkeypatch, "inside-marker")
         # The probe of the Sandbox's own T3 Code port.
-        monkeypatch.setattr(incontainer_setup, "t3_state", lambda _root: "running")
+        monkeypatch.setattr(incontainer_setup, "t3_state", lambda: "running")
     pin = _t3_pin()
     asked: list[list[str]] = []
 

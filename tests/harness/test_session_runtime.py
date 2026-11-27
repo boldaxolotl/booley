@@ -2562,21 +2562,20 @@ def test_t3_code_ui_inspection(
 
 
 @pytest.mark.parametrize(
-    ("project", "foreign", "server"),
+    ("foreign", "server"),
     [
-        pytest.param(True, False, "T3 Code does not answer in the Sandbox; ", id="off"),
-        pytest.param(True, True, "127.0.0.1:3773 in the Sandbox is held by", id="port-taken"),
-        pytest.param(False, True, "T3 Code server check skipped - project", id="no-project"),
+        pytest.param(False, "T3 Code does not answer in the Sandbox; ", id="off"),
+        pytest.param(True, "127.0.0.1:3773 in the Sandbox is held by", id="port-taken"),
     ],
 )
 def test_t3_code_inspection_in_the_sandbox_skips_an_unproven_server(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, project: bool, foreign: bool, server: str
+    monkeypatch: pytest.MonkeyPatch, foreign: bool, server: str
 ) -> None:
     from booley.runtime import t3_inspection
 
     serve_t3_code(monkeypatch, foreign=foreign)
 
-    report = t3_inspection.inspect_ui_in_sandbox(workspace if project else None)
+    report = t3_inspection.inspect_ui_in_sandbox()
 
     first, relay = report.findings
     assert (str(first.severity), str(relay.severity)) == ("skip", "skip")

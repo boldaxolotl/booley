@@ -81,14 +81,10 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
     return findings.report()
 
 
-def inspect_ui_in_sandbox(project_root: Path | None) -> DiagnosticReport:
+def inspect_ui_in_sandbox() -> DiagnosticReport:
     """Inside the Sandbox: whether T3 Code answers. The relay and its record are on the host."""
     findings = Findings()
-    # The Project holds the runtime record that proves the listener is its own T3 Code.
-    if project_root is None:
-        findings.skip("T3 Code server check skipped - project config invalid")
-    else:
-        _judge_server_in_sandbox(findings, incontainer_setup.t3_state(project_root))
+    _judge_server_in_sandbox(findings, incontainer_setup.t3_state())
     if runtime_context.in_hand_written_sandbox():
         findings.skip("T3 Code relay check not applicable - Booley did not create this Sandbox")
     else:
