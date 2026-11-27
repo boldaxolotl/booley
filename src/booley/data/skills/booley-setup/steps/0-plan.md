@@ -1,10 +1,10 @@
 # Step 0 — Plan (feasibility + decision grill → SETUP-PLAN.md)
 
-> Part of the `booley-setup` skill. This step runs on the **host**, before the
-> devcontainer exists. It is **read-only with respect to the repository** — its
-> only write is `.booley/SETUP-PLAN.md` (the Booley Directory; `booley init`
-> created it). No project config is authored here; that is Steps 2–4, and they
-> run only against an approved plan.
+> Part of the `booley-setup` skill. This step runs on the **host**, before
+> anything runs in the Sandbox. It is **read-only with respect to the
+> repository** — its only write is `.booley/SETUP-PLAN.md` (the Booley
+> Directory; `booley init` created it). No project config is authored here;
+> that is Steps 2–4, and they run only against an approved plan.
 
 Every decision the later steps need is gathered, decided, and approved **here,
 up front** — feasibility triage plus a full decision sheet, refined through a
@@ -160,10 +160,11 @@ leaves all of this on a blank slate:
   `[stealth] enabled`, and a missing key means Stealth Mode is off, so
   `.booley/` shows as untracked in the RTL repo until row 16 is executed;
 - `.git/hooks/commit-msg` + `pre-push` delegators (inactive until Stealth is
-  enabled), and `.devcontainer/devcontainer.json`;
+  enabled), and the issued Sandbox specification;
 - one generated block in `.git/info/exclude` under the header
-  `# Booley (generated; local, uncommitted)`: `/.devcontainer`,
-  `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
+  `# Booley (generated; local, uncommitted)`: `/.claude`,
+  `/.booley-projected-*.core`, and the issued Sandbox specification's folder.
+  Init consolidates repeated headers.
 
 Tell-tales of a **prior setup** are therefore only things init never writes:
 any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
