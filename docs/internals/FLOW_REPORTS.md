@@ -68,9 +68,8 @@ run, so you can watch a run or see where an interrupted one stopped. `lint` and
 - `phase: complete`: every planned Target was processed.
 - `phase: aborted`: the run stopped early; `pending_targets` lists the Targets
   that did not finish.
-- `phase: superseded`: an interrupted coverage run that a later run resumed.
-  `superseded_by` names that run; look there for the outcome. Marking is best
-  effort, so an `aborted` run may also have been resumed.
+- `phase: superseded`: a Job attempt killed for running out of memory and
+  requeued; the requeued attempt reports into a new numbered directory.
 
 ## Dry-run plan
 

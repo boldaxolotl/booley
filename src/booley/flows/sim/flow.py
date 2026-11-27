@@ -232,7 +232,6 @@ class SimulateFlow(
         self._current_published_pre_sim_keys: set[tuple[str, str, str, int]] = set()
         self._coverage_prepared: Any = None
         self._resolved_build_timeout_ms: int | None = None
-        self._resume_coverage_plan: CoverageTargetPlan | None = None
         self._target_handles: dict[str, TargetHandle] = {}
         self._work_item_plans: dict[str, TargetTestPlan] = {}
         self._standalone_plan_recipe = None
@@ -440,7 +439,7 @@ class SimulateFlow(
         """An explicit resume reads its Targets from the manifest."""
         return self.args.resume_from is not None
 
-    def prepare_simulation_endpoint(  # noqa: PLR0911 -- ordered pre-admission rejections
+    def prepare_simulation_endpoint(
         self,
     ) -> PreparedSimulationEndpoint | EndpointOutcome:
         """Resolve every Target before reservation or admission."""
@@ -453,7 +452,7 @@ class SimulateFlow(
                 self.set_report_targets(list(selected_targets))
             if (
                 resume is not None
-                and (refusal := self._refuse_unfinished_coverage_resume(resume)) is not None
+                and (refusal := self._refuse_coverage_resume(resume)) is not None
             ):
                 return refusal
             if resume is None:
@@ -462,10 +461,6 @@ class SimulateFlow(
                 )
                 if selection_error is not None:
                     return selection_error
-            else:
-                resume_error = self._resume_coverage_preflight_if_coverage(resume)
-                if resume_error is not None:
-                    return resume_error
             self._effective_build_timeout_ms()
             # A malformed conversion budget must refuse before any spawn too.
             resolve_sim_trace_convert_timeout_ms(self.args.work_dir)
