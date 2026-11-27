@@ -58,8 +58,8 @@ simulation or synthesis run needs and starts as many together as your machine
 can hold, so small runs don't wait behind big ones and nothing runs out of
 memory.
 
-Agent chats, RTL, terminals and waveforms sit in one VS Code window, and a web
-dashboard shows each worktree's Jobs.
+Agent chats and terminals sit in T3 Code, a web UI in your browser, and a
+dashboard there shows each worktree's Jobs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">
@@ -99,7 +99,8 @@ recorded numbers show how the design moved over time.
 Three ways in, ordered by how much you want to invest:
 
 1. **[Watch](#watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Demo](#demo).** Open the demo free in your browser, or clone it, then type your first request to the agent.
+2. **[Demo](#demo).** Clone a demo project already set up for Booley, then type
+   your first request to the agent.
 3. **[Your own project](#your-own-project).** Full integration on your own RTL.
 
 ### Watch
@@ -108,27 +109,29 @@ Two videos on the [Videos page](https://booley.dev/videos/) show an engineer dri
 
 ### Demo
 
-Try the demo in browser VS Code with one click. It is free, needs no install,
-and works on macOS too:
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
-
-The Codespace fits in GitHub's free monthly Codespaces allowance, and the
-agent runs GPT-6 Luna on us after a quick GitHub sign-in. Connect your own
-Claude or ChatGPT account if you want a smarter model. The first launch takes
-3-4 minutes while the container image builds. [How the free demo works](https://booley.dev/demo/).
-
-Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to run the demo locally, after you [install Booley](#installation).
+The PicoRV32 demo is a small RISC-V CPU already set up for Booley. After you
+[install Booley](#installation), follow
+[its README](https://github.com/boldaxolotl/booley-prj-picorv32#readme).
 
 ### Your own project
 
-Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley with your own RTL project, after you [install Booley](#installation).
+After you [install Booley](#installation):
+
+1. Run `booley init` in your RTL repository. It makes it a Booley Project.
+2. Run `/booley-setup` in your Claude Code or Codex chat. It plans the setup
+   with you.
+3. Run `booley session up`. It starts the Sandbox and prints a pairing link.
+   Open it in your browser: T3 Code, Booley's user interface, shows your
+   Project. Run `/booley-setup` again in a thread there to finish.
+4. Start a thread in a new worktree and give the agent its first task.
+
+The [Setup guide](https://booley.dev/docs/setup/) has every step.
 
 ## Installation
 
 Booley runs on Windows and Linux (macOS is not supported) for SystemVerilog
-or Verilog designs. It needs Python 3.11+, Git, Docker, and a Claude Code or
-Codex CLI; VS Code is optional. With
+or Verilog designs. It needs Python 3.11+, Git, Docker, a Claude Code or Codex
+CLI, and a web browser. With
 [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html):
 
 ```bash
