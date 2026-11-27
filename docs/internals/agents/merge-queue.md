@@ -340,16 +340,26 @@ Read the Mergify check and the underlying Actions failure, then:
       and `bwave-smoke`, so `main` evidence for every other job, including
       `package-artifacts` and the test jobs, comes from the nightly
       scheduled `Tests` run.
-    - Match a crashed worker or a duration-budget overrun by job and error
-      signature instead of a test ID.
+    - Match by test ID whenever the failure names one: a failed test, a
+      timeout-headroom overrun, or a crashed worker (JUnit records it as
+      "crashed while running" that test). Match by job and error signature
+      only when the failure names no test ID, such as a step or job that
+      hit its `timeout-minutes`.
     - When every failed test of a step passes on its rerun, the job stays
       green, so those failures never dequeue the PR and need no issue; see
       [Rerun of failed tests](../../../.github/ci/README.md#rerun-of-failed-tests).
       A test that failed on its rerun too, or a failure the step summary
       says was not rerun, follows the rules here.
-    - When no issue exists, first file a `bug`, `ci`, `needs-triage` issue
-      with the run link, test ID or job, and error, scanned as `AGENTS.md`
-      requires.
+    - When no open issue covers the failure, first file one, scanned as
+      `AGENTS.md` requires, with the run link and error: for a test ID, a
+      `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;
+      for a failure with no test ID, a `bug`, `ci`, `needs-triage` issue
+      naming the job. When an open issue already covers the test ID, comment
+      the run link and error there instead. One issue per test ID, as in
+      [Flaky-test issues](issue-tracker.md#flaky-test-issues); issues filed
+      automatically from the flake ledger
+      ([#4413](https://github.com/boldaxolotl/booley/issues/4413)) follow the
+      same rule.
     - When `main`'s latest run of that job (the latest nightly run, for jobs
       a `main` push skips) fails the same way, `main` has regressed: report
       it instead of requeueing.
