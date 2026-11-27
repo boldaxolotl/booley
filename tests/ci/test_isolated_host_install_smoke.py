@@ -60,7 +60,14 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
         smoke.sys, "argv", ["smoke", "--guide", "docs/user/INSTALL.md", "--wheel", str(wheel)]
     )
     smoke.main()
-    command, bounds = calls[0]
+    pull, _ = calls[0]
+    assert pull[0] == "bash"
+    assert pull[2:] == [
+        "docker",
+        "pull",
+        smoke.IMAGE,
+    ]
+    command, bounds = calls[-1]
     assert command[:3] == ["docker", "run", "--rm"]
     assert smoke.IMAGE == "ubuntu:26.04"
     assert smoke.IMAGE in command
@@ -69,7 +76,9 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
     assert all(value.endswith(",readonly") for value in mounts)
     assert any("dst=/artifacts," in value for value in mounts)
     assert any("dst=/smoke/runner.py," in value for value in mounts)
-    assert "apt-get install -y python3" in command[command.index("-c") + 1]
+    bootstrap = command[command.index("-c") + 1]
+    assert "apt-get install -y python3" in bootstrap
+    assert "Acquire::Retries" in bootstrap
     assert "--inside" in command
     assert bounds["timeout"] == 1200
 
