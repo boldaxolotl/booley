@@ -32,7 +32,7 @@ from booley.flows.sim.coverage_reference import (
     resolve_coverage_record_reference,
 )
 from booley.flows.sim.record.codec import canonical_json_bytes
-from booley.harness import booley as cli
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.coverage_analysis import CoverageAnalysisError as AnalystError
 from booley.specialists.coverage_analysis import CoverageAnalyzer
 from tests.flows.sim.coverage_record_test_support import decode_document
@@ -47,6 +47,7 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
     reports as _reports_fixture,
 )
 from tests.harness.test_coverage_cli import _booley
+from tests.sandbox_venue_fake import place
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture
@@ -321,7 +322,7 @@ def test_booley_coverage_reports_a_0_4_0_reference_as_older(
     _current_reference(run)
     _rewrite(run.public, _0_4_0_reference())
     # A host terminal: no Sandbox or Project is present.
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
 
     code, _out, err = _booley(monkeypatch, capsys, "coverage", "uncovered", str(run.public))
 

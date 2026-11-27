@@ -21,7 +21,9 @@ from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.endpoint_execution import ExecutionResult
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.memory_budget_support import fail_budget
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import STALL_DUMP_S
 from tests.time_budget import hang_guard_s, scaled
 
@@ -101,9 +103,8 @@ class TestBooleyFlowExecution:
     def test_host_entry_is_rejected_before_flow_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        from booley.runtime import runtime_context
 
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         flow = CommandFlow()
         flow.command = ["false"]
         exit_code = flow.main(["--target", "test", "--work-dir", str(tmp_path)])

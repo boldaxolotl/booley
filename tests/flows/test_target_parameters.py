@@ -5,6 +5,8 @@ import json
 import pytest
 
 from booley.flows import target_parameters as parameters
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def test_declared_types_and_raw_values():
@@ -45,10 +47,9 @@ def test_synthesis_flow_carries_types_without_changing_numeric_arguments(
     tmp_path, monkeypatch, capsys
 ):
     from booley.flows.synth.flow import AsicSynthesizeFlow
-    from booley.runtime import runtime_context
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     (tmp_path / ".booley").mkdir()
     (tmp_path / ".booley/booley.toml").write_bytes(b"")

@@ -11,9 +11,11 @@ from booley.audit.doctor_waivers import (
 )
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.presentation import colors
-from booley.runtime import dashboard_extension, runtime_context
+from booley.runtime import dashboard_extension
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.test_doctor import _write_project
+from tests.sandbox_venue_fake import place
 
 
 def _write(tmp_path, body: str) -> None:
@@ -206,7 +208,7 @@ def test_doctor_waives_one_target_s_untagged_harness(tmp_path, monkeypatch):
 def _run_inside_the_sandbox(monkeypatch, root, booley_dir) -> None:
     """Make Doctor run as inside the Sandbox, with healthy web isolation."""
     patch_doctor_environment(monkeypatch, root, booley_dir)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # The egress probe only runs in a marked Sandbox; keep these tests off real DNS.
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
