@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="3" time="0.021" timestamp="" hostname=""><testcase classname="tests.ci.test_flaky_sample.TestGroup" name="test_flaky" time="0.001"><flakyFailure message="AssertionError: flaked&#10;assert not True&#10; +  where True = _first('flaky')">self = &lt;tests.ci.test_flaky_sample.TestGroup object at 0x0&gt;
+
+    def test_flaky(self):
+&gt;       assert not _first("flaky"), "flaked"
+E       AssertionError: flaked
+E       assert not True
+E        +  where True = _first('flaky')
+
+tests/ci/test_flaky_sample.py:15: AssertionError</flakyFailure></testcase><testcase classname="tests.ci.test_flaky_sample" name="test_fixture_error" time="0.000"><flakyError message="failed on setup with &quot;RuntimeError: server not ready&quot;">@pytest.fixture
+    def slow_server():
+        if _first("server"):
+&gt;           raise RuntimeError("server not ready")
+E           RuntimeError: server not ready
+
+tests/ci/test_flaky_sample.py:21: RuntimeError</flakyError></testcase><testcase classname="tests.ci.test_flaky_sample" name="test_steady" time="0.000" /></testsuite></testsuites>

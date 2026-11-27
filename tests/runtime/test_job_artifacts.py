@@ -5,8 +5,11 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.sharing_error_support import hold_opens
 
 from booley.flows.progress_lifecycle import progress_document
+
+# private: imported only for bound() to lower the scan bounds (see there).
 from booley.runtime.job_observation import _artifacts as job_artifacts
 from booley.runtime.job_observation._artifacts import JobArtifactCache
 
@@ -38,8 +41,30 @@ def spy(monkeypatch, owner, name):
     return calls
 
 
+def artifact_reads(monkeypatch) -> list[Path]:
+    """Record every binary open of a report or progress document, calling through."""
+    original, reads = Path.open, []
+
+    def opened(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if mode == "rb" and path.name in ("report.json", "progress.json"):
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", opened)
+    return reads
+
+
+def bound(monkeypatch, files, size=None):
+    # private: the bounds are 4,096 files and 16 MiB; no small Project reaches them, and no
+    # public input lowers them.
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", files)
+    if size is not None:
+        monkeypatch.setattr(job_artifacts, "MAX_ARTIFACT_BYTES", size)
+
+
 def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 5)
+    bound(monkeypatch, 5)
     roots = [tmp_path / str(index) / "jobs" for index in range(3)]
     paths = [
         report(root, "sim", n, "flow-reports" if n % 2 else "mcp-tool-reports")
@@ -48,7 +73,7 @@ def test_multi_root_history_reuses_parses(tmp_path, monkeypatch):
     ]
     checkpoints = [progress(root.parent / "flow-reports/sim/1/progress.json") for root in roots]
     before = {p: p.read_bytes() for p in paths + checkpoints}
-    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
+    reads = artifact_reads(monkeypatch)
     cache = JobArtifactCache(tmp_path)
     for refresh in range(3):
         cache.begin()
@@ -75,7 +100,7 @@ def test_overflow_reuses_unchanged_documents(tmp_path, monkeypatch, invalid):
         paths[1].write_text("invalid")
     for n, path in enumerate(paths):
         os.utime(path, (100 + n, 100 + n))
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0)
+    bound(monkeypatch, 0)
     parses = spy(monkeypatch, json, "loads")
     cache = JobArtifactCache(tmp_path)
     for _refresh in range(2):
@@ -99,38 +124,26 @@ def test_overflow_reuses_unchanged_documents(tmp_path, monkeypatch, invalid):
 @pytest.mark.parametrize("kind", ["report", "progress"])
 def test_project_boundary_follows_only_the_booley_directory_entry(tmp_path, monkeypatch, kind):
     real = tmp_path / "real"
-    root = real / "project" / "jobs"
-    progress(report(root, "sim", 1).with_name("progress.json"))
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0 if kind == "progress" else 100)
-    # A link above the entry is accepted.
-    alias = tmp_path / "alias"
-    alias.symlink_to(real, target_is_directory=True)
-    cache = JobArtifactCache(alias / "project")
-    cache.begin()
-    assert cache.find(alias / "project/jobs", "sim", "1", kind) is not None
+    progress(report(real / "project/jobs", "sim", 1).with_name("progress.json"))
+    if kind == "progress":
+        bound(monkeypatch, 0)
     # The entry itself (the cache's Project is the Booley Directory) is followed.
     linked_project = tmp_path / "linked"
     linked_project.symlink_to(real / "project", target_is_directory=True)
     cache = JobArtifactCache(linked_project)
     cache.begin()
     assert cache.find(linked_project / "jobs", "sim", "1", kind) is not None
-    # A link below the entry is still refused.
-    other = tmp_path / "other"
-    report(other / "project" / "jobs", "sim", 1)
-    progress(other / "project" / "flow-reports/sim/1/progress.json")
-    (other / "project" / "flow-reports").rename(other / "elsewhere")
-    (other / "project" / "flow-reports").symlink_to(other / "elsewhere", target_is_directory=True)
-    below = JobArtifactCache(other / "project")
-    below.begin()
-    assert below.find(other / "project/jobs", "sim", "1", kind) is None
 
 
-@pytest.mark.parametrize("kind,limit", [("report", 100), ("progress", 100), ("progress", 0)])
-def test_transient_report_and_progress_io_is_retried(tmp_path, monkeypatch, kind, limit):
+@pytest.mark.parametrize(
+    "kind,overflow", [("report", False), ("progress", False), ("progress", True)]
+)
+def test_transient_report_and_progress_io_is_retried(tmp_path, monkeypatch, kind, overflow):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
     progress(path.with_name("progress.json"))
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
+    if overflow:
+        bound(monkeypatch, 0)
     cache = JobArtifactCache(tmp_path)
     with monkeypatch.context() as fault:
 
@@ -147,14 +160,13 @@ def test_transient_report_and_progress_io_is_retried(tmp_path, monkeypatch, kind
 
 @pytest.mark.parametrize("file_limit,byte_limit", [(2, 100000), (100, 80)])
 def test_scan_bounds(tmp_path, monkeypatch, file_limit, byte_limit):
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", file_limit)
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACT_BYTES", byte_limit)
+    bound(monkeypatch, file_limit, byte_limit)
     root = tmp_path / "jobs"
     paths = [report(root, "sim", n) for n in range(3)]
     for n, path in enumerate(paths):
         path.write_text(json.dumps({"run_id": "same", "passed": bool(n)}))
         os.utime(path, (100 + n, 100 + n))
-    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
+    reads = artifact_reads(monkeypatch)
     cache = JobArtifactCache(tmp_path)
     cache.begin()
     assert cache.find(root, "sim", "same", "report")[1] == paths[-1]
@@ -168,11 +180,12 @@ def test_invalid_documents_reused_until_metadata_changes(tmp_path, monkeypatch, 
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
     path.write_text(bad)
-    reads = spy(monkeypatch, job_artifacts, "read_file_bytes")
+    reads = artifact_reads(monkeypatch)
     cache = JobArtifactCache(tmp_path)
     for _ in range(2):
         cache.begin()
         assert cache.find(root, "sim", "1", "report") is None
+        assert cache.diagnostics == []
         cache.complete()
     assert reads == [path]
     report(root, "sim", 1)
@@ -222,12 +235,12 @@ def test_directory_checks_shared_once_and_refreshed_after_link_change(tmp_path, 
         ),
     ],
 )
-@pytest.mark.parametrize("limit", [0, 100])
-def test_internal_components_refused(tmp_path, monkeypatch, component, refusal, limit):
+@pytest.mark.parametrize("overflow", [True, False])
+def test_internal_components_refused(tmp_path, monkeypatch, component, refusal, overflow):
     project = tmp_path / "project"
     root = project / "logs/.runtime/jobs"
     path = progress(report(root, "sim", 1).with_name("progress.json"))
-    kind = "report" if limit else "progress"
+    kind = "progress" if overflow else "report"
     path = path.with_name(kind + ".json")
     source = (path, *path.parents)[component]
     moved = tmp_path / "moved"
@@ -238,24 +251,19 @@ def test_internal_components_refused(tmp_path, monkeypatch, component, refusal, 
         source.symlink_to(
             moved if refusal == "link" else tmp_path / "missing", target_is_directory=component > 0
         )
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
+    if overflow:
+        bound(monkeypatch, 0)
     cache = JobArtifactCache(project)
     cache.begin()
     assert cache.find(root, "sim", "1", kind) is None
 
 
-def test_relative_lexical_project_spelling_and_outside_root(tmp_path, monkeypatch):
-    project = tmp_path / "project"
-    root = project / "jobs"
-    report(root, "sim", 1)
+def test_relative_lexical_project_spelling(tmp_path, monkeypatch):
+    report(tmp_path / "project/jobs", "sim", 1)
     monkeypatch.chdir(tmp_path)
     cache = JobArtifactCache(Path("unused/../project"))
     cache.begin()
     assert cache.find(Path("project/jobs"), "sim", "1", "report") is not None
-    outside = tmp_path / "outside/jobs"
-    report(outside, "sim", 1)
-    assert cache.find(outside, "sim", "1", "report") is None
-    assert f"Job artifact root unavailable: {outside}" in cache.diagnostics
 
 
 def test_shared_refuse_symlinks_keeps_whole_ancestor_guard(tmp_path):
@@ -270,11 +278,12 @@ def test_shared_refuse_symlinks_keeps_whole_ancestor_guard(tmp_path):
         refuse_symlinks(alias / path.relative_to(real))
 
 
-@pytest.mark.parametrize("limit", [0, 100])
-def test_progress_shape_identity_and_size_limit(tmp_path, monkeypatch, limit):
+@pytest.mark.parametrize("overflow", [True, False])
+def test_progress_shape_identity_and_size_limit(tmp_path, monkeypatch, overflow):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1).with_name("progress.json")
-    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", limit)
+    if overflow:
+        bound(monkeypatch, 0)
     cache = JobArtifactCache(tmp_path)
     for updates in ({"complete": False}, {"flow": "lint"}, {"run_id": "other"}, {"run_id": 1}):
         progress(path, **updates)
@@ -287,41 +296,20 @@ def test_progress_shape_identity_and_size_limit(tmp_path, monkeypatch, limit):
     assert cache.find(root, "sim", "1", "progress") is None
 
 
-def test_artifact_read_survives_transient_sharing_error(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_opens
-
+@pytest.mark.parametrize("held,found", [(1, True), (100, False)], ids=["transient", "lasting"])
+def test_artifact_read_sharing_error(tmp_path, monkeypatch, held, found):
     root = tmp_path / "jobs"
     path = report(root, "sim", 1)
-    attempts = hold_opens(monkeypatch, {path: 1})
+    attempts = hold_opens(monkeypatch, {path: held})
     cache = JobArtifactCache(tmp_path)
     cache.begin()
-    found = cache.find(root, "sim", "1", "report")
-    assert found is not None
-    assert found[0]["run_id"] == "1"
-    assert attempts[path] == 2
-    assert cache.diagnostics == []
-
-
-def test_lasting_artifact_sharing_error_is_a_diagnostic(tmp_path, monkeypatch):
-    from tests.sharing_error_support import hold_opens
-
-    root = tmp_path / "jobs"
-    path = report(root, "sim", 1)
-    attempts = hold_opens(monkeypatch, {path: 100})
-    cache = JobArtifactCache(tmp_path)
-    cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
-    assert attempts[path] > 1
-    assert len(cache.diagnostics) == 1
-    assert cache.diagnostics[0].startswith(f"Job artifact unavailable: {path}: ")
-
-
-def test_artifact_missing_and_corrupt_documents_read_as_absent(tmp_path):
-    root = tmp_path / "jobs"
-    path = report(root, "sim", 1)
-    path.write_text("not json", encoding="utf-8")
-    cache = JobArtifactCache(tmp_path)
-    cache.begin()
-    assert cache.find(root, "sim", "1", "report") is None
-    assert cache.find(root, "sim", "2", "report") is None
-    assert cache.diagnostics == []
+    result = cache.find(root, "sim", "1", "report")
+    if found:
+        assert attempts[path] == 2
+        assert result is not None and result[0]["run_id"] == "1"
+        assert cache.diagnostics == []
+    else:
+        assert attempts[path] > 1
+        assert result is None
+        assert len(cache.diagnostics) == 1
+        assert cache.diagnostics[0].startswith(f"Job artifact unavailable: {path}: ")

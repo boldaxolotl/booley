@@ -20,6 +20,8 @@ MAX_RERUN_FAILURES = 5
 
 _FAILURE_TAGS = {"failure": "flakyFailure", "error": "flakyError"}
 _RERUN_TAGS = {"failure": "rerunFailure", "error": "rerunError"}
+#: The children of a ``testcase`` that record a failure which passed on the rerun.
+FLAKY_TAGS = frozenset(_FAILURE_TAGS.values())
 _Key = tuple[str, str]
 
 
@@ -31,7 +33,7 @@ def _failure_children(case: ElementTree.Element) -> list[ElementTree.Element]:
     return [child for child in case if child.tag in _FAILURE_TAGS]
 
 
-def _node_id(classname: str, name: str, root: Path) -> str:
+def node_id(classname: str, name: str, root: Path) -> str:
     parts = classname.split(".")
     for size in range(len(parts), 0, -1):
         module = "/".join(parts[:size]) + ".py"
@@ -82,7 +84,7 @@ def failed_ids(
             "worker crashed: its coverage data is lost, so a rerun cannot restore the "
             "shard's coverage"
         )
-    return {key: _node_id(*key, root) for key in sorted(keys)}
+    return {key: node_id(*key, root) for key in sorted(keys)}
 
 
 def rerun_arguments(first: list[str], ids: list[str]) -> list[str]:

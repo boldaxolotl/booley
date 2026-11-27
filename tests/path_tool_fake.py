@@ -14,6 +14,7 @@ hangs logs first), so a logged call is a handshake the test can poll.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -24,7 +25,7 @@ from typing import Any
 import pytest
 
 _CHILD = """\
-import json, os, sys, time
+import base64, json, os, sys, time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -46,6 +47,8 @@ if rule["hang_s"] is not None:
         handle.write(json.dumps(entry) + "\\n")
     time.sleep(rule["hang_s"])
     raise SystemExit(rule["returncode"])
+if rule["output"] is not None:
+    Path(args[args.index("-o") + 1]).write_bytes(base64.b64decode(rule["output"]))
 sys.stdout.write(rule["stdout"])
 sys.stdout.flush()
 sys.stderr.write(rule["stderr"])
@@ -100,6 +103,7 @@ class PathToolFake:
         returncode: int = 0,
         reads_input: bool = False,
         hang_s: float | None = None,
+        output: bytes | None = None,  # written to the file after ``-o``
     ) -> None:
         self.rules.append(
             {
@@ -109,6 +113,7 @@ class PathToolFake:
                 "returncode": returncode,
                 "reads_input": reads_input,
                 "hang_s": hang_s,
+                "output": None if output is None else base64.b64encode(output).decode("ascii"),
             }
         )
         self.save()
