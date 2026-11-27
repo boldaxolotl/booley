@@ -22,7 +22,7 @@ from booley.measurement.run_store import FlowReport, MeasurementStore, StoredRun
 from booley.presentation import colors
 from booley.runtime.pinned_history import FileCommitError
 from tests.measurement.test_base_run import Entry, Table, build_run, values
-from tests.measurement.test_rules_diff import AREA, SYNTH
+from tests.measurement.test_rules_diff import AREA, SYNTH, versioned_case
 from tests.measurement.test_run_store import (
     fingerprint,
     in_tree_repository,
@@ -32,7 +32,6 @@ from tests.measurement.test_run_store import (
 )
 from tests.measurement.test_run_view import (
     feature_repo,
-    stored_in_versioned_case,
     synth_entries,
     tree_of,
     view_of,
@@ -402,7 +401,9 @@ def test_delta_reads_no_base_run_then_no_base_value(tmp_path: Path) -> None:
 
     # The commit on ``main`` is its own base: no Base, no Δ, nothing compared.
     own = store.write(make_run(key_of(repo, base), "own", flow="synth"), [])
-    alone = markdown_report(view_of(repo, store, own, base))
+    own_view = view_of(repo, store, own, base)
+    assert own_view["view"]["changed"] is None
+    alone = markdown_report(own_view)
     assert metric_row(alone, "cell_count")[6] == "no base"
     assert "- no base: the measured commit" in alone
     assert "- rules not compared: the measured commit" in alone
@@ -502,13 +503,13 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
-    targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:other:1.0#top", "acme:a:1.0#y")
+    targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:other:1.0#top", "acme:a:1.0#x")
     run = replace(build_run(key_of(repo, head), "r1", (table,)), targets=targets)
     stored = store.write(run, [])
 
     view = view_of(repo, store, stored, head)
 
-    line = "Targets with no metrics: acme:b:1.0#x, acme:other:1.0#top, acme:a:1.0#y"
+    line = "Targets with no metrics: acme:b:1.0#x, acme:other:1.0#top, acme:a:1.0#x"
     assert markdown_report(view).splitlines()[2] == "**Green: accepted**"
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
@@ -517,6 +518,16 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     every = view_of(repo, store, store.write(only_tabled, []), head)
     assert "Targets with no metrics" not in markdown_report(every)
     assert "Targets with no metrics" not in terminal_report(every)
+
+
+def stored_in_versioned_case(tmp_path: Path) -> tuple[Path, Path, MeasurementStore, StoredRun]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    checkout, booley = versioned_case(tmp_path, "standalone")
+    head = git(checkout, "rev-parse", "HEAD")
+    store = MeasurementStore(booley)
+    run = make_run(key_of(checkout, head), "r1", flow="synth")
+    stored = store.write(replace(run, protected_paths=(".booley/metrics.toml",)), [])
+    return checkout, booley, store, stored
 
 
 def test_versioned_booley_directory_names_the_rules_base(tmp_path: Path) -> None:

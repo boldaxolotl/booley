@@ -99,16 +99,6 @@ def test_view_holds_the_stored_run_unchanged_and_round_trips(
     assert (commit["booley_commit"], commit["booley_tree"]) == (None, None)
 
 
-def stored_in_versioned_case(tmp_path: Path) -> tuple[Path, Path, MeasurementStore, StoredRun]:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    checkout, booley = versioned_case(tmp_path, "standalone")
-    head = git(checkout, "rev-parse", "HEAD")
-    store = MeasurementStore(booley)
-    run = make_run(key_of(checkout, head), "r1", flow="synth")
-    stored = store.write(replace(run, protected_paths=(".booley/metrics.toml",)), [])
-    return checkout, booley, store, stored
-
-
 def stealth_view(
     root: Path, stored_under: dict[str, int], *, on_main: bool = False
 ) -> tuple[dict[str, Any], str, str]:
