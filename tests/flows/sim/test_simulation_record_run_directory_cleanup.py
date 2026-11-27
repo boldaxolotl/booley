@@ -1,9 +1,9 @@
-"""Booley-created empty run_cwd parents and run-lock files are cleaned up (#1971)."""
+"""Booley-created run_cwd parents and run locks are cleaned up (#1971); claims serialize."""
 
 from __future__ import annotations
 
-import threading
-import time
+from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +18,15 @@ from booley.flows.sim.record.run_directory import (
     restore_run_directory_from_project_data,
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from tests.time_budget import hang_guard_s
+from tests.job_slot_steps import (
+    FINISH_STEP_CAP,
+    Actor,
+    FakeProcessWorld,
+    StepScheduler,
+    Worker,
+    stepped_file_lock_wait,
+    stepped_root,
+)
 
 TEMPLATE = "work/{record}/{test}/{attempt}"
 ATTEMPT_MARKER = ".booley-simulation-attempt.json"
@@ -70,6 +78,53 @@ def _lock_names(root: Path) -> list[str]:
     return sorted(path.name for path in locks.iterdir()) if locks.is_dir() else []
 
 
+LOCK_WAIT = ("lock_wait", "")
+
+
+@pytest.fixture
+def scheduler(monkeypatch: pytest.MonkeyPatch) -> Iterator[StepScheduler]:
+    """Claims run one filesystem step at a time; the run-lock wait is a scheduling point."""
+    monkeypatch.setattr(run_directory_module, "wait_for_file_lock", stepped_file_lock_wait)
+    machine = StepScheduler(FakeProcessWorld())
+    yield machine
+    machine.abort()
+
+
+def _start_claim(
+    scheduler: StepScheduler,
+    index: int,
+    run: RunDirectory,
+    identity: dict[str, str],
+    events: list[str],
+) -> Worker:
+    """Start claiming *run* as actor *index*; the claim's body is one file write."""
+    actor = Actor(index, scheduler.world, scheduler, Path(), lambda *_: False)
+    stepped = replace(run, path=stepped_root(run.path, scheduler))
+
+    def claim() -> None:
+        with claimed_run_directory(stepped, identity=identity) as path:
+            events.append(f"{actor.name} in")
+            (path / f"{actor.name}.log").write_text(actor.name, encoding="utf-8")
+            events.append(f"{actor.name} out")
+
+    return scheduler.start(actor, actor.name, claim)
+
+
+def _grant_until(scheduler: StepScheduler, worker: Worker, *stops: tuple[str, str]) -> None:
+    """Grant *worker* steps until it ends or its next step is one of *stops*."""
+    for _ in range(FINISH_STEP_CAP):
+        scheduler.grant(worker)
+        if worker.state != "parked" or worker.pending in stops:
+            return
+    raise AssertionError(f"{worker.label} never reached {stops}")
+
+
+def _drain_ok(scheduler: StepScheduler) -> None:
+    """Run every claim to its end; a claim left unfinished or ended by an OSError fails."""
+    scheduler.drain()
+    assert [w.oserror for w in scheduler.workers if w.state != "done" or w.oserror] == []
+
+
 def test_cleanup_keeps_preexisting_parent_and_template_root(tmp_path: Path) -> None:
     (tmp_path / "work/c1").mkdir(parents=True)
     for simulation_record in ("c1", "c2"):
@@ -89,30 +144,7 @@ def test_cleanup_stops_at_parent_with_foreign_content(tmp_path: Path) -> None:
     assert (tmp_path / "work/c/notes.txt").read_text(encoding="utf-8") == "mine"
 
 
-def _claim_siblings_in_parallel(tmp_path: Path) -> None:
-    """Claim eight sibling attempts of one record behind a barrier; none may fail."""
-    workers = 8
-    barrier = threading.Barrier(workers)
-    errors: list[BaseException] = []
-
-    def claim(index: int) -> None:
-        run, identity = _run(tmp_path, "c", f"t{index}")
-        try:
-            barrier.wait()
-            with claimed_run_directory(run, identity=identity):
-                time.sleep(0.01)
-        except BaseException as error:  # noqa: BLE001 - surfaced by the assert below
-            errors.append(error)
-
-    threads = [threading.Thread(target=claim, args=(index,)) for index in range(workers)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert errors == []
-
-
-def test_concurrent_sibling_attempts_keep_each_others_directories(tmp_path: Path) -> None:
+def test_overlapping_sibling_attempts_keep_each_others_directories(tmp_path: Path) -> None:
     # Sequential overlap: the creator of the shared parent finishes before its sibling.
     first, first_identity = _run(tmp_path, "c", "t1")
     second, second_identity = _run(tmp_path, "c", "t2")
@@ -128,8 +160,6 @@ def test_concurrent_sibling_attempts_keep_each_others_directories(tmp_path: Path
     assert (tmp_path / "work/c").is_dir()
     second_cm.__exit__(None, None, None)
     assert not (tmp_path / "work/c").exists()
-    assert list((tmp_path / "work").iterdir()) == []
-    _claim_siblings_in_parallel(tmp_path)
     assert list((tmp_path / "work").iterdir()) == []
 
 
@@ -320,43 +350,53 @@ def test_templated_run_locks_do_not_accumulate(tmp_path: Path) -> None:
 
 
 def test_unlinked_run_lock_still_serializes_waiters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, scheduler: StepScheduler
 ) -> None:
-    template = "work/{test}"
-    sections: list[tuple[float, float]] = []
-    guard = threading.Lock()
-    waiting = threading.Event()
-    real_wait = run_directory_module.wait_for_file_lock
-
-    def spy(handle: object, **kwargs: object) -> None:
-        # Flag the moment the waiter holds the old lock inode and is about to block.
-        if threading.current_thread().name == "waiter":
-            waiting.set()
-        real_wait(handle, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(run_directory_module, "wait_for_file_lock", spy)
-
-    def critical(attempt: str) -> None:
-        run, identity = _run(tmp_path, "c", "t", attempt, template)
-        with claimed_run_directory(run, identity=identity):
-            start = time.monotonic()
-            time.sleep(0.2)
-            with guard:
-                sections.append((start, time.monotonic()))
-
-    holder, holder_identity = _run(tmp_path, "c", "t", "holder", template)
-    holder_cm = claimed_run_directory(holder, identity=holder_identity)
-    holder_cm.__enter__()
-    waiter = threading.Thread(target=critical, args=("waiter",), name="waiter")
-    waiter.start()
-    assert waiting.wait(timeout=hang_guard_s())
-    time.sleep(0.1)
-    holder_cm.__exit__(None, None, None)
-    late = threading.Thread(target=critical, args=("late",), name="late")
-    late.start()
-    waiter.join()
-    late.join()
-    ordered = sorted(sections)
-    assert len(ordered) == 2
-    assert ordered[0][1] <= ordered[1][0]
+    events: list[str] = []
+    claims = [_run(tmp_path, "c", "t", attempt, "work/{test}") for attempt in ("h", "w", "l")]
+    holder = _start_claim(scheduler, 0, *claims[0], events)
+    _grant_until(scheduler, holder, ("write_text", "A.log"))
+    waiter = _start_claim(scheduler, 1, *claims[1], events)
+    _grant_until(scheduler, waiter, LOCK_WAIT)
+    scheduler.finish(holder)  # POSIX unlinks the lock the waiter has open; Windows keeps it
+    late = _start_claim(scheduler, 2, *claims[2], events)
+    _grant_until(scheduler, late, ("write_text", "C.log"))  # holds the lock; a new file on POSIX
+    _grant_until(scheduler, waiter, LOCK_WAIT, ("write_text", "B.log"))
+    assert waiter.pending == LOCK_WAIT
+    _drain_ok(scheduler)
+    assert events == ["A in", "A out", "C in", "C out", "B in", "B out"]
     assert [name for name in _lock_names(tmp_path) if name != "parents.lock"] == []
+
+
+def test_sibling_cleanup_waits_for_a_sibling_filling_the_parent(
+    tmp_path: Path, scheduler: StepScheduler
+) -> None:
+    events: list[str] = []
+    remover = _start_claim(scheduler, 0, *_run(tmp_path, "c", "t", "a1"), events)
+    # The remover found the shared parent work/c/t holding only its marker and removes it next.
+    _grant_until(scheduler, remover, ("unlink", PARENT_MARKER))
+    filler = _start_claim(scheduler, 1, *_run(tmp_path, "c", "t", "a2"), events)
+    _grant_until(scheduler, filler, LOCK_WAIT, ("write_text", "B.log"))
+    scheduler.finish(remover)
+    _drain_ok(scheduler)
+    assert list((tmp_path / "work").iterdir()) == []
+
+
+def test_canonical_collision_keys_serialize_aliased_claims(
+    tmp_path: Path, scheduler: StepScheduler
+) -> None:
+    literal = tmp_path / "literal"
+    literal.mkdir()
+    (first, mine), (alias, theirs) = (
+        _run(tmp_path, "c", "t", attempt, str(configured))
+        for attempt, configured in (("a1", literal), ("a2", literal / ".." / "literal"))
+    )
+    events: list[str] = []
+    owner = _start_claim(scheduler, 0, first, mine, events)
+    _grant_until(scheduler, owner, ("write_text", "A.log"))
+    other = _start_claim(scheduler, 1, alias, theirs, events)
+    _grant_until(scheduler, other, LOCK_WAIT, ("write_text", "B.log"))
+    assert other.pending == LOCK_WAIT
+    _drain_ok(scheduler)
+    assert first.collision_key == alias.collision_key
+    assert events == ["A in", "A out", "B in", "B out"]
