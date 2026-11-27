@@ -237,9 +237,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         self,
         targets: list[str],
         current: dict[str, FpgaMetrics],
-        baseline: dict[str, FpgaMetrics],
-        short_sha: str | None,
-        reports: dict[str, ImplementationReport],
+        baseline: dict[str, FpgaMetrics],  # noqa: ARG002 — overrides ImplementationFlow._result_detail
+        short_sha: str | None,  # noqa: ARG002 — overrides ImplementationFlow._result_detail
+        reports: dict[str, ImplementationReport],  # noqa: ARG002 — overrides ImplementationFlow._result_detail
         aggregate: ImplementationAggregate,
         /,
     ) -> dict[str, Any]:

@@ -585,7 +585,7 @@ class SimulationRecord:
         raise_if_cancelled_before_publication()
         note_final_work_item_oom_kill(work_item_label(work_item), passed=passed)
         try:
-            self._publish_scheduled_result(store, attempt, work_item_id, result)
+            self._publish_scheduled_result(store, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
             target = cast(Mapping[str, str], manifest.document["target"])
             coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"]
@@ -645,7 +645,6 @@ class SimulationRecord:
     def _publish_scheduled_result(
         self,
         store: SimulationRecordStore,
-        attempt: ScheduledAttempt,
         work_item_id: str,
         result: SimulationResult,
     ) -> None:

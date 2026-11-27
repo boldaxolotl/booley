@@ -31,10 +31,10 @@ class _AccumulateScope(argparse.Action):
 
     def __call__(
         self,
-        parser: argparse.ArgumentParser,
+        parser: argparse.ArgumentParser,  # noqa: ARG002 — argparse.Action.__call__ signature
         namespace: argparse.Namespace,
         values: str | Sequence[str] | None,
-        option_string: str | None = None,
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         previous = getattr(namespace, self.dest, None)
         setattr(namespace, self.dest, values if previous is None else f"{previous},{values}")

@@ -2314,13 +2314,12 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
             report["run_id"] = run_id
-        self._add_report_artifacts(report, report_path.parent, report_path, target, current)
+        self._add_report_artifacts(report, report_path, target, current)
         return report
 
     def _add_report_artifacts(
         self,
         report: dict[str, Any],
-        report_dir: Path,
         report_path: Path,
         target: str,
         metrics: SynthMetrics,
@@ -2330,9 +2329,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
         # MCP layer tail-truncates; ``reports`` was already here but not the log
         # itself. Both now travel together in the shared ``artifacts`` shape,
         # alongside this file's own path.
-        preserved = self._snapshot_report_artifacts(
-            report_dir, synth_target_report_slug(target), metrics
-        )
+        preserved = self._snapshot_report_artifacts(synth_target_report_slug(target), metrics)
         report["artifacts"] = {
             "report": posix_relpath(report_path, self.args.work_dir),
             **preserved,
@@ -2354,7 +2351,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             report["baseline"]["timing_unavailable"] = "baseline run produced no timing reports"
 
     def _snapshot_report_artifacts(
-        self, report_dir: Path, safe_target: str, metrics: SynthMetrics
+        self, safe_target: str, metrics: SynthMetrics
     ) -> dict[str, Any]:
         """Copy mutable log/timing evidence beside this invocation's report."""
         root = Path(self.args.work_dir)
@@ -2393,7 +2390,7 @@ class AsicSynthesizeFlow(ImplementationFlow[SynthRequest, SynthMetrics]):
             return f"synth: {exc}"
         return None
 
-    def _begin_run(self, targets: list[str], /) -> None:
+    def _begin_run(self, targets: list[str], /) -> None:  # noqa: ARG002 — overrides ImplementationFlow._begin_run
         """Reset the per-run baseline state so a reused instance never leaks a stale value."""
         self._baseline_selfcompare_msg = None
         self._baseline_timing = {}

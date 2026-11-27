@@ -271,7 +271,6 @@ class SimulationTestSelectionMixin:
             wanted = [parse_test_selector(text).test for text in self.args.test]
             return cast(list[str | None], _filter_tests(available, wanted))
         suite = resolve_target_test_suite(
-            target,
             identity=self._target_identity(target),
             test_names=test_names_map,
             test_skips=_get_test_skips(self.args.work_dir),
@@ -295,10 +294,10 @@ class SimulationTestSelectionMixin:
         if key not in cache:
             plan = self._registered_test_plan(target, test_names_map)
             self._test_runs.default_seeds.setdefault(target, plan.default_seed)
-            cache[key] = self._plan_test_runs(plan, target)
+            cache[key] = self._plan_test_runs(plan)
         return cache[key]
 
-    def _plan_test_runs(self, plan: TargetTestPlan, target: str) -> tuple[TestRun, ...]:
+    def _plan_test_runs(self, plan: TargetTestPlan) -> tuple[TestRun, ...]:
         """Resolve this request on *plan* from the current ``tests.toml``."""
         selectors = tuple(self.args.test) if self.args.test else None
         return plan.resolve(selectors, seed=getattr(self.args, "seed", None))

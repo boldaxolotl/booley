@@ -382,7 +382,11 @@ PendingValue = tuple[Value, str]
 
 
 def _check_release(
-    pin: Pin, tree: Tree, url: str, digest: str, upstream: Upstream
+    pin: Pin,
+    tree: Tree,  # noqa: ARG001 — dispatched through _CHECKS with one shared signature
+    url: str,
+    digest: str,
+    upstream: Upstream,
 ) -> list[PendingValue]:
     """Cross-check the digest GitHub publishes for the release asset, when it publishes one."""
     match = _RELEASE_URL.fullmatch(url)

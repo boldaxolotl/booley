@@ -210,9 +210,9 @@ class _RootHelpAction(argparse.Action):
     def __call__(
         self,
         parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
+        namespace: argparse.Namespace,  # noqa: ARG002 — argparse.Action.__call__ signature
+        values: Any,  # noqa: ARG002 — argparse.Action.__call__ signature
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         self._root_parser.print_help()
         parser.exit()
@@ -350,9 +350,9 @@ class _PrintVersion(argparse.Action):
     def __call__(
         self,
         parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
+        namespace: argparse.Namespace,  # noqa: ARG002 — argparse.Action.__call__ signature
+        values: Any,  # noqa: ARG002 — argparse.Action.__call__ signature
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         sys.stdout.write(_version_string() + "\n")
         parser.exit()
@@ -1747,7 +1747,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     # (e.g. an agent capturing output) fails with "the input device is not a TTY".
     tty = is_interactive and sys.stdin.isatty() and sys.stdout.isatty()
 
-    runner = DockerRunner(docker_cfg, project_root, label="shell")
+    runner = DockerRunner(docker_cfg, project_root)
     argv = runner.ephemeral_argv(payload, tty=tty)
     try:
         return subprocess.run(argv, check=False).returncode
@@ -1875,7 +1875,7 @@ def _quiet_keyboard_interrupt(
     return hook
 
 
-def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
+def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path) -> int:
     """Dispatch a Flow or Specialist through its execution adapter.
 
     A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
@@ -1938,9 +1938,7 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
 def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     """Run a deterministic Flow through its existing entry point."""
     info = _select_endpoint(args, _discover_project_mcp_tools(project_root), "flow")
-    return (
-        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=True)
-    )
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root)
 
 
 def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
@@ -1960,9 +1958,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")
-    return (
-        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=False)
-    )
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root)
 
 
 def _target_detail_payload(

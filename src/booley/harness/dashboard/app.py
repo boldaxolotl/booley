@@ -949,7 +949,7 @@ class DashboardApp(App[None]):
         aside = self.query_one("#aside")
         return self.focused is aside and aside.scroll_y == 0
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:  # noqa: ARG002 — overrides Textual App.check_action
         """Window keys act only on the base screen and while the top bar is not focused."""
         if action not in {"step_window", "focus_top_bar"}:
             return True

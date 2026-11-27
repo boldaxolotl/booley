@@ -610,7 +610,7 @@ class SimulateFlow(
         # Not used — _run() is overridden for multi-config logic
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:  # noqa: ARG002 — overrides Flow._interpret_result
         # Not used — _run() handles interpretation directly
         return EndpointOutcome()
 
@@ -1484,12 +1484,11 @@ class SimulateFlow(
         )
 
     def _ordinary_simulation_record_inputs(self, planned: PlannedTarget, test_names_map):
-        target, handle, preview = planned.selector, planned.handle, planned.preview
+        handle, preview = planned.handle, planned.preview
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         execution = self._simulation_execution()
         disclosures = _group_disclosures(execution, handle, preview.groups, preview.run_groups)
         suite = resolve_target_test_suite(
-            target,
             identity=handle.identity,
             test_names=test_names_map,
             test_skips=_get_test_skips(self.args.work_dir),

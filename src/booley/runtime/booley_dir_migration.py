@@ -221,7 +221,7 @@ def inspect_migration(
     journal = metadata_root(root) / _JOURNAL
     if journal.is_file():
         document = _read_journal(journal, root)
-        observe(_record_directory(root, document))
+        observe(_record_directory(document))
         _require_host_migration()
         _refuse_live_sandboxes(root, document["moves"], document["registrations"])
         return Migration(root, journal, document, observe, integrations)
@@ -235,7 +235,7 @@ def inspect_migration(
     return Migration(root, journal, _capture(root, observe, integrations), observe, integrations)
 
 
-def _record_directory(root: Path, document: dict[str, Any]) -> Path:
+def _record_directory(document: dict[str, Any]) -> Path:
     first = document["moves"][0]
     old, new = Path(first["source"]), Path(first["destination"])
     return old if old.is_dir() else new

@@ -90,7 +90,6 @@ def coverage_threshold(metric: str, stored: int | float) -> CoverageThreshold:
 
 
 def _criterion_fingerprint(
-    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
     waivers: ApprovedWaiverSet,
@@ -213,9 +212,7 @@ def _blocked_coverage_record(
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
     evaluation = {
         "status": "blocked",
-        "criterion_fingerprint": _criterion_fingerprint(
-            coverage_record, criterion, required_tests, waivers
-        ),
+        "criterion_fingerprint": _criterion_fingerprint(criterion, required_tests, waivers),
         "approved_waiver_set_digest": waivers.digest,
         "suite": {
             "status": "mismatch"
@@ -324,7 +321,7 @@ def _scored_coverage_record(
     evaluation = {
         "status": score.status,
         "criterion_fingerprint": _criterion_fingerprint(
-            coverage_record, criterion, required_tests, approved_waivers
+            criterion, required_tests, approved_waivers
         ),
         "approved_waiver_set_digest": approved_waivers.digest,
         "suite": {
