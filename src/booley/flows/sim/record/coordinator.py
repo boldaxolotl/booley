@@ -127,6 +127,8 @@ class NewSimulationRecordPreviewRequest:
     project_root: Path
     report_root: Path | None
     policy: SimulationRecordPolicy
+    # An existing Simulation Record this run continues.
+    record_directory: Path | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +328,13 @@ class SimulationRecord:
         still have work left, each against its own bound Project Root.
         """
         if isinstance(request, NewSimulationRecordPreviewRequest):
-            _preflight_run_directory(request.plan.manifest, request.project_root)
+            continued = _continued_store(request)
+            if continued is None:
+                _preflight_run_directory(request.plan.manifest, request.project_root)
+                return
+            # Identity first: a changed workload is reported before a run_cwd problem.
+            stored = _stored_manifest(continued, request.plan.manifest)
+            self._preflight_incomplete(stored, continued.scan(stored), request)
             return
         validated = request.validated
         store = SimulationRecordStore(validated.path.parent, booley_dir=validated.booley_dir)
@@ -365,13 +373,10 @@ class SimulationRecord:
     ) -> tuple[SimulationRecordStore, SimulationRecordManifest, str | None]:
         if isinstance(request, NewSimulationRecordRunRequest):
             store = _new_store(request)
-            if not store.manifest_path.exists():
-                self._publish_manifest(store, request.plan.manifest)
-            elif store.load_manifest() != request.plan.manifest:
-                raise SimulationRecordIntegrityError(
-                    "record path already contains another manifest"
-                )
-            manifest = request.plan.manifest
+            manifest = _continued_manifest(store, request)
+            if manifest is None:
+                manifest = request.plan.manifest
+                self._publish_manifest(store, manifest)
             authenticated_manifest_sha256 = None
         else:
             store = SimulationRecordStore(
@@ -497,11 +502,7 @@ class SimulationRecord:
             manifest,
             cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]),
         )
-        if store.manifest_path.exists():
-            if store.load_manifest() != request.plan.manifest:
-                raise SimulationRecordIntegrityError(
-                    "record path already contains another manifest"
-                )
+        if _continued_manifest(store, request) is not None:
             if self._manifest_published is not None:
                 self._manifest_published(store.manifest_path)
             return store.manifest_path
@@ -922,7 +923,38 @@ def _new_preview(request: NewSimulationRecordPreviewRequest) -> NewSimulationRec
     )
 
 
+def _continued_store(request: NewSimulationRecordPreviewRequest) -> SimulationRecordStore | None:
+    if request.record_directory is None:
+        return None
+    return SimulationRecordStore(
+        request.record_directory, booley_dir=simulation_booley_dir(request.project_root)
+    )
+
+
+def _stored_manifest(
+    store: SimulationRecordStore, planned: SimulationRecordManifest
+) -> SimulationRecordManifest:
+    """The record's own manifest, once *planned* has the same workload identity."""
+    stored = store.load_manifest()
+    verify_workload(stored, planned)
+    return stored
+
+
+def _continued_manifest(
+    store: SimulationRecordStore, request: NewSimulationRecordRunRequest
+) -> SimulationRecordManifest | None:
+    """The stored manifest this run continues; None when it publishes its own.
+
+    A named ``record_directory`` never gets a new manifest: a missing one is refused.
+    """
+    if request.record_directory is None and not store.manifest_path.exists():
+        return None
+    return _stored_manifest(store, request.plan.manifest)
+
+
 def _new_store(request: NewSimulationRecordRunRequest) -> SimulationRecordStore:
+    if (continued := _continued_store(request)) is not None:
+        return continued
     target = cast(Mapping[str, str], request.plan.manifest.document["target"])
     selector = target["selector"]
     if target["role"] == "cycle_count_baseline":

@@ -1987,7 +1987,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
 def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, object]]:
     """The ``cycle_count_baseline`` prerequisite documents a record of *plan* would be given.
 
-    A record that kept baseline prerequisites still resumes; this builds that format.
+    Resume refuses a record with prerequisites; this builds that format.
     """
     raw = encode_simulation_record_manifest(plan.manifest)
     manifest_ref = {

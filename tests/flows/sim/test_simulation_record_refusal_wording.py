@@ -16,7 +16,6 @@ from booley.flows.sim.acceptance import publish_simulation_record_projections
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
 from booley.flows.sim.record import decode_simulation_projection, store
 from booley.flows.sim.record.capacity import SimulationRecordCapacityError
-from booley.flows.sim.record.codec import encode_simulation_record_manifest
 from booley.flows.sim.record.coordinator import SimulationRecord, SimulationRecordPolicy
 from booley.flows.sim.record.flow_planning import (
     plan_coarse_simulation_record,
@@ -24,15 +23,12 @@ from booley.flows.sim.record.flow_planning import (
 )
 from booley.flows.sim.record.inspection import authenticate_work_item
 from booley.flows.sim.record.model import SimulationRecordDocument
-from booley.flows.sim.record.planning import finalize_manifest
-from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordIntegrityError
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.test_runs import build_test_run
 from booley.runtime.job_slots import SlotStore
 from tests.flows.sim.simulation_record_test_support import _capacity, _managed, _outer_claim
 from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
-from tests.flows.sim.test_simulation_record_manifest_codec import _linked_simulation_record_stores
 from tests.flows.sim.test_test_run_evidence_rows import _RESET, _outcome
 
 
@@ -143,20 +139,6 @@ def test_coarse_planning_refuses_duplicate_test_runs(tmp_path: Path) -> None:
             trace=False,
             kind="coverage_aggregate",
         )
-
-
-def test_a_prerequisite_must_name_the_recorded_identity(tmp_path: Path) -> None:
-    candidate, candidate_store, _baseline, _baseline_store = _linked_simulation_record_stores(
-        tmp_path
-    )
-    document = json.loads(encode_simulation_record_manifest(candidate))
-    document.pop("fingerprints")
-    document["prerequisites"][0]["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440999"
-    candidate_store.manifest_path.write_bytes(
-        encode_simulation_record_manifest(finalize_manifest(document))
-    )
-    with pytest.raises(SimulationRecordIntegrityError, match="prerequisite record identity"):
-        validate_resume_manifest(candidate_store.manifest_path, project_root=tmp_path)
 
 
 def test_projection_publication_refuses_a_foreign_outcome() -> None:
