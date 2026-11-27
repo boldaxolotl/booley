@@ -132,6 +132,7 @@ from booley.runtime import (
     project_repositories,
     runtime_context,
     session_runtime,
+    t3_inspection,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import (
@@ -1432,8 +1433,32 @@ def _run_runtime_phase(
         sandbox_image,
         reporter,
     )
+    # Before the Flow phase, which can start a stopped Sandbox.
+    _run_t3_code_checks(project, docker_exe, sandbox_image, reporter)
     progress("Project checks")
     _run_project_checks(project, reporter)
+
+
+def _run_t3_code_checks(
+    project: ProjectAudit | None, docker_exe: str | None, image: str, reporter: _Reporter
+) -> None:
+    """Check the pinned T3 Code install, its server and the host relay."""
+    _section("T3 Code checks")
+    remedy = functools.partial(_image_stale_remedy, project)
+    if runtime_context.inside_session_runtime():
+        reporter.diagnostics(t3_inspection.inspect_install(["t3", "--version"], remedy))
+        reporter.diagnostics(t3_inspection.inspect_ui_in_sandbox())
+    elif project is None:
+        reporter.skip_("T3 Code checks skipped - project config invalid")
+    elif docker_exe is None:
+        reporter.skip_("T3 Code checks skipped - no Docker/Podman runtime found on this host")
+    else:
+        if _docker_image_exists_by_name(image):
+            command = [docker_exe, "run", "--rm", image, "t3", "--version"]
+            reporter.diagnostics(t3_inspection.inspect_install(command, remedy))
+        else:
+            reporter.skip_("T3 Code version check skipped - Sandbox Image missing")
+        reporter.diagnostics(t3_inspection.inspect_ui(project.project_root))
 
 
 def _target_checks_blocker(project: ProjectAudit | None) -> str | None:

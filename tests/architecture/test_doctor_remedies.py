@@ -67,6 +67,7 @@ _AUDITED_MODULES = (
     "runtime/incontainer_setup.py",
     "runtime/project_image.py",
     "runtime/bundled_extensions.py",
+    "runtime/t3_inspection.py",
 )
 
 _NON_DOCTOR_PRINTERS = {

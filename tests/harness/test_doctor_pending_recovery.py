@@ -44,5 +44,9 @@ def test_host_doctor_leaves_pending_sandbox_recovery_to_lifecycle_commands(
         assert {f.severity for f in dry_runs} == {Severity.SKIP}
         assert all(f.message.endswith("recovery is pending on this host") for f in dry_runs)
         assert not [f for f in result.findings if "could not enter the Sandbox" in f.message]
+        assert (
+            "T3 Code server and relay checks could not run: Sandbox recovery is pending on this host"
+            in _messages(result, Severity.SKIP)
+        )
         rows.append([(f.severity, f.message) for f in result.findings])
     assert rows[0] == rows[1]

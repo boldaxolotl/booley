@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     from booley.runtime.session_admission import Sandbox
     from booley.runtime.session_issuance import Issuance
     from booley.runtime.session_refresh import RefreshImage
-    from booley.runtime.t3_relay import RelayStart
+    from booley.runtime.t3_relay import RelayObservation, RelayStart
 
 logger = logging.getLogger(__name__)
 
@@ -918,7 +918,8 @@ def _up_unlocked(
 def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> EnsureResult:
     """Ensure a Sandbox and expose startup metadata to the CLI.
 
-    Without *ui* nothing starts T3 Code or its relay; a Sandbox that already runs keeps them.
+    Without *ui* nothing starts T3 Code or its relay; a Sandbox that already runs keeps them,
+    and one this call starts drops the relay left from before.
     """
     from booley.runtime import t3_relay
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -926,6 +927,11 @@ def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> Ensure
     with host_lifecycle_lock("session up"):
         _recover_before_lifecycle("booley session up")
         result = _ensure_unlocked(workspace, rebuild=rebuild, ui=ui)
+        if result.started and not ui:
+            # Its record would otherwise tell Doctor that a UI should be running.
+            t3_relay.stop(workspace)
+            # `stop` keeps a record whose process it cannot observe: fail, as that raises.
+            t3_relay.observe(workspace, result.name)
         # A VS Code-owned Sandbox is not stopped by `session down`, so it gets no relay.
         if result.vscode or not ui:
             return result
@@ -2663,8 +2669,18 @@ def pairing_link(workspace: Path) -> PairingLink:
     return create_pairing_link(selected.name, port)
 
 
-def ui_status(workspace: Path) -> str | None:
-    """The T3 Code and relay lines of `session status`; ``None`` when no Sandbox runs."""
+@dataclass(frozen=True, slots=True)
+class UiState:
+    """What the running Sandbox and the host's relay record say about the UI."""
+
+    vscode: bool
+    t3: str  # the Sandbox's "running", "off" or "port-taken"; "unknown" when it gave no answer
+    relay: RelayObservation | None
+    relay_error: str | None = None
+
+
+def ui_state(workspace: Path) -> UiState | None:
+    """Observe T3 Code and its relay; ``None`` when no Sandbox runs."""
     from booley.runtime import t3_relay
 
     selected = resolve_running_sandbox(workspace)
@@ -2676,15 +2692,29 @@ def ui_status(workspace: Path) -> str | None:
     except subprocess.TimeoutExpired:
         t3_state = "unknown"
     try:
-        port = t3_relay.running_port(workspace, selected.name)
-        relay = "off" if port is None else f"127.0.0.1:{port}"
-    except t3_relay.T3RelayError:
+        relay = t3_relay.observe(workspace, selected.name)
+    except t3_relay.T3RelayError as exc:
+        return UiState(selected.vscode, t3_state, None, str(exc))
+    return UiState(selected.vscode, t3_state, relay)
+
+
+def ui_status(workspace: Path) -> str | None:
+    """The T3 Code and relay lines of `session status`; ``None`` when no Sandbox runs."""
+    state = ui_state(workspace)
+    if state is None:
+        return None
+    if state.relay_error is not None:
         relay = "unknown"
-    if t3_state == "off" and relay == "off":
+    elif state.relay is None or not state.relay.running:
+        relay = "off"
+    else:
+        relay = f"127.0.0.1:{state.relay.port}"
+    if state.t3 == "off" and relay == "off":
         return "UI: off"
-    if t3_state == incontainer_setup.T3_PORT_TAKEN:
-        t3_state = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
-    return f"T3 Code: {t3_state}\nT3 Code relay: {relay}"
+    t3 = state.t3
+    if t3 == incontainer_setup.T3_PORT_TAKEN:
+        t3 = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
+    return f"T3 Code: {t3}\nT3 Code relay: {relay}"
 
 
 def _project_data_alias_capable(image_id: str) -> bool:
