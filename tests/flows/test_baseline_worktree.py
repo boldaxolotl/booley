@@ -758,7 +758,7 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
     )
     (project / "booley.toml").write_text(
         "[flows.sim]\nrun_cwd = '.'\n[flows.synth]\nenabled = true\n"
-        "[flows.fpga]\nenabled = true\n",
+        "[flows.fpga]\nenabled = true\n[jobs.seats]\nvivado = 1\n",
         encoding="utf-8",
     )
     _git(project, "init", "-q", "-b", "project-owner")
