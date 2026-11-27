@@ -11,14 +11,16 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.sandbox_venue_fake import place
 from tests.session_issuance_support import install_trusted_validator, plain_builder
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning import authority
 from booley.runtime import devcontainer as dc
-from booley.runtime import inspection, runtime_context, session_issuance
+from booley.runtime import inspection, session_issuance
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +42,7 @@ def _configured_project(tmp_path, monkeypatch, *, active: bool):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     executable = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     return project
 
 
@@ -202,7 +204,7 @@ def test_failed_live_enumeration_is_not_an_empty_success(issued_environment):
 def test_malformed_spec_returns_independent_configuration_and_issuance_failures(
     tmp_path, monkeypatch, raw, fake_sandbox_attachment
 ):
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     path = dc.devcontainer_path(tmp_path)
     path.parent.mkdir()
     path.write_text(raw)

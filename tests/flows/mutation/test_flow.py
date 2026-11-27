@@ -40,18 +40,20 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.runtime import resource_history, runtime_context
+from booley.runtime import resource_history
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.canned_process_support import canned_command
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
+from tests.sandbox_venue_fake import place
 from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
@@ -301,7 +303,7 @@ def test_auto_dry_run_with_long_scope_paths_succeeds(tmp_path, monkeypatch):
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime_dir))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     _patch_fake_simulation(monkeypatch)
     _make_endpoint(tmp_path, monkeypatch)  # the run's environment and Target top
 

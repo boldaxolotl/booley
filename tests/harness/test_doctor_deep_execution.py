@@ -18,8 +18,9 @@ from booley.config import agent as agent_config
 from booley.core.models import AgentResult
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import auth_token, health, issuance_invalidation, runtime_context
+from booley.runtime import auth_token, health, issuance_invalidation
 from booley.runtime.agent_errors import UsageLimitError, model_unavailable_error
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.agent_call_fake import install_agent
 from tests.booley_checkouts_support import LAYOUTS, linked_worktree
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
@@ -38,6 +39,7 @@ from tests.harness.test_doctor import (
     _write_project,
 )
 from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture(autouse=True)
@@ -486,8 +488,6 @@ def _model_probe_run(
     ):
         monkeypatch.delenv(name, raising=False)
     if gateway:
-        # Private: it reads /.dockerenv, a host file the test cannot create.
-        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
         monkeypatch.setenv("BOOLEY_GATEWAY_URL", "https://gateway.example/v1")
         monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
@@ -714,7 +714,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     if data_policy is not None:
         _git_init(directory)
         git_stdout(directory, "config", "--local", _RELATIVE_WORKTREES, data_policy)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     route_bounded_capture_through_subprocess_run(monkeypatch, readiness)
     # A qualifying (SUCCESS) outcome needs a clean run, and a whole Sandbox run on a test host
     # always reports the Sandbox Image's missing files and EDA tools. So these phases are replaced:

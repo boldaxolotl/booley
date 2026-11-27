@@ -14,8 +14,8 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows.mutation.flow import MutationFlow
-from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.flows.mutation.test_flow import (
     _DEFAULT_SCOPE_CORE,
     _SCOPE,
@@ -29,6 +29,7 @@ from tests.flows.mutation.test_flow import (
     _run_count_preview,
     _write_tests_toml,
 )
+from tests.sandbox_venue_fake import place
 
 # Every file of ``_DEFAULT_SCOPE_CORE`` plus one ``.sv`` file the Target does not name.
 _CORE_FILES = (
@@ -71,7 +72,7 @@ def _main(
     reports = tmp_path / "reports"
     for key, value in _flow_env(tmp_path / "logs").items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     reached = EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="reached generation")
     (reports / "mutation.json").unlink(missing_ok=True)  # never read a previous run's report
     # Private seam: the fake build stages only `rtl/*.sv`, so a faked campaign cannot

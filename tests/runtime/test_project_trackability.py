@@ -9,10 +9,11 @@ from pathlib import Path
 import pytest
 from tests.conftest import reset_git_command_config
 from tests.git_support import git
+from tests.sandbox_venue_fake import place
 
 from booley.runtime import project_trackability as pt
-from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 @pytest.fixture
@@ -420,7 +421,6 @@ def test_fix_names_where_to_rerun(
     monkeypatch: pytest.MonkeyPatch, location: str, rerun: str
 ) -> None:
     """Sandbox `booley init` skips this check, so only Doctor is offered there."""
-    kind = runtime_context.RuntimeLocation[location]
-    monkeypatch.setattr(runtime_context, "runtime_location", lambda: kind)
+    place(monkeypatch, RuntimeLocation[location])
 
     assert pt.fix().endswith(rerun)
