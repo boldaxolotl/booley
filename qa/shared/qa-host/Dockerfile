@@ -24,8 +24,6 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.28 /uv /usr/local/bin/uv
 RUN usermod -l qa -d /home/qa -m ubuntu && groupmod -n qa ubuntu \
  && groupadd -r docker && usermod -aG docker qa
 
-# Stand-in VS Code CLI that Host Bootstrap does not need; #5634 removes it.
-COPY code-stub.sh /usr/local/bin/code
 COPY entrypoint.sh /usr/local/bin/qa-host-entrypoint
 VOLUME /var/lib/docker
 VOLUME /home/qa
