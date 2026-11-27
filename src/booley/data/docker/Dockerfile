@@ -18,7 +18,7 @@
 # symbols the runtime does not have and fail at exec time, not at build time.
 FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS bwave-builder
 COPY crates/bwave/ /build/bwave/
-RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
+RUN CARGO_NET_RETRY=20 CARGO_TARGET_DIR=/build/target cargo build --release --locked \
         --manifest-path /build/bwave/Cargo.toml
 
 FROM booley-runtime-base

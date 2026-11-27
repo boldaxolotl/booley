@@ -65,6 +65,7 @@ jobs:
           RENOVATE_BINARY_SOURCE: install
           LOG_LEVEL: info
         run: >-
+          bash .github/scripts/retry.sh docker pull "${IMAGE}" &&
           docker run --rm
           -v "${GITHUB_WORKSPACE}:/opt/booley:ro"
           --env RENOVATE_TOKEN
