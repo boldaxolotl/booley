@@ -1,8 +1,8 @@
 """Shared fixtures for infrastructure unit tests.
 
 Stand-ins here: the terminal, the host memory, the Sandbox venue check, the native B-Wave
-binary, the Sandbox owner inventory and the Feature Flag registry (rows of
-docs/internals/TEST_FAKES.md).
+binary, the Sandbox owner inventory, the Feature Flag registry and Project Root
+discovery (rows of docs/internals/TEST_FAKES.md).
 """
 
 from __future__ import annotations
@@ -607,6 +607,30 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
                     cleanup.callback(stack.close)
         if leaks:
             pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
+
+
+@pytest.fixture
+def pinned_project_root(tmp_path: Path) -> Path | None:
+    """The Project Root ``pin_project_root`` answers; override with None for real discovery."""
+    return tmp_path
+
+
+@pytest.fixture
+def pin_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_project_root: Path | None
+) -> None:
+    """Run in tmp_path as the Booley Directory with Project Root discovery pinned."""
+    from booley.runtime import shared_infra
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    if pinned_project_root is not None:
+        # No public input pins the root: a synthetic tmp_path proves no checkout ownership.
+        monkeypatch.setattr(
+            shared_infra, "resolve_project_root", lambda fallback_dir=None: pinned_project_root
+        )
+    # Private seam: the project-config cache is a module global with no public reset.
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
 
 
 @pytest.fixture(autouse=True)

@@ -6,7 +6,7 @@ import pytest
 
 
 @pytest.fixture
-def _flow_project_root() -> None:
+def pinned_project_root() -> None:
     """Exercise the actual lazy root resolver rather than the synthetic checkout."""
 
 
