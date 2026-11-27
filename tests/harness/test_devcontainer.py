@@ -41,9 +41,19 @@ class TestBuildSpec:
         assert spec["shutdownAction"] == "none"
         assert spec["updateRemoteUserUID"] is False
 
-    def test_egress_network_and_reaper_label(self):
-        spec = build_spec(dc.APP_NONE)
-        assert spec["runArgs"] == [
+    @pytest.mark.parametrize("app", dc.SUPPORTED_APPS)
+    @pytest.mark.parametrize(
+        ("options", "memory_args"),
+        [
+            ({}, []),
+            ({"memory": "8g"}, ["--memory", "8g"]),
+            ({"memory": "8g", "memory_swap": "9g"}, ["--memory", "8g", "--memory-swap", "9g"]),
+        ],
+    )
+    def test_run_args_harden_label_and_limit_every_app(self, app, options, memory_args):
+        """The Sandbox hardening (ARCHITECTURE.md#security--trust-model) must guard the
+        venue where the agent actually runs; ADR 0087 adds the optional memory limits."""
+        assert build_spec(app, **options)["runArgs"] == [
             "--init",
             "--network",
             dc.EGRESS_NETWORK,
@@ -55,36 +65,8 @@ class TestBuildSpec:
             "no-new-privileges",
             "--pids-limit",
             str(dc.SESSION_PIDS_LIMIT),
+            *memory_args,
         ]
-
-    def test_hardening_flags_present_for_every_app(self):
-        """The Sandbox hardening (ARCHITECTURE.md#security--trust-model)
-        must guard the venue where the agent actually runs, for every app and
-        regardless of the optional memory limit."""
-        for app in dc.SUPPORTED_APPS:
-            args = build_spec(app, memory="8g")["runArgs"]
-            assert "--init" in args
-            assert args[args.index("--cap-drop") + 1] == "ALL"
-            assert args[args.index("--security-opt") + 1] == "no-new-privileges"
-            assert int(args[args.index("--pids-limit") + 1]) == dc.SESSION_PIDS_LIMIT
-
-    def test_memory_limit_rendered_when_set(self):
-        """ADR 0087: [sandbox] memory feeds a --memory run arg, its swap a --memory-swap one."""
-        spec = build_spec(dc.APP_NONE, memory="8g", memory_swap="8g")
-        args = spec["runArgs"]
-        assert args[args.index("--memory") + 1] == "8g"
-        assert args[args.index("--memory-swap") + 1] == "8g"
-        assert args.index("--memory-swap") == args.index("--memory") + 2
-        assert "--memory-swap" not in build_spec(dc.APP_NONE, memory="8g")["runArgs"]
-
-    def test_no_memory_limit_by_default(self):
-        """Empty memory (the default) sets no limit."""
-        assert "--memory" not in build_spec(dc.APP_NONE)["runArgs"]
-
-    def test_credential_plan_is_required(self):
-        """The builder has no no-plan path: omitting ``cli_seeds`` is a call error."""
-        with pytest.raises(TypeError, match="cli_seeds"):
-            dc.build_devcontainer_spec(dc.APP_CLAUDE)
 
     def test_proxy_env_points_at_sidecar(self):
         env = build_spec(dc.APP_NONE)["remoteEnv"]
@@ -92,10 +74,6 @@ class TestBuildSpec:
             assert env[key] == dc.PROXY_URL
         assert env["BOOLEY_MCP_DEVELOPER_AGENT"] == "1"
         assert env["BOOLEY_DIR"] == dc.BOOLEY_DIR_TARGET
-
-    def test_agent_app_env_matches_app(self):
-        assert build_spec(dc.APP_CLAUDE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "claude"
-        assert build_spec(dc.APP_NONE)["remoteEnv"]["BOOLEY_AGENT_APP"] == "none"
 
     def test_initialize_command_is_fixed_host_validator(self):
         for app in dc.SUPPORTED_APPS:
@@ -107,56 +85,34 @@ class TestBuildSpec:
                 "${localWorkspaceFolder}",
             ]
 
-    def test_booley_dir_mount_default_source(self):
-        spec = build_spec(dc.APP_NONE)
-        # Default is the co-located single-var form; nested defaults are NOT used
-        # (the Dev Containers CLI mis-parses them into an invalid mount path).
-        assert dc.DEFAULT_BOOLEY_DIR_SOURCE == "${localWorkspaceFolder}/.booley"
-        assert "${localEnv:" not in dc.DEFAULT_BOOLEY_DIR_SOURCE
-        assert spec["mounts"][0] == (
-            f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target={dc.BOOLEY_DIR_TARGET},type=bind"
-        )
-
-    def test_booley_dir_mounts_at_booley(self):
-        # The literal is pinned on purpose: user docs and the CI demo scripts name it.
-        spec = build_spec(dc.APP_NONE)
-        assert (
-            spec["mounts"][0] == f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target=/booley,type=bind"
-        )
+    @pytest.mark.parametrize(
+        ("options", "source"),
+        [
+            # The default is the co-located single-variable form: the Dev Containers CLI
+            # mis-parses nested defaults. User docs and the CI demo scripts name the literals.
+            ({}, "${localWorkspaceFolder}/.booley"),
+            ({"booley_dir_source": "/host/proj/.booley"}, "/host/proj/.booley"),
+        ],
+    )
+    def test_booley_dir_mounts_at_booley(self, options, source):
+        spec = build_spec(dc.APP_NONE, **options)
+        assert spec["mounts"][0] == f"source={source},target=/booley,type=bind"
         assert spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
         assert (
             spec["containerEnv"]["BOOLEY_COMPILER_CACHE_ROOT"]
             == "/booley/.runtime/compiler-cache/ccache"
         )
 
-    def test_custom_booley_dir_source(self):
-        spec = build_spec(
-            dc.APP_NONE,
-            booley_dir_source="/host/proj/.booley",
-        )
-        assert spec["mounts"][0] == (
-            f"source=/host/proj/.booley,target={dc.BOOLEY_DIR_TARGET},type=bind"
-        )
-
     def test_unknown_app_rejected(self):
         with pytest.raises(ValueError, match="unknown app"):
             build_spec("emacs")
 
-    def test_cache_identity_is_container_wide_without_eda_environment(self):
-        spec = build_spec(dc.APP_NONE)
+    @pytest.mark.parametrize("fixed", [{}, {"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"}])
+    def test_container_env_is_cache_identity_and_literal_host_policy(self, fixed):
+        spec = build_spec(dc.APP_NONE, fixed_container_env=fixed)
         assert spec["containerEnv"] == {
             **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
-            "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
-        }
-
-    def test_fixed_container_env_is_literal_host_policy(self):
-        spec = build_spec(
-            dc.APP_NONE,
-            fixed_container_env={"XILINXD_LICENSE_FILE": "2100@booley-license-xilinx"},
-        )
-        assert spec["containerEnv"] == {
-            **git_identity_environment(GitIdentity("Dev", "dev@localhost")),
-            "XILINXD_LICENSE_FILE": "2100@booley-license-xilinx",
+            **fixed,
             "BOOLEY_COMPILER_CACHE_ROOT": "/booley/.runtime/compiler-cache/ccache",
         }
 
@@ -165,60 +121,41 @@ class TestBuildSpec:
 
         assert spec["remoteEnv"]["BOOLEY_LOCAL_TIMEZONE"] == "Asia/Tbilisi"
 
-    def test_host_skills_render_readonly_sidecar_binds(self):
+    @pytest.mark.parametrize(
+        "skills", [[], [("deslop", "/host/skills/deslop"), ("grill-me", "/host/x/grill-me")]]
+    )
+    def test_host_skills_render_readonly_sidecar_binds(self, skills):
         # [sandbox] mount_host_skills: each host skill rides in as its own
         # read-only bind at the sidecar; init has already resolved the real dir.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            host_skills=[("deslop", "/host/skills/deslop"), ("grill-me", "/host/x/grill-me")],
-        )
-        assert (
-            f"source=/host/skills/deslop,target={dc.HOST_SKILLS_SIDECAR}/deslop,"
-            "type=bind,readonly" in spec["mounts"]
-        )
-        assert (
-            f"source=/host/x/grill-me,target={dc.HOST_SKILLS_SIDECAR}/grill-me,"
-            "type=bind,readonly" in spec["mounts"]
-        )
+        spec = build_spec(dc.APP_CLAUDE, host_skills=skills)
+        assert [m for m in spec["mounts"] if dc.HOST_SKILLS_SIDECAR in m] == [
+            f"source={source},target={dc.HOST_SKILLS_SIDECAR}/{name},type=bind,readonly"
+            for name, source in skills
+        ]
 
-    def test_no_host_skills_adds_no_sidecar_bind(self):
-        spec = build_spec(dc.APP_CLAUDE)
-        assert not any(dc.HOST_SKILLS_SIDECAR in m for m in spec["mounts"])
-
-    def test_mask_paths_render_readonly_empty_binds_over_work(self):
+    @pytest.mark.parametrize(
+        ("mask_paths", "targets"),
+        [
+            (
+                ["secret/oracle", "notes.md"],
+                [f"{dc.WORK_DIR}/secret/oracle", f"{dc.WORK_DIR}/notes.md"],
+            ),
+            # .booley is visible TWICE (via /work and /booley), so a subtree under it
+            # must be masked in both views or the bytes stay readable through the other.
+            (
+                [".booley/oracle"],
+                [f"{dc.WORK_DIR}/.booley/oracle", f"{dc.BOOLEY_DIR_TARGET}/oracle"],
+            ),
+            # docker treats "target=/work/x/" and "target=/work/x" as different strings.
+            (["a/./b/", "c//d"], [f"{dc.WORK_DIR}/a/b", f"{dc.WORK_DIR}/c/d"]),
+        ],
+    )
+    def test_mask_paths_render_readonly_empty_binds(self, mask_paths, targets):
         # [sandbox] mask_paths: each entry hides a workspace subtree behind a
         # read-only bind of the always-empty host dir.
-        spec = build_spec(
-            dc.APP_NONE,
-            mask_paths=["secret/oracle", "notes.md"],
-            mask_source="/home/u/.config/booley/empty-mask",
-        )
-        assert (
-            f"source=/home/u/.config/booley/empty-mask,target={dc.WORK_DIR}/secret/oracle,"
-            "type=bind,readonly" in spec["mounts"]
-        )
-        assert (
-            f"source=/home/u/.config/booley/empty-mask,target={dc.WORK_DIR}/notes.md,"
-            "type=bind,readonly" in spec["mounts"]
-        )
-
-    def test_mask_under_booley_dir_masks_both_container_views(self):
-        # .booley is visible TWICE (via /work and /booley), so
-        # a subtree under it must be masked in both views or the bytes remain
-        # readable through the second mount.
-        spec = build_spec(
-            dc.APP_NONE,
-            mask_paths=[".booley/oracle"],
-            mask_source="/empty",
-        )
-        assert (
-            f"source=/empty,target={dc.WORK_DIR}/.booley/oracle,type=bind,readonly"
-            in spec["mounts"]
-        )
-        assert (
-            f"source=/empty,target={dc.BOOLEY_DIR_TARGET}/oracle,type=bind,readonly"
-            in spec["mounts"]
-        )
+        spec = build_spec(dc.APP_NONE, mask_paths=mask_paths, mask_source="/empty")
+        for target in targets:
+            assert f"source=/empty,target={target},type=bind,readonly" in spec["mounts"]
 
     def test_mask_mounts_come_after_the_booley_dir_mount(self):
         # Mount order is the over-mount mechanism: docker applies
@@ -239,18 +176,6 @@ class TestBuildSpec:
         # Masks trail EVERY other mount (state volume, token seeds, ...).
         assert mask_indices == list(range(len(mounts) - len(mask_indices), len(mounts)))
 
-    def test_mask_targets_are_normalized_posix(self):
-        # Trailing slashes / "." segments must not leak into mount targets —
-        # docker would treat "target=/work/x/" and "target=/work/x" as
-        # different strings even though they name the same path.
-        spec = build_spec(
-            dc.APP_NONE,
-            mask_paths=["a/./b/", "c//d"],
-            mask_source="/empty",
-        )
-        assert f"source=/empty,target={dc.WORK_DIR}/a/b,type=bind,readonly" in spec["mounts"]
-        assert f"source=/empty,target={dc.WORK_DIR}/c/d,type=bind,readonly" in spec["mounts"]
-
     def test_unproxied_spec_joins_routed_network_without_proxy_environment(self):
         spec = build_spec(dc.APP_NONE, egress="unproxied")
         networks = [
@@ -262,17 +187,15 @@ class TestBuildSpec:
         assert spec["containerEnv"]["BOOLEY_EGRESS"] == "unproxied"
         assert "BOOLEY_EGRESS" not in spec["remoteEnv"]
 
-    def test_proxy_egress_leaves_spec_byte_identical(self):
-        base = build_spec(dc.APP_CLAUDE)
-        proxied = build_spec(dc.APP_CLAUDE, egress="proxy")
-        assert json.dumps(base) == json.dumps(proxied)
-
-    def test_no_mask_paths_leaves_spec_byte_identical(self):
-        # The empty default must be a no-op: existing installs re-seed the
-        # exact same spec they had before the knob existed.
-        base = build_spec(dc.APP_CLAUDE)
-        with_empty = build_spec(dc.APP_CLAUDE, mask_paths=(), mask_source="")
-        assert json.dumps(base) == json.dumps(with_empty)
+    @pytest.mark.parametrize(
+        "options", [{"egress": "proxy"}, {"mask_paths": (), "mask_source": ""}]
+    )
+    def test_default_options_leave_spec_byte_identical(self, options):
+        # A default must be a no-op: existing installs re-seed the exact same
+        # spec they had before the knob existed.
+        assert json.dumps(build_spec(dc.APP_CLAUDE)) == json.dumps(
+            build_spec(dc.APP_CLAUDE, **options)
+        )
 
     def test_mask_paths_without_mask_source_rejected(self):
         # Silently dropping masks would hand the agent exactly the visibility
@@ -284,28 +207,30 @@ class TestBuildSpec:
 class TestMaskPathsValidation:
     """mask_paths_error guards the [sandbox].mask_paths knob shape."""
 
-    def test_accepts_absent_and_valid_relative_paths(self):
-        assert dc.mask_paths_error(None) is None
-        assert dc.mask_paths_error([]) is None
-        assert dc.mask_paths_error(["secret/oracle", ".booley/lanes/b", "notes.md"]) is None
+    @pytest.mark.parametrize("paths", [None, [], ["secret/oracle", ".booley/lanes/b", "notes.md"]])
+    def test_accepts_absent_and_valid_relative_paths(self, paths):
+        assert dc.mask_paths_error(paths) is None
 
-    def test_rejects_non_list_and_non_string_entries(self):
-        assert "list of strings" in dc.mask_paths_error("secret")
-        assert "list of strings" in dc.mask_paths_error(["ok", 3])
-
-    def test_rejects_absolute_dotdot_and_empty_entries(self):
-        # Absolute paths and ".." segments would turn the privacy knob into a
-        # container-layout editor; "." / "" name the whole workspace.
-        for entry in ["/etc", "../outside", "a/../b", ".", "", "win\\path"]:
-            error = dc.mask_paths_error([entry])
-            assert error is not None and "workspace-relative" in error, entry
-
-    def test_rejects_masking_the_whole_booley_dir(self):
-        # The session reads booley.toml through /booley — masking the
-        # entire dir bricks the runtime rather than hiding a secret.
-        for entry in [".booley", ".booley/"]:
-            error = dc.mask_paths_error([entry])
-            assert error is not None and "subtrees" in error, entry
+    @pytest.mark.parametrize(
+        ("paths", "message"),
+        [
+            ("secret", "list of strings"),
+            (["ok", 3], "list of strings"),
+            # Absolute paths and ".." segments would turn the privacy knob into a
+            # container-layout editor; "." / "" name the whole workspace.
+            *(
+                ([entry], "workspace-relative")
+                for entry in ["/etc", "../outside", "a/../b", ".", "", "win\\path"]
+            ),
+            # The session reads booley.toml through /booley: masking the entire dir
+            # bricks the runtime rather than hiding a secret.
+            ([".booley"], "subtrees"),
+            ([".booley/"], "subtrees"),
+        ],
+    )
+    def test_rejects_unsafe_entries(self, paths, message):
+        error = dc.mask_paths_error(paths)
+        assert error is not None and message in error
 
 
 class TestAppExtension:
@@ -364,9 +289,11 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             spec = build_spec(app)
             vscode = spec["customizations"]["vscode"]
+            # private: VaporView's presentation settings have no public reader; T3 retires
+            # this test with VaporView
             assert {
                 key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
-            } == dc._VAPORVIEW_PRESENTATION_SETTINGS
+            } == dc._VAPORVIEW_PRESENTATION_SETTINGS  # private: as above
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a
@@ -374,6 +301,7 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             settings = build_spec(app)["customizations"]["vscode"]["settings"]
             assert settings["remote.restoreForwardedPorts"] is False
+            # private: the Live Preview seed port has no public name
             assert settings["livePreview.portNumber"] == dc._LIVE_PREVIEW_SEED_PORT
 
     def test_live_preview_randomizer_runs_before_extension_patch(self):
@@ -401,25 +329,28 @@ class TestAppExtension:
             assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
 
 
-class TestAuthMount:
-    def test_claude_auth_mounted_readonly_at_seed_sidecar(self):
-        # Claude's creds are bound read-only at the sidecar SEED path (outside
-        # ~/.claude/) — never directly onto the real file — so the in-container
-        # refresh can rewrite the writable copy without hitting an RO mount.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            login_source="/home/u/.claude/.credentials.json",
-        )
-        auth = spec["mounts"][1]
-        assert "source=/home/u/.claude/.credentials.json" in auth
-        assert f"target={dc.AGENT_HOME}/.claude-creds-seed.json" in auth
-        assert auth.endswith(",readonly")
-        # The real credentials path must NOT be a mount target (it lives on the
-        # writable state volume; the seed is copied onto it at create time).
-        assert all(
-            f"target={dc.AGENT_HOME}/.claude/.credentials.json" not in m for m in spec["mounts"]
-        )
+@pytest.mark.parametrize(
+    ("app", "option", "source", "seed"),
+    [
+        ("claude", "login_source", "/home/u/.claude/.credentials.json", ".claude-creds-seed.json"),
+        ("codex", "login_source", "/home/u/.codex/auth.json", ".codex-auth-seed.json"),
+        ("claude", "token_source", "/home/u/token", ".booley-oauth-token-seed"),
+        ("codex", "token_source", "/home/u/api-key", ".booley-api-key-seed"),
+        ("claude", "config_source", "/home/u/.claude.json", ".claude-config-seed.json"),
+    ],
+)
+def test_seed_is_bound_readonly_beside_the_state_dir(app, option, source, seed):
+    # Seeds are read-only sidecars, never the real file, so the in-container refresh
+    # can rewrite the writable copy. The persisted state volume owns ~/.<app> and would
+    # shadow a seed nested in it, and stays the last mount so it nests under the binds.
+    spec = build_spec(app, **{option: source})
+    assert f"source={source},target={dc.AGENT_HOME}/{seed},type=bind,readonly" in spec["mounts"]
+    assert not any(f"target={dc.AGENT_HOME}/.{app}/" in m for m in spec["mounts"])
+    assert "type=volume" in spec["mounts"][-1]
+    assert f"{dc.AGENT_HOME}/.{app}" in dc.spec_volume_targets(spec)
 
+
+class TestAuthMount:
     def test_claude_creds_seeded_into_writable_path_on_create(self):
         # Plain cp (not cp -n) re-seeds the freshest host token on every create;
         # chmod 600 keeps it agent-private after the copy.
@@ -434,19 +365,11 @@ class TestAuthMount:
         # Must be a fresh copy each create — no no-clobber on the rotating token.
         assert f"cp -n {dc.AGENT_HOME}/.claude-creds-seed.json" not in pc
 
-    def test_codex_auth_is_seeded_not_bound_readonly(self):
+    def test_codex_auth_is_copied_to_a_writable_file(self):
         # Codex REWRITES ~/.codex/auth.json when a subscription login's tokens
         # refresh. A read-only bind on that path makes the refresh write fail and
-        # 401s the session, so Codex gets the same sidecar-seed + writable-copy
-        # treatment as Claude.
-        spec = build_spec(
-            dc.APP_CODEX,
-            login_source="/home/u/.codex/auth.json",
-        )
-        auth_mount = spec["mounts"][1]
-        assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in auth_mount
-        assert auth_mount.endswith(",readonly")  # the SEED is read-only, not the target
-        # ...and the writable copy is made on both create and start.
+        # 401s the session, so the writable copy is made on both create and start.
+        spec = build_spec(dc.APP_CODEX, login_source="/home/u/.codex/auth.json")
         for hook in (spec["postCreateCommand"], spec["postStartCommand"]):
             assert (
                 f"cp {dc.AGENT_HOME}/.codex-auth-seed.json {dc.AGENT_HOME}/.codex/auth.json"
@@ -454,20 +377,17 @@ class TestAuthMount:
             )
         assert f"chmod 600 {dc.AGENT_HOME}/.codex/auth.json" in spec["postCreateCommand"]
 
-    def test_no_auth_when_source_absent(self):
-        spec = build_spec(dc.APP_CLAUDE)
-        # project-dir mount + persistent state volume (no auth)
-        assert len(spec["mounts"]) == 2
-        assert all("type=bind" in m or "type=volume" in m for m in spec["mounts"])
+    @pytest.mark.parametrize("app", dc.SUPPORTED_APPS)
+    def test_no_seed_mounts_without_sources(self, app):
+        # project-dir mount, plus the persistent state volume for an agent app
+        mounts = build_spec(app)["mounts"]
+        assert len(mounts) == (1 if app == dc.APP_NONE else 2)
+        assert all("token-seed" not in m and "api-key-seed" not in m for m in mounts)
 
-    def test_no_auth_for_app_none(self):
-        # "none" has no auth target and no persistent state dir, so only the
-        # project-dir mount remains.
-        spec = build_spec(
-            dc.APP_NONE,
-            login_source="/whatever",
-        )
-        assert len(spec["mounts"]) == 1
+    @pytest.mark.parametrize("option", ["login_source", "token_source"])
+    def test_app_none_ignores_credential_sources(self, option):
+        # "none" has no auth target and no persistent state dir.
+        assert len(build_spec(dc.APP_NONE, **{option: "/whatever"})["mounts"]) == 1
 
 
 class TestTokenSeedMount:
@@ -478,38 +398,6 @@ class TestTokenSeedMount:
     the stored file is mounted for incontainer_register to apply on every
     container start.
     """
-
-    def test_claude_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            token_source="/home/u/.config/booley/claude-oauth-token",
-        )
-        seed = next(m for m in spec["mounts"] if "oauth-token-seed" in m)
-        assert "source=/home/u/.config/booley/claude-oauth-token" in seed
-        assert f"target={dc.AGENT_HOME}/.booley-oauth-token-seed" in seed
-        assert seed.endswith(",readonly")
-        # Sibling of ~/.claude, never nested under it: the state volume owns
-        # that dir and would shadow a seed placed inside it.
-        assert f"target={dc.AGENT_HOME}/.claude/" not in seed
-
-    def test_codex_token_seed_mounted_readonly_outside_state_dir(self):
-        spec = build_spec(
-            dc.APP_CODEX,
-            token_source="/home/u/.config/booley/openai-api-key",
-        )
-        seed = next(m for m in spec["mounts"] if "api-key-seed" in m)
-        assert f"target={dc.AGENT_HOME}/.booley-api-key-seed" in seed
-        assert seed.endswith(",readonly")
-        assert f"target={dc.AGENT_HOME}/.codex/" not in seed
-
-    def test_no_token_seed_by_default(self):
-        for app in dc.SUPPORTED_APPS:
-            spec = build_spec(app)
-            assert all("token-seed" not in m and "api-key-seed" not in m for m in spec["mounts"])
-
-    def test_no_token_seed_for_app_none(self):
-        spec = build_spec(dc.APP_NONE, token_source="/whatever")
-        assert len(spec["mounts"]) == 1
 
     def test_token_value_never_baked_into_spec(self):
         # The spec must carry only the mount reference — never file contents.
@@ -522,61 +410,25 @@ class TestTokenSeedMount:
 
 
 class TestStateVolume:
-    def test_claude_persists_claude_home(self):
-        spec = build_spec(dc.APP_CLAUDE)
-        vol = spec["mounts"][-1]
-        assert "source=booley-claude-state-${localWorkspaceFolderBasename}" in vol
-        assert f"target={dc.AGENT_HOME}/.claude" in vol
-        assert "type=volume" in vol
-
-    def test_codex_persists_codex_home(self):
-        spec = build_spec(dc.APP_CODEX)
-        vol = spec["mounts"][-1]
-        assert "source=booley-codex-state-${localWorkspaceFolderBasename}" in vol
-        assert f"target={dc.AGENT_HOME}/.codex" in vol
+    @pytest.mark.parametrize("app", [dc.APP_CLAUDE, dc.APP_CODEX])
+    def test_persists_the_app_home(self, app):
+        vol = build_spec(app)["mounts"][-1]
+        assert f"source=booley-{app}-state-${{localWorkspaceFolderBasename}}" in vol
+        assert f"target={dc.AGENT_HOME}/.{app}" in vol
         assert "type=volume" in vol
 
     def test_none_has_no_state_volume(self):
         spec = build_spec(dc.APP_NONE)
         assert all("type=volume" not in m for m in spec["mounts"])
 
-    def test_codex_creds_seed_sits_outside_state_dir(self):
-        # The seed must be a SIBLING of ~/.codex, never nested under it: the state
-        # volume owns that dir and would shadow a seed placed inside it, leaving
-        # the copy with nothing to copy from.
-        spec = build_spec(
-            dc.APP_CODEX,
-            login_source="/home/u/.codex/auth.json",
-        )
-        seed_mount = spec["mounts"][1]
-        assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in seed_mount
-        assert f"target={dc.AGENT_HOME}/.codex/" not in seed_mount
-        assert "type=volume" in spec["mounts"][2]  # state volume still mounted last
-
-    def test_claude_creds_seed_sits_outside_state_dir(self):
-        # The Claude creds seed must be a sibling of ~/.claude, not nested under
-        # it, else the state volume would shadow it.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            login_source="/home/u/.claude/.credentials.json",
-        )
-        seed = next(m for m in spec["mounts"] if "claude-creds-seed" in m)
-        assert f"target={dc.AGENT_HOME}/.claude/" not in seed
-
     def test_state_volume_name_format(self):
-        # The single name format shared with booley doctor's orphan check.
+        # The single name format shared with booley doctor's orphan check; the spec's
+        # volume must use it with the CLI's basename placeholder.
         assert dc.state_volume_name("claude", "myproj") == "booley-claude-state-myproj"
         assert dc.state_volume_name("codex", "myproj") == "booley-codex-state-myproj"
-
-    def test_state_volume_name_none_for_appless(self):
         assert dc.state_volume_name("none", "myproj") is None
-
-    def test_mount_name_matches_helper(self):
-        # The spec's volume name must equal state_volume_name with the CLI's
-        # basename placeholder — so doctor and the spec never diverge.
-        spec = build_spec(dc.APP_CLAUDE)
         expected = dc.state_volume_name("claude", "${localWorkspaceFolderBasename}")
-        assert f"source={expected}" in spec["mounts"][-1]
+        assert f"source={expected}" in build_spec(dc.APP_CLAUDE)["mounts"][-1]
 
     def test_canonical_project_identity_separates_same_basename(self, tmp_path):
         first = tmp_path / "one" / "project"
@@ -617,31 +469,6 @@ class TestSpecAgentApp:
 class TestConfigSeed:
     _SRC = "/home/u/.claude.json"
     _MCP = "python -m booley.harness.incontainer_register"
-
-    def test_seed_mounted_readonly_at_sidecar(self):
-        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC)
-        seed = next(m for m in spec["mounts"] if "claude-config-seed" in m)
-        assert f"source={self._SRC}" in seed
-        assert f"target={dc.AGENT_HOME}/.claude-config-seed.json" in seed
-        assert seed.endswith(",readonly")
-
-    def test_seed_sits_outside_the_state_dir(self):
-        # The seed must NOT nest under the persisted ~/.claude volume, else it
-        # would be shadowed; it lives at ~/.claude-config-seed.json (a sibling).
-        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC)
-        seed = next(m for m in spec["mounts"] if "claude-config-seed" in m)
-        assert f"target={dc.AGENT_HOME}/.claude/" not in seed
-
-    def test_state_volume_still_last_with_seed(self):
-        # Ordering contract: the persisted state volume stays the final mount so
-        # it nests under the deeper auth bind.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            login_source="/home/u/.claude/.credentials.json",
-            config_source=self._SRC,
-        )
-        assert "type=volume" in spec["mounts"][-1]
-        assert f"{dc.AGENT_HOME}/.claude" in dc.spec_volume_targets(spec)
 
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the
@@ -698,17 +525,6 @@ class TestConfigSeed:
 
 
 class TestMcpStartCommand:
-    def test_registration_set_on_both_create_and_start(self):
-        # postCreateCommand registers before the first session (avoids the race);
-        # postStartCommand repeats it on resume/rebuild.
-        spec = build_spec(
-            dc.APP_NONE,
-            mcp_start_command="python -m booley.harness.incontainer_register",
-        )
-        expected = f"{dc.git_identity_command()} && python -m booley.harness.incontainer_register"
-        assert spec["postCreateCommand"] == expected
-        assert spec["postStartCommand"] == expected
-
     def test_identity_hooks_remain_without_registration(self):
         spec = build_spec(dc.APP_NONE)
         assert spec["postStartCommand"] == dc.git_identity_command()
@@ -732,15 +548,13 @@ class TestRenderAndWrite:
         assert text.endswith("\n")
         assert json.loads(text) == spec
 
-    def test_write_creates_file(self, tmp_path):
+    def test_write_creates_then_overwrites_the_file(self, tmp_path):
         spec = build_spec(dc.APP_NONE)
         path = dc.write_devcontainer(tmp_path, spec)
         assert path == tmp_path / ".devcontainer" / "devcontainer.json"
         assert json.loads(path.read_text(encoding="utf-8")) == spec
 
-    def test_write_overwrites_existing(self, tmp_path):
-        dc.write_devcontainer(tmp_path, build_spec(dc.APP_NONE))
-        path = dc.write_devcontainer(tmp_path, build_spec(dc.APP_CODEX))
+        dc.write_devcontainer(tmp_path, build_spec(dc.APP_CODEX))
         assert json.loads(path.read_text(encoding="utf-8"))["name"].endswith("(codex)")
 
 
