@@ -100,6 +100,7 @@ to simplify, not to copy.
 | Target selection (`TargetCatalog.build`) and the setup argv | [tests/target_test_support.py](../../tests/target_test_support.py) | `install_lenient_target_catalog`, `make_target_handle` | patch `TargetCatalog.build`, `fusesoc_registry.setup_command_for_handle` |  |
 | Simulation execution edge (`SimulateFlow._execute_boundary`, `SimulationExecution._prepare_build`) | [tests/flows/sim/simulation_record_boundary.py](../../tests/flows/sim/simulation_record_boundary.py) | `run_simulation_record_sim` | patch |  |
 | Simulation Record executor, execution, sizing, admission endpoint and store | [tests/flows/sim/simulation_record_test_support.py](../../tests/flows/sim/simulation_record_test_support.py) | builders in the module | patch |  |
+| Simulation Flow publication fault point (`faults.fault_point`) | [tests/flows/sim/fault_point_support.py](../../tests/flows/sim/fault_point_support.py) | `inject_faults` | patch |  |
 | Compile surface and Target identity (`resolve_target_compile_surface`, `SimulateFlow._target_identity`) | [tests/flows/sim/conftest.py](../../tests/flows/sim/conftest.py) | fixtures in the module | patch |  |
 | Host credential scan (`auth_token.credential_plan`) | [tests/devcontainer_spec_support.py](../../tests/devcontainer_spec_support.py) | `build_spec` | injected `CliSeeds` |  |
 | Host Bootstrap and the Sandbox Image chain (`init_cmd.reconcile_bootstrap`, `image_lifecycle.reconcile_planned`) | [tests/harness/init_agent_support.py](../../tests/harness/init_agent_support.py) | `stub_host_images` | patch |  |

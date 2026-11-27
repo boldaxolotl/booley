@@ -21,6 +21,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
 from tests.time_budget import hang_guard_s
@@ -96,7 +97,7 @@ def _hook_project(tmp_path, commands, live_commands):
     return project
 
 
-def _hook_executor(build, disclosures, mutate_bundle, checkpoint):
+def _hook_executor(build, disclosures, mutate_bundle):
     from tests.flows.sim.simulation_record_test_support import _executor
 
     return _executor(
@@ -104,7 +105,6 @@ def _hook_executor(build, disclosures, mutate_bundle, checkpoint):
         {"compile": 0, "durable_reuse": 0, "launch": 0},
         disclosures=disclosures,
         mutate_bundle=mutate_bundle,
-        checkpoint=checkpoint,
     )
 
 
@@ -118,7 +118,6 @@ def _successful_pre_sim_record(
     live_commands: tuple[str, ...] | None = None,
     transform=None,
     invocation_directory: Path | None = None,
-    checkpoint=None,
     observer=None,
 ):
     from booley.flows.sim.record.coordinator import (
@@ -141,9 +140,9 @@ def _successful_pre_sim_record(
     )
     invocation = invocation_directory or tmp_path / "reports/1"
     invocation.mkdir(parents=True, exist_ok=True)
-    simulation_record = SimulationRecord(
-        _hook_executor(build, disclosures, mutate_bundle, checkpoint)
-    ).run(_observed_simulation_record_request(plan, project, invocation, observer))
+    simulation_record = SimulationRecord(_hook_executor(build, disclosures, mutate_bundle)).run(
+        _observed_simulation_record_request(plan, project, invocation, observer)
+    )
     return invocation, simulation_record
 
 
@@ -413,20 +412,19 @@ def test_cli_recovery_paths_survive_failures(
         if boundary == failure:
             raise KeyboardInterrupt()
 
-    flow = SimulateFlow(
-        coverage_execution=execution, simulation_record_publication_checkpoint=checkpoint
-    )
-    if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
-        with pytest.raises(KeyboardInterrupt):
-            flow.execute_cli(argv)
-    else:
-        result = flow.execute_cli(argv)
-        assert result.exit_code in {2, 130}
-        assert "  manifest: " in result.outcome.report_text
-        assert (
-            f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
-            in result.outcome.report_text
-        )
+    flow = SimulateFlow(coverage_execution=execution)
+    with inject_faults(checkpoint):
+        if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
+            with pytest.raises(KeyboardInterrupt):
+                flow.execute_cli(argv)
+        else:
+            result = flow.execute_cli(argv)
+            assert result.exit_code in {2, 130}
+            assert "  manifest: " in result.outcome.report_text
+            assert (
+                f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
+                in result.outcome.report_text
+            )
     _assert_recovery_announcement(capsys, seen, failure)
 
 
@@ -459,18 +457,18 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
         if armed and boundary == "before:manifest_commit":
             raise OSError("publication failed")
 
-    flow = SimulateFlow(
-        coverage_execution=lambda *_args: NativeExecution(),
-        simulation_record_publication_checkpoint=fail,
-    )
-    first = flow.execute_cli(argv)
-    manifest_line = next(
-        line for line in first.outcome.report_text.splitlines() if line.startswith("  manifest:")
-    )
-    capsys.readouterr()
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    with inject_faults(fail):
+        first = flow.execute_cli(argv)
+        manifest_line = next(
+            line
+            for line in first.outcome.report_text.splitlines()
+            if line.startswith("  manifest:")
+        )
+        capsys.readouterr()
 
-    armed = True
-    second = flow.execute_cli(argv)
+        armed = True
+        second = flow.execute_cli(argv)
     assert second.exit_code == 2
     assert "manifest:" not in second.outcome.report_text
     assert manifest_line not in second.outcome.report_text
@@ -641,9 +639,8 @@ def test_partial_publication_discloses_only_committed_target(
     def executor(*_args):
         raise AssertionError("work must wait for every manifest")
 
-    result = SimulateFlow(
-        coverage_execution=executor, simulation_record_publication_checkpoint=checkpoint
-    ).execute_cli(argv)
+    with inject_faults(checkpoint):
+        result = SimulateFlow(coverage_execution=executor).execute_cli(argv)
     output = capsys.readouterr()
     assert result.exit_code == 2
     assert output.err.count("Simulation Record manifest: ") == 1
