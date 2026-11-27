@@ -76,6 +76,7 @@ def _client(world, feature_flags) -> TestClient:
 
 
 ORIGIN = {"Origin": "http://127.0.0.1:8090"}
+LOCALHOST = {"Host": "localhost:8090", "Origin": "http://localhost:8090"}
 JSON = {"Content-Type": "application/json"}
 
 
@@ -563,6 +564,21 @@ def test_a_run_that_cannot_start_is_a_server_error_with_its_reason(
             403,
             id="rebound-name",
         ),
+        pytest.param(
+            {**ORIGIN, "Host": "localhost:8090"},
+            {"json": _run("lint")},
+            403,
+            id="localhost-host-ip-origin",
+        ),
+        pytest.param(
+            {"Origin": LOCALHOST["Origin"]},
+            {"json": _run("lint")},
+            403,
+            id="ip-host-localhost-origin",
+        ),
+        pytest.param(
+            {"Origin": "https://127.0.0.1:8090"}, {"json": _run("lint")}, 403, id="https"
+        ),
         pytest.param(ORIGIN, {"data": {"kind": "flow", "name": "lint"}}, 415, id="form-encoded"),
         pytest.param(ORIGIN, {"content": b"{", "headers": JSON}, 400, id="not-json"),
         pytest.param(ORIGIN, {"json": [_run("lint")]}, 400, id="not-an-object"),
@@ -582,6 +598,14 @@ def test_a_launch_from_another_origin_or_without_json_starts_nothing(
     assert list(answer.json()) == ["error"]
     assert spawned == []
     assert not list(standalone_jobs_dir(world.booley).glob("*"))
+
+
+def test_a_launch_from_the_page_named_localhost_passes_the_guard(world, feature_flags):
+    with _client(world, feature_flags) as client:
+        answer = _post(client, "command", world.wt, _run("lint"), headers=LOCALHOST)
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["command"].partition(" && ")[2] == "booley flow lint"
 
 
 @pytest.mark.parametrize("kind", ["flow", "specialist"])
