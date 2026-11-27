@@ -354,10 +354,12 @@ Read the Mergify check and the underlying Actions failure, then:
       `AGENTS.md` requires, with the run link and error: for a test ID, a
       `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;
       for a failure with no test ID, a `bug`, `ci`, `needs-triage` issue
-      naming the job. When an open `flaky` issue already covers the test ID,
-      comment the run link and error there instead. One issue per test ID,
-      as in [Flaky-test issues](issue-tracker.md#flaky-test-issues); issues
-      filed automatically from the flake ledger (#4413) follow the same rule.
+      naming the job. When an open issue already covers the test ID, comment
+      the run link and error there instead. One issue per test ID, as in
+      [Flaky-test issues](issue-tracker.md#flaky-test-issues); issues filed
+      automatically from the flake ledger
+      ([#4413](https://github.com/boldaxolotl/booley/issues/4413)) follow the
+      same rule.
     - When `main`'s latest run of that job (the latest nightly run, for jobs
       a `main` push skips) fails the same way, `main` has regressed: report
       it instead of requeueing.
