@@ -75,6 +75,8 @@ _SERVER_LOG_TAIL_LINES = 8
 # T3 Code's own default port; the Sandbox's loopback is its own, so nothing collides.
 T3_PORT = 3773
 _T3_START_TIMEOUT_SECONDS = 30.0
+PAIRING_TTL = "5m"
+NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code
 _T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
 
 
@@ -247,6 +249,36 @@ def _start_detached(
     return "failed"
 
 
+def t3_serving() -> bool:
+    """Whether T3 Code answers on its loopback port."""
+    return _port_is_serving(T3_PORT)
+
+
+def _t3_base(project_root: Path) -> Path:
+    return runtime_dir(project_root) / "t3"
+
+
+def create_t3_pairing(project_root: Path, base_url: str) -> subprocess.CompletedProcess[str]:
+    """Run ``t3 auth pairing create``; a failure to run it is a failed result.
+
+    The result's stdout holds the pairing token, so the caller prints it only to the user.
+    """
+    cmd = ["t3", "auth", "pairing", "create", "--base-dir", str(_t3_base(project_root))]
+    cmd += ["--ttl", PAIRING_TTL, "--base-url", base_url, "--json"]
+    try:
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
 def ensure_t3_server(project_root: Path) -> str:
     """Start T3 Code on loopback unless it answers, then register the Project with it.
 
@@ -256,13 +288,13 @@ def ensure_t3_server(project_root: Path) -> str:
     policy, so nothing is started), or ``"failed"``. Never raises, so MCP
     registration still runs.
     """
-    if _port_is_serving(T3_PORT):
+    if t3_serving():
         return "running"
     if not _t3_policy_accepted():
         return "policy-rejected"
     try:
         runtime = runtime_dir(project_root)
-        base = runtime / "t3"
+        base = _t3_base(project_root)
         # stdout carries T3 Code's startup pairing token, so it goes to no log.
         with (runtime / "t3-serve.log").open("ab") as log:
             started = _start_detached(
