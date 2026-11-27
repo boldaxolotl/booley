@@ -6,7 +6,7 @@ from __future__ import annotations
 import inspect
 import json
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -14,7 +14,7 @@ import pytest
 from booley.core.models import AgentCallParams, AgentResult
 
 Answer = AgentResult | Exception | dict[str, Any] | str
-Script = Answer | Sequence[Answer] | Callable[[AgentCallParams], Any]
+Script = Answer | list[Answer] | Callable[[AgentCallParams], Any]
 
 
 def play(script: Script, params: AgentCallParams, index: int) -> Any:
