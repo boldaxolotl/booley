@@ -155,6 +155,7 @@ def test_send_off_lists_only_outstanding_setup_steps(
         assert "Step 0, the plan phase" in off.advice
         assert "Step 4 (doctor)" in off.advice
         assert "plans setup with you first" in off.summary
+        assert "T3 Code thread" in off.summary and "Reopen in Container" not in off.summary
     else:
         assert off.detail == "configured"
 
@@ -226,13 +227,15 @@ def test_published_project_gets_runtime_steps_instead_of_setup_skill(
         "preconfigured demo_cpu Project",
         "the booley-setup skill does not apply",
         "this preconfigured Project is ready",
-        "open the proj folder",
-        "popup notification",
-        "F1",
-        "Ctrl+Shift+P",
-        '"Dev Containers: Reopen in Container"',
+        "booley session up",
+        "pairing link",
+        "T3 Code",
+        "start a thread",
     ):
         assert fragment in out
+    assert "VS Code" not in out and "Reopen in Container" not in out
+    assert "booley session up" in off.summary
+    assert "`booley doctor --deep` in that thread's terminal" in off.advice
     assert "Run the booley-setup skill" not in out
     assert "Step 2 (fpga)" not in out
     assert off.detail == "published"
@@ -241,7 +244,8 @@ def test_published_project_gets_runtime_steps_instead_of_setup_skill(
     hook = project / ".booley" / "hooks" / "post-setup.sh"
     hook.parent.mkdir()
     hook.write_bytes(b"#!/bin/sh\n")
-    assert "bash .booley/hooks/post-setup.sh" in send_off().advice
+    advice = send_off().advice
+    assert "thread's terminal, run `bash .booley/hooks/post-setup.sh`" in advice
 
 
 #: Files a change writes into a pristine published checkout (None deletes AGENTS.md).
@@ -336,6 +340,7 @@ def test_configured_project_send_off_routes_through_doctor(
     assert off.detail == "configured"
     assert off.code == 0
     assert "this project is ready" in off.summary
+    assert "booley session up" in off.summary and "Reopen in Container" not in off.summary
     assert "plans setup with you first" not in off.summary
 
 
@@ -348,11 +353,11 @@ def test_scaffold_send_off_is_unchanged(project: Path, send_off: SendOffRunner) 
 
     assert "Scaffolded starter project" in off.advice
     assert off.detail == "scaffold"
-    # Host first: the skill runs here, and it says when to Reopen in Container.
+    # Host first: the skill runs here, and it says when to move into the Sandbox.
     assert "`/booley-setup new` in your agent chat here on the host" in off.advice
-    assert "tells you when to Reopen in Container" in off.advice
-    assert off.advice.index("/booley-setup new") < off.advice.index("Reopen in Container")
-    assert 'choose "Reopen in Container"' not in off.advice
+    assert "tells you when to run `booley session up`" in off.advice
+    assert off.advice.index("/booley-setup new") < off.advice.index("booley session up")
+    assert "T3 Code thread" in off.advice and "Reopen in Container" not in off.advice
 
 
 @pytest.mark.parametrize(
@@ -468,6 +473,7 @@ def test_configured_scaffold_stops_repeating_greenfield_setup(
             assert "/booley-setup new" not in output
             assert "AGENTS.md is\n" not in output
             assert "doctor" in output.lower()
+            assert "T3 Code thread's terminal" in output
             (project / ".booley/AGENTS.md").unlink(missing_ok=True)
     (project / "demo.core").unlink()
     output = send_off().advice
@@ -521,4 +527,4 @@ def test_plain_init_without_rtl_suggests_new_ip_setup(
         "Step 0, the plan phase",  # the port checklist still follows, unchanged
     ):
         assert fragment in out
-    assert 'choose "Reopen in Container"' not in out
+    assert "Reopen in Container" not in out

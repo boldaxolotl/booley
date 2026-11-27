@@ -1265,6 +1265,7 @@ class TestUp:
         (created,) = [call for call in later if call[1] == "run"]
         mounts = _flag_values(created, "--mount")
         assert f"source=booley-t3-state-i2c,target={base},type=volume" in mounts
+        assert f"BOOLEY_T3_BASE_DIR={base}-i2c" in _flag_values(created, "-e")
         assert any(mount.endswith("target=/booley,type=bind") for mount in mounts)
         assert not any(c[1] == "volume" or (c[1] == "rm" and "-v" in c) for c in later)
         logs = [
@@ -1494,7 +1495,8 @@ def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[
 
 def _issued_container(spec: dict, workspace: Path, *, vscode: bool = False) -> dict:
     """Inspect state of a container started exactly as *spec* issues it."""
-    sections = (spec["containerEnv"],) if vscode else (spec["remoteEnv"], spec["containerEnv"])
+    container = {key: sr.substitute(str(v), workspace) for key, v in spec["containerEnv"].items()}
+    sections = (container,) if vscode else (spec["remoteEnv"], container)
     environment = {key: value for section in sections for key, value in section.items()}
     return {
         "Image": spec["image"],
@@ -2307,6 +2309,8 @@ class TestT3CodeRelay:
         status, _ = relay_cli.run(["status"], workspace)
 
         assert "pair#token" not in no_ui
+        assert "T3 Code thread" in up and "T3 Code thread" not in no_ui
+        assert "booley session enter" in no_ui
         assert all("t3:off dashboard:off" in run for run in runs[:2])  # create and start hook
         assert off == "running\nUI: off\nDashboard: off\n"
         assert len(t3.served) == len(t3.dashboards) == 1

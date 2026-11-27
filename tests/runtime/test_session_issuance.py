@@ -1685,21 +1685,21 @@ def test_invalid_agent_app_does_not_invent_expected_name(issued) -> None:
 
 
 def test_missing_fixed_environment_uses_missing_marker(issued) -> None:
-    _project, spec, _path, _stamp = issued
+    project, spec, _path, _stamp = issued
     del spec["remoteEnv"]["HTTP_PROXY"]
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing fixed") as caught:
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
     assert "HTTP_PROXY present -> <missing>" in str(caught.value)
 
 
 def test_fixed_environment_drift_names_field_and_values(issued) -> None:
-    _project, spec, _path, _stamp = issued
+    project, spec, _path, _stamp = issued
     spec["remoteEnv"]["NO_PROXY"] = "example.test"
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="fixed Sandbox") as caught:
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
     assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
 
@@ -1801,6 +1801,11 @@ def test_run_args_validate_with_and_without_swap_limit():
         (
             lambda spec: spec.__setitem__("workspaceMount", "source=/,target=/work,type=bind"),
             "workspace mount",
+        ),
+        (
+            # Allowed only with T3 Code's state volume, which this app-less spec lacks.
+            lambda spec: spec["containerEnv"].__setitem__("BOOLEY_T3_BASE_DIR", "/work/t3"),
+            "unsupported container environment",
         ),
     ],
 )
@@ -2757,7 +2762,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
     # An old Sandbox authenticates against its own stamp; the environment
     # check must then name the actionable fix, not a generic key diff.
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Compiler-cache root differs"):
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
 
 @pytest.mark.parametrize(
@@ -4046,6 +4051,7 @@ _REFUSALS = {
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
     "t3-volume-other-project": "agent state is not scoped",
+    "t3-base-dir-other-project": "T3 Code base directory",
     "claude-config-bind": "credential seed violates",
     "malformed-record": "Agent CLI record is malformed",
     "gateway-record": "Sandbox identity has drifted",
@@ -4078,7 +4084,12 @@ def _damage_claude_config_bind(spec: dict, project: Path, home: Path) -> None:
     )
 
 
+def _damage_t3_base_dir(spec: dict, project: Path, home: Path) -> None:
+    spec["containerEnv"]["BOOLEY_T3_BASE_DIR"] = "/home/agent/.t3-other"
+
+
 _MOUNT_AND_APP_DAMAGE = {
+    "t3-base-dir-other-project": _damage_t3_base_dir,
     "app-outside-clis-empty-record": _damage_empty_record,
     "typeless-volume": _damage_typeless_volume,
     "claude-config-bind": _damage_claude_config_bind,

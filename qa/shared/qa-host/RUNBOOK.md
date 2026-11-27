@@ -84,18 +84,15 @@ runs.
    `docker cp ~/.config/booley/claude-oauth-token qa-host:/home/qa/.config/booley/`,
    then `chown qa:qa` and `chmod 600` it. `booley session up` prints
    `T3 Code relay: 127.0.0.1:<port>`.
-6. Pair a browser on the outer host. Until `booley session up` prints a
-   pairing link (#5438), ask T3 Code for one in the Sandbox, with the outer
-   port as its base URL:
+6. Pair a browser on the outer host. In the Project, get a pairing link, which
+   is valid for 5 minutes:
 
    ```bash
-   qa$ booley session enter -- t3 auth pairing create \
-     --base-dir /home/agent/.t3 \
-     --base-url http://127.0.0.1:<port + 110> --ttl 30m --json
+   qa$ booley session pair
    ```
 
-   Open `pairUrl` on the outer host. For a link that Booley prints, change its
-   port from `<port>` to `<port + 110>`. Done when T3 Code shows the Project.
+   Change the link's port from `<port>` to `<port + 110>` and open it on the
+   outer host. Done when T3 Code shows the Project.
 
 ## 2. Reuse
 

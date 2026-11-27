@@ -257,6 +257,8 @@ def test_doctor_in_claude_session_notes_hidden_gateway(claude_session, monkeypat
 
     assert [f.severity.value for f in findings] == ["note"]
     assert _HIDDEN_NOTE in findings[0].message
+    assert "T3 Code thread's terminal" in findings[0].message
+    assert "booley session enter -- booley doctor" in findings[0].message
 
     # A VS Code terminal whose localEnv was empty has no marker: that Sandbox cannot reach it.
     monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
@@ -271,6 +273,8 @@ def test_auth_status_in_claude_session_notes_hidden_gateway(claude_session, monk
 
     assert code == 0
     assert _HIDDEN_NOTE in captured.out
+    assert "T3 Code thread's terminal" in captured.out
+    assert "booley session enter -- booley auth --status" in " ".join(captured.out.split())
 
     monkeypatch.delenv("BOOLEY_HIDDEN_GATEWAY")
     code, captured = _auth_status(claude_session, capsys)

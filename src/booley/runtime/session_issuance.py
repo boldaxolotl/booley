@@ -73,7 +73,13 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET, T3_BASE_DIR, T3_POLICY_TARGET
+from booley.runtime.sandbox_layout import (
+    DEVCONTAINER_TARGET,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_POLICY_TARGET,
+    t3_project_base_dir,
+)
 from booley.runtime.t3code_policy import narrowed_policy
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -1191,7 +1197,7 @@ def _validate_generated_spec(
     _validate_issued_mounts(project, spec, requirements, issuance, app)
     assert issuance.project_data_source is not None
     _validate_git_identity_environment(spec, Path(issuance.project_data_source))
-    _validate_environment(spec, requirements.license_environment, egress)
+    _validate_environment(spec, requirements.license_environment, egress, project)
     _validate_run_args(
         spec.get("runArgs"),
         expected_labels=labels(issuance),
@@ -1519,8 +1525,16 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
                 raise RuntimeSpecError(str(exc)) from exc
 
 
+def _validate_t3_base_dir(container: dict[str, Any], project: Path) -> None:
+    """T3 Code's base directory spelling is the one of this Project."""
+    from booley.runtime import devcontainer as dc
+
+    if container.get(T3_BASE_DIR_ENV) != t3_project_base_dir(dc.canonical_project_id(project)):
+        raise RuntimeSpecError("T3 Code base directory environment differs from the Project's")
+
+
 def _validate_environment(
-    spec: dict[str, Any], license_environment: str | None, egress: str
+    spec: dict[str, Any], license_environment: str | None, egress: str, project: Path
 ) -> None:
     container, remote = _environment_sections(spec)
     # Checked before the exact key set so a Sandbox issued before the shared
@@ -1540,6 +1554,10 @@ def _validate_environment(
     if egress == "unproxied":
         # Its value was already checked by _validate_egress_mode.
         allowed_container.add("BOOLEY_EGRESS")
+    cli_record = _spec_cli_record(spec)
+    if cli_record:  # T3 Code's state volume is issued; checked before the key set, as above
+        _validate_t3_base_dir(container, project)
+        allowed_container.add(T3_BASE_DIR_ENV)
     if set(container) != allowed_container:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported container environment: "
@@ -1548,7 +1566,7 @@ def _validate_environment(
                 {"container_environment_keys": sorted(container)},
             )
         )
-    _validate_remote_environment(remote, egress, _spec_cli_record(spec))
+    _validate_remote_environment(remote, egress, cli_record)
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:

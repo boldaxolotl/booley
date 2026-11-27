@@ -176,7 +176,13 @@ class TestAgentSessionApp:
             runtime_context.container_only_error,
             "1",
             None,
-            ("Reopen in Container", "booley session enter -- bwave"),
+            (
+                "booley session up",
+                "pairing link",
+                "T3 Code thread's terminal",
+                "booley session enter -- bwave",
+                "`booley session --help`",
+            ),
         ),
         (runtime_context.host_only_error, None, "1", ("HOST terminal", "BOOLEY_CONTAINER=0")),
     ],
@@ -199,6 +205,7 @@ def test_venue_guard_refuses_only_on_the_wrong_side(
     for fix in fixes:
         assert fix in message
     assert "`booley --help`" in message
+    assert "VS Code" not in message
     # The refusal points at the command-location source instead of listing commands (#1236);
     # the heading line names the guarded command, so only the instructions are checked.
     instructions = "\n".join(message.splitlines()[1:])

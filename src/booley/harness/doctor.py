@@ -2066,9 +2066,8 @@ def _check_host_agent_session(_pass: Check) -> None:
         message = (
             f"{app} is running on the HOST, as expected for host-side Project Setup. "
             "The Booley MCP server, booley_status, and Booley Flows (sim, lint, synth) "
-            "exist only inside the Sandbox. For Interactive work, reopen the project "
-            'in the devcontainer ("Reopen in Container"), or use '
-            "`booley session up && booley session enter`"
+            "exist only inside the Sandbox. For Interactive work, run `booley session up`, "
+            "open the pairing link it prints and work in a T3 Code thread"
         )
     _pass(warning("session.agent-on-host", message))
 
@@ -2134,7 +2133,8 @@ def _check_image_bakes_runtime_marker(
 # Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
 _HIDDEN_GATEWAY_NOTE = (
     "Codex gateway settings are hidden from Claude sessions; "
-    "run `booley doctor` from a VS Code terminal to check them"
+    "run `booley doctor` in a T3 Code thread's terminal to check them "
+    "(from a host shell: `booley session enter -- booley doctor`)"
 )
 
 

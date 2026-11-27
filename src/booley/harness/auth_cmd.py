@@ -81,7 +81,8 @@ def _report_gateway_status(app: str | None, label: str | None = None) -> int:
         # A Claude session was deliberately kept from the gateway values: nothing to grade.
         note(
             "Codex gateway settings are hidden from Claude sessions; "
-            "run `booley auth --status` from a VS Code terminal to check them"
+            "run `booley auth --status` in a T3 Code thread's terminal to check them "
+            "(from a host shell: `booley session enter -- booley auth --status`)"
         )
         return 0
     settings = gateway_settings_from_env()  # GatewayConfigError names the variable
@@ -447,8 +448,12 @@ def _report_stored(credential: AppCredential, project_root: Path | None) -> None
     if project_root is not None and not _report_project_use(app, project_root):
         return
     ok(
-        f"Done. {app} Projects using the stored credential pick this up automatically — "
-        "VS Code's 'Reopen in Container' included, no export needed."
+        f"Done. {app} Projects using the stored credential pick this up automatically, "
+        "no export needed:"
+    )
+    info(
+        "start the Sandbox with `booley session up`, open the pairing link it prints "
+        "and work in a T3 Code thread."
     )
     if project_root is None:
         info(

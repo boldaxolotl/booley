@@ -1609,7 +1609,7 @@ def _step_sandbox(
     init_will_create_booley_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
-    ctx.step_banner("Sandbox (Reopen in Container)")
+    ctx.step_banner("Sandbox")
     if _sandbox_precondition_failed(
         ctx,
         nangate_pdk_root,
@@ -1767,7 +1767,8 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     """
     if read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml") == "scaffold":
         info("This scaffold Project is already configured; every enabled Flow is wired.")
-        info("Optional guide: AGENTS.md. Verify with `booley doctor --deep` in the container.")
+        info("Optional guide: AGENTS.md. Verify with `booley doctor --deep` in a")
+        info("T3 Code thread's terminal.")
     else:
         info("This project is already configured — booley.toml is populated, AGENTS.md is")
         info(
@@ -1946,15 +1947,15 @@ def _print_published_advisory(ctx: InitContext) -> None:
     subject = f"preconfigured {name} Project" if name else "preconfigured Project"
     info(f"This is the {subject} — the booley-setup skill does not apply.")
     print()
-    info(f"  * Open the {ctx.project_root.name} folder in VS Code")
-    info('  * In the popup notification, choose "Reopen in Container"')
-    info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
+    info("  * Run `booley session up` here on the host and open the pairing link it prints")
+    info("  * In T3 Code, start a thread on the main checkout")
     # Only some published Projects ship a post-setup hook; naming a script
     # that is not there would send the user to a "No such file" error.
     booley_dir = resolve_booley_dir(ctx.project_root)
     if (booley_dir / "hooks" / "post-setup.sh").is_file():
-        info("  * In the container, run `bash .booley/hooks/post-setup.sh`")
-    info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
+        info("  * In that thread's terminal, run `bash .booley/hooks/post-setup.sh`")
+    info("  * Then run `booley doctor --deep` in that thread's terminal; use")
+    info("    booley-heal if it reports warnings")
 
 
 def _failed_step_names(ctx: InitContext) -> list[str]:
@@ -1992,8 +1993,9 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
         if scaffolded:
             info("Scaffolded starter project; finish greenfield setup with `/booley-setup new`.")
         info("Next: run `/booley-setup new` in your agent chat here on the host (or continue")
-        info("it, if it ran this scaffold); it tells you when to Reopen in Container and")
-        info("runs the Doctor gate there.")
+        info("it, if it ran this scaffold); it tells you when to run `booley session up`,")
+        info("open its pairing link and continue in a T3 Code thread, and runs the Doctor")
+        info("gate there.")
         info("AGENTS.md is optional; commit the scaffolded files before verification.")
         if outstanding:
             info("Check the current enabled Flow wiring and Project configuration.")
@@ -2020,7 +2022,8 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
 def _print_planned_scaffold_advisory() -> None:
     info("After applying the scaffold, the greenfield route would be:")
     info("  * Run `/booley-setup new` in your agent chat here on the host; it tells you when")
-    info("    to Reopen in Container and runs the Doctor gate there")
+    info("    to run `booley session up`, open its pairing link and continue in a T3 Code")
+    info("    thread, and runs the Doctor gate there")
     info("No scaffold files were written by this check.")
 
 
@@ -2127,6 +2130,12 @@ _SUMMARY_STATUS = {
 }
 
 
+_SESSION_UP_NEXT = (
+    "Next: run `booley session up`, open the pairing link it prints and start a\n"
+    "T3 Code thread on the main checkout."
+)
+
+
 def _print_summary(ctx: InitContext) -> int:
     banner("Summary")
     exit_code = 0
@@ -2164,12 +2173,7 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("Booley base setup complete."))
     elif advisory.detail == "published":
         print(green("Booley setup complete — this preconfigured Project is ready."))
-        folder = ctx.project_root.name
-        print(green(f"Next: open the {folder} folder in VS Code and use its popup notification"))
-        print(
-            green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
-        )
-        print(green('"Dev Containers: Reopen in Container".'))
+        print(green(_SESSION_UP_NEXT))
     elif advisory.detail == "scaffold":
         print(green("Booley base setup complete. Next: `/booley-setup new` in your agent chat"))
         print(green("here on the host."))
@@ -2178,14 +2182,15 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("chat here on the host (or `/booley-setup` to port an existing design)."))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
-        print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
+        print(green(_SESSION_UP_NEXT))
     else:
         # Setup starts with the skill's plan phase, which runs on the HOST; the
         # skill itself says when to move into the container (only its execution
         # steps need the Sandbox toolchain).
         print(green("Booley base setup complete. Run the booley-setup skill from your agent"))
         print(green("chat here on the host — it plans setup with you first, then tells you"))
-        print(green('when to "Reopen in Container" for the remaining steps.'))
+        print(green("when to run `booley session up`, open its pairing link and continue in a"))
+        print(green("T3 Code thread."))
     return exit_code
 
 

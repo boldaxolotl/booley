@@ -28,8 +28,19 @@ DASHBOARD_PORT = 8090
 
 # T3 Code's managed policy; Session Issuance mounts the Sandbox's own copy over it.
 T3_POLICY_TARGET = "/etc/t3code/policy.json"
-# T3 Code's base directory; the Project's T3 state volume is mounted there.
+# Where the Project's T3 state volume is mounted: T3 Code's default base directory.
 T3_BASE_DIR = "/home/agent/.t3"
+# containerEnv key of an issued Sandbox: the Project's own spelling of that directory.
+T3_BASE_DIR_ENV = "BOOLEY_T3_BASE_DIR"
+
+
+def t3_project_base_dir(project_id: str) -> str:
+    """The base directory T3 Code runs on for *project_id*: a link to ``T3_BASE_DIR``.
+
+    T3 Code names its session cookie after a hash of this spelling and its port, and a
+    browser does not scope cookies by port, so each Project needs its own spelling.
+    """
+    return f"{T3_BASE_DIR}-{project_id}"
 
 
 def canonical_project_alias_path(path: Path) -> Path:

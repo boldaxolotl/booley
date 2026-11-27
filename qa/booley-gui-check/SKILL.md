@@ -95,8 +95,8 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    tag, whether the QA Host and its volumes were reused, and the build times.
    A build that fails or takes over two hours is `blocked: image build`.
 3. **Project and pairing.** Runbook steps 3-5. Record the time from
-   `session up` to the Project shown in your tab. Start the Dashboard when a
-   check step needs it.
+   `session up` to the Project shown in your tab. Open the Dashboard with the
+   **Booley Dashboard** button (runbook step 5) when a check step needs it.
 4. **Run each step.** Act, take the screenshot (runbook step 9 naming, area
    `check`, for example `check-02-jobs-list.png`), run the oracle, bring the
    GUI back and wait one refresh, then give the step exactly one result: `pass`,
@@ -143,9 +143,10 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    Link each image as
    `https://raw.githubusercontent.com/boldaxolotl/booley-gui-evidence/<evidence-commit>/pr-<n>/<sha>/<file>`,
    pinned to the evidence commit so later pushes can't change it.
-6. **Clean up.** Runbook step 10: tear down the Sandbox, remove the
-   candidate wheel, remove the `qa-host` container (its volumes stay), and
-   diff the outer daemon's IDs. The `before.txt` and `after.txt` snapshots
+6. **Clean up.** Runbook step 10: tear down the Sandbox, forget the Project
+   with its state volumes, remove the candidate wheel, remove the `qa-host`
+   container (its volumes stay), and diff the outer daemon's IDs. The
+   `before.txt` and `after.txt` snapshots
    are evidence for `log.md`, not for the comment: they name other Projects.
    Any difference outside `qa-host` rows is a finding. If a failed step needs
    a live repro, follow the runbook's exception instead: leave the QA Host and
