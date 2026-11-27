@@ -31,6 +31,19 @@ FROM docker.io/openroad/ubuntu26.04-dev@sha256:a971c4db78c9a4a8db18a9fe136c9731c
 USER root
 WORKDIR /
 
+# Retry transient apt and git failures (#4420); the helper lives in this throwaway stage.
+RUN printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/99-network-retries \
+    && printf '%s\n' '#!/bin/sh' \
+        '# Run "$@"; retry a failure up to 8 times, 30 s apart.' \
+        'attempt=1' \
+        'until "$@"; do' \
+        '    test "$attempt" -le 8 || exit 1' \
+        '    echo "booley-retry: $1 failed (attempt $attempt); retrying in 30 s" >&2' \
+        '    attempt=$((attempt + 1))' \
+        '    sleep 30' \
+        'done' > /usr/local/bin/booley-retry \
+    && chmod 0755 /usr/local/bin/booley-retry
+
 # Yosys + ABC + native slang frontend, built from source.
 #
 # Yosys 0.67 replaced the old `make config-gcc` Makefile flow with CMake
@@ -53,10 +66,10 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && git init /tmp/yosys \
     && cd /tmp/yosys \
     && git remote add origin https://github.com/YosysHQ/yosys.git \
-    && git -c protocol.version=0 fetch --depth 1 origin "${YOSYS_REF}" \
+    && booley-retry git -c protocol.version=0 fetch --depth 1 origin "${YOSYS_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${YOSYS_REF}" \
-    && git -c protocol.version=0 submodule update --init --recursive \
+    && booley-retry git -c protocol.version=0 submodule update --init --recursive \
     && cmake -B build -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=gcc \
@@ -79,7 +92,7 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
     && git init /tmp/iverilog \
     && cd /tmp/iverilog \
     && git remote add origin https://github.com/steveicarus/iverilog.git \
-    && git -c protocol.version=0 fetch --depth 1 origin "${ICARUS_REF}" \
+    && booley-retry git -c protocol.version=0 fetch --depth 1 origin "${ICARUS_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${ICARUS_REF}" \
     && sh autoconf.sh \
@@ -105,7 +118,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && git init /tmp/verilator \
     && cd /tmp/verilator \
     && git remote add origin https://github.com/verilator/verilator.git \
-    && git -c protocol.version=0 fetch --depth 1 origin "${VERILATOR_REF}" \
+    && booley-retry git -c protocol.version=0 fetch --depth 1 origin "${VERILATOR_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${VERILATOR_REF}" \
     && autoconf && ./configure --prefix=/usr/local \
@@ -136,7 +149,8 @@ WORKDIR /
 # Docker Desktop/WSL2 VM inherits the host clock; a skewed host (common on
 # dual-boot RTC-vs-UTC setups) makes apt reject freshly-published Release
 # files as "not valid yet". Package integrity remains GPG-verified.
-RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
+RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew \
+    && printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/99-network-retries
 
 # Development support intentionally stops at the native C/C++ toolchain and
 # headers needed by project and Verilator builds. The remaining packages are
@@ -224,7 +238,7 @@ ARG SV2V_VERSION=v0.0.13
 # pin-companion: SV2V_VERSION
 ARG SV2V_SHA256=552799a1d76cd177b9b4cc63a3e77823a3d2a6eb4ec006569288abeff28e1ff8
 RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/zachjs/sv2v/releases/download/${SV2V_VERSION}/sv2v-Linux.zip" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/zachjs/sv2v/releases/download/${SV2V_VERSION}/sv2v-Linux.zip" \
     -o /tmp/sv2v.zip \
     && echo "${SV2V_SHA256}  /tmp/sv2v.zip" | sha256sum -c - \
     && unzip -o /tmp/sv2v.zip -d /tmp/sv2v \
@@ -238,7 +252,7 @@ ARG VERIBLE_VERSION=v0.0-4298-g085eef05
 # pin-companion: VERIBLE_VERSION
 ARG VERIBLE_SHA256=ca83778c7c2b73272277bd670d1851c8caf973fd3283688aeb0d36d4b3598a90
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz \
     && echo "${VERIBLE_SHA256}  /tmp/verible.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/verible.tar.gz -C /tmp \
@@ -264,7 +278,7 @@ ARG VAPORVIEW_SOURCE_TAG=1.6.0-rel
 # pin-companion: VAPORVIEW_VERSION
 ARG VAPORVIEW_SOURCE_COMMIT=d401914c3021596fccf343603aa5a8208c21d28c
 RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
     -o /tmp/vaporview.vsix \
     && echo "${VAPORVIEW_SHA256}  /tmp/vaporview.vsix" | sha256sum -c - \
     && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/vaporview \
@@ -301,7 +315,7 @@ ARG VERILOGHDL_SOURCE_TAG=v1.29.1
 # pin-companion: VERILOGHDL_VERSION
 ARG VERILOGHDL_SOURCE_COMMIT=44a5534c66e78bd8472eb6803b0a122ebeee8aba
 RUN echo ">>> Bundling Verilog-HDL ${VERILOGHDL_VERSION} VSIX..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://open-vsx.org/api/mshr-h/veriloghdl/${VERILOGHDL_VERSION}/file/mshr-h.veriloghdl-${VERILOGHDL_VERSION}.vsix" \
     -o /tmp/veriloghdl.vsix \
     && echo "${VERILOGHDL_SHA256}  /tmp/veriloghdl.vsix" | sha256sum -c - \
     && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/veriloghdl \
@@ -333,7 +347,7 @@ ARG LIVE_PREVIEW_SOURCE_TAG=v0.4.20
 # pin-companion: LIVE_PREVIEW_VERSION
 ARG LIVE_PREVIEW_SOURCE_COMMIT=5b3ce20cdd17ca462825606863a1b95f368695fc
 RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://open-vsx.org/api/ms-vscode/live-server/${LIVE_PREVIEW_VERSION}/file/ms-vscode.live-server-${LIVE_PREVIEW_VERSION}.vsix" \
     -o /tmp/live-server.vsix \
     && echo "${LIVE_PREVIEW_SHA256}  /tmp/live-server.vsix" | sha256sum -c - \
     && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/live-server \
@@ -368,7 +382,7 @@ ARG NODE_SHA256=4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
 RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors \
         "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
         -o /tmp/node.tar.xz \
     && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
@@ -377,7 +391,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && test "$(npm --version)" = "${NPM_VERSION}" \
     && apt-get update \
     && apt-get install -y --no-install-recommends bubblewrap \
-    && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
+    && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund --fetch-retries 5 \
     && CLAUDE_GLIBC=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64/claude \
     && CLAUDE_ACTIVE=/opt/agent-clis/node_modules/@anthropic-ai/claude-code/bin/claude.exe \
     && CLAUDE_MUSL=/opt/agent-clis/node_modules/@anthropic-ai/claude-code-linux-x64-musl \
