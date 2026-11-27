@@ -1,21 +1,11 @@
-"""Operating-system concurrency contracts for the shared memory-class slot store."""
+"""Import isolation of the Job slot store for spawned workers."""
 
 from __future__ import annotations
 
-import multiprocessing
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
-from typing import Any
-
-from tests.time_budget import hang_guard_s
-
-from booley.runtime import job_slots
-
-# One run-alone claim at a time: the single-holder vehicle for mutual exclusion.
-_RUN_ALONE = job_slots.MemoryClaim(budget_mb=1024, run_alone=True)
 
 
 def test_job_slot_import_does_not_require_fusesoc_api(tmp_path: Path) -> None:
@@ -36,86 +26,3 @@ def test_job_slot_import_does_not_require_fusesoc_api(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-
-
-def _hold_single_slot(
-    root: str,
-    start: Any,
-    active: Any,
-    maximum: Any,
-    counter_lock: Any,
-) -> None:
-    store = job_slots.SlotStore(Path(root))
-    start.wait(timeout=hang_guard_s())
-    token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=os.getpid(),
-        poll_interval=0.005,
-        memory=_RUN_ALONE,
-    )
-    try:
-        with counter_lock:
-            active.value += 1
-            maximum.value = max(maximum.value, active.value)
-        time.sleep(0.05)
-    finally:
-        with counter_lock:
-            active.value -= 1
-        store.release(token)
-
-
-def test_single_slot_never_has_multiple_process_holders(tmp_path: Path) -> None:
-    ctx = multiprocessing.get_context("spawn")
-    start = ctx.Barrier(4)
-    active = ctx.Value("i", 0)
-    maximum = ctx.Value("i", 0)
-    counter_lock = ctx.Lock()
-    workers = [
-        ctx.Process(
-            target=_hold_single_slot,
-            args=(str(tmp_path), start, active, maximum, counter_lock),
-        )
-        for _ in range(4)
-    ]
-
-    for worker in workers:
-        worker.start()
-    try:
-        for worker in workers:
-            worker.join(timeout=2 * hang_guard_s())
-            assert not worker.is_alive(), "slot worker exceeded its bounded join"
-            assert worker.exitcode == 0
-    finally:
-        for worker in workers:
-            if worker.is_alive():
-                worker.terminate()
-        for worker in workers:
-            worker.join(timeout=hang_guard_s())
-
-    assert active.value == 0
-    assert maximum.value == 1
-
-
-def test_acquire_recovers_stale_promotion_gate(tmp_path: Path) -> None:
-    class_dir = tmp_path / job_slots.CLASS_MEMORY
-    class_dir.mkdir(parents=True)
-    gate = class_dir / ".promotion.lock"
-    gate.write_text("987654321\n", encoding="utf-8")
-    old = time.time() - job_slots._UNREADABLE_REAP_AGE_SECONDS - 1
-    os.utime(gate, (old, old))
-    store = job_slots.SlotStore(
-        tmp_path,
-        is_pid_alive=lambda pid: pid == os.getpid(),
-    )
-
-    token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=os.getpid(),
-        poll_interval=0.005,
-        memory=_RUN_ALONE,
-    )
-    try:
-        assert token.is_holder
-        assert not gate.exists()
-    finally:
-        store.release(token)
