@@ -63,7 +63,8 @@ serves. Open it in a browser on the host within 5 minutes to pair that
 browser; each command prints a new link. Treat the link like a password: it
 holds a one-time token. `up --no-ui` is for scripted Sandboxes and starts no
 UI, but it doesn't stop one that already runs: run `session down` first.
-`session status` reports whether T3 Code runs.
+`session status` reports whether T3 Code runs. `session down` keeps T3 Code's
+threads, pairings and worktrees for the next `up`.
 
 `session enter` works like a terminal inside the container, so every
 in-Sandbox command works through it. Ending a `session enter` command, with

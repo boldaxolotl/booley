@@ -301,8 +301,8 @@ def compare_issued_reference(
 
 
 # Per-project persistent home-state volumes (see devcontainer.state_volume_name):
-# booley-<app>-state-<canonical-project-hash>.
-_STATE_VOLUME_RE = re.compile(r"^booley-(?:claude|codex)-state-.+")
+# booley-<app>-state-<canonical-project-hash>, and T3 Code's booley-t3-state-<hash>.
+_STATE_VOLUME_RE = re.compile(r"^booley-(?:claude|codex|t3)-state-.+")
 _ISSUED_IMAGE_RE = re.compile(r"^booley-issued-[0-9a-f]{64}:session$")
 
 
@@ -388,8 +388,9 @@ def state_volumes() -> list[str]:
     """Return names of Sandbox persistent home-state volumes.
 
     These survive container rebuilds by design (they hold the agent's plans,
-    session transcripts, and todos); the idle reaper deliberately leaves them
-    alone. ``booley doctor`` uses this to surface orphans from removed projects.
+    session transcripts, and todos, and T3 Code's threads); the idle reaper
+    deliberately leaves them alone. ``booley doctor`` uses this to surface orphans
+    from removed projects.
     Empty on any error.
     """
     try:

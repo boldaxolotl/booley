@@ -13,13 +13,14 @@ reports a failing test is healthy machinery; the Flows judge the design.
 Doctor checks what it can see from where it runs, so it gives a different view
 from each side:
 
-- **Host terminal:** the Booley install, Docker, the Sandbox Image, and the
-  Project configuration. Doctor starts the Sandbox for its Flow dry-runs. It
-  never completes pending Sandbox recovery: it warns and skips the checks that
-  need the Sandbox until `booley session up` completes it.
+- **Host terminal:** the Booley install, Docker, the Sandbox Image, T3 Code
+  and the relay that connects your browser to it, and the Project
+  configuration. Doctor starts the Sandbox for its Flow dry-runs. It never
+  completes pending Sandbox recovery: it warns and skips the checks that need
+  the Sandbox until `booley session up` completes it.
 - **Sandbox terminal** (a VS Code terminal in the devcontainer, or
   `booley session enter`): the same configuration plus the tools, MCP server,
-  and agent setup inside the Sandbox.
+  T3 Code, and agent setup inside the Sandbox.
 
 Run plain `booley doctor` for everyday checks. It checks configuration and
 prepares each Flow without running a simulation, lint, or synthesis.

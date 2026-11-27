@@ -64,6 +64,14 @@ class RelayStart:
 
 
 @dataclass(frozen=True, slots=True)
+class RelayObservation:
+    """A relay that was started into the Sandbox and that no ``stop`` has cleared."""
+
+    port: int
+    running: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Record:
     port: int
     container: str
@@ -143,15 +151,21 @@ def _unobservable(identity: ProcessIdentity) -> T3RelayError:
     )
 
 
-def running_port(workspace: Path, container: str) -> int | None:
-    """The port of this Project's running relay into *container*, else ``None``."""
+def observe(workspace: Path, container: str) -> RelayObservation | None:
+    """This Project's recorded relay into *container*; ``None`` when none is recorded."""
     record = _read(relay_store(), str(workspace.resolve()))
     if record is None or record.identity is None or record.container != container:
         return None
     state = observe_process(record.identity).state
     if state is ProcessState.UNKNOWN:
         raise _unobservable(record.identity)
-    return record.port if state is ProcessState.RUNNING else None
+    return RelayObservation(record.port, state is ProcessState.RUNNING)
+
+
+def running_port(workspace: Path, container: str) -> int | None:
+    """The port of this Project's running relay into *container*, else ``None``."""
+    relay = observe(workspace, container)
+    return relay.port if relay is not None and relay.running else None
 
 
 def start(workspace: Path, container: str) -> RelayStart:

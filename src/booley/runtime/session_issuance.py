@@ -73,7 +73,7 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET, T3_POLICY_TARGET
+from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET, T3_BASE_DIR, T3_POLICY_TARGET
 from booley.runtime.t3code_policy import narrowed_policy
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -2053,7 +2053,10 @@ def _require_project_data_mount(
 
 
 def _validate_state_volume(mounts: list[str], record: dict[str, str], project: Path) -> None:
-    """One state volume per allowed CLI, in record order, and nothing else under any state dir."""
+    """One state volume per allowed CLI, in record order, then T3 Code's when any is allowed.
+
+    No other volume is mounted, and nothing else at or under a state dir.
+    """
     from booley.runtime import devcontainer as dc
 
     project_id = dc.canonical_project_id(project)
@@ -2062,7 +2065,9 @@ def _validate_state_volume(mounts: list[str], record: dict[str, str], project: P
         str(dc.state_volume_mount(cli, project_id, policy, legacy=cli in legacy))
         for cli, policy in record.items()
     ]
-    targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
+    targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex", T3_BASE_DIR}
+    if record:
+        expected.append(dc.t3_state_volume_mount(project_id))
     # A volume other than an expected one may hold a login copied for a dropped CLI or
     # another Project; a bind at or under a state dir would shadow what the volume owns.
     stray = [
