@@ -8,6 +8,8 @@ import pytest
 from tests.sharing_error_support import hold_opens
 
 from booley.flows.progress_lifecycle import progress_document
+
+# private: imported only for bound() to lower the scan bounds (see there).
 from booley.runtime.job_observation import _artifacts as job_artifacts
 from booley.runtime.job_observation._artifacts import JobArtifactCache
 
