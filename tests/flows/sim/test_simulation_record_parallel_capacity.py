@@ -8,7 +8,9 @@ import json
 import os
 import sys
 import threading
+import time
 import uuid
+from collections.abc import Callable
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
@@ -448,13 +450,19 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(managed_ca
             store.release(competitor)
 
 
-def test_interrupted_scheduler_drains_its_lanes_before_it_raises(tmp_path: Path, slots) -> None:
+def _run_interrupted_scheduler(
+    tmp_path: Path,
+    slots,
+    linger: Callable[[threading.Event, threading.Event], object],
+    check: Callable[[], None],
+    *,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Interrupt the scheduler from its first lane, which then runs *linger*."""
     manifest, simulation_record_store, project = _record_project(tmp_path)
     registry = ChildExecutionRegistry(manifest, project)
-    slot_store, outer = slots
-    capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
+    capacity = _item_capacity(_managed(*slots), manifest, registry.project_data)
     supervising, draining, give_up = threading.Event(), threading.Event(), threading.Event()
-    returned: list[bool] = []
 
     class SupervisorEvent(threading.Event):
         def wait(self, timeout: float | None = None) -> bool:
@@ -468,66 +476,55 @@ def test_interrupted_scheduler_drains_its_lanes_before_it_raises(tmp_path: Path,
             return
         assert supervising.wait(hang_guard_s())
         _thread.interrupt_main()
-        _wait_until(lambda: draining.is_set() or give_up.is_set())
-        returned.append(True)
+        linger(draining, give_up)
 
     scheduler = BoundedSimulationRecordScheduler(
         capacity,
         allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
         execute=execute,
+        clock=clock,
         event=SupervisorEvent,
     )
     try:
         with pytest.raises(KeyboardInterrupt):
             scheduler.run(manifest.document["work_items"])
-        assert returned == [True], "a lane was still running"
+        check()
     finally:
         give_up.set()
         for thread in threading.enumerate():
             if thread.name.startswith("booley-record-"):
                 thread.join(hang_guard_s())
 
-    _assert_only_the_outer_claim_remains(slot_store)
+
+def test_interrupted_scheduler_drains_its_lanes_before_it_raises(tmp_path: Path, slots) -> None:
+    returned: list[bool] = []
+
+    def linger(draining: threading.Event, give_up: threading.Event) -> None:
+        _wait_until(lambda: draining.is_set() or give_up.is_set())
+        returned.append(True)
+
+    def check() -> None:
+        assert returned == [True], "a lane was still running"
+
+    _run_interrupted_scheduler(tmp_path, slots, linger, check)
+    _assert_only_the_outer_claim_remains(slots[0])
 
 
 def test_interrupt_stays_the_outcome_when_a_lane_outlasts_the_drain(
     tmp_path: Path, slots, caplog: pytest.LogCaptureFixture
 ) -> None:
-    manifest, simulation_record_store, project = _record_project(tmp_path)
-    registry = ChildExecutionRegistry(manifest, project)
-    slot_store, outer = slots
-    capacity = _item_capacity(_managed(slot_store, outer), manifest, registry.project_data)
-    supervising, give_up = threading.Event(), threading.Event()
     seconds = itertools.count(step=1000)
 
-    class SupervisorEvent(threading.Event):
-        def wait(self, timeout: float | None = None) -> bool:
-            supervising.set()
-            return super().wait(timeout)
-
-    def execute(attempt: ScheduledAttempt, _child_id) -> None:
-        if attempt.item != manifest.document["work_items"][0]:
-            return
-        assert supervising.wait(hang_guard_s())
-        _thread.interrupt_main()
-        give_up.wait(hang_guard_s())
-
-    scheduler = BoundedSimulationRecordScheduler(
-        capacity,
-        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
-        execute=execute,
-        clock=lambda: float(next(seconds)),
-        event=SupervisorEvent,
-    )
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            scheduler.run(manifest.document["work_items"])
+    def check() -> None:
         assert "record workers exceeded bounded shutdown" in caplog.text
-    finally:
-        give_up.set()
-        for thread in threading.enumerate():
-            if thread.name.startswith("booley-record-"):
-                thread.join(hang_guard_s())
+
+    _run_interrupted_scheduler(
+        tmp_path,
+        slots,
+        lambda _draining, give_up: give_up.wait(hang_guard_s()),
+        check,
+        clock=lambda: float(next(seconds)),
+    )
 
 
 class _ExitsDuringFinalWait(threading.Event):
