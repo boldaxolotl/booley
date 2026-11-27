@@ -1954,7 +1954,8 @@ def _print_published_advisory(ctx: InitContext) -> None:
     booley_dir = resolve_booley_dir(ctx.project_root)
     if (booley_dir / "hooks" / "post-setup.sh").is_file():
         info("  * In that thread's terminal, run `bash .booley/hooks/post-setup.sh`")
-    info("  * Then run `booley doctor --deep` there; use booley-heal if it reports warnings")
+    info("  * Then run `booley doctor --deep` in that thread's terminal; use")
+    info("    booley-heal if it reports warnings")
 
 
 def _failed_step_names(ctx: InitContext) -> list[str]:

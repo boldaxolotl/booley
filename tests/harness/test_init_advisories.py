@@ -234,6 +234,8 @@ def test_published_project_gets_runtime_steps_instead_of_setup_skill(
     ):
         assert fragment in out
     assert "VS Code" not in out and "Reopen in Container" not in out
+    assert "booley session up" in off.summary
+    assert "`booley doctor --deep` in that thread's terminal" in off.advice
     assert "Run the booley-setup skill" not in out
     assert "Step 2 (fpga)" not in out
     assert off.detail == "published"

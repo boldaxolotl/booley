@@ -181,6 +181,7 @@ class TestAgentSessionApp:
                 "pairing link",
                 "T3 Code thread's terminal",
                 "booley session enter -- bwave",
+                "`booley session --help`",
             ),
         ),
         (runtime_context.host_only_error, None, "1", ("HOST terminal", "BOOLEY_CONTAINER=0")),

@@ -81,7 +81,8 @@ def _report_gateway_status(app: str | None, label: str | None = None) -> int:
         # A Claude session was deliberately kept from the gateway values: nothing to grade.
         note(
             "Codex gateway settings are hidden from Claude sessions; "
-            "run `booley auth --status` in a T3 Code thread's terminal to check them"
+            "run `booley auth --status` in a T3 Code thread's terminal to check them "
+            "(from a host shell: `booley session enter -- booley auth --status`)"
         )
         return 0
     settings = gateway_settings_from_env()  # GatewayConfigError names the variable

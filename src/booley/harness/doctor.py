@@ -2133,7 +2133,8 @@ def _check_image_bakes_runtime_marker(
 # Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
 _HIDDEN_GATEWAY_NOTE = (
     "Codex gateway settings are hidden from Claude sessions; "
-    "run `booley doctor` in a T3 Code thread's terminal to check them"
+    "run `booley doctor` in a T3 Code thread's terminal to check them "
+    "(from a host shell: `booley session enter -- booley doctor`)"
 )
 
 
