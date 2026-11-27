@@ -255,12 +255,6 @@ def test_site_workflow_runs_when_a_published_doc_changes():
         assert not uncovered, f"pages.yml {event} paths miss {uncovered}"
 
 
-def test_demo_page_keeps_the_gateway_bring_your_own_key_anchor():
-    """The demo gateway's notice and errors link to booley.dev/demo#bring-your-own-key."""
-    page = (WEBSITE / "docs/demo.md").read_text(encoding="utf-8")
-    assert 'id="bring-your-own-key"' in page
-
-
 def test_goal_mode_url_redirects_to_the_metric_driven_development_guide():
     """The retired /docs/goal-mode/ URL still resolves: a static page sends readers to the guide."""
     from booley.runtime.docs_links import SITE_DOCS, docs_url

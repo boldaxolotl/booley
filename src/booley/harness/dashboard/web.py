@@ -13,10 +13,10 @@ for the same ``?worktree=``, with the same refusals; with the flag off they are 
 With the flag on, ``POST /api/run/command``, ``/check`` and ``/submit`` take a JSON body
 ``{"kind", "name", "values", "extra"}``: the equivalent CLI command, the review screen's lines
 and refusal, and the start of a Standalone Job. Each requires a page of this server (an ``Origin``
-of ``http://127.0.0.1:<port>``, the Host's own) and a JSON body, so no other site can launch;
-errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or Specialist), 422 (the form or the
-parser refuses; on submit, also the Agent CLI's sign-in check) and 500 (the argument check itself
-failed, or the Job record cannot be written).
+of ``http://`` and the Host's own ``127.0.0.1:<port>`` or ``localhost:<port>``) and a JSON body,
+so no other site can launch; errors are 403, 415, 400 (a bad body), 404 (an unknown Flow or
+Specialist), 422 (the form or the parser refuses; on submit, also the Agent CLI's sign-in check)
+and 500 (the argument check itself failed, or the Job record cannot be written).
 """
 
 from __future__ import annotations
@@ -65,6 +65,8 @@ from booley.harness.dashboard.web_snapshot import find_report, finished_sim_runs
 from booley.runtime import job_slots, loopback_http
 
 HOST = "127.0.0.1"
+# T3 Code's preview panel names this server ``localhost``; any other name may be rebound.
+_LAUNCH_HOSTS = frozenset({HOST, "localhost"})
 # The browser refuses any load from outside this server.
 _PAGE_HEADERS = {"Content-Security-Policy": "default-src 'self'"}
 
@@ -207,11 +209,13 @@ async def _guarded_json(request: Request) -> dict[str, Any]:
     """The JSON object of a launch request from this server's own page, else a refusal.
 
     Refused before any Git or disk read: 403 unless the ``Origin`` is ``http://`` and the
-    Host, whose name is the loopback address the server binds (so a rebound name is refused
-    too), 415 for another content type, 400 for a body that is not a JSON object.
+    Host, whose name is ``127.0.0.1`` (the address the server binds) or ``localhost`` (T3
+    Code's preview panel's name for it), so a rebound name is refused too; 415 for another
+    content type, 400 for a body that is not a JSON object.
     """
     host = request.headers.get("host", "")
-    if request.headers.get("origin") != f"http://{host}" or host.split(":")[0] != HOST:
+    from_page = request.headers.get("origin") == f"http://{host}"
+    if not from_page or host.split(":")[0] not in _LAUNCH_HOSTS:
         raise _RefusalError(403, "a launch must come from this Dashboard's own page")
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
         raise _RefusalError(415, "a launch takes a JSON body")
