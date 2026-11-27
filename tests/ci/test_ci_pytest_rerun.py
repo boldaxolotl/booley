@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 
 import coverage
 import pytest
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import run_bounded_child
 
 _ROOT = Path(__file__).parents[2]
 _SCRIPTS = _ROOT / ".github/scripts"
@@ -91,6 +91,23 @@ _CASES = {
             "m.json",
         ],
     ),
+    "class-collection-error": (
+        "class TestBad:\n"
+        "    @pytest.mark.parametrize('nope', [1])\n"
+        "    def test_a(self):\n"
+        "        pass\n\n\n"
+        "def test_one():\n"
+        "    attempt('one')\n",
+        ["-n", "2"],
+    ),
+    "malformed-junit": (
+        "import atexit\n\n\n"
+        "def test_one():\n"
+        "    attempt('one')\n"
+        "    atexit.register((DIR / 'junit.xml').write_text, '<broken')\n"
+        "    assert False\n",
+        [],
+    ),
     "missing-junit": ("def test_one():\n    attempt('one')\n    os._exit(1)\n", []),
     "too-many": (
         "@pytest.mark.parametrize('n', range(6))\n"
@@ -105,6 +122,8 @@ _CASES = {
 _MESSAGES = {
     "collection-error": "collection failed",
     "shard-selection": "not with test failures",
+    "class-collection-error": "collection failed: TestBad",
+    "malformed-junit": "malformed JUnit report",
     "missing-junit": "no JUnit report",
     "too-many": "6 tests failed, more than 5",
     "coverage-crash": "worker crashed",
@@ -149,7 +168,7 @@ def _run(
         "no:cacheprovider",
         *pytest_args,
     ]
-    result = run_bounded_child(command, cwd=work, env=env, timeout=SUBPROCESS_TIMEOUT_S * 4)
+    result = run_bounded_child(command, cwd=work, env=env)
     summary = work / "summary.md"
     text = summary.read_text(encoding="utf-8") if summary.exists() else ""
     return result.returncode, result.stdout, text
@@ -196,6 +215,7 @@ def test_rerun_absorbs_a_flake_and_reports_a_repeated_failure(
         assert _children(work, "test_broken") == ["failure", "rerunFailure"]
         assert _children(work, "test_skips_serially") == ["failure", "rerunFailure"]
         assert "Failed again: `pkg/test_case.py::test_broken`" in summary
+        assert "Failed again: `pkg/test_case.py::test_skips_serially`" in summary
         assert "skipped on rerun" in (work / "junit.xml").read_text(encoding="utf-8")
 
 
@@ -212,6 +232,24 @@ def test_rerun_is_refused_when_the_failure_is_not_a_test_result(tmp_path: Path, 
     assert _MESSAGES[case] in summary
     seen = _log(work) if (work / "log.txt").exists() else {}
     assert all(len(workers) == 1 for workers in seen.values())
+
+
+def test_a_killed_coverage_rerun_still_reports_the_repeated_failure(tmp_path: Path) -> None:
+    source = (
+        "def test_dies_serially():\n"
+        "    if attempt('dies')[1] == 'serial':\n"
+        "        os._exit(1)\n"
+        "    assert False\n"
+    )
+    work = tmp_path / "w"
+    args = ["-n", "2", "--cov=covmod", "--cov-report="]
+    code, _, summary = _run(work, source, args, "--coverage-file", str(work / ".coverage.1"))
+
+    assert code != 0
+    assert "No readable rerun report" in summary
+    assert "Failed again: `pkg/test_case.py::test_dies_serially`" in summary
+    assert "could not be combined" in summary
+    assert _children(work, "test_dies_serially") == ["failure", "rerunError"]
 
 
 def test_coverage_after_a_rerun_matches_a_run_without_failures(tmp_path: Path) -> None:

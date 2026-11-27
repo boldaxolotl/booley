@@ -89,9 +89,11 @@ inputs and their allowed values are in `ci_changes.py`.
 
 ## Rerun of failed tests
 
-The pytest steps of `docs-check`, the `Tests` jobs, and the coverage shards run
-through `.github/scripts/ci_pytest_rerun.py`. When a run ends with test
-failures, it reruns only the failed test ids once, in a separate serial pytest
+The merge queue retries nothing, so one rare test failure would eject a PR or
+batch. The pytest steps of the `docs-check`, `test`, and `coverage-shards` jobs
+therefore run through `.github/scripts/ci_pytest_rerun.py`; other jobs do not
+rerun. When a run ends with test failures or errors (a timeout-headroom overrun
+is one), it reruns only the failed test ids once, in a separate serial pytest
 process (`-n 0`, no shard options). The rerun keeps the mark expression,
 per-test timeout, and time scale. The job passes only when every rerun passes.
 
@@ -101,15 +103,16 @@ per-test timeout, and time scale. The job passes only when every rerun passes.
   that fails again keeps its failure and gains `rerunFailure` or `rerunError`;
   the log shows both failures.
 - No rerun starts, and the step summary says why, after a collection error, a
-  shard selection or other non-test exit, a missing or malformed JUnit report,
+  shard-selection error or any other exit that is not a test failure, a missing
+  or malformed JUnit report,
   or more than `MAX_RERUN_FAILURES` (5, in `ci_pytest_rerun.py`) failed tests,
   which likely means a deterministic break. A coverage shard also skips the
   rerun after a crashed worker, because that worker's coverage data is lost.
 - The rerun's coverage data is combined into the shard's one `.coverage.<index>`
   file, so lines only the failed attempt ran stay counted.
 - `flake-stress` never reruns: its job is to expose flakiness.
-- The rerun runs inside the step's existing time limit; a slow rerun fails the
-  step as a deterministic break would.
+- The rerun gets no extra time: it counts against the same step or job
+  `timeout-minutes` as the first run.
 
 ## Test time budgets
 

@@ -56,7 +56,13 @@ def failed_ids(
     except ElementTree.ParseError as exc:
         raise RerunRefusedError(f"malformed JUnit report at {junit}: {exc}") from None
     failed = [case for case in tree.iter("testcase") if _failure_children(case)]
-    broken = [case.get("name", "") for case in failed if not case.get("classname")]
+    # A module's collection error has no classname; a class's one has, but says so.
+    broken = [
+        case.get("name", "")
+        for case in failed
+        if not case.get("classname")
+        or any(child.get("message") == "collection failure" for child in case)
+    ]
     if broken:
         raise RerunRefusedError(f"collection failed: {', '.join(broken)}")
     keys = {(case.get("classname", ""), case.get("name", "")) for case in failed}
@@ -107,8 +113,8 @@ def merge_rerun(first: Path, rerun: Path, keys: dict[_Key, str]) -> tuple[list[s
     try:
         for case in ElementTree.parse(rerun).iter("testcase"):
             after.setdefault((case.get("classname", ""), case.get("name", "")), []).append(case)
-    except (FileNotFoundError, ElementTree.ParseError):
-        pass
+    except (FileNotFoundError, ElementTree.ParseError) as exc:
+        _say(f"No readable rerun report at {rerun}: {exc}")
     passed: list[str] = []
     again: list[str] = []
     for suite in tree.iter("testsuite"):
@@ -199,16 +205,17 @@ def main(argv: list[str] | None = None) -> int:
     rerun_code = _run(
         ["pytest", *rerun_args, "--junitxml", str(rerun_junit), "--basetemp", base], env
     )
-    if own.coverage_file is not None:
-        combine = ["coverage", "combine", "--append", f"--data-file={own.coverage_file}"]
-        if _run([*combine, env["COVERAGE_FILE"]]) != 0:
-            _say("Coverage data of the rerun could not be combined; failing the job.")
-            return code
     passed, again = merge_rerun(junit, rerun_junit, ids)
     for node_id in passed:
         _say(f"Passed on rerun: `{node_id}`")
     for node_id in again:
         _say(f"Failed again: `{node_id}`")
+    if own.coverage_file is not None:
+        # A killed rerun leaves no data file, so report its results before combining.
+        combine = ["coverage", "combine", "--append", f"--data-file={own.coverage_file}"]
+        if _run([*combine, env["COVERAGE_FILE"]]) != 0:
+            _say("Coverage data of the rerun could not be combined; failing the job.")
+            return code
     return 0 if rerun_code == 0 and not again else rerun_code or 1
 
 
