@@ -299,7 +299,7 @@ def _t3_environment_id() -> str | None:
         if response.status != 200:
             return None
         return require_str(require_dict(json.loads(response.read())), "environmentId")
-    except (OSError, http.client.HTTPException, ValueError):
+    except (OSError, http.client.HTTPException, ValueError, RecursionError):
         return None
 
 

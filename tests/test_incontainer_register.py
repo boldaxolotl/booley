@@ -105,8 +105,8 @@ def first_run(tmp_path_factory, monkeypatch):
 def _t3_code_answers(monkeypatch):
     """No test here starts the real `t3`: T3 Code already answers.
 
-    The T3 Code fake replaces the port probe and `subprocess` that the MCP server launch
-    fake drives, so only the tests of the T3 Code start install it, through `_t3_code`.
+    The T3 Code fake replaces the port and descriptor probes and the `subprocess` that the
+    MCP server launch fake drives, so only the T3 Code start tests install it, through `_t3_code`.
     """
     monkeypatch.setattr(reg, "ensure_t3_server", lambda _root: "running")
 
@@ -284,6 +284,9 @@ def test_ensure_t3_server_registers_the_project(
         pytest.param("env-other", "live", 0, "port-taken", id="other-base"),
         pytest.param("not-t3", "live", 0, "port-taken", id="not-t3"),
         pytest.param("drip", "live", 0, "port-taken", id="drip"),
+        pytest.param("banner", "live", 0, "port-taken", id="banner"),
+        pytest.param("nested", "live", 0, "port-taken", id="nested"),
+        pytest.param("oversized", "live", 0, "port-taken", id="oversized"),
         pytest.param("env-own", None, 0, "port-taken", id="no-record"),
         pytest.param("env-own", 4_194_305, 0, "port-taken", id="dead-pid"),
         pytest.param("env-own", "live", 1, "port-taken", id="wrong-port"),

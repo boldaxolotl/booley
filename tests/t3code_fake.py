@@ -133,24 +133,35 @@ def write_t3_runtime(base: Path, *, pid: int | None, port: int, environment_id: 
 def t3_listener(kind: str) -> Iterator[int]:
     """Serve a free loopback port and yield it.
 
-    ``"drip"`` never completes a reply, ``"not-t3"`` answers 404, and any other *kind* is the
-    environment ID in a T3 Code descriptor.
+    ``"drip"`` never completes a reply, ``"banner"`` does not speak HTTP, ``"not-t3"`` answers
+    404, ``"nested"`` answers JSON too deep to parse, ``"oversized"`` answers ``env-own``'s
+    descriptor padded past the size limit, and any other *kind* is the environment ID in a
+    T3 Code descriptor.
     """
     stop = threading.Event()
+    unusual = {
+        "nested": b"[" * 200_000 + b"]" * 200_000,
+        "oversized": json.dumps({"environmentId": "env-own", "pad": "x" * (1 << 20)}).encode(),
+    }
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def handle(self) -> None:
             with contextlib.suppress(OSError):
-                if kind != "drip":
+                if kind == "drip":
+                    while not stop.wait(0.2):
+                        self.wfile.write(b"H")
+                elif kind == "banner":
+                    while self.rfile.readline().strip():  # unread input would reset the reply
+                        pass
+                    self.wfile.write(b"SSH-2.0-banner\r\n")
+                else:
                     super().handle()
-                while kind == "drip" and not stop.wait(0.2):
-                    self.wfile.write(b"H")
 
         def do_GET(self) -> None:
             if kind == "not-t3" or self.path != "/.well-known/t3/environment":
                 self.send_error(404)
                 return
-            body = json.dumps({"environmentId": kind}).encode()
+            body = unusual.get(kind) or json.dumps({"environmentId": kind}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
