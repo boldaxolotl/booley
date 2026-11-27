@@ -424,7 +424,8 @@ def _find_launcher_as_posix_does(monkeypatch: pytest.MonkeyPatch, launcher: Path
                 found = shutil.which("docker", path=path)
                 if found is None:
                     raise FileNotFoundError(2, "No such file or directory", "docker")
-                if os.path.normcase(found) == os.path.normcase(launcher):
+                # str: a test may patch normcase with a function that refuses a Path.
+                if os.path.normcase(found) == os.path.normcase(str(launcher)):
                     args = [*_program(launcher.parent), *args[1:]]
             super().__init__(args, *rest, **kwargs)
 
