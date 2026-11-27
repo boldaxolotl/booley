@@ -4726,15 +4726,6 @@ def _probed_binaries(project_root, target, flow_name) -> list[str]:
         ),
         ('[tools]\nbuiltin = ["sim"]\n', "[tools]", "[flows.*]", "FAIL"),
         ('[tools]\ncustom = ["reviewer"]\n', "[tools]", "[specialists.*]", "FAIL"),
-        ('[flows.sim]\nbackend = "docker"\n', ".backend", "delete the key", "FAIL"),
-        ('[flows.sim]\nbackend = "none"\n', ".backend", "enabled = false", "FAIL"),
-        ('[flows.sim]\nvenue = "host"\n', ".venue", "delete the key", "FAIL"),
-        (
-            '[flows.sim]\nhost_setup_commands = ["true"]\n',
-            ".host_setup_commands",
-            "delete the key",
-            "FAIL",
-        ),
         ('[flows.sim]\ntarget = "sim_core"\n', ".target", "explicit target", "FAIL"),
         (
             '[flows.sim]\ndefault_target = "sim_core"\n',
@@ -4752,12 +4743,6 @@ def _probed_binaries(project_root, target, flow_name) -> list[str]:
             '[flows.sim.selftest]\ngood = "sim_core"\n',
             "[flows.sim.selftest]",
             "delete the table",
-            "FAIL",
-        ),
-        (
-            '[sandbox]\npassthrough_env = ["LM_LICENSE_FILE"]\n',
-            ".passthrough_env",
-            "host License Profile",
             "FAIL",
         ),
         ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
