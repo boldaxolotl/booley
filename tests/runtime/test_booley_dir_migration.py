@@ -20,6 +20,7 @@ from booley.core.project_identity import project_label_id
 from booley.harness.init_cmd import run_init
 from booley.harness.setup.directory_migration import inspect_migration
 from booley.runtime import booley_dir_migration as migration
+from booley.runtime.session_issuance import stamp_path
 from booley.runtime.worktree_identity import resolve_worktree_identity
 
 OLD = ".booley_project"
@@ -160,6 +161,21 @@ def test_power_loss_after_rename_blocks_until_init_recovers(tmp_path, monkeypatc
     assert (root / ".gitignore").read_bytes() == f"/{NEW}\n".encode()
     if git_backed:
         assert "prunable" not in git(root, "worktree", "list", "--porcelain")
+
+
+def test_failed_issuance_withdrawal_blocks_until_init_recovers(tmp_path):
+    root = tmp_path / "rtl"
+    (root / OLD).mkdir(parents=True)
+    stamp = stamp_path(root)
+    stamp.mkdir(parents=True)  # a directory in the stamp's place cannot be unlinked
+    with pytest.raises(OSError):
+        migration.apply_migration(inspect_migration(root))
+    with pytest.raises(BooleyLayoutError, match="interrupted"):
+        resolve_booley_dir(root)
+    stamp.rmdir()
+    stamp.write_bytes(b"{}")
+    migration.apply_migration(inspect_migration(root))
+    assert not stamp.exists()
 
 
 def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path):

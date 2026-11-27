@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -271,7 +271,7 @@ def test_missing_incomplete_or_duplicate_verdicts_fail_closed(tmp_path):
     ("failure", "cause"),
     [("issuance", "bad issuance"), ("missing executable", ""), ("timeout", "timed out")],
 )
-def test_sandbox_start_failure_fails(tmp_path, failure, cause):
+def test_sandbox_start_failure_fails(tmp_path, monkeypatch, failure, cause):
     """A Sandbox that cannot start, spawn or finish is one FAIL naming the cause."""
     _write_core(tmp_path, "unit", ("sim_ok",))
     sandbox = _Sandbox(tmp_path, _ok_for_all)
@@ -280,10 +280,12 @@ def test_sandbox_start_failure_fails(tmp_path, failure, cause):
         if failure == "issuance":
             raise session_runtime.SessionError("bad issuance")
         if failure == "timeout":
-            raise subprocess.TimeoutExpired(["sandbox"], 600)
+            return [sys.executable, "-c", "import time; time.sleep(10)"]
         return [str(tmp_path / "no-sandbox")]
 
     sandbox.command = command
+    # `_CORE_RESOLVE_TIMEOUT_S` is patched because no public setting shortens the limit.
+    monkeypatch.setattr(_owner(), "_CORE_RESOLVE_TIMEOUT_S", 0.5)
 
     result = _inspect(tmp_path, ("sim_ok",), sandbox)
 
