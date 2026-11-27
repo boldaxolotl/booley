@@ -52,11 +52,9 @@ from .model import (
 )
 from .planning import (
     WorkloadDiagnostic,
-    WorkloadMismatch,
-    compare_manifests,
     manifest_digest,
-    project_workload_mismatches,
     verify_workload,
+    workload_diagnostic,
 )
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
@@ -194,7 +192,6 @@ class ResumeSimulationRecordPreview:
     manifest: Mapping[str, object]
     required_bundle_variants: tuple[str, ...]
     effective_policy: SimulationRecordPolicy
-    mismatches: tuple[WorkloadMismatch, ...]
     diagnostic: WorkloadDiagnostic
 
 
@@ -300,17 +297,13 @@ class SimulationRecord:
         if isinstance(request, NewSimulationRecordPreviewRequest):
             return _new_preview(request)
         recovery, status = self._inspect_resume(request.validated)
-        mismatches = compare_manifests(request.validated.manifest, request.current_plan.manifest)
         needed = _required_variants(request.validated.manifest, recovery)
         return ResumeSimulationRecordPreview(
             status,
             request.validated.manifest.document,
             needed,
             request.policy,
-            mismatches,
-            project_workload_mismatches(
-                request.validated.manifest, request.current_plan.manifest, mismatches
-            ),
+            workload_diagnostic(request.validated.manifest, request.current_plan.manifest),
         )
 
     def inspect_resume(self, validated: ValidatedResumeManifest) -> SimulationRecordRecoveryStatus:

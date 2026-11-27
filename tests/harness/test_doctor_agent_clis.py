@@ -11,6 +11,7 @@ import tomlkit
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Severity
 from booley.runtime import auth_token
+from booley.runtime import devcontainer as dc
 from tests.gateway_command_support import write_token_command
 from tests.harness.agent_auth_support import install_agent_clis, pin_venue
 from tests.harness.doctor_run_support import run_doctor
@@ -79,6 +80,10 @@ def _record_visitor(monkeypatch, cli: str) -> None:
     """Record the visitor mode the way a hand-written Sandbox does, so it is honoured."""
     pin_venue(monkeypatch, inside=True)
     monkeypatch.setenv("BOOLEY_AGENT_APP", cli)
+    # Each login stands in for the host credential Booley seeds into the Sandbox. The seed
+    # targets are fixed Sandbox paths that no public input redirects.
+    for app, login in (("claude", ".claude/.credentials.json"), ("codex", ".codex/auth.json")):
+        monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, app, str(Path.home() / login))
 
 
 def _agent_fails(findings):

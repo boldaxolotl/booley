@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from tests.docker_cli_guard_plugin import allow_docker_cli
+
 _CHILD = """\
 import base64, json, os, sys, time
 from pathlib import Path
@@ -87,6 +89,9 @@ class PathToolFake:
 
     @classmethod
     def install(cls, directory: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> PathToolFake:
+        """Put *name* on ``PATH``; a ``docker`` also opts the test out of the CLI guard."""
+        if name == "docker":
+            allow_docker_cli()
         directory.mkdir(parents=True, exist_ok=True)
         fake = cls(directory, name)
         monkeypatch.setenv("PATH", os.pathsep.join((str(directory), os.environ.get("PATH", ""))))

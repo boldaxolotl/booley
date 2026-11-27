@@ -36,6 +36,7 @@ pytest_plugins = [
     "tests.sandbox_only",
     "tests.os_specific",
     "tests.thread_leak_guard",
+    "tests.docker_cli_guard_plugin",
 ]
 
 
@@ -264,7 +265,7 @@ def require_symlinks(tmp_path: Path) -> None:
 # worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
 # (3x the slowest Windows CI duration, from the ``time`` values in the
 # ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
-# legs fail a passing test that uses more than 80% of its budget.
+# legs warn above 50% of the budget; the budget itself is the hard limit.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
@@ -897,33 +898,23 @@ def fake_sandbox_attachment(
     return attach
 
 
-def _point_mountinfo_at(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, text: str
-) -> None:
-    from booley.runtime import runtime_context
-
-    mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
-    mountinfo.write_bytes(text.encode())
-    # private: no public seam points the container probe at a fixture mountinfo file.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
-
-
 @pytest.fixture(autouse=True)
-def _issued_sandbox_mounts(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _issued_sandbox_mounts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
 
     The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
     issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
     """
-    issued = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, issued)
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
 
 
 @pytest.fixture
-def hand_written_sandbox(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def hand_written_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, "")
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

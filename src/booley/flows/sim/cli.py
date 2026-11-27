@@ -133,7 +133,7 @@ class SimArguments(BuiltinArguments):
         parser.add_argument(
             "--verbose",
             action="store_true",
-            help="Include full Simulation Record resume mismatch pointers and values",
+            help="Deprecated: has no effect; removed in the next minor release",
         )
         SimArguments._add_run_control_args(parser)
 

@@ -17,6 +17,8 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import auth_token, session_issuance, session_runtime
 
+pytestmark = pytest.mark.docker_cli  # a real Docker integration test
+
 
 @pytest.fixture(scope="module")
 def transport_image():

@@ -36,6 +36,16 @@ class ExceptionRule:
     count: int
 
 
+CLI_HELP_EXCEPTIONS = (
+    ExceptionRule(
+        "booley flow sim",
+        "Deprecated: has no effect; removed in the next minor release",
+        "--verbose is still accepted until #5735, so its help states the deprecation",
+        1,
+    ),
+)
+
+
 def normalized_text(text: str) -> tuple[str, list[int]]:
     """Collapse wrapped prose while retaining its original offsets for diagnostics."""
     words = list(re.finditer(r"\S+", text))
@@ -153,7 +163,7 @@ def test_visible_cli_help_describes_current_version() -> None:
     )
     # Skill-only groups are omitted; still exercise the nested public help tree.
     assert len(rendered) > 40
-    failures = history_failures(rendered)
+    failures = history_failures(rendered, CLI_HELP_EXCEPTIONS)
     assert not failures, "\n".join(failures)
 
 

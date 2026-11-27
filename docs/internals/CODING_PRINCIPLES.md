@@ -261,7 +261,8 @@ Tests that touch time, processes, sockets, or the filesystem also:
   named base budget passed to `scaled`, or `hang_guard_s()` for a wait that only
   stops a hang (see
   [Test time budgets](../../.github/ci/README.md#test-time-budgets)).
-  Windows CI fails any test that uses more than 80% of its timeout (see
+  Windows CI reports a passing test that uses more than 50% of its timeout and
+  does not fail it; the per-test timeout is the hard limit (see
   [`tests/timeout_headroom.py`](../../tests/timeout_headroom.py)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
@@ -274,6 +275,11 @@ Tests that touch time, processes, sockets, or the filesystem also:
   detached job it started stopped, including work that tools start on their
   own, such as Git auto-maintenance. Code that starts a background thread
   stops and joins it on every way its owner exits.
+- **No Docker CLI by accident.** A test outside `tests/docker/` and
+  `tests/smoke/` fails when it starts `docker`. Use a shared Docker CLI fake
+  from the [test fakes catalog](TEST_FAKES.md); a test that must run the real
+  CLI or its own `docker` stub carries the `docker_cli` marker
+  ([Docker CLI guard](../../.github/ci/README.md#docker-cli-guard)).
 - **Patch time narrowly.** Inject a clock, or patch a name the module under
   test owns. Never replace `time.monotonic` or `time.time` on the shared
   `time` module, whether directly, through a module's `time` alias, or by a
