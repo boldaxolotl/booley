@@ -51,6 +51,7 @@ LIMITS = {
 STDLIB = set(sys.stdlib_module_names)
 SUBPROCESS_FUNCS = {"run", "Popen", "check_output", "check_call", "call"}
 OS_PROCESS_FUNCS = {"fork", "system", "posix_spawn", "posix_spawnp"}
+RUNNERS = {"run_captured_bounded"}
 _BOUNDARY = re.compile(r"# boundary:(.*)")
 _FIX = (
     "Drive the public entry point, use the shared fake for the boundary "
@@ -65,7 +66,6 @@ class SourceIndex:
     """Names and modules that ``src/booley/`` defines at one commit."""
 
     names: set[str]
-    runners: set[str]
     modules: set[str]
 
 
@@ -92,7 +92,6 @@ def _git(repo: str, *args: str) -> bytes:
 
 def index_source(repo: str, rev: str) -> SourceIndex:
     names: set[str] = set()
-    runners: set[str] = {"run_captured_bounded"}
     modules: set[str] = set()
     data = _git(repo, "archive", rev, "src/booley")
     with tarfile.open(fileobj=io.BytesIO(data)) as archive:
@@ -104,7 +103,7 @@ def index_source(repo: str, rev: str) -> SourceIndex:
             extracted = archive.extractfile(member)
             if extracted is not None:
                 names.update(_defined_names(ast.parse(extracted.read(), filename=member.name)))
-    return SourceIndex(names, runners, modules)
+    return SourceIndex(names, modules)
 
 
 def _defined_names(tree: ast.AST) -> set[str]:
@@ -221,7 +220,7 @@ def classify(
         return {"external", "command"} if _is_command(name, last) else {"external"}
     if name in index.names:
         classes = {"internal-private" if name.startswith("_") else "internal-public"}
-        if name in index.runners:
+        if name in RUNNERS:
             classes.add("command")
         return classes
     return {"other"}
@@ -279,7 +278,8 @@ def count_patches(repo: str, rev: str, paths: list[str]) -> list[Patch]:
 
 def _changed_tests(repo: str, base: str, head: str) -> list[FileDiff]:
     """Diffs of the ``.py`` files under ``tests/``; a move is a delete and an add."""
-    options = ("-U0", "--no-renames", "--no-color", "--no-ext-diff")
+    # --text: a ``-diff`` attribute must not hide a file from the count.
+    options = ("-U0", "--text", "--no-renames", "--no-color", "--no-ext-diff")
     diff = _git(repo, "diff", *options, base, head, "--", "tests/")
     return [
         entry

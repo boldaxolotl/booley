@@ -121,6 +121,27 @@ def _added(statement: str, names: int, commands: int, *named: str, code: int = 1
         pytest.param(
             *_added('monkeypatch.setattr(Path, "home", stub)', 0, 0, code=0), id="external-only"
         ),
+        pytest.param(
+            *_added(
+                'patch.object(mod, "helper", stub)\n'
+                '    mock.patch.object(mod, "helper", stub)\n'
+                '    monkeypatch.setattr("booley.mod.helper", stub)',
+                3,
+                0,
+                "tests/test_a.py:7 mod.helper",
+                "tests/test_a.py:8 mod.helper",
+                "tests/test_a.py:9 booley.mod.helper",
+            ),
+            id="object-and-string-setattr",
+        ),
+        pytest.param(
+            {},
+            {".gitattributes": "*.py -diff\n", "tests/test_a.py": _module(a=_COMMAND)},
+            1,
+            ("0 -> 0", "0 -> 1"),
+            ("tests/test_a.py:7 subprocess.run",),
+            id="no-diff-attribute",
+        ),
     ],
 )
 def test_patch_changes_decide_the_check(

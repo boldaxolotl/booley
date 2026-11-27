@@ -205,10 +205,10 @@ code. When a test needs something replaced:
   a file under `tmp_path`.
 - **Patch a Booley name only where it is the boundary**: the one function that
   runs the command, reads the clock (principle 16), or tells the host from the
-  Sandbox. Mark a patch of such a boundary with `# boundary: <reason>` on the
-  patch's line, the reason naming the boundary. Any other patch carries a
-  comment that says why no public entry point reaches the behavior; it still
-  counts toward the patch check below.
+  Sandbox. Mark a patch of such a boundary with `# boundary: <reason>` on any
+  line of the patch call, the reason non-empty and naming the boundary. Any
+  other patch of a Booley name carries a comment that says why no public entry
+  point reaches the behavior; it still counts toward the patch check below.
 - **One shared fake per boundary.** The fake lives in a support module under
   `tests/`, not in a `test_*.py` file, and every test of that boundary uses
   it. A test does not patch `subprocess` or a command runner itself: copies
@@ -220,16 +220,18 @@ code. When a test needs something replaced:
   the clock does it through one function (principle 9), so a test has one
   name to replace.
 
-The `test-ratio` job in the `Tests` workflow, part of `ci-required`, also
-counts patches in the `.py` files under `tests/` that a pull request adds,
-changes or deletes, test modules and support modules alike. It fails when the
-pull request raises the patches of Booley names (public plus private) or,
-separately, the patches of commands (`subprocess`, `os.exec*`, `os.fork`,
+The `test-ratio` job in the `Tests` workflow, part of `ci-required`, counts
+patches in the `.py` files under `tests/` that a pull request adds, changes or
+deletes, test modules and support modules alike
+([exact definitions](../../.github/scripts/ci_patch_count.py)). It fails when
+the pull request raises the patches of Booley names (public plus private) or,
+separately, the patches of commands (`subprocess` or its `run`, `Popen`,
+`check_output`, `check_call` or `call`; `os.exec*`, `os.fork`,
 `os.posix_spawn*`, `os.system`, `shutil.which`, `run_captured_bounded`), and
-names each added patch. A patch moved between files nets out. A patch whose
-line carries `# boundary: <reason>` with a non-empty reason does not count;
-reviewers judge the reason. A maintainer exempts a pull request with the
-`patch-count-exempt` label; the job reads the label each time it is re-run.
+names each added patch. Moving a patch between files does not raise the total.
+A patch marked as above does not count; reviewers judge the reason. A
+maintainer exempts a pull request with the `patch-count-exempt` label; the job
+reads the label each time it is re-run.
 
 To check a new test, break the code it covers: flip a condition, swap `min`
 for `max`, drop a call. If the test still passes, it catches nothing.
