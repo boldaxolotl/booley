@@ -51,8 +51,10 @@ _COMPLETED_CHILD = textwrap.dedent(
     from pathlib import Path
     from booley.core.models import AgentCallParams
     from booley.runtime import _codex_backend as cb
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import place_child
 
-    cb._inside_container = lambda: True
+    place_child(RuntimeLocation.ISSUED_SANDBOX)
     homes = []
     real_spawn = asyncio.create_subprocess_exec
 
@@ -81,8 +83,10 @@ def child_environment(scratch: Path, home: Path) -> dict[str, str]:
     """Return a child env whose temp directory and login home live in the test."""
     import booley
 
-    source_root = str(Path(booley.__file__).resolve().parent.parent)
-    env = {**os.environ, "TMPDIR": str(scratch), "HOME": str(home), "PYTHONPATH": source_root}
+    source_root = Path(booley.__file__).resolve().parent.parent
+    # The completed child imports the venue fake from the repository's ``tests``.
+    paths = os.pathsep.join(str(root) for root in (source_root, Path(__file__).parents[1]))
+    env = {**os.environ, "TMPDIR": str(scratch), "HOME": str(home), "PYTHONPATH": paths}
     env.pop("CODEX_HOME", None)
     return env
 

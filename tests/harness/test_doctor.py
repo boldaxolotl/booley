@@ -59,6 +59,7 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.agent_call_fake import install_agent
@@ -82,6 +83,7 @@ from tests.runtime.test_sandbox_remedy_workflows import (
     VSCODE_INIT,
     VSCODE_SEED,
 )
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -242,8 +244,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
 
 
 def _patch_host_environment(monkeypatch, root: Path) -> None:
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
     # a plain host shell is the baseline these fixtures model.
     monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)

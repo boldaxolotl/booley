@@ -13,17 +13,13 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding
 from booley.harness import doctor
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def pin_venue(monkeypatch: pytest.MonkeyPatch, *, inside: bool) -> None:
     """Make the process a Sandbox (``inside``) or the host for the auth policy and Codex."""
-    from booley.config import agent
-    from booley.runtime import _codex_backend
-
-    # private: the container marker is /.dockerenv on the real filesystem; no public seam
-    # points either probe at a fixture.
-    monkeypatch.setattr(agent, "_inside_container", lambda: inside)
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: inside)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX if inside else RuntimeLocation.HOST)
 
 
 def install_agent_clis(home: Path) -> None:
