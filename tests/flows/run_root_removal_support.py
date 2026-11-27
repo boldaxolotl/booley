@@ -92,6 +92,9 @@ class RemovalRun:
         self._pids: list[int] = []
         self._removed_at = 0.0
         self._returned = False
+        # Here before the run, as a test worker's multiprocessing resource tracker is.
+        idle = f"import time; time.sleep({hang_guard_s()})"
+        self._bystander = subprocess.Popen([sys.executable, "-c", idle])
 
     def __call__(self) -> EndpointOutcome:
         command = [sys.executable, "-c", _TOOL, _ORPHAN, str(self._pid_file), str(hang_guard_s())]
@@ -132,9 +135,13 @@ class RemovalRun:
         # Below the tool's sleep, which is the whole hang guard.
         assert time.monotonic() - self._removed_at < scaled(15)
         wait_until(lambda: not any(map(is_pid_alive, self._pids)), "a tool process is left")
+        with pytest.raises(subprocess.TimeoutExpired):  # still alive: not a tool of the run
+            self._bystander.wait(timeout=0.5)
 
     def close(self) -> None:
         """Leave nothing running, whatever the run under test did."""
+        self._bystander.kill()
+        self._bystander.wait()
         for pid in self._pids:
             if is_pid_alive(pid):
                 with contextlib.suppress(ProcessLookupError):

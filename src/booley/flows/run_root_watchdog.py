@@ -41,10 +41,13 @@ class RunRootWatchdog:
         # Tools in this process's own group (an agent CLI) are remembered by PID.
         self._pids: set[int] = set()
         self._groups: set[int] = set()
+        # Children from before the run: neither they nor their subtrees are its tools.
+        self._others: frozenset[int] = frozenset()
         self._interrupts = threading.current_thread() is threading.main_thread()
         self._thread = threading.Thread(target=self._watch, name=_THREAD_NAME, daemon=True)
 
     def __enter__(self) -> RunRootWatchdog:
+        self._others = frozenset(descendant_pids(os.getpid()))
         self._thread.start()
         return self
 
@@ -76,7 +79,7 @@ class RunRootWatchdog:
 
     def _find_tools(self) -> None:
         """Remember every tool: its process group, or its PID when it shares this one."""
-        for pid in descendant_pids(os.getpid()):
+        for pid in descendant_pids(os.getpid(), exclude=self._others):
             with contextlib.suppress(ProcessLookupError):
                 group = foreign_group_of(pid)
                 if group is None:

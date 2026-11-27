@@ -273,6 +273,8 @@ def test_slot_released_when_run_ends(
     if behavior is None:
         checkout.mkdir()
         harness.request = replace(harness.request, work_dir=checkout)
+    else:
+        removal.close()  # these endings never run it
     harness.behavior = behavior or removal
     stdout_before = sys.stdout
 
