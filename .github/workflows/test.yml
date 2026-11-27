@@ -21,8 +21,9 @@ on:
         description: Windows Python 3.14 shard count for CI benchmarking
         required: true
         type: choice
-        default: "4"
+        default: "3"
         options:
+          - "3"
           - "4"
           - "6"
           - "8"
@@ -114,7 +115,7 @@ jobs:
       test_matrix: ${{ steps.classify.outputs.test_matrix }}
       linux_shard_count: ${{ steps.classify.outputs.linux_shard_count }}
       linux_scheduler: ${{ steps.classify.outputs.linux_scheduler }}
-      stress_modules: ${{ steps.classify.outputs.stress_modules }}
+      stress_matrix: ${{ steps.classify.outputs.stress_matrix }}
       stress_count: ${{ steps.classify.outputs.stress_count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,7 +142,7 @@ jobs:
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
           --event-name "${EVENT_NAME}" --head-ref "${HEAD_REF}" --ref "${REF}"
-          --windows-shard-count "${{ inputs.windows_shard_count || '4' }}"
+          --windows-shard-count "${{ inputs.windows_shard_count || '3' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
           --linux-shard-count "${{ inputs.linux_shard_count || '2' }}"
           --linux-scheduler "${{ inputs.linux_scheduler || 'loadscope' }}"
@@ -373,7 +374,8 @@ jobs:
     env:
       BOOLEY_TEST_TIME_SCALE: ${{ startsWith(matrix.os, 'windows') && '2' || '1' }}
       PYTHONFAULTHANDLER: "1"
-      TEST_MARK_EXPRESSION: 'not native_bwave'
+      # Windows legs select only the OS-specific modules; see ci_changes.py.
+      TEST_MARK_EXPRESSION: ${{ matrix.mark_expression }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
@@ -426,10 +428,10 @@ jobs:
         run: >-
           python .github/scripts/ci_pytest_rerun.py --junitxml "${{ runner.temp }}/junit.xml"
           --basetemp "${{ runner.temp }}/pytest"
-          pytest tests/architecture tests/config
+          pytest tests/architecture/test_compare_report.py tests/config/test_eda.py
           tests/runtime/test_file_lock.py tests/runtime/test_pid.py
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
-          -q --tb=short -n 4 --dist=loadscope -m "not native_bwave"
+          -q --tb=short -n 4 --dist=loadscope -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30
 
       - name: Run duration-balanced shard
@@ -479,14 +481,8 @@ jobs:
       PYTHONFAULTHANDLER: "1"
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: ubuntu-3.14
-            os: ubuntu-latest
-            python: "3.14"
-          - name: windows-3.14
-            os: windows-latest
-            python: "3.14"
+      # The Windows leg exists only when a changed module is registered OS-specific.
+      matrix: ${{ fromJSON(needs.changes.outputs.stress_matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -515,7 +511,7 @@ jobs:
         env:
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
-          STRESS_MODULES: ${{ needs.changes.outputs.stress_modules }}
+          STRESS_MODULES: ${{ toJSON(matrix.modules) }}
           STRESS_COUNT: ${{ needs.changes.outputs.stress_count }}
           HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
           TEST_TIMEOUT: ${{ runner.os == 'Windows' && '120' || '60' }}
@@ -671,7 +667,7 @@ jobs:
 
       - name: Prove every sharded test ran exactly once
         env:
-          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '4' }}
+          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '3' }}
         run: >-
           python .github/scripts/ci_test_shards.py
           --root "${RUNNER_TEMP}/shards"

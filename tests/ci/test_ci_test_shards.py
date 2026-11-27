@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -11,7 +13,7 @@ import pytest
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
-from ci_changes import build_test_matrix
+from ci_changes import DEFAULT_WINDOWS_SHARD_COUNT, build_test_matrix
 from ci_test_shards import (
     ShardError,
     TimingModel,
@@ -21,6 +23,8 @@ from ci_test_shards import (
     verify_manifests,
     write_manifest,
 )
+from tests.os_specific import is_os_specific
+from tests.subprocess_budget import run_nested_pytest
 
 
 def test_longest_processing_time_balances_known_slow_tests() -> None:
@@ -126,6 +130,47 @@ def test_manifest_verifier_rejects(
         verify_manifests(paths, group="windows", shard_count=2)
 
 
+def _collect_windows_shard(entry: dict[str, object], manifest: Path) -> None:
+    """Collect one Windows shard leg over a registered and an unregistered module."""
+    result = run_nested_pytest(
+        [
+            *("--collect-only", "-q", "-p", "no:cacheprovider", "-p", "ci_pytest_shard"),
+            *("-m", str(entry["mark_expression"])),
+            *("tests/runtime/test_pid.py", "tests/harness/test_cheatsheet.py"),
+            *("--ci-shard-group", str(entry["group"])),
+            *("--ci-shard-index", str(entry["shard_index"])),
+            *("--ci-shard-count", str(entry["shard_count"])),
+            *("--ci-timing-model", ".github/ci/windows-test-timings.json"),
+            *("--ci-shard-manifest", str(manifest)),
+        ],
+        cwd=_ROOT,
+        env=os.environ | {"PYTHONPATH": str(_ROOT / ".github/scripts")},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_windows_shard_group_runs_exactly_the_registered_modules(tmp_path: Path) -> None:
+    include = build_test_matrix(DEFAULT_WINDOWS_SHARD_COUNT)["include"]
+    entries = [e for e in include if e["os"] == "windows-latest" and e["mode"] == "shard"]
+    paths = [tmp_path / str(index) / "shard-manifest.json" for index in range(len(entries))]
+    for entry, path in zip(entries, paths, strict=True):
+        _collect_windows_shard(entry, path)
+    verify = functools.partial(
+        verify_manifests, paths, group="windows", shard_count=DEFAULT_WINDOWS_SHARD_COUNT
+    )
+    selected = [json.loads(path.read_text(encoding="utf-8"))["selected"] for path in paths]
+    nodeids = [nodeid for shard in selected for nodeid in shard]
+
+    assert verify() == len(nodeids)
+    assert {nodeid.split("::")[0] for nodeid in nodeids} == {"tests/runtime/test_pid.py"}
+    _edit_manifest(paths[0], selected=selected[0][1:])
+    with pytest.raises(ShardError, match="union mismatch"):
+        verify()
+    _edit_manifest(paths[0], selected=[*selected[0], selected[1][0]])
+    with pytest.raises(ShardError, match="more than once"):
+        verify()
+
+
 _LINUX_TIMING_MODEL = _ROOT / ".github/ci/linux-test-timings.json"
 _LINUX_NODEIDS = ("test::a", "test::b", "test::c", "test::d", "test::e")
 
@@ -159,11 +204,15 @@ def _verify_download(download: Path, group: str) -> int:
     )
 
 
-def test_linux_timing_model_holds_measured_weights_above_the_default() -> None:
-    """The checked-in model stores measured medians, each above the default weight."""
-    timings = load_timings(_LINUX_TIMING_MODEL)
+@pytest.mark.parametrize("system", ["linux", "windows"])
+def test_timing_model_holds_measured_weights_of_its_selection(system: str) -> None:
+    """Each model stores medians above the default; Windows only of registered modules."""
+    timings = load_timings(_ROOT / f".github/ci/{system}-test-timings.json")
 
-    assert timings.tests, "the Linux timing model holds no measured weights"
+    assert timings.tests, f"the {system} timing model holds no measured weights"
+    if system == "windows":
+        unselected = [n for n in timings.tests if not is_os_specific(n.split("::")[0])]
+        assert not unselected, f"{len(unselected)} entries outside the registry"
     assert all(weight > timings.default_seconds for weight in timings.tests.values())
 
 
