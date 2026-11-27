@@ -404,8 +404,9 @@ def test_lost_execution_names_its_cause(
     if after == "replaced":
         entry["Id"] = "d" * 64
     docker.failing = {"ps"} if after == "unknown" else set()
-    # boundary: the recovery window the host clock is measured against
-    monkeypatch.setattr(runtime_attachment, "_RECOVERY_LIMIT_SECONDS", 0.5)
+    monkeypatch.setattr(  # boundary: the recovery deadline (clock); no setting shortens the 12 s
+        runtime_attachment, "_RECOVERY_LIMIT_SECONDS", 0.5
+    )
     interrupt = signal.getsignal(signal.SIGINT)
     inspecting: list[object] = []
     docker.on_call = lambda _argv: inspecting.append(signal.getsignal(signal.SIGINT))
