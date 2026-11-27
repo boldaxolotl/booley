@@ -148,19 +148,29 @@ def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> No
     compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
     assert len(entries) == 3 + shard_count
-    assert [{k: v for k, v in e.items() if k != "mark_expression"} for e in compatibility] == [
-        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+    windows_mark = "os_specific and not native_bwave"
+    assert all(entry["mark_expression"] == windows_mark for entry in shards)
+    assert compatibility == [
+        {
+            "name": "ubuntu-3.11-full",
+            "os": "ubuntu-latest",
+            "python": "3.11",
+            "mode": "full",
+            "mark_expression": "not native_bwave",
+        },
         {
             "name": "windows-3.11-compatibility",
             "os": "windows-latest",
             "python": "3.11",
             "mode": "compatibility",
+            "mark_expression": windows_mark,
         },
         {
             "name": "windows-3.13-compatibility",
             "os": "windows-latest",
             "python": "3.13",
             "mode": "compatibility",
+            "mark_expression": windows_mark,
         },
     ]
     assert [entry["shard_index"] for entry in shards] == list(range(shard_count))
