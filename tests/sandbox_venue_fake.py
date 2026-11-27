@@ -35,8 +35,8 @@ def _inputs(
 
 def point_mounts(monkeypatch: pytest.MonkeyPatch, location: RuntimeLocation) -> None:
     """Give the venue check the mount table of *location*; ``BOOLEY_CONTAINER`` stays."""
-    # private: /proc/self/mountinfo is the kernel's mount table; no public input moves it.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", _mount_table(location))
+    table = _mount_table(location)
+    monkeypatch.setattr(runtime_context, "_MOUNTINFO", table)  # boundary: host/Sandbox mounts
 
 
 def place(
@@ -53,11 +53,11 @@ def place(
         monkeypatch.setenv("BOOLEY_CONTAINER", declared)
     if table is not None:
         point_mounts(monkeypatch, location)
-    # private: the marker checks read /.dockerenv on the real filesystem; no public
-    # input points them at a fixture.
-    monkeypatch.setattr(runtime_context, "_CONTAINER_MARKER_FILES", (Path(__file__),) * marker)
-    monkeypatch.setattr(agent, "_inside_container", lambda: marker)
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: marker)
+    # The marker checks read /.dockerenv on the real filesystem.
+    markers = (Path(__file__),) * marker
+    monkeypatch.setattr(runtime_context, "_CONTAINER_MARKER_FILES", markers)  # boundary: venue
+    monkeypatch.setattr(agent, "_inside_container", lambda: marker)  # boundary: venue
+    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: marker)  # boundary: venue
 
 
 def place_child(location: RuntimeLocation) -> None:
@@ -70,6 +70,7 @@ def place_child(location: RuntimeLocation) -> None:
         os.environ.pop("BOOLEY_CONTAINER", None)
     else:
         os.environ["BOOLEY_CONTAINER"] = declared
+    # The same host/Sandbox boundary as ``place``: the mount table and marker checks.
     if table is not None:
         runtime_context._MOUNTINFO = table
     runtime_context._CONTAINER_MARKER_FILES = (Path(__file__),) * marker

@@ -80,7 +80,8 @@ def _record_visitor(monkeypatch, cli: str) -> None:
     """Record the visitor mode the way a hand-written Sandbox does, so it is honoured."""
     pin_venue(monkeypatch, inside=True)
     monkeypatch.setenv("BOOLEY_AGENT_APP", cli)
-    # Each login stands in for the host credential Booley seeds into the Sandbox.
+    # Each login stands in for the host credential Booley seeds into the Sandbox. The seed
+    # targets are fixed Sandbox paths that no public input redirects.
     for app, login in (("claude", ".claude/.credentials.json"), ("codex", ".codex/auth.json")):
         monkeypatch.setitem(dc._APP_CREDS_SEED_TARGET, app, str(Path.home() / login))
 
