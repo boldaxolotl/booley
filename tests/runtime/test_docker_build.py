@@ -325,16 +325,19 @@ def test_warm_cache_uses_smaller_headroom_and_keeps_the_safety_reserve(
     assert not docker.built
 
 
-@pytest.mark.parametrize(("code", "output"), [(0, "7"), (1, "permission denied")])
+@pytest.mark.parametrize(
+    ("code", "output", "reason"),
+    [(0, "7", "invalid inspection of image booley-sandbox: .*must be"), (1, "denied", "denied")],
+)
 def test_unreadable_cache_evidence_refuses_the_build(
-    tmp_path: Path, monkeypatch, code: int, output: str
+    tmp_path: Path, monkeypatch, code: int, output: str, reason: str
 ) -> None:
     docker = _docker(tmp_path, monkeypatch, image=(code, output))
     evidence = DockerCacheEvidence("booley-sandbox", (("expected", "value"),))
     request = DockerBuildRequest("booley-sandbox", "booley-sandbox", cache_evidence=evidence)
     plan = DockerBuildPlan((request,))
 
-    with pytest.raises(OSError, match="could not inspect cache evidence Docker image"):
+    with pytest.raises(OSError, match=f"could not inspect cache evidence Docker image .*{reason}"):
         _build(docker, current_request=request, remaining_plan=plan)
 
     assert not docker.built

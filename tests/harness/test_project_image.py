@@ -332,6 +332,20 @@ def test_layout_probe(docker: FakeDocker, stdout: str, expected: bool | None) ->
         assert pi.project_data_alias_capable(_IMAGE_ID) is expected
 
 
+@pytest.mark.parametrize(
+    ("code", "stdout", "detail"),
+    [(1, "exec format error", "exec format error"), (125, "", "exit 125")],
+    ids=["stdout-only", "no-output"],
+)
+def test_layout_probe_failure_names_what_docker_reported(
+    docker: FakeDocker, code: int, stdout: str, detail: str
+) -> None:
+    docker.answer("--entrypoint=python3", code=code, stdout=stdout)
+
+    with pytest.raises(pi.DockerImageError, match=f"layout of {_IMAGE_ID}: {detail}"):
+        pi.project_data_alias_capable(_IMAGE_ID)
+
+
 def test_probe_docker_host_memory(docker: FakeDocker) -> None:
     docker.answer("--entrypoint=cat", stdout="MemTotal: 2048 kB\nSwapTotal: 1024 kB\n")
 
@@ -343,6 +357,12 @@ def test_probe_docker_host_memory(docker: FakeDocker) -> None:
     assert docker.calls[-1][-2:] == ["img", "/proc/meminfo"]
     docker.answer("--entrypoint=cat", code=1, stderr="no such image")
     with pytest.raises(pi.DockerImageError, match="no such image"):
+        pi.probe_docker_host_memory("img")
+    docker.answer("--entrypoint=cat", code=1, stdout="daemon refused")
+    with pytest.raises(pi.DockerImageError, match="daemon refused"):
+        pi.probe_docker_host_memory("img")
+    docker.answer("--entrypoint=cat", code=125)
+    with pytest.raises(pi.DockerImageError, match="exit status 125"):
         pi.probe_docker_host_memory("img")
     docker.answer("--entrypoint=cat", stdout="garbage\n")
     with pytest.raises(pi.DockerImageError, match="MemTotal"):

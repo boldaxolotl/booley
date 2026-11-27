@@ -73,8 +73,8 @@ _LOOKUP_FAILURES = {
     ),
     "not-json": (completed(0, stdout="not json"), "invalid metadata", "inspect_image_metadata"),
     "no-rootfs": (
-        completed(0, stdout=json.dumps([{"Id": "sha256:x", "RootFS": None}])),
-        "invalid metadata",
+        completed(0, stdout=json.dumps({"Id": "sha256:x", "RootFS": None})),
+        "invalid metadata: RootFS",
         "inspect_image_metadata",
     ),
 }
@@ -165,7 +165,7 @@ _INVENTORY_FAILURES = {
     ),
     "non-string-image-id": (
         _container_listing("7"),
-        "invalid inspection",
+        "invalid inspection .*must be",
         "container_image_ids_strict",
     ),
     "inspect-timeout": (

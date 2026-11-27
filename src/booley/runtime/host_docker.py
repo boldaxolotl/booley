@@ -376,7 +376,7 @@ def strict_inspect(
         raise RuntimeError(f"{context}: {exc}") from exc
     except docker_cli.InspectError as exc:
         detail = (
-            str(exc)
+            f"{exc}: {exc.__cause__}"
             if exc.result is None
             else docker_cli.failure_detail(exc.result, _STRICT_FALLBACK)
         )

@@ -143,7 +143,7 @@ def _image_label(docker: str, image: str, label: str) -> str | None:
         return docker_cli.inspect_label(run, "image", image, label, timeout=15)
     except docker_cli.InspectError as exc:
         if exc.result is None:
-            raise DockerCapacityError(f"{failed}: {exc}") from exc
+            raise DockerCapacityError(f"{failed}: {exc}: {exc.__cause__}") from exc
         detail = _probe_detail(exc.result)
         if "no such image" in detail.lower() or "not found" in detail.lower():
             return None
