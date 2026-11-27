@@ -13,9 +13,9 @@ from booley.config import agent as agent_config
 from booley.core.models import AgentResult
 from booley.harness import developer_probe
 from booley.runtime import _claude_backend, _codex_backend
-from booley.runtime import agent as agent_mod
 from booley.runtime import agent_config as backend_config
 from booley.runtime.booley_dir import reset_cache
+from tests.agent_call_fake import install_agent
 
 
 @pytest.fixture
@@ -62,8 +62,7 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
         monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
     seen = {}
 
-    async def fake_call_agent(params):
-        seen["params"] = params
+    async def answer(params):
         seen["cwd_existed"] = Path(params.cwd).is_dir()
         # Private: the SDK options and the Codex argv cross to the external agent, and
         # `measure_developer_rss` returns neither, so they are captured at that last step.
@@ -86,12 +85,12 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
             await _codex_backend._codex_spawn(["codex", "exec", "-"], params, auth_mode)
         return AgentResult(output="OK")
 
-    monkeypatch.setattr(agent_mod, "call_agent", fake_call_agent)
+    agent = install_agent(monkeypatch, answer)
     developer_probe.measure_developer_rss(
         sandbox, getrusage=lambda _who: SimpleNamespace(ru_maxrss=1)
     )
 
-    params = seen["params"]
+    params = agent.calls[0]
     assert params.nested_mcp_tools is None
     assert seen["cwd_existed"]
     assert sandbox not in Path(params.cwd).parents and not Path(params.cwd).exists()
