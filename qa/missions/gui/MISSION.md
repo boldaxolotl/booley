@@ -182,22 +182,26 @@ Evidence: `bwave-gui-*` `.txt` files with each command, its report and exit
 code.
 
 ### 6. stop-resume — Stop and start the Sandbox mid-measurement (~20 min)
-Intent: Booley state survives `booley session down` and `up`, and the GUI
-comes back to it.
+Intent: Booley's and T3 Code's state survive `booley session down` and `up`,
+and the pairing and the Dashboard come back on their own.
 Depends on: area 3's child or measurement still running; run it inside area 3
 (see the budget note).
 Try:
 - Note the Job records, both Dashboards and the `measure` Job. Run
   `booley session down` from the host and time it.
-- `booley session up`, pair again (runbook steps 3-4), and time the way back
-  to the Project. Restart the Dashboard (runbook step 5).
-- After the restart: the relay keeps its port; threads, their worktrees and
-  uncommitted edits are still there (`git worktree list`); finished Jobs and
-  their results are still listed; an interrupted measurement is never shown
-  Measured. Open the child's thread and ask it to continue; measuring again
-  needs no `--again`.
-Look for: lost threads or worktrees, Jobs reported running forever, lost
-results, a cancelled run shown Measured, a relay that moved for no reason.
+- Start the Sandbox again and reload your tab as runbook step 4 ("After a
+  restart") says, and time the way back to the Project. Open both Dashboards
+  with the **Booley Dashboard** button (runbook step 5).
+- After the restart: the tab is still paired and the Dashboard answers
+  (`booley session status`); the relay keeps its port; threads, their
+  worktrees and uncommitted edits are still there (`git worktree list`);
+  finished Jobs and their results are still listed; an interrupted measurement
+  is never shown Measured. Open the child's thread and ask it to continue;
+  measuring again needs no `--again`.
+Look for: a pairing prompt when the relay did not report a move, a Dashboard
+that does not come back, lost threads or worktrees, Jobs reported running
+forever, lost results, a cancelled run shown Measured, a relay that moved for
+no reason. Each is a finding.
 Evidence: `stop-resume-*` before/after pairs with oracle output.
 
 ### 7. terminal-output — CLI rendering in T3 Code's terminal drawer (~10 min)
@@ -252,10 +256,5 @@ outside `qa-host` in the IDs diff.
 ## Known traps
 - Area 3's request runs about half an hour. Start it as soon as area 3
   begins, and do the resize and MCP items while it works.
-- Until #4749 the Dashboard needs a manual `booley dashboard`, and it
-  stops with the Sandbox: restart it after area 6.
-- Until #4566 lands, threads, pairings or worktrees lost across
-  `session down` and `up` are known; record what you saw, not a new finding,
-  unless it differs from that issue.
 - The demo's README still starts agents with the retired chat command
   instead of T3 Code; that is a demo finding, logged once.
