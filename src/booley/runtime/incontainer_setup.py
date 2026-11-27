@@ -393,9 +393,11 @@ def create_t3_pairing(base_url: str) -> subprocess.CompletedProcess[str]:
 
     The result's stdout holds the pairing token, so the caller prints it only to the user.
     """
-    cmd = ["t3", "auth", "pairing", "create", "--base-dir", t3_base_dir()]
+    base = t3_base_dir()
+    cmd = ["t3", "auth", "pairing", "create", "--base-dir", base]
     cmd += ["--ttl", PAIRING_TTL, "--base-url", base_url, "--json"]
     try:
+        _link_t3_base_dir(base)  # else `t3` makes a directory there when no start linked it
         return subprocess.run(
             cmd,
             stdin=subprocess.DEVNULL,

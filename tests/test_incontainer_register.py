@@ -369,6 +369,19 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
     assert [cmd[cmd.index("--base-dir") + 1] for cmd in commands] == [str(alias)] * 6
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the Sandbox's base directory is a symlink")
+def test_a_pairing_before_any_start_links_the_projects_base_dir(tmp_path, monkeypatch):
+    """`t3` would otherwise make a directory there, and every later start would refuse it."""
+    volume, alias = tmp_path / "t3-volume", tmp_path / "t3-alias"
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))
+    monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
+    t3 = _t3_code(monkeypatch, check_reply=(77, "unknown driver"))
+    assert reg.ensure_t3_server(tmp_path) == "policy-rejected"
+
+    assert reg.create_t3_pairing("http://127.0.0.1:1").returncode == 0
+    assert alias.readlink() == volume and str(alias) in t3.paired[0]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse log files")
 def test_t3_code_restarts_with_its_logs_cut_to_the_cap(tmp_path, monkeypatch, capsys):
     volume = tmp_path / "t3-volume"
