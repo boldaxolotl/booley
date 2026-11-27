@@ -13,8 +13,10 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.flows.invocation_doubles import replace_run
 from tests.flows.report_headline import assert_paired_headline
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
@@ -50,9 +52,8 @@ def test_complete_builtin_schema_is_compatible():
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
     from booley.flows import endpoint_admission
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # Seat Caps are covered by the admission tests; these tests are about transport.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in (

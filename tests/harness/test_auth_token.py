@@ -18,11 +18,13 @@ import pytest
 from booley.core.host_shell import quote_arg
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
-from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
+from booley.runtime import auth_token, issuance_invalidation, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.devcontainer_spec_support import build_spec
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
@@ -187,14 +189,13 @@ class TestAuthStatusReport:
         assert "can revoke a running container" in lines[row + 1]
 
     def test_api_key_runs_and_overridden_login_is_a_hint(self, isolated_home, monkeypatch, capsys):
-        from booley.config import agent as agent_config
 
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-        # The visitor mode needs a hand-written Sandbox: /.dockerenv, which a test cannot create.
-        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+        # The visitor mode needs a container, as a hand-written Sandbox is.
+        place(monkeypatch, RuntimeLocation.HOST, container_host=True)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
         _rc, lines = self._status(monkeypatch, capsys)
@@ -288,7 +289,7 @@ class TestRotationRiskVenue:
     ):
         from booley.harness import doctor
 
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_sandbox)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if in_sandbox else RuntimeLocation.HOST)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",
@@ -339,7 +340,7 @@ class TestDoctorCheck:
         from booley.harness import doctor
 
         # Host venue, pinned: in a Sandbox the rotation WARN depends on the seed sidecar.
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",

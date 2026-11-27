@@ -25,9 +25,11 @@ from booley.runtime import health, host_install
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.lifecycle_lock import LifecycleLockError
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.docker_host_support import fake_docker_host
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -86,7 +88,7 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
 
 
 def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     args = _parse_argv(monkeypatch)
     assert (args.command, args.agent_args) == ("chat", [])
 
@@ -235,7 +237,7 @@ def host_main(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
     monkeypatch.setattr(host_install, "host_install_error", lambda _source: None)
 
@@ -801,7 +803,7 @@ class TestEffectiveCommand:
         assert tlr._effective_command(self._parse([])) is None
 
     def test_normalized_sandbox_default_is_chat(self, monkeypatch):
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         parser = tlr._build_parser()
         args = tlr._normalize_args(parser, parser.parse_args([]))
         assert tlr._effective_command(args) == "chat"
@@ -1047,7 +1049,7 @@ class TestCmdFlow:
 
     def test_bare_flow_main_lists_on_stdout(self, tmp_path, monkeypatch, capsys):
         args = self._args(["flow"])
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
         monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
         monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
@@ -1329,7 +1331,7 @@ def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
@@ -1495,7 +1497,7 @@ def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, comma
         "f" * 64,
     )
     # `init` is dual: its installation check applies on the host only.
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(host_install.sys, "prefix", "/home/user/venv")
     monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

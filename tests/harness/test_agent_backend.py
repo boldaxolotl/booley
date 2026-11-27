@@ -24,6 +24,7 @@ from booley.runtime.agent_config import (
     set_backend_config,
 )
 from booley.runtime.agent_errors import AgentProviderError, TransientAPIError, UsageLimitError
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.claude_cli_fake import record_sdk_options, replay_sdk_stream, sdk_message, sdk_result
 from tests.codex_cli_fake import (
     codex_report,
@@ -32,6 +33,7 @@ from tests.codex_cli_fake import (
     write_codex_login,
 )
 from tests.conftest import require_symlinks
+from tests.sandbox_venue_fake import place
 from tests.time_budget import scaled
 
 _MODEL = "claude-opus-4-8"
@@ -746,7 +748,7 @@ async def test_subscription_codex_pins_relative_cli_home_before_changing_cwd(
         (directory / "alternate" / "auth.json").write_text(content)
     monkeypatch.chdir(parent)
     monkeypatch.setenv("CODEX_HOME", "alternate")
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     captured = {}
 
     async def spawn(*args, **kwargs):
@@ -773,8 +775,7 @@ def sandbox(monkeypatch):
     set_backend_config(None)
 
     def choose(*, inside: bool) -> None:
-        # The container marker is the host/Sandbox boundary; config tests choose the side.
-        monkeypatch.setattr("booley.config.agent._inside_container", lambda: inside)
+        place(monkeypatch, RuntimeLocation.HOST, container_host=inside)
 
     choose(inside=False)
     yield choose

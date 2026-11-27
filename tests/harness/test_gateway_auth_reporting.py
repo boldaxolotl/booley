@@ -14,10 +14,12 @@ from booley.core.models import AgentCallParams
 from booley.harness import auth_cmd, doctor
 from booley.runtime import auth_token
 from booley.runtime._claude_backend import ClaudeSDKBackend
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.claude_cli_fake import record_sdk_options
 from tests.codex_cli_fake import codex_report, install_fake_codex, write_codex_login
 from tests.gateway_command_support import write_token_command
 from tests.harness.agent_auth_support import credential_findings, install_agent_clis, pin_venue
+from tests.sandbox_venue_fake import place
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -282,9 +284,8 @@ def test_auth_status_in_claude_session_notes_hidden_gateway(claude_session, monk
 def _deep_probe_failure(project, monkeypatch):
     """Run the developer probe with a provider call that fails on the gateway configuration."""
     from booley.harness import developer_probe
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
 
     def fail(_root):
         raise developer_probe.ProbeError(

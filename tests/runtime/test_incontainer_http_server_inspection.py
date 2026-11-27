@@ -7,10 +7,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from tests.sandbox_venue_fake import place
 
 from booley.audit.diagnostic_results import Severity
 from booley.runtime import incontainer_setup as reg
-from booley.runtime import runtime_context
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 @pytest.fixture
@@ -52,8 +53,7 @@ def test_not_serving_fails_with_log_tail_and_remedy(
     hand_written: bool,
 ) -> None:
     if hand_written:
-        request.getfixturevalue("hand_written_sandbox")
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     log = tmp_path / "server.log"
     lines = [f"line {number}" for number in range(1, 13)]
     log.write_text("\n\n".join(lines) + "\n\n", encoding="utf-8", newline="\n")

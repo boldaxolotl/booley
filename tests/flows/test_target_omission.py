@@ -23,8 +23,10 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from tests.memory_budget_support import fail_budget, pin_budget
+from tests.sandbox_venue_fake import place
 
 FLOWS = {"sim": SimulateFlow, "lint": LintFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 CASES = [(entry, flow) for entry in ("cli", "mcp") for flow in FLOWS]
@@ -57,10 +59,9 @@ def write_targets(root: Path, flow: str, count: int = 1, *, core: str = "demo") 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     from booley.flows import endpoint_admission
-    from booley.runtime import runtime_context
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # Seat Caps are covered by the admission tests; these tests are about Target omission.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in ("BOOLEY_STATE_FILE", "BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_DIR"):

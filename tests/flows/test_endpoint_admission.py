@@ -39,6 +39,7 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.memory_budget_support import fail_budget
 from tests.oom_priority_support import (
     PROC_PATH,
@@ -46,6 +47,7 @@ from tests.oom_priority_support import (
     inert_oom_proc,  # noqa: F401  (fixture, used by memory_runtime)
     oom_priority,
 )
+from tests.sandbox_venue_fake import place
 
 FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 
@@ -53,9 +55,8 @@ FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImpl
 @pytest.fixture
 def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A session runtime with no ambient identity, slot or state variables."""
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.chdir(tmp_path)
     for name in (
         "BOOLEY_TICKET_FILE",

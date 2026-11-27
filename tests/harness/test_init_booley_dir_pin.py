@@ -10,6 +10,7 @@ import pytest
 from booley.core import booley_dir_pin
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
@@ -17,6 +18,7 @@ from tests.runtime.test_sandbox_remedy_workflows import (
     VSCODE_INIT,
     VSCODE_SEED,
 )
+from tests.sandbox_venue_fake import place
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="directory symlink requires privilege")
 
@@ -85,9 +87,9 @@ def test_init_repins_only_with_flag(
     managed: bool,
     steps: str,
 ) -> None:
-    from booley.runtime import runtime_context, session_runtime
+    from booley.runtime import session_runtime
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: owner)
     monkeypatch.setattr(session_runtime, "image_is_managed", lambda _root: managed)
     _reconcile(project)
