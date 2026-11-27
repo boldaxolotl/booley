@@ -401,7 +401,7 @@ class SimulateFlow(
     ) -> tuple[JobRequest, ...] | None:
         """What a prepared Simulation Record runs; ``None`` when that is not known yet.
 
-        A resume has no Test Runs resolved before admission.
+        A resume is not sized from its Test Runs before admission.
         """
         if prepared.resume is not None:
             return None
@@ -450,12 +450,11 @@ class SimulateFlow(
             targets, resume, selected_targets, test_names_map = prepared
             if resume is None:
                 self.set_report_targets(list(selected_targets))
-            if (
-                resume is not None
-                and (refusal := self._refuse_coverage_resume(resume)) is not None
-            ):
-                return refusal
-            if resume is None:
+            if resume is not None:
+                if (refusal := self._refuse_coverage_resume(resume)) is not None:
+                    return refusal
+                selected_targets, test_names_map = self._replay_simulation_record(resume)
+            else:
                 selection_error = self._validate_prepared_selection(
                     list(selected_targets), test_names_map
                 )
@@ -485,7 +484,7 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
         if prepared.resume is not None:
-            simulation_record = self._resume_simulation_record(prepared.resume)
+            simulation_record = self._resume_simulation_record(prepared)
         elif getattr(self.args, "coverage", False):
             simulation_record = (
                 self._preview_coverage_simulation_records()
@@ -610,7 +609,8 @@ class SimulateFlow(
     def _shared_baseline_worktree(self, revision: str) -> Path:
         """This invocation's one checkout of *revision*, open until publication ends.
 
-        Resuming a record that kept baseline prerequisites opens their revision. The
+        Resume opens it only for a manifest whose own Target role is a Cycle Count
+        baseline: a record that has baseline prerequisites is refused first. The
         scratch path depends only on the process and revision, so a second opening
         while the first is held fails in ``git worktree add`` (#1959); callers share
         this one. Call from the candidate checkout: ``self.args.work_dir`` is the
@@ -1284,7 +1284,9 @@ class SimulateFlow(
         return result
 
     def _ordinary_simulation_record_run(
-        self, planning: OrdinarySimulationRecordPlanning
+        self,
+        planning: OrdinarySimulationRecordPlanning,
+        record_directory: Path | None = None,
     ) -> _SimulationRecordRun:
         """Describe running every planned Target as one ordinary Simulation Record."""
         targets = [planned.selector for planned in planning.candidates]
@@ -1307,7 +1309,7 @@ class SimulateFlow(
                     targets, outcomes, phase="starting", complete=False
                 )
                 candidate_requests = self._candidate_simulation_record_requests(
-                    planning, invocation, admission
+                    planning, invocation, admission, record_directory
                 )
                 self._publish_and_run_simulation_record_requests(
                     simulation_record,
@@ -1368,6 +1370,7 @@ class SimulateFlow(
         planning: OrdinarySimulationRecordPlanning,
         invocation: Path,
         admission: AdmissionContext,
+        record_directory: Path | None = None,
     ) -> list[NewSimulationRecordRunRequest]:
         execution_id = str(admission.execution_id or "")
         requests = []
@@ -1388,6 +1391,7 @@ class SimulateFlow(
                     invocation,
                     admission,
                     pre_sim_firing_published=self._record_pre_sim_firing,
+                    record_directory=record_directory,
                 )
             )
         return requests

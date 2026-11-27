@@ -38,12 +38,13 @@ from booley.flows.sim.record.resume import (
     validate_resume_manifest,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
+from booley.flows.sim.request import SimRequest
 from booley.flows.test_runs import build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
-from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S, run_bounded_child
+from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 __all__ = ["project_alias"]
 
@@ -271,45 +272,6 @@ def test_finalize_manifest_accepts_immutable_nested_planning_input() -> None:
     assert manifest.document["planning_disclosures"][0]["planner"] == "fusesoc_setup"  # type: ignore[index]
 
 
-def _linked_simulation_record_stores(tmp_path: Path, *, topology_revisions=None):
-    baseline = _baseline_manifest()
-    if topology_revisions is not None:
-        document = json.loads(encode_simulation_record_manifest(baseline))
-        document.pop("fingerprints")
-        _retarget_topology_manifest(document, topology_revisions[1])
-        baseline = finalize_manifest(document)
-    invocation = tmp_path / "reports" / "000001"
-    baseline_store = SimulationRecordStore(invocation / "targets" / "base-revision" / "record")
-    baseline_store.publish_manifest(baseline)
-    raw = encode_simulation_record_manifest(baseline)
-    baseline_json = json.loads(raw)
-    candidate_document = _manifest()
-    candidate_document.pop("fingerprints")
-    if topology_revisions is not None:
-        _retarget_topology_manifest(candidate_document, topology_revisions[0])
-    candidate_document["prerequisites"] = [
-        {
-            "role": "cycle_count_baseline",
-            "manifest": {
-                "path_base": "origin_invocation",
-                "path": baseline_store.manifest_path.relative_to(invocation).as_posix(),
-                "bytes": len(raw),
-                "sha256": manifest_digest(baseline),
-                "kind": "simulation_record_manifest",
-                "owner": baseline_json["simulation_record_id"],
-            },
-            "simulation_record_id": baseline_json["simulation_record_id"],
-            "target": baseline_json["target"],
-            "required_observation": "cycle_count",
-            "work_item_id": baseline_json["work_items"][0]["work_item_id"],
-        }
-    ]
-    candidate = finalize_manifest(candidate_document)
-    candidate_store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
-    candidate_store.publish_manifest(candidate)
-    return candidate, candidate_store, baseline, baseline_store
-
-
 def test_simulation_record_plan_is_derived_only_from_a_validated_manifest() -> None:
     manifest = decode_simulation_record_manifest(canonical_json_bytes(_manifest()))
     plan = create_simulation_record_plan(manifest)
@@ -318,61 +280,6 @@ def test_simulation_record_plan_is_derived_only_from_a_validated_manifest() -> N
         SimulationRecordPlan()
     with pytest.raises(TypeError):
         SimulationRecordPlan(manifest, ("item:0000:ffffffffffffffff",))  # type: ignore[call-arg]
-
-
-def _distinct_root_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Validate a candidate resume whose baseline prerequisite has its own checkout root."""
-    candidate, candidate_store, baseline, baseline_store = _linked_simulation_record_stores(
-        tmp_path
-    )
-    candidate_root = tmp_path / "candidate-source"
-    baseline_root = tmp_path / "baseline-source"
-    candidate_root.mkdir()
-    baseline_root.mkdir()
-
-    class Catalog:
-        def __init__(self, root: Path) -> None:
-            self.root = root
-
-        def select(self, selector: str, *, for_flow: str):
-            assert for_flow == "sim"
-            target = (
-                candidate.document["target"] if selector == "sim" else baseline.document["target"]
-            )
-            return SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}",
-                selector=selector,
-                project_root=self.root,
-            )
-
-    monkeypatch.setattr(TargetCatalog, "build", lambda root: Catalog(Path(root)))
-    roots = {"candidate": candidate_root, "cycle_count_baseline": baseline_root}
-    revisions = {candidate_root.resolve(): "abc123", baseline_root.resolve(): "base-rev"}
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha",
-        lambda _ref, root: revisions[Path(root).resolve()],
-    )
-    validated = validate_resume_manifest(
-        candidate_store.manifest_path,
-        project_root=candidate_root,
-        revision_root=lambda target: roots[target["role"]],
-    )
-    return validated, candidate, baseline_store, candidate_root, baseline_root
-
-
-def test_resume_binds_distinct_candidate_and_baseline_revision_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    validated, candidate, baseline_store, candidate_root, baseline_root = _distinct_root_resume(
-        tmp_path, monkeypatch
-    )
-
-    assert [binding.project_root for binding in validated.bindings] == [
-        candidate_root,
-        baseline_root,
-    ]
-    reference = candidate.document["prerequisites"][0]["manifest"]  # type: ignore[index]
-    assert validated.prerequisite_for(reference).path == baseline_store.manifest_path
 
 
 def _stub_resume_target(monkeypatch: pytest.MonkeyPatch, manifest) -> None:
@@ -587,7 +494,7 @@ def test_resume_of_a_non_coverage_record_with_an_interrupted_item_is_not_refused
     store.allocate_attempt_directory(work_item_id, "550e8400-e29b-41d4-a716-446655440001")
     assert store.scan().interrupted == (work_item_id,)
     validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, "0" * 64), (), ()
+        ValidatedManifestNode(store.manifest_path, manifest, "0" * 64), (), (object(),)
     )
 
     def forbidden(*_args: object) -> None:
@@ -598,9 +505,7 @@ def test_resume_of_a_non_coverage_record_with_an_interrupted_item_is_not_refused
     )
     monkeypatch.setattr("booley.flows.sim.flow_resume.SimulationRecord.inspect_resume", forbidden)
     flow = SimulateFlow()
-    flow._args = SimpleNamespace(
-        resume_from=store.manifest_path, work_dir=tmp_path, coverage=False
-    )
+    flow._args = SimRequest(target="", work_dir=tmp_path, resume_from=store.manifest_path)
 
     prepared = flow.prepare_simulation_endpoint()
 
@@ -629,59 +534,6 @@ def _retarget_topology_manifest(document, revision):
     item = document["work_items"][0]
     item.update(target=target, revision=revision)
     _seal_item(item)
-
-
-@pytest.mark.parametrize("topology", ["standalone", "linked"])
-def test_resume_baseline_materializes_project_topologies(tmp_path, monkeypatch, topology):
-    from booley.flows.sim.mode import SimulationMode
-    from tests.flows.test_baseline_worktree import (
-        _assert_topology_baseline,
-        _project_topology_checkout,
-    )
-
-    root, revision = _project_topology_checkout(tmp_path, monkeypatch, topology)
-    current = run_bounded_child(["git", "rev-parse", "HEAD"], cwd=root, check=True).stdout.strip()
-    _candidate, store, _baseline, baseline_store = _linked_simulation_record_stores(
-        tmp_path, topology_revisions=(current, revision)
-    )
-    flow = SimulateFlow()
-    flow._args = SimpleNamespace(
-        work_dir=root,
-        resume_from=store.manifest_path,
-        mode=SimulationMode.SIMULATE,
-        coverage=False,
-    )
-    roots = []
-
-    def validate(path, *, project_root, revision_root):
-        def inspect(target):
-            historical = revision_root(target)
-            if target["role"] != "candidate":
-                _assert_topology_baseline(historical, root, "sim_core")
-                assert revision_root(target) == historical
-                roots.append(historical)
-            return historical
-
-        return validate_resume_manifest(path, project_root=project_root, revision_root=inspect)
-
-    monkeypatch.setattr("booley.flows.sim.flow.validate_resume_manifest", validate)
-    try:
-        prepared = flow.prepare_simulation_endpoint()
-        assert isinstance(prepared, PreparedSimulationEndpoint)
-        validated = prepared.resume
-        assert validated is not None
-        handles = prepared.targets
-        assert handles == validated.target_handles
-        assert handles[0].project_root == root
-        assert handles[1].identity == "acme:lib:top:1#sim_core"
-        assert handles[1].project_root == roots[0]
-        assert validated.prerequisites[0].path == baseline_store.manifest_path
-        assert prepared.selected_targets == ()
-        assert prepared.test_names_map == {}
-        assert roots[0].exists()
-    finally:
-        flow.publication_resources.close()
-    assert not roots[0].exists()
 
 
 def _diagnostic_document(*, sources=(), parameters=(), names=()):

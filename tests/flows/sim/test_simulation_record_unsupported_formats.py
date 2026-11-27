@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,14 +21,11 @@ from booley.flows.sim.record.codec import (
     decode_simulation_record_manifest,
     decode_simulator_bundle,
 )
-from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.simulation_record_test_support import (
     _retained_invocation,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _linked_simulation_record_stores,
     _manifest,
 )
 
@@ -127,43 +123,6 @@ def test_a_0_3_0_manifest_is_refused_naming_an_older_booley(
     if entry == "store_outside_report_layout":
         # No report layout, so there is no invocation directory to name.
         assert "delete the Simulation invocation directory" not in str(excinfo.value)
-
-
-def test_resume_refuses_a_0_3_0_cycle_count_baseline_naming_its_invocation(
-    tmp_path, monkeypatch
-) -> None:
-    candidate, candidate_store, _baseline, baseline_store = _linked_simulation_record_stores(
-        tmp_path
-    )
-    _rewrite(
-        baseline_store.manifest_path,
-        _as_030_manifest(baseline_store.manifest_path.read_bytes(), "v1"),
-    )
-    root = tmp_path / "source"
-    root.mkdir()
-    target = candidate.document["target"]
-    monkeypatch.setattr(
-        TargetCatalog,
-        "build",
-        lambda _root: SimpleNamespace(
-            select=lambda selector, **_: SimpleNamespace(
-                identity=f"{target['vlnv']}#{target['name']}", selector=selector
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "booley.flows.sim.record.resume.git_full_sha", lambda *_args: target["revision"]
-    )
-
-    with pytest.raises(ValueError) as excinfo:
-        validate_resume_manifest(
-            candidate_store.manifest_path,
-            project_root=root,
-            revision_root=lambda _target: root,
-        )
-
-    _assert_unsupported_type(excinfo.value)
-    _assert_refused(str(excinfo.value), _MANIFEST + "v1", tmp_path / "reports" / "000001")
 
 
 def test_a_schema_less_projection_cannot_authenticate_a_coverage_record() -> None:
