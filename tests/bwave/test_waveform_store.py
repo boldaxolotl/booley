@@ -13,7 +13,7 @@ import pytest
 
 from booley.bwave import cli
 from booley.bwave import waveform_store as stores
-from tests.bwave.native_binary import fake_native_binary
+from tests.bwave.native_binary import answer_vcd_build, fake_native_binary
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import FST_HEADER_BYTES, MINIMAL_FST_BYTES
 from tests.path_tool_fake import PathToolFake
@@ -518,12 +518,12 @@ def _descriptors_on(identity: tuple[int, int]) -> list[int]:
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
 def test_backlog_counts_unread_bytes_through_a_read_only_descriptor(
-    tmp_path: Path, fake_bwave, monkeypatch
+    tmp_path: Path, fake_native, monkeypatch
 ) -> None:
     """macOS answers FIONREAD on a read-write FIFO descriptor with 0: ask a read-only one."""
     import fcntl
 
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native.answer("build", hang_s=hang_guard_s())
     fifo = tmp_path / "pipe.vcd"
     conversion = stores.start_streaming_conversion(
         fifo, tmp_path / "s.fst", stderr_path=tmp_path / "e"
@@ -576,7 +576,9 @@ def test_streaming_start_unavailable_and_popen_failure(tmp_path: Path, monkeypat
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
-def test_strict_streaming_start_never_touches_an_existing_path(tmp_path: Path, fake_bwave) -> None:
+def test_strict_streaming_start_never_touches_an_existing_path(
+    tmp_path: Path, fake_native
+) -> None:
     """``replace_existing=False``: a user's file stays and no directory appears."""
     existing = tmp_path / "user.vcd"
     existing.write_text("user data", encoding="utf-8")
@@ -593,8 +595,9 @@ def test_strict_streaming_start_never_touches_an_existing_path(tmp_path: Path, f
 
 
 @pytest.mark.skipif(os.name == "nt", reason="FIFO requires POSIX")
-def test_close_input_keeps_a_path_the_writer_replaced(tmp_path: Path, fake_bwave) -> None:
+def test_close_input_keeps_a_path_the_writer_replaced(tmp_path: Path, fake_native) -> None:
     """Only the pipe this conversion created is removed; a replacement file is the user's."""
+    answer_vcd_build(fake_native)
     fifo = tmp_path / "pipe.vcd"
     conversion = stores.start_streaming_conversion(
         fifo, tmp_path / "s.fst", stderr_path=tmp_path / "e"

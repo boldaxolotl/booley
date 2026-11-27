@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 import pytest
+from tests.bwave.native_binary import fake_native_binary
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.time_budget import hang_guard_s, scaled
 
@@ -395,9 +396,9 @@ def _declared_stream(tmp_path):
 
 
 @_posix_only
-def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeypatch):
+def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, monkeypatch):
     """No unread bytes means no stall, however long the converter sits idle."""
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "bwave", monkeypatch).answer("build", hang_s=hang_guard_s())
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
@@ -430,9 +431,9 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
 
 
 @_posix_only
-def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwave, monkeypatch):
+def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, monkeypatch):
     """A converter that stopped reading is killed; the blocked writer is then drained."""
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "bwave", monkeypatch).answer("build", hang_s=hang_guard_s())
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
