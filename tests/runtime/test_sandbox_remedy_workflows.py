@@ -224,6 +224,7 @@ def test_unreachable_docker_asks_for_connectivity(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the hanging docker stub is a POSIX shell script")
+@pytest.mark.docker_cli
 def test_hung_docker_inventory_times_out_to_the_connectivity_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

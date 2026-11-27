@@ -70,8 +70,6 @@ from tests.diagnostic_helpers import (
     _Rec,
 )
 from tests.docker_cli_guard import (
-    assert_docker_processes_unused,
-    forbid_docker_processes,
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
@@ -271,7 +269,6 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     # Modules that import this helper lack this module's autouse routing; without
     # it Doctor's container checks start real `docker run`s that can each wait 30 s.
     route_docker_helper_through_subprocess_run(monkeypatch)
-    forbid_docker_processes(monkeypatch)
     fake_docker_host(monkeypatch)
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
@@ -953,7 +950,6 @@ def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
 
     assert len(inspected) == 1
     assert [call for call in calls if call[-3:] == ["python", "-m", "booley.mcp.probe"]]
-    assert_docker_processes_unused()
 
 
 def _history_git(repo: Path, *args: str) -> None:

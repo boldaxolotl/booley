@@ -391,7 +391,7 @@ def test_restart_after_the_choice_changes_leaves_no_breaking_registration(
 
 @pytest.mark.parametrize("kind", ["both", "gateway"])
 def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
-    sandbox, monkeypatch, capsys, kind
+    sandbox, monkeypatch, capsys, kind, fake_sandbox_attachment
 ):
     _give(kind, sandbox.home, monkeypatch)
     _start(capsys)
@@ -435,7 +435,9 @@ def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
     return inspection.inspect_runtime(request).configuration
 
 
-def test_auto_spec_with_a_provider_pin_warns_instead_of_failing(sandbox, monkeypatch):
+def test_auto_spec_with_a_provider_pin_warns_instead_of_failing(
+    sandbox, monkeypatch, fake_sandbox_attachment
+):
     report = _auto_spec_report(sandbox, monkeypatch, declared_provider="codex")
 
     findings = report.findings
