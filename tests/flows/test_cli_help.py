@@ -166,8 +166,10 @@ def test_resume_and_required_target_guidance() -> None:
         actions = parser._option_string_actions
         if cls.name == "sim":
             assert "manifest owns" in actions["--target"].help
+            assert "resume restores the manifest" in actions["--trace"].help
+            for flag in ("--coverage", "--no-waivers"):
+                assert "never resumes" in actions[flag].help
             for flag in ("--coverage", "--trace", "--no-waivers"):
-                assert "resume restores the manifest" in actions[flag].help
                 assert "rejects this flag" in actions[flag].help
             assert "omission is required" in actions["--mode"].help
         elif cls.name == "mutation":

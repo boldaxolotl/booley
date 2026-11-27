@@ -42,8 +42,14 @@ def validate_corrupt_terminal(
     )
     attempts = rejection.get("attempts_before")
     _need(attempts == rejection.get("attempts_after"), "corrupt resume created an attempt")
-    _need(rejection.get("control_exit_code") == 0, "restored control did not succeed")
-    _need(rejection.get("control_complete") is True, "restored control is incomplete")
+    control = rejection.get("control_diagnostic")
+    _need(
+        rejection.get("control_exit_code") == 2
+        and isinstance(control, str)
+        and "booley flow sim" in control
+        and "--coverage" in control,
+        "restored control was not refused with a new --coverage run",
+    )
     _need(
         attempts == rejection.get("attempts_after_restore"), "restored completed work item reran"
     )
