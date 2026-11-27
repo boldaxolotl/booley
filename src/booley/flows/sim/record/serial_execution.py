@@ -593,8 +593,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             request.policy,
             trace=cast(bool, workload["trace"]),
         )
-        # Build and launch commands name paths relative to the record's own
-        # checkout (a Cycle Count baseline's is not the invocation's), so they run there.
+        # Build and launch commands name paths relative to the record's Project Root,
+        # so they run there.
         execution = (
             self._execution_factory(options)
             if self._execution_factory
@@ -1823,7 +1823,7 @@ def capture_private_image(
         executable_assigned |= kind == "simulator_executable"
         sources.append((source, kind))
     for declaration in runtime_declarations:
-        # A resumed prerequisite manifest is not re-planned, so refuse a path
+        # The declaration is read back from the stored manifest, so refuse a path
         # that could copy outside the private image before touching the disk.
         try:
             relative = safe_runtime_relative(declaration["source_artifact_path"])

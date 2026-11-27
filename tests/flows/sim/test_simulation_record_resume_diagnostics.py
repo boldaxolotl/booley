@@ -36,7 +36,6 @@ def _interrupted_simulation_record(
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
-    monkeypatch.setattr("booley.flows.sim.flow_resume.git_full_sha", lambda *_args: "a" * 40)
     monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "a" * 40)
     project(root)
     core = root / "counter.core"
@@ -64,7 +63,8 @@ def _interrupted_simulation_record(
         raise KeyboardInterrupt("durable ordinary interruption")
 
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", interrupt_execution
+        "booley.flows.sim.record.serial_execution.OrdinaryHdlSerialExecutor.execute",
+        interrupt_execution,
     )
 
     with pytest.raises(KeyboardInterrupt, match="durable ordinary interruption"):
@@ -89,7 +89,9 @@ def _resume_until_execution(monkeypatch):
             executor.prepare_attempt(request)
         raise KeyboardInterrupt("resume reached execution")
 
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", resumed)
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.OrdinaryHdlSerialExecutor.execute", resumed
+    )
 
 
 def test_resume_accepts_attempts_recorded_with_the_diagnostic_policy(tmp_path, monkeypatch):
@@ -424,7 +426,8 @@ def test_cli_resume_announces_validated_origin_before_execution(
     # Private seam: executing the first item is an observable point after the origin is
     # announced.
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", before_execution
+        "booley.flows.sim.record.serial_execution.OrdinaryHdlSerialExecutor.execute",
+        before_execution,
     )
     if mode == "mismatch":
         (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")

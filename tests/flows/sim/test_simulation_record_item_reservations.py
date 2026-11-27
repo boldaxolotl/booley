@@ -48,7 +48,6 @@ from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCap
 from booley.flows.sim.record.codec import canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
@@ -86,7 +85,6 @@ from tests.flows.sim.simulation_record_test_support import (
     _ParallelExecution,
     _ParallelGroup,
     _scheduled_attempt,
-    _validated_simulation_record,
 )
 from tests.flows.test_endpoint_admission import _selection_prepared
 from tests.job_slot_steps import (
@@ -680,19 +678,16 @@ def test_resumed_simulation_record_items_take_their_own_claims_after_the_build(
     with _scenario(tmp_path, monkeypatch, flow_requests=None, history=history) as scenario:
         store = scenario.record()
         store.publish_manifest(manifest)
-        validated = _validated_simulation_record(
-            store, manifest, scenario.project, scenario.state.handle
-        )
         invocation = scenario.tmp_path / "reports" / "000001"
         outcome = scenario.simulation_record().run(
-            ResumeSimulationRecordRunRequest(
-                validated,
+            NewSimulationRecordRunRequest(
                 create_simulation_record_plan(manifest),
                 scenario.project,
                 invocation.parent,
                 SimulationRecordPolicy(),
-                invocation,
-                scenario.admission,
+                record_directory=store.root,
+                invocation_directory=invocation,
+                admission=scenario.admission,
             )
         )
 

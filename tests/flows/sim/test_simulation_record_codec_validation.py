@@ -15,10 +15,7 @@ from tests.flows.sim.test_simulation_record_codec_golden import (
     _BUILD_READY,
     _simulation_result,
 )
-from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _manifest,
-    _prerequisite_entry,
-)
+from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 from tests.flows.sim.test_simulation_record_model import _attempt
 
 
@@ -210,25 +207,18 @@ _DELETE = object()
         (("workload", "run_cwd", "configured"), 7, r"run_cwd\.configured"),
         (("target", "selector"), _DELETE, r"target\.selector"),
         (("work_items", 0, "kind"), _DELETE, r"work_items\[0\]\.kind"),
-        (
-            ("prerequisites", 0, "manifest", "path"),
-            _DELETE,
-            r"prerequisites\[0\]\.manifest\.path",
-        ),
     ],
     ids=[
         "workload-run-cwd",
         "workload-run-cwd-wrong-type",
         "target-selector",
         "work-item-kind",
-        "prerequisite-manifest-path",
     ],
 )
 def test_manifest_reader_rejects_a_missing_nested_field(
     tmp_path, path, replacement, field
 ) -> None:
     document = _manifest()
-    document["prerequisites"] = [_prerequisite_entry()]
     parent: object = document
     for part in path[:-1]:
         parent = parent[part]  # type: ignore[index]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import cast
 
 from booley.config.project_config import load_test_configuration, lookup_target_section
 from booley.config.tests_toml_rules import parse_test_variants
@@ -42,7 +41,6 @@ def _require_ordinary_hdl_inputs(
     handle: TargetHandle,
     inspection: TargetInspection,
     preview: SimulationPreview,
-    role: str,
     revision: str,
 ) -> None:
     """Refuse Target facts the ordinary-HDL planner cannot plan from."""
@@ -50,26 +48,8 @@ def _require_ordinary_hdl_inputs(
         raise SimulationRecordIntegrityError("record planning Target facts disagree")
     if inspection.flow_options.get("cocotb_module"):
         raise SimulationRecordIntegrityError("ordinary HDL planner cannot plan Cocotb")
-    if role not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationRecordIntegrityError("record planning role is invalid")
     if not revision:
         raise SimulationRecordIntegrityError("record revision is required")
-
-
-def _require_baseline_prerequisites(documents: Sequence[Mapping[str, object]]) -> None:
-    """Refuse a prerequisite whose Target was not planned as a Cycle Count baseline.
-
-    The coarse (Cocotb) planner labels its Target ``candidate``, so a Cocotb
-    Target cannot be the baseline of an ordinary HDL Target: its record would
-    not be where the prerequisite link points.
-    """
-    for document in documents:
-        target = cast(Mapping[str, object], document["target"])
-        if target.get("role") != "cycle_count_baseline":
-            raise SimulationRecordIntegrityError(
-                f"prerequisite Target {target.get('selector')!r} was not planned as a Cycle "
-                "Count baseline (a Cocotb Target cannot be the baseline of an ordinary HDL Target)"
-            )
 
 
 def plan_ordinary_hdl_simulation_record(
@@ -83,14 +63,11 @@ def plan_ordinary_hdl_simulation_record(
     invocation_id: int,
     execution_id: str,
     trace: bool,
-    prerequisite_documents: Sequence[Mapping[str, object]] = (),
     planning_disclosures: Sequence[Mapping[str, object]] = (),
-    role: str = "candidate",
     required_suite_catalog_backed: bool | None = None,
 ) -> SimulationRecordPlan:
     """Build one strict immutable plan from already-resolved Target facts."""
-    _require_ordinary_hdl_inputs(handle, inspection, preview, role, revision)
-    _require_baseline_prerequisites(prerequisite_documents)
+    _require_ordinary_hdl_inputs(handle, inspection, preview, revision)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     if len(groups) != len(preview.commands):
@@ -100,7 +77,7 @@ def plan_ordinary_hdl_simulation_record(
     workload, configured_cwd, run_kind, sources = _workload_document(
         handle, inspection, sources, trace, coverage=False
     )
-    target = _target_document(handle, root, revision, role)
+    target = _target_document(handle, root, revision)
     suite = _required_suite(
         root,
         required_suite,
@@ -119,7 +96,6 @@ def plan_ordinary_hdl_simulation_record(
         suite,
         variant,
         planning_disclosures,
-        prerequisite_documents,
         work_items,
     )
     return create_simulation_record_plan(manifest)
@@ -159,7 +135,7 @@ def plan_coarse_simulation_record(
         coverage=kind == "coverage_aggregate",
         no_waivers=no_waivers,
     )
-    target = _target_document(handle, root, revision, "candidate")
+    target = _target_document(handle, root, revision)
     suite = _required_suite(
         root,
         required_suite,
@@ -176,7 +152,6 @@ def plan_coarse_simulation_record(
         suite,
         variant,
         planning_disclosures,
-        (),
         work_items,
     )
     return create_simulation_record_plan(manifest)
@@ -225,7 +200,6 @@ def _manifest_document(
     suite,
     variant,
     planning_disclosures,
-    prerequisite_documents,
     work_items,
 ):
     # v4: every work item records its concrete Test Runs (ADR 0072).
@@ -240,7 +214,7 @@ def _manifest_document(
             "required_suite": suite,
             "build_variants": [variant],
             "planning_disclosures": list(planning_disclosures),
-            "prerequisites": list(prerequisite_documents),
+            "prerequisites": [],
             "work_items": work_items,
         }
     )
@@ -327,16 +301,14 @@ def _workload_document(
     return workload, configured_cwd, run_kind, sources
 
 
-def _target_document(
-    handle: TargetHandle, root: Path, revision: str, role: str
-) -> dict[str, object]:
+def _target_document(handle: TargetHandle, root: Path, revision: str) -> dict[str, object]:
     return {
         "vlnv": handle.vlnv,
         "name": handle.name,
         "selector": handle.selector,
         "project_identity": document_digest(str(root)),
         "revision": revision,
-        "role": role,
+        "role": "candidate",
         "display_name": handle.selector,
     }
 
