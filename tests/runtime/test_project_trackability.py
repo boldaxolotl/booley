@@ -210,6 +210,8 @@ def test_inspection_failures_are_location_specific(project, monkeypatch):
     monkeypatch.setattr(pt.os, "scandir", unreadable)
     result = pt.inspect_project_trackability(root, selected)
     assert any(str(selected / "cores") in e and "unreadable" in e for e in result.errors)
+    (root / ".git" / "index").write_bytes(b"corrupt")
+    assert any("index file" in e for e in pt.inspect_project_trackability(root, selected).errors)
 
 
 @pytest.mark.parametrize("failure", ["malformed", "returncode", "timeout", "exception"])

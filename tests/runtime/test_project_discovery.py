@@ -192,17 +192,20 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     from booley.runtime.booley_dir import reset_cache
     from booley.runtime.project_discovery import ProjectRootDiscoveryError, discover_project_root
 
-    root, alias, unrelated, owner = (
-        tmp_path / name for name in ("selected", "alias", "unrelated", "owner")
+    root, alias, unrelated, owner, inner_alias = (
+        tmp_path / name for name in ("selected", "alias", "unrelated", "owner", "owner/mid/alias")
     )
-    for directory in (root, alias, unrelated, owner / "alias"):
+    for directory in (root, alias, unrelated, inner_alias):
         directory.mkdir(parents=True)
+    # A plain checkout below the owner: the fallback answer, so ownership must be real.
+    (owner / "mid" / ".git").write_text("gitdir: elsewhere\n")
+    (owner / "mid" / "booley.toml").write_text("[project]\n")
     original = Path.samefile
     calls = []
 
     def samefile(path, other):
         """Emulate directory aliases that ``resolve()`` cannot see."""
-        if {path, Path(other)} in ({root, alias}, {root, owner / "alias"}):
+        if {path, Path(other)} in ({root, alias}, {root, inner_alias}):
             calls.append(path)
             return True
         return original(path, other)
@@ -224,7 +227,7 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     assert discover_project_root(nested / "new") == nested
     monkeypatch.setenv("BOOLEY_DIR", str(unrelated))
     reset_cache()
-    assert discover_project_root(owner / "alias" / "new") == owner
+    assert discover_project_root(inner_alias / "new") == owner
 
 
 @pytest.mark.parametrize("owned", [True, False])
@@ -399,7 +402,7 @@ def test_unpinned_linked_ancestor_does_not_block_nested_discovery(tmp_path, monk
 
 def test_relocated_paired_checkout_is_not_a_checkout_candidate(tmp_path, monkeypatch):
     """A Paired Checkout at ``<worktree>/state`` is data, never mistaken for an RTL checkout."""
-    from booley.runtime.project_discovery import discover_project_root
+    from booley.runtime.project_discovery import discover_project_root, discover_session_context
 
     outer = tmp_path / "checkout"
     outer.mkdir()
@@ -412,7 +415,7 @@ def test_relocated_paired_checkout_is_not_a_checkout_candidate(tmp_path, monkeyp
     (data / ".git").rename(tmp_path / "project.git")
     (data / ".git").write_text(f"gitdir: {tmp_path / 'project.git'}\n", encoding="utf-8")
 
-    assert discover_project_root(data) == outer
+    assert discover_session_context(data).checkout == discover_project_root(data) == outer
 
 
 def test_session_owner_of_relocated_worktree_uses_configured_namespace(tmp_path, monkeypatch):

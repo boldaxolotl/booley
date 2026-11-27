@@ -109,14 +109,14 @@ def test_configuration_readers_use_relocated_booley_dir(
     state = root / "state"
 
     assert resolve_booley_toml(root) == state / "booley.toml"
-    # Reader under test; no public entry takes a checkout root.
+    # Reader under test; no public entry returns the whole parsed config.
     assert settings._load_booley_toml(root)["project"]["name"] == name
     is_main = checkout == "main"
     assert flow_enabled("lint", root) is not is_main
-    # Reader under test; no public entry takes a checkout root.
+    # Reader under test; T3 rewrites this test, so the private call stays until then.
     rtl_config = shared_infra._load_rtl_config(root)
     assert rtl_config is not None and rtl_config["project"]["name"] == name
-    # The settings cache has no public reset.
+    # Only monkeypatch restores the previous settings cache at teardown.
     monkeypatch.setattr(agent, "_agent_settings", None)
     assert agent.load_agent_settings(root).clis == (("claude", "codex") if is_main else ("codex",))
     # Reader under test; the public planners need a resolved Target first.
