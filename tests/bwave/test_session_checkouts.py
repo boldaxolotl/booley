@@ -161,37 +161,38 @@ def test_subdirectory_of_a_relocated_non_git_project_resolves_against_the_root(
     assert _resolve(project / "rtl", env, "@dut", "list") == trace
 
 
+@pytest.mark.parametrize(
+    ("git_file", "borrows"),
+    [
+        (None, True),  # a `.git` directory: a standalone nested repository
+        (b"gitdir: ../../.git/modules/ip\n", True),  # a submodule
+        (b"gitdir: /repo/.git/worktrees/wt\n", False),  # a linked worktree never borrows
+    ],
+    ids=["repository", "submodule", "linked-worktree"],
+)
 def test_nested_git_repository_without_a_booley_directory_reads_the_enclosing_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_file: bytes | None, borrows: bool
 ) -> None:
     isolate_git(tmp_path, monkeypatch)
     main = main_project(tmp_path)
     nested = main / "vendor" / "ip"
-    (nested / ".git").mkdir(parents=True)
-    (nested / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    if git_file is None:
+        (nested / ".git").mkdir(parents=True)
+        (nested / ".git" / "HEAD").write_bytes(b"ref: refs/heads/main\n")
+    else:
+        nested.mkdir(parents=True)
+        (nested / ".git").write_bytes(git_file)
     env = _env(tmp_path / "shared-tmp")
     trace = _trace(main / "out", "dut.fst")
 
     _register(main, env, trace, "dut")
 
-    assert _resolve(nested, env, "@dut", "list") == trace
-
-
-def test_worktree_pointer_tells_a_linked_worktree_from_a_submodule(tmp_path: Path) -> None:
-    from booley.runtime.project_discovery import _is_linked_worktree_pointer
-
-    worktree = tmp_path / "worktree"
-    submodule = tmp_path / "submodule"
-    standalone = tmp_path / "standalone"
-    for path in (worktree, submodule, standalone / ".git"):
-        path.mkdir(parents=True)
-    (worktree / ".git").write_bytes(b"gitdir: /repo/.git/worktrees/wt\n")
-    (submodule / ".git").write_bytes(b"gitdir: ../.git/modules/sub\n")
-
-    assert _is_linked_worktree_pointer(worktree)
-    assert not _is_linked_worktree_pointer(submodule)
-    assert not _is_linked_worktree_pointer(standalone)
-    assert not _is_linked_worktree_pointer(tmp_path / "absent")
+    if borrows:
+        assert _resolve(nested, env, "@dut", "list") == trace
+        return
+    code, _out, err = _python(_RESOLVE, nested, env, "@dut", "list")
+    assert code != 0
+    assert "No registered alias" in err
 
 
 def test_outside_a_project_uses_the_temporary_store(

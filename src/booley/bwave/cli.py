@@ -197,7 +197,6 @@ from booley.bwave.sessions import (
     MarkerLookup,
     _get_markers,
     _load_sessions,
-    _save_sessions,  # noqa: F401  # re-exported for backward compatibility
     cmd_markers,
     cmd_register,
     current_session_store,

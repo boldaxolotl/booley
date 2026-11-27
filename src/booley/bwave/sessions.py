@@ -15,8 +15,6 @@ Consumers:
     and calls a few of them from its CLI dispatch / marker-resolution code.
   - ``booley.flows.sim.bwave_registration`` calls ``register_trace`` to register
     a traced simulation run's waveforms into the run's own checkout store.
-  - ``tests/bwave/test_sessions.py`` imports _load_sessions, _save_sessions,
-    register_trace via the ``bwave`` facade.
 
 Cross-module coupling is one-directional at import time: ``bwave`` imports this
 module eagerly; this module imports ``bwave`` only *lazily* (inside functions)
@@ -368,8 +366,7 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
     for event in result.events:
         print(f"[bwave] {event}")
     if not result.success:
-        if result.detail:
-            (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
+        (trace.parent / "trace.fst.stderr").write_text(result.detail + "\n", encoding="utf-8")
         sys.exit(
             f"ERROR: could not build a queryable store from {trace}.\n"
             f"Run `bwave build {trace_arg} -o {out_arg}` directly to see the failure."
