@@ -405,9 +405,6 @@ reason = "Codespaces GitHub access"
 permanent = true
 ```
 
-A waiver without a `subject` accepts every helper. It also hides the warning
-that Doctor cannot list the helpers.
-
 ## Applying Sandbox changes
 
 A Sandbox keeps the settings and Booley version it was created with until you
