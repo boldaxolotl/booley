@@ -342,6 +342,11 @@ Read the Mergify check and the underlying Actions failure, then:
       scheduled `Tests` run.
     - Match a crashed worker or a duration-budget overrun by job and error
       signature instead of a test ID.
+    - When every failed test of a step passes on its rerun, the job stays
+      green, so those failures never dequeue the PR and need no issue; see
+      [Rerun of failed tests](../../../.github/ci/README.md#rerun-of-failed-tests).
+      A test that failed on its rerun too, or a failure the step summary
+      says was not rerun, follows the rules here.
     - When no issue exists, first file a `bug`, `ci`, `needs-triage` issue
       with the run link, test ID or job, and error, scanned as `AGENTS.md`
       requires.

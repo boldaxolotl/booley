@@ -19,7 +19,9 @@ on:
       - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
       - ".github/scripts/riscv_candidate.sh"
+      - ".github/scripts/retry.sh"
       - ".github/scripts/riscv_tooling.py"
+      - ".github/scripts/select_runtime_base.sh"
       - ".github/scripts/validate_installed_artifact.py"
       - ".github/scripts/verify_picorv32_demo.sh"
       - ".github/scripts/run_picorv32_ci_demo.sh"
@@ -74,6 +76,8 @@ concurrency:
 
 env:
   CONTRACT: .github/contracts/picorv32-demo.toml
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
 
 jobs:
   # Decide where the demo's stable base comes from, with the contract test the
@@ -90,8 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      build: ${{ steps.decide.outputs.publish }}
-      image: ${{ steps.published.outputs.image }}
+      build: ${{ steps.select.outputs.build }}
+      image: ${{ steps.select.outputs.image }}
 
     steps:
       - name: Check out Booley
@@ -105,23 +109,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Decide whether the published base already has this contract
-        id: decide
-        run: |
-          python .github/scripts/docker_base_contract.py --repo . \
-            --publish-decision ghcr.io/boldaxolotl/booley-sandbox-base:main \
-            --github-output "${GITHUB_OUTPUT}"
-
-      # Pin the exact base the decision saw: a publisher promoting a new
-      # `main` meanwhile cannot change what the demo job builds on.
-      - name: Resolve the published stable base
-        id: published
-        if: steps.decide.outputs.publish != 'true'
-        run: |
-          python .github/scripts/docker_base_contract.py --repo . \
-            --resolver remote \
-            --resolve-image ghcr.io/boldaxolotl/booley-sandbox-base:main \
-            --github-output "${GITHUB_OUTPUT}"
+      # One lookup pins the exact base the decision saw: a publisher promoting
+      # a new `main` meanwhile cannot change what the demo job builds on.
+      - name: Select compatible stable runtime base
+        id: select
+        env:
+          PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
+        run: bash .github/scripts/select_runtime_base.sh "${PUBLISHED_BASE}"
 
   # The demo runs the commit's source in a RISC-V Sandbox image built from the
   # same commit (#3590), never in the last released image: that image lags
@@ -214,16 +208,7 @@ jobs:
         env:
           BUILD_STABLE_BASE: ${{ needs.base-plan.outputs.build == 'true' }}
           PUBLISHED_BASE: ${{ needs.base-plan.outputs.image }}
-        run: |
-          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
-            echo "build=true" >> "${GITHUB_OUTPUT}"
-            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          python .github/scripts/docker_base_contract.py --repo . \
-            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
-            --github-output "${GITHUB_OUTPUT}"
-          echo "build=false" >> "${GITHUB_OUTPUT}"
+        run: bash .github/scripts/select_runtime_base.sh "${PUBLISHED_BASE}"
 
       - name: Build changed stable runtime base locally
         if: steps.runtime-base.outputs.build == 'true'

@@ -76,6 +76,12 @@ concurrency:
   group: tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
+  # cargo waits up to 10 s per retry: about 3 minutes.
+  CARGO_NET_RETRY: "20"
+
 jobs:
   changes:
     # Draft PRs skip CI until marked ready (ready_for_review re-runs it);
@@ -245,9 +251,10 @@ jobs:
         run: |
           python .github/scripts/ci_docs_tests.py --repo . > "${RUNNER_TEMP}/content-tests.txt"
           mapfile -t modules < "${RUNNER_TEMP}/content-tests.txt"
-          pytest "${modules[@]}" -q --tb=short -n 4 --dist=loadscope \
-            --basetemp "${RUNNER_TEMP}/pytest" -m "not native_bwave" \
-            --timeout=60 --junitxml="${RUNNER_TEMP}/junit.xml"
+          python .github/scripts/ci_pytest_rerun.py --junitxml "${RUNNER_TEMP}/junit.xml" \
+            --basetemp "${RUNNER_TEMP}/pytest" \
+            pytest "${modules[@]}" -q --tb=short -n 4 --dist=loadscope \
+            -m "not native_bwave" --timeout=60
 
       - name: Publish pytest evidence
         if: always()
@@ -302,7 +309,7 @@ jobs:
           archive="${RUNNER_TEMP}/actionlint.tar.gz"
           # GitHub's release CDN sometimes answers 504; retry before failing the lint job.
           curl --fail --silent --show-error --location \
-            --retry 5 --retry-all-errors --retry-delay 5 \
+            --retry 8 --retry-all-errors --retry-delay 30 \
             --output "${archive}" \
             https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict
@@ -401,10 +408,12 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
+          python .github/scripts/ci_pytest_rerun.py --junitxml "${{ runner.temp }}/junit.xml"
+          --basetemp "${{ runner.temp }}/pytest"
           pytest tests/ -q --tb=short -n 4 --dist=${{ needs.changes.outputs.linux_scheduler }}
-          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
+          -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
-          --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --durations=30
           -p ci_pytest_shard
           --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"
 
@@ -415,12 +424,13 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
         run: >-
+          python .github/scripts/ci_pytest_rerun.py --junitxml "${{ runner.temp }}/junit.xml"
+          --basetemp "${{ runner.temp }}/pytest"
           pytest tests/architecture tests/config
           tests/runtime/test_file_lock.py tests/runtime/test_pid.py
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
-          -q --tb=short -n 4 --dist=loadscope
-          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          -q --tb=short -n 4 --dist=loadscope -m "not native_bwave"
+          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
@@ -431,9 +441,11 @@ jobs:
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
           BOOLEY_PYTEST_TIMING_FILE: ${{ runner.temp }}/pytest-timeouts/test-timings.jsonl
         run: >-
+          python .github/scripts/ci_pytest_rerun.py --junitxml "${{ runner.temp }}/junit.xml"
+          --basetemp "${{ runner.temp }}/pytest"
           pytest tests/ -q --tb=short -n 4 --dist=${{ runner.os == 'Linux' && needs.changes.outputs.linux_scheduler || 'worksteal' }}
-          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          -m "${{ env.TEST_MARK_EXPRESSION }}"
+          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -612,10 +624,13 @@ jobs:
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
           BOOLEY_PYTEST_TIMING_FILE: ${{ runner.temp }}/pytest-timeouts/test-timings.jsonl
         run: >-
+          python .github/scripts/ci_pytest_rerun.py --junitxml "${{ runner.temp }}/junit.xml"
+          --basetemp "${{ runner.temp }}/pytest"
+          --coverage-file "${COVERAGE_FILE}"
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
-          --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"
+          -m "${{ env.TEST_MARK_EXPRESSION }}"
           --timeout=60 --cov=booley --cov-report= --cov-fail-under=0
-          --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          --durations=30
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -737,7 +752,7 @@ jobs:
 
       - name: Fetch pull-request base for changed-line coverage
         if: github.event_name == 'pull_request'
-        run: git fetch --no-tags --unshallow origin
+        run: bash .github/scripts/retry.sh git fetch --no-tags --unshallow origin
 
       - name: Enforce 90% changed-line coverage
         if: github.event_name == 'pull_request'
@@ -1069,7 +1084,7 @@ jobs:
       - name: Pull the Renovate image
         env:
           IMAGE: ${{ steps.image.outputs.image }}
-        run: docker pull "${IMAGE}"
+        run: bash .github/scripts/retry.sh docker pull "${IMAGE}"
 
       # --no-global validates the named file as repository configuration; the
       # default would treat it as global configuration. --strict fails on
@@ -1241,16 +1256,7 @@ jobs:
             ${{ needs.changes.outputs.build_stable_base == 'true' ||
                 (github.event_name == 'pull_request' && github.base_ref != 'main') }}
           PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
-        run: |
-          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
-            echo "build=true" >> "${GITHUB_OUTPUT}"
-            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          python .github/scripts/docker_base_contract.py --repo . \
-            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
-            --github-output "${GITHUB_OUTPUT}"
-          echo "build=false" >> "${GITHUB_OUTPUT}"
+        run: bash .github/scripts/select_runtime_base.sh "${PUBLISHED_BASE}"
 
       # A PR that changes a stable-base input must test that candidate without
       # publishing untrusted layers. Reuse the trusted main-branch cache, but do
@@ -1407,7 +1413,7 @@ jobs:
         id: nangate
         shell: bash
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare isolated validation temp directories
@@ -1770,7 +1776,7 @@ jobs:
           TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
         run: |
           mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
-          nohup docker pull --quiet "${TOOLING_CONTEXT#docker-image://}" \
+          nohup bash .github/scripts/retry.sh docker pull --quiet "${TOOLING_CONTEXT#docker-image://}" \
             > "${RUNNER_TEMP}/riscv-image-evidence/tooling-prefetch.log" 2>&1 &
           echo "$!" > "${RUNNER_TEMP}/riscv-tooling-prefetch.pid"
 
@@ -1802,16 +1808,7 @@ jobs:
             ${{ needs.changes.outputs.build_stable_base == 'true' ||
                 (github.event_name == 'pull_request' && github.base_ref != 'main') }}
           PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
-        run: |
-          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
-            echo "build=true" >> "${GITHUB_OUTPUT}"
-            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          python .github/scripts/docker_base_contract.py --repo . \
-            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
-            --github-output "${GITHUB_OUTPUT}"
-          echo "build=false" >> "${GITHUB_OUTPUT}"
+        run: bash .github/scripts/select_runtime_base.sh "${PUBLISHED_BASE}"
 
       - name: Build changed stable runtime base locally
         if: steps.runtime-base.outputs.build == 'true'

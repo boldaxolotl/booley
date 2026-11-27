@@ -1,4 +1,7 @@
-"""Whole-run helpers for the Doctor tests that check one section of its report."""
+"""Whole-run helpers for the Doctor tests that check one section of its report.
+
+``enter_sandbox`` fakes the Sandbox venue check and the Sandbox image contents.
+"""
 
 from __future__ import annotations
 

@@ -67,7 +67,7 @@ runs:
     - name: Install Booley runtime dependencies
       shell: bash
       run: >-
-        python -m pip install --disable-pip-version-check --quiet
+        python -m pip install --disable-pip-version-check --quiet --retries 10
         -c "${GITHUB_WORKSPACE}/.github/ci/constraints.txt" "${GITHUB_WORKSPACE}"
 
     # Readiness runs the project's deterministic preparation
@@ -81,7 +81,7 @@ runs:
       run: |
         archive="${RUNNER_TEMP}/riscv-toolchain.tar.gz"
         tool_root="${RUNNER_TEMP}/riscv-toolchain"
-        curl --proto '=https' --tlsv1.2 -fsSL "${TOOLCHAIN_URL}" -o "${archive}"
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "${TOOLCHAIN_URL}" -o "${archive}"
         echo "${TOOLCHAIN_SHA256}  ${archive}" | sha256sum -c -
         mkdir -p "${tool_root}"
         tar -xzf "${archive}" -C "${tool_root}" --strip-components=1

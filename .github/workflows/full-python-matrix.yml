@@ -13,6 +13,10 @@ concurrency:
   group: full-python-matrix-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
+
 jobs:
   test:
     name: full / ${{ matrix.os }} / Python ${{ matrix.python }}

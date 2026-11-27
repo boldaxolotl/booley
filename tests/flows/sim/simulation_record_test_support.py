@@ -1,4 +1,6 @@
-"""Shared builders and fakes for the Simulation Record suites."""
+"""Shared builders and fakes for the Simulation Record suites: its executor, execution, sizing,
+admission endpoint and store.
+"""
 
 from __future__ import annotations
 

@@ -74,7 +74,7 @@ def test_readers_preserve_different_malformed_document_behavior(document, caplog
 @pytest.mark.parametrize(
     ("text", "match"),
     [
-        ('[flows.sim]\nbackend = "none"\n[eda.unknown]\n', "enabled = false"),
+        ("[flows.elab]\n[eda.unknown]\n", "elab-only"),
         ("[eda.unknown]\n", "unsupported EDA kind"),
     ],
     ids=["retired-key-first", "invalid-eda"],
@@ -133,7 +133,13 @@ def test_host_policy_is_only_applied_by_eda_loaders(document, monkeypatch):
     [
         (b"[a]\n[a]\n", 2, "cannot read"),
         (b"x = [1,\n", 2 if sys.version_info >= (3, 14) else None, "cannot read"),
-        (b'[flows.lint]\nbackend = "x"\n', None, "retired"),
+        (b"[flows.elab]\n", None, "retired"),
+        pytest.param(
+            b'[eda.vivado]\ninstallation = "x"\n',
+            None,
+            r"unknown key\(s\): installation",
+            id="installation",
+        ),
     ],
 )
 def test_refused_document_reports_its_path_and_parser_line(document, text, line, match):

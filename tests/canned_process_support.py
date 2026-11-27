@@ -1,4 +1,4 @@
-"""A real child process that replays a canned subprocess result."""
+"""A Flow tool's child process: a real child that replays a canned subprocess result."""
 
 from __future__ import annotations
 
