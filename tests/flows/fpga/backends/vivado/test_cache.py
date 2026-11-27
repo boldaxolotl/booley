@@ -338,14 +338,14 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     )
     # Private: no portable file is listed as a regular file yet fails to open
     # (root and Windows ignore a chmod 000), so the one hashing call is replaced.
-    real_hash = fpga_cache._hash_file
+    real_hash = fpga_cache.file_sha256_and_size
 
     def _locked_only(path: Path) -> tuple[str, int]:
         if path.name == "locked.vh":
             raise OSError("permission denied")
         return real_hash(path)
 
-    monkeypatch.setattr(fpga_cache, "_hash_file", _locked_only)
+    monkeypatch.setattr(fpga_cache, "file_sha256_and_size", _locked_only)
     with_locked = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(user,)
     )
