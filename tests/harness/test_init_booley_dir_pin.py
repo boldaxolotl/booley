@@ -11,6 +11,7 @@ from booley.core import booley_dir_pin
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime.sandbox_apply import Attachment
+from tests.conftest import use_terminal_stdin
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -109,12 +110,12 @@ def test_interactive_prompt_decides_the_repin(
     _retarget(project, _new_target(tmp_path, "ext-b"))
     before = _pin_file(project).read_bytes()
 
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    use_terminal_stdin(monkeypatch, "n")
     proceed, _ctx = _reconcile(project, interactive=True)
     assert not proceed
     assert _pin_file(project).read_bytes() == before
 
-    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    use_terminal_stdin(monkeypatch, "y")
     proceed, _ctx = _reconcile(project, interactive=True)
     assert proceed
     booley_dir_pin.require_pinned_entry(project)
@@ -126,7 +127,7 @@ def test_flag_replaces_an_unreadable_pin_and_prompt_decline_is_reported(
     _reconcile(project)
     _pin_file(project).write_text("{not json", encoding="utf-8")
 
-    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    use_terminal_stdin(monkeypatch, "n")
     proceed, ctx = _reconcile(project, interactive=True)
     assert not proceed
     assert ctx.results[-1].status == "err"
