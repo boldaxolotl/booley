@@ -1,6 +1,8 @@
 # Publish the user docs on the project site
 
-Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing text and contributor docs; 2026-11-12: rendered doc copies, see Amendments)
+Status: accepted (amended 2026-10-26: site domain; 2026-11-10: agent-facing
+text and contributor docs; 2026-11-12: rendered doc copies; 2026-11-25:
+rendered changelog copy, see Amendments)
 
 ## Context
 
@@ -76,11 +78,10 @@ paths is superseded. The Sandbox has no repository checkout, so agent-facing
 text (packaged skills, the cheatsheet, generated config comments, agent-facing
 runtime messages) cites the doc copies the Sandbox image ships at the fixed path
 `/booley-docs/<FILE>` and names any other doc only with the marker
-`(host doc, not shipped)`. `python -m booley.dev_support.reference_docs`
-generates the copies from an allowlist into `src/booley/data/docs/`, rewriting
-links between docs so each copy resolves in the flat directory; people still
-get site URLs through `docs_url()`. `tests/docs/test_sandbox_doc_citations.py`
-fails on a citation that is neither.
+`(host doc, not shipped)`. The copies are generated from an allowlist into
+`src/booley/data/docs/`, rewriting links between docs so each copy resolves in
+the flat directory; people still get site URLs through `docs_url()`.
+`tests/docs/test_sandbox_doc_citations.py` fails on a citation that is neither.
 
 The site also publishes a short list of contributor docs, starting with
 `docs/internals/ARCHITECTURE.md` at `/docs/architecture/`, in an "Internals"
@@ -96,10 +97,8 @@ published files stay on the site; its other links go to GitHub.
 The 2026-11-10 copies are no longer committed. The build step
 (`write_build_stamp`, which calls `write_packaged_docs`) renders them from
 `SHIPPED_DOCS` into `src/booley/data/docs/`, a Git-ignored directory. Nothing
-commits or syncs them: `python -m booley.dev_support.reference_docs` and
-`.github/scripts/sync_packaged_copies.py` cover only the packaged `CHANGELOG.md`
-mirror. Tests read the rendered output of the sources, so they never compare
-against a stale committed copy.
+commits or syncs them. Tests read the rendered output of the sources, so they
+never compare against a stale committed copy.
 
 Rejected alternatives:
 
@@ -108,3 +107,12 @@ Rejected alternatives:
   CI build step already renders before building the wheel and sdist.
 - **Committed copies regenerated only at release.** The copies would drift from
   their sources between releases, and tests would read stale text.
+
+### 2026-11-25
+
+The same build step copies the root `CHANGELOG.md` byte for byte to the packaged
+location the runtime reads, which is Git-ignored, so the changelog copy is not
+committed either. Nothing syncs or checks a committed copy, and the release
+changelog script edits and checks only the root file. Fingerprints hash the
+root file, not the copy. A source checkout that has not run the build has no
+packaged changelog, as it has no packaged user docs.
