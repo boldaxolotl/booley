@@ -117,6 +117,8 @@ class EndpointState(ABC):
         self._reserved_invocation_dir: Path | None = None
         # The checkout and existing Booley Directory a run must not recreate.
         self._run_roots: tuple[Path, Path | None] | None = None
+        # The first of them found removed during the run.
+        self._removed_run_root: Path | None = None
         # Failures retiring a killed attempt's progress; the final result reports them.
         self._requeue_cleanup_errors: list[Exception] = []
         self._skip_report_detail_refresh = False

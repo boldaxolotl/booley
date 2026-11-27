@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_cli import runtime_report_root
 from booley.flows.endpoint_reporting import _StdoutWitness, removed_root, report_root_removed
+from booley.flows.run_root_watchdog import RunRootWatchdog
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -115,6 +116,7 @@ def _record_run_roots(endpoint: EndpointState) -> None:
     if booley_dir is not None and not booley_dir.is_dir():
         booley_dir = None
     endpoint._run_roots = (checkout, booley_dir)
+    endpoint._removed_run_root = None
 
 
 def _live_roots(endpoint: EndpointState) -> list[Path]:
@@ -198,6 +200,30 @@ def _exception_outcome(
     )
 
 
+def _run_watched(
+    endpoint: EndpointState, prepared: PreparedExecution, admission: object | None
+) -> EndpointOutcome:
+    """Run the invocation, stopping it when a run root is removed.
+
+    ``finish_execution`` names the removed root, so the stopped run fails; it is
+    not cancelled, unlike one the user interrupted.
+    """
+    watchdog = RunRootWatchdog(lambda: removed_root(endpoint))
+    result = EndpointOutcome(exit_code=EXIT_ERROR)
+    try:
+        with watchdog:
+            try:
+                invocation = prepared.invocation
+                result = invocation.run(admission if invocation.borrows_admission else None)
+            except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
+                result = _exception_outcome(endpoint, prepared, exc)
+    except KeyboardInterrupt:
+        watchdog.close()  # the interrupt may have cut the exit's join short
+        if watchdog.removed is None:
+            raise
+    return result
+
+
 def invoke_endpoint(
     endpoint: EndpointState,
     prepared: PreparedExecution,
@@ -207,17 +233,12 @@ def invoke_endpoint(
 ) -> EndpointOutcome:
     """Run the prepared invocation under the neutral coordinator."""
     endpoint._start_time = started
-    result = EndpointOutcome(exit_code=EXIT_ERROR)
     witness = _StdoutWitness(sys.stdout)
     endpoint._stdout_witness = witness
     sys.stdout = witness  # type: ignore[assignment]
     try:
         with run_roots(*_live_roots(endpoint)):
-            try:
-                invocation = prepared.invocation
-                result = invocation.run(admission if invocation.borrows_admission else None)
-            except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
-                result = _exception_outcome(endpoint, prepared, exc)
+            result = _run_watched(endpoint, prepared, admission)
     finally:
         sys.stdout = witness.wrapped
     _attach_memory_warning(result, admission)

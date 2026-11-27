@@ -48,10 +48,12 @@ from booley.flows.sim.record.resume import (
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
+from booley.runtime.supervised_execution import current_supervised_execution
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
     _validated_resume,
+    _wait_until,
     as_if_the_sandbox_restarted,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -1210,7 +1212,8 @@ class _CancelAfterInputs:
     """Publication checkpoint: the forked worker is cancelled once its inputs are staged.
 
     ``kill`` exits like a SIGKILL. ``sigint`` signals the worker's own process
-    and waits, as the CLI does for Ctrl-C while a lane thread works. The test
+    twice and waits: the first Ctrl-C makes the scheduler drain its lanes, the
+    second abandons them. The test
     process records whether the destination survived into the next attempt.
     """
 
@@ -1230,11 +1233,15 @@ class _CancelAfterInputs:
         if self.how != "sigint":
             os._exit(_KILLED)
         os.kill(os.getpid(), signal.SIGINT)
+        scope = current_supervised_execution()
+        assert scope is not None
+        _wait_until(scope.cancelled)  # the scheduler is now draining
+        os.kill(os.getpid(), signal.SIGINT)
         threading.Event().wait(hang_guard_s())
 
 
 def _interrupted(run) -> None:
-    """Run in the worker like the CLI: a Ctrl-C ends the process without unwinding lanes."""
+    """Run in the worker like the CLI: an abandoned drain ends the process, lanes unwound or not."""
     try:
         run()
     except KeyboardInterrupt:
