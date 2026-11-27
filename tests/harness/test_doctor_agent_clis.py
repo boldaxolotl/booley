@@ -395,7 +395,7 @@ def test_doctor_audits_what_the_runtime_resolves(
     if handoff:
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", handoff)
     pin_venue(monkeypatch, inside=inside)
-    project = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, "")
 
     # private: a whole run shows the audit only through each CLI's rows.
     audit = doctor._agent_audit(project, None)
@@ -418,7 +418,7 @@ def test_doctor_audits_what_the_runtime_resolves(
 def _project(tmp_path, agent):
     from booley.harness import doctor
 
-    return doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, {}, "")
+    return doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": agent}, "")
 
 
 def test_auto_narrowing_keeps_a_listed_codex_from_gatewaying_claude(tmp_path, monkeypatch):
