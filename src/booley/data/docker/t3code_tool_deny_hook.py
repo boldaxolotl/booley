@@ -2,8 +2,6 @@
 
 The Sandbox Image installs this file, with ``t3code-denied-tools.txt`` beside it, in
 ``/usr/local/libexec/booley`` and Codex's managed requirements run it for T3 Code tool calls.
-It is separate from ``session_activity_hook.py``, which must never block a turn.
-
 Codex blocks a call only on exit 2 with a reason on stderr; any other failure lets the call
 proceed. A call this hook cannot check is therefore blocked the same way.
 

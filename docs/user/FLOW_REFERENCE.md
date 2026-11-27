@@ -60,10 +60,10 @@ it keeps running as a background Job and the call returns a `run_id`. With
 several Jobs running, call `booley_poll` with no `run_id`: it returns the
 result of whichever Job you started finishes first and says which others are
 still running, or that there is nothing to wait for. Pass a `run_id` to wait for
-one specific Job. Jobs started by another agent session or by a nested
-Specialist are not included. Every Booley MCP tool response ends with one line
-for each finished Job you started but have not polled yet (up to ten, then a
-count of the rest; input prompts carry none).
+one specific Job. Jobs started by another T3 Code thread, another Codex
+conversation, or a nested Specialist are not included. Every Booley MCP tool
+response ends with one line for each finished Job you started but have not
+polled yet (up to ten, then a count of the rest; input prompts carry none).
 
 ### Resource use
 

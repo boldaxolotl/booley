@@ -178,7 +178,6 @@ def _job(
             exit_code=exit_code,
             run_started_at=started if running and pid else None,
             work_dir=None if work_dir is None else str(work_dir),
-            session_key=session,
             client=client,
             thread=thread,
             process_identity=identity,
@@ -423,15 +422,15 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     assert "leak" not in response.text
 
 
-def test_a_sessions_key_without_a_handle_reads_as_its_process():
+@pytest.mark.parametrize(("client", "owner"), [("claude", "claude"), (None, "you")])
+def test_a_job_without_a_thread_is_owned_by_its_client_or_you(client, owner):
     from types import SimpleNamespace
 
     from booley.harness.dashboard.web_snapshot import _owner
 
-    key = "pid:pid:[4026531836]:42:7"
-    record = SimpleNamespace(session_key=key, client=None, thread=None)
+    record = SimpleNamespace(client=client, thread=None)
 
-    assert _owner(SimpleNamespace(record=record, owner_handle=""), {}).startswith("PID 42")
+    assert _owner(SimpleNamespace(record=record), {}) == owner
 
 
 def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):
@@ -520,7 +519,7 @@ def test_now_lists_running_and_queued_jobs_with_queue_position(world, monkeypatc
         "handle": "J-SIM?",
         "flow": "sim",
         "target": "t_queued",
-        "owner": "sess1",
+        "owner": "you",
         "state": "queued",
         "stage": "",
         "elapsed_s": 5.0,
@@ -580,7 +579,7 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
         "handle": "J-SIM?",
         "flow": "sim",
         "target": "t12",
-        "owner": "sess1",
+        "owner": "you",
         "result": "PASSED",
         "ended_at": "2026-10-08T10:00:12Z",
         "duration_s": 12.0,
@@ -663,7 +662,7 @@ def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch
             "claude": titled,
             "gone": "claude · 5e6f7a8b",
             "codex": "codex · 9c0d1e2f",
-            "old": "sess1",
+            "old": "you",
         }
     ]
     # One call per Claude thread over both snapshots (cached; none for Codex), or a single

@@ -18,8 +18,10 @@ treats it exactly like an explicit ``work_dir`` argument.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,6 @@ from starlette.requests import Request
 
 from booley.core.boundary import as_dict
 from booley.mcp.session_peer import observed_peer
-from booley.mcp.session_registry import codex_client, git_checkout_metadata, process_client
 from booley.runtime.pid import ProcessIdentity
 
 NO_WORKSPACE_REFUSAL = (
@@ -43,6 +44,61 @@ class CallerCheckout:
     peer: ProcessIdentity | None
     checkout: Path | None
     refusal: str | None = None
+
+
+def codex_client(client_name: str, metadata: Mapping[str, Any]) -> bool:
+    """Whether a call comes from Codex, which is identified by thread rather than process."""
+    return "codex" in client_name.lower() or metadata.get("threadId") is not None
+
+
+def process_client(client_name: str, peer: ProcessIdentity) -> bool:
+    """Whether a non-Codex client's loopback *peer* is its own session process."""
+    return (
+        bool(client_name)
+        and len(client_name) <= 128
+        and client_name.isprintable()
+        and peer.pid != os.getpid()
+    )
+
+
+def _git_fact(path: Path) -> str:
+    with path.open(encoding="utf-8", newline="") as handle:
+        value = handle.read(16385)
+    if len(value) > 16384:
+        raise ValueError("Git metadata exceeds observation bound")
+    return value.strip()
+
+
+def git_checkout_metadata(root: Path) -> tuple[Path, Path, Path] | None:
+    """Nearest enclosing checkout of *root* as ``(checkout root, git dir, common dir)``.
+
+    ``None`` when no ``.git`` is found. A main checkout has ``git == common``; a linked
+    worktree's ``git`` is a subdirectory of its ``common``.
+    """
+    # Observational filesystem facts avoid invoking Git on the MCP response path.
+    for candidate in islice((root, *root.parents), 128):
+        marker = candidate / ".git"
+        if marker.is_dir():
+            return candidate, marker.resolve(), marker.resolve()
+        if marker.is_file():
+            raw = _git_fact(marker)
+            if not raw.startswith("gitdir: "):
+                raise ValueError("invalid Git worktree marker")
+            git = (candidate / raw.removeprefix("gitdir: ")).resolve()
+            common_file = git / "commondir"
+            common = (git / _git_fact(common_file)).resolve() if common_file.exists() else git
+            return candidate, git, common
+    return None
+
+
+def git_branch(git_dir: Path) -> str:
+    """The branch *git_dir*'s ``HEAD`` names; empty when detached or unreadable."""
+    try:
+        head = _git_fact(git_dir / "HEAD")
+    except (OSError, ValueError, UnicodeError):
+        return ""
+    prefix = "ref: refs/heads/"
+    return head.removeprefix(prefix) if head.startswith(prefix) else ""
 
 
 def process_checkout(

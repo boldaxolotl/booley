@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding
-from booley.harness import activity_hooks, doctor, web_isolation
+from booley.harness import doctor, web_isolation
 from booley.runtime import runtime_context
 
 
@@ -25,7 +25,6 @@ def enter_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     # The next two stand in for files the Sandbox Image installs, which a test host lacks.
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
-    monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
 
 
 def findings(result: doctor.DoctorRunResult, check_id: str) -> list[DiagnosticFinding]:

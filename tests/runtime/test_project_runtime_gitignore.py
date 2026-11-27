@@ -152,19 +152,12 @@ def test_backfill_preserves_already_tracked_findings(versioned_project):
 
 def _publish_bookkeeping(root, data, repo):
     """Doctor, MCP sessions/jobs, supervision: runtime/ and .runtime/."""
-    from tests.mcp_tools.test_session_registry import facts
-
-    from booley.mcp.session_registry import SessionRegistry
     from booley.runtime.doctor_stamp import record_clean_run
     from booley.runtime.execution_records import atomic_write_json, execution_paths
     from booley.runtime.job_records import JobRecord, write_record
 
     stamp = record_clean_run(data, root, deep=False)
     assert stamp is not None and stamp.is_file()
-    assert_clean(repo)
-    SessionRegistry(data).upsert(facts(), "sim", "completed", now=100)
-    sessions = tuple((data / "runtime/sessions").glob("*.json"))
-    assert sessions
     assert_clean(repo)
     jobs = data / "runtime/jobs"
     jobs.mkdir(parents=True, exist_ok=True)
@@ -173,7 +166,7 @@ def _publish_bookkeeping(root, data, repo):
     assert_clean(repo)
     execution = execution_paths("a" * 32, booley_dir=data).record
     atomic_write_json(execution, {"schema_version": 1, "state": "starting"})
-    return (stamp, *sessions, jobs / "run.json", execution)
+    return (stamp, jobs / "run.json", execution)
 
 
 def _publish_ticket(root, data, repo):

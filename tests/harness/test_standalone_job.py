@@ -139,7 +139,7 @@ def test_shell_run_writes_standalone_job(monkeypatch, project, kind):
     done, failed = sorted(records(project), key=lambda rec: rec.exit_code)
     for rec, outcome, status in ((done, 0, "done"), (failed, 3, "failed")):
         assert (rec.status, rec.exit_code) == (status, outcome)
-        assert rec.session_key is None
+        assert rec.client is None
         assert rec.endpoint == "stub"
         assert rec.argv == ["booley", kind, "stub", "--outcome", str(outcome)]
         assert rec.work_dir == str(project)

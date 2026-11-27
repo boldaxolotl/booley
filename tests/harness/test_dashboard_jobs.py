@@ -308,9 +308,7 @@ def test_report_under_an_allowed_extra_root_is_found(tmp_path):
     assert found.report_path == report
 
 
-@pytest.mark.parametrize(
-    "malformed", [{"session_key": 5}, {"work_dir": []}, {"thread": ["x"]}, {"client": 5}]
-)
+@pytest.mark.parametrize("malformed", [{"work_dir": []}, {"thread": ["x"]}, {"client": 5}])
 def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     root = tmp_path / "jobs"
     job_records.write_record(rec("good", status="done"), root)
@@ -367,7 +365,7 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
 
     capsys.readouterr()
     (view,) = snapshot_jobs(layout.control).jobs
-    assert view.record.session_key is None
+    assert view.record.client is None
     assert view.state == "completed"
     assert view.report is not None  # found under the checkout's reports, by the run's own id
     assert view.report_path.name == "report.json"

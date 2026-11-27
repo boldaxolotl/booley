@@ -113,13 +113,10 @@ def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypa
     assert not (main / "reviewer-state").exists()
 
 
-def test_session_registry_and_prune_use_main(worktree, monkeypatch):
+def test_handle_prune_uses_main(worktree, monkeypatch):
     from booley.mcp import handle_pruning
-    from booley.mcp.session_observer import SessionObserver
 
     main, _worktree = worktree
-    assert SessionObserver()._registry().booley_dir == main
-
     pruned: list[Path] = []
 
     def spy(directory: Path, *, now: float) -> None:
@@ -138,7 +135,7 @@ def test_unbound_job_handle_registers_in_main(worktree, monkeypatch):
     monkeypatch.setattr(
         job_lifecycle, "register_job", lambda project, *_args, **_kw: registered.append(project)
     )
-    context = SimpleNamespace(work_dir=None, explicit_work_dir=None, session_key="pid:k")
+    context = SimpleNamespace(work_dir=None, explicit_work_dir=None)
     record = job_records.JobRecord("run-1", "sim", rfc3339_from_epoch(1_800_000_000.0), 60)
     job_lifecycle.JobLifecycle._stamp_context(record, context)
     assert registered == [main]

@@ -96,23 +96,6 @@ def translate_stored_path(value: str, *, record: str) -> str:
     return value
 
 
-def former_spellings(value: str, *, record: str) -> tuple[str, ...]:
-    """*value*, a path under the current mount, as each former mount spelled it; () otherwise.
-
-    The current mount counts by its lexical spelling or its resolved directory, because the
-    image makes the mount a symlink and attribution resolves paths before it derives keys.
-    """
-    path = Path(value)
-    if not path.is_absolute():
-        return ()
-    current = Path(sandbox_layout.BOOLEY_DIR_TARGET)
-    for mount in dict.fromkeys((current, current.resolve())):
-        if path.is_relative_to(mount):
-            relative = path.relative_to(mount)
-            return tuple(str(Path(former) / relative) for former in _former(record))
-    return ()
-
-
 def _former_mount_of(spec: bytes) -> str | None:
     try:
         data: Any = json.loads(spec)

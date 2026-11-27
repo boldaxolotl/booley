@@ -729,87 +729,36 @@ class TestBooleyStatus:
     @pytest.mark.parametrize(
         ("case", "identity"),
         [
-            (
-                "no-attribution",
-                "Session: unknown (Booley could not attribute this call)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            (
-                "unrecorded",
-                "Session: unknown (Booley has not recorded this session)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            (
-                "state-error",
-                "Session: unknown (Booley could not read its session state)\n"
-                "Branch: unknown\n"
-                "Checkout: unknown\n",
-            ),
-            ("no-handle", "Session: unknown\nBranch: main\nCheckout: {repo} (main checkout)\n"),
-            (
-                "unreadable-checkout",
-                "Session: S1\nBranch: main\nCheckout: {repo} (checkout kind unknown)\n",
-            ),
-            ("recorded", "Session: S1\nBranch: main\nCheckout: {repo} (main checkout)\n"),
-        ],
-        ids=[
-            "no-attribution",
-            "unrecorded",
-            "state-error",
-            "no-handle",
-            "unreadable-checkout",
-            "recorded",
+            ("routed", "Branch: main\nCheckout: {repo} (main checkout)\n"),
+            ("server-cwd", "Branch: main\nCheckout: {repo} (main checkout)\n"),
+            ("detached", "Branch: unknown\nCheckout: {repo} (main checkout)\n"),
+            ("unreadable-head", "Branch: unknown\nCheckout: {repo} (main checkout)\n"),
+            ("not-git", "Branch: unknown\nCheckout: unknown\n"),
+            ("unreadable-marker", "Branch: unknown\nCheckout: unknown\n"),
         ],
     )
     def test_format_status_card(self, monkeypatch, tmp_path, case, identity):
-        from booley.mcp.session_registry import Attribution, SessionRegistry
-        from booley.runtime.handles import HandleStore
-        from booley.runtime.pid import ProcessIdentity
         from tests.git_support import git
 
         app = fake.application(monkeypatch, tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
-        if case == "unreadable-checkout":
+        if case == "unreadable-marker":
             (repo / ".git").write_bytes(b"garbage")
-        else:
+        elif case != "not-git":
             git(repo, "init", "-q", "-b", "main")
             git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+        if case == "detached":
+            git(repo, "checkout", "-q", "--detach")
+        if case == "unreadable-head":
+            (repo / ".git" / "HEAD").write_bytes(b"\xff\xfe")
         repo = repo.resolve()
-        booley = tmp_path / "booley"
-        booley.mkdir()
-        monkeypatch.setenv("BOOLEY_DIR", str(booley))
         monkeypatch.setattr(server.socket, "gethostname", lambda: "4f3c2a1b")
-        attribution = Attribution(
-            key="process:x",
-            kind="process",
-            work_dir=str(repo),
-            worktree_key="",
-            branch="main",
-            process=ProcessIdentity(4_194_306, "pid:[17]", 7),
-        )
-        if case not in ("no-attribution", "unrecorded"):
-            SessionRegistry(booley).upsert(attribution, "booley_status", "started", now=1.0)
-        if case == "no-handle":
-            HandleStore(booley).path.unlink()
-        if case == "state-error":
-            # No on-disk state makes the snapshot raise; the card must survive an unexpected
-            # registry error.
-            def unreadable(_registry):
-                raise RuntimeError("unreadable")
+        if case == "server-cwd":
+            monkeypatch.chdir(repo)
 
-            monkeypatch.setattr(SessionRegistry, "snapshot", unreadable)
-
-        payload = fake.call(
-            app,
-            "booley_status",
-            {},
-            request_context=McpRequestContext(
-                attribution=None if case == "no-attribution" else attribution
-            ),
-        )
+        context = McpRequestContext(checkout=None if case == "server-cwd" else repo)
+        payload = fake.call(app, "booley_status", {}, request_context=context)
 
         head = "```text\nBooley ready. Sandbox container 4f3c2a1b is running.\n" + identity.format(
             repo=repo
@@ -821,6 +770,15 @@ class TestBooleyStatus:
         assert tools.startswith("Available MCP tools: ") and "sim" in tools
         assert health.startswith("Health: ")
         assert closing == "```"
+
+    def test_format_status_card_survives_a_removed_server_cwd(self, monkeypatch):
+        def gone():
+            raise FileNotFoundError("the server cwd was removed")
+
+        # Windows refuses to remove a process's cwd, so the removal is simulated.
+        monkeypatch.setattr(server.Path, "cwd", gone)
+
+        assert "Branch: unknown\nCheckout: unknown\n" in server._format_status_card([], None)
 
 
 class TestBooleySleep:
@@ -1417,7 +1375,7 @@ def test_live_sim_checkpoint_survives_mcp_background_responses(
 
     # Private patch: this process's real health state must not prefix the Job responses.
     monkeypatch.setattr(server, "_prepend_changed_health_alert", lambda result: result)
-    context = CallContext(tmp_path, tmp_path / "jobs", None, tmp_path, {}, None)
+    context = CallContext(tmp_path, tmp_path / "jobs", None, tmp_path, {})
     monkeypatch.setattr(server, "job_roots", lambda: [context.jobs_root])
 
     asyncio.run(_live_checkpoint_scenario(server, context, tmp_path, monkeypatch, response_kind))

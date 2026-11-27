@@ -294,5 +294,5 @@ def submit(
     if refusal:
         raise RunRefusedError(refusal)
     run_id = launcher.start(worktree, run.kind, run.name, argv)
-    handles, _diagnostics = HandleStore(booley_dir, jobs=True).snapshot()
+    handles, _diagnostics = HandleStore(booley_dir).snapshot()
     return {"run_id": run_id, "handle": job_label(handles.get(run_id, ""), run.name)}

@@ -1305,7 +1305,7 @@ def _outer_branch_for_project_data(
 
 
 def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
-    """The Main Booley Directory holding Session Registry and handle maps.
+    """The Main Booley Directory holding the Job handle map.
 
     Reports a skip with the reason when it cannot be resolved, so the checks
     that read it never vanish silently.
@@ -2782,20 +2782,6 @@ def _check_current_runtime_web_isolation(_pass: Check, _fail: Fail) -> None:
     _pass("agent provider-side web access disabled")
 
 
-def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
-    """Validate the session-activity hooks from inside the Sandbox."""
-    from booley.harness.activity_hooks import hooks_error
-
-    error = hooks_error()
-    if error:
-        _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Session activity is unavailable: {error}; "
-            "rebuild the sandbox image, then rebuild/reopen the Sandbox"
-        )
-        return
-    _pass("Session-activity hooks installed")
-
-
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
@@ -2899,7 +2885,6 @@ def _run_container_checks(
     _section("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
-        _check_current_runtime_activity_hooks(_pass, _warn)
         _check_current_runtime_git_identity(project, _pass, _warn, _skip)
         _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())
@@ -3981,21 +3966,19 @@ def _handle_map_restart(project_root: Path) -> str:
 
 
 def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
-    """Warn when a display handle map nears the cap past which allocation fails."""
-    for jobs in (False, True):
-        path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
-        subject = "job" if jobs else "session"
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        if size > handle_maps.MAP_WARN_BYTES:
-            _warning_sink(_warn, "handles.map-size", subject=subject)(
-                f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
-                f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "restart the Sandbox so its MCP server prunes expired handles at start: "
-                + _handle_map_restart(project_root),
-            )
+    """Warn when the Job handle map nears the cap past which allocation fails."""
+    path = handle_maps.HandleStore(booley_dir).path
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size > handle_maps.MAP_WARN_BYTES:
+        _warning_sink(_warn, "handles.map-size", subject="job")(
+            f"job handle map {path} is {size / 2**20:.1f} MiB of its "
+            f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
+            "restart the Sandbox so its MCP server prunes expired handles at start: "
+            + _handle_map_restart(project_root),
+        )
 
 
 def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:

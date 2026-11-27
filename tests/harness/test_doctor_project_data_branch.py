@@ -194,18 +194,18 @@ def _plant(path: Path, text: str = "planted\n"):
 def test_common_state_in_worktree_warns_on_planted_path(tmp_path, monkeypatch):
     worktree = _linked_worktree(tmp_path, versioned=False, paired=False)
     root = tmp_path / "project"
-    planted = worktree / ".booley" / "runtime" / "session_activity" / "a"
+    planted = worktree / ".booley" / "runtime" / "job-handles" / "a"
     _plant(planted)
     _plant(worktree / ".booley" / "measurements" / ("a" * 40) / "r.json")
     # A main checkout full of Common state is where that state belongs.
-    _plant(root / ".booley" / "runtime" / "session_activity" / "main")
+    _plant(root / ".booley" / "runtime" / "job-handles" / "main")
     _plant(root / ".booley" / "findings.jsonl")
 
     result = _doctor(monkeypatch, root)
 
     [warning] = _warnings(result, "project-data.common-state-in-worktree")
     assert warning.subject == str(worktree / ".booley")
-    assert "runtime/session_activity" in warning.message
+    assert "runtime/job-handles" in warning.message
     assert "measurements" in warning.message
     assert "findings.jsonl" not in warning.message
     assert "git worktree remove" in warning.fix
@@ -245,11 +245,11 @@ def test_common_state_in_worktree_ignores_tracked_paths_in_paired_checkout(tmp_p
     assert _messages(clean, "pass", "Common Booley State")
     assert _warnings(clean, "project-data.common-state-in-worktree") == []
 
-    _plant(paired / "runtime" / "session_activity" / "a")
+    _plant(paired / "runtime" / "job-handles" / "a")
     [warning] = _warnings(
         _doctor(monkeypatch, tmp_path / "project"), "project-data.common-state-in-worktree"
     )
-    assert "session_activity" in warning.message
+    assert "job-handles" in warning.message
     assert "goalsets" not in warning.message and "docker" not in warning.message
 
 
@@ -372,8 +372,8 @@ def test_plain_copy_at_relocated_directory_warns(tmp_path, monkeypatch):
 
 def test_common_state_scan_reads_the_relocated_directory(tmp_path, monkeypatch):
     worktree = _relocated_linked_worktree(tmp_path, versioned=False)
-    _plant(worktree / "state" / "runtime" / "session_activity" / "a")
-    _plant(worktree / ".booley" / "runtime" / "session_activity" / "ignored")
+    _plant(worktree / "state" / "runtime" / "job-handles" / "a")
+    _plant(worktree / ".booley" / "runtime" / "job-handles" / "ignored")
 
     result = _doctor(monkeypatch, tmp_path / "project")
 

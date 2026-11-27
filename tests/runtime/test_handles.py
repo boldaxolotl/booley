@@ -1,145 +1,17 @@
-"""Persistent display identity contracts across processes, failures and legacy state."""
+"""Persistent Job handle contracts across processes, failures and legacy state."""
 
 import json
 import multiprocessing
-import os
-import time
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from tests.booley_checkouts_support import isolate_git, main_project
 from tests.conftest import symlink_or_skip
-from tests.project_runtime_git_support import git
 from tests.time_budget import hang_guard_s
 
 from booley.harness.dashboard.jobs import JobReader
-from booley.harness.dashboard.model import read_occupants
-from booley.mcp import session_registry
-from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import handles, job_records
-from booley.runtime.pid import ProcessIdentity
 
 STAMP = "2026-10-14T10:00:00Z"
-
-
-def attribution(key="codex:one", **changes):
-    return replace(
-        Attribution(key, "thread", "/work", "repo:main", namespace="fixture"), **changes
-    )
-
-
-def test_session_survives_restart_pruning_and_reregistration(tmp_path):
-    registry = SessionRegistry(tmp_path, quiet_after=10)
-    registry.upsert(attribution(), "sim", "completed", now=100)
-    assert handles.HandleStore(tmp_path).load().labels() == {"codex:one": "S1"}
-    assert registry.prune(now=200, namespace="fixture") == 1
-    restarted = SessionRegistry(tmp_path)
-    restarted.upsert(attribution("codex:two"), "lint", "completed", now=201)
-    restarted.upsert(attribution(), "sim", "completed", now=202)
-    assert handles.HandleStore(tmp_path).load().labels() == {"codex:one": "S1", "codex:two": "S2"}
-    assert len(restarted.snapshot().rows) == 2
-    assert not restarted.snapshot().diagnostics
-
-
-def test_fallback_migration_and_conflicting_allocations(tmp_path):
-    store = handles.HandleStore(tmp_path)
-    old = "worktree:path:/work"
-    with handles.session_writer(tmp_path):
-        state = store.load()
-        assert state.reserve(old, "S") == "S1"
-        assert state.reserve("worktree:repo:main", "S", predecessors=(old,)) == "S1"
-        assert state.entries[old] == "S1"
-        assert state.aliases["worktree:repo:main"] == old
-        store.save(state)
-    assert store.load().labels() == {old: "S1", "worktree:repo:main": "S1"}
-    with handles.session_writer(tmp_path):
-        state = store.load()
-        state.reserve("other-old", "S")
-        state.reserve("other-canonical", "S")
-        assert state.reserve("other-canonical", "S", predecessors=("other-old",)) == "S3"
-        store.save(state)
-    assert store.load().labels()["other-old"] == "S2"
-    assert store.load().next_number == 4
-    state = store.load()
-    original = (dict(state.entries), dict(state.aliases))
-    assert state.reserve("third", "S", predecessors=("worktree:repo:main",)) == "S1"
-    assert all(state.entries[k] == v for k, v in original[0].items())
-    assert all(state.aliases[k] == v for k, v in original[1].items())
-    assert state.labels()[old] == state.labels()["third"] == "S1"
-
-
-def test_registry_migration_keeps_handle_after_old_row_was_pruned(tmp_path):
-    registry = SessionRegistry(tmp_path, quiet_after=10)
-    old = attribution("worktree:path:/work", kind="worktree", worktree_key="path:/work")
-    registry.upsert(old, "sim", "completed", now=100)
-    registry.prune(now=200, namespace="fixture")
-    canonical = replace(old, key="worktree:repo:main", worktree_key="repo:main")
-    registry.upsert(canonical, "lint", "completed", now=201)
-    assert handles.HandleStore(tmp_path).load().labels()[canonical.key] == "S1"
-
-
-@pytest.mark.parametrize("spelling", ["absolute", "relative", "symlink", "subdirectory"])
-def test_job_creation_before_registry_migration_preserves_existing_handle(
-    tmp_path, monkeypatch, spelling
-):
-    from booley.mcp.call_context import CallContext
-    from booley.mcp.job_lifecycle import JobLifecycle
-
-    root = tmp_path / "work"
-    (root / ".git").mkdir(parents=True)
-    (root / "rtl").mkdir()
-    monkeypatch.chdir(root)
-    work_dir = {
-        "absolute": root,
-        "relative": Path(),
-        "symlink": tmp_path / "alias",
-        "subdirectory": Path("rtl"),
-    }[spelling]
-    if spelling == "symlink":
-        symlink_or_skip(work_dir, root)
-    old = attribution(
-        "worktree:path:" + str(root),
-        kind="worktree",
-        work_dir=str(root),
-        worktree_key="path:" + str(root),
-    )
-    canonical = replace(old, key="worktree:repo:main", worktree_key="repo:main")
-    registry = SessionRegistry(tmp_path)
-    registry.upsert(old, "sim", "completed", now=100)
-    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: tmp_path)
-    context = CallContext(work_dir, tmp_path / "jobs", None, None, {}, session_key=canonical.key)
-    JobLifecycle._stamp_context(job_records.JobRecord("new-job", "sim", STAMP, 60), context)
-    registry.upsert(canonical, "sim", "completed", now=101)
-    labels = handles.HandleStore(tmp_path).load().labels()
-    assert labels[canonical.key] == labels[old.key] == "S1"
-
-
-def test_corrupt_session_handles_preserve_presence_publication(tmp_path):
-    store = handles.HandleStore(tmp_path)
-    store.root.mkdir(parents=True)
-    store.path.write_text("broken")
-    registry = SessionRegistry(tmp_path)
-    registry.upsert(attribution(), "sim", "completed", now=100)
-    assert registry.snapshot().rows[0].attribution.key == "codex:one"
-    assert store.path.read_text() == "broken"
-
-
-def test_reservation_survives_failed_row_publication(tmp_path, monkeypatch):
-    registry = SessionRegistry(tmp_path)
-    real_write = session_registry.atomic_replace_bytes
-    monkeypatch.setattr(
-        session_registry,
-        "atomic_replace_bytes",
-        lambda *_a: (_ for _ in ()).throw(OSError("disk")),
-    )
-    with pytest.raises(OSError, match="disk"):
-        registry.upsert(attribution(), "sim", "completed", now=100)
-    assert not registry.path("codex:one").exists()
-    assert handles.HandleStore(tmp_path).load().labels()["codex:one"] == "S1"
-    monkeypatch.setattr(session_registry, "atomic_replace_bytes", real_write)
-    registry.upsert(attribution(), "sim", "completed", now=101)
-    assert handles.HandleStore(tmp_path).load().next_number == 2
 
 
 def test_job_kinds_and_project_wide_counter(tmp_path_factory):
@@ -152,53 +24,33 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
     }.items():
         for endpoint in endpoints:
             tmp_path = tmp_path_factory.mktemp(str(endpoint))
-            handles.register_job(tmp_path, "first", endpoint, None)
-            store = handles.HandleStore(tmp_path, jobs=True)
+            handles.register_job(tmp_path, "first", endpoint)
+            store = handles.HandleStore(tmp_path)
             state = store.load()
             state.next_number = 1
             store.save(state)
-            handles.register_job(tmp_path, "second", "lint", None)
-            handles.register_job(tmp_path, "first", endpoint, None)
-            state = handles.HandleStore(tmp_path, jobs=True).load()
+            handles.register_job(tmp_path, "second", "lint")
+            handles.register_job(tmp_path, "first", endpoint)
+            state = handles.HandleStore(tmp_path).load()
             assert state.entries == {"first": f"J-{prefix}1", "second": "J-LINT2"}, endpoint
             assert state.next_number == 3, endpoint
-            handles.register_job(tmp_path / "another-project", "second", "lint", None)
-            other = handles.HandleStore(tmp_path / "another-project", jobs=True).load()
+            handles.register_job(tmp_path / "another-project", "second", "lint")
+            other = handles.HandleStore(tmp_path / "another-project").load()
             assert other.entries["second"] == "J-LINT1", endpoint
 
 
 def _allocate_worker(root, number, start):
     start.wait(timeout=hang_guard_s())
-    handles.register_job(Path(root), f"job-{number}", "sim", None)
-    handles.register_job(Path(root), "shared", "lint", None)
+    handles.register_job(Path(root), f"job-{number}", "sim")
+    handles.register_job(Path(root), "shared", "lint")
 
 
 def test_concurrent_processes_allocate_unique_stable_jobs(tmp_path):
     run_workers(tmp_path, _allocate_worker)
-    state = handles.HandleStore(tmp_path, jobs=True).load()
+    state = handles.HandleStore(tmp_path).load()
     assert len(state.entries) == 5
     assert len(set(state.entries.values())) == 5
     assert state.next_number == 6
-
-
-def _register_session_worker(root, number, start):
-    start.wait(timeout=hang_guard_s())
-    registry = SessionRegistry(Path(root))
-    deadline = time.monotonic() + hang_guard_s()
-    while time.monotonic() < deadline:
-        try:
-            registry.upsert(attribution(f"codex:{number}"), "sim", "completed", now=100)
-            return
-        except BlockingIOError:
-            time.sleep(0.01)
-    raise RuntimeError("session registry remained busy")
-
-
-def test_concurrent_sessions_use_registry_lock_for_unique_allocations(tmp_path):
-    run_workers(tmp_path, _register_session_worker)
-    labels = handles.HandleStore(tmp_path).load().labels()
-    assert set(labels.values()) == {"S1", "S2", "S3", "S4"}
-    assert len(SessionRegistry(tmp_path).snapshot().rows) == 4
 
 
 @pytest.mark.parametrize(
@@ -213,15 +65,13 @@ def test_concurrent_sessions_use_registry_lock_for_unique_allocations(tmp_path):
 )
 def test_invalid_map_is_diagnosed_never_reset(tmp_path, mutation):
     store = handles.HandleStore(tmp_path)
-    store.save(handles.HandleMap({"one": "S1"}, next_number=2))
+    store.save(handles.HandleMap({"one": "J-SIM1"}, next_number=2))
     data = json.loads(store.path.read_bytes())
     data.update(mutation)
     store.path.write_text(json.dumps(data))
     before = store.path.read_bytes()
     assert store.snapshot()[1]
-    registry = SessionRegistry(tmp_path)
-    registry.upsert(attribution(), "lint", "completed", now=100)
-    assert registry.snapshot().rows[0].attribution.key == "codex:one"
+    handles.register_job(tmp_path, "job", "lint")
     assert store.path.read_bytes() == before
 
 
@@ -244,22 +94,16 @@ def test_handles_follow_a_symlinked_booley_directory(tmp_path):
     booley_dir.parent.mkdir()
     symlink_or_skip(booley_dir, store_dir, target_is_directory=True)
 
-    assert handles.reserve_session_handle(booley_dir, "codex:one") == "S1"
-    handles.register_job(booley_dir, "run-1", "sim", "codex:two")
+    handles.register_job(booley_dir, "run-1", "sim")
 
-    assert handles.HandleStore(booley_dir).snapshot() == (
-        {"codex:one": "S1", "codex:two": "S2"},
-        (),
-    )
-    assert handles.HandleStore(booley_dir, jobs=True).snapshot() == ({"run-1": "J-SIM1"}, ())
-    assert (store_dir / "runtime/sessions/handles/map.json").is_file()
+    assert handles.HandleStore(booley_dir).snapshot() == ({"run-1": "J-SIM1"}, ())
     assert (store_dir / "runtime/job-handles/map.json").is_file()
 
     # A link below the Booley Directory is still refused.
     moved = store_dir / "moved"
     (store_dir / "runtime/job-handles").rename(moved)
     symlink_or_skip(store_dir / "runtime/job-handles", moved, target_is_directory=True)
-    labels, diagnostics = handles.HandleStore(booley_dir, jobs=True).snapshot()
+    labels, diagnostics = handles.HandleStore(booley_dir).snapshot()
     assert labels == {} and "symlink" in diagnostics[0]
 
 
@@ -279,121 +123,17 @@ def test_deeply_nested_or_oversized_map_is_diagnosed_without_mutation(tmp_path, 
 
 
 def test_job_allocation_failure_is_advisory(tmp_path, monkeypatch, caplog):
-    store = handles.HandleStore(tmp_path, jobs=True)
+    store = handles.HandleStore(tmp_path)
     store.root.mkdir(parents=True)
     store.path.write_text("broken")
-    handles.register_job(tmp_path, "job", "sim", "codex:owner")
+    handles.register_job(tmp_path, "job", "sim")
     assert store.path.read_text() == "broken"
-    assert handles.HandleStore(tmp_path).load().labels()["codex:owner"] == "S1"
     assert "Job handle unavailable" in caplog.text
     monkeypatch.setattr(
         handles, "atomic_replace_bytes", lambda *_a: (_ for _ in ()).throw(OSError("disk"))
     )
-    handles.register_job(tmp_path / "unwritable", "job", "sim", None)
+    handles.register_job(tmp_path / "unwritable", "job", "sim")
     assert "disk" in caplog.text
-
-
-def test_dashboard_reads_keep_maps_and_registry_bytes_unchanged(tmp_path_factory, monkeypatch):
-    for map_state in ["allocated", "named", "empty", "broken"]:
-        tmp_path = tmp_path_factory.mktemp(str(map_state))
-        registry = SessionRegistry(tmp_path)
-        registry.upsert(attribution(), "sim", "completed", now=100)
-        job = job_records.JobRecord("job-one", "sim", STAMP, 60, session_key="codex:one")
-        handles.register_job(tmp_path, job.run_id, job.endpoint, job.session_key)
-        job_records.write_record(job, tmp_path / "job_logs/old/.runtime/jobs")
-        store = handles.HandleStore(tmp_path)
-        if map_state == "empty":
-            store.save(handles.HandleMap())
-        elif map_state == "named":
-            store.reserve("codex:one", "S", name="uart-fix")
-        elif map_state == "broken":
-            store.path.write_text("broken")
-        monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-        monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: 101)
-        load, reads = handles.HandleStore.load, []
-
-        def counted_load(self, reads=reads, load=load):
-            reads.append(self.jobs)
-            return load(self)
-
-        monkeypatch.setattr(handles.HandleStore, "load", counted_load)
-        before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-        reader = JobReader(tmp_path)
-        title = {"allocated": "S1", "named": "S1 \u00b7 uart-fix"}.get(map_state, "S?")
-        for _ in range(2):
-            reads.clear()
-            occupants = read_occupants(tmp_path, reader, Path("/work"))
-            assert reads.count(False) == 1, map_state
-            assert occupants.sessions == (f"{title} Interactive",), map_state
-            snapshot = reader.read(now=101)
-            assert snapshot.jobs[0].handle == "J-SIM1", map_state
-            assert snapshot.jobs[0].owner_handle == (
-                "S1" if map_state in {"allocated", "named"} else ""
-            ), map_state
-            diagnostics = snapshot.diagnostics
-            assert sum("Session handles unavailable" in d for d in diagnostics) == (
-                map_state == "broken"
-            ), map_state
-            assert not any("pending" in d for d in diagnostics), map_state
-        assert before == {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}, (
-            map_state
-        )
-        monkeypatch.undo()
-
-
-def test_pre_reserved_process_handle_is_reused_by_registry(tmp_path, monkeypatch):
-    from booley.runtime.session_activity import process_session_key
-
-    reserve = handles.reserve_session_handle
-    peer = ProcessIdentity(os.getpid() + 100000, "fixture", 101)
-    key = process_session_key(peer)
-    assert reserve(tmp_path, key) == "S1"
-    store = handles.HandleStore(tmp_path)
-    assert store.load().labels() == {key: "S1"}
-    registry = SessionRegistry(tmp_path)
-    assert registry.snapshot().rows == ()
-    assert reserve(tmp_path, key) == "S1"
-    monkeypatch.setattr(session_registry, "namespace", lambda *_: "fixture")
-    facts = session_registry.resolve_attribution(
-        tmp_path, metadata={}, client_name="claude-code", peer=peer
-    )
-    assert facts.kind == "process" and facts.key == key
-    registry.upsert(facts, "status", "completed", now=100)
-    registry.upsert(facts, "status", "completed", now=101)
-    assert registry.snapshot().rows[0].attribution.key == key
-    assert store.load().labels() == {key: "S1"}
-    assert store.load().next_number == 2
-    assert (
-        reserve(tmp_path, process_session_key(ProcessIdentity(peer.pid + 1, "fixture", 102)))
-        == "S2"
-    )
-    assert store.load().next_number == 3
-
-
-def test_launch_reservation_preserves_corrupt_store(tmp_path):
-    store = handles.HandleStore(tmp_path)
-    store.root.mkdir(parents=True)
-    store.path.write_text("broken")
-    with pytest.raises(ValueError):
-        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
-    assert store.path.read_text() == "broken"
-
-
-def test_launch_reservation_propagates_save_failure(tmp_path, monkeypatch):
-    def fail_save(*_args):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(handles, "atomic_replace_bytes", fail_save)
-    with pytest.raises(OSError, match="disk full"):
-        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
-    assert not handles.HandleStore(tmp_path).path.exists()
-    assert SessionRegistry(tmp_path).snapshot().rows == ()
-
-
-def test_launch_reservation_uses_the_registry_writer_lock(tmp_path):
-    with handles.session_writer(tmp_path), pytest.raises(BlockingIOError):
-        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
-    assert not handles.HandleStore(tmp_path).path.exists()
 
 
 def run_workers(tmp_path, target):
@@ -416,68 +156,45 @@ def run_workers(tmp_path, target):
             worker.join(timeout=hang_guard_s())
 
 
-def test_shape_valid_maps_remain_usable(tmp_path_factory, caplog):
+def test_shape_valid_maps_remain_usable(tmp_path_factory):
     for counter in [-1, 1, 99]:
-        caplog.clear()
         tmp_path = tmp_path_factory.mktemp(str(counter))
         store = handles.HandleStore(tmp_path)
-        entries = {"old": "S7", "duplicate": "S7", "unusual": "display", "collision": "S3"}
-        aliases = {"prior": "old", "dangling": "missing", "collision": "old"}
-        store.save(handles.HandleMap(entries, aliases, counter))
+        entries = {"old": "J-SIM7", "duplicate": "J-SIM7", "unusual": "display"}
+        aliases = {"prior": "old", "dangling": "missing"}
+        store.save(handles.HandleMap(dict(entries), dict(aliases), counter))
         before = store.path.read_bytes()
         state = store.load()
         assert state.next_number == max(counter, 8), counter
-        assert state.labels() == {**entries, "prior": "S7"}, counter
-        assert state.reserve("canonical", "S", predecessors=("dangling", "prior")) == "S7", counter
-        assert state.entries == entries, counter
-        assert state.aliases == {**aliases, "canonical": "old"}, counter
-        assert state.reserve("new", "S") == f"S{max(counter, 8)}", counter
+        assert store.snapshot() == (entries, ()), counter
+        assert state.reserve("old", "J-SIM") == "J-SIM7", counter
+        assert state.reserve("new", "J-SIM") == f"J-SIM{max(counter, 8)}", counter
+        assert state.aliases == aliases, counter
         assert store.path.read_bytes() == before, counter
-        with pytest.raises(ValueError):
-            state.reserve("dangling", "S")
-        assert state.aliases["dangling"] == "missing", counter
-        registry = SessionRegistry(tmp_path)
-        registry.upsert(attribution("dangling"), "sim", "completed", now=100)
-        handles.register_job(tmp_path, "job", "sim", "dangling")
-        assert registry.snapshot().rows[0].attribution.key == "dangling", counter
-        assert handles.HandleStore(tmp_path, jobs=True).load().entries["job"] == "J-SIM1", counter
-        assert store.path.read_bytes() == before, counter
-        assert "for dangling" in caplog.text and "for Job job" in caplog.text, counter
 
 
-def test_maintenance_prunes_without_allocating_historical_handles(tmp_path_factory, monkeypatch):
-    for broken in [False, True]:
-        tmp_path = tmp_path_factory.mktemp(str(broken))
-        from booley.mcp.session_observer import SessionObserver
+def test_an_emptied_map_restarts_numbering_and_drops_stored_aliases():
+    state = handles.HandleMap({"one": "J-SIM1", "two": "J-SIM2"}, {"prior": "one"}, 3)
+    state.drop({"one"})
+    assert (state.entries, state.next_number) == ({"two": "J-SIM2"}, 3)
+    state.drop({"two"})
+    assert state == handles.HandleMap()
 
-        registry = SessionRegistry(tmp_path, quiet_after=10)
-        registry.upsert(attribution(), "sim", "completed", now=100)
-        store = handles.HandleStore(tmp_path)
-        if broken:
-            store.path.write_text("broken")
-        else:
-            store.path.unlink()
-        job = job_records.JobRecord("old", "sim", STAMP, 60, session_key="codex:disconnected")
-        root = tmp_path / "job_logs/old/.runtime/jobs"
-        job_records.write_record(job, root)
-        before = (root / "old.json").read_bytes()
-        observer = SessionObserver(now=lambda: 200)
-        monkeypatch.setattr(observer, "_registry", lambda registry=registry: registry)
-        monkeypatch.setattr("booley.mcp.session_observer.namespace", lambda: "fixture")
-        observer._prune()
-        assert registry.snapshot().rows == (), broken
-        assert not handles.HandleStore(tmp_path, jobs=True).path.exists(), broken
-        assert (root / "old.json").read_bytes() == before, broken
-        assert store.path.read_text() == "broken" if broken else not store.path.exists(), broken
+
+def test_map_written_with_labels_still_loads(tmp_path):
+    # Maps written by an earlier release carry a ``names`` member.
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    legacy = {"schema": 1, "entries": {"k": "J-SIM4"}, "aliases": {}, "next_number": 5}
+    store.path.write_bytes(json.dumps({**legacy, "names": {}}).encode())
+    assert store.snapshot() == ({"k": "J-SIM4"}, ())
+    handles.register_job(tmp_path, "new", "sim")
+    assert store.load().entries == {"k": "J-SIM4", "new": "J-SIM5"}
 
 
 def _saved_handle_store(tmp_path):
-    store = handles.HandleStore(tmp_path)
-    with handles.session_writer(tmp_path):
-        state = store.load()
-        state.reserve("codex:one", "S")
-        store.save(state)
-    return store
+    handles.register_job(tmp_path, "run-1", "sim")
+    return handles.HandleStore(tmp_path)
 
 
 def test_handle_map_read_survives_transient_sharing_error(tmp_path, monkeypatch):
@@ -485,7 +202,7 @@ def test_handle_map_read_survives_transient_sharing_error(tmp_path, monkeypatch)
 
     store = _saved_handle_store(tmp_path)
     attempts = hold_opens(monkeypatch, {store.path: 1})
-    assert store.load().labels() == {"codex:one": "S1"}
+    assert store.load().entries == {"run-1": "J-SIM1"}
     assert attempts[store.path] == 2
 
 
@@ -519,117 +236,11 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path):
             60,
             status=job_records.STATUS_RUNNING if running else job_records.STATUS_DONE,
             ended_at=None if running else rfc3339_from_epoch(now - age),
-            session_key="codex:gone",
         )
         job_records.write_record(record, root)
     views = {j.record.run_id: j for j in JobReader(tmp_path).read(now=now).jobs}
-    assert {run_id: (view.handle, view.owner_handle) for run_id, view in views.items()} == {
-        "sim-expired": ("sim-expired", "codex:gone"),
-        "sim-recent": ("", ""),
-        "sim-running": ("", ""),
+    assert {run_id: view.handle for run_id, view in views.items()} == {
+        "sim-expired": "sim-expired",
+        "sim-recent": "",
+        "sim-running": "",
     }
-
-
-def test_session_allocation_ignores_worktrees_and_branches(tmp_path, monkeypatch):
-    """A worktree or branch named like a handle does not take its number."""
-    isolate_git(tmp_path, monkeypatch)
-    main = main_project(tmp_path)
-    booley_dir = main / ".booley"
-    (booley_dir / "worktrees" / "s1").mkdir(parents=True)
-    git(main, "branch", "booley/s2")
-    store = handles.HandleStore(booley_dir)
-
-    def allocate_with_registry():
-        attributed = attribution("codex:registry")
-        SessionRegistry(booley_dir).upsert(attributed, "sim", "completed", now=100)
-
-    paths = {
-        "codex:store": lambda: handles.reserve_session_handle(booley_dir, "codex:store"),
-        "codex:registry": allocate_with_registry,
-    }
-    for key, allocate in paths.items():
-        store.path.unlink(missing_ok=True)  # A full prune: numbering restarts.
-        allocate()
-        labels = store.load().labels()
-        assert set(labels.values()) == {"S1"}, (key, labels)
-
-
-def test_dropping_an_entry_drops_the_marker_of_a_resumed_tab():
-    # Bug caught: the Codex ownership marker of a resumed tab (an alias of an alias) outlived
-    # the entry it hangs off, so a later launch could inherit ownership of a dead tab.
-    handles_map = handles.HandleMap()
-    handles_map.reserve("pid:old", "S")
-    handles_map.reserve("pid:new", "S", predecessors=("pid:old",))
-    handles_map.aliases["alias:pid:new"] = "pid:new"
-    handles_map.reserve("pid:other", "S")
-
-    handles_map.drop({"pid:old"})
-
-    assert handles_map.aliases == {}
-    assert handles_map.entries == {"pid:other": "S2"}
-
-
-def test_session_name_is_kept_on_resume_and_replaced_by_a_new_name():
-    # Bug caught: resuming (a predecessor) dropped the label, or a new name did not replace
-    # it; the label must live on the entry every alias of the session resolves to.
-    handles_map = handles.HandleMap()
-    handles_map.reserve("pid:old", "S", name="uart-fix")
-    assert handles_map.titles() == {"pid:old": "S1 \u00b7 uart-fix"}
-
-    handles_map.reserve("pid:new", "S", predecessors=("pid:old",))
-    assert handles_map.titles()["pid:new"] == "S1 \u00b7 uart-fix"
-    assert handles_map.names == {"pid:old": "uart-fix"}
-
-    handles_map.reserve("pid:newer", "S", predecessors=("pid:new",), name="data path")
-    assert handles_map.names == {"pid:old": "data path"}
-    assert handles_map.titles()["pid:newer"] == "S1 \u00b7 data path"
-    assert handles_map.labels()["pid:newer"] == "S1"
-
-
-def test_dropping_a_handle_drops_its_name(tmp_path):
-    # Bug caught: a stale label survived its dropped entry and showed on a reused number.
-    store = handles.HandleStore(tmp_path)
-    store.reserve("pid:one", "S", name="uart-fix")
-    store.reserve("pid:two", "S")
-    store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
-    assert store.load().names == {}
-    assert json.loads(store.path.read_bytes())["names"] == {}
-    store.reserve("pid:three", "S")
-    assert store.load().titles() == {"pid:two": "S2", "pid:three": "S3"}
-
-
-def test_handle_map_without_names_loads_and_titles_are_handles(tmp_path):
-    # Bug caught: a map written before labels existed was rejected, or titled wrongly.
-    store = handles.HandleStore(tmp_path)
-    store.root.mkdir(parents=True)
-    legacy = {"schema": 1, "entries": {"k": "S4"}, "aliases": {"old": "k"}, "next_number": 5}
-    store.path.write_text(json.dumps(legacy))
-    assert store.load().names == {}
-    assert store.titled_snapshot() == (
-        {"k": "S4", "old": "S4"},
-        {"k": "S4", "old": "S4"},
-        (),
-    )
-    # Reading a label-less map writes nothing; a reservation without a name leaves it as is.
-    store.reserve("k", "S")
-    assert json.loads(store.path.read_text()) == legacy
-
-
-def test_non_string_names_are_diagnosed_and_never_reset(tmp_path):
-    # Bug caught: bad labels silently dropped, or the map reset by prune/reserve.
-    store = handles.HandleStore(tmp_path)
-    store.reserve("pid:one", "S", name="uart-fix")
-    data = json.loads(store.path.read_bytes())
-    data["names"] = {"pid:one": 7}
-    store.path.write_text(json.dumps(data))
-    before = store.path.read_bytes()
-    _handles, titles, diagnostics = store.titled_snapshot()
-    assert titles == {}
-    assert "Session handles unavailable" in diagnostics[0]
-    with pytest.raises(ValueError, match="strings"):
-        store.reserve("pid:two", "S", name="x")
-    with pytest.raises(ValueError, match="strings"):
-        store.prune(lambda _map: {"pid:one"}, wait_s=hang_guard_s())
-    assert store.path.read_bytes() == before
-    store.path.write_text(json.dumps({**data, "names": ["not", "a", "dict"]}))
-    assert store.titled_snapshot()[2]

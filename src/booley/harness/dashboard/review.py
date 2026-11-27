@@ -16,9 +16,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Occupants:
-    """Who is in a worktree: connected-session labels and unfinished-Job handles."""
+    """Who is in a worktree: unfinished-Job handles."""
 
-    sessions: tuple[str, ...] = ()
     unfinished_jobs: tuple[str, ...] = ()
 
 
@@ -79,13 +78,11 @@ def agent_refusal(facts: SpecialistFacts) -> str:
 
 
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
-    """Warnings, not blocks: sessions, unfinished Jobs and changes in the worktree.
+    """Warnings, not blocks: unfinished Jobs and changes in the worktree.
 
     A string *uncommitted* is why the changes cannot be counted.
     """
     lines: list[str] = []
-    for label in occupants.sessions:
-        lines.append(f"Warning: session {label} is connected to this worktree")
     if occupants.unfinished_jobs:
         handles = ", ".join(occupants.unfinished_jobs)
         lines.append(

@@ -233,7 +233,7 @@ def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_pa
         job_records.write_record(
             rec(
                 "duplicate" if number < 2 else str(number),
-                session_key="codex:expired",
+                thread="expired",
                 status="done" if number > 2 else "running",
             ),
             root,
@@ -248,7 +248,7 @@ def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_pa
     snapshot = JobObserver(tmp_path, slots_root=tmp_path / "slots").read(roots)
     assert len(snapshot.jobs) == 5
     assert len({job.key for job in snapshot.jobs}) == 5
-    assert all(job.record.session_key == "codex:expired" for job in snapshot.jobs)
+    assert all(job.record.thread == "expired" for job in snapshot.jobs)
     assert snapshot.diagnostics == ("ambiguous legacy run ID: duplicate",)
     assert files(tmp_path) == before
 

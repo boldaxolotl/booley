@@ -20,7 +20,6 @@ from booley.harness.dashboard.jobs import (
     job_elapsed_seconds,
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
-from booley.harness.dashboard.sessions import session_key_label
 from booley.harness.dashboard.specialist_form import SimRun, sim_runs
 from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.presentation.report_results import present_job_report
@@ -179,14 +178,12 @@ def job_label(handle: str, endpoint: str) -> str:
 def _owner(job: JobView, titles: Mapping[str, str]) -> str:
     """The title of the thread that started the Job, else its client and a short thread id.
 
-    A Job without a recorded thread is ``you`` when Standalone (no owning session), else
-    its session's handle or key.
+    A Job without a recorded thread is its client when one is recorded, else ``you``.
     """
     record = job.record
     if record.thread:
         return titles.get(record.thread) or f"{record.client} · {record.thread[-8:]}"
-    key = record.session_key
-    return "you" if not key else session_key_label(job.owner_handle or key)
+    return record.client or "you"
 
 
 def _started(job: JobView) -> float:

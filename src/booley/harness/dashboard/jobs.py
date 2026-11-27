@@ -26,7 +26,6 @@ class JobView(JobObservation):
     """A neutral observation enriched for Dashboard display."""
 
     handle: str = ""
-    owner_handle: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,7 +84,6 @@ class JobReader:
         self,
         *,
         interactive_root: Path | None = None,
-        session_handles: dict[str, str] | None = None,
         now: float | None = None,
         artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
@@ -98,22 +96,16 @@ class JobReader:
         observed = self._observer.read(
             roots.history, unfinished_roots=roots.older, artifact_roots=artifact_roots
         )
-        handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
-        owners, owner_diagnostics = (
-            HandleStore(self._booley_dir).snapshot()
-            if session_handles is None
-            else (session_handles, ())
-        )
+        handles, diagnostics = HandleStore(self._booley_dir).snapshot()
         when = time.time() if now is None else now
         standalone = standalone_jobs_dir(self._booley_dir)
-        rows = tuple(_job_view(job, handles, owners, when, standalone) for job in observed.jobs)
-        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
+        rows = tuple(_job_view(job, handles, when, standalone) for job in observed.jobs)
+        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics))
 
 
 def _job_view(
     job: JobObservation,
     handles: dict[str, str],
-    owners: dict[str, str],
     now: float,
     standalone: Path,
 ) -> JobView:
@@ -123,11 +115,10 @@ def _job_view(
         # A Standalone Job has no supervisor: its dead process is a failed run.
         state = "failed" if state == "orphaned" else state
     handle = handles.get(record.run_id, "")
-    owner_handle = owners.get(record.session_key or "", "")
     if not handle and job_handle_expired(record, now):
         # A pruned Job is history, not an unallocated live one: name it by run ID
-        # and its owner by session key so neither shows the live-only "?".
-        handle, owner_handle = record.run_id, owner_handle or record.session_key or ""
+        # so it does not show the live-only "?".
+        handle = record.run_id
     return JobView(
         root=job.root,
         record=job.record,
@@ -140,7 +131,6 @@ def _job_view(
         queue=job.queue,
         queue_position=job.queue_position,
         handle=handle,
-        owner_handle=owner_handle,
     )
 
 

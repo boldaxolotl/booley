@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,7 +22,6 @@ except ImportError:
 
 from booley.core.booley_dir import reset_cache
 from booley.mcp.application import McpInputRequired
-from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -31,24 +31,13 @@ NESTED_SERVER = "mcp-stdio:nested:pid:test:2:2"
 ME = f"{SERVER}|codex:t1"
 OTHER_TAB = f"{SERVER}|codex:t2"
 NOTICE = "UNREAD JOB RESULT:"
-# Far-future stamps end after any server start; 2026-01-01 ends before it.
-LATER = "2999-01-01T00:00:00Z"
 EARLIER = "2026-01-01T00:00:00Z"
 
 
-class Observer:
-    """Session observer: thread attribution from ``_meta.threadId``."""
-
-    async def attribution(
-        self, arguments, metadata, client_name, *, request=None, tool="request", caller=None
-    ):
-        return Attribution("codex:" + metadata.get("threadId", "unknown"), "thread", "/fx", "fx")
-
-    async def record(self, facts, tool, outcome):
-        return None
-
-    async def resolved(self, facts):
-        return facts
+def _context() -> Any:
+    """The SDK context of one call: no transport request, so ``_meta`` names the thread."""
+    session = SimpleNamespace(client_params=None, client_capabilities=None)
+    return SimpleNamespace(session=session, protocol_version="2026-07-28", request=None)
 
 
 @pytest.fixture(autouse=True)
@@ -76,12 +65,12 @@ def _application(identity: str = SERVER):
 async def _call(
     application, name: str, arguments: dict[str, Any] | None = None, thread: str | None = "t1"
 ) -> CallToolResult:
-    """One tool call through the SDK adapter, as thread *thread* (None: no attribution)."""
+    """One tool call through the SDK adapter, as thread *thread* (None: no context)."""
     params = CallToolRequestParams(
         name=name, arguments=arguments or {}, _meta={"threadId": thread} if thread else None
     )
     result = await server._call_application_tool(
-        application, params, None, Observer() if thread else None
+        application, params, _context() if thread else None
     )
     assert isinstance(result, CallToolResult)
     return result
@@ -134,17 +123,12 @@ async def test_notice_lists_only_own_jobs():
     _write("mine-job")
     _write("other-tab-job", owner=OTHER_TAB)
     _write("nested-job", owner=NESTED_SERVER)
-    _write(
-        "baseline-job", owner=None, endpoint="sim_baseline", session_key="codex:t1", ended_at=LATER
-    )
-    _write("lint-job", owner=None, endpoint="lint", session_key="codex:t1", ended_at=LATER)
-    _write("before-start-job", owner=None, session_key="codex:t1", ended_at=EARLIER)
-    _write("legacy-mine-job", owner=None, session_key="codex:t1", ended_at=LATER)
+    _write("unowned-job", owner=None)
 
     result = await _call(_application(), "booley_targets")
 
     shown = {line.split(" · ")[0].removeprefix(NOTICE).strip() for line in _notice_lines(result)}
-    assert shown == {"mine-job", "legacy-mine-job"}
+    assert shown == {"mine-job"}
 
 
 @pytest.mark.asyncio
@@ -368,6 +352,6 @@ async def test_form_request_is_returned_unchanged():
     )
     params = CallToolRequestParams(name="probe", _meta={"threadId": "t1"})
 
-    result = await server._call_application_tool(application, params, None, Observer())
+    result = await server._call_application_tool(application, params, _context())
 
     assert result.request_state == "opaque-state"

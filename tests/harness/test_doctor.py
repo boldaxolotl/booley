@@ -37,7 +37,6 @@ from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import core_projection, selftest_overlay, target_inspection
 from booley.harness import (
-    activity_hooks,
     developer_probe,
     doctor,
     doctor_deep,
@@ -3417,7 +3416,6 @@ def _prepare_row(monkeypatch, row):
     if row == "inside-marker":
         # The Sandbox owns these probes; answer them healthy.
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
-        monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
     elif row == "host-no-marker":
         _answer_command(
             monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout='["PATH=/usr/bin"]\n'

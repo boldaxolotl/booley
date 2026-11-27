@@ -232,7 +232,7 @@ def _run_posts(
     def occupants_of(worktree: Path) -> Callable[[], Occupants]:
         def read() -> Occupants:
             with lock:  # the Job reader's artifact cache is shared
-                return read_occupants(booley_dir, reader, worktree)
+                return read_occupants(reader, worktree)
 
         return read
 

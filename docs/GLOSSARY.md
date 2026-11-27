@@ -347,11 +347,6 @@ worktree's Booley Flow and Specialist Jobs, from which a human can also Run them
 as Standalone Jobs. It shows no sessions, Goals, or health signals.
 _Avoid_: control room, console, monitor
 
-**Session activity**:
-What a session's agent client last reported, never inferred from Booley calls or
-Jobs.
-_Avoid_: session status, session state
-
 ## Execution and evidence
 
 **Criterion**:
