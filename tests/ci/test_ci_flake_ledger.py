@@ -79,6 +79,7 @@ def test_hits_count_runs_not_jobs_or_attempts(
         "days": 7,
     }
     assert (report["runs_read"], report["min_hits"]) == (2, 2)
+    # The --json contract the external issue pipeline reads.
     assert report["quarantine_bar"] == {"min_hits": 3, "days": 7}
     assert [entry["test_id"] for entry in report["ledger"]] == _BOTH
     assert [entry["test_id"] for entry in report["candidates"]] == _BOTH

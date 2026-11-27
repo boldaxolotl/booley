@@ -255,7 +255,10 @@ def test_rerun_is_refused_when_the_failure_is_not_a_test_result(tmp_path: Path, 
     assert all(len(workers) == 1 for workers in seen.values())
 
 
-def test_a_killed_coverage_rerun_still_reports_the_repeated_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize("quarantined", [False, True])
+def test_a_killed_coverage_rerun_still_reports_the_repeated_failure(
+    tmp_path: Path, quarantined: bool
+) -> None:
     source = (
         "def test_dies_serially():\n"
         "    if attempt('dies')[1] == 'serial':\n"
@@ -264,13 +267,37 @@ def test_a_killed_coverage_rerun_still_reports_the_repeated_failure(tmp_path: Pa
     )
     work = tmp_path / "w"
     args = ["-n", "2", "--cov=covmod", "--cov-report="]
-    code, _, summary = _run(work, source, args, "--coverage-file", str(work / ".coverage.1"))
+    test_id = "pkg/test_case.py::test_dies_serially"
+    code, _, summary = _run(
+        work,
+        source,
+        args,
+        "--coverage-file",
+        str(work / ".coverage.1"),
+        quarantine=(test_id,) if quarantined else (),
+    )
 
     assert code != 0
     assert "No readable rerun report" in summary
-    assert "Failed again: `pkg/test_case.py::test_dies_serially`" in summary
+    label = "Quarantined test failed again" if quarantined else "Failed again"
+    assert f"{label}: `{test_id}`" in summary
     assert "could not be combined" in summary
-    assert _children(work, "test_dies_serially") == ["failure", "rerunError"]
+    tag = "quarantinedFailure" if quarantined else "failure"
+    assert _children(work, "test_dies_serially") == [tag, "rerunError"]
+
+
+def test_a_rerun_that_ends_without_test_results_fails_a_quarantined_test(tmp_path: Path) -> None:
+    source = (
+        "def test_dies_serially():\n"
+        "    if attempt('dies')[1] == 'serial':\n"
+        "        os._exit(3)\n"
+        "    assert False\n"
+    )
+    test_id = "pkg/test_case.py::test_dies_serially"
+    code, _, summary = _run(tmp_path / "w", source, ["-n", "2"], quarantine=(test_id,))
+
+    assert code == 3
+    assert f"Quarantined test failed again: `{test_id}`" in summary
 
 
 def test_coverage_after_a_rerun_matches_a_run_without_failures(tmp_path: Path) -> None:

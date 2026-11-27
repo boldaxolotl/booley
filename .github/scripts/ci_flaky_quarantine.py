@@ -110,13 +110,14 @@ def issue_problems(entries: tuple[object, ...], gh: Gh) -> list[str]:
     return [problem for problem in checked if problem is not None]
 
 
-def main(argv: list[str] | None = None, *, gh: Gh = run_gh) -> int:
+def main(argv: list[str] | None = None) -> int:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
     root = Path.cwd()
     entries = load_quarantine(root)
-    found = problems(entries, root) or issue_problems(entries, gh)
+    found = problems(entries, root) or issue_problems(entries, run_gh)
     for problem in found:
         print(problem, file=sys.stderr)
+    print(f"Quarantine entries checked: {len(entries)}")
     return 1 if found else 0
 
 

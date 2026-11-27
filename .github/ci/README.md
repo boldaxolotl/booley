@@ -139,15 +139,15 @@ therefore run through `.github/scripts/ci_pytest_rerun.py`; other jobs do not
 rerun. When a run ends with test failures or errors (a timeout-headroom overrun
 is one), it reruns only the failed test ids once, in a separate serial pytest
 process (`-n 0`, no shard options). The rerun keeps the mark expression,
-per-test timeout, and time scale. The job passes only when every test that does
-not pass its rerun is [quarantined](#quarantine-of-flaky-tests).
+per-test timeout, and time scale. The job passes when every rerun passes, or
+when only [quarantined](#quarantine-of-flaky-tests) tests fail again.
 
 - A test that fails once and passes on the rerun is recorded in the step
   summary ("Passed on rerun") and in `junit.xml` as `flakyFailure` or
   `flakyError` inside its `testcase`, with the failure counts reduced. A test
   that fails again keeps its failure and gains `rerunFailure` or `rerunError`;
-  the log shows both failures. A quarantined test's failure is renamed, as
-  [Quarantine of flaky tests](#quarantine-of-flaky-tests) says.
+  the log shows both failures. A quarantined test's failure becomes
+  `quarantinedFailure` or `quarantinedError`, with the failure counts reduced.
 - No rerun starts, and the step summary says why, after a collection error, a
   shard-selection error or any other exit that is not a test failure, a missing
   or malformed JUnit report,
@@ -178,10 +178,9 @@ PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
   `--days` says otherwise.
 - A hit is one test ID in one workflow run: several jobs or attempts of that run
   count once. A test ID with 2 or more hits in the window is a filing candidate.
-- A test ID meets the [quarantine bar](#quarantine-of-flaky-tests) with at least
-  3 hits within 7 days, or with a hit from a run created after the open `flaky`
-  issue naming it was opened. The script reads the open `flaky` issues for this,
-  and only hits inside the window count.
+- The script also reports which test IDs meet the
+  [quarantine bar](#quarantine-of-flaky-tests). It reads the open `flaky` issues
+  for this, and only hits inside the window count.
 - A test whose module no longer exists in the checkout is listed by its JUnit
   name, `<classname>::<name>`.
 - The default output is readable text. `--json` prints only a document with
@@ -211,22 +210,24 @@ until its issue is fixed.
   the step summary, and a warning annotation name the test ID and owner issue,
   and `junit.xml` records `quarantinedFailure` or `quarantinedError`, which the
   [flake ledger](#flake-ledger) counts as a hit.
-- A refused rerun, for example after more than `MAX_RERUN_FAILURES` failures,
-  still fails the job.
+- The job still fails when no rerun starts, for example after more than
+  `MAX_RERUN_FAILURES` failures, when the rerun process ends other than with
+  test results, or when its coverage data cannot be combined.
 - `flake-stress` does not apply the quarantine, so a PR that adds or modifies
   the test's module must pass it there.
 - The registry is `tests/flaky_quarantine.py`. Each entry is the exact pytest
   node ID, parameter case included, and the number of its owner issue: the open
   [`flaky` issue](../../docs/internals/agents/issue-tracker.md#flaky-test-issues)
   whose title names that ID.
-- Add an entry only for a test ID the flake ledger reports as meeting the bar:
-  at least 3 hits within 7 days, or a new hit after its `flaky` issue was
-  opened. Adding one is a reviewed PR; no workflow does it.
+- Add an entry only for a test ID the flake ledger reports as meeting the
+  quarantine bar: at least 3 hits within 7 days, or a hit from a run created
+  after its open `flaky` issue was opened. Adding one is a reviewed PR; no
+  workflow does it.
 - The `lint` job runs `.github/scripts/ci_flaky_quarantine.py`. It fails an
   entry with no owner issue, with a test ID pytest does not collect, or listed
-  twice, and one whose owner is closed, is a PR, lacks the `flaky` label, or has
-  a title that does not name the test ID. So the PR that fixes the test removes
-  its entry.
+  twice, and one whose owner issue is closed, is a PR, lacks the `flaky` label,
+  or has a title that does not name the test ID. The PR that fixes the test must
+  remove its entry, or later `lint` runs fail once the issue closes.
 
 ## Test time budgets
 

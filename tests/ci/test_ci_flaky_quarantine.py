@@ -155,6 +155,7 @@ def test_open_owner_issues_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     result = _guard(tmp_path / "w", ((_CASE, 11), (_METHOD, 12)))
 
     assert (result.returncode, result.stderr) == (0, "")
+    assert "Quarantine entries checked: 2" in result.stdout
     assert [call.args[-1] for call in gh.calls()] == [
         "repos/{owner}/{repo}/issues/11",
         "repos/{owner}/{repo}/issues/12",
