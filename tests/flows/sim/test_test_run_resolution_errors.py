@@ -84,3 +84,6 @@ def test_a_resume_hint_names_every_frozen_run_when_the_plan_cannot_be_built(tmp_
     assert flow._frozen_test_run_options(manifest, "sim") == ""
     _unresolvable(flow, monkeypatch)
     assert flow._frozen_test_run_options(manifest, "sim") == " --test=stress+short@1"
+    (tmp_path / "unnamed").mkdir()
+    unnamed = _hdl_plan(tmp_path / "unnamed", ((build_test_run(None, seed=7),),), ()).manifest
+    assert flow._frozen_test_run_options(unnamed, "sim") == " --seed 7"

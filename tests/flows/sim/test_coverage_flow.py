@@ -1963,10 +1963,13 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
         dry_run=dry_run,
     )
     assert result.exit_code == 2
-    assert "source changed: rtl/counter.sv" in result.outcome.report_text
-    assert "5 derived fingerprints differ" in result.outcome.report_text
-    assert result.outcome.detail["derived_fingerprint_count"] == 5
-    assert result.outcome.detail["mismatches"]
+    assert "source closures" in result.outcome.detail["mismatches"]
+    (command,) = [
+        line.strip()
+        for line in result.outcome.report_text.splitlines()
+        if line.strip().startswith("booley flow sim --target sim_0")
+    ]
+    assert " --coverage" in command
     assert [test.name for test in runs] == ["reset", "wrap"]
     after = {
         path.relative_to(manifest.parent).as_posix(): path.read_bytes()

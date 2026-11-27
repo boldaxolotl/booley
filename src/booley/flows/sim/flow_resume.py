@@ -64,6 +64,7 @@ from .record.flow_planning import (
 )
 from .record.planning import (
     SimulationRecordWorkloadMismatchError,
+    WorkloadDiagnostic,
     verify_workload,
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
@@ -206,7 +207,7 @@ class SimulationRecordResumeMixin:
             return None
         item_id = unfinished[0]
         state = "interrupted" if item_id in status.interrupted else "pending"
-        command, note = self._new_coverage_run_command(validated, view)
+        command, note = self._new_run_command(validated, view)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
@@ -218,16 +219,25 @@ class SimulationRecordResumeMixin:
             detail=_simulation_record_recovery_detail(status),
         )
 
-    def _new_coverage_run_command(
+    def _workload_mismatch_report(
+        self, validated: ValidatedResumeManifest, diagnostic: WorkloadDiagnostic
+    ) -> str:
+        """What changed since the original run, and the command for a new run."""
+        view = SimulationRecordManifestView(validated.manifest)
+        command, note = self._new_run_command(validated, view)
+        return f"{diagnostic.report()}\nStart a new run instead:\n  {command}\n{note}"
+
+    def _new_run_command(
         self, validated: ValidatedResumeManifest, view: SimulationRecordManifestView
     ) -> tuple[str, str]:
         """The command for a new run that repeats the record, and the line after it."""
         selector = view.target.selector
+        coverage = " --coverage" if view.is_coverage else ""
         trace = " --trace" if view.trace else ""
         no_waivers = " --no-waivers" if view.no_waivers else ""
         tests = self._frozen_test_run_options(validated.manifest, selector)
         command = (
-            f"booley flow sim --target {shlex.quote(selector)}{tests or ''} --coverage"
+            f"booley flow sim --target {shlex.quote(selector)}{tests or ''}{coverage}"
             f"{trace}{no_waivers}{self._recorded_report_dir_option(validated)}"
         )
         if tests is None:
@@ -268,7 +278,7 @@ class SimulationRecordResumeMixin:
         selection then resolves to the same runs.  Any other record (a subset,
         a Test Variant, a pinned or drawn seed, a default that has since
         changed) is named run by run, so a new run draws and resolves nothing
-        again.
+        again; the unnamed invocation is repeated by its ``--seed``.
         """
         try:
             runs = [run for group in _manifest_run_groups(manifest) for run in group]
@@ -285,6 +295,9 @@ class SimulationRecordResumeMixin:
             whole_suite = False
         if whole_suite:
             return ""
+        # --test cannot name the unnamed invocation, so only its seed is repeated.
+        if len(runs) == 1 and runs[0].test is None:
+            return "" if runs[0].seed is None else f" --seed {runs[0].seed}"
         return "".join(f" {shlex.quote(f'--test={run.name}')}" for run in runs)
 
     def _resume_simulation_record(
@@ -328,7 +341,8 @@ class SimulationRecordResumeMixin:
         status = _simulation_record_recovery_detail(preview.recovery)
         status.update(preview.diagnostic.detail)
         status["required_bundle_variants"] = list(preview.required_bundle_variants)
-        if not preview.mismatches:
+        areas = preview.diagnostic.areas
+        if not areas:
             # The real run reports a mismatch before its run_cwd check.
             refusal = _resume_run_cwd_refusal(request, status)
             if refusal is not None:
@@ -338,12 +352,12 @@ class SimulationRecordResumeMixin:
             f"completed: {len(preview.recovery.completed)}",
             f"interrupted: {len(preview.recovery.interrupted)}",
             f"pending: {len(preview.recovery.pending)}",
-            f"mismatches: {len(preview.mismatches)}",
+            f"mismatches: {len(areas)}",
         ]
-        if preview.mismatches:
-            lines.append(preview.diagnostic.report(verbose=self.args.verbose))
+        if areas:
+            lines.append(self._workload_mismatch_report(validated, preview.diagnostic))
         return EndpointOutcome(
-            exit_code=EXIT_ERROR if preview.mismatches else EXIT_SUCCESS,
+            exit_code=EXIT_ERROR if areas else EXIT_SUCCESS,
             detail=status,
             report_text="\n".join(lines),
         )
@@ -424,7 +438,7 @@ class SimulationRecordResumeMixin:
         message = str(error)
         if isinstance(error, SimulationRecordWorkloadMismatchError):
             detail.update(error.diagnostic.detail)
-            message = error.diagnostic.report(verbose=self.args.verbose)
+            message = self._workload_mismatch_report(validated, error.diagnostic)
         if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
             selector = str(error.detail["target"])
             detail["targets"] = {

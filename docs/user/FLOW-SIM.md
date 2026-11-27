@@ -60,7 +60,7 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 | `--no-waivers` | With `--coverage`, report coverage without applying approved waivers. See [Coverage](COVERAGE.md). |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run the tests (default), or only [compile](#elaboration-checks). |
 | `--resume-from <manifest.json>` | [Resume](#resuming-an-interrupted-run) an interrupted run. |
-| `--verbose` | With `--resume-from`, show every detail of why the manifest doesn't match the current Project. |
+| `--verbose` | Deprecated: has no effect. The next minor release removes it. |
 | `--no-kill` | Don't kill leftover simulator processes before the run. For diagnosis only. |
 
 ### Adding a Test
@@ -500,10 +500,12 @@ booley flow sim --resume-from <manifest.json>
   the refusal prints the command, with the same Test Runs and seeds.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
-- Resume refuses when the Target's sources, Tests or simulation settings have
-  changed since the original run. Don't edit Simulation Record files by hand:
-  resume
-  checks that they are intact.
+- Resume refuses (exit `2`) when the Target's sources, Tests or simulation
+  settings have changed since the original run. The refusal names what changed,
+  for example the source closures or the test suite, and prints the command for
+  a new run with the same Test Runs and seeds.
+- Don't edit Simulation Record files by hand: resume checks that they are
+  intact.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>

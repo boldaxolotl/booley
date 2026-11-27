@@ -101,7 +101,7 @@
       "verbose": {
         "type": "boolean",
         "default": false,
-        "description": "Include full Simulation Record resume mismatch pointers and values"
+        "description": "Deprecated: has no effect; removed in the next minor release"
       },
       "trace": {
         "type": "boolean",
