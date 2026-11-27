@@ -1,8 +1,8 @@
-"""The Run wizard's form model (#3580): generated from each Flow's human parser.
+"""The Run form's model (#3580): generated from each Flow's human parser.
 
 The drift tests build the real parsers of every built-in Flow, so a Flow that
 gains an option fails here until the option is shown or routed to extra
-arguments. The module under test is imported in each test body, so a Dashboard
+arguments. The module under test is imported in each test body, so a tree
 without it fails there and not at collection.
 """
 
@@ -162,30 +162,18 @@ def test_target_and_test_fields_are_pickers():
     assert fields["--test"].kind == "tests"
     assert not fields["--target"].required  # every built-in Flow can pick the Target itself
     assert "One Target" in fields["--target"].hint
-    assert "toggles a Test Run" in fields["--test"].hint
+    assert "More forms (seeds)" in fields["--test"].hint
     assert fields["--seed"].hint.startswith("Seed for every selected Test Run")
-    assert fields["--target"].shown("") == "automatic"
-    assert fields["--target"].shown("sim_fifo") == "sim_fifo"
-    assert fields["--test"].shown("") == "default suite"
-    assert fields["--test"].shown(()) == "default suite"
-    assert fields["--test"].shown(("reset", "stress+soak")) == "reset, stress+soak"
     assert fields["--seed"].kind == "text"
-    assert fields["--seed"].shown("") == ""
-    assert fields["--coverage"].shown("") == "off"
-    assert fields["--coverage"].shown("on") == "on"
-    assert fields["--mode"].shown("") == "default"
-    assert fields["--mode"].shown("elab-only") == "elab-only"
 
 
-def test_a_required_target_field_has_no_automatic():
+def test_a_required_target_option_makes_a_required_field():
     from booley.harness.dashboard import run_form
 
     parser = parser_for("sim")
     next(a for a in parser._actions if a.dest == "target").required = True
     target = {field.label: field for field in run_form.describe(parser).fields}["--target"]
     assert target.required
-    assert target.shown("") == ""
-    assert target.shown("sim_fifo") == "sim_fifo"
 
 
 # --- command_argv ---------------------------------------------------------------

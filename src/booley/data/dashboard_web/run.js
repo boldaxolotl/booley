@@ -200,7 +200,7 @@
     var dest = active && active.dataset && active.dataset.dest;
     var caret = active && active.selectionStart;
     var rows = form.fields.map(function (field) {
-      return rowHtml(field, field.kind === 'more' ? '' : field.hint);
+      return rowHtml(field, field.hint);
     });
     if (form.extra) {
       rows.push(rowHtml({ dest: 'extra', kind: 'text', label: 'Extra arguments' }, form.extra.hint));
@@ -419,7 +419,7 @@
     });
   }
 
-  // A Specialist's fields follow its list values and More, as the wizard's form does.
+  // A Specialist's fields follow its list values and More.
   function reloadForm() {
     dependentRead('/api/run/form', Object.assign({ kind: entry.kind, name: entry.name }, values), function (body) {
       clearReview(); // the answer may change the values a shown review checked

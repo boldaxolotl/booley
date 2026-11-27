@@ -277,7 +277,7 @@ class SessionObserver:
         return SessionRegistry(resolve_common_booley_dir())
 
     async def maintain(self) -> None:
-        """Prune during MCP silence; owned by the server lifespan, never Dashboard reads."""
+        """Prune during MCP silence; owned by the server lifespan, never a reader."""
         if not self.writes:
             return  # Its cwd is a Specialist workspace, so worktree presence would misjudge rows.
         await self._bounded(self._prune, maintenance=True)

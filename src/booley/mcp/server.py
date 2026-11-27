@@ -708,7 +708,7 @@ def _checkout_kind(path: str) -> str:
 
 
 def _recorded_identity_lines(attribution: Attribution) -> tuple[str, ...]:
-    """Session, branch and checkout lines from the registry row the Dashboard lists."""
+    """Session, branch and checkout lines from the registry row of the calling session."""
     try:
         common = resolve_common_booley_dir()
     except (SourceCheckoutProjectError, BooleyLayoutError, OSError):

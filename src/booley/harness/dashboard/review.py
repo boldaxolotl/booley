@@ -1,6 +1,6 @@
-"""The Run wizard's review text: queue verdict, timeout budget and warnings.
+"""The Run form's review text: queue verdict, timeout budget and warnings.
 
-Pure text building, no Textual, so the wording of each line has one owner.
+Pure text building, so the wording of each line has one owner.
 """
 
 from __future__ import annotations
@@ -16,11 +16,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Occupants:
-    """Who is in a worktree: connected-session labels and unfinished-Job handles, or why unknown."""
+    """Who is in a worktree: connected-session labels and unfinished-Job handles."""
 
     sessions: tuple[str, ...] = ()
     unfinished_jobs: tuple[str, ...] = ()
-    problem: str = ""
 
 
 def _plural(count: int, noun: str) -> str:
@@ -82,12 +81,9 @@ def agent_refusal(facts: SpecialistFacts) -> str:
 def warning_lines(occupants: Occupants, uncommitted: int | str) -> list[str]:
     """Warnings, not blocks: sessions, unfinished Jobs and changes in the worktree.
 
-    A string *uncommitted* is why the changes cannot be counted; ``occupants.problem``
-    is why sessions and Jobs cannot be told.
+    A string *uncommitted* is why the changes cannot be counted.
     """
     lines: list[str] = []
-    if occupants.problem:
-        lines.append(f"Cannot check sessions and unfinished Jobs: {occupants.problem}")
     for label in occupants.sessions:
         lines.append(f"Warning: session {label} is connected to this worktree")
     if occupants.unfinished_jobs:

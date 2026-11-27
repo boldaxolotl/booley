@@ -1,4 +1,4 @@
-"""Doctor, MCP and the Dashboard agree on one stored observation, without running probes."""
+"""Doctor and MCP agree on one stored observation, without running probes."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
-from booley.harness import auto_doctor, doctor, upgrade_review
+from booley.harness import auto_doctor, doctor
 from booley.harness import booley as cli
-from booley.harness.dashboard import model as dashboard
 from booley.mcp import (
     server,
 )
@@ -65,16 +64,11 @@ def _write(root, directory, result, *, age=None):
     return document
 
 
-def _isolate_mcp_and_dashboard(monkeypatch, root):
-    """Leave only the health line of the MCP status card and Dashboard to this test."""
+def _isolate_mcp(monkeypatch, root):
+    """Leave only the health line of the MCP status card to this test."""
     monkeypatch.chdir(root)
     monkeypatch.setattr(server, "format_status_line", lambda: "status")
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
-    monkeypatch.setattr(
-        upgrade_review,
-        "read_status",
-        lambda _: upgrade_review.ReviewStatus(upgrade_review.ReviewCondition.CURRENT, "1", "path"),
-    )
 
 
 @pytest.mark.parametrize(
@@ -86,10 +80,8 @@ def _isolate_mcp_and_dashboard(monkeypatch, root):
         (Severity.PASS, True, 0),
     ],
 )
-def test_same_observations_reach_doctor_mcp_and_dashboard(
-    project, monkeypatch, severity, clean, exit_code
-):
-    root, directory = project
+def test_same_observations_reach_doctor_and_mcp(project, monkeypatch, severity, clean, exit_code):
+    root, _directory = project
     result = _result(severity)
     assert (result.clean, result.exit_code) == (clean, exit_code)
     assert doctor.record_manual_result(root, result) is not None
@@ -98,14 +90,11 @@ def test_same_observations_reach_doctor_mcp_and_dashboard(
     assert snapshot.assessment == result.diagnostics.health
     assert snapshot.due is None
     message = health_presentation.brief_message(snapshot)
-    _isolate_mcp_and_dashboard(monkeypatch, root)
+    _isolate_mcp(monkeypatch, root)
     # private: the status card's only public route, `McpApplication.call_tool("booley_status")`,
     # needs an application that only the private `server._build_mcp_catalog` assembles (see
     # `tests/mcp_tools/test_live_catalog.py::build_catalog`), which adds private names.
     assert "Health: " + message in server._format_status_card([], None)
-    lines = dashboard.health_lines(root, directory)
-    expected = "Doctor: OK" if clean else f"Doctor: 1 {severity.name}"
-    assert tuple(line.text for line in lines) == (expected,)
     content = [server.TextContent(type="text", text="Flow result")]
     # private: `call_tool` reaches the alert only after dispatching a Flow or bwave tool, on
     # that same privately built application.
@@ -285,11 +274,11 @@ def test_interpreted_lint_design_findings_remain_healthy(project):
     assert "design has lint findings" in outcome.findings[0].message
 
 
-def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch, capsys):
+def test_stale_observation_reaches_doctor_and_mcp(project, monkeypatch, capsys):
     root, directory = project
     result = _result(Severity.FAIL)
     _write(root, directory, result, age=timedelta(days=2))
-    _isolate_mcp_and_dashboard(monkeypatch, root)
+    _isolate_mcp(monkeypatch, root)
     read = health.read_health
     monkeypatch.setattr(health, "read_health", lambda root, **_: read(root, now=NOW))
     expired = "automatic Doctor result expired"
@@ -307,61 +296,14 @@ def test_stale_observation_reaches_doctor_mcp_and_dashboard(project, monkeypatch
     # private: `booley session up`, the public route, starts a Sandbox.
     cli._report_session_health(root)
     assert f"Automatic Doctor is running in the Sandbox ({expired})" in capsys.readouterr().err
-    # MCP retains full findings; the Dashboard shows compact counts and freshness.
+    # MCP retains full findings.
     # private: the status card is built only by the private application; see above.
     assert "Health: " + message in server._format_status_card([], None)
-    assert tuple(line.text for line in dashboard.health_lines(root, directory)) == (
-        "Doctor: 1 FAIL · recheck due",
-    )
     # A Flow result gains no HEALTH WARNING built from stale findings.
     content = [server.TextContent(type="text", text="Flow result")]
     # private: the alert is reached only through the privately built application.
     assert server._prepend_changed_health_alert(content) == content
     assert not (health.state_dir(directory) / "announcements.json").exists()
-
-
-def test_dashboard_compact_line_preserves_verbose_brief(tmp_path, monkeypatch):
-    transcript = tmp_path / "sentinel[transcript].log"
-    mixed = health.HealthSnapshot(
-        DiagnosticReport(
-            (
-                DiagnosticFinding(Severity.FAIL, "broken machinery"),
-                DiagnosticFinding(Severity.WARN, "review needed", check_id="test.warning"),
-            )
-        ),
-        "hash",
-        transcript,
-        None,
-    )
-    clean = replace(mixed, diagnostics=DiagnosticReport())
-    monkeypatch.setattr(
-        upgrade_review,
-        "read_status",
-        lambda _: upgrade_review.ReviewStatus(upgrade_review.ReviewCondition.CURRENT, "1", "path"),
-    )
-    for snapshot, brief, compact in (
-        (
-            mixed,
-            f"Automatic Doctor found 1 FAIL, 1 WARN: broken machinery; review needed. Full report: {transcript}",
-            "Doctor: 1 FAIL · 1 WARN",
-        ),
-        (clean, f"Automatic Doctor is clean. Full report: {transcript}", "Doctor: OK"),
-        # A due result leads the verbose brief with its staleness; the compact line gains a marker.
-        (
-            replace(mixed, due="expired"),
-            "Automatic Doctor result is out of date (expired); run `booley doctor` for current"
-            " health. Last result: Automatic Doctor found 1 FAIL, 1 WARN: broken machinery;"
-            f" review needed. Full report: {transcript}",
-            "Doctor: 1 FAIL · 1 WARN · recheck due",
-        ),
-    ):
-        monkeypatch.setattr(health, "read_health", lambda _, observed=snapshot: observed)
-        assert health_presentation.brief_message(snapshot) == brief
-        lines = dashboard.health_lines(tmp_path, tmp_path)
-        texts = tuple(getattr(line, "text", line) for line in lines)
-        assert texts == (compact,), (
-            "Dashboard compact format must preserve the separate verbose brief"
-        )
 
 
 @pytest.mark.parametrize(("held", "loads"), [(1, True), (1000, False)])

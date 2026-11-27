@@ -9,7 +9,7 @@ and nested actions.
 
 | Command | Purpose |
 |---------|---------|
-| `booley dashboard` | Show sessions, Jobs, and Targets |
+| `booley dashboard` | Serve the web Dashboard of each worktree's Jobs |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley measure` | Measure a commit against `metrics.toml`; `--validate` checks the file |
 | `booley specialist` | List or directly run visible Specialists |

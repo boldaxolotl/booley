@@ -1,4 +1,4 @@
-"""``booley dashboard --web``: each worktree's Jobs as a page and JSON on the loopback interface.
+"""``booley dashboard``: each worktree's Jobs as a page and JSON on the loopback interface.
 
 ``GET /api/snapshot?worktree=<absolute path>`` answers for the main checkout or one
 registered linked worktree; ``GET /api/report?...`` serves a report the snapshot links to.
@@ -226,7 +226,7 @@ def _run_routes(
     if not feature_enabled("web-run-panel", features):
         return []
     launcher = Launcher(booley_dir)
-    targets = TargetsReader(main)
+    targets = TargetsReader()
 
     def records(worktree: Path) -> tuple[SimRun, ...]:
         with lock:  # the Job reader's artifact cache is shared

@@ -43,8 +43,8 @@ read-only, and delegating it would loosen the hardening.
   would defeat OpenROAD reuse).
 - The Memory Budget is always computed from the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
-  reserve for the agent, the MCP server, the Dashboard, `t3 serve` and the
-  headless Chrome processes, each measured while it runs. Doctor warns when
+  reserve for the agent, the MCP server, `t3 serve` and the headless Chrome
+  processes, each measured while it runs. Doctor warns when
   `[sandbox].memory` is unset. There is no override: one that replaces the
   computed budget subtracts no reserve, so the natural setting lets Jobs eat
   the memory the agents are using and invites OOM kills.
@@ -151,8 +151,8 @@ read-only, and delegating it would loosen the hardening.
 - While a Job holds a reservation, Booley ranks its processes for the kernel
   OOM killer through `oom_score_adj` by admission order: the newest running
   Job's tools rank first (it is the Job most likely to have tipped the
-  container), then older Jobs' by age, then the Developer Agent's, the MCP
-  server's and the Dashboard's. The Job's coordinator, the process holding
+  container), then older Jobs' by age, then the Developer Agent's and the MCP
+  server's. The Job's coordinator, the process holding
   its claim, ranks just below its own tools, so a kill takes a tool and leaves
   the coordinator able to report it or requeue the Job. The levels, the gap
   and the refresh interval live in the code, with a test that checks the

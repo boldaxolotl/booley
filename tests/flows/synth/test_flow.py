@@ -50,7 +50,6 @@ from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import StaTimingConfig
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.presentation.report_results import present_job_report
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -3861,12 +3860,6 @@ def test_public_latch_allowance_excess_is_design_failure(synth_cli: SynthCli):
     )
     reason = "8 latches (actual=8, expected=7, excess=1; types: $_DLATCH_P_=8)"
     assert report["implementation"]["status"]["failure_reasons"] == [reason]
-    job = present_job_report(
-        {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
-    )
-    assert ("Failure reason", reason) in [
-        (row.label.strip(), row.value) for row in job.result_rows
-    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(synth_cli: SynthCli):

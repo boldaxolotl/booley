@@ -1,10 +1,9 @@
 """The Run form's choices for one worktree as plain JSON values.
 
-Textual-free and HTTP-free: ``web`` routes requests and calls these. They list what the
-Textual wizard offers (Flows, Specialists, Targets, Tests, forms) from the same sources, and
-quote, check and start a run as the wizard's review and Submit do. ``UnknownEntryError`` names
+HTTP-free: ``web`` routes requests and calls these. They list Flows, Specialists, Targets,
+Tests and forms, and quote, check and start a run. ``UnknownEntryError`` names
 a Flow, Specialist or form kind that does not exist; any other trouble reading a worktree is a
-``problem`` text beside what could still be read, as in the wizard. ``InvalidRunError`` is a
+``problem`` text beside what could still be read. ``InvalidRunError`` is a
 request body of the wrong shape, ``RunRefusedError`` a run the form, the parser or the Agent
 CLI's sign-in check refuses and ``CheckFailedError`` an argument check that itself raised.
 """
@@ -71,12 +70,12 @@ class CheckFailedError(RuntimeError):
 
 
 def _cause(exc: Exception) -> str:
-    """How the wizard words a read that failed: the exception type, then its first line."""
+    """A read that failed, in words: the exception type, then its first line."""
     return f"{type(exc).__name__}: {first_line(exc)}"
 
 
 def entries(launcher: Launcher, worktree: Path) -> dict[str, Any]:
-    """The Flows and built-in Specialists *worktree* enables, as the wizard lists them."""
+    """The Flows and built-in Specialists *worktree* enables."""
     blurbs = {flow.name: flow.blurb for flow in launcher.flows()}
     specialists = launcher.specialists(worktree)
     return {
@@ -98,7 +97,7 @@ def targets(
         listing = reader.listing(worktree)
     except Exception as exc:
         logger.exception("Run Targets read failed")
-        listing = TargetListing(worktree, (), _cause(exc))
+        listing = TargetListing((), _cause(exc))
     return {"targets": list(targets_for(listing, flow)), "problem": targets_problem(listing, flow)}
 
 
@@ -108,7 +107,7 @@ def tests(reader: TargetsReader, worktree: Path, selector: str) -> dict[str, Any
         choices = reader.test_runs(worktree, selector)
     except Exception as exc:
         logger.exception("Run Test Runs read failed")
-        choices = RunChoices(worktree, selector, (), f"Tests unavailable: {_cause(exc)}")
+        choices = RunChoices((), f"Tests unavailable: {_cause(exc)}")
     return {"runs": list(choices.runs), "problem": runs_problem(choices)}
 
 
@@ -132,8 +131,7 @@ def _built(
 ) -> tuple[RunForm | SpecialistForm | None, str]:
     """The endpoint's form and why it could not be built (empty when it was).
 
-    A Flow that cannot be built is ``NO_FORM``: its extra arguments alone, as the wizard
-    launches it. A Specialist that cannot be built is ``None``.
+    A Flow that cannot be built is ``NO_FORM``: its extra arguments alone. A Specialist that cannot be built is ``None``.
     """
     try:
         return launcher.form(kind, name, worktree), ""
@@ -170,7 +168,7 @@ def form(
     if name == COVERAGE_ANALYST:
         try:
             records = finished_coverage_records(worktree, coverage_records())
-        except Exception:  # a crashed read lists none, as the wizard's picker does
+        except Exception:  # a crashed read lists none
             logger.exception("Run Coverage Records read failed")
     fields = [asdict(field) for field in built.fields(chosen)]
     for field in fields:
@@ -209,7 +207,7 @@ def run_request(body: Mapping[str, Any]) -> RunRequest:
 
 
 def _argv(launcher: Launcher, worktree: Path, run: RunRequest) -> tuple[str, ...]:
-    """The words the form's values make, as the wizard builds them.
+    """The words the form's values make.
 
     ``UnknownEntryError`` for an unknown endpoint, ``InvalidRunError`` for a value or extra
     text the endpoint's form does not take, ``RunRefusedError`` for the form's own error.
@@ -250,7 +248,7 @@ def _refusal(facts: RunFacts) -> str:
 
 
 def _checked(worktree: Path, run: RunRequest, check_run: Callable[[], _T]) -> _T:
-    """Run an argument check; ``CheckFailedError`` when it raises, in the wizard's wording."""
+    """Run an argument check; ``CheckFailedError`` when it raises."""
     try:
         return check_run()
     except Exception as exc:

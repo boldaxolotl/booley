@@ -98,7 +98,7 @@ logger = logging.getLogger(__name__)
 # NOTE: ``spec`` was removed when spec_arbiter took over spec-compliance
 # arbitration (ADR-0014), then re-introduced (ADR 0038) after the arbiter
 # itself was pruned — without it nothing checked RTL against the spec.
-# Ordered so the Dashboard wizard lists the focuses in this order.
+# Ordered so the Run form lists the focuses in this order.
 RTL_FOCUSES = ("spec", "bugs", "protocol", "security", "optimization", "code_style")
 RTL_FOCUS_CATEGORIES = frozenset(RTL_FOCUSES)
 

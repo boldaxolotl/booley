@@ -33,8 +33,7 @@ they are.
 
 The glossary lists "IDE" and "agentic RTL IDE" as terms to avoid for the
 product itself. VS Code remains the shell; it is described as the window
-that holds agent sessions, the Booley Dashboard, and the editor, not as the
-product.
+that holds agent sessions and the editor, not as the product.
 
 Product direction follows the framing: UI work goes into supervising agents
 (sessions, Goal and evidence status, review), not editor features. The
@@ -56,8 +55,6 @@ break the package, CLI, repository, and published links for no gain.
   ARCHITECTURE, and AGENTS.md use the ADE framing.
 - Warp and Orca are named only in WHY.md, to explain the category.
 - The CHANGELOG keeps its historical "IDE" wording.
-- Internal names such as the site's `ide-figure.html` are left alone: that
-  illustration shows a VS Code window.
 
 ## Amendments (2026-11-12)
 

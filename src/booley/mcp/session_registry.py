@@ -487,16 +487,6 @@ class SessionRegistry:
         return removed
 
 
-def shares_worktree(facts: Attribution, other: Attribution) -> bool:
-    """Only distinct attributed callers count; a fallback cannot prove another session."""
-    return bool(
-        facts.worktree_key
-        and facts.worktree_key == other.worktree_key
-        and facts.key != other.key
-        and other.kind != "worktree"
-    )
-
-
 def namespace(proc_root: Path = Path("/proc")) -> str:
     """Current PID namespace; unavailable cannot authorize process observation."""
     try:

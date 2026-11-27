@@ -13,7 +13,7 @@ the Main Booley Directory resolution of ``booley.core.booley_dir``;
 ``tests/harness/test_session_activity_hook.py`` holds the two in agreement.
 
 Every event in ``EVENT_STATES`` and ``SessionEnd`` writes one signal under
-``runtime/session_activity`` (Dashboard activity).
+``runtime/session_activity``, which the Session Registry reads.
 
 It prints nothing to stdout (clients feed hook output back to the model),
 reports a problem on stderr only, and always exits 0, so it can never block or
@@ -366,7 +366,7 @@ def resolve_common_booley_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
     """The Main Booley Directory of the session's Project, or ``None`` outside one.
 
     Session activity is Common Booley State (ADR 0082): a session in a linked
-    worktree writes where the Dashboard, which reads the main directory, looks.
+    worktree writes where the Session Registry, which reads the main directory, looks.
     An unreadable Git topology keeps the selection; the hook must not fail a turn.
     """
     selected = resolve_booley_dir(env, cwd)

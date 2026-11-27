@@ -871,7 +871,7 @@ def test_process_rows_hide_on_process_exit_and_on_session_end(registry, monkeypa
 
 
 def test_tool_call_after_session_end_shows_the_row_again(registry):
-    from booley.runtime.session_activity import UNKNOWN, ActivityStore, observed_activity
+    from booley.runtime.session_activity import ActivityStore
     from tests.conftest import write_activity_signal
 
     registry.upsert(facts(), "sim", "completed", now=100)
@@ -881,8 +881,7 @@ def test_tool_call_after_session_end_shows_the_row_again(registry):
     rows = registry.visible_snapshot(now=131, scope=SCOPE).rows
     assert [row.attribution.key for row in rows] == ["codex:one"]
     # The end marker is never reported as the returning session's activity.
-    store = ActivityStore(registry.booley_dir)
-    assert observed_activity(store.read("codex:one"), now=131).state == UNKNOWN
+    assert ActivityStore(registry.booley_dir).read("codex:one") is None
 
 
 @pytest.mark.asyncio

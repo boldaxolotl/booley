@@ -14,13 +14,6 @@ them and metrics you can trust.
 
 **Website:** [booley.dev](https://booley.dev/) for the full feature tour, videos, and blog.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
-  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley
-  Dashboard, and waveform inspection"
-  src="https://booley.dev/docs/assets/booley-screenshot.png">
-</picture>
-
 ## What it does
 
 The [Features page](https://booley.dev/docs/features/) is the complete feature reference.
@@ -65,8 +58,8 @@ simulation or synthesis run needs and starts as many together as your machine
 can hold, so small runs don't wait behind big ones and nothing runs out of
 memory.
 
-Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms,
-and a dashboard showing what every agent is doing.
+Agent chats, RTL, terminals and waveforms sit in one VS Code window, and a web
+dashboard shows each worktree's Jobs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">

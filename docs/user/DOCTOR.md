@@ -93,8 +93,8 @@ last result is older than 7 days (1 day if it found problems) or older than a
 change to the Project's configuration or the Booley version.
 
 It never blocks work. New problems show up in the output of
-`booley session up`, at the top of the next Flow result the agent receives,
-and on the Dashboard. The full output of the last run is in
+`booley session up` and at the top of the next Flow result the agent
+receives. The full output of the last run is in
 `.booley/runtime/doctor/last.log`.
 
 ## Deep checks

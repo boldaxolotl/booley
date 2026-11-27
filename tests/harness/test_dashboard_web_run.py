@@ -1,4 +1,4 @@
-"""`booley dashboard --web`: the Run form's choices as JSON, behind the `web-run-panel` flag."""
+"""`booley dashboard`: the Run form's choices as JSON, behind the `web-run-panel` flag."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ from tests.harness.test_dashboard_run import (
     write_config,
     write_picker_project,
 )
-from tests.harness.test_dashboard_run_pickers import SIM_FIFO_RUNS, TARGETS_BY_FLOW
 from tests.harness.test_dashboard_specialist_form import write_coverage_record
 from tests.harness.test_dashboard_web import _job, _queued_world, _web
 from tests.uvicorn_support import capture_serving
@@ -44,6 +43,15 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 world = web_tests.world
 empty_home = specialist_tests.empty_home
 spawned = run_tests.spawned
+
+TARGETS_BY_FLOW = {
+    "fpga": ["fpga_fifo"],
+    "lint": ["lint_fifo"],
+    "mutation": ["sim_fifo", "sim_wide"],
+    "sim": ["sim_fifo", "sim_wide"],
+    "synth": ["synth_fifo"],
+}
+SIM_FIFO_RUNS = ["reset", "stress", "stress+short", "stress+soak", "slow"]
 
 FLAG = "web-run-panel"
 # Every Run route with the parameters that make it answer for a worktree.
@@ -451,7 +459,7 @@ def test_unfinished_jobs_are_named_oldest_first_whatever_the_listing_order(world
     _queued_world(world)
     jobs = JobReader(world.booley, proc_root=world.proc).read().jobs
     listed = tuple(sorted(jobs, key=lambda job: job.record.run_id, reverse=reverse))
-    snapshot = model.DashboardSnapshot((), JobSnapshot(listed), observed_at=1.0)
+    snapshot = model.DashboardSnapshot((), JobSnapshot(listed))
 
     occupants = model.worktree_occupants(snapshot, world.wt)
 
@@ -1058,10 +1066,9 @@ def test_specialist_form_keeps_max_turns_and_timeout_under_more_and_shows_its_er
         f'data-dest="{dest}"' in released["run-fields"]["html"]
         for dest in ("max_turns", "timeout")
     )
-    # The rebuilt form puts the caret back where the user was typing, and has no Textual hint.
+    # The rebuilt form puts the caret back where the user was typing.
     assert "field:scope" in probe["focused"]
     assert probe["selections"][0] == ["scope", 6, 6]
-    assert "Enter shows" not in released["run-fields"]["html"]
     assert focused["run-error"]["hidden"] is True
     assert focused["run-command"]["text"].endswith(
         "booley specialist reviewer --category rtl --focus bugs --scope fifo.v"

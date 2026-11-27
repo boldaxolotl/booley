@@ -415,7 +415,7 @@ RUN chmod 0755 /etc/t3code \
     && chmod 0644 /etc/t3code/policy.json \
     && t3 policy check /etc/t3code/policy.json
 # Both policy files also run this hook on client lifecycle events so the
-# Dashboard can show session activity (ADR 0068). It is a standalone
+# Session Registry can read session activity (ADR 0068). It is a standalone
 # standard-library script, not a `booley` import: the client waits for it on
 # every prompt and tool call.
 COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/session_activity_hook.py

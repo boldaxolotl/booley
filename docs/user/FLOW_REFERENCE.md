@@ -63,8 +63,7 @@ still running, or that there is nothing to wait for. Pass a `run_id` to wait for
 one specific Job. Jobs started by another agent session or by a nested
 Specialist are not included. Every Booley MCP tool response ends with one line
 for each finished Job you started but have not polled yet (up to ten, then a
-count of the rest; input prompts carry none), and the Dashboard's
-Job details show how long each result waited before it was read.
+count of the rest; input prompts carry none).
 
 ### Resource use
 

@@ -78,25 +78,26 @@ judge the evidence.
 
 Booley is not only infrastructure for the Developer Agent. It is workflow
 infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA
-tools, waveforms, run status, and review evidence share a single VS Code
-window.
+tools, waveforms, and review evidence share a single VS Code window.
 
 - **Hands-on.** Work through conversation: ask for an edit, run Booley Flows,
   debug a failure. You can still read and edit RTL yourself between agent
   turns.
 - **Parallel.** Leave sessions running in container terminals alongside, each
-  on its own branch and worktree ([Parallel Sessions](#parallel-sessions)).
-  The Booley Dashboard shows every session and Job; you step in when an agent
-  needs a decision.
+  on its own branch and worktree ([Parallel Sessions](#parallel-sessions)), and
+  step in when an agent needs a decision. The Booley Dashboard shows each
+  worktree's Jobs.
 
 Either way, Booley removes the manual transitions among editor, build commands,
 logs, waveform viewer, and review artifacts. Less time spent on that plumbing
 means faster iterations and more opportunities to verify, refine, and optimize
 the design.
 
-Today the shell is stock VS Code: agent sessions run in its terminals and the
-Booley Dashboard in its panel. Native agent-supervision UI (evidence status,
-Flow dashboards, one-click review) is on the
+Today the shell is stock VS Code: agent sessions run in its terminals. The
+Booley Dashboard is a web page of each worktree's Jobs, for T3 Code's preview
+panel.
+Native agent-supervision UI (evidence status, Flow dashboards, one-click
+review) is on the
 [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term
 direction is Booley as a **standalone ADE**.
 
@@ -226,7 +227,7 @@ Settings are in [Jobs](CONFIG.md#jobs--concurrency-jobs); the reasoning is in
 
 Several Developer Agents working in one checkout overwrite each other's edits
 and builds. Run each session in its own linked worktree and branch inside the
-Sandbox instead; the Dashboard shows the sessions and their Jobs,
+Sandbox instead; the Dashboard shows each worktree's Jobs,
 and [Job Admission](#job-admission) decides how many of their Jobs run at once.
 
 ### Code Coverage

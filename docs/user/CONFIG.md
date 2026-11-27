@@ -116,7 +116,7 @@ memory = "32g"           # the Sandbox's memory limit; the Memory Budget comes f
 ```
 
 The Memory Budget comes from the Sandbox's memory limit, `[sandbox].memory`,
-less what the running agents, the MCP server, and the Dashboard use. Without
+less what the running agents and Booley's own services use. Without
 swap the budget is smaller, so fewer Jobs run at once: give the Sandbox
 [swap](SANDBOX.md#project-settings-sandbox). Without `[sandbox].memory` the
 Sandbox has no limit, so Booley starts from the machine's installed memory;

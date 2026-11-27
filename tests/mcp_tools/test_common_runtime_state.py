@@ -157,27 +157,6 @@ def test_job_slot_store_is_in_main(worktree, monkeypatch):
     assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
 
 
-def test_dashboard_handles_use_main(worktree, monkeypatch):
-    from booley.harness.dashboard import command
-
-    main, tree = worktree
-    # The view is interactive and blocks, so no public entry point shows which Booley
-    # Directory it reads: stub its socket, probe server and terminal label, and observe
-    # the argument at the reader.
-    owner = MagicMock()
-    owner.__enter__.return_value = owner
-    monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
-    monkeypatch.setattr(command.socket, "socket", lambda *_: owner)
-    monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
-    monkeypatch.setattr(command.view_probe, "serve", lambda *_: MagicMock())
-    monkeypatch.setattr(command, "_label_terminal", lambda: lambda: None)
-    monkeypatch.setattr(command, "DashboardApp", MagicMock())
-    reader = MagicMock()
-    monkeypatch.setattr(command, "DashboardReader", reader)
-    assert command.run_dashboard(tree) == 0
-    reader.assert_called_once_with(tree, main)
-
-
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):
     from booley.harness import doctor
 

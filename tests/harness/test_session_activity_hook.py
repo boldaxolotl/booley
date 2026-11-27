@@ -215,7 +215,6 @@ def test_every_translated_event_is_readable_by_the_package(tmp_path, event, stat
     assert (signal.state, signal.at) == (state, "2026-10-08T10:10:00Z")
     # Only a pending tool call names its tool.
     assert signal.tool == ("mcp__booley__Sim" if state == activity.WAITING_TOOL else "")
-    assert activity.observed_activity(signal, now=NOW + 5).state == state
 
 
 @pytest.mark.parametrize(

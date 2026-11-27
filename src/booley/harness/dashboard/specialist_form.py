@@ -1,6 +1,6 @@
-"""The Run wizard's hand-made forms for the ``reviewer`` and ``coverage_analyst`` Specialists.
+"""The Run form's hand-made forms for the ``reviewer`` and ``coverage_analyst`` Specialists.
 
-No Textual here. Flow forms are generated from a parser (``run_form``); a
+Flow forms are generated from a parser (``run_form``); a
 Specialist's form is written by hand, because a person starts a review with a
 category, a focus and a scope, or an analysis with a Coverage Record, rather than with
 every parser option. The options a form leaves out are named in the drift guard's
@@ -22,7 +22,7 @@ from booley.harness.dashboard.jobs import FINISHED_JOB_STATES, JobView
 from booley.harness.dashboard.run_form import Field, text_words
 from booley.runtime.timefmt import format_clock, parse_timestamp
 
-# The built-in Specialists the wizard has a form for: every one of them.
+# The built-in Specialists with a form: every one of them.
 REVIEWER: Final = "reviewer"
 COVERAGE_ANALYST: Final = "coverage_analyst"
 
@@ -52,7 +52,7 @@ _SPEC = _text(
 )
 _SCOPE = _text("scope", "Scope", "--scope", "Comma-separated files to review (required).")
 _INSTRUCTION = _text("instruction", "Instruction", "--instruction", "Extra instructions.")
-_MORE = Field("more", "more", "More", "", "Enter shows or hides max turns and timeout.", ())
+_MORE = Field("more", "more", "More", "", "", ())
 _MAX_TURNS = _text("max_turns", "Max turns", "--max-turns", "Most conversation turns.")
 _TIMEOUT = _text("timeout", "Timeout", "--timeout", "How long the review may run, e.g. 30m.")
 _ANALYSIS_TIMEOUT = _text(
@@ -67,8 +67,6 @@ _COVERAGE_RECORD = Field(
     ("--record",),
     required=True,
 )
-# The picker row that opens the text editor; no Coverage Record path equals it.
-TYPE_COVERAGE_RECORD: Final = "Type a coverage.json path…"
 NO_COVERAGE_RECORDS: Final = (
     "No finished Coverage Record in this worktree. Run a coverage Simulation on a Target "
     "first (booley flow sim --coverage --target <Target>), or type a coverage.json path."
@@ -76,8 +74,8 @@ NO_COVERAGE_RECORDS: Final = (
 
 
 def focuses(category: str) -> tuple[str, ...]:
-    """The review focuses of *category*, in the order the wizard lists them."""
-    # Lazy: the Reviewer module is heavy and the wizard only needs these two constants.
+    """The review focuses of *category*, in the order the Run form lists them."""
+    # Lazy: the Reviewer module is heavy and the form only needs these two constants.
     from booley.specialists.reviewer import RTL_FOCUSES, TB_FOCUS_CATEGORIES
 
     if category == "rtl":
@@ -281,5 +279,5 @@ class CoverageAnalystForm:
         return tuple(words)
 
 
-# A Specialist's form: the wizard treats everything that is not a Flow's generated form as one.
+# A Specialist's form: everything that is not a Flow's generated form.
 SpecialistForm = ReviewerForm | CoverageAnalystForm

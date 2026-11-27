@@ -29,13 +29,6 @@ from .agent import (  # noqa: F401 — re-exported as public API of configuratio
     worktree_agent_settings,
 )
 
-# --- Re-exports: editor for Console clickable links (always VS Code) ---
-from .editor import (  # noqa: F401 — re-exported as public API of configuration settings
-    VSCODE_EDITOR,
-    ResolvedEditor,
-    resolve_editor,
-)
-
 # --- booley.toml loader ---
 
 

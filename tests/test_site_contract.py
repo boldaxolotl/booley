@@ -1,8 +1,8 @@
-"""Project site contracts: links, colours, contrast and the generated illustration.
+"""Project site contracts: links, colours, contrast and the generated diagrams.
 
 These tests fail when a README link points at a site section or page that no
 longer exists, when a site colour escapes the theme tokens or fails WCAG AA
-contrast, or when the generated home-page illustration is stale.
+contrast, or when a generated diagram is stale.
 """
 
 import html
@@ -43,8 +43,8 @@ def test_readme_links_resolve_to_site_sections_and_pages():
     assert not failures, failures
 
 
-def test_generated_illustration_is_up_to_date():
-    """ide.css, ide-figure.html, and the architecture and Features diagrams match their sources."""
+def test_generated_diagrams_are_up_to_date():
+    """The architecture and Features diagrams match their sources."""
     spec = importlib.util.spec_from_file_location(
         "site_illustration", WEBSITE / "illustration/build.py"
     )
@@ -52,8 +52,6 @@ def test_generated_illustration_is_up_to_date():
     build = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(build)
 
-    assert build.FIGURE_OUT.read_text(encoding="utf-8") == build.figure_html()
-    assert build.CSS_OUT.read_text(encoding="utf-8") == build.css_text()
     assert build.ARCHITECTURE_OUT.read_text(encoding="utf-8") == build.architecture_svg()
     assert build.ARCHITECTURE_DARK_OUT.read_text(encoding="utf-8") == build.architecture_svg(
         dark=True
@@ -62,7 +60,6 @@ def test_generated_illustration_is_up_to_date():
         for theme in build.THEME_RULES:
             generated = build.feature_out(name, theme).read_text(encoding="utf-8")
             assert generated == build.feature_svg(name, theme), (name, theme)
-    assert '--8<-- "ide-figure.html"' in SITE
 
 
 # ---------------------------------------------------------------- theme tokens

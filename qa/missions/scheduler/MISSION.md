@@ -99,8 +99,8 @@ Try:
   one waits with its position and none is refused. Nothing is left in the
   `memory/` directory afterwards.
 - With agent credentials: submit `lint_caliptra` over MCP while the budget is
-  full; `booley_poll` shows `QUEUED (position N)` with the same reasons. On
-  the Dashboard, the Job detail has a Queue row.
+  full; `booley_poll` shows `QUEUED (position N)` with the same reasons. The
+  Dashboard page of the Job's worktree shows its queue position.
 Look for: a waiter with no reason, "free" that does not match budget minus
 holders, a Job that starts while it does not fit, a stale claim file, a
 budget change ignored by later Jobs.

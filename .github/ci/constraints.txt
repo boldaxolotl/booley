@@ -98,14 +98,10 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 libcst==1.9.0
     # via booley-rtl (pyproject.toml)
-linkify-it-py==2.2.0
-    # via markdown-it-py
 markdown-it-py==4.2.0
     # via
     #   booley-rtl (pyproject.toml)
     #   mdit-py-plugins
-    #   rich
-    #   textual
 markupsafe==3.0.4
     # via jinja2
 mcp==2.3.0
@@ -115,9 +111,7 @@ mcp==2.3.0
 mcp-types==2.3.0
     # via mcp
 mdit-py-plugins==0.6.1
-    # via
-    #   booley-rtl (pyproject.toml)
-    #   textual
+    # via booley-rtl (pyproject.toml)
 mdurl==0.1.2
     # via markdown-it-py
 nanobind-backend==1.0.0
@@ -132,8 +126,6 @@ packaging==26.3
     # via
     #   build
     #   pytest
-platformdirs==4.14.5
-    # via textual
 pluggy==1.7.0
     # via
     #   diff-cover
@@ -156,8 +148,6 @@ pygments==2.21.0
     # via
     #   diff-cover
     #   pytest
-    #   rich
-    #   textual
 pyjwt==2.15.1
     # via mcp
 pyparsing==3.3.3
@@ -207,17 +197,11 @@ referencing==0.37.0
     # via
     #   jsonschema
     #   jsonschema-specifications
-rich==15.0.0
-    # via
-    #   booley-rtl (pyproject.toml)
-    #   textual
 rpds-py==2026.9.1
     # via
     #   jsonschema
     #   referencing
 ruff==0.17.2
-    # via booley-rtl (pyproject.toml)
-setproctitle==1.3.8
     # via booley-rtl (pyproject.toml)
 setuptools==84.2.1
     # via booley-rtl (pyproject.toml)
@@ -235,8 +219,6 @@ starlette==1.10.0
     # via
     #   mcp
     #   sse-starlette
-textual==8.2.8
-    # via booley-rtl (pyproject.toml)
 tomli==2.5.0
     # via booley-rtl (pyproject.toml)
 tomlkit==0.15.2
@@ -259,7 +241,6 @@ typing-extensions==4.16.0
     #   pytest-asyncio
     #   referencing
     #   starlette
-    #   textual
     #   typing-inspection
 typing-inspection==0.4.5
     # via

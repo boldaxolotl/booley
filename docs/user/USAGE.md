@@ -204,87 +204,19 @@ shows peak memory and run time per Target. How to read a result:
 
 ### The dashboard
 
-Run `booley dashboard` in a container terminal to open the Dashboard.
-`booley dashboard` replaces a Dashboard that no terminal shows any more.
-The Dashboard has three windows; press `←` or `→` to switch:
+The Dashboard is a web page of one worktree's Jobs, the long runs of Flows and
+Specialists. Open it to see what runs there, what waits and how each run ended.
 
-- **Sessions:** every Developer Agent session and what its agent last
-  reported: working, waiting for a tool call, or waiting for your input.
-  Sessions waiting for your input are grouped under
-  **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
-  Each session's row lists its running and queued Jobs; Jobs with no session
-  are listed under **STANDALONE JOBS**. Finished Jobs are only in the Jobs
-  window.
-  When the session's checkout declares a `[target.flow]` table in
-  `metrics.toml`, a second line under the session shows its measurement:
-  `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
-  5d6e7f8: 1 unmet, 3 not evaluated` when it is not, or `measuring 2/5 · 14m 00s`
-  while a `booley measure` Job runs there. `Enter` on a line that has a report
-  opens its Markdown
-  [Measurement Report](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)
-  in your editor.
-- **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
-  session. The tab reads `Jobs 1▶ 1 queued` while one Job runs and one waits
-  to start.
-  A `booley flow` or `booley specialist` run typed in a container terminal
-  also appears here as a Standalone Job with no session. Its output is copied
-  to `job.log`, shown as a link.
-- **Targets:** the Targets of one worktree, with their core and the Flows that
-  can drive them. Press `Enter` on a Target for its filesets, tests, Test
-  Variants, and constraints. When Run is available and a Flow can drive the
-  Target, the detail ends with those Flows (for a Simulation Target, also the
-  [Mutation Flow](FLOW-MUTATION.md)): press `↓` past its end, then `Enter`
-  on a Flow to open the Run form with the worktree and Target filled in; `Esc`
-  on the form itself returns to the detail.
-  The **Worktree** item in the top bar picks the worktree: those with a
-  connected session come first, the main checkout last.
+1. Run `booley dashboard` in a container terminal. It serves
+   `http://127.0.0.1:8090` until you press `Ctrl+C`; `--port` picks another
+   port.
+2. Open `http://127.0.0.1:8090/?worktree=<absolute path>` in the preview panel
+   of [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). Each worktree
+   has its own page.
 
-The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
-or `coverage_analyst` Specialist, as a Standalone Job. Pick the worktree and the
-Flow, then fill in the form the Dashboard builds from that Flow's options (the Project comes from
-the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
-Common and Flow option is
-a field: `Enter` flips an on/off flag, opens a short list for an option with
-choices or a default/on/off pair, or opens a text editor. The Target field picks
-one Target of the worktree that the Flow can drive, or `automatic`; put more
-Targets in **Extra arguments**. Once you have chosen a Target, the test field of
-the Simulation Flow lists its [Test Runs](TESTS.md): each test, and each test
-with one of its Test Variants (written `test+variant`). `Enter` toggles a Test
-Run at once, and `Esc` only goes back to the form; choosing another Target
-clears them. **Extra arguments** takes seeds and further Targets too. When a
-list cannot be read, the open list says why, and **Extra arguments** still takes
-the Targets and Test Runs you type. Output and Expert options go in the
-**Extra arguments** field, typed as on the command line. `Esc` in a choice list
-or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
-`cd … && booley flow …` command. The
-review screen also says whether the Job runs now or is admitted by
-memory. Every Job that takes a slot, Specialists and the Mutation Flow
-included, is admitted by memory: it waits while its estimate does not fit the
-Memory Budget. A dry run runs now. The screen also warns when the worktree has
-a connected session, running or queued Jobs, or uncommitted changes. A check it
-cannot make is reported as such. Synth and FPGA runs show their timeout per
-work unit, a Mutation Flow run its timeout for the whole run, and a Specialist
-its timeout per model call; Simulation and lint runs show none.
-**Submit** starts the Job, unless, for a Specialist, its Agent CLI cannot
-sign in or its settings cannot be read:
-then Submit says why (with the fix) and does nothing until the problem is fixed.
-**Copy command** asks your terminal to copy the
-command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
-Finished filter switches to Running, which keeps the Job listed after it
-finishes. `Esc` returns to where you started.
-
-The `coverage_analyst` form has no Extra arguments field. Its Coverage Record
-row lists the `coverage.json` of each finished coverage run among the Jobs the
-Dashboard still lists under All, newest first; with none, only the row that
-types the path of any other `coverage.json` is shown. Instruction, max turns,
-and timeout follow, the last two under More.
-
-Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, Run, and Help; the
-footer shows the keys you can use.
-
-Sessions have short handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25` or `J-SYN34`.
+It shows the running and queued Jobs, and the finished ones with a link to each
+report. A `booley flow` or `booley specialist` run you type in a container
+terminal is a Standalone Job, owned by `you`.
 
 ### Several agents at once
 

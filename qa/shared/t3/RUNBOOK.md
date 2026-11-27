@@ -199,7 +199,7 @@ after `booley session down` and `up`, or when the relay reports it moved
 
 **Dashboard.** Until the Sandbox starts the Dashboard and T3 Code opens it
 on its own (#4749), start it by hand. In the T3 Code UI, open the terminal
-drawer of a thread on the main checkout and run `booley dashboard --web`
+drawer of a thread on the main checkout and run `booley dashboard`
 there; it serves on Sandbox `127.0.0.1:8090` until stopped. Open
 `http://127.0.0.1:8090/?worktree=/work` (or another worktree's absolute path)
 in T3 Code's preview panel. The relay forwards only T3 Code's own port, so
@@ -261,8 +261,8 @@ one refresh before calling a mismatch.
 | GUI surface | Oracle |
 |---|---|
 | T3 Code project list, threads and their checkouts | `booley session enter -- git -C /work worktree list`, and what you started |
-| Dashboard Jobs list and Job detail | `booley session enter -- curl -s 'http://127.0.0.1:8090/api/snapshot?worktree=<path>'` for what the page should render; the Job records for the data: `booley session enter -- sh -c 'for f in /work/.booley/{,logs/,logs/*/,job_logs/*/}.runtime/jobs/*.json; do jq -c "{run_id,endpoint,status,exit_code,owner,work_dir}" "$f"; done 2>/dev/null'`, plus `ps -eo pid,etime,args` for running ones |
-| Job owner | The thread's T3 Code title, else the agent and a short thread id; `you` for a Standalone Job (CLI-REFERENCE, `booley dashboard --web`) |
+| Dashboard Now and Results lists | `booley session enter -- curl -s 'http://127.0.0.1:8090/api/snapshot?worktree=<path>'` for what the page should render; the Job records for the data: `booley session enter -- sh -c 'for f in /work/.booley/{,logs/,logs/*/,job_logs/*/}.runtime/jobs/*.json; do jq -c "{run_id,endpoint,status,exit_code,owner,work_dir}" "$f"; done 2>/dev/null'`, plus `ps -eo pid,etime,args` for running ones |
+| Job owner | The thread's T3 Code title, else the agent and a short thread id; `you` for a Standalone Job (CLI-REFERENCE, `booley dashboard`) |
 | Dashboard resource figures | The snapshot JSON; roughly, `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /work` |
 | Run form choices and review screen | `booley targets`, `booley specialist <name> --help`, the `[agent]` settings; the shown command run in the Sandbox, whose Job record must match the form's |
 | A `measure` Job and the report it links | The run's own document by run ID (the Job record carries `run_id`): `find /work/.booley/measurements -name '<run_id>.json'` read with `jq .`, and its commit against `git -C <worktree> rev-parse HEAD`. Never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement |
@@ -290,7 +290,7 @@ gap in `log.md` the first time you meet it.
 
 ## 10. Cleanup
 
-1. Stop `booley dashboard --web` (Ctrl+C in its terminal drawer) and close
+1. Stop `booley dashboard` (Ctrl+C in its terminal drawer) and close
    your tab (`t3_preview_close` with your `tabId`).
 2. `qa$ booley session down` in `$QA_PROJECT`, which removes the Sandbox and
    stops the relay. The relay's port record, in the QA config home, stays on

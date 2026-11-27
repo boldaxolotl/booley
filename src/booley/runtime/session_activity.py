@@ -1,8 +1,7 @@
 """Session activity reported by agent-client lifecycle hooks (ADR 0068).
 
-A hook writes the last lifecycle event of one session; the Dashboard reads it.
-Activity is presentational only: no lifecycle rule reads it, and a missing or
-stale signal is "unknown", never a guess.
+A hook writes the last lifecycle event of one session; the Session Registry
+reads its end marker and prunes old signals.
 
 The writer is the standalone hook script the Sandbox Image installs
 (``booley/data/docker/session_activity_hook.py``); it cannot import this
@@ -38,7 +37,6 @@ SCHEMA = 1
 WORKING = "working"
 WAITING_TOOL = "waiting for tool call"
 WAITING_USER = "waiting for user input"
-UNKNOWN = "unknown"
 
 # Lifecycle events the hook script translates; the image must install a hook for each.
 EVENT_STATES = {
@@ -57,20 +55,12 @@ END_EVENT = "SessionEnd"
 # SessionEnd turns the session's signal into an end marker with this state.
 ENDED = "ended"
 
-# A client that died mid-turn sends no closing event. A busy state older than
-# the longest Booley tool call is therefore no longer evidence of activity.
-BUSY_STALE_AFTER = 7200.0
 # Tolerated clock difference between the hook and the reader.
 FUTURE_TOLERANCE = 5.0
 MAX_SIGNALS = 4096
 MAX_SIGNAL_BYTES = 4096
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
-
-# Why an activity is unknown, in the words the Dashboard shows.
-NO_REPORT = "no report yet"
-STALE_BUSY = f"no event for {BUSY_STALE_AFTER / 3600:g} h; the client may have stopped"
-AHEAD = "the report's time is ahead of this clock"
 
 
 def process_session_key(identity: ProcessIdentity) -> str:
@@ -109,19 +99,6 @@ class ActivitySignal:
     state: str
     at: str
     tool: str = ""
-
-
-@dataclass(frozen=True)
-class Activity:
-    """What the Dashboard shows: a reported state and when it began, or unknown.
-
-    An unknown activity says why in ``cause``; a reported one ignores it.
-    """
-
-    state: str = UNKNOWN
-    since: str = ""
-    tool: str = ""
-    cause: str = NO_REPORT
 
 
 def _parse(raw: bytes, key: str) -> ActivitySignal:
@@ -233,7 +210,7 @@ class ActivityStore:
         publishes by atomic replacement and shares no lock with this
         pruner, so the file is examined again immediately before removal: a
         replacement is a different inode. The remaining window is the instant
-        between that check and the unlink; losing it shows unknown until the
+        between that check and the unlink; losing it drops the signal until the
         session's next event.
         """
         try:
@@ -253,15 +230,3 @@ class ActivityStore:
         except OSError:
             return False
         return True
-
-
-def observed_activity(signal: ActivitySignal | None, *, now: float) -> Activity:
-    """Report a fresh signal; a missing, future or stale busy signal is unknown, with its cause."""
-    if signal is None:
-        return Activity()
-    age = now - parse_timestamp(signal.at).timestamp()
-    if age < -FUTURE_TOLERANCE:
-        return Activity(cause=AHEAD)
-    if signal.state != WAITING_USER and age >= BUSY_STALE_AFTER:
-        return Activity(cause=STALE_BUSY)
-    return Activity(signal.state, signal.at, signal.tool)

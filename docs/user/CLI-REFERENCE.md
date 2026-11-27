@@ -51,8 +51,7 @@ Host Bootstrap is described in [INSTALL.md](INSTALL.md#host-bootstrap);
 ### Work in the Sandbox · container
 
 ```bash
-booley dashboard                  # sessions and Jobs; see Usage
-booley dashboard --web            # serve each worktree's Jobs page and JSON (--port PORT, default 8090)
+booley dashboard                  # serve each worktree's Dashboard page and JSON (--port PORT, default 8090)
 booley measure                    # measure HEAD against its committed metrics.toml and store the run
 booley measure <sha> --base <sha> # measure another commit; compare with another Base
 booley measure --all --json       # evaluate every table after a failure; print the report as JSON
@@ -61,8 +60,8 @@ booley measure --target <name>    # measure one Target's tables only
 booley measure --validate         # check .booley/metrics.toml; measures nothing
 ```
 
-- `booley dashboard --web` serves a page and JSON on `127.0.0.1` until you
-  stop it, on port 8090 unless `--port` names another; `--port` needs `--web`.
+- `booley dashboard` serves a page and JSON on `127.0.0.1` until you stop it,
+  on port 8090 unless `--port` names another.
   Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
   page, which refreshes every 3 s.
   `GET /api/snapshot?worktree=<absolute path>` answers for the main checkout or

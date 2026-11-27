@@ -230,7 +230,7 @@ Try:
 - Commit, `booley measure --base <the commit that registered the tests>` (the
   default Base is the upstream pin, so the registry would read as "tests
   changed"): one child Flow per table in a clean checkout, a stored Measurement
-  Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
+  Run, green header, exit 0.
   Again: the stored run, no Flow, exit 0. `--again` stores a second run;
   `--again --target synth_mac_10g` is never stored or Measured (reports under
   `job_logs/standalone/<run_id>/`); `--json` matches the Markdown
@@ -305,9 +305,8 @@ Try:
   identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews
   done; keep the review reports.
 - Message-only amend: amend the Measured repair commit's message; `booley
-  measure` prints the stored run, starts no Flow, exits 0, and the Dashboard
-  reads `Measured <new sha>`. Amend with a one-byte content change: measured
-  again.
+  measure` prints the stored run, starts no Flow and exits 0. Amend with a
+  one-byte content change: measured again.
 - Loosened rules, each in a disposable commit with and without a `notes` entry,
   measured with `--base <the commit holding area 9's final rules>` (the default
   Base on this run-owned branch is the upstream pin, which has no
