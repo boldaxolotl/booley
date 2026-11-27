@@ -36,6 +36,8 @@ below target the common formats and are intentionally easy to adjust.
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
 import os
 import socket
@@ -47,10 +49,12 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from types import SimpleNamespace
+from typing import IO, cast
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.project_config import configured_project_name
+from booley.core.boundary import require_dict, require_int, require_str
 from booley.runtime import auth_token
 from booley.runtime.booley_dir import resolve_booley_dir, runtime_dir
 from booley.runtime.mcp_config import (
@@ -61,6 +65,7 @@ from booley.runtime.mcp_config import (
     gateway_provider_toml,
     http_port,
 )
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
 from booley.runtime.sandbox_layout import T3_POLICY_TARGET
 
@@ -79,6 +84,13 @@ _T3_START_TIMEOUT_SECONDS = 30.0
 PAIRING_TTL = "5m"
 NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code
 _T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
+_T3_IDENTITY_TIMEOUT_SECONDS = 1.0  # the whole descriptor exchange
+_T3_DESCRIPTOR_LIMIT = 1 << 20  # reply bytes
+T3_PORT_TAKEN = "port-taken"
+T3_PORT_TAKEN_MESSAGE = (
+    f"127.0.0.1:{T3_PORT} in the Sandbox is held by another process; "
+    "stop it, then run `booley session up`"
+)
 
 
 def http_url() -> str:
@@ -250,13 +262,71 @@ def _start_detached(
     return "failed"
 
 
-def t3_serving() -> bool:
-    """Whether T3 Code answers on its loopback port."""
-    return _port_is_serving(T3_PORT)
+def t3_state(project_root: Path) -> str:
+    """``"running"``, ``"port-taken"`` or ``"off"``: what holds T3 Code's loopback port.
+
+    ``"running"`` means the Project's own T3 Code: its runtime record and the listener's
+    environment descriptor agree. T3 Code's files are only read.
+    """
+    if not _port_is_serving(T3_PORT):
+        return "off"
+    return "running" if _t3_identity_proven(_t3_base(project_root)) else T3_PORT_TAKEN
 
 
 def _t3_base(project_root: Path) -> Path:
     return runtime_dir(project_root) / "t3"
+
+
+def _t3_identity_proven(base: Path) -> bool:
+    userdata = base / "userdata"
+    try:
+        record = require_dict(json.loads((userdata / "server-runtime.json").read_bytes()))
+        pid = require_int(record.get("pid"))
+        environment_id = (userdata / "environment-id").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return False
+    if record.get("port") != T3_PORT or not is_pid_alive(pid):
+        return False
+    return _t3_environment_id() == environment_id
+
+
+def _t3_environment_id() -> str | None:
+    """The environment ID the listener on T3 Code's port describes, or ``None``."""
+    try:
+        reply = _t3_descriptor_reply()
+        received = SimpleNamespace(makefile=lambda _mode: io.BytesIO(reply))
+        response = http.client.HTTPResponse(cast("socket.socket", received))
+        response.begin()
+        if response.status != 200:
+            return None
+        return require_str(require_dict(json.loads(response.read())), "environmentId")
+    except (OSError, http.client.HTTPException, ValueError, RecursionError):
+        return None
+
+
+def _t3_descriptor_reply() -> bytes:
+    """The raw reply to T3 Code's descriptor request, within one deadline for all of it.
+
+    A raw loopback socket never consults the Sandbox's ``HTTP_PROXY``.
+    """
+    deadline = time.monotonic() + _T3_IDENTITY_TIMEOUT_SECONDS
+    request = (
+        "GET /.well-known/t3/environment HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{T3_PORT}\r\nConnection: close\r\n\r\n"
+    )
+    reply = bytearray()
+    address = ("127.0.0.1", T3_PORT)
+    with socket.create_connection(address, timeout=_T3_IDENTITY_TIMEOUT_SECONDS) as sock:
+        sock.sendall(request.encode("ascii"))
+        while (left := deadline - time.monotonic()) > 0:
+            sock.settimeout(left)
+            chunk = sock.recv(65536)
+            if not chunk:
+                return bytes(reply)
+            reply += chunk
+            if len(reply) > _T3_DESCRIPTOR_LIMIT:
+                raise ValueError("T3 Code descriptor reply is too large")
+    raise TimeoutError("T3 Code descriptor reply took too long")
 
 
 def create_t3_pairing(project_root: Path, base_url: str) -> subprocess.CompletedProcess[str]:
@@ -281,18 +351,30 @@ def create_t3_pairing(project_root: Path, base_url: str) -> subprocess.Completed
 
 
 def ensure_t3_server(project_root: Path) -> str:
-    """Start T3 Code on loopback unless it answers, then register the Project with it.
+    """Start T3 Code on loopback unless its port is held, then register the Project with it.
 
     Returns ``"running"`` (already up: nothing is started or registered),
+    ``"port-taken"`` (another process holds the port: nothing is started),
     ``"started"``, ``"unregistered"`` (serving, but the Project is not
     registered), ``"policy-rejected"`` (``t3 policy check`` did not accept the
     policy, so nothing is started), or ``"failed"``. Never raises, so MCP
     registration still runs.
     """
-    if t3_serving():
-        return "running"
-    if not _t3_policy_accepted():
-        return "policy-rejected"
+    try:
+        state = t3_state(project_root)
+    except Exception as exc:  # noqa: BLE001 - Booley Directory resolution raises several error types
+        print(f"T3 Code not started: {exc}", file=sys.stderr)
+        return "failed"
+    if state == "running":
+        return state
+    if state == T3_PORT_TAKEN:
+        print(f"T3 Code not started: {T3_PORT_TAKEN_MESSAGE}", file=sys.stderr)
+        return state
+    return _serve_t3(project_root) if _t3_policy_accepted() else "policy-rejected"
+
+
+def _serve_t3(project_root: Path) -> str:
+    """Start ``t3 serve`` detached and register the Project; never raises."""
     try:
         runtime = runtime_dir(project_root)
         base = _t3_base(project_root)

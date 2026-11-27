@@ -1,8 +1,9 @@
 """In-Sandbox entry of the host's T3 Code controls: ``python -m booley.harness.incontainer_t3``.
 
 The host runs it through the hook shell, so it sees the hook's environment and working
-directory. Verbs: ``start`` (the registrar's T3 Code step), ``state`` (``running`` or ``off``),
-and ``pair <relay port>`` (T3 Code's pairing reply on stdout).
+directory. Verbs: ``start`` (the registrar's T3 Code step), ``state`` (``running``, ``off`` or
+``port-taken``), and ``pair <relay port>`` (T3 Code's pairing reply on stdout, or ``port-taken``
+and exit 1 when another process holds T3 Code's port).
 """
 
 from __future__ import annotations
@@ -31,11 +32,13 @@ def main(argv: list[str]) -> int:
     if args.verb == "start":
         print(incontainer_register.start_t3(agent.sandbox_agent_clis()))
     elif args.verb == "state":
-        print("running" if incontainer_setup.t3_serving() else "off")
+        print(incontainer_setup.t3_state(incontainer_register.hook_start_directory()))
     else:
-        pairing = incontainer_setup.create_t3_pairing(
-            incontainer_register.hook_start_directory(), f"http://127.0.0.1:{args.port}"
-        )
+        root = incontainer_register.hook_start_directory()
+        if incontainer_setup.t3_state(root) == incontainer_setup.T3_PORT_TAKEN:
+            print(incontainer_setup.T3_PORT_TAKEN)
+            return 1
+        pairing = incontainer_setup.create_t3_pairing(root, f"http://127.0.0.1:{args.port}")
         if pairing.returncode:
             print(f"t3 auth pairing create failed (exit {pairing.returncode})", file=sys.stderr)
             return 1
