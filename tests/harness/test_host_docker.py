@@ -50,8 +50,8 @@ def test_image_lookups_read_the_stored_image(docker: SandboxDocker) -> None:
     assert metadata is not None
     assert (metadata.layers, metadata.labels) == (("sha256:l",), {"large": large})
     assert docker.calls == [
-        ["docker", "image", "inspect", "keeper", "--format", "{{.Id}}"],
-        ["docker", "image", "inspect", "keeper"],
+        ["docker", "image", "inspect", "keeper", "--format", "{{json .Id}}"],
+        ["docker", "image", "inspect", "keeper", "--format", "{{json .}}"],
     ]
     assert idk.image_id("gone") is None
     docker.script(("image", "inspect"), completed(1, stderr="Error: no such object: gone"))
@@ -136,14 +136,18 @@ def _daemon_failure(operation: str) -> tuple[Any, str, str]:
 
 
 _INVENTORY_FAILURES = {
-    "empty-image-id": (_container_listing(""), "invalid immutable", "container_image_ids_strict"),
+    "empty-image-id": (
+        _container_listing('""'),
+        "invalid immutable",
+        "container_image_ids_strict",
+    ),
     "short-image-id": (
-        _container_listing("short"),
+        _container_listing('"short"'),
         "invalid immutable",
         "container_image_ids_strict",
     ),
     "uppercase-image-id": (
-        _container_listing("sha256:" + "A" * 64),
+        _container_listing('"sha256:' + "A" * 64 + '"'),
         "invalid immutable",
         "container_image_ids_strict",
     ),
@@ -156,6 +160,19 @@ _INVENTORY_FAILURES = {
     ),
     "containers-timeout": (
         [((), subprocess.TimeoutExpired("docker", 30))],
+        "cannot observe",
+        "container_image_ids_strict",
+    ),
+    "non-string-image-id": (
+        _container_listing("7"),
+        "invalid inspection",
+        "container_image_ids_strict",
+    ),
+    "inspect-timeout": (
+        [
+            (("container", "ls"), completed(stdout="c" * 64)),
+            (("container", "inspect"), subprocess.TimeoutExpired("docker", 30)),
+        ],
         "cannot observe",
         "container_image_ids_strict",
     ),
@@ -194,6 +211,15 @@ def test_ensure_unproxied_network_refuses_an_internal_network(docker: SandboxDoc
         idk.ensure_unproxied_network()
 
     assert not any(call[1:3] == ["network", "create"] for call in docker.calls)
+
+
+def test_ensure_unproxied_network_names_a_reason_docker_printed_on_stdout(
+    docker: SandboxDocker,
+) -> None:
+    docker.script(("network", "create"), completed(1, stdout="address pools exhausted"))
+
+    with pytest.raises(RuntimeError, match=r"booley-.*: address pools exhausted"):
+        idk.ensure_unproxied_network()
 
 
 @pytest.mark.parametrize(

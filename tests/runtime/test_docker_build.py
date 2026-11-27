@@ -101,7 +101,7 @@ def _docker(
     """The fake Docker CLI answering the capacity probes; *replies* override its table."""
     table = {
         "info": (0, str(tmp_path)),
-        "image": (0, "sha256:cached")
+        "image": (0, '"sha256:cached"')
         if cached
         else (1, "Error response from daemon: No such image"),
         "system": (0, f"Build Cache\t{build_cache}\t18GB"),
@@ -297,11 +297,15 @@ def test_capacity_planning_rejects_inconsistent_inputs(call, message: str) -> No
         call()
 
 
-@pytest.mark.parametrize("free_gib", [16, 14])
+@pytest.mark.parametrize(
+    ("free_gib", "label"),
+    [(16, '"sha256:cached"'), (14, '"sha256:cached"'), (16, "null")],
+    ids=["warm", "reserve", "missing-label"],
+)
 def test_warm_cache_uses_smaller_headroom_and_keeps_the_safety_reserve(
-    tmp_path: Path, monkeypatch, free_gib: int
+    tmp_path: Path, monkeypatch, free_gib: int, label: str
 ) -> None:
-    docker = _docker(tmp_path, monkeypatch, cached=True)
+    docker = _docker(tmp_path, monkeypatch, cached=True, image=(0, label))
     _set_free_space(monkeypatch, free_gib)
     request = DockerBuildRequest(
         "booley-sandbox",
@@ -310,13 +314,29 @@ def test_warm_cache_uses_smaller_headroom_and_keeps_the_safety_reserve(
     )
     plan = DockerBuildPlan((request,))
 
-    if free_gib == 16:
+    if free_gib == 16 and label != "null":
         assert _build(docker, current_request=request, remaining_plan=plan).returncode == 0
         assert docker.built
         return
-    with pytest.raises(OSError, match=r"15\.0 GiB required") as raised:
+    required, peak = (35, "30.0 GiB cold") if label == "null" else (15, "10.0 GiB warm")
+    with pytest.raises(OSError, match=rf"{required}\.0 GiB required") as raised:
         _build(docker, current_request=request, remaining_plan=plan)
-    assert "10.0 GiB warm temporary peak" in str(raised.value)
+    assert f"{peak} temporary peak" in str(raised.value)
+    assert not docker.built
+
+
+@pytest.mark.parametrize(("code", "output"), [(0, "7"), (1, "permission denied")])
+def test_unreadable_cache_evidence_refuses_the_build(
+    tmp_path: Path, monkeypatch, code: int, output: str
+) -> None:
+    docker = _docker(tmp_path, monkeypatch, image=(code, output))
+    evidence = DockerCacheEvidence("booley-sandbox", (("expected", "value"),))
+    request = DockerBuildRequest("booley-sandbox", "booley-sandbox", cache_evidence=evidence)
+    plan = DockerBuildPlan((request,))
+
+    with pytest.raises(OSError, match="could not inspect cache evidence Docker image"):
+        _build(docker, current_request=request, remaining_plan=plan)
+
     assert not docker.built
 
 

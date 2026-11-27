@@ -1546,7 +1546,10 @@ def _fake_docker_with_failing_keeper(
         if args[:2] == ["image", "inspect"] and args[2] == stamp.keeper_image:
             return subprocess.CompletedProcess(args, 1, "", "Cannot connect to the Docker daemon")
         if args[:2] == ["image", "inspect"]:
-            return subprocess.CompletedProcess(args, 0, stamp.image_id + "\n", "")
+            answer = stamp.image_id
+            if args[-1] == "{{json .Id}}":
+                answer = json.dumps(answer)
+            return subprocess.CompletedProcess(args, 0, answer + "\n", "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("booley.runtime.host_docker._run_docker", fake)
