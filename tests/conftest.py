@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
-from tests.memory_budget_support import budget_of, pin_budget
+from tests.memory_budget_support import measure_or_fall_back, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
 
 if TYPE_CHECKING:
@@ -735,25 +735,8 @@ def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
-
-    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
-    every Job would run alone with an extra "Memory Budget unavailable" note in
-    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
-    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
-    """
-    from booley.flows import memory_admission
-    from booley.runtime import memory_budget
-
-    real_compute = memory_budget.compute_memory_budget
-
-    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
-        try:
-            return real_compute(**kwargs)
-        except OSError:
-            return budget_of(64 * 1024**3)
-
-    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``."""
+    measure_or_fall_back(monkeypatch)
 
 
 @pytest.fixture
