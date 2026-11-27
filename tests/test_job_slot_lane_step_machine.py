@@ -10,8 +10,8 @@ supervised process, shrink, renew, close), and a supervisor that runs one
 ``reap`` is the independent reaper, recovering with the real ``recover_execution`` (its
 ``/proc`` scan finds no process with a fresh marker, so it proves every lane tree empty).
 Lock waits are scheduling points too: the record's file lock and the registry's lock.
-A supervisor pass is one ``recover_lost_children`` or ``cancel_waiters`` call: the machine does
-not model the production loop stopping the pool after a failed recovery pass.
+The rules never stop the pool after a failed recovery pass. A scenario may run the real lane
+scheduler: its lane threads, start turn, supervisor and deadline are steps on the machine clock.
 Execution recovery scans Linux ``/proc``, so the module runs on Linux only; its fake PIDs are
 above the kernel's PID limit, so no cancellation signal reaches a real process.
 
@@ -35,8 +35,9 @@ import functools
 import json
 import os
 import sys
+import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,9 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from hypothesis.stateful import precondition, rule, run_state_machine_as_test
 
+from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim.record import coordinator
 from booley.flows.sim.record.capacity import (
     ChildPermit,
     LeaseLostError,
@@ -54,6 +57,11 @@ from booley.flows.sim.record.capacity import (
 )
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.scheduler import (
+    BoundedSimulationRecordScheduler,
+    SimulationRecordSchedulingError,
+)
+from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime import execution_records, job_slots
 from booley.runtime.execution_records import (
     ExecutionId,
@@ -69,17 +77,25 @@ from booley.runtime.job_slots import (
     ClaimLostError,
     SlotRecovery,
 )
-from tests.flows.sim.simulation_record_test_support import _named_manifest
+from tests.flows.sim.simulation_record_test_support import (
+    _named_manifest,
+    _pinned_lanes,
+    _scheduled_attempt,
+)
 from tests.job_slot_steps import (
+    DRAIN_STEP_CAP,
     FIRST_ACTOR_PID,
     LOCK_WAIT_KINDS,
     Actor,
     ActorKilled,
     FakeProcessWorld,
+    StepEvent,
     StepLock,
     Worker,
     stepped_file_lock_wait,
     stepped_root,
+    stepped_turn,
+    thread_name,
 )
 from tests.test_job_slot_step_machine import (
     _CLAIM,
@@ -153,6 +169,9 @@ class Lane:
     registered: list[FakeProcess] = field(default_factory=list)
     shrinks: int = 0
     outcome: BaseException | None = None
+    # A scheduled lane: its item's execute returned; a later item took its thread.
+    returned: bool = False
+    superseded: bool = False
 
     @property
     def label(self) -> str:
@@ -160,7 +179,7 @@ class Lane:
 
     @property
     def ended(self) -> bool:
-        return self.worker is not None and self.worker.state == "done"
+        return self.superseded or (self.worker is not None and self.worker.state == "done")
 
     @property
     def idle(self) -> bool:
@@ -168,6 +187,19 @@ class Lane:
 
     def bind(self, execution_id: str) -> None:
         self.execution_id = str(execution_id)
+
+
+@dataclass(eq=False)
+class ScheduledRun:
+    """One ``run`` of the real lane scheduler by R, and how it ended."""
+
+    store: SimulationRecordStore
+    worker: Worker | None = None
+    error: Exception | None = None
+
+    def lane_workers(self, scheduler: Any) -> list[Worker]:
+        """The threads the run started, once each took a step."""
+        return [w for w in scheduler.workers if w.root is self.worker and w is not self.worker]
 
 
 class RecordProcess(Actor):
@@ -200,6 +232,20 @@ class RecordProcess(Actor):
         self.supervisor = None
         self.cancelled = False
         self._locks = {}
+        self.open_capacity()
+
+    def open_capacity(
+        self,
+        *,
+        manifest: Any = None,
+        lanes: int = _MAX_LANES,
+        timeout: float | None = None,
+        cancellation: Callable[[], bool] = lambda: False,
+        cause: Callable[[], str | None] | None = None,
+        claim: Callable[[Any], Any] = lambda _item: _CLAIM,
+    ) -> None:
+        """A capacity under the Flow's claim, with *lanes* pinned."""
+        self.manifest = manifest or _manifest()
         if self.flow_token is None:
             # As ``flow_claim.py`` does before items take their own claims: admitted, then zero.
             self.flow_token = self.store.acquire(
@@ -212,11 +258,13 @@ class RecordProcess(Actor):
             self.flow_token,
             job_slots.ROLE_INTERACTIVE,
             _PARENT_EXECUTION,
-            None,
-            lambda: False,
+            timeout,
+            cancellation,
         )
-        self.capacity = SimulationRecordCapacity(
-            admission, _manifest(), self.booley_dir, lambda _item: _CLAIM
+        if cause is not None:
+            admission = replace(admission, cancellation_cause=cause)
+        self.capacity = _pinned_lanes(
+            admission, self.manifest, self.booley_dir, claim, lanes=lanes
         )
         # Private: the registry's per-execution lock is an in-process lock held across filesystem
         # steps. No public entry point exchanges it, and a plain threading.Lock held across a
@@ -238,6 +286,8 @@ class LaneStepMachine(JobSlotStepMachine):
     def __init__(self, parent: Path) -> None:
         self._torn_down = False
         super().__init__(parent, recovery=self._execution_recovery())
+        # The scope watcher only polls ``cancelled``; no scenario registers a process in a run.
+        self.scheduler.unstepped_prefixes = ("booley-record-process-cancellation",)
         self.booley_real = Path(self._temporary.name) / "booley"
         self.booley_dir = stepped_root(self.booley_real, self.scheduler)
         self._record_registry = ChildExecutionRegistry.from_project_data(
@@ -364,13 +414,96 @@ class LaneStepMachine(JobSlotStepMachine):
         record.supervisor = self.scheduler.start(record, f"supervise-{which}", work)
         return record.supervisor
 
+    # ------------------------------------------------------- lane scheduler
+
+    def run_scheduler(
+        self, items: Any = None, *, finish: Callable[[], None] = lambda: None
+    ) -> ScheduledRun:
+        """R runs the real lane scheduler; each item idles until ``close``, then *finish*es."""
+        record = self.record
+        run = ScheduledRun(SimulationRecordStore(Path(self._temporary.name) / "record"))
+        run.store.publish_manifest(record.manifest)
+
+        def prepare(attempt: Any, child_id: str) -> None:
+            worker = self.scheduler.current_worker()
+            for lane in record.lanes:
+                lane.superseded |= lane.worker is worker
+            item = str(attempt.item["work_item_id"])
+            record.lanes.append(Lane(len(record.lanes) + 1, item, worker, str(child_id)))
+
+        def execute(_attempt: Any, _child_id: str | None) -> None:
+            worker = self.scheduler.current_worker()
+            lane = next(x for x in record.lanes if x.worker is worker and not x.returned)
+            while self.scheduler.await_command() != "close":
+                pass
+            finish()
+            lane.returned = True
+
+        pool = BoundedSimulationRecordScheduler(
+            record.capacity,
+            allocate=lambda item: _scheduled_attempt(run.store, item),
+            execute=execute,
+            prepare_child=prepare,
+            clock=self.world.now,
+            event=lambda: StepEvent(self.scheduler),
+            take_turn=stepped_turn(self.scheduler),
+        )
+
+        def schedule() -> None:
+            try:
+                pool.run(items or record.manifest.document["work_items"])
+            except Exception as exc:  # noqa: BLE001 -- the scenario judges it
+                run.error = exc
+            finally:
+                record.store.release(record.flow_token)  # as the endpoint's ``finally``
+
+        run.worker = self.scheduler.start(record, "schedule", schedule)
+        return run
+
+    def run_lanes(self, run: ScheduledRun, until: Callable[[], bool]) -> None:
+        """Step the run's lane threads, not its supervisor, until *until* holds."""
+        for _ in range(DRAIN_STEP_CAP):
+            if until():
+                return
+            lanes = [w for w in run.lane_workers(self.scheduler) if w.state == "parked"]
+            # Runnable before waiting, then the least-stepped, so every waiter gets turns.
+            self.scheduler.grant(min(lanes, key=lambda w: (_waits(w), w.steps, thread_name(w))))
+        raise AssertionError("the lanes did not get there")
+
+    def start_idle(self, count: int, **kwargs: Any) -> tuple[ScheduledRun, list[Lane]]:
+        """A run stepped until *count* items idle; the lanes are in the order they started."""
+        run = self.run_scheduler(**kwargs)
+        self.run_lanes(run, lambda: len(self._idle_lanes()) == count)
+        return run, self._idle_lanes()
+
+    def close_item(self, run: ScheduledRun, lane: Lane) -> None:
+        """Close one item and run its lane to its end."""
+        self.command_lane(lane, "close")
+        self.run_lanes(run, lambda: lane.ended)
+
+    def supervise(self, run: ScheduledRun, passes: int = 1) -> None:
+        """Grant the supervisor's timed wait *passes* times, each with the pass it starts; a
+        run that ended takes none, and the scenario judges how it ended."""
+        worker = run.worker
+        assert worker is not None
+        for _ in range(passes):
+            if worker.state != "parked":
+                return
+            for _ in range(DRAIN_STEP_CAP):
+                self.scheduler.grant(worker)
+                if worker.state != "parked" or worker.pending == ("lock_wait", "event"):
+                    break
+            else:
+                raise AssertionError("the supervisor pass did not end")
+
     # ---------------------------------------------------------------- rules
 
     def _record_alive(self) -> bool:
         return not self.record.killed
 
     def _idle_lanes(self) -> list[Lane]:
-        return [lane for lane in self.record.lanes if lane.idle] if self._record_alive() else []
+        lanes = self.record.lanes if self._record_alive() else []
+        return [lane for lane in lanes if lane.idle and not lane.returned]
 
     def _registering_lanes(self) -> list[Lane]:
         return [lane for lane in self._idle_lanes() if len(lane.registered) == 1]
@@ -603,13 +736,13 @@ class LaneStepMachine(JobSlotStepMachine):
 
     def _close_lanes(self) -> None:
         for _ in range(4 * _MAX_LANES * (_MAX_REGISTERED + 2)):
-            self.scheduler.drain()
-            idle = self._idle_lanes()
-            if not idle:
-                return
-            for lane in idle:
+            # Idle lanes first: a drain cannot end the waits that depend on them.
+            for lane in self._idle_lanes():
                 assert lane.worker is not None
                 self.scheduler.command(lane.worker, "unregister" if lane.registered else "close")
+            self.scheduler.drain(until_idle=True)
+            if not self._idle_lanes():
+                return
         raise AssertionError("lanes did not close")
 
     def _check_executions_recovered(self) -> None:
@@ -630,6 +763,21 @@ class LaneStepMachine(JobSlotStepMachine):
             and not self._is_flow_claim(payload)
         ]
         assert not left, f"S2: execution-owned entries survive two reaps: {left}"
+
+
+def _waits(worker: Worker) -> bool:
+    return worker.pending is not None and worker.pending[0] in (*LOCK_WAIT_KINDS, "sleep")
+
+
+def _flow_holds(machine: LaneStepMachine) -> bool:
+    return any(
+        name.startswith("h-") and payload and payload.get("execution_id") == _PARENT_EXECUTION
+        for name, payload in machine.read_entries().items()
+    )
+
+
+def _holders(machine: LaneStepMachine) -> int:
+    return sum(name.startswith("h-") for name in machine.read_entries())
 
 
 # ------------------------------------------------------------------ fixtures
@@ -898,6 +1046,138 @@ def test_a_busy_lease_gate_at_lane_confirmation_is_retried(
     assert type(lane.outcome) is error if error else lane.outcome is None
     assert _lane_record(machine, lane)["terminal_cause"] == cause
     assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
+
+
+def test_the_scheduler_starts_only_its_bounded_lane_threads(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    manifest = _named_manifest(("alpha", "beta", "gamma", "delta"))
+    machine.record.open_capacity(manifest=manifest, lanes=3)
+    run, _ = machine.start_idle(2)
+    # The third lane is alive too, waiting for room in the budget.
+    machine.run_lanes(
+        run, lambda: any(w.pending == ("sleep", "") for w in run.lane_workers(machine.scheduler))
+    )
+    machine._close_lanes()
+    threads = sorted(thread_name(w) for w in run.lane_workers(machine.scheduler))
+    assert threads == ["booley-record-child-1", "booley-record-child-2", "booley-record-outer"]
+    assert run.worker is not None and run.worker.state == "done" and run.error is None
+
+
+def test_a_lane_past_the_cancel_deadline_holds_the_outer_slot_within_lanes(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    cancelled = threading.Event()
+    machine.record.open_capacity(timeout=1.0, cancellation=cancelled.is_set)
+    earlier = set(threading.enumerate())
+    run, (alpha, beta) = machine.start_idle(2)
+    cancelled.set()
+    held = [_holders(machine)]
+    machine.close_item(run, alpha)  # beta ignores the cancellation
+    machine.supervise(run)
+    machine.world.advance(1.0)
+    machine.supervise(run)
+    assert isinstance(run.error, SimulationRecordSchedulingError)
+    assert "bounded shutdown" in str(run.error)
+    assert beta.work_item_id in run.store.scan().interrupted
+    assert _flow_holds(machine)  # past the endpoint's release
+    # The cancellation recovered beta's claim, so A and B fit beside the Flow's; C does not.
+    for actor in machine.actors:
+        for op in ("submit", "refresh"):
+            machine.scheduler.finish(machine.start_operation(actor, op, ROLE_INTERACTIVE, 0))
+    first, second, third = (actor.tokens[0] for actor in machine.actors)
+    assert first.is_holder and second.is_holder and not third.is_holder
+    assert _flow_holds(machine) and max(*held, _holders(machine)) <= _MAX_LANES + 1
+    alive = {
+        t.name for t in set(threading.enumerate()) - earlier if t.name.startswith("booley-record-")
+    }
+    assert beta.worker is not None and beta.worker.thread is not None
+    assert alive == {beta.worker.thread.name, "booley-record-process-cancellation"}
+    machine.command_lane(beta, "close")
+    machine.scheduler.drain(until_idle=True)
+    assert not _flow_holds(machine)
+    for actor, op in zip(machine.actors, ("release", "refresh", "refresh"), strict=True):
+        machine.scheduler.finish(machine.start_operation(actor, op, ROLE_INTERACTIVE, 0))
+    assert third.is_holder
+    for actor in machine.actors[1:]:
+        machine.scheduler.finish(machine.start_operation(actor, "release", ROLE_INTERACTIVE, 0))
+    assert machine.read_entries() == {}
+
+
+def test_a_failed_recovery_pass_still_holds_the_outer_slot_until_lanes_exit(
+    build_machine: Callable[[], LaneStepMachine], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    machine = build_machine()
+    machine.record.open_capacity(timeout=1.0)
+    run, _ = machine.start_idle(2)
+
+    def failing_recovery() -> None:
+        # The owner loop must survive a recovery error (for example a file error). Patched:
+        # no public entry point makes a lost child's recovery write fail.
+        raise OSError("recovery write failed")
+
+    monkeypatch.setattr(machine.record.capacity, "recover_lost_children", failing_recovery)
+    machine.supervise(run)
+    machine.world.advance(1.0)
+    machine.supervise(run)
+    assert isinstance(run.error, SimulationRecordSchedulingError)
+    assert "bounded shutdown" in str(run.error)
+    assert _flow_holds(machine)  # past the endpoint's release
+    machine._close_lanes()
+    assert machine.read_entries() == {}
+
+
+@pytest.mark.parametrize(
+    ("scenario", "reason"),
+    [("lease_lost", "lease lost"), ("token_missing", "Memory Reservation missing")],
+    ids=["lease_lost", "token_missing"],
+)
+def test_the_outer_lane_names_the_lost_slot(
+    build_machine: Callable[[], LaneStepMachine], scenario: str, reason: str
+) -> None:
+    machine = build_machine()
+    token = machine.record.flow_token
+    assert token is not None
+    cause = endpoint_admission._admission_cancellation_cause(machine.record.store, token)
+    machine.record.open_capacity(
+        lanes=1, cancellation=lambda: cause() is not None, cause=cause, claim=lambda _item: None
+    )
+    messages: list[str] = []
+
+    def publish() -> None:
+        try:
+            coordinator.raise_if_cancelled_before_publication()
+        except SimulationRecordCapacityError as exc:
+            messages.append(str(exc))
+
+    items = machine.record.manifest.document["work_items"][:1]
+    run, (item,) = machine.start_idle(1, items=items, finish=publish)
+    entry = machine.memory_dir / token.path.name
+    if scenario == "lease_lost":
+        token.lease_health.lost.set()
+    else:
+        entry.unlink()  # as a reaper would
+    machine.supervise(run)  # its argument-less cancel_waiters must not mask the cause
+    machine.close_item(run, item)
+    (message,) = messages
+    assert "outer lane" in message and reason in message and token.path.name in message
+    machine.scheduler.drain()
+    assert scenario == "lease_lost" or not entry.exists()
+
+
+def test_normal_work_runtime_does_not_consume_the_shutdown_budget(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    machine.record.open_capacity(timeout=0.01)
+    run, _ = machine.start_idle(2)
+    machine.world.advance(0.04)
+    machine.supervise(run, passes=2)
+    assert run.worker is not None and run.worker.state == "parked"  # still supervising
+    machine._close_lanes()
+    assert run.worker is not None and run.worker.state == "done" and run.error is None
 
 
 def test_interleaved_lane_schedules(tmp_path: Path) -> None:
