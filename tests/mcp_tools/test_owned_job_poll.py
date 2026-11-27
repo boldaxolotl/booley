@@ -328,7 +328,7 @@ def test_http_server_passes_stable_owner(monkeypatch, caplog):
     served = _stub_http_server(monkeypatch, build)
 
     with caplog.at_level(logging.INFO, logger="booley.mcp.server"):
-        mcp_server._run_http(0)
+        mcp_server._run_http(0)  # private: see _stub_http_server
 
     assert seen["identity"] == job_ownership.http_server_identity("box", 0)
     ((_app, (_host, port)),) = served
@@ -347,7 +347,7 @@ def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, capl
             caplog.at_level(logging.INFO, logger="booley.mcp.server"),
             pytest.raises(SystemExit) as stop,
         ):
-            mcp_server._run_http(port)
+            mcp_server._run_http(port)  # private: see _stub_http_server
 
     assert stop.value.code == 2
     err = capsys.readouterr().err
@@ -380,3 +380,5 @@ def test_legacy_record_falls_back_to_session_key(monkeypatch, tmp_path):
     )
     done = _text(asyncio.run(_booley_poll(app, mine_k, wait=0)))
     assert "Result of job old-running" in done
+    by_id = _text(asyncio.run(_booley_poll(app, _context(), run_id="old-running", wait=0)))
+    assert "EXIT_CODE: 0" in by_id

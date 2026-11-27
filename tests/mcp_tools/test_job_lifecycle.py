@@ -162,7 +162,8 @@ async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execut
         assert tuple(store.load().entries.values()) == ("J-LINT1",)
 
 
-def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monkeypatch):
     """Progress behind a Job report is read and repaired through the linked entry."""
     real = tmp_path / "real-booley-dir"
     entry = tmp_path / "project" / ".booley"
@@ -197,7 +198,25 @@ def test_job_progress_follows_symlinked_booley_dir_entry(context, tmp_path, monk
     assert partial is not None
     assert partial["partial"] is True
 
+    unfinished = checkpoint.read_text(encoding="utf-8")
     JobLifecycle().reconcile_orphaned()  # the PID-less record reads as failed
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "aborted"
+
+    # The supervisor repairs it too, when its own child exits with it unfinished.
+    live = dataclasses.replace(
+        context,
+        jobs_root=entry / "runtime" / "jobs",
+        subprocess_env_overrides={"BOOLEY_RUNTIME_DIR": str(entry / "runtime")},
+    )
+    script = f"""
+        import os, pathlib
+        text = {unfinished!r}.replace("run-1", os.environ["BOOLEY_RUN_ID"])
+        pathlib.Path({str(checkpoint)!r}).write_text(text, encoding="utf-8")
+        raise SystemExit(1)
+    """
+    await JobLifecycle().submit_and_wait(
+        "sim", command(script), JOB_TIMEOUT, context=live, wait_seconds=WAIT_TIMEOUT
+    )
     assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "aborted"
 
 
@@ -641,15 +660,17 @@ async def test_unrecorded_cancellation_keeps_no_requeue_reason(context, monkeypa
 
 def test_child_requeued_reads_the_reason_of_its_own_claim(context):
     store = job_slots.SlotStore(job_slots.slots_dir())
-    token = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=os.getpid(),
-        timeout_s=2 * hang_guard_s(),
-        memory=_RUN_ALONE,
-        queue_reason="requeued after out-of-memory",
-    )
+    claim = {"pid": os.getpid(), "timeout_s": 2 * hang_guard_s(), "memory": _RUN_ALONE}
     rec = job_records.JobRecord("lint-1", "lint", utc_now_rfc3339(), JOB_TIMEOUT, pid=os.getpid())
     jobs = JobLifecycle()
+    first = store.acquire(job_slots.CLASS_MEMORY, **claim)
+    try:
+        assert jobs._child_requeued(rec) is False  # a first claim must not reset the budget
+    finally:
+        store.release(first)
+    token = store.acquire(
+        job_slots.CLASS_MEMORY, **claim, queue_reason="requeued after out-of-memory"
+    )
     try:
         # Private seam: the budget reset this drives shows only as elapsed wall time
         # (covered with a controlled clock below). A Job without a PID owns no claim.

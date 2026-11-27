@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from booley.runtime import job_records as jobrec
+from tests.sharing_error_support import hold_opens, hold_replaces
 
 _STARTED = "2026-07-04T13:15:02Z"
 _RUN_STARTED = "2026-07-04T13:45:02Z"  # promoted 30 min after submit
@@ -194,19 +195,7 @@ def test_unreadable_record_raises_instead_of_reading_as_absent(
 ):
     rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
     jobrec.write_record(rec, root=_jobs_env)
-    from tests.sharing_error_support import retry_delays_target
-
-    monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
-    real_open = Path.open
-
-    def held_open(path: Path, *args: object, **kwargs: object):
-        if path.name == "sim-held-1.json":
-            error = PermissionError(13, "The process cannot access the file")
-            error.winerror = 32  # type: ignore[attr-defined]
-            raise error
-        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(Path, "open", held_open)
+    hold_opens(monkeypatch, {_jobs_env / "sim-held-1.json": 100})
     with pytest.raises(PermissionError):
         jobrec.read_record("sim-held-1", root=_jobs_env)
     # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
@@ -219,21 +208,11 @@ def test_write_record_survives_a_transient_windows_reader(
     _jobs_env, monkeypatch: pytest.MonkeyPatch
 ):
     rec = jobrec.JobRecord(run_id="sim-busy-1", endpoint="sim", started_at="t", timeout_s=60)
-    real_replace = Path.replace
-    blocked = False
-
-    def replace_after_reader_closes(source: Path, destination: Path):
-        nonlocal blocked
-        if destination.name == "sim-busy-1.json" and not blocked:
-            blocked = True
-            error = PermissionError(13, "A reader holds the record open")
-            error.winerror = 5  # type: ignore[attr-defined]
-            raise error
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
+    # winerror 5: Windows refuses to rename onto a record a reader holds open.
+    target = _jobs_env / "sim-busy-1.json"
+    attempts = hold_replaces(monkeypatch, {target: 1}, winerror=5)
     jobrec.write_record(rec, root=_jobs_env)
-    assert blocked
+    assert attempts[target] == 2
     got = jobrec.read_record("sim-busy-1", root=_jobs_env)
     assert got is not None and got.run_id == "sim-busy-1"
 
