@@ -18,8 +18,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.runtime import mount_history, platform_paths, sandbox_layout
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.directory_migration_git import pointer_bytes
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import common_git_dir, resolve_inner_project_repo

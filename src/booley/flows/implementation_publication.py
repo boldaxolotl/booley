@@ -5,15 +5,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.atomic_files import Durability, atomic_write_text
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
-from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 
 from .implementation_report import (
@@ -124,14 +123,9 @@ def target_report_path(flow: str, target: str, report_dir: Path) -> Path:
     return report_dir / f"{flow}_{target_report_slug(target)}.json"
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    make_directories(path.parent)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+def _publish_json(path: Path, payload: Mapping[str, Any]) -> None:
+    text = json.dumps(payload, indent=2)
+    atomic_write_text(path, text, mode=None, durability=Durability.NONE)
 
 
 def _published_canonical(
@@ -220,8 +214,8 @@ class ImplementationPublisher:
         payload[ENVELOPE_KEY] = canonical
         _validate_numbered_logs(payload, self, invocation)
         if invocation is not None:
-            _atomic_write_json(invocation, payload)
-        _atomic_write_json(stable, payload)
+            _publish_json(invocation, payload)
+        _publish_json(stable, payload)
         return PublishedReport(stable, invocation, payload)
 
     def publish_progress(self, progress: ImplementationProgress) -> Path | None:

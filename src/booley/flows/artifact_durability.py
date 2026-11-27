@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from booley.runtime.atomic_files import STAGED_SUFFIX
+from booley.core.atomic_files import STAGED_SUFFIX
 from booley.runtime.filesystem_utils import missing_directories
 
 

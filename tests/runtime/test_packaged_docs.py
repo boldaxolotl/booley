@@ -146,21 +146,3 @@ def test_orphan_directory_is_removed_not_fatal(tmp_path: Path) -> None:
 
     assert packaged_docs.write_packaged_docs(root) == ["stale_dir"]
     assert not orphan.exists()
-
-
-def test_atomic_write_failure_removes_temporary_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    packaged = tmp_path / "packaged.md"
-    packaged.write_text("original\n", encoding="utf-8")
-
-    def fail_replace(_source: Path, _target: Path) -> None:
-        raise OSError("simulated replace failure")
-
-    monkeypatch.setattr(Path, "replace", fail_replace)
-
-    with pytest.raises(OSError, match="simulated replace failure"):
-        packaged_docs.atomic_write(packaged, b"replacement\n")
-
-    assert packaged.read_text(encoding="utf-8") == "original\n"
-    assert list(tmp_path.iterdir()) == [packaged]

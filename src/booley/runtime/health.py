@@ -25,9 +25,9 @@ from typing import Any
 from booley.audit import health as policy
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
+from booley.core.atomic_files import atomic_write_text
 from booley.core.boundary import as_dict
 from booley.runtime import doctor_stamp
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import (
     contains,
     resolve_common_booley_dir,
@@ -43,6 +43,8 @@ _TRANSCRIPT_NAME = "last.log"
 _ANNOUNCEMENTS_NAME = "announcements.json"
 _ANNOUNCE_LOCK_NAME = "announcements.lock"
 _INVALIDATION_NAME = "invalidated.json"
+# World-readable like the files it replaces: host and Sandbox both read them.
+_SHARED_MODE = 0o644
 _INPUT_LABELS = {
     "booley_toml_sha256": "booley.toml",
     "doctor_waivers_sha256": "doctor-waivers.toml",
@@ -236,11 +238,6 @@ def try_state_lock(path: Path) -> Iterator[bool]:
         yield acquired
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    # World-readable like the files it replaces: host and Sandbox both read them.
-    atomic_replace_bytes(path, text.encode("utf-8"), mode=0o644)
-
-
 def _finding_hash(diagnostics: DiagnosticReport) -> str:
     """Identify the active findings; every clean observation shares one identity."""
     value: object = policy.finding_documents(diagnostics.active_findings) or "clean"
@@ -289,8 +286,10 @@ def publish_result(
         "deep_status": deep_status,
         "finding_hash": _finding_hash(diagnostics),
     }
-    _atomic_write(transcript_path(booley_dir), transcript)
-    _atomic_write(report_path(booley_dir), json.dumps(payload, indent=2) + "\n")
+    atomic_write_text(transcript_path(booley_dir), transcript, mode=_SHARED_MODE)
+    atomic_write_text(
+        report_path(booley_dir), json.dumps(payload, indent=2) + "\n", mode=_SHARED_MODE
+    )
     return payload
 
 
@@ -311,7 +310,9 @@ def invalidate(project_root: Path, *, reason: str) -> None:
     """
     booley_dir = resolve_common_booley_dir(project_root)
     document = {"at": run_start_stamp(), "reason": reason}
-    _atomic_write(state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n")
+    atomic_write_text(
+        state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n", mode=_SHARED_MODE
+    )
 
 
 def _load_announcements(path: Path) -> dict[str, str]:
@@ -350,7 +351,9 @@ def consume_changed_snapshot(
             if announcements.get(channel) == snapshot.finding_hash:
                 return None
             announcements[channel] = snapshot.finding_hash
-            _atomic_write(announcements_path, json.dumps(announcements, indent=2) + "\n")
+            atomic_write_text(
+                announcements_path, json.dumps(announcements, indent=2) + "\n", mode=_SHARED_MODE
+            )
     except (FileNotFoundError, OSError):
         return None
     return snapshot

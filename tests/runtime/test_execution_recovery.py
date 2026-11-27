@@ -22,13 +22,13 @@ from tests.execution_test_support import (
 )
 from tests.time_budget import hang_guard_s
 
+from booley.core.atomic_files import atomic_write_json
 from booley.runtime import execution_recovery
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
     ExecutionPaths,
-    atomic_write_json,
     execution_paths,
     read_json,
     write_attachment_heartbeat,

@@ -10,13 +10,13 @@ from pathlib import Path
 from time import monotonic
 from typing import cast
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.record_files import read_bounded
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
-    atomic_write_json,
     execution_paths,
     read_json,
     request_cancellation,

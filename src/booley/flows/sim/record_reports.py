@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_layout import (
@@ -16,7 +17,6 @@ from booley.core.booley_layout import (
     BooleyLayoutError,
 )
 from booley.core.checkout_role import SourceCheckoutProjectError
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 from booley.runtime.session_paths import RUNTIME_DIR
 

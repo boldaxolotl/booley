@@ -13,8 +13,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import require_dict, require_str, require_str_value, require_uuid4
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import (

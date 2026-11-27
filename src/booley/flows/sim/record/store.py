@@ -17,6 +17,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeVar, cast
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.boundary import (
     BoundaryError,
@@ -40,7 +41,6 @@ from booley.flows.sim.record_files import (
 )
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import is_report_link
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
 from .bundle import require_bundle_inventory

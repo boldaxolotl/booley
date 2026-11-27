@@ -21,13 +21,13 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any
 
+from booley.core.atomic_files import atomic_write_json
 from booley.core.boundary import BoundaryError, as_float, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RELEASE_TOKEN_ENV,
     ExecutionId,
     ExecutionPaths,
-    atomic_write_json,
     child_context_matches,
     execution_paths,
     force_cancellation_requested,

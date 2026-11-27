@@ -23,9 +23,9 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.process_identity import ProcessIdentity
 
-from .atomic_files import atomic_replace_bytes
 from .filesystem_utils import safe_rmtree
 from .pid import DEAD, REUSED, ZOMBIE, capture_process_identity, observe_process
 

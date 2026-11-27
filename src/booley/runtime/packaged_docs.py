@@ -8,10 +8,10 @@ output: never commit or edit it. Every wheel and image builder renders it throug
 ``booley.runtime.build_stamp.write_build_stamp`` before it packs anything. The same
 step copies the root ``CHANGELOG.md`` byte for byte to :data:`PACKAGED_CHANGELOG_RELATIVE_PATH`.
 
-This module is stdlib only (plus the stdlib-only ``booley.runtime.docs_links``) so
-``build.sh`` can run the render step with nothing but ``PYTHONPATH=src``. The
-markdown-it cross-check that catches link forms the scanner cannot see lives in
-``tests/docs/test_shipped_doc_link_forms.py``.
+This module is stdlib only (plus the stdlib-only ``booley.runtime.docs_links`` and
+``booley.core.atomic_files``) so ``build.sh`` can run the render step with nothing
+but ``PYTHONPATH=src``. The markdown-it cross-check that catches link forms the
+scanner cannot see lives in ``tests/docs/test_shipped_doc_link_forms.py``.
 
 Links are rewritten so each copy is self-consistent in the flat directory:
 
@@ -27,16 +27,15 @@ shipped doc forces a decision about its target.
 
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 import shutil
-import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlsplit
 
+from booley.core.atomic_files import Durability, atomic_replace_bytes
 from booley.runtime.docs_links import USER_DOCS
 
 PACKAGED_DOCS_RELATIVE_DIR = "src/booley/data/docs"
@@ -366,7 +365,7 @@ def write_packaged_docs(root: Path) -> list[str]:
     for name, content in expected.items():
         path = directory / name
         if not path.is_file() or path.read_bytes() != content:
-            atomic_write(path, content)
+            _publish(path, content)
             changed.append(name)
     for path in sorted(directory.iterdir()):
         if path.name not in expected:
@@ -385,28 +384,8 @@ def write_packaged_changelog(root: Path) -> None:
         raise MissingShippedDocError(f"shipped doc source is missing: {CHANGELOG_SOURCE}")
     target = root / PACKAGED_CHANGELOG_RELATIVE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(target, source.read_bytes())
+    _publish(target, source.read_bytes())
 
 
-def atomic_write(path: Path, content: bytes) -> None:
-    """Publish one generated document without exposing a partial file.
-
-    Stdlib-only on purpose: ``runtime.atomic_files`` imports ``core``, which the
-    build-stamp step must not need (it runs with ``PYTHONPATH=src`` alone).
-    """
-    temporary: Path | None = None
-    try:
-        mode = path.stat().st_mode if path.exists() else 0o644
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.chmod(mode)
-        temporary.replace(path)
-    except OSError:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        raise
+def _publish(path: Path, content: bytes) -> None:
+    atomic_replace_bytes(path, content, mode=0o644, keep_mode=True, durability=Durability.FILE)
