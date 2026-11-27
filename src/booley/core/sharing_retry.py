@@ -109,6 +109,46 @@ def unlink_file(
     path.unlink(missing_ok=missing_ok)
 
 
+def link_file(
+    target: Path,
+    source: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Hard-link ``target`` to ``source``, tolerating a Windows sharing violation.
+
+    Counterpart of :func:`replace_file`: retries only the transient Windows
+    sharing errors, with the same bounded backoff (about 1.1 s in total). The
+    last transient error and every other one, including ``FileExistsError``,
+    propagate unchanged.
+    """
+    for delay in _SHARING_RETRY_DELAYS_SECONDS:
+        try:
+            target.hardlink_to(source)
+        except PermissionError as exc:
+            if not is_transient_sharing_error(exc):
+                raise
+            logger.debug("Retrying link of %s after %s", target, exc)
+            sleep(delay)
+        else:
+            return
+    target.hardlink_to(source)
+
+
+def write_file_text(
+    path: Path,
+    text: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Create or truncate ``path`` with ``text`` as UTF-8, retrying its refused open.
+
+    A sharing violation of a write surfaces at the open, so this retries the
+    errors and the bound of :func:`open_with_sharing_retry`.
+    """
+    open_with_sharing_retry(lambda: path.write_text(text, encoding="utf-8"), path, sleep=sleep)
+
+
 def read_file_bytes(
     path: Path,
     *,
@@ -143,8 +183,9 @@ def open_with_sharing_retry(
 ) -> _T:
     """Call ``open_once`` and retry it while Windows reports a sharing error.
 
-    The ``os.open``-level counterpart of :func:`read_file_bytes` for readers
-    that cannot use it: no-follow opens and bounded head reads. Retries only
+    The ``os.open``-level counterpart of :func:`read_file_bytes` for openers
+    that cannot use it: no-follow opens, bounded head reads and
+    :func:`write_file_text`. Retries only
     the transient errors :func:`is_transient_read_error` matches, with the same
     bounded backoff (about 1.1 s in total). The last transient error and every
     other error, including ``FileNotFoundError`` and a POSIX ``EACCES``,

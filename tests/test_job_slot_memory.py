@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 
+from booley.core.sharing_retry import read_file_bytes, write_file_text
 from booley.runtime import job_slots
 from booley.runtime.job_slots import (
     HOLDING,
@@ -22,11 +23,11 @@ from booley.runtime.job_slots import (
     TokenState,
 )
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.job_slot_steps import held_gate
 from tests.sharing_error_support import hold_opens
 from tests.test_job_slots import (
     PROMOTION_GATE,
     FakeWorld,
-    held_gate,
     interleave,
     is_lease_gate,
     make_store,
@@ -423,7 +424,7 @@ def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_clai
 
 def _on_disk_reservation(token) -> float | None:
     """The reservation the token's entry file carries right now."""
-    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload = json.loads(read_file_bytes(token.path))
     return payload["memory"]["reservation_mb"]
 
 
@@ -562,9 +563,9 @@ def hold(store: SlotStore, world: FakeWorld, pid: int, memory) -> job_slots.Slot
 
 def start_age(token: job_slots.SlotToken, world: FakeWorld, seconds: float) -> None:
     """Rewrite a holder's promotion stamp to *seconds* before now (the clock stays put)."""
-    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload = json.loads(read_file_bytes(token.path))
     payload["promoted_at"] = rfc3339_from_epoch(world.clock - seconds)
-    token.path.write_text(json.dumps(payload), encoding="utf-8")
+    write_file_text(token.path, json.dumps(payload))
 
 
 def test_jumpers_start_in_queue_order(root, world):

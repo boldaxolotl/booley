@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.sharing_retry import link_file, write_file_text
 from booley.runtime.filesystem_utils import (
     RemovedDirectoryError,
     make_directories,
@@ -199,7 +200,22 @@ def _operation(
             lambda _: not entry.exists(),
         )
     record = tmp_path / "record.json"
+    if op == "write":
+        return (
+            "write_text",
+            record,
+            lambda: write_file_text(record, "payload", sleep=delays.append),
+            lambda _: record.read_bytes() == b"payload",
+        )
     record.write_bytes(b"payload")
+    if op == "link":
+        target = tmp_path / "gate"
+        return (
+            "hardlink_to",
+            target,
+            lambda: link_file(target, record, sleep=delays.append),
+            lambda _: target.read_bytes() == b"payload",
+        )
     return (
         "open",
         record,
@@ -208,7 +224,7 @@ def _operation(
     )
 
 
-OPERATIONS = pytest.mark.parametrize("op", ["replace", "unlink", "read"])
+OPERATIONS = pytest.mark.parametrize("op", ["replace", "unlink", "read", "write", "link"])
 
 
 @OPERATIONS
@@ -246,8 +262,8 @@ def test_does_not_retry_posix_permission_errors(
     calls = _fail_first(monkeypatch, method, path, [PermissionError(13, "Permission denied")])
 
     with monkeypatch.context() as host:
-        if op == "read":
-            # Only the read path treats a bare EACCES as a transient C-runtime sharing error
+        if op in ("read", "write"):
+            # Only the open paths treat a bare EACCES as a transient C-runtime sharing error
             # on Windows; replace and unlink run on the real host.
             use_sys_platform(host, windows=False)
         with pytest.raises(PermissionError):

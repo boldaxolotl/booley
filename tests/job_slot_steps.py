@@ -3,7 +3,8 @@
 Each simulated process (an ``Actor``) owns a ``SlotStore`` whose ``root`` is a
 ``SteppedPath``. Every filesystem call the store makes through that path is a
 scheduling point: the calling thread parks until the ``StepScheduler`` grants it
-that one step, or fails it with an injected Windows sharing violation. Exactly
+that one step, or fails it with an injected Windows sharing violation. The lease renewal
+wait of an actor that renews is a checkpoint too. Exactly
 one thread runs at a time, so a schedule is a pure function of the choices that
 produced it. The store's own code runs unchanged.
 
@@ -16,18 +17,22 @@ It fakes process liveness, process identity and the clock for each store.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import errno
+import json
 import os
 import threading
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, ClassVar
 
 from booley.core import file_lock
+from booley.core.sharing_retry import link_file, unlink_file, write_file_text
 from booley.runtime import job_slots
 from booley.runtime.job_slots import SlotStore
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
@@ -84,6 +89,23 @@ _FAULT_KINDS = frozenset(
         "rmdir",
     }
 )
+
+
+@contextlib.contextmanager
+def held_gate(gate: Path, pid: int, identity: ProcessIdentity | None) -> Iterator[None]:
+    """Another process's gate on disk, as that process publishes it, until the block ends."""
+    owner = {"pid": pid, "owner_identity": identity.to_payload() if identity else None}
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
+    write_file_text(tmp, json.dumps(owner) + "\n")
+    try:
+        link_file(gate, tmp)  # exclusive: the gate must be free
+    finally:
+        unlink_file(tmp, missing_ok=True)
+    try:
+        yield
+    finally:
+        unlink_file(gate, missing_ok=True)
 
 
 class FakeProcessWorld:
@@ -283,6 +305,11 @@ class StepScheduler:
         """The stores' injected sleep: a checkpoint that advances the machine clock when granted."""
 
         self.call("sleep", Path(), lambda: self.world.advance(seconds))
+
+    def renewal_wait(self, stop: threading.Event, seconds: float) -> bool:
+        """The stores' injected renewal wait: a ``sleep`` checkpoint named ``renewal``."""
+        self.call("sleep", Path("renewal"), lambda: self.world.advance(seconds))
+        return stop.is_set()
 
     def _step_worker(
         self, worker: Worker, kind: str, path: Path, perform: Callable[[], Any], name: str
@@ -670,7 +697,9 @@ class Actor:
         *,
         name: str | None = None,
         recovery: job_slots.SlotRecovery | None = None,
+        renews: bool = False,
     ) -> None:
+        self.renews = renews
         self.index = index
         self.name = name or "ABC"[index]
         self._base_recovery = recovery or job_slots.SlotRecovery()
@@ -693,6 +722,7 @@ class Actor:
             read_cmdline=self.world.read_cmdline,
             now=self.world.now,
             sleep=self.scheduler.sleep,
+            renewal_wait=self.scheduler.renewal_wait if self.renews else None,
             capture_identity=self.world.capture_identity,
             observe_identity=self.world.observe_identity,
             recovery=dataclasses.replace(
