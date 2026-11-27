@@ -27,7 +27,6 @@ from booley.runtime import (
     inspection,
     platform_paths,
     project_image,
-    session_admission,
     session_runtime,
     vaporview,
 )
@@ -163,7 +162,7 @@ def route_bounded_capture_through_subprocess_run(
 
 def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the session runtime's and admission's timed captures through ``subprocess.run``."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, session_runtime, session_admission)
+    route_bounded_capture_through_subprocess_run(monkeypatch, session_runtime, host_docker)
 
 
 def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:

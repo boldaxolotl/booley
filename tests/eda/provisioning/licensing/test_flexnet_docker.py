@@ -125,7 +125,7 @@ def _topology(labels: tuple[str, ...] = ()) -> dict[str, tuple[int, str]]:
     nets = "{{json .NetworkSettings.Networks}}"
     rules = {
         "image inspect": IMAGE_ID,
-        f"inspect {_RELAY}": json.dumps([_relay_state()]),
+        f"inspect {_RELAY}": json.dumps(_relay_state()),
         f"inspect {_RELAY} .Config.Labels}}}}": _role_labels("license-relay", labels),
         " ".join(_POLL): "running healthy",
         f"inspect {_RELAY} {{{{.State.Health.Status}}}}": "healthy",
@@ -138,7 +138,7 @@ def _topology(labels: tuple[str, ...] = ()) -> dict[str, tuple[int, str]]:
         (_OUTBOUND, "license-outbound-network", "false", {}, (_RELAY,)),
     ):
         endpoints = {name: {"Name": name} for name in members}
-        rules[f"network inspect {network}"] = json.dumps([{"Containers": endpoints}])
+        rules[f"network inspect {network}"] = json.dumps({"Containers": endpoints})
         rules[f"inspect {network} .Labels}}}}"] = _role_labels(role, labels)
         rules[f"inspect {network} {{{{.Internal}}}}"] = internal
         rules[f"inspect {network} .Options}}}}"] = json.dumps(options)
@@ -228,6 +228,24 @@ def test_image_build_uses_packaged_dockerfile_and_relay_only_context() -> None:
         "Dockerfile.flexnet-relay",
     )
     assert Path(argv[-1]).parts[-2:] == ("provisioning", "licensing")
+
+
+@pytest.mark.parametrize(
+    ("words", "code", "output", "message"),
+    [
+        ((_RELAY, ".Config.Labels}}"), 1, "daemon busy", "cannot inspect container .*daemon busy"),
+        ((_PRIVATE, ".Labels}}"), 0, "null", "invalid labels for network"),
+        ((_PRIVATE, ".Options}}"), 0, "[]", "invalid options for network"),
+        ((_RELAY, "{{json .NetworkSettings.Networks}}"), 0, "{", "invalid network state"),
+    ],
+)
+def test_validation_keeps_its_messages_for_untrusted_inspection(
+    docker: FakeDocker, words: tuple[str, str], code: int, output: str, message: str
+) -> None:
+    docker.answer("inspect", *words, code=code, stdout=output, stderr=output if code else "")
+
+    with pytest.raises(RelayDockerError, match=message):
+        _validate(docker)
 
 
 def test_image_build_failure_is_actionable(docker: FakeDocker) -> None:
@@ -385,7 +403,7 @@ def test_resume_validation_rejects_session_on_outbound_network(docker: FakeDocke
 def test_resume_validation_rejects_each_container_security_drift(
     docker: FakeDocker, state_kwargs: dict, message: str
 ) -> None:
-    docker.answer("inspect", _RELAY, stdout=json.dumps([_relay_state(**state_kwargs)]))
+    docker.answer("inspect", _RELAY, stdout=json.dumps(_relay_state(**state_kwargs)))
 
     with pytest.raises(RelayDockerError, match=message):
         _validate(docker)
@@ -394,7 +412,7 @@ def test_resume_validation_rejects_each_container_security_drift(
 def test_resume_validation_rejects_unauthorized_private_endpoint(docker: FakeDocker) -> None:
     members = (_RELAY, SESSION_CONTAINER, "unrelated-container")
     endpoints = {name: {"Name": name} for name in members}
-    docker.answer("network", "inspect", _PRIVATE, stdout=json.dumps([{"Containers": endpoints}]))
+    docker.answer("network", "inspect", _PRIVATE, stdout=json.dumps({"Containers": endpoints}))
 
     with pytest.raises(RelayDockerError, match="unauthorized endpoints"):
         _validate(docker)
@@ -403,7 +421,7 @@ def test_resume_validation_rejects_unauthorized_private_endpoint(docker: FakeDoc
 def test_resume_validation_rejects_relay_alias_drift(docker: FakeDocker) -> None:
     state = _relay_state()
     state["NetworkSettings"]["Networks"][_PRIVATE]["Aliases"] = ["booley-license-xilinx"]
-    docker.answer("inspect", _RELAY, stdout=json.dumps([state]))
+    docker.answer("inspect", _RELAY, stdout=json.dumps(state))
 
     with pytest.raises(RelayDockerError, match="aliases have drifted"):
         _validate(docker)
