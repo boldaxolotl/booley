@@ -146,7 +146,7 @@ def touch():
         stream.write("beat\\n")
 
 heartbeat.touch_reaper_heartbeat = touch  # boundary: the heartbeat file the idle reaper reads
-worker._JOB_HEARTBEAT_SECONDS = 0.02
+worker._JOB_HEARTBEAT_SECONDS = 0.02  # no public setting, and 10 s is too slow here
 signal.signal(signal.SIGINT, signal.default_int_handler)  # even if the test runner ignores it
 try:
     raise SystemExit(worker.main(sys.argv[1:]))
