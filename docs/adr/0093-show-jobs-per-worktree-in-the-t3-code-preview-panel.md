@@ -28,8 +28,8 @@ worktree.
 - **One Dashboard per worktree.** The Dashboard shows only Jobs whose
   `work_dir` is its worktree. The main checkout counts as a worktree. There
   is no Sandbox-wide view: Jobs of a deleted worktree appear in no Dashboard.
-- **Jobs, not sessions.** The Dashboard shows no sessions, Goals or Doctor
-  health: T3 Code lists threads, and Doctor reports health.
+- **Jobs, not sessions.** The Dashboard has no session list, Goal view or
+  Doctor health: T3 Code lists threads, and Doctor reports health.
 - **A web page in the preview panel.** One server in the Sandbox serves
   every worktree's Dashboard; the worktree is a URL parameter
   (`?worktree=<path>`). A `t3.json` script opens it. Headless Chrome ships in
@@ -57,8 +57,8 @@ worktree.
 ## Considered options
 
 - **A terminal view in the terminal drawer.** It costs no image size, but a
-  terminal tab is easy to lose and cannot link into T3 Code. Rejected for a
-  page that matches T3 Code and can link into it.
+  terminal tab is easy to lose. Rejected for a page that matches T3 Code and
+  can link into it.
 - **A Sandbox-wide Dashboard.** It would show Jobs in `/work` and other
   worktrees' Jobs holding shared slots. Rejected: the user works one worktree
   per thread, and the queue position shown on Run covers the slot question.
