@@ -138,7 +138,7 @@ def _topology(labels: tuple[str, ...] = ()) -> dict[str, tuple[int, str]]:
         (_OUTBOUND, "license-outbound-network", "false", {}, (_RELAY,)),
     ):
         endpoints = {name: {"Name": name} for name in members}
-        rules[f"inspect {network}"] = json.dumps([{"Containers": endpoints}])
+        rules[f"network inspect {network}"] = json.dumps([{"Containers": endpoints}])
         rules[f"inspect {network} .Labels}}}}"] = _role_labels(role, labels)
         rules[f"inspect {network} {{{{.Internal}}}}"] = internal
         rules[f"inspect {network} .Options}}}}"] = json.dumps(options)
@@ -394,7 +394,7 @@ def test_resume_validation_rejects_each_container_security_drift(
 def test_resume_validation_rejects_unauthorized_private_endpoint(docker: FakeDocker) -> None:
     members = (_RELAY, SESSION_CONTAINER, "unrelated-container")
     endpoints = {name: {"Name": name} for name in members}
-    docker.answer("inspect", _PRIVATE, stdout=json.dumps([{"Containers": endpoints}]))
+    docker.answer("network", "inspect", _PRIVATE, stdout=json.dumps([{"Containers": endpoints}]))
 
     with pytest.raises(RelayDockerError, match="unauthorized endpoints"):
         _validate(docker)
@@ -437,6 +437,7 @@ def test_partial_startup_rolls_back_container_then_networks(docker: FakeDocker) 
             {
                 "container logs": (
                     0,
+                    "",
                     "INFO starting\nERROR invalid FlexNet relay configuration: bad port",
                 )
             },
@@ -473,7 +474,7 @@ def test_partial_startup_rolls_back_container_then_networks(docker: FakeDocker) 
 def test_startup_failure_reports_state_and_log_tail(
     docker: FakeDocker,
     health: list[tuple[int, str, str]],
-    replies: dict[str, tuple[int, str]],
+    replies: dict[str, tuple[int, str, str] | tuple[int, str]],
     present: list[str],
     absent: list[str],
     inspects: int | None,

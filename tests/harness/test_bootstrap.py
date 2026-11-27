@@ -1682,6 +1682,13 @@ def _run_inspection(capsys):
     return status, output
 
 
+def _assert_inspect_only(docker):
+    """A check-only run asks Docker only to inspect: no call may change the host."""
+    assert docker.calls
+    for call in docker.calls:
+        assert call[0] == "version" or "inspect" in call[:2], call
+
+
 def _assert_complete(output):
     for resource in (
         "host-config",
@@ -1719,7 +1726,7 @@ def _snapshot_bytes(path, reader=Path.open):
 
 
 def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch, tmp_path, capsys):
-    _inspection_environment(monkeypatch, tmp_path, recorded=False)
+    environment = _inspection_environment(monkeypatch, tmp_path, recorded=False)
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     assert status == 1, "fresh eligible wheel must be pending"
@@ -1728,6 +1735,7 @@ def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch,
         if "  +  " in line:
             assert "booley bootstrap" in line
     assert _tree_snapshot(tmp_path) == before
+    _assert_inspect_only(environment.docker)
 
 
 def _deny_cache_read(monkeypatch, environment):

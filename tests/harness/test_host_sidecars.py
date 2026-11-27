@@ -717,6 +717,7 @@ def test_check_only_missing_sidecar_images_and_containers_are_pending(
 def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource, call):
     from tests.harness.test_bootstrap import (
         _assert_complete,
+        _assert_inspect_only,
         _inspection_environment,
         _run_inspection,
     )
@@ -728,6 +729,7 @@ def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys,
     assert status == 2
     assert f"✗  {resource}:" in output
     assert "access" in output
+    _assert_inspect_only(environment.docker)
 
 
 def test_complete_inspection_foreign_container_with_missing_image_remains_error(

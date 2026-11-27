@@ -946,8 +946,9 @@ def test_default_runner_decodes_utf8_output_whatever_the_locale() -> None:
 def _hung_docker(timeouts: list[float | None], hung: list[str]):
     """The session runtime's own runner with ``docker ps`` replaced by a hanging child.
 
-    A stand-in of the injected Session runner port, not of Docker: the logic above it is
-    that each inventory listing hands its runner a finite timeout.
+    A stand-in of the injected Session runner port: the logic above it is that each
+    inventory listing hands its runner a finite timeout, which a ``docker`` on ``PATH``
+    cannot observe.
 
     Records each call's ``timeout`` and runs the hung child with a 1 s timeout when
     the listing gave one.
