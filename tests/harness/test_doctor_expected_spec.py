@@ -19,7 +19,7 @@ def test_expected_sandbox_spec_depends_on_the_venue(
     """On the host the drift check rebuilds through init's own builder; inside, it cannot."""
     place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
 
-    # private: every whole run replaces `_expected_sandbox_spec` (`_patch_environment`; the real
+    # private: every whole run replaces `_expected_sandbox_spec` (`patch_doctor_environment`; the real
     # rebuild needs a Sandbox Image), so only this test checks which spec inspection compares.
     rebuild = doctor._expected_sandbox_spec(tmp_path)
 

@@ -2849,8 +2849,7 @@ def test_ordinary_group_builds_before_launching_supplied_bundle(
         ),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
-        patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
-        patch.object(SimulationBuildSession, "authorize_fresh_image", return_value=artifacts),
+        canned_build_session(artifacts=artifact_names),
     ):
         with execution.ordinary_group(handle, ("smoke",)) as group:
             build = group.compile()
@@ -3227,8 +3226,7 @@ def test_retained_log_failure_keeps_build_slot_failure_boundary(tmp_path, observ
         ),
         patch("booley.flows.sim.execution.engine.prepare_simulation_build", return_value=prepared),
         _compile_surface_patch(handle),
-        patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
-        patch.object(SimulationBuildSession, "reusable_key", return_value="key"),
+        canned_build_session(reusable_key="key"),
         patch.object(SimulationBuildSession, "try_reuse", return_value=retained),
         patch.object(SimulationBuildSession, "discard_candidate") as discard,
         patch("booley.flows.run_log.begin_run_log", side_effect=begin),

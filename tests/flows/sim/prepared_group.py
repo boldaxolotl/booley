@@ -36,8 +36,8 @@ def _capture_bundle(
 
     A real build authorizes its artifact paths; copy those plus the declared
     runtime inputs, keeping their paths relative to ``build_root``. The
-    ``canned_build_session`` fakes authorize nothing (``authorize_fresh_image``
-    is stubbed to return ``()``), so only a caller that uses them opts in to
+    ``canned_build_session`` fakes authorize nothing by default (without
+    ``artifacts``), so only a caller that uses them that way opts in to
     copying the whole build root. Anywhere else an empty set is an error, as in
     a record.
     """
@@ -68,7 +68,7 @@ def run_prepared_group(
     ``attempt_root``, which must be fresh per call. By default it is a new
     directory beside the project, so copied ``.core`` files never reach core
     discovery. Pass ``copy_build_root=True`` only with ``canned_build_session``
-    fakes, which authorize no artifact paths. ``on_compiled`` is called with
+    fakes, which by default authorize no paths. ``on_compiled`` is called with
     the build root while the Target slot is still leased, the only time a
     non-reusable generation still exists.
     """

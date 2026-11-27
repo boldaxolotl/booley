@@ -12,13 +12,11 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from booley import __version__
 from booley.audit import (
     design_size,
     eda_environment,
@@ -43,7 +41,6 @@ from booley.harness import (
     host_diagnostics,
     web_isolation,
 )
-from booley.harness import image_lifecycle as harness_lifecycle
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
@@ -53,7 +50,6 @@ from booley.runtime import (
     issuance_invalidation,
     project_gitignore,
     runtime_context,
-    session_issuance,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
@@ -67,15 +63,15 @@ from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
 from tests.diagnostic_helpers import (
-    _issued_runtime_state,
     _Rec,
 )
 from tests.docker_cli_guard import (
-    route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
 from tests.docker_host_support import fake_docker_host
+from tests.git_command_fake import REAL_RUN
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.harness.doctor_environment_support import answer_image_check, patch_doctor_environment
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -224,205 +220,6 @@ def _seed_sandbox_files(root: Path) -> None:
     )
 
 
-def _write_skills_home(root: Path) -> Path:
-    home = root / "home"
-    (home / ("." + "ag" + "ents") / "skills" / "one").mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-    return home
-
-
-def _patch_bootstrap_current(monkeypatch) -> None:
-    report = DiagnosticReport((DiagnosticFinding(Severity.PASS, "Host Bootstrap docker: ok"),))
-    monkeypatch.setattr(
-        host_diagnostics,
-        "inspect_host",
-        lambda _root: host_diagnostics.HostDiagnosticResult(report, "docker"),
-    )
-
-
-def _patch_host_environment(monkeypatch, root: Path) -> None:
-    place(monkeypatch, RuntimeLocation.HOST)
-    # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
-    # a plain host shell is the baseline these fixtures model.
-    monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)
-    # The fixture Project pins `auth = "subscription"`, which needs a credential to pass.
-    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fixture")
-    monkeypatch.setattr(Path, "home", lambda: _write_skills_home(root))
-    runtime = "doc" + "ker"
-    monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
-    _patch_bootstrap_current(monkeypatch)
-
-
-def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
-    monkeypatch,
-    root: Path,
-    booley_dir: Path,
-    *,
-    mcp_tools: list[str] | None = None,
-    mcp_payload: dict | None = None,
-    runtime_booley_version: str = __version__,
-) -> list[list[str]]:
-    reset_cache()
-    route_bounded_captures_through_subprocess_run(monkeypatch)
-    # Modules that import this helper lack this module's autouse routing; without
-    # it Doctor's container checks start real `docker run`s that can each wait 30 s.
-    route_docker_helper_through_subprocess_run(monkeypatch)
-    fake_docker_host(monkeypatch)
-    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
-    # Doctor tests exercise the host-side orchestration path deterministically,
-    # whatever machine the suite itself runs on.
-    _patch_host_environment(monkeypatch, root)
-    monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: True)
-    monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
-    # A whole run cannot supply a host Sandbox Image graph; the provenance tests override the CHECK.
-    _check(monkeypatch, lifecycle.Status.CURRENT)
-    # The rebuild of the spec `booley init` would write has its own tests; here the
-    # seeded fixture spec stands in for it.
-    monkeypatch.setattr(
-        doctor,
-        # Private: the real call builds an image spec through `init_cmd`; a full run cannot supply a host image.
-        "_expected_sandbox_spec",
-        lambda project_root: (
-            lambda _image: json.loads(
-                dc.devcontainer_path(project_root).read_text(encoding="utf-8")
-            )
-        ),
-    )
-
-    # Orchestration tests substitute the public issuance interface. Runtime
-    # owner tests separately exercise real authority and live-state policy.
-    issuance, _spec, _labels, _state = _issued_runtime_state(root)
-    issuance = replace(issuance, image=dc.SANDBOX_IMAGE)
-    monkeypatch.setattr(session_issuance, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
-    monkeypatch.setattr(
-        doctor.session_runtime,
-        "up_without_recovery",
-        lambda _root: "booley-session-test",
-    )
-    monkeypatch.setattr(
-        doctor.idk,
-        "compare_issued_build",
-        lambda *_args, **_kwargs: doctor.image_identity.Comparison(
-            doctor.image_identity.Status.MATCH
-        ),
-    )
-
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):  # noqa: PLR0911,PLR0912 — external-command boundary fixture
-        calls.append([str(part) for part in cmd])
-        if cmd[:2] == ["git", "--literal-pathspecs"] and "--git-common-dir" in cmd:
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=f"{root / '.git'}\n".encode(), stderr=b""
-            )
-        if cmd[:2] == ["git", "--literal-pathspecs"] and "worktree" in cmd:
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=os.fsencode(f"worktree {root}\0\0"), stderr=b""
-            )
-        if cmd[:2] == ["git", "-C"] and "var" in cmd:
-            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"")
-        if cmd[:2] == ["git", "--literal-pathspecs"] and "ls-files" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
-        if cmd[:2] == ["git", "-C"] and "--show-toplevel" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
-        if cmd[:2] == ["git", "-C"] and "config" in cmd and "core.autocrlf" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="false\n", stderr="")
-        if cmd[:2] == ["git", "-C"] and "ls-files" in cmd and "--eol" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["git", "-C"] and "status" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["git", "-C"] and "diff" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
-        if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
-        if cmd[:3] == ["git", "status", "--porcelain"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:3] == ["git", "rev-parse", "--git-dir"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
-        if cmd[:3] == ["git", "rev-parse", "--git-common-dir"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
-        if cmd[:2] == ["git", "--version"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
-        if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[1] == "ps":
-            # Live Sandbox inventory must see an empty container list.
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:2] == ["git", "ls-files"]:
-            binary = not kwargs.get("text")
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=b"" if binary else "", stderr=b"" if binary else ""
-            )
-        if cmd[0] == "git" and "config" in cmd and "gc.worktreePruneExpire" in cmd:
-            # Healthy default: the ADR 0028 worktree prune guard is set.
-            return subprocess.CompletedProcess(cmd, 0, stdout="never\n", stderr="")
-        if cmd[0] == "git" and "config" in cmd and "worktree.useRelativePaths" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
-        if cmd[0] == "git" and "config" in cmd and "extensions.relativeWorktrees" in cmd:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
-        if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["id", "-u"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
-        if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
-        if cmd[1:3] == ["image", "ls"]:
-            # No issued Sandbox Image keepers; the strict listing rejects stray output.
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[1:3] == ["image", "inspect"] and "{{json .Config.Env}}" in cmd:
-            # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout='["BOOLEY_CONTAINER=1"]\n', stderr=""
-            )
-        if cmd[1:3] == ["image", "inspect"] and "--format" in cmd:
-            return subprocess.CompletedProcess(cmd, 0, stdout="2099-01-01T00:00:00Z\n", stderr="")
-        if "import booley; print(booley.__version__)" in cmd:
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=f"{runtime_booley_version}\n", stderr=""
-            )
-        if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
-            payload = mcp_payload or {
-                "tools": mcp_tools
-                or [
-                    "synth",
-                    "bwave",
-                    "coverage_analyst",
-                    "lint",
-                    "mutation",
-                    "reviewer",
-                    "sim",
-                ],
-                "errors": [],
-                "logs_dir": "/work/.booley/job_logs/session",
-                "logs_dir_ok": True,
-            }
-            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
-        if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
-            # The deep .core-resolvability snippet (Sandbox command): report the
-            # selected Targets as resolvable via the marker line it scrapes.
-            selected = json.loads(cmd[-1])
-            verdicts = json.dumps(
-                [{"selector": item["selector"], "ok": True} for item in selected]
-            )
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
-            )
-        if cmd[0:2] == ["git", "check-ignore"]:
-            binary = not kwargs.get("text")
-            return subprocess.CompletedProcess(
-                cmd, 1, stdout=b"" if binary else "", stderr=b"" if binary else ""
-            )
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
-
-    # ``doctor.subprocess`` is the stdlib module, so this one fake also answers the MCP
-    # server inspection owner's probe (``booley.mcp.server_inspection``).
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-    return calls
-
-
 def _doctor_run(
     root: Path,
     *,
@@ -432,7 +229,7 @@ def _doctor_run(
     skip_agent_checks: bool = False,
     record_clean: bool = False,
 ) -> doctor.DoctorRunResult:
-    """Run the whole Doctor on a Project `_write_project` and `_patch_environment` set up."""
+    """Run the whole Doctor on a Project `_write_project` and `patch_doctor_environment` set up."""
     args = argparse.Namespace(
         verbose=verbose, deep=deep, concise=concise, skip_agent_checks=skip_agent_checks
     )
@@ -473,9 +270,6 @@ def _answer_command(
     monkeypatch.setattr(doctor.subprocess, "run", run)
 
 
-_REAL_SUBPROCESS_RUN = subprocess.run
-
-
 def _forward_to_git(monkeypatch: pytest.MonkeyPatch, *tokens: str) -> None:
     """Run the Git commands naming any of *tokens* for real; every other one uses the current fake."""
     other_commands = doctor.subprocess.run
@@ -483,7 +277,7 @@ def _forward_to_git(monkeypatch: pytest.MonkeyPatch, *tokens: str) -> None:
     def run(cmd, **kwargs):
         argv = [str(part) for part in cmd]
         if argv[:1] == ["git"] and any(token in argv for token in tokens):
-            return _REAL_SUBPROCESS_RUN(cmd, **kwargs)
+            return REAL_RUN(cmd, **kwargs)
         return other_commands(cmd, **kwargs)
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
@@ -500,7 +294,7 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     capsys,
 ):
     booley_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -540,7 +334,7 @@ def test_plain_doctor_lint_dry_run_judges_the_toplevel(
     )
     assert (edited != original) == (toplevel != "dut")
     core.write_bytes(edited)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     other_commands = doctor.subprocess.run
 
     def run(cmd, **kwargs):
@@ -572,7 +366,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
 ) -> None:
     real_up = session_runtime.up_without_recovery
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     issuance_invalidation.prepare(str(tmp_path.resolve()))
@@ -596,7 +390,7 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
 
 def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)  # seeds devcontainer + exclude
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -610,7 +404,7 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
     booley_dir = _write_project(tmp_path)
     (tmp_path / ".git").mkdir(exist_ok=True)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     # This broad integration fixture intentionally leaves several environmental
     # warnings active.  Exercise the real waiver path so the clean-run contract
     # remains zero *unwaived* warnings.
@@ -660,7 +454,7 @@ permanent = true
 
 def test_doctor_warning_run_does_not_record_freshness_stamp(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -671,7 +465,7 @@ def test_doctor_warning_run_does_not_record_freshness_stamp(tmp_path, monkeypatc
 def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
     # Missing asic_synthesize in the MCP probe is a hard FAIL (rc 1).
-    _patch_environment(
+    patch_doctor_environment(
         monkeypatch,
         tmp_path,
         booley_dir,
@@ -690,7 +484,7 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     capsys,
 ):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(
+    patch_doctor_environment(
         monkeypatch,
         tmp_path,
         booley_dir,
@@ -730,7 +524,7 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -784,7 +578,7 @@ def test_doctor_names_the_value_for_a_retired_auto_auth(tmp_path, monkeypatch, a
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fixture")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     result = _doctor_run(tmp_path)
 
@@ -813,7 +607,7 @@ def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, 
         encoding="utf-8",
     )
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE))
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -827,7 +621,7 @@ def test_mcp_checks_report_spec_issued_for_other_cli_set(tmp_path, monkeypatch, 
 
 def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path, seed_interactive=False)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -840,7 +634,7 @@ def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
 
 def test_doctor_fails_when_devcontainer_tracked(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     # Make `git ls-files -- .devcontainer` report a tracked file.
     inner = doctor.subprocess.run
 
@@ -875,7 +669,7 @@ def _full_run_rows_from(
     """Run full Doctor in a fresh project; return its rc and the rows from *start_row* on."""
     tmp_path.mkdir()
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir, mcp_tools=_MCP_PROBE_TOOLS)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir, mcp_tools=_MCP_PROBE_TOOLS)
     if probe_exit:
         answer_other_commands = doctor.subprocess.run
 
@@ -936,7 +730,7 @@ def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
 ):
     """Full Doctor reaches the probe only through the owner, answered by the fake."""
     booley_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     inspected: list[object] = []
     real_inspect = doctor.server_inspection.inspect_mcp_server
 
@@ -1032,7 +826,7 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
         '[lint_fast]\ndefines = []\ntop_module = "dut"\ntests = ["smoke", "full"]\n',
         encoding="utf-8",
     )
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
     starts: list[Path] = []
     issue_session = doctor.session_runtime.up_without_recovery
@@ -1073,7 +867,7 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
 @pytest.mark.parametrize("waived", [False, True])
 def test_doctor_deep_surfaces_synthesis_warning_verdict(tmp_path, monkeypatch, capsys, waived):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     if waived:
         (booley_dir / "doctor-waivers.toml").write_text(
             'version = 1\n\n[[waiver]]\ncheck = "flow.synth-deep-warning"\n'
@@ -1137,7 +931,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     from booley.harness import developer_probe
 
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
@@ -1208,7 +1002,7 @@ def test_sandbox_mcp_server_check_runs_only_inside_sandbox(row, tmp_path, monkey
 
 def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     result = doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=True), tmp_path, record_clean=False
@@ -1228,7 +1022,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     from booley.runtime import agent_config
 
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
 
     def unexpected_agent_check(*_args, **_kwargs):
@@ -1357,7 +1151,7 @@ def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     tmp_path, monkeypatch, fake_sandbox_attachment, error, fix
 ):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     fake_sandbox_attachment(Attachment.VSCODE)
 
     def fail_up(_root):
@@ -1385,7 +1179,7 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     """
     booley_dir = _write_project(tmp_path)
     _write_bad_overlay(booley_dir)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(
         host_diagnostics,
         "inspect_host",
@@ -1730,7 +1524,7 @@ def test_doctor_uses_configured_sandbox_image(tmp_path, monkeypatch):
         tmp_path,
         sandbox_image="ibex-booley-sandbox:latest",
     )
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1745,7 +1539,7 @@ def test_doctor_uses_configured_sandbox_image(tmp_path, monkeypatch):
 def test_riscv_image_with_a_missing_document_fails_with_the_rebuild_fix(tmp_path, monkeypatch):
     """A RISC-V image missing an offline document FAILs; the other probes still pass."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _answer_command(
         monkeypatch,
         lambda cmd: "{{json .Config.Env}}" in cmd,
@@ -1765,7 +1559,7 @@ def test_riscv_image_with_a_missing_document_fails_with_the_rebuild_fix(tmp_path
 
 def test_doctor_fails_when_job_logs_tracked(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
@@ -1792,7 +1586,7 @@ def test_doctor_warns_about_leftover_interactive_logs_and_keeps_them(
     tmp_path, monkeypatch, capsys
 ):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     main_dir = tmp_path / "main-booley"
     leftover = main_dir / ".interactive_logs"
     (leftover / "s1").mkdir(parents=True)
@@ -1820,7 +1614,7 @@ def test_doctor_warns_about_leftover_interactive_logs_and_keeps_them(
 )
 def test_doctor_fails_on_container_uid_mismatch(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor.sys, "platform", "linux")
     base_run = doctor.subprocess.run
 
@@ -1844,7 +1638,7 @@ def test_doctor_sim_dry_run_follows_tb_top_resolution(tmp_path, monkeypatch):
     (booley_dir / "configs.toml").write_text(
         '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\n', encoding="utf-8"
     )
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _answer_command(
         monkeypatch,
         lambda argv: "booley.flows.sim" in argv,
@@ -1894,7 +1688,7 @@ def _core_project(
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     return booley_dir
 
 
@@ -2390,7 +2184,7 @@ def _staleness_run(
     booley_dir = _write_project(tmp_path, sandbox_image=image)
     if invalid:
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     names = {"base": doctor.DOCKER_IMAGE, "derived": doctor.pi.project_image_name(tmp_path)}
     for role, stamp in created.items():
         name = names.get(role, role)
@@ -2510,18 +2304,6 @@ def test_image_stale_names_each_owner_workflow(owner, managed, steps, tmp_path, 
     assert warning.endswith(steps + ".")
 
 
-def _check(monkeypatch, status=None, *, raises=None, diagnostics=(), selected_id=dc.SANDBOX_IMAGE):
-    """Stand in for the lifecycle CHECK `booley init --check-only` runs."""
-
-    def reconcile(_scope, _intent):
-        if raises:
-            raise raises
-        found = tuple(lifecycle.Diagnostic("stale", m) for m in diagnostics)
-        return lifecycle.LifecycleResult(dc.SANDBOX_IMAGE, selected_id, status, diagnostics=found)
-
-    monkeypatch.setattr(harness_lifecycle, "reconcile_planned", reconcile)
-
-
 _UNADOPTED = "the selected image is built but this Project has not adopted it"
 _ERROR = lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
 
@@ -2542,8 +2324,8 @@ _ERROR = lifecycle.ImageLifecycleError("Cannot connect to the Docker daemon")
     ],
 )
 def test_doctor_reports_sandbox_image_provenance(kwargs, reason, outcome, tmp_path, monkeypatch):
-    _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
-    _check(monkeypatch, **kwargs)
+    patch_doctor_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    answer_image_check(monkeypatch, **kwargs)
     result = _doctor_run(tmp_path)
     found = {
         "warn": _messages(result, Severity.WARN, check_id="sandbox.image-stale"),
@@ -2595,7 +2377,7 @@ def test_worktree_prune_guard(row, tmp_path, monkeypatch):
     project = tmp_path / "it's a project"
     project.mkdir()
     booley_dir = _write_project(project)
-    _patch_environment(monkeypatch, project, booley_dir)
+    patch_doctor_environment(monkeypatch, project, booley_dir)
     answers = {
         "never": {"stdout": "never\n"},
         "unset": {"returncode": 1},
@@ -2636,7 +2418,7 @@ _SHADOW_CORE = "CAPI=2:\nname: ::demo:0\n"
 def test_worktree_core_shadow_guard(row, tmp_path, monkeypatch):
     """A stale worktree .core under .booley/ shadows the root source unless FUSESOC_IGNORE is set."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     core_dirs = {"stale-core": "worktrees/scalar_1bfe1733", "authored-stealth-core": "cores"}
     if row == "marker":
         (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
@@ -3193,7 +2975,7 @@ def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
         booley_dir = tmp_path / ".booley"
     else:
         booley_dir = _write_project(tmp_path)
-        _patch_environment(monkeypatch, tmp_path, booley_dir)
+        patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     cgroup = tmp_path / "memory.max"
     monkeypatch.setattr(doctor.resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (cgroup,))
     if not row.endswith("unreadable"):
@@ -3243,7 +3025,7 @@ def test_sandbox_swap(tmp_path, monkeypatch):
 
 def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     # memory 16g on a host with 32g of memory and 16g of swap (the fake default).
     if row == "over-host-swap":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = "20g"\n')
@@ -3311,7 +3093,7 @@ def test_hand_written_sandbox_doctor_names_no_host_steps(tmp_path, monkeypatch):
 
 def test_sandbox_swap_warns_on_a_non_string_setting(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _edit_booley_toml(booley_dir, 'memory = "16g"\n', 'memory = "16g"\nswap = 0\n')
     result = _doctor_run(tmp_path)
     (warning,) = _messages(result, Severity.WARN, check_id="sandbox.swap-unbacked")
@@ -3320,7 +3102,7 @@ def test_sandbox_swap_warns_on_a_non_string_setting(tmp_path, monkeypatch):
 
 def test_sandbox_swap_skips_without_memory_or_project(tmp_path, monkeypatch):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
     result = _doctor_run(tmp_path)
     assert any("no swap limit without a parseable" in m for m in _messages(result, Severity.SKIP))
@@ -3361,7 +3143,7 @@ def _runtime_setup(
 ):
     """Set up a Project for a Doctor run in or out of the Sandbox; return its recorded commands."""
     booley_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     if not valid:
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
     _set_venue(monkeypatch, inside, sandbox)
@@ -3518,7 +3300,7 @@ _CUSTOM_FLOW = (
 def test_disabled_endpoints_note(row, tmp_path, monkeypatch):
     """One NOTE names disabled Specialists and custom Flows, never a built-in Flow."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     disabled = {
         "custom-and-specialist": ("flows.custom_flow", "flows.lint", "specialists.reviewer"),
         "builtin-only": ("flows.lint",),
@@ -3566,7 +3348,7 @@ def _selftest_run(tmp_path, monkeypatch, capsys, exit_by_kind, *, inside=False, 
         _runtime_setup(tmp_path, monkeypatch, inside=True)
         _patch_developer_probe(monkeypatch)
     else:
-        _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+        patch_doctor_environment(monkeypatch, tmp_path, _write_project(tmp_path))
     booley_dir = tmp_path / ".booley"
     _write_bad_overlay(booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
@@ -4005,7 +3787,7 @@ class TestReporterAcceptsFixHints:
 
 def test_concise_reporter_suppresses_only_pass_rendering(tmp_path, monkeypatch, capsys):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _answer_command(
         monkeypatch, lambda argv: "booley.flows.lint" in argv, returncode=3, stderr="boom"
     )
@@ -4214,7 +3996,7 @@ def test_flow_check_doctor_output_is_stable(tmp_path, monkeypatch, capsys, verbo
     excerpt line only under ``--verbose``.
     """
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     sim_stderr = "\n".join(
         ["sim: starting", "sim: elaborating", "sim: linking"]
         + [f"sim: note {index}" for index in range(4)]
@@ -4735,7 +4517,7 @@ def test_doctor_renders_removed_documentation_item_with_fix(
     tmp_path, monkeypatch, capsys, config, item, fix, severity
 ):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     (booley_dir / "booley.toml").write_text(
         '[project]\nname = "unit"\n[agent]\nauth = "subscription"\n' + config
     )
@@ -4752,7 +4534,7 @@ def test_doctor_renders_removed_documentation_item_with_fix(
 def test_doctor_warns_on_unused_sources_and_preflight_checks(tmp_path, monkeypatch, capsys):
     """Doctor renders WARNs for the retired `[sources]` table and `preflight_checks`."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     toml_path = booley_dir / "booley.toml"
     text = toml_path.read_text(encoding="utf-8")
     assert 'name = "unit"\n' in text
@@ -4772,7 +4554,7 @@ def test_doctor_warns_on_unused_sources_and_preflight_checks(tmp_path, monkeypat
 @pytest.mark.parametrize("table", ["interactive", "sandbox"])
 def test_doctor_renders_each_project_policy_migration(tmp_path, monkeypatch, capsys, key, table):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     value = '["example.com"]' if key == "egress_allowlist" else "600"
     (booley_dir / "booley.toml").write_text(f"[{table}]\n{key} = {value}\n")
 
@@ -4800,7 +4582,7 @@ def test_doctor_renders_synthesis_target_migration(
     import yaml
 
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     core = tmp_path / "unit.core"
     document = yaml.safe_load(core.read_text().removeprefix("CAPI=2:\n"))
     document["targets"]["synth_fast"]["flow_options"][key] = value
@@ -5301,7 +5083,6 @@ class TestDoctorCommonStateFromWorktree:
 
 def _relocated_project(tmp_path: Path, *, stealth: bool = False) -> tuple[Path, Path]:
     """Return ``(root, booley_dir)`` for a Git checkout whose Booley Directory is relocated."""
-    from booley.runtime.booley_dir import reset_cache
 
     root = tmp_path / "rtl"
     root.mkdir()
@@ -5621,7 +5402,7 @@ _VERIBLE_CONTAINER_ROW = "verible-verilog-lint (a .core lint Target selects veri
 )
 def test_doctor_warns_once_that_configs_toml_is_ignored(tmp_path, monkeypatch, configs):
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     before = _doctor_run(tmp_path)
     (booley_dir / "configs.toml").write_text(configs, encoding="utf-8")
 
@@ -5900,7 +5681,7 @@ def test_retired_jobs_key_fails_with_its_own_fix(
 ):
     """ADR 0087: Doctor reports a retired ``[jobs]`` key as a FAIL and keeps checking."""
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     toml = booley_dir / "booley.toml"
     toml.write_bytes(toml.read_bytes() + snippet)
 
@@ -6047,7 +5828,7 @@ def test_authored_lint_doctor_eda_tool_policy(
     assert bool(_rows(result, Severity.PASS, _VERIBLE_CONTAINER_ROW)) is verible
     if binary is not None:
         # The probe owner answers for the Project Root; the Doctor run's fake is not its Sandbox.
-        monkeypatch.setattr(doctor.subprocess, "run", _REAL_SUBPROCESS_RUN)
+        monkeypatch.setattr(doctor.subprocess, "run", REAL_RUN)
         assert _probed_binaries(tmp_path, "lint_style", "lint") == [binary]
 
 

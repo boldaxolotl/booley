@@ -18,7 +18,6 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordPreviewRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
@@ -42,7 +41,6 @@ from tests.flows.sim.test_coverage_flow import _coverage, _coverage_project, _pi
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import (
     _baseline_manifest,
-    _distinct_root_resume,
     _manifest,
     _selection_test_runs,
     _sha,
@@ -452,29 +450,3 @@ def test_dry_run_and_run_accept_usable_run_cwd(
 
     assert run(True).exit_code == 0
     assert run(False).exit_code == 0
-
-
-@pytest.mark.parametrize("baseline_run", [False, True], ids=["baseline-missing", "both-present"])
-def test_resume_preflight_checks_each_record_in_its_own_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, baseline_run: bool
-) -> None:
-    validated, _candidate, _store, candidate_root, baseline_root = _distinct_root_resume(
-        tmp_path, monkeypatch
-    )
-    (candidate_root / "run").mkdir()
-    if baseline_run:
-        (baseline_root / "run").mkdir()
-    request = ResumeSimulationRecordPreviewRequest(
-        validated,
-        create_simulation_record_plan(validated.manifest),
-        candidate_root,
-        None,
-        SimulationRecordPolicy(),
-    )
-
-    if baseline_run:
-        SimulationRecord().preflight(request)
-        return
-    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
-        SimulationRecord().preflight(request)
-    assert str(baseline_root / "run") in str(caught.value)

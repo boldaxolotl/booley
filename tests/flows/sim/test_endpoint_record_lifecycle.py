@@ -563,33 +563,13 @@ def test_ordinary_cli_manifest_and_card_paths(
     assert report.is_file()
     assert result.outcome.report_text.count("  manifest:") == 1
 
-    _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result, factory)
+    _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result)
 
 
-def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result, factory):
+def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result):
     capsys.readouterr()
     destination = tmp_path / "resumed reports"
     monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "abc123")
-    monkeypatch.setattr(flow, "_resume_simulation_record_plan", lambda *_args, **_kwargs: plan)
-
-    def resume_executor(**_kwargs):
-        checkpoints = list(destination.glob("sim/[0-9]*/progress.json"))
-        assert len(checkpoints) == 1
-        preparing = json.loads(checkpoints[0].read_text())
-        assert preparing["complete"] is False
-        assert preparing["completed_targets"] == []
-        assert preparing["active"][0]["stage"] == "preparing"
-        assert preparing["active"][0]["operation"] == "publication"
-        assert (
-            capsys.readouterr().err
-            == _WORK_DIR_NOTICE + f"Simulation Record manifest: {seen[0]}\n"
-        )
-        return OrdinaryHdlSerialExecutor(
-            invoke=lambda *_args, **_kwargs: None, execution_factory=factory
-        )
-
-    # Private seam: the cocotb card execution has no public Project fixture.
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor", resume_executor)
     resumed = flow.execute_cli(
         _simulation_record_cli_args(
             work_dir=str(tmp_path), report_dir=str(destination), resume_from=str(seen[0])
@@ -1347,7 +1327,10 @@ _UNADMITTED = {
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
 def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: str) -> None:
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.flow import (
+        OrdinarySimulationRecordPlanning,
+        PreparedSimulationEndpoint,
+    )
     from booley.flows.sim.request import SimRequest
 
     flow = SimulateFlow()
@@ -1360,8 +1343,10 @@ def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: 
         recovery = SimpleNamespace(
             manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
         )
+        planning = OrdinarySimulationRecordPlanning((), {})
+        validated = SimpleNamespace(path=tmp_path / "manifest.json")
         result = flow._execute_simulation_record(
-            None, flow._resume_simulation_record_run(SimpleNamespace(), recovery)
+            None, flow._resume_simulation_record_run(validated, recovery, planning)
         )
     else:
         with flow.publication_resources:

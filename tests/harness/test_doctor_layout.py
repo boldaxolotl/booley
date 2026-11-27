@@ -15,8 +15,9 @@ from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import DoctorWaiver, DoctorWaivers
 from booley.harness import doctor
 from booley.presentation import colors
+from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.doctor_run_support import run_doctor
-from tests.harness.test_doctor import _patch_environment, _write_project
+from tests.harness.test_doctor import _write_project
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ def _plain_reporter_run(capsys, monkeypatch, *, colored: bool) -> str:
 def test_phase_sections_render_as_headers_with_glyph_rows(capsys, monkeypatch, tmp_path):
     booley_dir = _write_project(tmp_path)
     (booley_dir / "booley.toml").write_bytes(b"[project\n")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     run_doctor(tmp_path)
 
