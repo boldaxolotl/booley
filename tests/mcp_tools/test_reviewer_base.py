@@ -153,6 +153,7 @@ def test_cli_prints_the_report_once(
     report: str,
 ) -> None:
     place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.delenv("BOOLEY_DIR")  # the endpoints conftest points it at a non-Project
     (repo / ".booley").mkdir()
     (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")

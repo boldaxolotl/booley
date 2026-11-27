@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import FeatureFlagHelper
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 
 from booley.harness import booley as cli
 from booley.harness.setup import readiness
@@ -56,7 +56,7 @@ def test_unregistered_enable_name_fails_configuration_loading(
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "proj"
     root.mkdir()
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     feature_flags.enable(booley_dir, "test-flag")
     toml = booley_dir / "booley.toml"
     toml.write_bytes(toml.read_bytes().replace(b'["test-flag"]', b'["ghost"]'))

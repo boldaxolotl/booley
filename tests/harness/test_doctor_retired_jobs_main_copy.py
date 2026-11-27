@@ -8,12 +8,12 @@ from booley.harness import doctor
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from tests.harness.doctor_environment_support import patch_doctor_environment
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 
 
 def test_a_linked_worktrees_doctor_reports_the_main_copys_keys(tmp_path, monkeypatch, capsys):
     """The worktree's own copy is clean; the main copy's key is what every command refuses on."""
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     main_dir = tmp_path / "main-booley"
     main_dir.mkdir()
