@@ -131,3 +131,22 @@ A code change that also updates docs is `bug` or `enhancement` and may carry
 pipeline uses the strongest: `bug`, then `enhancement`, then `documentation`.
 The category decides which models work the ticket: `documentation` tickets
 get Claude only and never a GUI check.
+
+### Flaky-test issues
+
+`flaky` marks an issue about one test that fails only sometimes. Each such
+issue covers exactly one test ID (the pytest node ID), and its title names
+that ID, so every failure of the test collects in one place. Before filing,
+search the open `flaky` issues for the test ID. When one exists, add the new
+failure (run link and error) to it as a comment instead of opening another
+issue. A failure that names no test ID, such as a job that ran out of time,
+gets an ordinary issue for its job instead; see the known-flake rule in
+[Recover a dequeued PR](merge-queue.md#recover-a-dequeued-pr). Issues filed
+automatically from the per-test flake ledger (#4413) follow the same rule.
+
+An issue or PR whose only fix for a flaky test is a larger time budget or
+timeout closes as a duplicate of #4384, with a closing comment that links
+[Test time budgets](../../../.github/ci/README.md#test-time-budgets). That
+shared policy sizes every test's waits, so raising one test's budget hides the
+slowdown instead of fixing it. A change to the shared policy itself is not a
+duplicate. Close such an issue with `gh issue close <n> --duplicate-of 4384`.
