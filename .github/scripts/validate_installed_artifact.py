@@ -29,9 +29,6 @@ EXPECTED_RESOURCES = {
     "booley/data/docker/export_project_dependencies.py",
     "booley/data/docker/stable-base-inputs.txt",
     "booley/data/edalize/verible.py",
-    "booley/data/vscode/dashboard/package.json",
-    "booley/data/vscode/dashboard/extension.js",
-    "booley/data/vscode/dashboard/LICENSE.txt",
     "booley/dev_support/pre-commit-ruff.sh",
     # The Sandbox links /booley-docs to these packaged copies of the shipped docs.
     *(f"booley/data/docs/{Path(source).name}" for source in SHIPPED_DOCS),

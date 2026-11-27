@@ -164,7 +164,6 @@ def newcomer(tmp_path, monkeypatch, scope):
     launches: list[str] = []
     monkeypatch.setattr(command, "namespace", lambda: scope)
     monkeypatch.setattr(command, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
     monkeypatch.setattr(command, "DashboardReader", lambda *_: SimpleNamespace(read=lambda: None))
     monkeypatch.setattr(
         command,
@@ -191,10 +190,7 @@ def test_unseen_dashboard_is_not_open_and_a_new_one_starts(tmp_path, monkeypatch
     old = _PtyDashboard(scope, tmp_path, answers=False)
     try:
         time.sleep(scaled(2.0))  # past the unseen threshold: nobody answered since the start
-        policy = command.attach_policy(tmp_path)
-        assert policy["already_open"] is False, "an unseen Dashboard counted as open"
-        assert policy["enabled"] is True
-        exit_code = command.run_dashboard(tmp_path, on_attach=True)
+        exit_code = command.run_dashboard(tmp_path)
         assert exit_code == 0, f"the new Dashboard did not start (exit {exit_code})"
         assert len(newcomer.launches) == 1
     finally:
@@ -240,7 +236,7 @@ def test_wedged_owner_is_stopped_before_takeover(tmp_path, monkeypatch, scope, n
     try:
         assert wedged.stdout is not None
         assert wedged.stdout.readline().strip() == "ready"
-        exit_code = command.run_dashboard(tmp_path, on_attach=True)
+        exit_code = command.run_dashboard(tmp_path)
         assert exit_code == 0, f"a wedged owner kept the view (exit {exit_code})"
         assert len(newcomer.launches) == 1
         assert wedged.poll() == -signal.SIGKILL, "the wedged owner was not killed"
@@ -257,19 +253,10 @@ def test_seen_dashboard_still_refuses(tmp_path, monkeypatch, scope, newcomer, ca
     visible = _PtyDashboard(scope, tmp_path, answers=True)
     try:
         time.sleep(scaled(4.5))  # beyond the unseen threshold: only heartbeat answers keep it seen
-        policy = command.attach_policy(tmp_path)
-        assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
         assert command.run_dashboard(tmp_path) == 0
-        refusals = capsys.readouterr().out.splitlines()
-        assert len(refusals) == 2 and refusals[0] == refusals[1]
-        assert "already open in another window or terminal of this Sandbox" in refusals[0]
-        assert "then run booley dashboard or Booley: Open Dashboard here" in refusals[0]
-        assert policy == {
-            "protocol": 1,
-            "enabled": False,
-            "reason": refusals[0],
-            "already_open": True,
-        }
+        (refusal,) = capsys.readouterr().out.splitlines()
+        assert "already open in another window or terminal of this Sandbox" in refusal
+        assert refusal.endswith("then run booley dashboard here.")
         assert newcomer.launches == []
         assert visible.process.poll() is None, "a visible Dashboard was stopped"
     finally:
@@ -279,8 +266,7 @@ def test_seen_dashboard_still_refuses(tmp_path, monkeypatch, scope, newcomer, ca
 def test_starting_dashboard_is_not_retired(tmp_path, scope, newcomer, capsys):
     starting = _PtyDashboard(scope, tmp_path, answers=False)
     try:
-        assert command.attach_policy(tmp_path)["already_open"] is True
-        assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
+        assert command.run_dashboard(tmp_path) == 0
         assert "already open" in capsys.readouterr().out
         assert newcomer.launches == []
         assert starting.process.poll() is None, "a starting Dashboard was stopped"
@@ -292,6 +278,5 @@ def test_owner_that_cannot_be_proven_unseen_keeps_the_view(tmp_path, scope, newc
     """Bound but never listening (an older Booley) is refused to, not taken over."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as legacy:
         legacy.bind("\0booley-dashboard:" + scope)
-        assert command.attach_policy(tmp_path)["already_open"] is True
-        assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
+        assert command.run_dashboard(tmp_path) == 0
     assert newcomer.launches == []

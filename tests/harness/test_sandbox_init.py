@@ -13,7 +13,7 @@ from booley.config import agent as agent_config
 from booley.harness import booley as cli
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import auth_token, dashboard_tasks, runtime_context
+from booley.runtime import auth_token, runtime_context
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.git_command_fake import GitCommandFake
@@ -27,7 +27,6 @@ CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 GIT_IDENTITY = ("-c", "user.name=Publisher", "-c", "user.email=publisher@example.invalid")
 ISSUED_MOUNTINFO = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
 PLAIN_MOUNTINFO = "1 0 0:1 / / rw - overlay overlay rw\n2 1 0:2 / /work rw - ext4 /dev/x rw\n"
-TASKS_JSON = b'{"version": "2.0.0", "tasks": [{"label": "build", "command": "make"}]}\n'
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -148,9 +147,7 @@ def test_sandbox_init_sets_up_a_fresh_project(
     booley_dir = project / ".booley"
     assert (project / "AGENTS.md").resolve() == (booley_dir / "AGENTS.md").resolve()
     assert (project / "CLAUDE.md").resolve() == (booley_dir / "AGENTS.md").resolve()
-    tasks = (project / ".vscode" / "tasks.json").read_text(encoding="utf-8")
-    assert "Booley Dashboard" in tasks
-    assert dashboard_tasks.attach_blocker(project, booley_dir) == ""
+    assert not (project / ".vscode").exists()
     assert _local_config(project, "gc.worktreePruneExpire") == "never"
     assert _local_config(project, "worktree.useRelativePaths") in {"true", "false"}
     assert _git(project, "status", "--porcelain") == ""
@@ -218,7 +215,7 @@ def test_sandbox_init_fills_missing_default_cli_from_agent_app(
 ) -> None:
     booley_dir = project / ".booley"
     for app in ("claude", "codex"):
-        original = _set_booley_toml(project, "[sandbox]\ndashboard = true\n")
+        original = _set_booley_toml(project, '[sandbox]\nmemory = "8g"\n')
         monkeypatch.setenv("BOOLEY_AGENT_APP", app)
 
         assert _booley_init(project, monkeypatch) == 0, app
@@ -250,7 +247,7 @@ def test_sandbox_init_leaves_default_cli_unset_without_a_source(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     for app in (None, "auto", "none", "gemini"):
-        original = _set_booley_toml(project, "[sandbox]\ndashboard = true\n")
+        original = _set_booley_toml(project, '[sandbox]\nmemory = "8g"\n')
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
         if app is not None:
             monkeypatch.setenv("BOOLEY_AGENT_APP", app)
@@ -274,21 +271,6 @@ def test_sandbox_init_worktree_policy_follows_local_git(
         assert _booley_init(project, monkeypatch) == 0, git_version
 
         assert _local_config(project, "worktree.useRelativePaths") == expected
-
-
-def test_sandbox_init_reports_tracked_tasks_json(
-    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    tasks = project / ".vscode" / "tasks.json"
-    tasks.parent.mkdir()
-    tasks.write_bytes(TASKS_JSON)
-    _commit_all(project, ".vscode/tasks.json")
-
-    assert _booley_init(project, monkeypatch) == 0
-
-    assert tasks.read_bytes() == TASKS_JSON
-    assert ".vscode/tasks.json is tracked by Git" in capsys.readouterr().out
-    assert _git(project, "status", "--porcelain") == ""
 
 
 @pytest.mark.parametrize(

@@ -316,7 +316,7 @@ def test_port_without_web_is_refused(tmp_path, monkeypatch, capsys):
     from booley.harness.dashboard import command
 
     monkeypatch.setattr(command, "run_dashboard", lambda _root: 0)
-    args = argparse.Namespace(attach_policy=False, on_attach=False, web=False, port=9123)
+    args = argparse.Namespace(web=False, port=9123)
 
     assert tlr._cmd_dashboard(args, tmp_path) == 2
     assert "booley dashboard: --port needs --web" in capsys.readouterr().err

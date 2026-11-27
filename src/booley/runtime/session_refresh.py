@@ -15,7 +15,6 @@ from typing import Literal, Protocol, TypeVar
 
 from booley.runtime import host_docker as idk
 from booley.runtime import issuance_invalidation
-from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -252,13 +251,10 @@ def _current_container(
 
 
 def finalize_project(project: Path) -> None:
-    """Reconcile the ancillary files (excludes, Dashboard task); safe to repeat."""
+    """Reconcile the ancillary Git excludes; safe to repeat."""
     from booley.commit_policy import stealth_enabled
-    from booley.runtime import dashboard_tasks
     from booley.runtime.git import add_git_excludes, stealth_exclude_names
 
-    source = runtime_spec.authorized_project_data_source(project)
-    dashboard_tasks.reconcile(project, source)
     names = (".devcontainer", ".claude")
     add_git_excludes(
         project, (*names, *stealth_exclude_names(project)) if stealth_enabled(project) else names

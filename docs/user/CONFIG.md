@@ -2,10 +2,10 @@
 
 `.booley/booley.toml` holds your Project's Booley settings. This page covers the
 Project-wide ones: Project identity, extra Protected Inputs, turning Flows and
-Specialists off, Job limits, the Agent CLIs and their billing, models, the
-Dashboard, Git submodules and worktree hooks, and feedback redaction. Settings
-for one Flow, the Sandbox, or Stealth Mode live on their own pages; the table
-below says where.
+Specialists off, Job limits, the Agent CLIs and their billing, models, Git
+submodules and worktree hooks, and feedback redaction. Settings for one Flow,
+the Sandbox, or Stealth Mode live on their own pages; the table below says
+where.
 
 You rarely edit this file by hand. The `booley-setup` skill writes it during
 [setup](SETUP.md), and afterwards you ask the Developer Agent to change a
@@ -16,7 +16,7 @@ here to look up what a setting means and what its default is.
 
 | Setting | Documented in |
 |---|---|
-| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[sandbox].dashboard`, `[feedback]` | this page |
+| `[project]`, `enabled`, `[jobs]`, `[agent]`, `[models]`, `[submodules]`, `[feedback]` | this page |
 | `[flows.sim]` | [Simulation](FLOW-SIM.md#configuration-flowssim) |
 | `[coverage.waivers]` and per-Target coverage settings | [Coverage](COVERAGE.md#configuration) |
 | `[flows.lint]` | [Lint](FLOW-LINT.md#configuration-flowslint) |
@@ -312,18 +312,6 @@ entry to change. `booley doctor --deep` checks every model ahead of time.
 `[models]` has no model tiers. A config with `heavy`, `standard`, or `light`
 keys or a `[models.roles]` table doesn't load; the error shows the `[models]`
 entries to use instead.
-
-## Dashboard (`[sandbox].dashboard`)
-
-```toml
-[sandbox]
-dashboard = true     # open the Dashboard when VS Code attaches to the Sandbox
-```
-
-With `dashboard = false` the [Dashboard](USAGE.md#the-dashboard) does not
-open on its own; `booley dashboard` in a container terminal still opens it, and
-so does **Booley: Open Dashboard** (it needs a trusted Sandbox window with one
-Git folder).
 
 ## Worktrees
 

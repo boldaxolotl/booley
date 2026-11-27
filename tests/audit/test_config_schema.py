@@ -470,7 +470,14 @@ def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: obj
 
 def test_project_sandbox_accepts_project_fields() -> None:
     assert project_schema.audit_sandbox_table(
-        {"sandbox": {"memory": "8g", "image": "project-image", "pip_requirements": ["req.txt"]}}
+        {
+            "sandbox": {
+                "memory": "8g",
+                "image": "project-image",
+                "pip_requirements": ["req.txt"],
+                "dashboard": "invalid",
+            }
+        }
     ).is_valid
 
 
@@ -482,6 +489,14 @@ def test_project_sandbox_accepts_project_fields() -> None:
             {"jobs": {"max_tickets": 0}},
             "config.ignored-key",
             "delete max_tickets from [jobs] in booley.toml",
+        ),
+        *(
+            (
+                {"sandbox": {"dashboard": value}},
+                "config.ignored-key",
+                "delete dashboard from [sandbox] in booley.toml",
+            )
+            for value in (False, "invalid")
         ),
     ],
 )

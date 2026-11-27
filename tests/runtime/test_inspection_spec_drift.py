@@ -25,7 +25,6 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import (
     auth_token,
-    dashboard_extension,
     inspection,
     project_image,
     runtime_context,
@@ -387,10 +386,6 @@ def _remove_post_attach(spec: dict) -> None:
 _DRIFT_CASES = {
     "state-volume": (_remove_state_volume, "mounts[]"),
     "token-seed-mount": (_remove_token_seed, "mounts[]"),
-    "booley-integration-vsix": (
-        _remove_extension(dashboard_extension.VSIX_PATH),
-        "customizations.vscode.extensions[]",
-    ),
     "post-attach": (_remove_post_attach, "postAttachCommand"),
     "hdl-vsix": (_remove_extension(dc.HDL_VSIX), "customizations.vscode.extensions[]"),
     "retired-extension": (

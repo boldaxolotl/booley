@@ -15,7 +15,6 @@ from booley.audit.config_common import (
     pass_finding,
 )
 from booley.config.feature_flags import FEATURES_TABLE, FeatureConfigError, parse_enabled_features
-from booley.config.sandbox import parse_dashboard
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -316,10 +315,6 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
-    try:
-        parse_dashboard(data)
-    except BoundaryError as exc:
-        return failure(str(exc), "set [sandbox].dashboard to true or false")
     from booley.config.host_config import retired_project_policy_message
 
     migration = retired_project_policy_message({"sandbox": sandbox})
@@ -388,6 +383,16 @@ def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
                     subject=f"worktree.{key}",
                 )
             )
+    if "dashboard" in (as_dict(data.get("sandbox")) or {}):
+        findings.append(
+            ConfigFinding(
+                ConfigFindingSeverity.WARN,
+                "booley.toml [sandbox].dashboard was removed and is ignored",
+                "delete dashboard from [sandbox] in booley.toml",
+                check_id="config.ignored-key",
+                subject="sandbox.dashboard",
+            )
+        )
     return ConfigTableAudit(tuple(findings))
 
 

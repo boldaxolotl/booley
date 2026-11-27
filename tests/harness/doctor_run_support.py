@@ -9,7 +9,7 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding
 from booley.harness import activity_hooks, doctor, web_isolation
-from booley.runtime import dashboard_extension, runtime_context
+from booley.runtime import runtime_context
 
 
 def run_doctor(root: Path) -> doctor.DoctorRunResult:
@@ -23,10 +23,9 @@ def enter_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     # The host fixtures pin this false; on a CI runner `/.dockerenv` would decide.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    # The next three stand in for files the Sandbox Image installs, which a test host lacks.
+    # The next two stand in for files the Sandbox Image installs, which a test host lacks.
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
-    monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
 
 
 def findings(result: doctor.DoctorRunResult, check_id: str) -> list[DiagnosticFinding]:

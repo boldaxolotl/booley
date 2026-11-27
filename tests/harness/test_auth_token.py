@@ -933,7 +933,6 @@ class TestAuthStorePreflight:
 # fake covers that boundary yet, so the private ones below stand in for it.
 def _auth_sandbox_ports(monkeypatch):
     from booley.harness.setup import interactive
-    from booley.runtime import dashboard_tasks
 
     monkeypatch.setattr(interactive, "_unlicensed_relay_pending", lambda _: False)
     monkeypatch.setattr(
@@ -944,7 +943,6 @@ def _auth_sandbox_ports(monkeypatch):
     monkeypatch.setattr(session_runtime, "reconcile_stopped_headless_runtime", lambda *a: False)
     monkeypatch.setattr(interactive, "git_excludes_pending", lambda *a: False)
     monkeypatch.setattr(interactive, "add_git_excludes", lambda *a: False)
-    monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
 
 
 def _auth_reseed_boundaries(project, monkeypatch, issue_error=None):

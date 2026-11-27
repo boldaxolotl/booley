@@ -48,7 +48,6 @@ from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
     auth_token,
-    dashboard_extension,
     doctor_stamp,
     issuance_invalidation,
     project_gitignore,
@@ -3406,7 +3405,6 @@ def _prepare_row(monkeypatch, row):
         # The Sandbox owns these probes; answer them healthy.
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
-        monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
     elif row == "host-no-marker":
         _answer_command(
             monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout='["PATH=/usr/bin"]\n'

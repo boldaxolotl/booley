@@ -1,7 +1,6 @@
-"""Sandbox-only Dashboard command and one-view-per-Sandbox attachment policy."""
+"""Sandbox-only Dashboard command and one-view-per-Sandbox ownership."""
 
 import errno
-import json
 import os
 import socket
 import sys
@@ -9,7 +8,6 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from itertools import islice
 from pathlib import Path
 
 from booley.harness.dashboard import view_probe
@@ -19,14 +17,11 @@ from booley.harness.dashboard.model import DashboardReader
 from booley.harness.dashboard.targets import TargetsReader
 from booley.mcp.session_registry import namespace
 from booley.runtime.booley_dir import resolve_common_booley_dir
-from booley.runtime.dashboard_tasks import attach_blocker
 
-ALREADY_OPEN = 3
 ALREADY_OPEN_REASON = (
     "The Dashboard is already open in another window or terminal of this Sandbox. "
-    "Close it there (or press q in it), then run booley dashboard or Booley: Open Dashboard here."
+    "Close it there (or press q in it), then run booley dashboard here."
 )
-ATTACH_DISABLED = 4
 _PLATFORM = sys.platform
 
 
@@ -78,58 +73,6 @@ def _label_terminal() -> Callable[[], None]:
     return restore
 
 
-def attach_policy(root: Path) -> dict[str, object]:
-    """Read live Project policy without starting a terminal or changing any files."""
-    reason = attach_blocker(root, resolve_common_booley_dir(root))
-    # Computed even when a Project blocker applies, so the explicit open command
-    # can tell an open Dashboard from a disabled automatic open.
-    try:
-        already_open = _dashboard_is_open()
-    except RuntimeError:
-        if not reason:
-            raise
-        already_open = False  # a Project opt-out was always reported without probing
-    if already_open and not reason:
-        reason = ALREADY_OPEN_REASON
-    return {"protocol": 1, "enabled": not reason, "reason": reason, "already_open": already_open}
-
-
-def _dashboard_is_open() -> bool:
-    """A Dashboard holds the Sandbox view and something still renders it (or cannot be proven not to)."""
-    scope = namespace()
-    if not scope or not hasattr(socket, "AF_UNIX"):
-        raise RuntimeError("Sandbox Dashboard ownership is unavailable")
-    address = "@booley-dashboard:" + scope
-    # A probe must not reserve the live view's socket, even momentarily. Linux
-    # exposes abstract addresses here, in the caller's network namespace.
-    with Path("/proc/net/unix").open(encoding="utf-8") as sockets:
-        for index, row in enumerate(islice(sockets, 65537)):
-            if index == 65536:
-                raise RuntimeError("Sandbox socket inventory exceeds 65536 entries")
-            fields = row.split()
-            if len(fields) == 8 and fields[-1] == address:
-                return view_probe.unseen_owner(scope) is None
-    return False
-
-
-def run_attach(root: Path, *, policy_only: bool = False) -> int:
-    """Internal editor protocol; ordinary manual Dashboard behavior stays unchanged."""
-    try:
-        if policy_only:
-            print(json.dumps(attach_policy(root)))
-            return 0
-        # Only Project policy is rechecked here: `run_dashboard` makes the single
-        # ownership decision, so one attach probes the running Dashboard once.
-        reason = attach_blocker(root, resolve_common_booley_dir(root))
-    except (OSError, ValueError, RuntimeError, UnicodeError) as exc:
-        print(f"Dashboard attach unavailable: {exc}", file=sys.stderr)
-        return 2
-    if reason:
-        print(reason)
-        return ATTACH_DISABLED
-    return run_dashboard(root, on_attach=True)
-
-
 def _bind(owner: socket.socket, address: str, patience: float) -> OSError | None:
     """Bind *address*, retrying while it stays in use for up to *patience* seconds."""
     deadline = time.monotonic() + patience
@@ -143,7 +86,7 @@ def _bind(owner: socket.socket, address: str, patience: float) -> OSError | None
         time.sleep(view_probe.POLL_SECONDS)
 
 
-def _bind_view(owner: socket.socket, scope: str, *, on_attach: bool) -> int | None:
+def _bind_view(owner: socket.socket, scope: str) -> int | None:
     """Claim the Sandbox view; None when claimed, else the exit code of the refusal.
 
     A running Dashboard that provably nobody sees is retired once and the claim
@@ -168,11 +111,11 @@ def _bind_view(owner: socket.socket, scope: str, *, on_attach: bool) -> int | No
         print(f"Dashboard unavailable: cannot reserve the Sandbox view: {failure}")
         return 2
     print(ALREADY_OPEN_REASON)
-    return ALREADY_OPEN if on_attach else 0
+    return 0
 
 
-def run_dashboard(root: Path, *, on_attach: bool = False) -> int:
-    """Repeat attach keeps the existing view; an abstract socket leaves no filesystem state."""
+def run_dashboard(root: Path) -> int:
+    """A repeat launch keeps the existing view; an abstract socket leaves no filesystem state."""
     if not hasattr(socket, "AF_UNIX"):
         print("Dashboard unavailable: AF_UNIX sockets are unsupported")
         return 2
@@ -181,7 +124,7 @@ def run_dashboard(root: Path, *, on_attach: bool = False) -> int:
         print("Dashboard unavailable: Sandbox PID namespace cannot be observed")
         return 2
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
-        refusal = _bind_view(owner, scope, on_attach=on_attach)
+        refusal = _bind_view(owner, scope)
         if refusal is not None:
             return refusal
         _run_view(root, owner)
