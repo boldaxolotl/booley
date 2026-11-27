@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.021" timestamp="" hostname=""><testcase classname="tests.ci.test_flaky_sample" name="test_always_fails" time="0.000"><failure message="AssertionError: always&#10;assert 1 == 2">def test_always_fails():
+&gt;       assert 1 == 2, "always"
+E       AssertionError: always
+E       assert 1 == 2
+
+tests/ci/test_flaky_sample.py:29: AssertionError</failure><rerunFailure message="AssertionError: always&#10;assert 1 == 2">def test_always_fails():
+&gt;       assert 1 == 2, "always"
+E       AssertionError: always
+E       assert 1 == 2
+
+tests/ci/test_flaky_sample.py:29: AssertionError</rerunFailure></testcase></testsuite></testsuites>
