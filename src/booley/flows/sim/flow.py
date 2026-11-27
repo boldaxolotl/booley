@@ -204,11 +204,9 @@ class SimulateFlow(
             AuthenticatedSimulationExecutionPort,
         ]
         | None = None,
-        simulation_record_publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._coverage_execution_factory = coverage_execution
-        self._simulation_record_publication_checkpoint = simulation_record_publication_checkpoint
 
     def _start_invocation(self, request: FlowRequest | None = None) -> None:
         """Start an invocation with no Simulation Record outcomes: only this Flow keeps them."""
@@ -937,11 +935,9 @@ class SimulateFlow(
         executor = CoverageAggregateExecutor(
             plans=plans,
             execution_factory=self._coverage_simulation_record_execution,
-            publication_checkpoint=self._simulation_record_publication_checkpoint,
         )
         simulation_record = SimulationRecord(
             executor,
-            publication_checkpoint=self._simulation_record_publication_checkpoint,
             manifest_published=manifest_published,
             work_item_request=self.work_item_job_request,
         )
@@ -1266,7 +1262,6 @@ class SimulateFlow(
         ) -> _SimulationRecordSteps:
             simulation_record = SimulationRecord(
                 OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
-                publication_checkpoint=self._simulation_record_publication_checkpoint,
                 manifest_published=manifest_published,
                 work_item_request=self.work_item_job_request,
             )

@@ -11,6 +11,7 @@ from typing import cast
 
 from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.flows.artifact_durability import durable_directory
+from booley.flows.sim import faults
 from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.coverage_invocation import CoverageTargetPlan
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
@@ -115,7 +116,6 @@ class _CapturingExecution:
         ready: Callable[[float], _CapturedBuild],
         staged: Callable[[_CapturedBuild], tuple[RuntimeInputBinding, ...]],
         request: WorkExecutionRequest,
-        checkpoint: Callable[[str], None],
     ):
         self._delegate = delegate
         self._ready = ready
@@ -126,7 +126,6 @@ class _CapturingExecution:
         self.build_elapsed = 0.0
         self._hook_ordinal = 0
         self._request = request
-        self._checkpoint = checkpoint
 
     def build(self, request: SimulationBuildRequest) -> SimulationBuildResult:
         # The delegate's build slot lease must outlive the image copy below, or another
@@ -160,7 +159,7 @@ class _CapturingExecution:
             getattr(self._delegate, "set_pre_sim_evidence_sink", None)
         ):
             self._hook_ordinal += 1
-            _publish_hook(self._request, result.pre_sim, self._hook_ordinal, self._checkpoint)
+            _publish_hook(self._request, result.pre_sim, self._hook_ordinal)
         return result
 
     def command(self, request: SimulationCommandRequest) -> SimulationCommandResult:
@@ -198,11 +197,11 @@ def _raise_if_pre_sim_scope_stopped(request: WorkExecutionRequest) -> None:
         raise PreSimScopeStoppedError("execution scope stopped before Pre-Sim Commands")
 
 
-def _publish_hook(request, evidence, ordinal, checkpoint) -> None:
+def _publish_hook(request, evidence, ordinal) -> None:
     from .pre_sim_evidence import publish_pre_sim_firing
 
     try:
-        publish_pre_sim_firing(request, evidence, ordinal=ordinal, checkpoint=checkpoint)
+        publish_pre_sim_firing(request, evidence, ordinal=ordinal)
     except SimulationRecordIntegrityError as exc:
         raise _RecordIntegrityCarrierError(str(exc)) from exc
 
@@ -218,19 +217,17 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             [CoverageTargetPlan, SimulationOptions, tuple[str, ...], str],
             AuthenticatedSimulationExecutionPort,
         ],
-        publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         self._plans = dict(plans)
         self._execution_factory = execution_factory
-        self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._prepared: dict[Path, RunDirectory] = {}
 
     def prepare_attempt(self, request: WorkExecutionRequest) -> None:
         """Publish the exact coverage attempt before child admission."""
         attempt, _run_directory = simulation_attempt(request)
-        self._publication_checkpoint("before:simulation_attempt")
+        faults.fault_point("before:simulation_attempt")
         request.store.publish_attempt(request.attempt_directory, attempt)
-        self._publication_checkpoint("after:simulation_attempt")
+        faults.fault_point("after:simulation_attempt")
         self._prepared[request.attempt_directory] = _run_directory
 
     def execute(self, request: WorkExecutionRequest) -> SimulationResult:
@@ -274,7 +271,6 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                     request, captured, execution, run_directory, run_cwd, stack
                 ),
                 request,
-                self._publication_checkpoint,
             )
             outcome = self._collect(request, capturing)
         failure = self._publish_missing_build(
@@ -308,7 +304,6 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             outcome,
             capturing.build_result,
             capturing.build_elapsed,
-            self._publication_checkpoint,
         )
 
     def _collect(
@@ -333,7 +328,6 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 nested_plan,
                 execution,
                 embedded_root=request.attempt_directory / COVERAGE_RECORD_DIRECTORY,
-                publication_checkpoint=self._publication_checkpoint,
             )
         except _RecordIntegrityCarrierError as exc:
             assert isinstance(exc.__cause__, SimulationRecordIntegrityError)
@@ -363,7 +357,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             def publish(evidence):
                 nonlocal ordinal
                 ordinal += 1
-                _publish_hook(request, evidence, ordinal, self._publication_checkpoint)
+                _publish_hook(request, evidence, ordinal)
 
             sink_setter(publish)
         return execution
@@ -397,7 +391,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
     ) -> tuple[RuntimeInputBinding, ...]:
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
-        self._publication_checkpoint("before:runtime_inputs")
+        faults.fault_point("before:runtime_inputs")
         bindings = stack.enter_context(
             materialize_simulation_record_runtime_inputs(
                 bundle_root=captured.directory,
@@ -416,7 +410,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
             run_cwd,
             lambda: _verify_or_carry(captured),
         )
-        self._publication_checkpoint("after:runtime_inputs")
+        faults.fault_point("after:runtime_inputs")
         return bindings
 
 
@@ -467,7 +461,6 @@ def _publish_coverage_build_failure(
     outcome: CoverageTargetOutcome,
     build: SimulationBuildResult | None,
     elapsed: float,
-    checkpoint: Callable[[str], None],
 ) -> SimulationResult | None:
     if build is None or build.success:
         detail = outcome.detail.get("error") or outcome.detail.get("collection")
@@ -510,7 +503,6 @@ def _publish_coverage_build_failure(
         failed,
         elapsed,
         infrastructure=infrastructure,
-        checkpoint=checkpoint,
     )
     return blocked_result(
         request,
