@@ -367,9 +367,9 @@ def _scenario(
         _remember_item_tokens(monkeypatch, scenario)
         yield scenario
         return
-    # boundary: the slot stores' lease clock never moves, so no lease expires or renews.
+    # A lease clock that never moves: no lease expires and no renewal thread starts.
     clocked = functools.partial(job_slots.SlotStore, now=FakeProcessWorld().now)
-    monkeypatch.setattr(job_slots, "SlotStore", clocked)
+    monkeypatch.setattr(job_slots, "SlotStore", clocked)  # boundary: the slot stores' clock
     store = job_slots.SlotStore(job_slots.slots_dir(booley_dir))
     early = [
         store.acquire(
@@ -411,10 +411,10 @@ def _machine_admission(
         event=lambda: StepEvent(machine.scheduler),
         take_turn=stepped_turn(machine.scheduler),
     )
-    # boundary: the lane scheduler's clock, lanes-exited event and start-turn wait.
-    monkeypatch.setattr(coordinator, "BoundedSimulationRecordScheduler", stepped)
-    # boundary: the Simulation slot's file-lock wait.
-    monkeypatch.setattr(build_session, "wait_for_file_lock", stepped_file_lock_wait)
+    name = "BoundedSimulationRecordScheduler"
+    monkeypatch.setattr(coordinator, name, stepped)  # boundary: its clock and waits
+    wait = stepped_file_lock_wait
+    monkeypatch.setattr(build_session, "wait_for_file_lock", wait)  # boundary: file-lock wait
     # I7 knows R's machine lanes only; this record's lanes keep theirs in the project.
     machine.scheduler.checks.remove(machine._check_execution_entries)
     return AdmissionContext(
