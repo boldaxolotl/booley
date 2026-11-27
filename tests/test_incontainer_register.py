@@ -32,7 +32,7 @@ from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProble
 from tests.codex_config_support import count_parses, tomlkit_copy
 from tests.harness.agent_auth_support import pin_venue
 from tests.mcp_server_launch_fake import McpServerLaunchFake
-from tests.t3code_fake import serve_t3_code
+from tests.t3code_fake import serve_t3_code, t3_listener, write_t3_runtime
 
 _GATEWAY_KEYS = (
     "BOOLEY_GATEWAY_URL",
@@ -105,8 +105,8 @@ def first_run(tmp_path_factory, monkeypatch):
 def _t3_code_answers(monkeypatch):
     """No test here starts the real `t3`: T3 Code already answers.
 
-    The T3 Code fake replaces the port probe and `subprocess` that the MCP server launch
-    fake drives, so only the tests of the T3 Code start install it, through `_t3_code`.
+    The T3 Code fake replaces the port and descriptor probes and the `subprocess` that the
+    MCP server launch fake drives, so only the T3 Code start tests install it, through `_t3_code`.
     """
     monkeypatch.setattr(reg, "ensure_t3_server", lambda _root: "running")
 
@@ -265,13 +265,51 @@ def test_hook_without_an_agent_cli_starts_and_writes_nothing(first_run, monkeypa
 def test_ensure_t3_server_registers_the_project(
     tmp_path, monkeypatch, capsys, replies, adds, status
 ):
-    t3 = _t3_code(monkeypatch, add_replies=replies)
+    volume = tmp_path / "t3-volume"
+    t3 = _t3_code(monkeypatch, add_replies=replies, volume=volume)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    stale = write_t3_runtime(volume, pid=4_194_305, port=3773, environment_id="env-fake")
 
     assert reg.ensure_t3_server(tmp_path) == status
+    assert t3.replaced_records == [stale]  # untouched until T3 Code replaced it
     assert len(t3.added) == adds
     assert t3.checked == [["t3", "policy", "check", "/etc/t3code/policy.json"]]
     assert "boom" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("listener", "pid", "port_offset", "status"),
+    [
+        pytest.param("env-own", "live", 0, "running", id="own"),
+        pytest.param("env-other", "live", 0, "port-taken", id="other-base"),
+        pytest.param("not-t3", "live", 0, "port-taken", id="not-t3"),
+        pytest.param("drip", "live", 0, "port-taken", id="drip"),
+        pytest.param("banner", "live", 0, "port-taken", id="banner"),
+        pytest.param("nested", "live", 0, "port-taken", id="nested"),
+        pytest.param("oversized", "live", 0, "port-taken", id="oversized"),
+        pytest.param("env-own", None, 0, "port-taken", id="no-record"),
+        pytest.param("env-own", 4_194_305, 0, "port-taken", id="dead-pid"),
+        pytest.param("env-own", "live", 1, "port-taken", id="wrong-port"),
+    ],
+)
+def test_only_its_own_t3_code_on_the_port_counts_as_running(
+    first_run, tmp_path, monkeypatch, capsys, listener, pid, port_offset, status
+):
+    volume = tmp_path / "t3-volume"
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))
+    monkeypatch.setattr(reg, "ensure_t3_server", _REAL_ENSURE_T3_SERVER)
+    with t3_listener(listener) as port:
+        monkeypatch.setattr(reg, "T3_PORT", port)  # a test cannot bind T3 Code's fixed port
+        write_t3_runtime(
+            volume,
+            pid=os.getpid() if pid == "live" else pid,
+            port=port + port_offset,
+            environment_id="env-own",
+        )
+
+        assert reg.ensure_t3_server(first_run.project) == status
+
+    assert ("held by another process" in capsys.readouterr().err) == (status == "port-taken")
 
 
 @pytest.mark.parametrize(

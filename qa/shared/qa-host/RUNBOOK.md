@@ -26,7 +26,10 @@ runs.
 ## Rules
 
 - **Get the maintainer's approval before step 1.** The QA Host is a
-  privileged container, and a cold build uses about 20 GiB.
+  privileged container, and a cold build uses about 20 GiB. An explicit
+  request to run the `booley-gui-check` skill is that approval for its run:
+  it covers starting or reusing the QA Host and its privileged container,
+  and nothing else on the outer host.
 - **Treat the QA Host as root on the outer host.** `--privileged` gives it
   every capability and device. A Sandbox inside it keeps its own Sandbox
   Policy against the inner daemon, but an escape from that Sandbox lands in a
@@ -145,5 +148,6 @@ from `t3`):
 | `qa-host-docker` volume after a cold build | 19.4 GB (6.8 GB images, 15.5 GB build cache, partly shared) |
 | `qa-host-home` volume | 0.54 GB |
 | Reuse: container recreated to Sandbox ready | 6 s |
+| Reuse: new candidate `booley bootstrap --update` (unchanged base recipe) | 67 s (2026-11-27, `a1cb09d91`) |
 
 [dev-wheel]: ../../../docs/internals/CONTRIBUTING.md#building-a-development-wheel

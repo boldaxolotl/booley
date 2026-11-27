@@ -1237,7 +1237,7 @@ class TestUp:
         caplog: pytest.LogCaptureFixture,
         tmp_path: Path,
     ) -> None:
-        t3 = serve_t3_code(monkeypatch)
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
         runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
         up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(
             workspace, running=False
@@ -2294,7 +2294,7 @@ class TestT3CodeRelay:
             session_admission, "running_project_sandboxes", real_running_project_sandboxes
         )
         up_docker.created = _sandbox_state(workspace)
-        t3 = serve_t3_code(monkeypatch)
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
         runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
 
         no_ui, _ = relay_cli.run(["up", "--no-ui"], workspace)
@@ -2317,6 +2317,34 @@ class TestT3CodeRelay:
         assert status.endswith(f"T3 Code: running\nT3 Code relay: 127.0.0.1:{port}\n")
         files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
         assert TOKEN not in "".join([caplog.text, *runs, *files])
+
+    @linux_only
+    def test_a_foreign_listener_on_the_t3_code_port_gets_no_pairing_link(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
+        )
+        up_docker.created = _sandbox_state(workspace)
+        t3 = serve_t3_code(monkeypatch, foreign=True)
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+
+        up, warned = relay_cli.run(["up"], workspace)
+        status, _ = relay_cli.run(["status"], workspace)
+
+        held = "127.0.0.1:3773 in the Sandbox is held by another process"
+        assert "t3:port-taken" in runs[0] and held in runs[0]
+        assert "pair#token" not in up and held in warned
+        assert f"T3 Code: off ({held}" in status
+        with pytest.raises(sr.SessionError, match=held):
+            sr.pairing_link(workspace)
+        assert t3.served == t3.paired == []
 
     def test_session_up_warns_and_succeeds_when_the_pairing_link_fails(
         self, workspace: Path, up_docker: SandboxDocker, relay_cli: SimpleNamespace
