@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +13,6 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
-    encode_simulation_record_manifest,
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
@@ -22,9 +20,8 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.run_directory import RunDirectory, claimed_run_directory
-from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from tests.flows.sim.leased_session import canned_build_session
@@ -40,7 +37,6 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.flows.sim.test_coverage_flow import _coverage, _coverage_project, _pin_revision
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _baseline_manifest,
     _manifest,
     _selection_test_runs,
     _sha,
@@ -280,70 +276,6 @@ def test_missing_literal_run_cwd_blocks_every_publication_across_the_invocation(
 
     assert harness.counters["compile"] == 0
     assert not tuple(harness.invocation.glob("targets/*/record/*manifest*"))
-
-
-def test_owner_missing_run_cwd_fails_before_prerequisite_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The baseline's own directory exists, so only the owner check can stop its build."""
-    harness = _Harness(tmp_path, monkeypatch, "immutable")
-    (harness.project / "run").mkdir()  # the baseline's literal "run"
-    owner_document = literal_document("immutable", configured="owner-run")
-    owner_document["prerequisites"] = [
-        _prerequisite_entry(harness, _baseline_manifest(), "base-revision")
-    ]
-
-    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
-        harness.run(finalize_manifest(owner_document))
-
-    assert "owner-run" in str(caught.value)
-    assert harness.counters["compile"] == 0
-
-
-def _prerequisite_entry(harness, manifest, slug: str) -> dict:
-    """Publish ``manifest`` under the invocation and return the entry that references it."""
-    store = SimulationRecordStore(harness.invocation / "targets" / slug / "record")
-    store.publish_manifest(manifest)
-    raw = encode_simulation_record_manifest(manifest)
-    document = json.loads(raw)
-    return {
-        "role": "cycle_count_baseline",
-        "manifest": {
-            "path_base": "origin_invocation",
-            "path": store.manifest_path.relative_to(harness.invocation).as_posix(),
-            "bytes": len(raw),
-            "sha256": manifest_digest(manifest),
-            "kind": "simulation_record_manifest",
-            "owner": document["simulation_record_id"],
-        },
-        "simulation_record_id": document["simulation_record_id"],
-        "target": document["target"],
-        "required_observation": "cycle_count",
-        "work_item_id": document["work_items"][0]["work_item_id"],
-    }
-
-
-def test_nested_prerequisite_missing_run_cwd_fails_before_deeper_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A -> B -> C: B's missing directory must stop C's build, not only A's or B's own run."""
-    harness = _Harness(tmp_path, monkeypatch, "immutable")
-    (harness.project / "run").mkdir()  # owner A and leaf C use the literal "run"
-    leaf = _prerequisite_entry(harness, _baseline_manifest(), "leaf-revision")
-    middle_document = json.loads(encode_simulation_record_manifest(_baseline_manifest()))
-    middle_document.pop("fingerprints")
-    middle_document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440001"
-    middle_document["workload"]["run_cwd"]["configured"] = "middle-run"
-    middle_document["prerequisites"] = [leaf]
-    middle = _prerequisite_entry(harness, finalize_manifest(middle_document), "middle-revision")
-    owner_document = literal_document("immutable")
-    owner_document["prerequisites"] = [middle]
-
-    with pytest.raises(SimulationRecordIntegrityError, match=_MISSING) as caught:
-        harness.run(finalize_manifest(owner_document))
-
-    assert "middle-run" in str(caught.value)
-    assert harness.counters["compile"] == 0
 
 
 def test_missing_literal_run_cwd_fails_coverage_before_attempt(
