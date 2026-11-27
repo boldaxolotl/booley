@@ -546,26 +546,17 @@ class SimulateFlow(
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .record import collect_pre_sim_firings
-
+        # A failed scan cannot vouch for a terminal result.
         firings = tuple(
-            firing
+            replace(firing, terminal=False)
             for outcome in self._simulation_record_outcomes
             for firing in outcome.pre_sim_firings
         )
         retained = False
-        invocation = self._reserved_invocation_dir
         if firings:
             try:
                 result = self._project_published_pre_sim(
-                    result,
-                    collect_pre_sim_firings(
-                        prior=firings,
-                        booley_dir=None
-                        if invocation is None
-                        else invocation_booley_dir(invocation),
-                    ),
-                    invocation,
+                    result, firings, self._reserved_invocation_dir
                 )
                 retained = True
             except (OSError, ValueError):

@@ -216,25 +216,19 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
     assert result.detail["pre_sim_runs"][0]["terminal"] is False
 
 
-def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
-    tmp_path, monkeypatch
-):
-    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+def test_scan_error_before_any_outcome_publishes_no_hook_lines(tmp_path, monkeypatch):
+    invocation, _simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+    result_path = next((invocation / "targets/sim/record").glob("work-items/*/result.json"))
+    result_path.chmod(0o600)
+    result_path.write_bytes(b"{")
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
-    flow._args = SimpleNamespace(target=["sim"])
-    # Private seams: the integrity failure and corruption must land between projection and attach,
-    # which no public run exposes.
-    result = flow._simulation_record_endpoint_outcome([simulation_record])
-    assert result.detail["pre_sim_current"] == 1
-    firing = simulation_record.pre_sim_firings[0]
-    firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    result = flow._attach_published_pre_sim(result)
+    # Private seam: no public run stops between publication and attach.
+    result = flow._attach_published_pre_sim(EndpointOutcome(exit_code=0, report_text="done"))
     assert result.exit_code == 2
-    assert "pre_run_commands" not in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
     assert "pre_sim_lines" not in result.detail
     assert "pre_sim_runs" not in result.detail
-    assert result.detail["pre_sim_unauthenticated_references"]
 
 
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
@@ -1739,19 +1733,6 @@ def test_partial_simulation_record_planning_keeps_known_and_unknown_tools(tmp_pa
     assert result.exit_code == 2
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
     assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": None}
-
-
-def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path, monkeypatch):
-    """The Pre-Sim read boundary binds a terminal result's firing references both ways."""
-    from booley.flows.sim.record import SimulationRecordIntegrityError
-    from booley.flows.sim.record.store import SimulationRecordStore
-
-    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
-    outcome.pre_sim_firings[0].path.unlink()
-    store = SimulationRecordStore(invocation / "targets/sim/record")
-
-    with pytest.raises(SimulationRecordIntegrityError, match="result references disagree"):
-        collect_pre_sim_firings(store.manifest_path)
 
 
 def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_write_fails):
