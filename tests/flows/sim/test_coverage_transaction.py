@@ -36,6 +36,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationRunResult,
 )
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -591,11 +592,8 @@ def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_p
         if boundary == "after:coverage_record":
             raise OSError("injected post-merge publication failure")
 
-    outcome = run_target(
-        plan,
-        MergeUnavailable(),
-        publication_checkpoint=checkpoint,
-    )
+    with inject_faults(checkpoint):
+        outcome = run_target(plan, MergeUnavailable())
 
     assert outcome.exit_code == 2
     assert outcome.detail["passed"] is True
@@ -795,7 +793,8 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
             if boundary == "after:coverage_record":
                 raise OSError("publication interrupted")
 
-        retained = run_target(retained_plan, NativeExecution(), publication_checkpoint=checkpoint)
+        with inject_faults(checkpoint):
+            retained = run_target(retained_plan, NativeExecution())
         assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
 
     coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record

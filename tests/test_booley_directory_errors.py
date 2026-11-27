@@ -23,9 +23,8 @@ from tests.booley_checkouts_support import commit_all, init_repo, isolate_git
 from tests.flows.test_baseline_worktree import _init_repo, _paired_checkout_without_upstream
 from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.doctor_host_support import answer_doctor_commands
-from tests.harness.doctor_run_support import run_doctor
+from tests.harness.doctor_run_support import run_doctor, write_project
 from tests.harness.init_agent_support import empty_host, seed_init, stub_host_images
-from tests.harness.test_doctor import _write_project
 from tests.project_runtime_git_support import git
 from tests.test_guidance_links import _make_project
 
@@ -100,7 +99,7 @@ def test_missing_pairing_on_cleanup_preserves_unowned_directory(tmp_path, caplog
 
 
 def test_doctor_outside_git_names_the_rtl_repository(tmp_path, monkeypatch):
-    patch_doctor_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    patch_doctor_environment(monkeypatch, tmp_path, write_project(tmp_path))
     outside_git = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
     answer_doctor_commands(
         monkeypatch,

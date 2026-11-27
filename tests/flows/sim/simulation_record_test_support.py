@@ -885,11 +885,9 @@ def _executor(
     *,
     mutate_bundle: str = "",
     disclosures: dict[str, object] | None = None,
-    checkpoint=None,
     launched_bundles: list[Path] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
-        publication_checkpoint=checkpoint,
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _Execution(
             build_root,
@@ -1566,7 +1564,6 @@ def _run_coverage_simulation_record(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
-    publication_checkpoint=None,
 ):
     plan, target = _coverage_simulation_record_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -1586,7 +1583,6 @@ def _run_coverage_simulation_record(
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
         execution_factory=execution_factory,
-        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
