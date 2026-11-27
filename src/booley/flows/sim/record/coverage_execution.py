@@ -349,7 +349,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 "coverage plan is missing for record Target"
             ) from exc
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
-        # The codec's _read_workload proves workload.trace is a bool.
+        # Planning writes workload.trace as a bool; records are trusted on read.
         options = simulation_options_from_policy(
             request.policy, trace=cast(bool, workload["trace"])
         )
@@ -429,7 +429,7 @@ def _verify_or_carry(captured: _CapturedBuild) -> None:
 
 
 def _attempt_identity(request: WorkExecutionRequest) -> dict[str, str]:
-    # The codec's _read_manifest proves the record id and every work item id are strings.
+    # Planning writes the record and work item ids as strings; records are trusted on read.
     return {
         "simulation_record_id": cast(str, request.manifest.document["simulation_record_id"]),
         "work_item_id": cast(str, request.work_item["work_item_id"]),
