@@ -85,23 +85,27 @@ class SupervisedExecutionDriver:
             process = subprocess.Popen(transport_argv)
             try:
                 result = _drive_execution(process, paths, pending)
-                if self._cwd is not None and result.terminal_cause in {
-                    "protocol_unavailable",
-                    "protocol_mismatch",
-                }:
-                    # A vanished directory and a broken image look the same here.
-                    logger.error(
-                        "Sandbox startup failed with selected directory %r; "
-                        "directory and protocol startup could not be distinguished",
-                        self._cwd,
-                    )
-                else:
-                    _report_execution_failure(
-                        result, self._project_root, self._container, self._sandbox_name
-                    )
-                return result
             finally:
                 _stop_transport(process)
+        # Outside the signal capture: inspecting a hung Docker must stay interruptible.
+        self._report(result)
+        return result
+
+    def _report(self, result: ExecutionResult) -> None:
+        if self._cwd is not None and result.terminal_cause in {
+            "protocol_unavailable",
+            "protocol_mismatch",
+        }:
+            # A vanished directory and a broken image look the same here.
+            logger.error(
+                "Sandbox startup failed with selected directory %r; "
+                "directory and protocol startup could not be distinguished",
+                self._cwd,
+            )
+        else:
+            _report_execution_failure(
+                result, self._project_root, self._container, self._sandbox_name
+            )
 
 
 @dataclass

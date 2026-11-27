@@ -364,6 +364,10 @@ def test_record_poll_survives_sharing_error(
 _KILL = "os.kill(os.getppid(), signal.SIGKILL)\n"
 _CANCEL = "r.request_cancellation(paths, signum=signal.SIGTERM, reason={!r})\ntime.sleep(60)\n"
 _RECOVERED = (
+    # Wait out the supervisor's own `running` write, so it cannot replace this record.
+    f"end = time.monotonic() + {hang_guard_s()}\n"
+    "while (r.read_json(paths.record) or {}).get('state') != 'running' and time.monotonic() < end:\n"
+    "    time.sleep(0.01)\n"
     "r.atomic_write_json(paths.record, dict(schema_version=r.PROTOCOL_VERSION, state='terminal',"
     " exit_code=125, tree_terminal=True, terminal_cause='orphan_recovered'))\n"
 ) + _KILL
@@ -402,6 +406,9 @@ def test_lost_execution_names_its_cause(
     docker.failing = {"ps"} if after == "unknown" else set()
     # boundary: the recovery window the host clock is measured against
     monkeypatch.setattr(runtime_attachment, "_RECOVERY_LIMIT_SECONDS", 0.5)
+    interrupt = signal.getsignal(signal.SIGINT)
+    inspecting: list[object] = []
+    docker.on_call = lambda _argv: inspecting.append(signal.getsignal(signal.SIGINT))
     script = (
         "import os,signal,time\nfrom booley.runtime import execution_records as r\n"
         "paths = r.execution_paths(os.environ[r.RUNTIME_EXECUTION_ENV])\n"
@@ -414,3 +421,5 @@ def test_lost_execution_names_its_cause(
     assert (result.exit_code, result.terminal_cause) == (exit_code, cause)
     [message] = [record.getMessage() for record in caplog.records]
     assert all(fact in message for fact in ["'lost-box'", *facts]), message
+    # A hung inspection after the loss must stay interruptible by Ctrl-C.
+    assert set(inspecting) == ({interrupt} if cause == "recovery_timeout" else set())
