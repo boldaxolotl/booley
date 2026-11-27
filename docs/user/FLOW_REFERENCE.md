@@ -40,8 +40,9 @@ for the whole suite:
 
 The agent replies with the verdict and the paths to the report and logs.
 
-To run a Flow yourself, type these in a container terminal: a T3 Code thread's
-terminal, or `booley session enter` on the host.
+To run a Flow yourself, type these in a
+[container terminal](USAGE.md#read-this-first): a T3 Code thread's terminal, or
+`booley session enter` on the host.
 
 ```bash
 booley flow                                   # list the Flows

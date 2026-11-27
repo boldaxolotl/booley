@@ -73,14 +73,15 @@ T3 Code lists the Project under its `[project].name` from
 the Sandbox starts, so a name you give the Project in T3 Code lasts only until
 then.
 
-A T3 Code thread's terminal runs inside the Sandbox: type in-Sandbox commands
-there. From a host terminal, `session enter` gives the same, for example
-without a browser or in a script. Ending a `session enter` command, with
-`Ctrl-C` or by closing the shell, stops everything it started, background
-processes included, except a Flow or Specialist started from the Dashboard:
-that Standalone Job keeps running until it finishes or the Sandbox stops. `up`
-and `enter` reuse a running Sandbox. `session down` also stops any `booley flow`
-or `booley specialist` run typed in a container terminal.
+A T3 Code thread's terminal is a [container terminal](USAGE.md#read-this-first):
+it runs inside the Sandbox, so type in-Sandbox commands there. From a host
+terminal, `session enter` gets you in too, for example without a browser or in a
+script. Ending a `session enter` command, with `Ctrl-C` or by closing the shell,
+stops everything it started, background processes included, except a Flow or
+Specialist started from the Dashboard: that Standalone Job keeps running until
+it finishes or the Sandbox stops. `up` and `enter` reuse a running Sandbox.
+`session down` also stops any `booley flow` or `booley specialist` run typed in
+a container terminal.
 
 `session refresh` rebuilds only what changed and is safe to rerun after a
 failure. It doesn't touch tracked files; when it reports pending file changes,

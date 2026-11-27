@@ -19,9 +19,10 @@ from each side:
   and the Project configuration. Doctor starts the Sandbox for its Flow
   dry-runs. It never completes pending Sandbox recovery: it warns and skips
   the checks that need the Sandbox until `booley session up` completes it.
-- **Container terminal** (a T3 Code thread's terminal, or
-  `booley session enter` on the host): the same configuration plus the tools,
-  MCP server, T3 Code, the Dashboard, and agent setup inside the Sandbox.
+- **[Container terminal](USAGE.md#read-this-first)** (a T3 Code thread's
+  terminal, or `booley session enter` on the host): the same configuration plus
+  the tools, MCP server, T3 Code, the Dashboard, and agent setup inside the
+  Sandbox.
 
 Run plain `booley doctor` for everyday checks. It checks configuration and
 prepares each Flow without running a simulation, lint, or synthesis.

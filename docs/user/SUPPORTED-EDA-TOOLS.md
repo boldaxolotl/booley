@@ -103,8 +103,9 @@ Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
 To see what your image actually has, run `booley doctor -v` in a host
 terminal: it prints version lines from the Sandbox image for Verilator, Yosys,
-Icarus, and sv2v. Inside the Sandbox it prints none, so in a container
-terminal (a T3 Code thread's terminal) run the tools directly:
+Icarus, and sv2v. Inside the Sandbox it prints none, so run the tools directly
+in a [container terminal](USAGE.md#read-this-first) (a T3 Code thread's
+terminal, or `booley session enter` on the host):
 
 ```bash
 verilator --version   # any EDA tool
