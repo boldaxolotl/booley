@@ -146,7 +146,6 @@ class RemovalRun:
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(pid, signal.SIGKILL)
         if self._tool is not None:
-            # Its session too: the child may not have reported its PID yet.
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError):  # the child's PID may be unread
                 os.killpg(self._tool.pid, signal.SIGKILL)
             self._tool.communicate()
