@@ -2,6 +2,8 @@
 
 They observe public result values; no production diagnostic implementation is
 recreated here. Existing message assertions remain useful during the migration.
+
+The private helpers fake the Runtime files and version probe the diagnostics read.
 """
 
 from __future__ import annotations

@@ -1,4 +1,7 @@
-"""Shared helpers for the Codex config writer tests."""
+"""Shared helpers for the Codex config writer tests.
+
+``tomlkit_copy`` fakes the installed ``tomlkit`` version.
+"""
 
 from __future__ import annotations
 

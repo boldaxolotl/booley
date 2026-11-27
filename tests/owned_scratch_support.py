@@ -3,6 +3,8 @@
 The children run a real nested Codex home and a real read-only Specialist
 workspace so the tests prove cleanup against genuine process death, not a
 simulated one. Every child is reaped before the helper returns.
+
+The completed child fakes the Sandbox venue check.
 """
 
 from __future__ import annotations

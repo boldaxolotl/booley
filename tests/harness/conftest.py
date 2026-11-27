@@ -1,4 +1,7 @@
-"""Test fixtures for booley tests."""
+"""Test fixtures for booley tests.
+
+It stubs the Claude Agent SDK package when it is not yet imported.
+"""
 
 from __future__ import annotations
 
