@@ -381,6 +381,7 @@ def run_registrar_on_post_start(
         "BOOLEY_DIR": str(workspace / ".booley"),
     }.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.delenv("BOOLEY_T3_BASE_DIR", raising=False)  # never the host Sandbox's own
     monkeypatch.chdir(workspace)
     runs: list[str] = []
 

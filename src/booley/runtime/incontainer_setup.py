@@ -23,6 +23,7 @@ booley.harness.incontainer_register``, does two things on every container start:
 5. **Starts T3 Code and registers the Project with it** (``ensure_t3_server``)
    when an Agent CLI is allowed, on the same terms as the MCP server, and the
    web Dashboard that T3 Code's preview panel shows (``ensure_dashboard_server``).
+   T3 Code runs on the Project's own spelling of its base directory (``t3_base_dir``).
 
 Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
@@ -69,7 +70,12 @@ from booley.runtime.mcp_config import (
 )
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
-from booley.runtime.sandbox_layout import DASHBOARD_PORT, T3_BASE_DIR, T3_POLICY_TARGET
+from booley.runtime.sandbox_layout import (
+    DASHBOARD_PORT,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_POLICY_TARGET,
+)
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -297,6 +303,28 @@ def _start_detached(
     return "failed"
 
 
+def t3_base_dir() -> str:
+    """The ``--base-dir`` T3 Code takes in this Sandbox.
+
+    An issued spec names the Project's own spelling; a hand-written one keeps the default.
+    """
+    return os.environ.get(T3_BASE_DIR_ENV, T3_BASE_DIR)
+
+
+def _link_t3_base_dir(base: str) -> None:
+    """Make *base* a link to the T3 state volume's mount, unless it is the mount itself.
+
+    Raises ``OSError`` when *base* holds anything else, so T3 Code keeps no state there.
+    """
+    if base == T3_BASE_DIR:
+        return
+    try:
+        Path(base).symlink_to(T3_BASE_DIR)
+    except FileExistsError:
+        if Path(base).readlink() != Path(T3_BASE_DIR):
+            raise
+
+
 def t3_state() -> str:
     """``"running"``, ``"port-taken"`` or ``"off"``: what holds T3 Code's loopback port.
 
@@ -305,7 +333,7 @@ def t3_state() -> str:
     """
     if not _port_is_serving(T3_PORT):
         return "off"
-    return "running" if _t3_identity_proven(Path(T3_BASE_DIR)) else T3_PORT_TAKEN
+    return "running" if _t3_identity_proven(Path(t3_base_dir())) else T3_PORT_TAKEN
 
 
 def _t3_identity_proven(base: Path) -> bool:
@@ -365,9 +393,11 @@ def create_t3_pairing(base_url: str) -> subprocess.CompletedProcess[str]:
 
     The result's stdout holds the pairing token, so the caller prints it only to the user.
     """
-    cmd = ["t3", "auth", "pairing", "create", "--base-dir", T3_BASE_DIR]
+    base = t3_base_dir()
+    cmd = ["t3", "auth", "pairing", "create", "--base-dir", base]
     cmd += ["--ttl", PAIRING_TTL, "--base-url", base_url, "--json"]
     try:
+        _link_t3_base_dir(base)  # else `t3` makes a directory there when no start linked it
         return subprocess.run(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -399,8 +429,14 @@ def ensure_t3_server(project_root: Path) -> str:
         return state
     if not _t3_policy_accepted():
         return "policy-rejected"
-    prune_t3_logs(Path(T3_BASE_DIR))
-    return _serve_t3(project_root)
+    base = t3_base_dir()
+    try:
+        _link_t3_base_dir(base)
+    except OSError as exc:
+        print(f"T3 Code not started: cannot link {base} to {T3_BASE_DIR}: {exc}", file=sys.stderr)
+        return "failed"
+    prune_t3_logs(Path(base))
+    return _serve_t3(project_root, base)
 
 
 def prune_t3_logs(base: Path) -> None:
@@ -429,7 +465,7 @@ def prune_t3_logs(base: Path) -> None:
         print(f"T3 Code logs not pruned: {exc}", file=sys.stderr)
 
 
-def _serve_t3(project_root: Path) -> str:
+def _serve_t3(project_root: Path, base: str) -> str:
     """Start ``t3 serve`` detached and register the Project; never raises."""
     try:
         runtime = runtime_dir(project_root)
@@ -445,7 +481,7 @@ def _serve_t3(project_root: Path) -> str:
                     "--port",
                     str(T3_PORT),
                     "--base-dir",
-                    T3_BASE_DIR,
+                    base,
                     str(project_root),
                 ],
                 label="T3 Code server",
@@ -494,7 +530,7 @@ def _register_t3_project(project_root: Path, title: str | None) -> bool:
     renamed to it, and a failed rename still counts as registered.
     """
     titled = ["--title", title] if title else []
-    cmd = ["t3", "project", "add", "--base-dir", T3_BASE_DIR, *titled, str(project_root)]
+    cmd = ["t3", "project", "add", "--base-dir", t3_base_dir(), *titled, str(project_root)]
     deadline = time.monotonic() + _T3_START_TIMEOUT_SECONDS
     while True:
         result = _run_t3_project(cmd, "registration")
@@ -516,7 +552,7 @@ def _register_t3_project(project_root: Path, title: str | None) -> bool:
 
 def _rename_t3_project(project_root: Path, title: str) -> None:
     """Run ``t3 project rename``, which also exits 0 when the title already matches."""
-    cmd = ["t3", "project", "rename", "--base-dir", T3_BASE_DIR, str(project_root), title]
+    cmd = ["t3", "project", "rename", "--base-dir", t3_base_dir(), str(project_root), title]
     result = _run_t3_project(cmd, "rename")
     if result is not None and result.returncode != 0:
         print(f"T3 Code project rename failed (exit {result.returncode})", file=sys.stderr)

@@ -496,6 +496,15 @@ class TestStateVolume:
         assert f"target={dc.AGENT_HOME}/.codex" in vol
         assert "type=volume" in vol
 
+    def test_t3_base_dir_is_the_projects_own(self):
+        first, second, again = (
+            build_spec(dc.APP_CLAUDE, project_id=name)["containerEnv"]["BOOLEY_T3_BASE_DIR"]
+            for name in ("aaa", "bbb", "aaa")
+        )
+        assert first != second
+        assert first == again == "/home/agent/.t3-aaa"  # users' pairings depend on it
+        assert "BOOLEY_T3_BASE_DIR" not in build_spec(dc.APP_NONE)["containerEnv"]
+
     def test_none_has_no_state_volume(self):
         spec = build_spec(dc.APP_NONE)
         assert all("type=volume" not in m for m in spec["mounts"])
