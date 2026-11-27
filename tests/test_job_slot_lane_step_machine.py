@@ -1057,6 +1057,25 @@ def test_a_cancel_after_a_waiting_lane_is_promoted_retires_it_as_an_abort(
     assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
 
 
+def refuse_renewal_at_busy_gate(
+    machine: LaneStepMachine, token: job_slots.SlotToken, worker: Worker, close: Callable[[], None]
+) -> Worker:
+    """*close* an item while R's renewal tick holds *token*'s lease gate, then run its lane
+    *worker* through one refused renewal. Returns the tick, which still holds the gate.
+    """
+    gate = f".{token.lease_id}.lease.lock"
+    tick = machine.scheduler.start(
+        machine.record, "tick", lambda: machine.record.store.renew(token)
+    )
+    _step_until(machine, tick, "hardlink_to", gate)
+    machine.scheduler.grant(tick)
+    close()
+    for _ in range(21):  # a refused renewal reads the held gate 20 times: the worker now retries
+        _step_until(machine, worker, "read_bytes", gate)
+        machine.scheduler.grant(worker)
+    return tick
+
+
 @pytest.mark.parametrize(
     ("while_busy", "error", "cause"),
     [
@@ -1076,16 +1095,10 @@ def test_a_busy_lease_gate_at_lane_confirmation_is_retried(
     lane = machine.start_lane()
     _run_lane_to_idle(machine, lane)
     assert lane.permit is not None and lane.worker is not None
-    record, token = machine.record, lane.permit.token
+    token = lane.permit.token
     gate = f".{token.lease_id}.lease.lock"
-    # The lane's renewal thread takes the lease gate for a tick and holds it.
-    tick = machine.scheduler.start(record, "tick", lambda: record.store.renew(token))
-    _step_until(machine, tick, "hardlink_to", gate)
-    machine.scheduler.grant(tick)
-    machine.command_lane(lane, "close")
-    for _ in range(21):  # a refused renewal reads the held gate 20 times: the lane now retries
-        _step_until(machine, lane.worker, "read_bytes", gate)
-        machine.scheduler.grant(lane.worker)
+    close = functools.partial(machine.command_lane, lane, "close")
+    tick = refuse_renewal_at_busy_gate(machine, token, lane.worker, close)
     if while_busy == "lost":
         machine.world.clock += job_slots.LEASE_DURATION_SECONDS + 1
     if while_busy == "renewed":  # the tick extends the lease and still holds the gate
