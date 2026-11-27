@@ -24,6 +24,8 @@ _NOW = datetime(2026, 11, 27, 12, tzinfo=UTC)
 _CLASS_ID = "tests/ci/test_flaky_sample.py::TestGroup::test_flaky"
 _ERROR_ID = "tests/ci/test_flaky_sample.py::test_fixture_error"
 _BOTH = [_CLASS_ID, _ERROR_ID]
+_QUARANTINED_ID = "tests/ci/test_flaky_sample.py::test_always_fails"
+_THREE = "3 hits within 7 days"
 
 
 def _zip(data: bytes) -> bytes:
@@ -77,6 +79,7 @@ def test_hits_count_runs_not_jobs_or_attempts(
         "days": 7,
     }
     assert (report["runs_read"], report["min_hits"]) == (2, 2)
+    assert report["quarantine_bar"] == {"min_hits": 3, "days": 7}
     assert [entry["test_id"] for entry in report["ledger"]] == _BOTH
     assert [entry["test_id"] for entry in report["candidates"]] == _BOTH
     candidate = report["candidates"][0]
@@ -106,7 +109,7 @@ def test_hits_count_runs_not_jobs_or_attempts(
     window = f"{format_human_date(datetime(2026, 11, 20, 12, tzinfo=UTC))} to "
     window += format_human_date(_NOW)
     assert text.startswith(
-        f"Flake ledger {window} (7 days): 2 Tests runs read, 2 test ids, 2 candidates\n"
+        f"Flake ledger {window} (7 days): 2 Tests runs read, 2 test ids, 2 candidates, 0 meet the quarantine bar\n"
     )
     assert f"\n{_CLASS_ID}: 2 hits (candidate)\n" in text
 
@@ -121,6 +124,33 @@ def _pair(first: str, second: str) -> Callable[[GhApiFake], None]:
 
 def _one(fake: GhApiFake) -> None:
     fake.add_run(1, "2026-11-26T00:00:00Z", artifacts=(_marker(),))
+
+
+def _runs(*days: int, fixture: str = "flaky.xml") -> Callable[[GhApiFake], None]:
+    def arrange(fake: GhApiFake) -> None:
+        for day in days:
+            marked = (_marker(fixture=fixture),)
+            fake.add_run(day, f"2026-11-{day}T00:00:00Z", artifacts=marked)
+
+    return arrange
+
+
+def _hit_after_issue(fake: GhApiFake) -> None:
+    for number in range(100, 200):  # the owner issue is on the second page
+        fake.add_issue(number, "Flaky test: other", "2026-11-25T00:00:00Z")
+    fake.add_issue(7, f"Flaky test: `{_CLASS_ID}`", "2026-11-25T00:00:00Z")
+    title = f"Flaky test: {_ERROR_ID}"
+    fake.add_issue(8, title, "2026-11-25T00:00:00Z", pull_request=True)
+    _one(fake)
+
+
+def _hit_before_issue(fake: GhApiFake) -> None:
+    title = f"Flaky test: {_CLASS_ID}"
+    fake.add_issue(7, title, "2026-11-27T00:00:00Z")
+    fake.add_issue(8, title, "2026-11-25T00:00:00Z", state="closed")
+    fake.add_issue(9, title, "2026-11-25T00:00:00Z", label="bug")
+    fake.add_issue(10, f"{title}[1]", "2026-11-25T00:00:00Z")
+    _one(fake)
 
 
 def _second_page(fake: GhApiFake) -> None:
@@ -138,23 +168,41 @@ _OUTSIDE = _pair("2026-11-20T11:59:59Z", "2026-11-26T00:00:00Z")
 
 
 @pytest.mark.parametrize(
-    ("arrange", "args", "listed", "candidates"),
+    ("arrange", "args", "listed", "candidates", "quarantine"),
     [
-        (_pair("2026-11-20T12:00:00Z", "2026-11-27T11:59:59Z"), (), _BOTH, _BOTH),
-        (_one, (), _BOTH, []),
-        (_OUTSIDE, (), _BOTH, []),
-        (_OUTSIDE, ("--days", "8"), _BOTH, _BOTH),
-        (_second_page, (), _BOTH, _BOTH),
-        (_timed_out, (), [], []),
+        (_pair("2026-11-20T12:00:00Z", "2026-11-27T11:59:59Z"), (), _BOTH, _BOTH, []),
+        (_one, (), _BOTH, [], []),
+        (_OUTSIDE, (), _BOTH, [], []),
+        (_OUTSIDE, ("--days", "8"), _BOTH, _BOTH, []),
+        (_second_page, (), _BOTH, _BOTH, []),
+        (_timed_out, (), [], [], []),
+        (_runs(25, 26, fixture="quarantined.xml"), (), [_QUARANTINED_ID], [_QUARANTINED_ID], []),
+        (_runs(21, 23, 26), (), _BOTH, _BOTH, [(test, None, [_THREE]) for test in _BOTH]),
+        (_runs(19, 23, 27), ("--days", "9"), _BOTH, _BOTH, []),
+        (_hit_after_issue, (), _BOTH, [], [(_CLASS_ID, 7, ["hit after #7 was opened"])]),
+        (_hit_before_issue, (), _BOTH, [], []),
     ],
-    ids=["both-edges", "one-hit", "outside-window", "wider-window", "page-two", "timed-out"],
+    ids=[
+        "both-edges",
+        "one-hit",
+        "outside-window",
+        "wider-window",
+        "page-two",
+        "timed-out",
+        "quarantined-hit",
+        "three-in-a-week",
+        "three-over-eight-days",
+        "hit-after-issue",
+        "hit-before-issue",
+    ],
 )
-def test_candidates_need_two_runs_inside_the_window(
+def test_ledger_reports_candidates_and_the_quarantine_bar(
     capsys: pytest.CaptureFixture[str],
     arrange: Callable[[GhApiFake], None],
     args: tuple[str, ...],
     listed: list[str],
     candidates: list[str],
+    quarantine: list[tuple[str, int | None, list[str]]],
 ) -> None:
     fake = GhApiFake()
     arrange(fake)
@@ -164,6 +212,15 @@ def test_candidates_need_two_runs_inside_the_window(
     report = json.loads(capsys.readouterr().out)
     assert [entry["test_id"] for entry in report["ledger"]] == listed
     assert [entry["test_id"] for entry in report["candidates"]] == candidates
+    met = [(row["test_id"], row["issue"], row["reasons"]) for row in report["quarantine"]]
+    assert met == quarantine
+
+    assert _main(fake, *args) == 0
+    text = capsys.readouterr().out
+    assert f", {len(quarantine)} meet the quarantine bar" in text
+    for test, _, _ in quarantine:
+        mark = "candidate, quarantine bar" if test in candidates else "quarantine bar"
+        assert f"hits ({mark})" in text.split(f"\n{test}: ")[1].splitlines()[0]
 
 
 def test_a_deleted_module_keeps_its_junit_id(
@@ -231,6 +288,15 @@ def _bad_response(fake: GhApiFake) -> None:
     fake.artifacts[42].append({"name": "flaky-a"})
 
 
+def _issues_fail(fake: GhApiFake) -> None:
+    fake.fail("/issues", "HTTP 403")
+
+
+def _issues_endless(fake: GhApiFake) -> None:
+    for number in range(1000):
+        fake.add_issue(number, "Flaky test: other", "2026-11-25T00:00:00Z")
+
+
 def _lost(
     publish: str = "failure", conclusion: str = "failure", attempt: int = 1
 ) -> Callable[[GhApiFake], None]:
@@ -261,6 +327,8 @@ _LOST = "run 42: job test / x ran pytest but its evidence upload failed"
         (_too_many, ["Tests runs ", "more than 1000"]),
         (_truncated, ["run 42: listed 0 of 3 artifacts"]),
         (_bad_response, ["run 42: unreadable artifacts response"]),
+        (_issues_fail, ["flaky issues: ", "HTTP 403"]),
+        (_issues_endless, ["flaky issues: ", "1000 or more"]),
         pytest.param(_lost(), [_LOST], id="lost-upload"),
         pytest.param(_lost("cancelled", "cancelled"), [_LOST], id="cancelled-upload"),
         pytest.param(_lost(conclusion="success", attempt=2), [_LOST], id="earlier-attempt"),

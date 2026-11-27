@@ -3,7 +3,8 @@
 Why the `Tests` workflow (`.github/workflows/test.yml`) runs what it runs. The
 job selection itself is code: read `.github/scripts/ci_changes.py` (categories
 and `required_jobs`), `ci_flake_stress.py`, `ci_pytest_shard.py`,
-`ci_pytest_rerun.py`, and `ci_flake_ledger.py` for the mechanics. Local checks
+`ci_pytest_rerun.py`, `ci_flake_ledger.py`, and `ci_flaky_quarantine.py` for the
+mechanics. Local checks
 and the path from branch to `main` are in
 [CONTRIBUTING.md](../../docs/internals/CONTRIBUTING.md), the merge queue in
 [merge-queue.md](../../docs/internals/agents/merge-queue.md), Renovate in
@@ -138,13 +139,15 @@ therefore run through `.github/scripts/ci_pytest_rerun.py`; other jobs do not
 rerun. When a run ends with test failures or errors (a timeout-headroom overrun
 is one), it reruns only the failed test ids once, in a separate serial pytest
 process (`-n 0`, no shard options). The rerun keeps the mark expression,
-per-test timeout, and time scale. The job passes only when every rerun passes.
+per-test timeout, and time scale. The job passes only when every test that does
+not pass its rerun is [quarantined](#quarantine-of-flaky-tests).
 
 - A test that fails once and passes on the rerun is recorded in the step
   summary ("Passed on rerun") and in `junit.xml` as `flakyFailure` or
   `flakyError` inside its `testcase`, with the failure counts reduced. A test
   that fails again keeps its failure and gains `rerunFailure` or `rerunError`;
-  the log shows both failures.
+  the log shows both failures. A quarantined test's failure is renamed, as
+  [Quarantine of flaky tests](#quarantine-of-flaky-tests) says.
 - No rerun starts, and the step summary says why, after a collection error, a
   shard-selection error or any other exit that is not a test failure, a missing
   or malformed JUnit report,
@@ -159,13 +162,13 @@ per-test timeout, and time scale. The job passes only when every rerun passes.
 
 ## Flake ledger
 
-A green rerun hides a flake from the PR that hit it, so
-`.github/scripts/ci_flake_ledger.py` collects these passes across runs. The
+A green rerun or a quarantine hides a flake from the PR that hit it, so
+`.github/scripts/ci_flake_ledger.py` collects these hits across runs. The
 `.github/actions/publish-pytest-evidence` action uploads a `flaky-<label>`
-artifact, a copy of `junit.xml`, only when that report holds a `flakyFailure` or
-`flakyError`. The script downloads only those artifacts, from the completed
-`Tests` runs created in the window, and rebuilds the ledger on every call
-without storing anything.
+artifact, a copy of `junit.xml`, only when that report holds a `flakyFailure`,
+`flakyError`, `quarantinedFailure`, or `quarantinedError`. The script downloads
+only those artifacts, from the completed `Tests` runs created in the window, and
+rebuilds the ledger on every call without storing anything.
 
 ```bash
 PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
@@ -175,22 +178,55 @@ PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
   `--days` says otherwise.
 - A hit is one test ID in one workflow run: several jobs or attempts of that run
   count once. A test ID with 2 or more hits in the window is a filing candidate.
+- A test ID meets the [quarantine bar](#quarantine-of-flaky-tests) with at least
+  3 hits within 7 days, or with a hit from a run created after the open `flaky`
+  issue naming it was opened. The script reads the open `flaky` issues for this,
+  and only hits inside the window count.
 - A test whose module no longer exists in the checkout is listed by its JUnit
   name, `<classname>::<name>`.
 - The default output is readable text. `--json` prints only a document with
   `window`, `min_hits`, `runs_read`, `ledger` (each `test_id` with its `hits`:
-  run ID and URL, date, branch, jobs, first line of the failure message), and
-  `candidates`, which add a draft issue `title` and `body`.
-- It exits 1 with no ledger, naming the run or the run listing, when the API
-  cannot be read in full, a `flaky-*` artifact is expired or unreadable, or a
-  job ran its tests but its evidence upload failed or was cancelled. A job that
-  published nothing because its pytest step failed or timed out counts as having
-  no hit.
+  run ID and URL, date, branch, jobs, first line of the failure message),
+  `candidates`, which add a draft issue `title` and `body`, `quarantine_bar`,
+  and `quarantine` (`test_id`, the owner `issue` number or null, `reasons`).
+- It exits 1 with no ledger, naming the run or the listing (runs or issues),
+  when the API cannot be read in full, a `flaky-*` artifact is expired or
+  unreadable, or a job ran its tests but its evidence upload failed or was
+  cancelled. A job that published nothing because its pytest step failed or
+  timed out counts as having no hit.
 - In-progress runs are not read. Runs of a commit without the `flaky-<label>`
-  upload carry no marker, so their passes on rerun are not counted.
+  upload carry no marker, so their hits are not counted.
 - No workflow here runs the script or files issues. The external issue pipeline
   runs it and files or comments on `flaky` issues as in
   [Flaky-test issues](../../docs/internals/agents/issue-tracker.md#flaky-test-issues).
+
+## Quarantine of flaky tests
+
+A repeat flaky test can be quarantined so that it stops blocking unrelated PRs.
+It is not skipped: it runs in every job that selects it, and it stays visible
+until its issue is fixed.
+
+- In the jobs that [rerun](#rerun-of-failed-tests), a quarantined test that
+  fails on the run and does not pass the rerun does not fail the job. The log,
+  the step summary, and a warning annotation name the test ID and owner issue,
+  and `junit.xml` records `quarantinedFailure` or `quarantinedError`, which the
+  [flake ledger](#flake-ledger) counts as a hit.
+- A refused rerun, for example after more than `MAX_RERUN_FAILURES` failures,
+  still fails the job.
+- `flake-stress` does not apply the quarantine, so a PR that adds or modifies
+  the test's module must pass it there.
+- The registry is `tests/flaky_quarantine.py`. Each entry is the exact pytest
+  node ID, parameter case included, and the number of its owner issue: the open
+  [`flaky` issue](../../docs/internals/agents/issue-tracker.md#flaky-test-issues)
+  whose title names that ID.
+- Add an entry only for a test ID the flake ledger reports as meeting the bar:
+  at least 3 hits within 7 days, or a new hit after its `flaky` issue was
+  opened. Adding one is a reviewed PR; no workflow does it.
+- The `lint` job runs `.github/scripts/ci_flaky_quarantine.py`. It fails an
+  entry with no owner issue, with a test ID pytest does not collect, or listed
+  twice, and one whose owner is closed, is a PR, lacks the `flaky` label, or has
+  a title that does not name the test ID. So the PR that fixes the test removes
+  its entry.
 
 ## Test time budgets
 

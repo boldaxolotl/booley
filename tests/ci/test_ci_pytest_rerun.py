@@ -48,7 +48,8 @@ def test_steady():
 """
 _TWICE = """
 
-def test_broken():
+@pytest.mark.parametrize("n", [1, 2])
+def test_broken(n):
     attempt("test_broken")
     assert False, "broken"
 
@@ -131,11 +132,18 @@ _MESSAGES = {
 
 
 def _run(
-    work: Path, test_source: str, pytest_args: list[str], *wrapper_args: str
+    work: Path,
+    test_source: str,
+    pytest_args: list[str],
+    *wrapper_args: str,
+    quarantine: tuple[str, ...] = (),
 ) -> tuple[int, str, str]:
     """Run the wrapper in *work*; return its exit code, output, and step summary."""
     work.mkdir(exist_ok=True)
     (work / "pytest.ini").write_text("[pytest]\n", encoding="utf-8", newline="\n")
+    (work / "tests").mkdir()
+    registry = f"QUARANTINE = {tuple((test, 4242) for test in quarantine)!r}\n"
+    (work / "tests/flaky_quarantine.py").write_text(registry, encoding="utf-8", newline="\n")
     (work / "covmod.py").write_text(_COVMOD, encoding="utf-8", newline="\n")
     (work / "pkg").mkdir()
     (work / "pkg/test_case.py").write_text(_HEADER + test_source, encoding="utf-8", newline="\n")
@@ -187,12 +195,20 @@ def _children(work: Path, name: str) -> list[str]:
     return [c.tag for case in tree.iter("testcase") if case.get("name") == name for c in case]
 
 
-@pytest.mark.parametrize("outcome", ["passes", "fails-twice"])
+_BROKEN = ["test_broken[1]", "test_broken[2]"]
+_FAILING = [*_BROKEN, "test_skips_serially"]
+#: The tests of ``_TWICE`` that each outcome quarantines.
+_QUARANTINED = {"quarantined": _FAILING, "one-quarantined": _BROKEN[:1]}
+
+
+@pytest.mark.parametrize("outcome", ["passes", "fails-twice", "quarantined", "one-quarantined"])
 def test_rerun_absorbs_a_flake_and_reports_a_repeated_failure(
     tmp_path: Path, outcome: str
 ) -> None:
-    source = _FLAKY + (_TWICE if outcome == "fails-twice" else "")
-    code, output, summary = _run(tmp_path / "w", source, ["-n", "2"])
+    source = _FLAKY + ("" if outcome == "passes" else _TWICE)
+    held = _QUARANTINED.get(outcome, [])
+    ids = tuple(f"pkg/test_case.py::{name}" for name in held)
+    code, output, summary = _run(tmp_path / "w", source, ["-n", "2"], quarantine=ids)
     work = tmp_path / "w"
     seen = _log(work)
     suite = ElementTree.parse(work / "junit.xml").getroot().find("testsuite")
@@ -205,18 +221,23 @@ def test_rerun_absorbs_a_flake_and_reports_a_repeated_failure(
     assert "flakyError" in _children(work, "test_crash")
     assert "Passed on rerun: `pkg/test_case.py::TestGroup::test_flaky`" in summary
     assert "Passed on rerun: `pkg/test_case.py::test_crash`" in summary
-    if outcome == "passes":
-        assert code == 0
+    assert code == (0 if outcome in ("passes", "quarantined") else 1)
+    if code == 0:
         assert suite is not None
         assert (suite.get("failures"), suite.get("errors")) == ("0", "0")
-    else:
-        assert code == 1
-        assert output.count("FAILED pkg/test_case.py::test_broken") == 2
-        assert _children(work, "test_broken") == ["failure", "rerunFailure"]
-        assert _children(work, "test_skips_serially") == ["failure", "rerunFailure"]
-        assert "Failed again: `pkg/test_case.py::test_broken`" in summary
-        assert "Failed again: `pkg/test_case.py::test_skips_serially`" in summary
-        assert "skipped on rerun" in (work / "junit.xml").read_text(encoding="utf-8")
+    if outcome == "passes":
+        return
+    assert output.count("FAILED pkg/test_case.py::test_broken") == 4
+    for name, test_id in ((name, f"pkg/test_case.py::{name}") for name in _FAILING):
+        warning = f"Quarantined test failed again: `{test_id}` (owner issue #4242)"
+        if name in held:
+            assert _children(work, name) == ["quarantinedFailure", "rerunFailure"]
+            assert warning in summary and warning in output
+            assert f"::warning title=Quarantined test::{test_id} " in output
+        else:
+            assert _children(work, name) == ["failure", "rerunFailure"]
+            assert f"Failed again: `{test_id}`" in summary
+    assert "skipped on rerun" in (work / "junit.xml").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("case", list(_CASES))
