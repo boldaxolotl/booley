@@ -12,13 +12,8 @@ from booley.audit.config_common import (
     failure,
     warn_finding,
 )
-from booley.core.boundary import (
-    BoundaryError,
-    as_dict,
-    is_str_list,
-    require_bool,
-    require_int,
-)
+from booley.config import flow_knobs
+from booley.core.boundary import BoundaryError, as_dict
 from booley.targets.flow_names import (
     DEFAULT_TARGET_KEY,
     LEGACY_TO_CANONICAL,
@@ -69,19 +64,6 @@ _MOVED_TARGET_RECIPE_KEYS = frozenset(
 )
 
 
-def pre_run_commands_problem(flow_name: str) -> tuple[str, str]:
-    """Return the ``(message, fix)`` for a malformed ``pre_run_commands`` knob.
-
-    Doctor and the run-time readers share this text so a Project sees one
-    diagnosis wherever the knob is rejected.
-    """
-    return (
-        f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
-        "list of strings, none empty (shell lines run before each sim run)",
-        f"fix [flows.{flow_name}].pre_run_commands",
-    )
-
-
 def audit_flow_tables(
     data: Mapping[str, Any],
     required_flows: Sequence[str],
@@ -114,14 +96,6 @@ def _retired_flow_findings(flows: Mapping[str, Any]) -> list[ConfigFinding]:
                 fail_finding(
                     f"booley.toml [flows].{retired} is retired",
                     "delete the allowlist and use [flows.<name>].enabled = false for opt-outs",
-                )
-            )
-    for retired in ("elab", "elaborate"):
-        if retired in flows:
-            findings.append(
-                fail_finding(
-                    f"booley.toml [flows.{retired}] is retired",
-                    "use `booley flow sim --mode elab-only` and delete standalone_frontend",
                 )
             )
     for old, new in LEGACY_TO_CANONICAL.items():
@@ -185,7 +159,7 @@ def audit_flow_table(flow_name: str, section: Any) -> ConfigTableAudit:
         )
     findings = _retired_flow_key_findings(flow_name, section_table)
     findings.extend(_target_recipe_findings(flow_name, section_table))
-    findings.extend(_flow_shape_findings(flow_name, section_table))
+    findings.extend(_shared_knob_findings(flow_name, section_table))
     findings.extend(_ignored_flow_knob_findings(flow_name, section_table))
     return ConfigTableAudit(tuple(findings))
 
@@ -259,51 +233,16 @@ def _target_recipe_findings(
     ]
 
 
-def _flow_shape_findings(
+def _shared_knob_findings(
     flow_name: str,
     section: Mapping[str, Any],
 ) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
-    for timeout_field in ("timeout_ms", "build_timeout_ms", "trace_convert_timeout_ms"):
-        if timeout_field not in section:
-            continue
+    for knob, reader in flow_knobs.SHARED_KNOBS.items():
         try:
-            timeout_ms = require_int(
-                section[timeout_field],
-                field=f"[flows.{flow_name}].{timeout_field}",
-            )
-            if timeout_ms <= 0:
-                raise BoundaryError
-        except BoundaryError:
-            findings.append(
-                fail_finding(
-                    f"booley.toml [flows.{flow_name}].{timeout_field} must be a positive integer",
-                    f"fix [flows.{flow_name}].{timeout_field}",
-                )
-            )
-    if "enabled" in section:
-        try:
-            require_bool(section, "enabled")
-        except BoundaryError:
-            findings.append(
-                fail_finding(
-                    f"booley.toml [flows.{flow_name}].enabled must be a bool "
-                    "(true/false, no quotes)",
-                    f"fix [flows.{flow_name}].enabled",
-                )
-            )
-    pre_sim_commands = section.get("pre_run_commands")
-    if pre_sim_commands is not None and not (
-        is_str_list(pre_sim_commands) and all(pre_sim_commands)
-    ):
-        findings.append(fail_finding(*pre_run_commands_problem(flow_name)))
-    if "standalone_frontend" in section:
-        findings.append(
-            fail_finding(
-                f"booley.toml [flows.{flow_name}].standalone_frontend is retired",
-                "delete it; the standalone module probe now follows each Target's simulator",
-            )
-        )
+            reader(flow_name, section)
+        except BoundaryError as exc:
+            findings.append(fail_finding(str(exc), f"fix [flows.{flow_name}].{knob}"))
     return findings
 
 
