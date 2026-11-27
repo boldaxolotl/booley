@@ -346,20 +346,21 @@ Read the Mergify check and the underlying Actions failure, then:
       only when the failure names no test ID, such as a step or job that
       hit its `timeout-minutes`.
     - When every failed test of a step passes on its rerun, the job stays
-      green, so those failures never dequeue the PR and need no issue; see
+      green, so those failures never dequeue the PR and need no issue from
+      the PR's owner; see
       [Rerun of failed tests](../../../.github/ci/README.md#rerun-of-failed-tests).
-      A test that failed on its rerun too, or a failure the step summary
-      says was not rerun, follows the rules here.
+      The [flake ledger](../../../.github/ci/README.md#flake-ledger) counts
+      them, and the external issue pipeline files or comments on the `flaky`
+      issue for a test ID that reaches the ledger's threshold. A test that
+      failed on its rerun too, or a failure the step summary says was not
+      rerun, follows the rules here.
     - When no open issue covers the failure, first file one, scanned as
       `AGENTS.md` requires, with the run link and error: for a test ID, a
       `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;
       for a failure with no test ID, a `bug`, `ci`, `needs-triage` issue
       naming the job. When an open issue already covers the test ID, comment
       the run link and error there instead. One issue per test ID, as in
-      [Flaky-test issues](issue-tracker.md#flaky-test-issues); issues filed
-      automatically from the flake ledger
-      ([#4413](https://github.com/boldaxolotl/booley/issues/4413)) follow the
-      same rule.
+      [Flaky-test issues](issue-tracker.md#flaky-test-issues).
     - When `main`'s latest run of that job (the latest nightly run, for jobs
       a `main` push skips) fails the same way, `main` has regressed: report
       it instead of requeueing.

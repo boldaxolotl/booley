@@ -36,6 +36,7 @@ OS_SPECIFIC_TESTS: tuple[str, ...] = (
     "tests/ci/test_bwave_smoke_runner_disk.py",
     "tests/ci/test_change_classifier.py",
     "tests/ci/test_changed_line_coverage.py",
+    "tests/ci/test_ci_flake_ledger.py",
     "tests/ci/test_ci_pytest_rerun.py",
     "tests/ci/test_ci_pytest_shard.py",
     "tests/ci/test_confidential_content_guard.py",
