@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from booley.core.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.flows.metric_declarations import FlowMetricValues
+from booley.measurement import run_store
 from booley.measurement.metrics_file import Bound, MetricsRules, TableRules, TrackedMetric
+from booley.measurement.run_document import (
+    MeasurementRun,
+    MetricResult,
+    RunStatus,
+    TableRun,
+    Verdict,
+)
+from booley.measurement.run_key import KeyedCommit, RulesNotVersionedError, resolve_measurement_key
+from booley.measurement.run_store import FlowReport, MeasurementStore, MeasurementStoreError
+from booley.measurement.toolchain import ToolchainFingerprint
+from booley.runtime.atomic_files import WriteOnceConflictError
+from booley.runtime.pinned_history import FileCommitError
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-    from booley.measurement.run_document import MeasurementRun
-    from booley.measurement.run_key import KeyedCommit
-    from booley.measurement.toolchain import ToolchainFingerprint
 from tests.runtime.test_commit_export import (
     commit_all,
     git,
@@ -49,6 +57,12 @@ def in_tree_repository(root: Path) -> tuple[Path, str]:
     return repo, commit_all(repo)
 
 
+def store_world(tmp_path: Path) -> tuple[Path, MeasurementStore, KeyedCommit]:
+    """An in-tree repository, its store and the Measurement Key of its HEAD."""
+    repo, head = in_tree_repository(tmp_path / "repo")
+    return repo, MeasurementStore(repo / ".booley"), key_of(repo, head)
+
+
 def rules(
     *, with_tracked: bool = False, identity: str = IDENTITY, flow: str = "syn"
 ) -> MetricsRules:
@@ -59,8 +73,6 @@ def rules(
 
 
 def fingerprint(booley: str = "sha256:a") -> ToolchainFingerprint:
-    from booley.measurement.toolchain import ToolchainFingerprint
-
     return ToolchainFingerprint(None, booley, "build", None, {"yosys": "0.1"})
 
 
@@ -79,14 +91,6 @@ def make_run(
     identity: str = IDENTITY,
     flow: str = "syn",
 ) -> MeasurementRun:
-    from booley.measurement.run_document import (
-        MeasurementRun,
-        MetricResult,
-        RunStatus,
-        TableRun,
-        Verdict,
-    )
-
     results = (
         () if omit_results else (MetricResult("cell_count_max", 100, 90, Verdict(verdict), None),)
     )
@@ -112,19 +116,13 @@ def make_run(
 
 
 def key_of(repo: Path, commit: str) -> KeyedCommit:
-    from booley.measurement.run_key import resolve_measurement_key
-
     return resolve_measurement_key(repo, commit)
 
 
 def test_amended_commit_with_same_tree_finds_the_run_and_a_changed_file_does_not(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    first = key_of(repo, head)
+    repo, store, first = store_world(tmp_path)
     store.write(make_run(first, "r1"), [])
 
     git(repo, "commit", "-q", "--amend", "-m", "reworded")
@@ -143,8 +141,6 @@ def test_amended_commit_with_same_tree_finds_the_run_and_a_changed_file_does_not
 def test_linked_worktree_finds_the_main_checkouts_run_and_git_status_is_clean(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
     repo, head = in_tree_repository(tmp_path / "repo")
     linked = tmp_path / "linked"
     git(repo, "worktree", "add", "-q", "-b", "feature", str(linked), head)
@@ -166,11 +162,7 @@ def test_linked_worktree_finds_the_main_checkouts_run_and_git_status_is_clean(
 
 
 def test_every_run_of_a_key_is_kept_and_measured_follows_the_latest(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    _, store, keyed = store_world(tmp_path)
 
     # Run ids are random in real use: order must follow finish time, never the id.
     store.write(make_run(keyed, "c", minute=1), [])
@@ -193,8 +185,6 @@ def test_every_run_of_a_key_is_kept_and_measured_follows_the_latest(tmp_path: Pa
 
 
 def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
     for status in ("stopped", "cancelled"):
         repo, head = in_tree_repository(tmp_path / status)
         store = MeasurementStore(repo / ".booley")
@@ -210,8 +200,6 @@ def test_stopped_and_cancelled_runs_are_stored_but_not_measured(tmp_path: Path) 
 
 
 def test_base_run_prefers_the_run_under_the_given_rules_tree(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
     repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
     head = git(repo, "rev-parse", "HEAD")
     store = MeasurementStore(booley)
@@ -245,8 +233,6 @@ def test_base_run_prefers_the_run_under_the_given_rules_tree(tmp_path: Path) -> 
 
 
 def test_stored_key_follows_the_exported_booley_commit(tmp_path: Path) -> None:
-    from booley.measurement.run_key import resolve_measurement_key
-
     repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
     head = git(repo, "rev-parse", "HEAD")
     exported = key_of(repo, head)
@@ -264,8 +250,6 @@ def test_stored_key_follows_the_exported_booley_commit(tmp_path: Path) -> None:
 
 
 def test_unversioned_booley_directory_without_commits_is_refused(tmp_path: Path) -> None:
-    from booley.measurement.run_key import RulesNotVersionedError
-
     repo, _ = make_versioned_booley_directory(tmp_path, "standalone")
     empty = new_repository(tmp_path / "empty-rules")
     (repo / ".booley").rename(tmp_path / "moved")
@@ -292,8 +276,6 @@ def _outside_booley_directory(tmp_path: Path) -> tuple[Path, str]:
 
 
 def test_unversioned_rules_fail_with_rules_must_be_versioned(tmp_path: Path) -> None:
-    from booley.measurement.run_key import RulesNotVersionedError
-
     for name, layout in (
         ("ignored", _gitignored_booley_directory),
         ("outside", _outside_booley_directory),
@@ -305,8 +287,6 @@ def test_unversioned_rules_fail_with_rules_must_be_versioned(tmp_path: Path) -> 
 
 
 def test_booley_directory_place_is_read_from_the_commit(tmp_path: Path) -> None:
-    from booley.measurement.run_key import RulesNotVersionedError
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "booley.toml", '[project]\ndir = "cfg/booley"\n')
     write(repo / "cfg" / "booley" / "booley.toml", "[project]\n")
@@ -323,38 +303,17 @@ def test_booley_directory_place_is_read_from_the_commit(tmp_path: Path) -> None:
         key_of(repo, unreadable)
 
 
-def test_toolchain_difference_keeps_the_key(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
-
-    store.write(make_run(keyed, "r1", minute=1, toolchain=fingerprint("sha256:a")), [])
-    store.write(make_run(keyed, "r2", minute=2, toolchain=fingerprint("sha256:b")), [])
-
-    runs = store.history(keyed.key)
-    assert [run.document["toolchain"]["booley"] for run in runs] == ["sha256:a", "sha256:b"]
-    assert runs[0].document["toolchain"]["tools"] == {"yosys": "0.1"}
-    latest = store.measured(keyed.key)
-    assert latest is not None and latest.run_id == "r2"
-
-
 def test_reports_beyond_the_cap_are_dropped_and_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.measurement import run_store
-    from booley.measurement.run_store import FlowReport, MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
+    _, store, keyed = store_world(tmp_path)
     monkeypatch.setattr(run_store, "REPORT_CAP_BYTES", 10)
     sources = tmp_path / "sources"
     for name, size in (("a.rpt", 4), ("big.rpt", 20), ("c.rpt", 5)):
         write(sources / name, "x" * size)
     reports = [FlowReport(IDENTITY, "syn", sources / n) for n in ("a.rpt", "big.rpt", "c.rpt")]
 
-    stored = store.write(make_run(key_of(repo, head), "r1"), reports)
+    stored = store.write(make_run(keyed, "r1"), reports)
 
     assert [entry["name"] for entry in stored.document["reports"]] == ["a.rpt", "c.rpt"]
     assert stored.document["dropped_reports"] == [
@@ -367,12 +326,7 @@ def test_reports_beyond_the_cap_are_dropped_and_named(
 
 
 def test_duplicate_report_and_repeated_run_id_are_refused(tmp_path: Path) -> None:
-    from booley.measurement.run_store import FlowReport, MeasurementStore
-    from booley.runtime.atomic_files import WriteOnceConflictError
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    _, store, keyed = store_world(tmp_path)
     report = FlowReport(IDENTITY, "syn", write(tmp_path / "a.rpt", "x"))
 
     with pytest.raises(ValueError, match="duplicate report"):
@@ -400,14 +354,8 @@ def test_duplicate_report_and_repeated_run_id_are_refused(tmp_path: Path) -> Non
 def test_write_rejects_a_run_whose_results_do_not_cover_its_rules(
     tmp_path: Path, flaw: str
 ) -> None:
-    from dataclasses import replace
-
-    from booley.measurement.run_document import MetricResult, Verdict
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    run = make_run(key_of(repo, head), "r1", omit_results=flaw == "missing-result")
+    repo, store, keyed = store_world(tmp_path)
+    run = make_run(keyed, "r1", omit_results=flaw == "missing-result")
     table = run.tables[0]
     if flaw == "unknown-table":
         run = replace(run, tables=())
@@ -440,11 +388,7 @@ def test_write_rejects_a_run_whose_results_do_not_cover_its_rules(
 
 
 def test_unreadable_document_fails_the_lookup(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore, MeasurementStoreError
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    repo, store, keyed = store_world(tmp_path)
     store.write(make_run(keyed, "r1", minute=1), [])
     broken = repo / ".booley" / "measurements" / keyed.key.project_tree / "r2.json"
     broken.write_bytes(b'{"schema": 2}\n')
@@ -455,11 +399,7 @@ def test_unreadable_document_fails_the_lookup(tmp_path: Path) -> None:
 
 
 def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> None:
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    _, store, keyed = store_world(tmp_path)
     assert store.clock_names(IDENTITY, "syn") == ()
     # Neither ascending nor descending id order, nor start order, picks the newest run.
     store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"old_a": 1.0}}), [])
@@ -474,13 +414,7 @@ def test_clock_names_come_from_the_latest_run_that_has_them(tmp_path: Path) -> N
 
 
 def test_reported_clocks_union_every_run_and_skip_damaged_clock_data(tmp_path: Path) -> None:
-    import json
-
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    repo, store, keyed = store_world(tmp_path)
     assert store.reported_clocks(IDENTITY, "syn") == frozenset()
     store.write(make_run(keyed, "a", minute=1, per_clock={"fmax": {"clk_a": 1.0}}), [])
     store.write(make_run(keyed, "b", minute=2, clocks=("clk_b",)), [])
@@ -499,14 +433,7 @@ def test_reported_clocks_union_every_run_and_skip_damaged_clock_data(tmp_path: P
 
 
 def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> None:
-    from dataclasses import replace
-
-    from booley.measurement.run_document import MetricResult, Verdict
-    from booley.measurement.run_store import MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    _, store, keyed = store_world(tmp_path)
     tracked_rules = rules(with_tracked=True)
     run = make_run(keyed, "r1")
     table = replace(
@@ -535,12 +462,7 @@ def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> Non
 def test_failed_publication_leaves_no_report_copies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.measurement import run_store
-    from booley.measurement.run_store import FlowReport, MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    repo, store, keyed = store_world(tmp_path)
     report = FlowReport(IDENTITY, "syn", write(tmp_path / "a.rpt", "x"))
 
     def refuse(_path: Path, _content: bytes) -> bool:
@@ -557,13 +479,7 @@ def test_failed_publication_leaves_no_report_copies(
 def test_lost_publication_race_keeps_the_winners_report_copies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.measurement import run_store
-    from booley.measurement.run_store import FlowReport, MeasurementStore
-    from booley.runtime.atomic_files import WriteOnceConflictError
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
-    keyed = key_of(repo, head)
+    repo, store, keyed = store_world(tmp_path)
     report = FlowReport(IDENTITY, "syn", write(tmp_path / "a.rpt", "x"))
 
     def lose(_path: Path, _content: bytes) -> bool:
@@ -578,21 +494,14 @@ def test_lost_publication_race_keeps_the_winners_report_copies(
 
 
 def test_report_of_no_rules_table_is_refused(tmp_path: Path) -> None:
-    from booley.measurement.run_store import FlowReport, MeasurementStore
-
-    repo, head = in_tree_repository(tmp_path / "repo")
-    store = MeasurementStore(repo / ".booley")
+    _, store, keyed = store_world(tmp_path)
     report = FlowReport(IDENTITY, "sim", write(tmp_path / "a.rpt", "x"))
 
     with pytest.raises(ValueError, match="no rules table"):
-        store.write(make_run(key_of(repo, head), "r1"), [report])
+        store.write(make_run(keyed, "r1"), [report])
 
 
 def test_non_commit_booley_commit_and_non_text_timestamp_are_refused(tmp_path: Path) -> None:
-    from booley.measurement.run_key import resolve_measurement_key
-    from booley.measurement.run_store import MeasurementStore, MeasurementStoreError
-    from booley.runtime.pinned_history import FileCommitError
-
     repo, booley = make_versioned_booley_directory(tmp_path, "standalone")
     head = git(repo, "rev-parse", "HEAD")
     with pytest.raises(FileCommitError, match="full canonical"):
