@@ -216,7 +216,7 @@ class _Scenario:
     cancelled: list[str] = field(default_factory=list)
     outcomes: list[Any] = field(default_factory=list)
     item_tokens: dict[str, job_slots.SlotToken] = field(default_factory=dict)
-    # Lane threads in admission order, which ``pause_admitted`` holds before they count threads.
+    # Lane threads ``pause_admitted`` held before they counted threads, in admission order.
     admitted: list[Worker] = field(default_factory=list)
     pause_admitted: bool = False
     flow_attempt: Any = None
@@ -430,14 +430,16 @@ def _machine_admission(
 def _remember_item_tokens(
     monkeypatch: pytest.MonkeyPatch, scenario: _Scenario, machine: LaneStepMachine
 ) -> None:
-    """Keep each lane's own token: R runs no renewal thread, so a scenario renews it itself."""
+    """Keep each lane's token (R runs no renewal thread, so a scenario renews it itself) and, for
+    ``pause_admitted``, hold the lane before it counts threads: no public entry point stops there.
+    """
     acquire = scenario.store.acquire
 
     def remember(*args: Any, **kwargs: Any) -> job_slots.SlotToken:
         token = acquire(*args, **kwargs)
         scenario.item_tokens[str(kwargs.get("execution_id"))] = token
-        scenario.admitted.append(machine.scheduler.current_worker())
         if scenario.pause_admitted:
+            scenario.admitted.append(machine.scheduler.current_worker())
             machine.scheduler.await_command()
         return token
 
@@ -1254,7 +1256,7 @@ def _killed_beside_beta(
 ) -> tuple[ScheduledRun, dict[str, bool]]:
     """Run the record with item *name*'s next *times* launches OOM-killed, the first beside beta.
 
-    A second launch of a *record* with the real executor closes while the lane's lease gate is
+    A second launch with the real executor (no *record*) closes while the lane's lease gate is
     held. Returns the ended run and whether beta's commands were told to stop after the kill.
     """
     scenario.kills[name] = times
