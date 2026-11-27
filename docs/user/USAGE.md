@@ -49,7 +49,7 @@ and keeps the Developer Agent away from the rest of your computer.
 | Place | What goes there | Example |
 | --- | --- | --- |
 | **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `booley auth` |
-| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley measure`, `git diff` |
+| **Container terminal** | Commands inside the Sandbox: a T3 Code thread's terminal, or `booley session enter` on the host | `booley measure`, `git diff` |
 | **Developer Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
 Command blocks go in the terminal named in the text around them. Sentences in
@@ -95,25 +95,24 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
 ### Open your first Developer Agent session
 
-1. Open your RTL project folder in VS Code (**File → Open Folder**).
+1. In a **host terminal** at the Project Root, run `booley session up`. It
+   starts the Sandbox and prints a pairing link.
 
-2. When VS Code offers **Reopen in Container**, accept it. If the offer doesn't
-   appear, open the Command Palette (`Ctrl+Shift+P`) and run **Dev Containers:
-   Reopen in Container**. The first start can take several minutes. When it's
-   done, the lower-left corner of the window says you are in a Dev Container.
-   No VS Code (for example, over SSH)? See
-   [Entering the Sandbox without VS Code](SANDBOX.md#entering-the-sandbox-without-vs-code).
+2. Open the link in a browser on this machine. T3 Code, the web UI the
+   Sandbox serves, opens with your Project. The other `booley session`
+   commands are in [SANDBOX.md](SANDBOX.md).
 
-3. Start a Developer Agent, Claude or Codex, in a T3 Code thread.
+3. In T3 Code, start a thread on the main checkout (your Project folder) and
+   choose Claude or Codex.
 
     Every Agent CLI listed in `[agent] clis` in `.booley/booley.toml` gets
     Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;
     an unlisted one gets none. See
     [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 
-    If you see a login screen instead of a chat, run `booley auth --status` in a
+    If the agent can't sign in, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
-    **Dev Containers: Rebuild Container** and try again. See
+    `booley session down` and `booley session up` there and try again. See
     [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 4. Type this first request into the chat:
@@ -207,9 +206,8 @@ shows peak memory and run time per Target. How to read a result:
 The Dashboard is a web page of one worktree's Jobs, the long runs of Flows and
 Specialists. Open it to see what runs there, what waits and how each run ended.
 
-1. Click **Booley Dashboard** in the top bar of
-   [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). The page opens
-   in the preview panel; the Sandbox already serves it.
+1. Click **Booley Dashboard** in T3 Code's top bar. The page opens in the
+   preview panel; the Sandbox already serves it.
 2. Pick the worktree: the main checkout or one of your T3 Code threads'
    worktrees. Each has its own page. With no T3 Code worktree, the page opens
    the main checkout.
@@ -221,10 +219,11 @@ container terminal is a Standalone Job, owned by `you`.
 ### Several agents at once
 
 Agents that share a checkout overwrite each other's edits. Start each parallel
-task as its own T3 Code thread, which works in its own worktree; its Booley
-tool calls run in that worktree. Read-only sessions, such as one that only
-explains code or runs reviews, can share the main checkout. To prepare a
-worktree you made yourself, see [Worktrees](WORKTREES.md).
+task as its own T3 Code thread on a new worktree: T3 Code creates the
+worktree, Booley prepares it, and the thread's Booley tool calls run in it.
+Read-only threads, such as one that only explains code or runs reviews, can
+share the main checkout. What a worktree gets, and how to prepare one you made
+yourself, is in [Worktrees](WORKTREES.md).
 
 ### What the Developer Agent is allowed to do
 
@@ -252,9 +251,10 @@ and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 </details>
 
-Per-session logs of Flow and Specialist calls through Booley’s tool server
-are saved in `.booley/job_logs/`. Chat transcripts live in
-the Developer Agent CLI’s own session storage.
+Logs of the Flow and Specialist calls made through Booley's tool server are
+saved under `job_logs/` in the Main Booley Directory (`.booley/job_logs/` in
+the main checkout), for threads on a worktree too. Chat transcripts live in
+the Developer Agent CLI's own session storage.
 
 ### Editing Project instructions
 
@@ -277,11 +277,11 @@ instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
 ### Viewing waveforms
 
 When a simulation with tracing fails, the Developer Agent reads the waveform
-on its own with `bwave`. Booley has no waveform viewer for now, so when *you*
-want to know what happened, ask: *"what does the FIFO handshake do around the
-failure"*. The agent answers from the waveform, naming the signals, times and
-values. You can open the FST file in a viewer of your own, such as GTKWave or
-Surfer.
+on its own with `bwave`. Booley has no waveform viewer for now, and
+`bwave gui` fails with a message. When *you* want to know what happened, ask:
+*"what does the FIFO handshake do around the failure"*. The agent answers from
+the waveform, naming the signals, times and values. You can open the FST file
+in a viewer of your own, such as GTKWave or Surfer.
 
 ## When Booley itself misbehaves
 
