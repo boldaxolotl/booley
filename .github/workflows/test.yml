@@ -2039,10 +2039,11 @@ jobs:
             --budget-seconds "${budget}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
-  # Coding principle 18's test ratio. Mergify's queue drafts skip it: each
-  # queued PR already passed it, and a batch carries none of its labels. Only
-  # a branch of this repository counts as a queue draft, so a fork cannot skip
-  # the check by naming its branch mergify/merge-queue/.
+  # Coding principle 18's test ratio and principle 14's patch count. Mergify's
+  # queue drafts skip them: each queued PR already passed them, and a batch
+  # carries none of its labels. Only a branch of this repository counts as a
+  # queue draft, so a fork cannot skip the checks by naming its branch
+  # mergify/merge-queue/.
   test-ratio:
     needs: changes
     if: >-
@@ -2070,6 +2071,17 @@ jobs:
         run: |
           labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --paginate --jq '.[].name')"
           python .github/scripts/ci_test_ratio.py --repo . --base "${GITHUB_SHA}^1" --head "${GITHUB_SHA}^2" --labels "${labels}"
+
+      - name: Check patches of Booley names and commands in tests
+        # Runs even when the ratio step failed, so both verdicts show.
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # A live label read, as in the step above.
+        run: |
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --paginate --jq '.[].name')"
+          python .github/scripts/ci_patch_count.py --repo . --base "${GITHUB_SHA}^1" --head "${GITHUB_SHA}^2" --labels "${labels}"
 
   ci-required:
     name: ci-required

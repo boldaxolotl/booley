@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from tests.git_support import git, repository
+from tests.git_support import commit_files, git, repository
 
 _ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(_ROOT / ".github/scripts"))
@@ -21,19 +21,6 @@ def _lines(count: int, prefix: str = "x") -> str:
     return "".join(f"{prefix}{number} = {number}\n" for number in range(count))
 
 
-def _commit(repo: Path, files: dict[str, str | None]) -> str:
-    for name, text in files.items():
-        target = repo / name
-        if text is None:
-            target.unlink()
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(text.encode())
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "change")
-    return git(repo, "rev-parse", "HEAD")
-
-
 def _run(repo: Path, base: str, head: str, labels: str = "") -> int:
     return ci_test_ratio.main(
         ["--repo", str(repo), "--base", base, "--head", head, "--labels", labels]
@@ -44,8 +31,8 @@ def _pull_request(
     tmp_path: Path, files: dict[str, str | None], seed: dict[str, str] | None = None
 ) -> tuple[Path, str, str]:
     repo = repository(tmp_path / "repo")
-    base = _commit(repo, {"README.txt": "base\n", **(seed or {})})
-    return repo, base, _commit(repo, files)
+    base = commit_files(repo, {"README.txt": "base\n", **(seed or {})})
+    return repo, base, commit_files(repo, files)
 
 
 @pytest.mark.parametrize(
@@ -83,12 +70,12 @@ def test_rust_inline_test_items_count_as_test_lines(
         "    #[test]\n    fn t() {\n        assert!(true);\n    }\n}\n"
     )
     repo = repository(tmp_path / "repo")
-    base = _commit(repo, {"crates/k/src/lib.rs": "pub fn a() {}\n" + module})
+    base = commit_files(repo, {"crates/k/src/lib.rs": "pub fn a() {}\n" + module})
     added = "".join(f"        assert_eq!({n}, {n});\n" for n in range(7))
     head_text = "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\n" + module.replace(
         "    }\n}\n", f"    }}\n{added}}}\n"
     )
-    head = _commit(repo, {"crates/k/src/lib.rs": head_text})
+    head = commit_files(repo, {"crates/k/src/lib.rs": head_text})
 
     assert _run(repo, base, head) == 1
 
@@ -104,8 +91,8 @@ def test_rust_test_regions_survive_nesting_and_removal(
     )
     gone = "pub fn f() {}\n#[cfg(test)]\nmod tests {\n" + "    fn t() {}\n" * 30 + "}\n"
     repo = repository(tmp_path / "repo")
-    base = _commit(repo, {"crates/k/gone.rs": gone, "crates/k/lib.rs": "mod a {\n}\n"})
-    head = _commit(repo, {"crates/k/gone.rs": None, "crates/k/lib.rs": nested})
+    base = commit_files(repo, {"crates/k/gone.rs": gone, "crates/k/lib.rs": "mod a {\n}\n"})
+    head = commit_files(repo, {"crates/k/gone.rs": None, "crates/k/lib.rs": nested})
 
     assert _run(repo, base, head) == 0
 
@@ -114,13 +101,13 @@ def test_rust_test_regions_survive_nesting_and_removal(
 
 def test_counts_against_the_merge_base(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo = repository(tmp_path / "repo")
-    start = _commit(repo, {"README.txt": "base\n"})
+    start = commit_files(repo, {"README.txt": "base\n"})
     git(repo, "switch", "-q", "-c", "topic")
-    _commit(repo, {"src/m.py": _lines(10), "tests/test_m.py": _lines(20)})
+    commit_files(repo, {"src/m.py": _lines(10), "tests/test_m.py": _lines(20)})
     topic = git(repo, "rev-parse", "HEAD")
     git(repo, "switch", "-q", "main")
     git(repo, "reset", "-q", "--hard", start)
-    tip = _commit(repo, {"src/m.py": _lines(10)})
+    tip = commit_files(repo, {"src/m.py": _lines(10)})
 
     assert _run(repo, tip, topic) == 0
 
@@ -186,6 +173,12 @@ def test_workflow_reads_labels_live_on_every_pull_request() -> None:
     assert "gh api" in run
     assert "/issues/${PR_NUMBER}/labels" in run
     assert "pull_request.labels" not in yaml.safe_dump(job)
+    steps = [step for step in job["steps"] if "ci_patch_count.py" in step.get("run", "")]
+    assert len(steps) == 1, "no step runs the patch count"
+    assert "gh api" in steps[0]["run"]
+    assert "/issues/${PR_NUMBER}/labels" in steps[0]["run"]
+    assert "--labels" in steps[0]["run"]
+    assert "!cancelled()" in steps[0]["if"]
     assert job["needs"] == "changes"
     assert "github.event_name == 'pull_request'" in job["if"]
     assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
