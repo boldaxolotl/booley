@@ -209,6 +209,21 @@ def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
 
 
+def test_windows_headroom_only_warns() -> None:
+    """Windows CI reports headroom drift; only the per-test timeout fails a test."""
+    pytest_steps = [
+        (str(job.get("runs-on", "")), f"{step['run']} {step.get('env', {})}")
+        for name in ("test.yml", "full-python-matrix.yml")
+        for job in _workflow(name)["jobs"].values()
+        for step in job.get("steps", [])
+        if re.search(r"\bpytest\s", step.get("run", ""))
+    ]
+    windows = [text for runner, text in pytest_steps if not runner.startswith("ubuntu")]
+    assert windows
+    assert all("--timeout-headroom-warn=0.5" in text for text in windows)
+    assert not [text for _, text in pytest_steps if "--timeout-headroom=" in text]
+
+
 def test_windows_shards_are_exactly_verified() -> None:
     jobs = _test_workflow()["jobs"]
     test_verify_steps = jobs["test-verify"]["steps"]
