@@ -172,6 +172,7 @@ def test_gateway_with_claude_provider_fails_doctor_and_status(gateway_env, capsy
     assert [(f.severity.value, f.check_id) for f in findings] == [
         ("fail", "agent.credential-missing")
     ]
+    assert "routes Codex only" in findings[0].message
     assert code == 1
 
 

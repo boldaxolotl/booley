@@ -3072,13 +3072,13 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
     reported, auto_choice = _report_agent_app_choice(reporter)
     if not reported:
         return
-    default_cli = _configured_provider(project)
-    _check_auth_recorded(project, _allowed_clis(project, default_cli), reporter)
-    allowed = _auto_allowed_clis(auto_choice, default_cli) or _allowed_clis(project, default_cli)
+    audit = _agent_audit(project, auto_choice)
+    default_cli, allowed = audit.default_cli, audit.allowed
+    _check_auth_recorded(project, audit.listed, reporter)
     _warn_ignored_gateway_handoff(reporter)
     # Pins apply to gateway-routed Codex only, so judge them under Codex's policy when it is listed.
     pin_cli = auth_token.APP_CODEX if auth_token.APP_CODEX in allowed else default_cli
-    _check_gateway_model_pin(_configured_auth_policy(project, pin_cli), pin_cli, reporter)
+    _check_gateway_model_pin(audit.policy(pin_cli), pin_cli, reporter)
     from booley.config.agent import required_agent_clis
 
     required = required_agent_clis(default_cli, project.booley_toml.get("models"))
@@ -3090,6 +3090,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
             is_default=cli == default_cli,
             required=cli in required,
             auto_choice=auto_choice,
+            auth_policy=audit.policy(cli),
         )
 
 
@@ -3145,13 +3146,6 @@ def _check_auth_recorded(
         )
 
 
-def _auto_allowed_clis(choice: AgentAppChoice | None, default_cli: str) -> tuple[str, ...]:
-    """The CLIs ``BOOLEY_AGENT_APP=auto`` allowed, the default first; empty for an explicit app."""
-    if choice is None:
-        return ()
-    return (default_cli, *(cli for cli in choice.clis if cli != default_cli))
-
-
 def _check_cli_credentials(
     project: ProjectAudit | None,
     cli: str,
@@ -3160,6 +3154,7 @@ def _check_cli_credentials(
     is_default: bool,
     required: bool,
     auto_choice: AgentAppChoice | None,
+    auth_policy: str,
 ) -> None:
     """Audit one allowed Agent CLI's credential, policy, and rotation risk.
 
@@ -3168,7 +3163,6 @@ def _check_cli_credentials(
     *required* (:func:`booley.config.agent.required_agent_clis`): then it FAILs under every policy,
     because that Specialist's calls would fail. Every CLI's row carries its own login fix.
     """
-    auth_policy = _configured_auth_policy(project, cli)
     if auth_policy == GATEWAY_AUTH and _gateway_hidden_here():
         # A Claude session has no gateway values by design; only a shell that kept them can grade it.
         reporter.note_(_HIDDEN_GATEWAY_NOTE)
@@ -3389,73 +3383,85 @@ def _declared_clis(project: ProjectAudit | None) -> tuple[str, ...] | None:
     return declared.clis or ((declared.default,) if declared.default else None)
 
 
-def _configured_provider(project: ProjectAudit | None) -> str:
-    """Return the default Agent CLI this project's runs will use.
-
-    There is ALWAYS an answer: ``config.agent.resolve_default_cli`` (the order the
-    loaders use: ``BOOLEY_PRIMARY_PROVIDER`` -> booley.toml ``[agent] default`` ->
-    ``BOOLEY_AGENT_APP``), then the built-in default. An omitted default is not
-    "unknown", so the auth checks audit exactly the backend that will run: the
-    *unlisted* backend's absent credentials never surface as warnings.
-    """
-    from booley.config.agent import _DEFAULT_PROVIDER, resolve_default_cli
-
-    resolved = resolve_default_cli(_declared_agent(project))
-    return resolved[0] if resolved else _DEFAULT_PROVIDER
-
-
-def _allowed_clis(project: ProjectAudit | None, default_cli: str) -> tuple[str, ...]:
-    """The Agent CLIs to audit: the default first, then the other declared ``[agent] clis``.
-
-    A default outside the declared list (for example from ``BOOLEY_PRIMARY_PROVIDER``)
-    is a config error that ``agent.backend-health`` reports; the credential audit
-    then stays the default CLI's alone.
-    """
-    declared = _declared_agent(project)
-    clis = declared.clis if declared else None
-    if not clis or default_cli not in clis:
-        return (default_cli,)
-    return (default_cli, *(cli for cli in clis if cli != default_cli))
-
-
 def _recorded_auth(declared: DeclaredAgent | None, cli: str) -> str | None:
     """The auth policy booley.toml records for *cli*, ``None`` when it records none."""
     auth = declared.auth if declared else None
     return auth if isinstance(auth, str) else (auth or {}).get(cli)
 
 
-def _configured_auth_policy(project: ProjectAudit | None, cli: str | None = None) -> str:
-    """Audit *cli*'s policy (default CLI when omitted); ambient handoff is only a no-Project fallback."""
+@dataclass(frozen=True)
+class _AgentAudit:
+    """The Agent CLIs a Project run resolves and the policy each one runs under."""
+
+    default_cli: str
+    listed: tuple[str, ...]  # the Project's Agent CLIs, default first
+    allowed: tuple[str, ...]  # the CLIs to audit, default first
+    policies: dict[str, str]  # CLI -> the resolver's policy
+    fallback: str  # the policy of a CLI the resolver gave none
+
+    def policy(self, cli: str) -> str:
+        """*cli*'s policy; the hand-off audits a sole listed Claude as gateway (it routes Codex only)."""
+        from booley.config.agent import RETIRED_AUTH, gateway_handoff_active
+
+        if gateway_handoff_active() and self.listed == (cli,):
+            return GATEWAY_AUTH
+        policy = self.policies.get(cli, self.fallback)
+        return self.fallback if policy == RETIRED_AUTH else policy
+
+
+def _resolved_agent(
+    project: ProjectAudit | None, clis: tuple[str, ...] = ()
+) -> tuple[str, tuple[str, ...], dict[str, str]] | None:
+    """What the runtime resolves from the Project's ``[agent]``; ``None`` when it refuses it.
+
+    *clis*, when given, replaces ``[agent] clis``. The config audit FAILs a refused table.
+    """
+    from booley.config.agent import BackendConfigError, resolve_agent_clis
+
+    if project is None:
+        return None
+    agent: dict[str, Any] = as_dict(project.booley_toml.get("agent"), default={}) or {}
+    if clis:
+        agent["clis"] = list(clis)
+    try:
+        return resolve_agent_clis({"agent": agent}, lazy=False, keep_retired_auth=True)
+    except BackendConfigError:
+        return None
+
+
+def _agent_audit(project: ProjectAudit | None, auto_choice: AgentAppChoice | None) -> _AgentAudit:
+    """The default CLI, allowed CLIs and policies Doctor audits, from the runtime resolver.
+
+    A table the resolver refuses audits the default CLI alone. Without a Project the
+    ambient ``BOOLEY_PRIMARY_AUTH`` hand-off is the policy.
+    """
     from booley.config.agent import (
+        _DEFAULT_PROVIDER,
         DEFAULT_AUTH,
-        RETIRED_AUTH,
         VALID_AUTH_MODES,
-        _inside_container,
         env_auth_handoff,
-        gateway_handoff_active,
-        policy_in_force,
+        resolve_default_cli,
     )
 
-    default_cli = _configured_provider(project)
-    cli = cli or default_cli
-    # The hand-off routes Codex; Claude is audited as gateway only when it is the sole
-    # allowed CLI (the single-CLI FAIL "routes Codex only"), as the runtime treats it.
-    if gateway_handoff_active() and (
-        cli == auth_token.APP_CODEX or _allowed_clis(project, default_cli) == (cli,)
-    ):
-        return GATEWAY_AUTH  # env-only policy: it outranks the Project toml
-    env_auth = env_auth_handoff() or ""
+    resolved = _resolved_agent(project)
+    if resolved is None:
+        found = resolve_default_cli(_declared_agent(project))
+        default_cli, others, policies = (found[0] if found else _DEFAULT_PROVIDER), (), {}
+    else:
+        default_cli, clis, policies = resolved
+        others = tuple(cli for cli in clis if cli != default_cli)
+    listed = (default_cli, *others)
+    allowed = listed
+    if auto_choice is not None:  # the auto set can name a CLI that [agent] clis does not list
+        allowed = (default_cli, *(cli for cli in auto_choice.clis if cli != default_cli))
+        widened = _resolved_agent(project, allowed) if resolved else None
+        policies = widened[2] if widened else policies
+    fallback = DEFAULT_AUTH
     if project is None:
-        return (
-            env_auth if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH) else DEFAULT_AUTH
-        )
-    declared = _declared_agent(project)
-    if declared is None:
-        return DEFAULT_AUTH
-    policy = _recorded_auth(declared, cli)
-    if policy == GATEWAY_AUTH and not _inside_container():
-        return DEFAULT_AUTH  # like the env hand-off, the toml gateway applies in a Sandbox only
-    return DEFAULT_AUTH if policy == RETIRED_AUTH else policy_in_force(policy)
+        env_auth = env_auth_handoff() or ""
+        if env_auth in (*VALID_AUTH_MODES, auth_token.VISITOR_AUTH):
+            fallback = env_auth
+    return _AgentAudit(default_cli, listed, allowed, policies, fallback)
 
 
 _AGENT_APP_LABELS = {auth_token.APP_CLAUDE: "Claude Code", auth_token.APP_CODEX: "Codex"}
@@ -3498,7 +3504,7 @@ def _check_agent_auth_token(
     ``[agent] auth`` knob: under ``subscription`` Booley scrubs the API keys
     from agent envs, so the resolution here mirrors that.
 
-    Scoped to one allowed CLI (see :func:`_allowed_clis`): a CLI the Project does
+    Scoped to one allowed CLI (see :class:`_AgentAudit`): a CLI the Project does
     not list is never audited. *missing_fix* names the sign-in for a missing credential;
     *missing_fails* grades a missing credential FAIL (through *_fail*) even in the visitor mode.
     """
@@ -3634,7 +3640,7 @@ def _check_oauth_token(
     booley.toml records it, the fallback policy otherwise (``policy_recorded``).
     In a Sandbox without the app's seed sidecar the login was made inside it, no
     host-side login shares its refresh token, and the finding is a NOTE too.
-    A CLI the Project does not list gets no line -- see :func:`_allowed_clis`.
+    A CLI the Project does not list gets no line -- see :class:`_AgentAudit`.
     """
     note_sink = _note or _pass
     _warn = _warning_sink(_warn, "agent.rotation-risk", subject=provider)

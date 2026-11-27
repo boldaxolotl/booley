@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
+  # cargo waits up to 10 s per retry: about 3 minutes.
+  CARGO_NET_RETRY: "20"
+
 jobs:
   # A tag is not publication evidence by itself. Re-run the same required
   # source workflow against the exact tagged commit before any registry write.

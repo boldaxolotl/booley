@@ -200,6 +200,12 @@ def test_windows_rejects_host_provisioning_during_config_audit(
         ),
         pytest.param({}, True, [], id="absent"),
         pytest.param({"agent": {}}, True, [], id="empty"),
+        pytest.param(
+            {"agent": {"clis": ["codex"], "default": "claude"}},
+            False,
+            ["not in booley.toml [agent] clis"],
+            id="default-outside-clis",
+        ),
     ],
 )
 def test_agent_table_fails_only_a_present_and_wrong_value(

@@ -60,6 +60,7 @@ def user_command(command: str) -> None:
             "-u",
             "smoke",
             "env",
+            "PIP_RETRIES=10",
             "PIP_CONSTRAINT=/home/smoke/constraint.txt",
             "bash",
             "-lc",
@@ -205,6 +206,8 @@ def main() -> None:
         inside(args.wheel, commands)
         return
     wheel = args.wheel.resolve(strict=True)
+    # Retry transient registry and mirror failures (#4420): a short outage must not fail CI.
+    run(["bash", str(Path(__file__).with_name("retry.sh")), "docker", "pull", IMAGE])
     run(
         [
             "docker",
@@ -219,7 +222,9 @@ def main() -> None:
             IMAGE,
             "bash",
             "-c",
-            'apt-get update && apt-get install -y python3 && exec python3 /smoke/runner.py "$@"',
+            "echo 'Acquire::Retries \"8\";' > /etc/apt/apt.conf.d/80-retries"
+            " && apt-get update && apt-get install -y python3"
+            ' && exec python3 /smoke/runner.py "$@"',
             "smoke",
             "--inside",
             "--guide",
