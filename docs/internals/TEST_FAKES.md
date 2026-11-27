@@ -81,7 +81,7 @@ A boundary with several fakes links the issue that merges them.
 | Runtime files and version probe of the diagnostics | [tests/diagnostic_helpers.py](../../tests/diagnostic_helpers.py) | private helpers | injected runner; patch `Path.is_dir`, `Path.exists`, `Path.lstat` |  |
 | Host named-pipe support (waveform streaming) | [tests/flows/sim/conftest.py](../../tests/flows/sim/conftest.py) | `declared_trace_files_convert_after_the_run` | patch `waveform_store.can_stream_waveform` |  |
 | uvicorn's serving loop | [tests/uvicorn_support.py](../../tests/uvicorn_support.py) | `capture_serving` | patch `uvicorn.Server.run` |  |
-| Native B-Wave binary (`bwave build`, `bwave list`, queries) | [tests/bwave/native_binary.py](../../tests/bwave/native_binary.py) | `fake_native_binary`, `answer_vcd_build` | launcher named by `BOOLEY_BWAVE_BIN` that runs a `PathToolFake` (through `/bin/sh` on POSIX) | `answer_vcd_build` converts a piped VCD and refuses input without a VCD header |
+| Native B-Wave binary (`bwave build`, `bwave list`, queries) | [tests/bwave/native_binary.py](../../tests/bwave/native_binary.py) | `fake_native_binary`, `answer_vcd_build` | launcher named by `BOOLEY_BWAVE_BIN` that runs a `PathToolFake` (through `/bin/sh` on POSIX) | `answer_vcd_build` converts a piped VCD and refuses input without a VCD header; `test_execution_engine.py` still has an inline stand-in: [#5863](https://github.com/boldaxolotl/booley/issues/5863) |
 
 ## Booley port stand-ins
 
