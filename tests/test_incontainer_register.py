@@ -361,7 +361,7 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
 
     if restart in ("directory", "elsewhere"):
         assert status == "failed" and len(t3.served) == 1
-        assert "T3 Code not started" in capsys.readouterr().err
+        assert f"T3 Code not started: cannot link {alias} to" in capsys.readouterr().err
         return
     assert status == "started" and t3.replaced_records == [record]  # found in the volume
     reg.create_t3_pairing("http://127.0.0.1:1")
@@ -373,7 +373,7 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
 def test_a_pairing_before_any_start_links_the_projects_base_dir(tmp_path, monkeypatch):
     """`t3` would otherwise make a directory there, and every later start would refuse it."""
     volume, alias = tmp_path / "t3-volume", tmp_path / "t3-alias"
-    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))  # a host test has no volume mount
     monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
     t3 = _t3_code(monkeypatch, check_reply=(77, "unknown driver"))
     assert reg.ensure_t3_server(tmp_path) == "policy-rejected"

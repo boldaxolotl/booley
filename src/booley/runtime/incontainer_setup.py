@@ -433,7 +433,7 @@ def ensure_t3_server(project_root: Path) -> str:
     try:
         _link_t3_base_dir(base)
     except OSError as exc:
-        print(f"T3 Code not started: {exc}", file=sys.stderr)
+        print(f"T3 Code not started: cannot link {base} to {T3_BASE_DIR}: {exc}", file=sys.stderr)
         return "failed"
     prune_t3_logs(Path(base))
     return _serve_t3(project_root, base)
