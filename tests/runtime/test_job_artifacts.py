@@ -304,11 +304,12 @@ def test_artifact_read_sharing_error(tmp_path, monkeypatch, held, found):
     cache = JobArtifactCache(tmp_path)
     cache.begin()
     result = cache.find(root, "sim", "1", "report")
-    assert attempts[path] > 1
     if found:
+        assert attempts[path] == 2
         assert result is not None and result[0]["run_id"] == "1"
         assert cache.diagnostics == []
     else:
+        assert attempts[path] > 1
         assert result is None
         assert len(cache.diagnostics) == 1
         assert cache.diagnostics[0].startswith(f"Job artifact unavailable: {path}: ")

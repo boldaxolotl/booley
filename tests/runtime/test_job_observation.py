@@ -44,6 +44,10 @@ def files(root):
     }
 
 
+def stamps(*paths):
+    return [(path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_size) for path in paths]
+
+
 @pytest.fixture
 def me() -> ProcessIdentity:
     """The test process: a real, live Job owner on every platform."""
@@ -147,6 +151,7 @@ def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
 def test_only_a_successful_refresh_commits_its_artifact_generation(tmp_path, monkeypatch, error):
     roots = [tmp_path / str(number) / "jobs" for number in range(2)]
     reports = [write_job(root, str(number)) for number, root in enumerate(roots)]
+    before = stamps(*reports)
     failing = []
 
     def validate(_record):
@@ -170,6 +175,7 @@ def test_only_a_successful_refresh_commits_its_artifact_generation(tmp_path, mon
     assert all(job.report is not None for job in restored.jobs)
     # A successful refresh retired the unselected root's parse; a failed one committed nothing.
     assert reads == ([reports[1]] if error is None else [])
+    assert stamps(*reports) == before, "a refresh repaired or touched a report"
 
 
 def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
@@ -182,6 +188,7 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
     failing_report = write_job(later, "later")
     observer = JobObserver(tmp_path)
     assert len(observer.read((root,)).jobs) == 2
+    before = stamps(report_a, report_b)
     original_open, original_stat = Path.open, Path.lstat
     inspected = []
 
@@ -207,6 +214,7 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
     assert sorted(job.record.run_id for job in restored.jobs) == ["A", "B"]
     assert all(job.report is not None for job in restored.jobs)
     assert reads == [], "failed partial refresh discarded committed parses"
+    assert stamps(report_a, report_b) == before
 
 
 def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_path):
