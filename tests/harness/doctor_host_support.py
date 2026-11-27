@@ -18,7 +18,7 @@ import pytest
 
 from booley.harness import developer_probe, host_diagnostics
 from tests.git_command_fake import REAL_RUN
-from tests.harness.test_doctor import _patch_environment
+from tests.harness.doctor_environment_support import patch_doctor_environment
 
 _VIVADO_STARTUP = re.compile(r"BOOLEY_VIVADO_STARTUP_[0-9a-f]{32}")
 _SANDBOX_MCP_TOOLS = ["synth", "bwave", "coverage_analyst", "lint", "mutation", "reviewer", "sim"]
@@ -27,10 +27,10 @@ _SANDBOX_MCP_TOOLS = ["synth", "bwave", "coverage_analyst", "lint", "mutation", 
 def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[list[str]]:
     """Answer Doctor's host and Sandbox commands as healthy, but run Git for real.
 
-    ``_patch_environment`` answers Git for a Project with no repository; this Project
+    ``patch_doctor_environment`` answers Git for a Project with no repository; this Project
     has one. Vivado's startup probe gets back the marker it asked the Sandbox to print.
     """
-    calls = _patch_environment(
+    calls = patch_doctor_environment(
         monkeypatch, root, root / ".booley", mcp_tools=[*_SANDBOX_MCP_TOOLS, "fpga"]
     )
     host_run = subprocess.run
@@ -54,7 +54,7 @@ def answer_doctor_commands(
     """Answer Doctor's commands with ``answer(argv, env)``; ``None`` passes one on.
 
     Layers over the fake already installed (``serve_healthy_doctor_host`` or
-    ``_patch_environment``), so a test answers only the commands it is about.
+    ``patch_doctor_environment``), so a test answers only the commands it is about.
     """
     other_commands = subprocess.run
 
