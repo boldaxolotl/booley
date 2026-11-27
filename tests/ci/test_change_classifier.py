@@ -957,8 +957,8 @@ _TODAYS_LINUX_FULL_COMMAND = (
     ' --junitxml "${{ runner.temp }}/junit.xml" --basetemp "${{ runner.temp }}/pytest"'
     " pytest tests/ -q --tb=short -n 4 --dist=loadscope"
     ' -m "${{ env.TEST_MARK_EXPRESSION }}"'
-    " --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8"
-    " --timeout-headroom-warn=0.5' || '' }}"
+    " --timeout=60 ${{ runner.os == 'Windows' && '"
+    "--timeout-headroom-warn=0.5' || '' }}"
     " --durations=30 -p ci_pytest_shard"
     ' --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"'
 )

@@ -289,6 +289,12 @@ jobs:
     if: fromJSON(needs.changes.outputs.jobs)['lint']
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Job permissions replace the workflow's. "issues" is for the quarantine check.
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      packages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -299,7 +305,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pinned CI quality tools
-        run: pip install -e ".[quality,hdl-parser]" -c .github/ci/constraints.txt
+        run: pip install -e ".[quality,hdl-parser,test]" -c .github/ci/constraints.txt
 
       - name: Install actionlint v1.7.12
         shell: bash
@@ -320,6 +326,12 @@ jobs:
 
       - name: Reject suppressed test assertions
         run: python .github/scripts/check_suppressed_assertions.py
+
+      - name: Check the flaky-test quarantine registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python .github/scripts/ci_flaky_quarantine.py
 
       - name: Reject new or grown functions over 50 lines
         if: github.event_name == 'pull_request'
@@ -413,7 +425,7 @@ jobs:
           --basetemp "${{ runner.temp }}/pytest"
           pytest tests/ -q --tb=short -n 4 --dist=${{ needs.changes.outputs.linux_scheduler }}
           -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
+          --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom-warn=0.5' || '' }}
           --durations=30
           -p ci_pytest_shard
           --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"
@@ -431,7 +443,7 @@ jobs:
           tests/runtime/test_file_lock.py tests/runtime/test_pid.py
           tests/runtime/test_process_group.py tests/flows/sim/test_coverage_waivers.py
           -q --tb=short -n 4 --dist=loadscope -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30
+          --timeout=120 ${{ runner.os == 'Windows' && '--timeout-headroom-warn=0.5' || '' }} --durations=30
 
       - name: Run duration-balanced shard
         if: matrix.mode == 'shard'
@@ -446,7 +458,7 @@ jobs:
           --basetemp "${{ runner.temp }}/pytest"
           pytest tests/ -q --tb=short -n 4 --dist=${{ runner.os == 'Linux' && needs.changes.outputs.linux_scheduler || 'worksteal' }}
           -m "${{ env.TEST_MARK_EXPRESSION }}"
-          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }} --durations=30
+          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom-warn=0.5' || '' }} --durations=30
           -p ci_pytest_shard --ci-shard-group "${{ matrix.group }}"
           --ci-shard-index "${{ matrix.shard_index }}"
           --ci-shard-count "${{ matrix.shard_count }}"
@@ -512,13 +524,13 @@ jobs:
           BOOLEY_PYTEST_EVIDENCE_DIR: ${{ runner.temp }}/pytest-timeouts
           STRESS_MODULES: ${{ toJSON(matrix.modules) }}
           STRESS_COUNT: ${{ needs.changes.outputs.stress_count }}
-          HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom=0.8 --timeout-headroom-warn=0.5' || '' }}
+          HEADROOM: ${{ runner.os == 'Windows' && '--timeout-headroom-warn=0.5' || '' }}
           TEST_TIMEOUT: ${{ runner.os == 'Windows' && '120' || '60' }}
         run: |
           # NUL-delimited: Windows Python would turn "\n" into "\r\n".
           mapfile -d '' -t modules < <(python -c 'import json, os, sys; sys.stdout.write("\0".join(json.loads(os.environ["STRESS_MODULES"])))')
           status=0
-          # shellcheck disable=SC2086 # HEADROOM holds zero or two options.
+          # shellcheck disable=SC2086 # HEADROOM holds zero or one option.
           pytest "${modules[@]}" -q --tb=short -n 4 --dist=load \
             --count="${STRESS_COUNT}" --basetemp "${RUNNER_TEMP}/pytest" \
             -m "not native_bwave" --timeout="${TEST_TIMEOUT}" ${HEADROOM} \

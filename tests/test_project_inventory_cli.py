@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ import pytest
 
 from booley.config.sandbox import project_image_name, project_image_name_for_identity
 from booley.core.host_shell import quote_arg
+from booley.core.project_identity import accepted_project_labels, project_name_id
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import Inspection
 from booley.harness import booley, projects_view
@@ -40,16 +43,17 @@ from booley.runtime.sandbox_apply import Attachment
 from booley.runtime.session_issuance import keeper_image
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
-from tests.docker_image_cli_fake import DockerImageCli, serve_docker_image_cli
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 from tests.session_issuance_support import fixed, install_trusted_validator
+from tests.time_budget import hang_guard_s
 
 _A, _B, _C = ("sha256:" + digit * 64 for digit in "abc")
 _CONTAINER = "c" * 64
 
 
 @pytest.fixture
-def docker(monkeypatch: pytest.MonkeyPatch) -> DockerImageCli:
-    return serve_docker_image_cli(monkeypatch)
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
+    return install_fake_docker(tmp_path / "docker-bin", monkeypatch, {}, images={})
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -108,7 +112,7 @@ def _session_files_remain(project_root: str) -> bool:
 
 
 def test_discover_and_list_need_no_keeper_operations(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     search_root = tmp_path / "workplace"
     project = search_root / "project"
@@ -132,7 +136,7 @@ def test_discover_and_list_need_no_keeper_operations(
 
 @pytest.mark.parametrize("output", ["json", "human"])
 def test_forget_releases_only_the_own_unused_keeper(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], output: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], output: str
 ) -> None:
     project = _remember(tmp_path)
     own, other = keeper_image(project), keeper_image(tmp_path / "other")
@@ -158,12 +162,12 @@ def test_forget_releases_only_the_own_unused_keeper(
     assert own not in docker.images
     assert other in docker.images and "unrelated:latest" in docker.images
     # A release is one exact, non-force, no-prune tag removal.
-    assert docker.removals() == [["docker", "image", "rm", "--no-prune", own]]
+    assert docker.removals() == [["image", "rm", "--no-prune", own]]
     assert project_inventory.project_inventory() == ()
 
 
 def test_forget_json_reports_an_absent_keeper_with_a_null_image_id(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _remember(tmp_path)
 
@@ -243,12 +247,12 @@ _UNRECORDED_LINE = (
 
 @pytest.mark.parametrize("output", ["human", "json"])
 def test_forget_explains_unrecorded_leftovers(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], output: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], output: str
 ) -> None:
     project = _remember(tmp_path)
     # A digest pull can leave the Project's repository on an untagged image no record names.
     image = "sha256:" + "7" * 64
-    docker.untagged_rows.append((project_image_name(project), "<none>", image))
+    docker.images[f"{project_image_name(project)}:<none>"] = image
 
     assert _cli("projects", "forget", str(project), *(["--json"] if output == "json" else [])) == 0
 
@@ -267,26 +271,37 @@ def test_forget_explains_unrecorded_leftovers(
 
 
 def test_forget_lists_leftovers_with_sizes_and_tags(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _remember(tmp_path)
     docker.images.update({f"{project_image_name(project)}:latest": _A, "mirror:x": _A})
+    root = str(project.resolve())
+    volume = min(devcontainer.state_volume_names(project_name_id(root)))
+    docker.volumes[volume] = {}
+    docker.containers[_CONTAINER] = {"Image": _B, "Volumes": [volume]}
+    docker.networks["licensed"] = {"booley.project-id": min(accepted_project_labels(root))}
 
     assert _cli("projects", "forget", str(project)) == 0
 
     table = render_table(
         ["Kind", "Name", "Size", "Reason", "Tags"],
-        [["image", _A, "1GB", "shared", f"mirror:x, {project_image_name(project)}:latest"]],
+        [
+            ["image", _A, "1GB", "shared", f"mirror:x, {project_image_name(project)}:latest"],
+            ["volume", volume, "1GB", "in-use", ""],
+            ["network", "licensed", "", "labelled", ""],
+        ],
     )
     assert "Left behind for this Project:\n" + "\n".join(table) + "\n" in capsys.readouterr().out
 
 
 def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _remember(tmp_path, "it's a project")
     family = project_image_name(project)
     docker.images.update({f"{family}:latest": _A, f"{family}-wheel:latest": _B, "mirror:x": _B})
+    volume = min(devcontainer.state_volume_names(project_name_id(str(project.resolve()))))
+    docker.volumes[volume] = {}
     assert _cli("projects", "forget", str(project)) == 0
     first = capsys.readouterr().out
     assert f"booley projects forget --purge {quote_arg(str(project))}" in first
@@ -298,6 +313,7 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in docker.images
     assert "in-use:" not in output
+    assert f"Removed: {volume}\n" in output and volume not in docker.volumes
     docker.images[f"{family}-busy:latest"] = _C
     docker.containers[_CONTAINER] = _C
     assert _cli("projects", "forget", "--purge", str(project)) == 0
@@ -307,14 +323,14 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     )
     # Every removal is the exact release of one of the Project's own tags.
     assert {tuple(call) for call in docker.removals()} == {
-        ("docker", "image", "rm", "--no-prune", f"{family}:latest"),
-        ("docker", "image", "rm", "--no-prune", f"{family}-wheel:latest"),
+        ("image", "rm", "--no-prune", f"{family}:latest"),
+        ("image", "rm", "--no-prune", f"{family}-wheel:latest"),
     }
 
 
 @pytest.mark.parametrize("grant", [False, True])
 def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], grant: bool
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], grant: bool
 ) -> None:
     base = tmp_path.resolve()
     deleted = base / "deleted"
@@ -344,7 +360,7 @@ def test_purge_accepts_a_forgotten_root_unless_a_grant_holds_it(
 
 
 def test_forget_reports_leftover_listing_failure_after_forgetting(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _remember(tmp_path)
     docker.answer("image", "ls", "--all", code=1, stderr="daemon went away")
@@ -362,7 +378,7 @@ def test_forget_reports_leftover_listing_failure_after_forgetting(
     "flags", [["projects", "--json", "prune-keepers"], ["projects", "prune-keepers", "--json"]]
 )
 def test_public_prune_preview_then_digest_confirmation(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], flags: list[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], flags: list[str]
 ) -> None:
     project = _remember(tmp_path)
     own, orphan = keeper_image(project), keeper_image(tmp_path / "legacy")
@@ -374,12 +390,12 @@ def test_public_prune_preview_then_digest_confirmation(
     assert _cli(*flags, "--confirm", preview["digest"]) == 0
 
     assert orphan not in docker.images and own in docker.images
-    assert docker.removals() == [["docker", "image", "rm", "--no-prune", orphan]]
+    assert docker.removals() == [["image", "rm", "--no-prune", orphan]]
 
 
 @pytest.mark.parametrize("state", ["running", "stopped"])
 def test_forget_retains_an_image_any_container_uses(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], state: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], state: str
 ) -> None:
     """A stopped container still pins the keeper, and the Session authority goes either way."""
     project = _remember(tmp_path)
@@ -387,7 +403,7 @@ def test_forget_retains_an_image_any_container_uses(
     docker.images[tag] = _A
     docker.containers[_CONTAINER] = _A  # .Image stays immutable whatever tag created it
     if state == "stopped":
-        docker.stopped.add(_CONTAINER)
+        docker.containers[_CONTAINER] = {"Image": _A, "Running": False}
     _write_session_files(str(project.resolve()))
 
     assert _cli("projects", "forget", str(project)) == 0
@@ -402,7 +418,7 @@ def test_forget_retains_an_image_any_container_uses(
 
 
 def test_forget_removal_failure_preserves_inventory(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -417,7 +433,7 @@ def test_forget_removal_failure_preserves_inventory(
 
 @pytest.mark.parametrize("change", ["container", "remember"])
 def test_prune_confirmation_goes_stale_when_protection_changes(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], change: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], change: str
 ) -> None:
     orphan = keeper_image(tmp_path / ("orphan" if change == "container" else "project"))
     docker.images[orphan] = _A
@@ -434,7 +450,7 @@ def test_prune_confirmation_goes_stale_when_protection_changes(
 
 
 def test_prune_digest_ignores_unrelated_observations(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     docker.images[keeper_image(tmp_path / "orphan")] = _A
     _, first = _prune(capsys)
@@ -445,7 +461,7 @@ def test_prune_digest_ignores_unrelated_observations(
 
 
 def test_prune_with_nothing_eligible_offers_no_confirmation_and_refuses_one(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Two keepers, both protected: one inventoried, one orphan used by a container (#1576)."""
     project = _remember(tmp_path)
@@ -480,7 +496,7 @@ def test_prune_with_nothing_eligible_offers_no_confirmation_and_refuses_one(
 
 
 def test_prune_partial_failure_accounts_for_prior_releases(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tags = sorted([keeper_image(tmp_path / "one"), keeper_image(tmp_path / "two")])
     docker.images.update(dict.fromkeys(tags, _A))
@@ -497,7 +513,7 @@ def test_prune_partial_failure_accounts_for_prior_releases(
 
 @pytest.mark.parametrize("stamp", ["runtime-issuance.json", "session-spec.json"])
 def test_prune_inventory_absence_authorizes_historical_stamps(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], stamp: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], stamp: str
 ) -> None:
     project = tmp_path / "old"
     (project / ".booley").mkdir(parents=True)
@@ -511,7 +527,7 @@ def test_prune_inventory_absence_authorizes_historical_stamps(
 
 @pytest.mark.parametrize("change", ["missing", "uninitialized", "replacement-symlink"])
 def test_forget_uses_exact_stored_identity(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], change: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], change: str
 ) -> None:
     project = _remember(tmp_path)
     own = keeper_image(project)
@@ -533,7 +549,7 @@ def test_forget_uses_exact_stored_identity(
 
 
 def test_prune_protects_missing_uninitialized_and_grant_only_roots(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     base = tmp_path.resolve()
     project = _remember(base)
@@ -558,7 +574,7 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
 
 def test_lifecycle_contention_becomes_cli_error(
     tmp_path: Path,
-    docker: DockerImageCli,
+    docker: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -585,18 +601,17 @@ def test_lifecycle_contention_becomes_cli_error(
 
 @pytest.mark.parametrize("mutation", ["retag", "container", "grant"])
 def test_apply_rechecks_before_deletion(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], mutation: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], mutation: str
 ) -> None:
     orphan = tmp_path.resolve() / "orphan"
     tag = keeper_image(orphan)
     docker.images[tag] = _A
     _, preview = _prune(capsys)
-    changed: list[str] = []
+    docker.pause_after("image", "inspect")  # the first inspect of the confirming run
 
-    def mutate(argv: list[str]) -> None:
-        if argv[1:3] != ["image", "inspect"] or changed:
-            return
-        changed.append(mutation)  # once, after the first inspect of the confirming run
+    with ThreadPoolExecutor(1) as pool:
+        confirming = pool.submit(_prune, capsys, preview["digest"])
+        docker.wait_until_paused()
         if mutation == "retag":
             docker.images[tag] = _B
         elif mutation == "container":
@@ -604,17 +619,15 @@ def test_apply_rechecks_before_deletion(
         else:
             (orphan / ".git").mkdir(parents=True)
             _grant(orphan)
-
-    docker.after_call = mutate
-
-    status, result = _prune(capsys, preview["digest"])
+        docker.resume()
+        status, result = confirming.result(timeout=hang_guard_s())
 
     assert status == 0 and result["released"] == [] and result["retained"] == [tag]
     assert tag in docker.images and docker.removals() == []
 
 
 def test_forget_withdraws_issuance_stamp_and_admission_claim(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     kept = _remember(tmp_path / "kept")
     purged = _remember(tmp_path / "purged")
@@ -638,13 +651,13 @@ def test_forget_withdraws_issuance_stamp_and_admission_claim(
 
 def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
     tmp_path: Path,
-    docker: DockerImageCli,
+    docker: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Forget retains a keeper a Session container uses, yet the Sandbox must be reissued (#1112)."""
     validator = install_trusted_validator(tmp_path, monkeypatch)
-    monkeypatch.setenv("PATH", str(validator.parent))
+    monkeypatch.setenv("PATH", os.pathsep.join((str(validator.parent), str(docker.path.parent))))
     project = _remember(tmp_path)
     spec = build_spec(
         devcontainer.APP_NONE,
@@ -667,8 +680,8 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
         session_issuance.validate(project, prepared.spec, path)
     # The Session takes the withdrawn-stamp path: an editor-owned Sandbox is told to rebuild
     # from VS Code, which reissues the stamp that no longer exists.
-    # The attachment kind comes from a running container's labels, and the shared fake serves no
-    # labelled `container ls` rows, so the editor-owned answer is stubbed at the Booley seam.
+    # The attachment kind comes from `docker ps` labels, which the shared fake does not model,
+    # so the editor-owned answer is stubbed at the Booley seam.
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
     assert session_runtime.sandbox_remedy(project) == (
@@ -680,7 +693,7 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
 
 def test_main_wires_the_keeper_service_into_forget_and_prune(
     tmp_path: Path,
-    docker: DockerImageCli,
+    docker: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -710,7 +723,7 @@ def test_main_wires_the_keeper_service_into_forget_and_prune(
 
 def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
     tmp_path: Path,
-    docker: DockerImageCli,
+    docker: FakeDocker,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -720,7 +733,7 @@ def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
     docker.images[tag] = _A
     docker.containers[_CONTAINER] = _A
     editor = SimpleNamespace(container_id=_CONTAINER, name="editor", running=True, vscode=True)
-    # Listing running Sandboxes needs labelled `container ls` rows the shared fake does not serve.
+    # Listing running Sandboxes needs `docker ps` rows the shared fake does not serve.
     monkeypatch.setattr(
         session_admission,
         "running_project_sandboxes",
@@ -730,7 +743,7 @@ def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
         session_runtime.down(project)
     assert docker.removals() == [] and _CONTAINER in docker.containers
     editor.running = False
-    docker.stopped.add(_CONTAINER)
+    docker.containers[_CONTAINER] = {"Image": _A, "Running": False}
 
     assert _cli("projects", "forget", str(project), "--json") == 0
 
@@ -740,7 +753,7 @@ def test_forget_after_an_editor_stop_refusal_retains_the_stopped_container(
 
 @pytest.mark.parametrize("failure", ["invalid-image", "invalid-container", "daemon"])
 def test_forget_incomplete_observation_preserves_inventory(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], failure: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], failure: str
 ) -> None:
     project = _remember(tmp_path)
     _write_session_files(str(project.resolve()))
@@ -760,7 +773,7 @@ def test_forget_incomplete_observation_preserves_inventory(
 
 
 def test_prune_stamps_withdraws_only_orphan_session_files(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Only a deleted, unremembered root loses its stamp and claim; no Docker command runs."""
     orphan = str(tmp_path / "orphan")
@@ -795,7 +808,7 @@ def test_prune_stamps_withdraws_only_orphan_session_files(
 
 
 def test_prune_stamps_human_output_names_the_exact_command(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     orphan = str(tmp_path / "orphan root")
     _write_session_files(orphan)
@@ -822,7 +835,7 @@ def test_prune_stamps_human_output_names_the_exact_command(
 @pytest.mark.parametrize("journal_kind", ["invalidation", "malformed-invalidation"])
 def test_real_pending_journal_preserves_keeper_and_inventory(
     tmp_path: Path,
-    docker: DockerImageCli,
+    docker: FakeDocker,
     capsys: pytest.CaptureFixture[str],
     operation: str,
     journal_kind: str,
@@ -839,7 +852,7 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
         journal.write_text("{invalid")
     before_journal = journal.read_bytes()
     before_inventory = project_inventory.state_path().read_bytes()
-    docker.calls.clear()
+    seen = len(docker.calls)
     argv = {
         "forget": ["projects", "forget", str(project)],
         "prune-stamps": ["projects", "prune-stamps", str(project)],
@@ -849,14 +862,14 @@ def test_real_pending_journal_preserves_keeper_and_inventory(
 
     captured = capsys.readouterr()
     assert captured.err and captured.out == ""
-    assert docker.calls == [] and tag in docker.images
+    assert docker.calls[seen:] == [] and tag in docker.images
     assert journal.read_bytes() == before_journal
     assert project_inventory.state_path().read_bytes() == before_inventory
 
 
 @pytest.mark.parametrize("action", ["forget", "preview", "confirm"])
 def test_missing_keeper_adapter_refuses_before_observation(
-    tmp_path: Path, docker: DockerImageCli, capsys: pytest.CaptureFixture[str], action: str
+    tmp_path: Path, docker: FakeDocker, capsys: pytest.CaptureFixture[str], action: str
 ) -> None:
     project = _remember(tmp_path)
     tag = keeper_image(project)
@@ -883,7 +896,7 @@ def test_missing_keeper_adapter_refuses_before_observation(
 
 @pytest.mark.parametrize("command", ["purge", "refused-prune"])
 def test_purge_and_refused_prune_sweep_records_of_absent_images(
-    tmp_path: Path, docker: DockerImageCli, command: str
+    tmp_path: Path, docker: FakeDocker, command: str
 ) -> None:
     gone = "sha256:" + "d" * 64
     project = _remember(tmp_path)
