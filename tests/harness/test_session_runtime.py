@@ -53,6 +53,7 @@ from tests.harness.booley_dir_support import select_booley_dir
 from tests.harness.session_docker_fake import (
     SandboxDocker,
     attach_commands,
+    docker_runner,
     headless_session_entry,
     isolate_session_cli,
     run_cli,
@@ -2657,7 +2658,7 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         return subprocess.CompletedProcess(argv, 0, json.dumps(documents[argv[3]]), "")
 
-    assert admission.claim_vscode_start(project, run=docker)
+    assert admission.claim_vscode_start(project, run=docker_runner(docker))
     documents["editor-id"] = {
         "Name": "/editor",
         "Created": "2026-09-27T08:00:00Z",
@@ -2681,8 +2682,8 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
         sr.down(project)
     del documents["editor-id"]
     assert sr.down(project).claim_cleared
-    admission.admit_start(project, target_name="headless", run=docker)
-    assert admission.claim_vscode_start(project, run=docker)
+    admission.admit_start(project, target_name="headless", run=docker_runner(docker))
+    assert admission.claim_vscode_start(project, run=docker_runner(docker))
 
 
 def test_spawn_passes_credential_in_child_env_without_secret_argv(workspace, monkeypatch):
@@ -3141,14 +3142,14 @@ def test_project_sandbox_resolution_consumed_claim_status(
 
     fixture = project_sandbox_resolution
     state = fixture.documents.pop(fixture.state["Id"])
-    assert real_claim_vscode_start(workspace, run=fixture.run)
+    assert real_claim_vscode_start(workspace, run=docker_runner(fixture.run))
     claim = session_admission.claim_store().path(str(workspace))
     assert claim.exists()
     fixture.documents[state["Id"]] = state
     monkeypatch.setattr(
         session_admission,
         "has_pending_claim",
-        lambda root: real_has_pending_claim(root, run=fixture.run),
+        lambda root: real_has_pending_claim(root, run=docker_runner(fixture.run)),
     )
     assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
     assert not claim.exists()
@@ -3212,7 +3213,7 @@ def test_project_sandbox_resolution_status_ignores_uninspectable_foreign(
     fixture = project_sandbox_resolution
     if pending:
         fixture.documents.clear()
-        assert real_claim_vscode_start(workspace, run=fixture.run)
+        assert real_claim_vscode_start(workspace, run=docker_runner(fixture.run))
         fixture.documents[fixture.state["Id"]] = fixture.state
     foreign = copy.deepcopy(fixture.state)
     root = workspace.parent / "foreign"
@@ -3229,7 +3230,9 @@ def test_project_sandbox_resolution_status_ignores_uninspectable_foreign(
 
     monkeypatch.setattr(sr, "_run", run)
     monkeypatch.setattr(
-        session_admission, "has_pending_claim", lambda root: real_has_pending_claim(root, run=run)
+        session_admission,
+        "has_pending_claim",
+        lambda root: real_has_pending_claim(root, run=docker_runner(run)),
     )
     assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
 

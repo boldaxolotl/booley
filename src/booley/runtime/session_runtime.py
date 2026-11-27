@@ -579,6 +579,11 @@ def _run(
     )
 
 
+def _docker_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    """The core Docker ``Runner`` over :func:`_run`, so admission calls reach its debug log."""
+    return _run(["docker", *args], timeout=timeout)
+
+
 @dataclass(frozen=True)
 class ParkedSession:
     """One retained Sandbox that can be restored or discarded."""
@@ -779,7 +784,7 @@ def _create_or_resume_session(
             session_admission.admit_start(
                 workspace,
                 target_name=request.name,
-                run=_run,
+                run=_docker_runner,
             )
         except session_admission.AdmissionError as exc:
             raise SessionError(str(exc)) from exc
@@ -1208,7 +1213,7 @@ def _prepare_unlocked(workspace: Path) -> str:
 
     try:
         claim_created = selected is None and session_admission.claim_vscode_start(
-            workspace, run=_run
+            workspace, run=_docker_runner
         )
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
@@ -2280,7 +2285,7 @@ def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
     from booley.runtime import session_admission
 
     try:
-        candidates = session_admission.running_project_sandboxes(workspace, run=_run)
+        candidates = session_admission.running_project_sandboxes(workspace, run=_docker_runner)
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
     if len(candidates) > 1:
@@ -2513,7 +2518,7 @@ def _down_unlocked(
     selected = resolve_running_sandbox(workspace)
     _refuse_editor(selected, "stop from the CLI")
     try:
-        session_admission.vscode_sandboxes(workspace, run=_run)
+        session_admission.vscode_sandboxes(workspace, run=_docker_runner)
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
     name = selected.container_id if selected is not None else session_container_name(workspace)
