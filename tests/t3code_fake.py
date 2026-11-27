@@ -104,8 +104,8 @@ def serve_t3_code(
 ) -> T3CodeFake:
     """Route `incontainer_setup`'s port and descriptor probes and `subprocess` to a `T3CodeFake`.
 
-    With *foreign*, something other than T3 Code already answers on the port. *volume* keeps
-    what T3 Code writes to, and is read from, the T3 state volume.
+    With *foreign*, something other than T3 Code already answers on the port. *volume* stands
+    in for the T3 state volume: what T3 Code writes, what is read back, what Booley prunes.
     The two probes are the network boundary and `subprocess` the process boundary; the
     global `subprocess` module stays untouched.
     """
@@ -118,6 +118,15 @@ def serve_t3_code(
     proven = incontainer_setup._t3_identity_proven
     monkeypatch.setattr(
         incontainer_setup, "_t3_identity_proven", lambda base: proven(fake.on_host(base))
+    )
+    pruned = incontainer_setup.prune_t3_logs
+    # `ensure_t3_server` passes the fixed Sandbox path, which tests assert in the `t3 serve`
+    # argv, so map it to *volume* here. With none, skip: a test run inside a Sandbox must never
+    # prune that Sandbox's live T3 state volume.
+    monkeypatch.setattr(
+        incontainer_setup,
+        "prune_t3_logs",
+        lambda base: fake.volume and pruned(fake.on_host(base)),
     )
     monkeypatch.setattr(incontainer_setup, "_port_is_serving", fake.serving)
     monkeypatch.setattr(incontainer_setup, "_t3_environment_id", fake.describe, raising=False)
