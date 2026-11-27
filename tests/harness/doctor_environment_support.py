@@ -1,7 +1,6 @@
 """A healthy host for a whole Doctor run on a Project that has no Git repository.
 
-``patch_doctor_environment`` answers Git through ``GitCommandFake`` rules and every other
-command (Docker, the Sandbox's Python and MCP probes) here, answering "ok" to the rest.
+Git is answered by ``GitCommandFake`` rules; every command no rule matches is answered here.
 """
 
 from __future__ import annotations
@@ -130,7 +129,7 @@ def _answer_git(fake: GitCommandFake, root: Path) -> None:
 
 
 def _other_command(cmd, payload: dict, runtime_booley_version: str):  # noqa: PLR0911 - command table
-    """Answer a command that is not Git: Docker, the Sandbox's probes, or "ok"."""
+    """Answer what no Git rule did: Docker, the Sandbox's probes, or "ok"."""
     if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
     if cmd[1] == "ps":
@@ -164,8 +163,13 @@ def _other_command(cmd, payload: dict, runtime_booley_version: str):  # noqa: PL
 
 
 def answer_image_check(
-    monkeypatch, status=None, *, raises=None, diagnostics=(), selected_id=dc.SANDBOX_IMAGE
-):
+    monkeypatch: pytest.MonkeyPatch,
+    status: lifecycle.Status | None = None,
+    *,
+    raises: Exception | None = None,
+    diagnostics: tuple[str, ...] = (),
+    selected_id: str = dc.SANDBOX_IMAGE,
+) -> None:
     """Stand in for the lifecycle CHECK `booley init --check-only` runs."""
 
     def reconcile(_scope, _intent):
