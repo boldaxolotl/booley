@@ -87,8 +87,7 @@ release. An OpenROAD PR therefore carries `ready-for-human`. Its
   submodule manifest).
 - Update `THIRD_PARTY_NOTICES.md`.
 - Update the OpenROAD row of `docs/user/SUPPORTED-EDA-TOOLS.md`; its commit
-  and self-reported version cannot be derived from the release label. Then
-  regenerate the packaged copy with `python -m booley.dev_support.reference_docs`.
+  and self-reported version cannot be derived from the release label.
 - Update the source-archive path in `.github/contracts/session-runtime.toml`.
 - Verify that the builder-image digests in the `LABEL` lines of
   `Dockerfile.base` still match its `FROM` lines.

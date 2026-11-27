@@ -10,7 +10,7 @@ from booley.harness.dashboard.targets import enabled_flows
 @pytest.mark.parametrize(
     "layout",
     [
-        {".booley/booley.toml": "[flows.sim]\nbackend = 'x'\n"},
+        {".booley/booley.toml": "[flows.elab]\n"},
         {".booley/booley.toml": "", ".booley_project/booley.toml": ""},
     ],
     ids=["retired-key", "two-booley-directories"],

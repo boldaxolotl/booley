@@ -304,7 +304,6 @@ _RETIRED_SITE_LINKS = (
 )
 _RETIRED_LINKS_ALLOWED = {
     "CHANGELOG.md",  # release history
-    "src/booley/data/refs/CHANGELOG.md",  # packaged copy of the release history
     "docs/adr/0081-publish-user-docs-on-the-project-site.md",  # amendment records the move
     ".github/workflows/pages.yml",  # documents the redirect setting
     "tests/docs/test_links.py",  # this guard

@@ -20,7 +20,9 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
         "SYN": ("asic_synthesize", "synth"),
         "LINT": ("lint", "lint_rtl"),
         "FPGA": ("fpga_impl", "fpga"),
-        "JOB": ("custom",),
+        "MEAS": ("measure",),
+        "MUT": ("mutation",),
+        "JOB": ("custom", "reviewer"),
     }.items():
         for endpoint in endpoints:
             tmp_path = tmp_path_factory.mktemp(str(endpoint))
@@ -30,7 +32,7 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
             state.next_number = 1
             store.save(state)
             handles.register_job(tmp_path, "second", "lint")
-            handles.register_job(tmp_path, "first", endpoint)
+            handles.register_job(tmp_path, "first", "measure")  # stored kind wins
             state = handles.HandleStore(tmp_path).load()
             assert state.entries == {"first": f"J-{prefix}1", "second": "J-LINT2"}, endpoint
             assert state.next_number == 3, endpoint

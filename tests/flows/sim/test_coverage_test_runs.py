@@ -292,34 +292,44 @@ def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
 
 
-def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new_run(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("interruption", ["collection", "publication"])
+def test_interrupted_multi_run_coverage_names_its_frozen_test_runs_for_the_new_run(
+    tmp_path, monkeypatch, interruption
 ):
-    """A collection cut after its first run is not resumed; its seeds are not lost.
+    """An interrupted coverage run is not resumed; its seeds are not lost.
 
-    Resuming an unfinished coverage collection is refused by design (it would
-    re-run every Test Run). The refusal's command names the frozen Test Runs,
-    so the new run repeats the drawn seeds instead of drawing three others.
+    The refusal's command names the frozen Test Runs, so the new run repeats
+    the drawn seeds instead of drawing three others.
     """
     _resumable_project(tmp_path, monkeypatch)
     reports = tmp_path / "reports"
-    execution = _InterruptedAfterFirstRun()
-    with pytest.raises(KeyboardInterrupt):
-        _coverage(tmp_path, execution, test=_MULTI_RUN)
-    assert len(execution.runs) == 1
+
+    def crash(boundary):
+        if boundary == "before:summary_replace":
+            raise OSError("injected crash before:summary_replace")
+
+    if interruption == "collection":
+        execution = _InterruptedAfterFirstRun()
+        with pytest.raises(KeyboardInterrupt):
+            _coverage(tmp_path, execution, test=_MULTI_RUN)
+        assert len(execution.runs) == 1
+    else:
+        execution = NativeExecution()
+        crashed = _coverage(tmp_path, execution, checkpoint=crash, test=_MULTI_RUN)
+        assert crashed.exit_code == 2 and len(execution.runs) == 5
     manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
     frozen = manifest.read_bytes()
     names = [run["name"] for run in _recorded_runs(manifest)]
     assert names[:2] == ["reset+short@1", "reset+soak@1"] and len(set(names)) == 5
     _forbid_resolution(monkeypatch)
 
-    resumed = _coverage(tmp_path, resume_from=manifest)
+    refused = _coverage(tmp_path, resume_from=manifest)
 
-    assert resumed.exit_code == 2, resumed.outcome.report_text
+    assert refused.exit_code == 2, refused.outcome.report_text
     assert manifest.read_bytes() == frozen
     command = next(
         line.strip()
-        for line in resumed.outcome.report_text.splitlines()
+        for line in refused.outcome.report_text.splitlines()
         if line.strip().startswith("booley flow sim")
     )
     assert command == (
@@ -334,43 +344,3 @@ def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new
     assert json.dumps([test_run_document(run) for run in replayed], sort_keys=True) == (
         json.dumps(_recorded_runs(manifest), sort_keys=True)
     )
-
-
-def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identically(
-    tmp_path, monkeypatch
-):
-    """A collected record cut during publication resumes from its own manifest."""
-    _resumable_project(tmp_path, monkeypatch)
-    reports = tmp_path / "reports"
-    execution = NativeExecution()
-    armed = [True]
-
-    def crash(boundary):
-        if armed[0] and boundary == "before:summary_replace":
-            armed[0] = False
-            raise OSError("injected crash before:summary_replace")
-
-    interrupted = _coverage(tmp_path, execution, checkpoint=crash, test=_MULTI_RUN)
-    assert interrupted.exit_code == 2
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    frozen = manifest.read_bytes()
-    recorded = _recorded_runs(manifest)
-    names = [run["name"] for run in recorded]
-    launched = [request.test.run_name for request in execution.runs]
-    assert launched == names and len(names) == 5
-    _forbid_resolution(monkeypatch)
-
-    resumed = _coverage(tmp_path, execution, resume_from=manifest)
-
-    assert resumed.exit_code == 0, resumed.outcome.report_text
-    assert manifest.read_bytes() == frozen
-    # Nothing ran again, and every published record names the frozen Test Runs.
-    assert [request.test.run_name for request in execution.runs] == launched
-    rows = resumed.outcome.detail["records"]["sim_0"]["test_runs"]
-    assert [{key: row[key] for key in recorded[0]} for row in rows] == recorded
-    nested = json.loads(next(reports.rglob("coverage-record/coverage.json")).read_text())
-    assert [(run["test_run"], run["fingerprint"]) for run in nested["tests"]["runs"]] == [
-        (run["name"], run["fingerprint"]) for run in recorded
-    ]
-    projection = json.loads((reports / "sim/1/targets/sim_0/simulation.json").read_text())
-    assert [row["name"] for row in projection["test_runs"]] == names

@@ -5,7 +5,8 @@ Installed runtimes and the Sandbox cannot rely on a repository checkout, so the
 docs listed in :data:`SHIPPED_DOCS` are rendered, flat, to ``src/booley/data/docs/``
 (``/booley-docs/`` inside the Sandbox image). That directory is Git-ignored build
 output: never commit or edit it. Every wheel and image builder renders it through
-``booley.runtime.build_stamp.write_build_stamp`` before it packs anything.
+``booley.runtime.build_stamp.write_build_stamp`` before it packs anything. The same
+step copies the root ``CHANGELOG.md`` byte for byte to :data:`PACKAGED_CHANGELOG_RELATIVE_PATH`.
 
 This module is stdlib only (plus the stdlib-only ``booley.runtime.docs_links``) so
 ``build.sh`` can run the render step with nothing but ``PYTHONPATH=src``. The
@@ -89,6 +90,11 @@ _SLUG_TO_FILE = {doc.slug: doc.file for doc in USER_DOCS}
 _GITHUB_BLOB = re.compile(r"^/boldaxolotl/booley/blob/[^/]+/(?P<path>.+)$", re.IGNORECASE)
 _FENCE = re.compile(r"^ *(```+|~~~+)")
 _REMEDY = "add the target to SHIPPED_DOCS or PLAIN_TEXT_TARGETS in booley/runtime/packaged_docs.py"
+
+
+CHANGELOG_SOURCE = "CHANGELOG.md"
+# Where ``booley.runtime.paths.changelog_path`` finds the copy; copied without link rewriting.
+PACKAGED_CHANGELOG_RELATIVE_PATH = "src/booley/data/refs/CHANGELOG.md"
 
 
 class MissingShippedDocError(ValueError):
@@ -370,6 +376,16 @@ def write_packaged_docs(root: Path) -> list[str]:
                 path.unlink()
             changed.append(path.name)
     return changed
+
+
+def write_packaged_changelog(root: Path) -> None:
+    """Copy ``CHANGELOG.md`` byte for byte to its packaged path; raise if it is absent."""
+    source = root / CHANGELOG_SOURCE
+    if not source.is_file():
+        raise MissingShippedDocError(f"shipped doc source is missing: {CHANGELOG_SOURCE}")
+    target = root / PACKAGED_CHANGELOG_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(target, source.read_bytes())
 
 
 def atomic_write(path: Path, content: bytes) -> None:

@@ -175,7 +175,6 @@ _RETIRED_HINT = "fix is the retired-table hint from a constant mapping, looked u
 _OWNER_RECORD = "forwards an owner record's message and fix, built where the owner constructs it"
 _MODEL_PROBE = "forwards a model probe's message and fix, built where the probe runs"
 _BOOTSTRAP_FIX = "fix is BootstrapFinding.doctor_fix, built at runtime by the bootstrap owner"
-_CONFIG_ISSUE = "forwards a config issue's message and fix from its owner"
 _DISCOVERY_ERROR = "fix is the first reported discovery error, built at runtime"
 _RUNTIME_FIX = "the fix is computed at runtime, so the scan cannot read it"
 _PIN_ERROR = "message is a BooleyDirPinError detail and its remedy comes from the error"
@@ -190,7 +189,6 @@ _UNRESOLVED: dict[str, str] = {
     'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
     'fail - runtime/bundled_extensions.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
-    'fail - audit/flow_schema.py::_flow_shape_findings "message"': _RUNTIME_TUPLE,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_features_table "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_interactive_table "message"': _EXCEPTION_TEXT,
@@ -210,7 +208,6 @@ _UNRESOLVED: dict[str, str] = {
     'fail - harness/host_diagnostics.py::_add_environment "finding.message"': _OWNER_RECORD,
     'fail - harness/host_diagnostics.py::_inspect_host_installation "str(exc)"': _EXCEPTION_TEXT,
     'fail - harness/setup/readiness.py::_add_config_audit "finding.message"': _OWNER_RECORD,
-    'fail - harness/setup/readiness.py::_validate_configs_toml "issue.message"': _CONFIG_ISSUE,
     'fail - mcp/server_inspection.py::_grade_payload "MCP tool discovery reported"': _DISCOVERY_ERROR,
     'fail - runtime/inspection.py::_check_issued_license_relay "issued License Profile lacks an immutabl"': _RUNTIME_FIX,
     'fail - runtime/inspection.py::_check_issued_session_runtime "Sandbox host issuance is invalid:"': _RUNTIME_FIX,

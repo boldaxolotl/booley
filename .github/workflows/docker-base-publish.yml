@@ -129,6 +129,7 @@ jobs:
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
+          bash .github/scripts/retry.sh docker pull "${BASE_IMAGE}"
           python .github/scripts/docker_base_contract.py --repo . \
             --resolver remote --resolve-image "${BASE_IMAGE}"
           docker run --rm "${BASE_IMAGE}" python -c \
@@ -145,7 +146,6 @@ jobs:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           mkdir -p "${RUNNER_TEMP}/base-package-inventory"
-          docker pull "${BASE_IMAGE}"
           docker run --rm --network none --entrypoint cat "${BASE_IMAGE}" /usr/local/share/booley/base-package-inventory.json \
             > "${RUNNER_TEMP}/base-package-inventory/base-package-inventory.json"
 

@@ -216,6 +216,9 @@ The page shows the running and queued Jobs, and the finished ones with a link
 to each report. A `booley flow` or `booley specialist` run you type in a
 container terminal is a Standalone Job, owned by `you`.
 
+Each Job has a short handle that carries its kind, as in `J-SIM25`, `J-SYN34`,
+`J-MEAS3` for a `booley measure` run or `J-MUT7` for a Mutation Flow run.
+
 ### Several agents at once
 
 Agents that share a checkout overwrite each other's edits. Start each parallel

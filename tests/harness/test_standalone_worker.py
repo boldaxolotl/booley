@@ -25,6 +25,7 @@ from booley.harness.standalone_job import (
     standalone_request_path,
 )
 from booley.runtime import detached_job, job_records, job_slots
+from booley.runtime.pid import DEAD, ZOMBIE, ProcessIdentity, observe_process
 from booley.runtime.timefmt import utc_now_rfc3339
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
@@ -131,11 +132,39 @@ class StubSpecialist(Specialist):
 """
 )
 
+# Runs as the detached worker: record each heartbeat instead of writing the real
+# ``/tmp`` file, and list the threads that are left once ``main`` has unwound.
+WORKER = """
+import os, signal, sys, threading
+from booley.harness import standalone_worker as worker
+from booley.runtime import heartbeat
+
+log = os.environ["HEARTBEAT_LOG"]
+
+def touch():
+    with open(log, "a", encoding="utf-8") as stream:
+        stream.write("beat\\n")
+
+heartbeat.touch_reaper_heartbeat = touch  # boundary: the heartbeat file the idle reaper reads
+worker._JOB_HEARTBEAT_SECONDS = 0.02  # no public setting, and 10 s is too slow here
+signal.signal(signal.SIGINT, signal.default_int_handler)  # even if the test runner ignores it
+try:
+    raise SystemExit(worker.main(sys.argv[1:]))
+finally:
+    names = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
+    with open(log + ".threads", "w", encoding="utf-8") as stream:
+        stream.write("\\n".join(names))
+"""
+
 # Runs in the submitter: submit, report the run id, wait for the stub's marker, then exit.
 SUBMITTER = f"""
 import json, sys, time
 from pathlib import Path
 from booley.harness.standalone_worker import StandaloneRequest, submit
+from booley.runtime import detached_job
+
+# No public entry point: the worker argv is fixed, and the recorder must precede the run.
+detached_job.worker_command = lambda *args: [sys.executable, "-c", {WORKER!r}, *args]
 
 booley_dir, request, marker = Path(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3]
 run_id = submit(
@@ -154,6 +183,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A Project whose Booley Directory has one Flow, one Specialist and one memory slot."""
     for name in ("BOOLEY_DIR", "BOOLEY_SLOTS_DIR", *SESSION_ENV):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HEARTBEAT_LOG", str(tmp_path / "heartbeats"))
     monkeypatch.delenv("_BOOLEY_CLI_INVOCATION_ORIGIN", raising=False)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     root = tmp_path / "proj"
@@ -197,6 +227,30 @@ def poll(condition: Callable[[], object], what: str) -> None:
     while not condition():
         assert time.monotonic() < deadline, f"timed out waiting for {what}"
         time.sleep(0.02)
+
+
+def heartbeats(project: Path) -> int:
+    """Heartbeats the worker has recorded so far."""
+    log = project.parent / "heartbeats"
+    return len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
+
+
+def assert_heartbeat_refreshes(project: Path) -> None:
+    """Two more beats: the periodic refresh, not only the touch at start."""
+    seen = heartbeats(project)
+    poll(lambda: heartbeats(project) >= seen + 2, "the Job to refresh its heartbeat")
+
+
+def wait_for_worker_exit(record: job_records.JobRecord) -> None:
+    identity = ProcessIdentity.from_payload(record.process_identity)
+    assert identity is not None
+    poll(lambda: observe_process(identity).state in {DEAD, ZOMBIE}, "the worker to exit")
+
+
+def threads_left(project: Path, record: job_records.JobRecord) -> list[str]:
+    """Threads still alive when the worker's ``main`` unwound."""
+    wait_for_worker_exit(record)  # the record is written before ``main`` returns
+    return (project.parent / "heartbeats.threads").read_text(encoding="utf-8").splitlines()
 
 
 def submit_and_exit(
@@ -274,6 +328,7 @@ def test_flow_outlives_its_submitter_without_its_session_identity(
     assert running is not None and running.status == job_records.STATUS_RUNNING
     assert running.pid is not None and running.pid != os.getpid()
     assert "flow output line" in job_log(project, run_id)
+    assert_heartbeat_refreshes(project)
 
     (ctl / "release").write_text("1", encoding="utf-8")
     final = terminal_record(project, run_id)
@@ -288,6 +343,7 @@ def test_flow_outlives_its_submitter_without_its_session_identity(
     assert final.client is None
     assert "BOOLEY_RELEASE_TOKEN" not in worker_env
     assert not list((booley_dir_of(project) / ".runtime").rglob("release-tokens"))
+    assert "reaper-heartbeat" not in threads_left(project, final)
 
 
 # Sandbox hand-off variables a worker inherits; the tests set only what they assert.
@@ -330,6 +386,7 @@ def test_specialist_job_survives_its_submitter_with_worktree_settings(
     assert (ctl / "survived").exists()
     # An unclassed Specialist holds no slot; the record alone must show it running.
     assert dashboard_states(project, run_id) == ["running"]
+    assert_heartbeat_refreshes(project)
     (ctl / "release").write_text("1", encoding="utf-8")
     final = terminal_record(project, run_id)
     assert (final.status, final.exit_code) == ("done", 0), job_log(project, run_id)
@@ -385,6 +442,34 @@ def test_start_failure_leaves_failed_record(
     assert final.ended_at
     assert reason in job_log(project, run_id)
     assert dashboard_states(project, run_id) == ["failed"]
+    assert heartbeats(project) >= 1
+    assert "reaper-heartbeat" not in threads_left(project, final)
+
+
+@linux_only
+@pytest.mark.parametrize(
+    ("signum", "exit_code"),
+    [(signal.SIGTERM, 143), (signal.SIGINT, 130)],
+    ids=["sigterm", "ctrl-c"],
+)
+def test_cancelled_job_stops_refreshing_its_heartbeat(
+    project: Path, ctl: Path, signum: signal.Signals, exit_code: int
+) -> None:
+    run_id = submit_and_exit(
+        project, "flow", "stub_flow", ("--ctl", str(ctl)), wait_for=ctl / "started"
+    )
+    assert_heartbeat_refreshes(project)
+    running = job_records.read_record(run_id, jobs_root_of(project))
+    assert running is not None and running.pid is not None
+
+    os.kill(running.pid, signum)
+    final = terminal_record(project, run_id)
+
+    assert (final.status, final.exit_code) == ("cancelled", exit_code)
+    if signum == signal.SIGTERM:  # dies by the re-sent signal, and its threads with it
+        wait_for_worker_exit(final)
+    else:  # Ctrl-C unwinds, so the refresher must have been joined
+        assert "reaper-heartbeat" not in threads_left(project, final)
 
 
 def test_worker_exit_before_initialization_is_failed(project: Path) -> None:
@@ -478,6 +563,7 @@ def test_worker_job_queues_in_the_shell_slot_store(project: Path, ctl: Path) -> 
         (ctl / "release").write_text("1", encoding="utf-8")
         run_id = submit_and_exit(project, "flow", "stub_flow", ("--ctl", str(ctl)))
         poll(lambda: dashboard_states(project, run_id) == ["queued"], "the worker Job to queue")
+        assert_heartbeat_refreshes(project)
         assert not (ctl / "started").exists()
     finally:
         for holder in holders:

@@ -103,7 +103,7 @@ def test_init_repins_only_with_flag(
 
 
 def test_interactive_prompt_decides_the_repin(
-    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_sandbox_attachment: object
 ) -> None:
     _reconcile(project)
     _retarget(project, _new_target(tmp_path, "ext-b"))
@@ -121,7 +121,7 @@ def test_interactive_prompt_decides_the_repin(
 
 
 def test_flag_replaces_an_unreadable_pin_and_prompt_decline_is_reported(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, fake_sandbox_attachment: object
 ) -> None:
     _reconcile(project)
     _pin_file(project).write_text("{not json", encoding="utf-8")

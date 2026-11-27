@@ -1,4 +1,7 @@
-"""Whole-run helpers for the Doctor tests that check one section of its report."""
+"""Whole-run helpers for the Doctor tests that check one section of its report.
+
+``enter_sandbox`` fakes the Sandbox venue check and the Sandbox image contents.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,8 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding
 from booley.harness import doctor, web_isolation
-from booley.runtime import runtime_context
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def run_doctor(root: Path) -> doctor.DoctorRunResult:
@@ -18,12 +22,12 @@ def run_doctor(root: Path) -> doctor.DoctorRunResult:
     return doctor.run_doctor_result(args, root, record_clean=False)
 
 
-def enter_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+def enter_sandbox(
+    monkeypatch: pytest.MonkeyPatch, location: RuntimeLocation = RuntimeLocation.ISSUED_SANDBOX
+) -> None:
     """Make the host fixtures' Doctor run inside the Sandbox, healthy apart from the test."""
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    # The host fixtures pin this false; on a CI runner `/.dockerenv` would decide.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    # The next two stand in for files the Sandbox Image installs, which a test host lacks.
+    place(monkeypatch, location)
+    # The next line stands in for a file the Sandbox Image installs, which a test host lacks.
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
 
 

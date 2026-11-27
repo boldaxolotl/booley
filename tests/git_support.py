@@ -1,4 +1,7 @@
-"""Plain Git and Stealth fixtures shared by tests that build real repositories."""
+"""Plain Git and Stealth fixtures shared by tests that build real repositories.
+
+``no_live_git_processes`` fakes the live Git process scan.
+"""
 
 from __future__ import annotations
 
@@ -74,3 +77,17 @@ def repository(path: Path) -> Path:
     git(path, "init", "-q", "-b", "main")
     git(path, "config", "core.autocrlf", "false")
     return path
+
+
+def commit_files(repo: Path, files: dict[str, str | None]) -> str:
+    """Write (or, for None, delete) *files*, commit everything and return the SHA."""
+    for name, text in files.items():
+        target = repo / name
+        if text is None:
+            target.unlink()
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(text.encode())
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "change")
+    return git(repo, "rev-parse", "HEAD")

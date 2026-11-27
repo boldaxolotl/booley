@@ -1,4 +1,9 @@
-"""Shared fixtures for infrastructure unit tests."""
+"""Shared fixtures for infrastructure unit tests.
+
+Stand-ins here: the terminal, the host memory, the Sandbox venue check, the native B-Wave
+binary, the Sandbox owner inventory, the Feature Flag registry and Project Root
+discovery (rows of docs/internals/TEST_FAKES.md).
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
-from tests.memory_budget_support import budget_of, pin_budget
+from tests.memory_budget_support import measure_or_fall_back, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
 
 if TYPE_CHECKING:
@@ -29,7 +34,9 @@ pytest_plugins = [
     "tests.timeout_evidence",
     "tests.timeout_headroom",
     "tests.sandbox_only",
+    "tests.os_specific",
     "tests.thread_leak_guard",
+    "tests.docker_cli_guard_plugin",
 ]
 
 
@@ -258,7 +265,7 @@ def require_symlinks(tmp_path: Path) -> None:
 # worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
 # (3x the slowest Windows CI duration, from the ``time`` values in the
 # ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
-# legs fail a passing test that uses more than 80% of its budget.
+# legs warn above 50% of the budget; the budget itself is the hard limit.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
@@ -602,6 +609,30 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
             pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 
 
+@pytest.fixture
+def pinned_project_root(tmp_path: Path) -> Path | None:
+    """The Project Root ``pin_project_root`` answers; override with None for real discovery."""
+    return tmp_path
+
+
+@pytest.fixture
+def pin_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_project_root: Path | None
+) -> None:
+    """Run in tmp_path as the Booley Directory with Project Root discovery pinned."""
+    from booley.runtime import shared_infra
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    if pinned_project_root is not None:
+        # No public input pins the root: a synthetic tmp_path proves no checkout ownership.
+        monkeypatch.setattr(
+            shared_infra, "resolve_project_root", lambda fallback_dir=None: pinned_project_root
+        )
+    # Private seam: the project-config cache is a module global with no public reset.
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_host_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve Booley's host config directory inside each test's tmp_path (#3837).
@@ -728,25 +759,8 @@ def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
-
-    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
-    every Job would run alone with an extra "Memory Budget unavailable" note in
-    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
-    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
-    """
-    from booley.flows import memory_admission
-    from booley.runtime import memory_budget
-
-    real_compute = memory_budget.compute_memory_budget
-
-    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
-        try:
-            return real_compute(**kwargs)
-        except OSError:
-            return budget_of(64 * 1024**3)
-
-    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``."""
+    measure_or_fall_back(monkeypatch)
 
 
 @pytest.fixture
@@ -878,33 +892,23 @@ def fake_sandbox_attachment(
     return attach
 
 
-def _point_mountinfo_at(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, text: str
-) -> None:
-    from booley.runtime import runtime_context
-
-    mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
-    mountinfo.write_bytes(text.encode())
-    # private: no public seam points the container probe at a fixture mountinfo file.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
-
-
 @pytest.fixture(autouse=True)
-def _issued_sandbox_mounts(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _issued_sandbox_mounts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
 
     The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
     issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
     """
-    issued = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, issued)
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
 
 
 @pytest.fixture
-def hand_written_sandbox(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def hand_written_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, "")
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

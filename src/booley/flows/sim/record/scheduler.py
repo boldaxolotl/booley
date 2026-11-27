@@ -74,6 +74,10 @@ class _TurnHold:
             self._lock.release()
 
 
+def _take_turn(lock: threading.Lock, seconds: float) -> bool:
+    return lock.acquire(timeout=seconds)
+
+
 class _StartTurn:
     """Lets one lane at a time take the next item and get its claim admitted.
 
@@ -81,9 +85,12 @@ class _StartTurn:
     claim waiting in the slot store at any time.
     """
 
-    def __init__(self, stop: threading.Event) -> None:
+    def __init__(
+        self, stop: threading.Event, take: Callable[[threading.Lock, float], bool]
+    ) -> None:
         self._lock = threading.Lock()
         self._stop = stop
+        self._take = take
 
     def take(self) -> _TurnHold | None:
         """Wait for the turn; ``None`` once the record stops.
@@ -91,7 +98,7 @@ class _StartTurn:
         Waiters check only the stop event, which the supervisor sets within moments of
         any shutdown: a full cancellation check would rescan the slot store per lane.
         """
-        while not self._lock.acquire(timeout=_TURN_POLL_SECONDS):
+        while not self._take(self._lock, _TURN_POLL_SECONDS):
             if self._stop.is_set():
                 return None
         return _TurnHold(self._lock)
@@ -115,6 +122,11 @@ class BoundedSimulationRecordScheduler:
 
     An item whose wait for the Target slot lease times out also ends alone and
     without a result, so a later resume runs it; its lane takes the next item.
+
+    *clock* times the shutdown deadline, *event* makes the lanes-exited event the
+    supervisor waits on, *take_turn* waits for the start turn and *condition* makes the
+    condition a lane waits on while another lane runs its collision key: the lane step
+    machine steps all four.
     """
 
     def __init__(
@@ -124,20 +136,26 @@ class BoundedSimulationRecordScheduler:
         allocate: Callable[[Mapping[str, object]], ScheduledAttempt],
         execute: Callable[[ScheduledAttempt, str | None], bool | None],
         prepare_child: Callable[[ScheduledAttempt, str], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        event: Callable[[], threading.Event] = threading.Event,
+        take_turn: Callable[[threading.Lock, float], bool] = _take_turn,
+        condition: Callable[[], threading.Condition] = threading.Condition,
     ) -> None:
         self._capacity = capacity
         self._allocate = allocate
         self._execute = execute
         self._prepare_child = prepare_child or (lambda _attempt, _child: None)
+        self._clock = clock
+        self._take_turn = take_turn
         self._stop = threading.Event()
         self._errors: queue.SimpleQueue[BaseException] = queue.SimpleQueue()
         # A lost child lease or a lease wait timeout interrupts one lane's item without stopping the record.
         self._interruptions: queue.SimpleQueue[RuntimeError] = queue.SimpleQueue()
         self._lane_gate = threading.Lock()
         self._live = 0
-        self._lanes_exited = threading.Event()
+        self._lanes_exited = event()
         self._allocation_gate = threading.Lock()
-        self._collision_condition = threading.Condition()
+        self._collision_condition = condition()
         self._active_collisions: set[str] = set()
         # Terminal progress is lane-scoped only while items really overlap.
         self._lanes_concurrent = False
@@ -161,7 +179,9 @@ class BoundedSimulationRecordScheduler:
             else 0
         )
         self._lanes_concurrent = child_count > 0
-        self._turn = _StartTurn(self._stop) if self._capacity.items_admitted else None
+        self._turn = (
+            _StartTurn(self._stop, self._take_turn) if self._capacity.items_admitted else None
+        )
         self._lanes_exited.clear()
         with self._capacity.outer_permit():
             lanes = self._start_lanes(ready, child_count)
@@ -234,8 +254,8 @@ class BoundedSimulationRecordScheduler:
             if deadline is None and (self._stop.is_set() or self._capacity.shutdown_requested):
                 self._stop.set()
                 self._capacity.cancel_waiters()
-                deadline = time.monotonic() + self._capacity.shutdown_timeout_seconds
-            if deadline is not None and time.monotonic() >= deadline:
+                deadline = self._clock() + self._capacity.shutdown_timeout_seconds
+            if deadline is not None and self._clock() >= deadline:
                 if exited.is_set():
                     # Every lane exited during the last wait: a clean shutdown.
                     return

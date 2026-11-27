@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -11,7 +12,7 @@ import pytest
 
 from booley.flows.sim.execution.contract import SimulationTestOutcome
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow
-from booley.flows.sim.record import serial_execution
+from booley.flows.sim.record import planning, serial_execution
 from booley.flows.sim.record.codec import (
     MANIFEST_SCHEMA,
     SimulationRecordIntegrityError,
@@ -28,7 +29,6 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import (
-    compare_manifests,
     finalize_manifest,
     manifest_digest,
 )
@@ -38,7 +38,6 @@ from booley.flows.sim.record.resume import (
     validate_resume_manifest,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.flows.sim.record_files import document_digest
 from booley.flows.test_runs import build_test_run, test_run_document
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
@@ -726,417 +725,117 @@ def _finalize_diagnostic_document(document):
     return finalize_manifest(document)
 
 
-def _project_diagnostics(old, new):
-    from booley.flows.sim.record.planning import (
-        SimulationRecordWorkloadMismatchError,
-        verify_workload,
-    )
+def _grow_source(document):
+    document["workload"]["source_recipe"]["sources"][0]["bytes"] = 2
+    document["build_variants"][0]["source_closure"][0]["bytes"] = 2
 
+
+_SOURCE_AREAS = ("Target recipe", "source closures", "work items")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "mutate", "areas"),
+    [
+        pytest.param(
+            {"sources": [_diagnostic_source("a.sv")]}, _grow_source, _SOURCE_AREAS, id="source"
+        ),
+        pytest.param(
+            {"names": ["reset"]},
+            lambda d: d["required_suite"].update(names=["reset", "wrap"]),
+            ("test suite",),
+            id="suite",
+        ),
+        pytest.param(
+            {},
+            lambda d: d["workload"]["run_cwd"].update(configured="other"),
+            ("other workload settings",),
+            id="run-cwd",
+        ),
+        pytest.param(
+            {},
+            lambda d: d.update(
+                planning_disclosures=[
+                    {
+                        "planner": "setup",
+                        "scratch_inputs": [],
+                        "generated_files": [],
+                        "tool_provenance": {
+                            "kind": "fusesoc",
+                            "version": "1",
+                            "contract_version": "1",
+                        },
+                        "cleanup": {"removed": True},
+                    }
+                ]
+            ),
+            ("planning disclosures",),
+            id="disclosure",
+        ),
+        pytest.param(
+            {},
+            lambda d: d.update(prerequisites=[_prerequisite_entry()]),
+            ("prerequisites",),
+            id="prerequisite",
+        ),
+        pytest.param(
+            {},
+            lambda d: d["work_items"][0].update(arguments=["+extra"]),
+            ("work items",),
+            id="arguments",
+        ),
+        pytest.param(
+            {},
+            lambda d: d["target"].update(revision="changed"),
+            ("Target recipe", "work items"),
+            id="revision",
+        ),
+        # False == 0, so only a digest comparison sees the changed parameter type.
+        pytest.param(
+            {"parameters": [{"name": "N", "value": False}]},
+            lambda d: d["workload"]["source_recipe"]["parameters"][0].update(value=0),
+            _SOURCE_AREAS,
+            id="typed-parameter",
+        ),
+        pytest.param({}, lambda d: None, (), id="unchanged"),
+        # No named area's members differ, so the catch-all must still name something.
+        pytest.param(
+            {},
+            lambda d: d["build_variants"][0].update(sharing_eligible=False),
+            ("other workload settings",),
+            id="sharing",
+        ),
+    ],
+)
+def test_workload_mismatch_names_each_changed_area(kwargs, mutate, areas):
+    old = _diagnostic_document(**kwargs)
+    new = copy.deepcopy(old)
+    mutate(new)
     left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
-    raw = compare_manifests(left, right)
-    with pytest.raises(SimulationRecordWorkloadMismatchError) as exc:
-        verify_workload(left, right)
-    assert exc.value.diagnostic.mismatches == raw
-    assert exc.value.diagnostic.detail["mismatches"] == [item.message for item in raw]
-    return exc.value.diagnostic
+    if areas:
+        with pytest.raises(planning.SimulationRecordWorkloadMismatchError) as exc:
+            planning.verify_workload(left, right)
+        assert exc.value.diagnostic.areas == areas
+    else:
+        planning.verify_workload(left, right)
+    assert planning.workload_diagnostic(left, right).areas == areas
 
 
 def test_manifest_with_recorded_flow_option_defines_still_decodes_and_compares():
-    """A Simulation Record stored with `source_recipe.defines` stays readable; resume names the cause."""
-    import copy
-
+    """A Simulation Record stored with `source_recipe.defines` stays readable; resume refuses."""
     legacy_doc = _diagnostic_document()
     legacy_doc["workload"]["source_recipe"]["defines"] = ["LEGACY=1"]
-    current_doc = _diagnostic_document()
 
-    stored = _finalize_diagnostic_document(copy.deepcopy(legacy_doc))
+    stored = _finalize_diagnostic_document(legacy_doc)
     encoded = encode_simulation_record_manifest(stored)
     assert encode_simulation_record_manifest(decode_simulation_record_manifest(encoded)) == (
         encoded
     )
-    assert compare_manifests(stored, stored) == ()
+    planning.verify_workload(stored, stored)
 
-    diagnostic = _project_diagnostics(legacy_doc, current_doc)
-    assert diagnostic.mismatch_summary == (
-        "recorded flow_options.defines is no longer recorded (no Flow applies it); "
-        "re-plan the Simulation Record",
-    )
-
-
-def _sources(*paths: str, size: int = 1) -> list[dict[str, object]]:
-    return [_diagnostic_source(path, size=size) for path in paths]
-
-
-@pytest.mark.parametrize(
-    ("old_sources", "new_sources", "lines"),
-    [
-        (_sources("a.sv"), _sources("head.sv", "a.sv"), ("source added: head.sv",)),
-        (_sources("a.sv", "b.sv"), _sources("b.sv"), ("source removed: a.sv",)),
-        (
-            _sources("a.sv"),
-            _sources("b.sv"),
-            ("source removed: a.sv", "source added: b.sv"),
-        ),
-        (_sources("a.sv", "b.sv"), _sources("b.sv", "a.sv"), ("source order changed",)),
-        # Control characters in a path are escaped in the label.
-        (_sources("a\n.sv"), _sources("a\n.sv", size=2), ('source changed: "a\\n.sv"',)),
-    ],
-)
-def test_source_diagnostics_align_paths_across_positional_diff(old_sources, new_sources, lines):
-    old = _diagnostic_document(sources=old_sources)
-    new = _diagnostic_document(sources=new_sources)
-    diagnostic = _project_diagnostics(old, new)
-    assert tuple(diagnostic.mismatch_summary) == lines
-    assert diagnostic.derived_fingerprint_count == 5
-
-
-@pytest.mark.parametrize("duplicate_digest", ["a", "b"])
-def test_duplicate_source_paths_preserve_second_entry_evidence(duplicate_digest):
-    old = _diagnostic_document(
-        sources=[_diagnostic_source("a.sv"), _diagnostic_source("a.sv", digest=duplicate_digest)]
-    )
-    new = json.loads(json.dumps(old))
-    new["workload"]["source_recipe"]["sources"][1]["bytes"] = 2
-    new["build_variants"][0]["source_closure"][1]["bytes"] = 2
-    diagnostic = _project_diagnostics(old, new)
-    assert "source paths ambiguous: duplicate source path" in diagnostic.mismatch_summary
-    assert any("/sources/1/bytes" in line for line in diagnostic.mismatch_summary)
-    assert any("/source_closure/1/bytes" in line for line in diagnostic.mismatch_summary)
-    assert diagnostic.derived_fingerprint_count == 5
-
-
-@pytest.mark.parametrize(
-    ("old_parameters", "new_parameters"),
-    [
-        ([{"name": "N", "value": 1}, {"name": "N", "value": 2}], [{"name": "N", "value": 1}]),
-        ([{"name": {}, "value": 1}], [{"name": "N", "value": 1}]),
-    ],
-    ids=["duplicate-name", "non-string-name"],
-)
-def test_ambiguous_parameter_names_report_ambiguity_instead_of_crashing(
-    old_parameters, new_parameters
-):
-    old = _diagnostic_document(parameters=old_parameters)
-    new = _diagnostic_document(parameters=new_parameters)
-    diagnostic = _project_diagnostics(old, new)
-    assert (
-        "parameter names ambiguous: duplicate or non-string parameter name"
-        in diagnostic.mismatch_summary
-    )
-
-
-def test_conflicting_source_replica_remains_visible():
-    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
-    new = json.loads(json.dumps(old))
-    new["workload"]["source_recipe"]["sources"][0]["bytes"] = 2
-    new["build_variants"][0]["source_closure"][0]["bytes"] = 3
-    diagnostic = _project_diagnostics(old, new)
-    assert "source changed: a.sv" in diagnostic.mismatch_summary
-    assert any("/source_closure/0/bytes" in line for line in diagnostic.mismatch_summary)
-
-
-@pytest.mark.parametrize(
-    ("old_names", "new_names", "line"),
-    [
-        (("a", "b"), ("b", "c"), "suite changed: +c -a"),
-        (("a", "b"), ("b", "a"), "suite order changed"),
-    ],
-)
-def test_suite_names_are_manifest_projection_cases(old_names, new_names, line):
-    diagnostic = _project_diagnostics(
-        _diagnostic_document(names=old_names), _diagnostic_document(names=new_names)
-    )
-    assert diagnostic.mismatch_summary == (line,)
-
-
-@pytest.mark.parametrize(
-    ("old_parameters", "new_parameters", "line"),
-    [
-        (
-            ({"name": "a/~b", "value": False},),
-            ({"name": "a/~b", "value": "false"},),
-            'parameter a/~b: false → "false"',
-        ),
-        ((), ({"name": "N", "value": "<absent>"},), 'parameter N: <absent> → "<absent>"'),
-        ((), ({"name": "N", "value": 2},), "parameter N: <absent> → 2"),
-        (({"name": "N", "value": 2},), (), "parameter N: 2 → <absent>"),
-        (
-            ({"name": "shape", "value": {"x": [1, False]}},),
-            ({"name": "shape", "value": {"x": [2, True]}},),
-            'parameter shape: {"x":[1,false]} → {"x":[2,true]}',
-        ),
-        (
-            ({"name": "A", "value": 1}, {"name": "B", "value": 2}),
-            ({"name": "B", "value": 2}, {"name": "A", "value": 1}),
-            "parameter order changed",
-        ),
-    ],
-)
-def test_parameter_diagnostics_preserve_values_and_absence(old_parameters, new_parameters, line):
-    diagnostic = _project_diagnostics(
-        _diagnostic_document(parameters=old_parameters),
-        _diagnostic_document(parameters=new_parameters),
-    )
-    assert diagnostic.mismatch_summary == (line,)
-
-
-def test_opaque_command_model_digest_is_a_named_root_cause():
-    old, new = _diagnostic_document(), _diagnostic_document()
-    new["workload"]["build_recipe"]["command_model_sha256"] = "sha256:" + "b" * 64
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ("build command model changed",)
-    assert diagnostic.derived_fingerprint_count == 5
-
-
-def test_fingerprint_only_report_retains_details():
-    from booley.flows.sim.record.planning import WorkloadDiagnostic, WorkloadMismatch
-
-    finding = WorkloadMismatch("/build_variants/0/recipe_sha256", "sha256:old", "sha256:new")
-    diagnostic = WorkloadDiagnostic((finding,), (), 1)
-    assert "no root cause identified" in diagnostic.report()
-    assert "1 derived fingerprints differ" in diagnostic.report()
-    assert finding.message in diagnostic.report(verbose=True)
-
-
-def test_target_revision_fallback_collapses_verified_replicas():
-    old, new = _diagnostic_document(), _diagnostic_document()
-    new["target"]["revision"] = "changed"
-    diagnostic = _project_diagnostics(old, new)
-    assert len(diagnostic.mismatch_summary) == 1
-    assert "/target/revision" in diagnostic.mismatch_summary[0]
-    assert diagnostic.derived_fingerprint_count == 2
-
-
-def test_zero_mismatch_verification_remains_successful():
-    from booley.flows.sim.record.planning import project_workload_mismatches, verify_workload
-
-    manifest = finalize_manifest(_diagnostic_document())
-    verify_workload(manifest, manifest)
-    diagnostic = project_workload_mismatches(manifest, manifest)
-    assert diagnostic.detail == {
-        "mismatches": [],
-        "mismatch_summary": [],
-        "derived_fingerprint_count": 0,
-    }
-
-
-@pytest.mark.parametrize("region", ["planning_disclosures", "prerequisites"])
-def test_independent_container_additions_preserve_raw_fallback(region):
-    old, new = _diagnostic_document(), _diagnostic_document()
-    if region == "planning_disclosures":
-        new[region] = [
-            {
-                "planner": "setup",
-                "scratch_inputs": [],
-                "generated_files": [],
-                "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
-                "cleanup": {"removed": True},
-            }
-        ]
-    else:
-        new[region] = [_prerequisite_entry()]
-    diagnostic = _project_diagnostics(old, new)
-    assert len(diagnostic.mismatch_summary) == 1
-    assert (
-        diagnostic.mismatch_summary[0] == "workload changed: " + diagnostic.mismatches[0].message
-    )
-    assert f"/{region}/0" in diagnostic.mismatch_summary[0]
-    assert diagnostic.derived_fingerprint_count == 0
-
-
-@pytest.mark.parametrize("field", ["sharing_eligible", "eda_version", "run_cwd"])
-def test_unrecognized_identity_changes_remain_visible(field):
-    old, new = _diagnostic_document(), _diagnostic_document()
-    if field == "sharing_eligible":
-        new["build_variants"][0][field] = False
-        pointer = "/build_variants/0/sharing_eligible"
-    elif field == "eda_version":
-        new["workload"]["eda"]["version"] = "13"
-        pointer = "/workload/eda/version"
-    else:
-        new["workload"]["run_cwd"]["configured"] = "other"
-        pointer = "/workload/run_cwd/configured"
-    diagnostic = _project_diagnostics(old, new)
-    assert any(pointer in line for line in diagnostic.mismatch_summary)
-
-
-def _runtime_inputs(*pairs: tuple[str, str]) -> list[dict[str, str]]:
-    """Runtime input declarations for ``(destination, source_artifact_path)`` pairs."""
-    declarations = []
-    for destination, source in pairs:
-        declaration = {"destination": destination, "source_artifact_path": source}
-        declarations.append({**declaration, "declaration_id": document_digest(declaration)})
-    return declarations
-
-
-@pytest.mark.parametrize(
-    ("old_inputs", "new_inputs", "line", "derived_count"),
-    [
-        (
-            _runtime_inputs(("input/data.bin", "old/data.bin")),
-            _runtime_inputs(("input/data.bin", "new/data.bin")),
-            "runtime input changed: input/data.bin",
-            1,
-        ),
-        (
-            _runtime_inputs(("a", "a")),
-            _runtime_inputs(("head", "head"), ("a", "a")),
-            "runtime input added: head",
-            0,
-        ),
-        (
-            _runtime_inputs(("a", "a"), ("b", "b")),
-            _runtime_inputs(("b", "b")),
-            "runtime input removed: a",
-            0,
-        ),
-        (
-            _runtime_inputs(("a", "a"), ("b", "b")),
-            _runtime_inputs(("b", "b"), ("a", "a")),
-            "runtime input order changed",
-            0,
-        ),
-    ],
-)
-def test_runtime_declarations_are_aligned_by_destination(
-    old_inputs, new_inputs, line, derived_count
-):
-    old, new = _diagnostic_document(), _diagnostic_document()
-    old["workload"]["runtime_inputs"] = old_inputs
-    new["workload"]["runtime_inputs"] = new_inputs
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == (line,)
-    assert diagnostic.derived_fingerprint_count == derived_count
-
-
-def _change_source_size(document: dict[str, object]) -> None:
-    document["workload"]["source_recipe"]["sources"][0]["bytes"] = 2  # type: ignore[index]
-
-
-def _change_target_revision(document: dict[str, object]) -> None:
-    document["target"]["revision"] = "changed"  # type: ignore[index]
-
-
-@pytest.mark.parametrize(
-    ("mutate", "pointers", "detail"),
-    [
-        (
-            _change_source_size,
-            [
-                "/build_variants/0/build_variant_id",
-                "/build_variants/0/recipe_sha256",
-                "/build_variants/0/source_closure/0/bytes",
-                "/work_items/0/build_variant_id",
-                "/work_items/0/fingerprint_sha256",
-                "/work_items/0/work_item_id",
-                "/workload/source_recipe/sources/0/bytes",
-            ],
-            (
-                "/workload/source_recipe/sources/0/bytes",
-                1,
-                2,
-                "/workload/source_recipe/sources/0/bytes: manifest has 1, current workload has 2",
-            ),
-        ),
-        # A resume preview reports every place a changed revision is recorded.
-        (
-            _change_target_revision,
-            [
-                "/target/revision",
-                "/work_items/0/fingerprint_sha256",
-                "/work_items/0/revision",
-                "/work_items/0/target/revision",
-                "/work_items/0/work_item_id",
-            ],
-            (
-                "/work_items/0/target/revision",
-                "abc123",
-                "changed",
-                '/work_items/0/target/revision: manifest has "abc123", current workload has "changed"',
-            ),
-        ),
-    ],
-    ids=["source-bytes", "target-revision"],
-)
-def test_raw_comparator_pointer_value_contract_is_unchanged(mutate, pointers, detail):
-    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
-    new = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
-    mutate(new)
-    left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
-    raw = compare_manifests(left, right)
-    assert [item.pointer for item in raw] == pointers
-    pointer, expected, actual, message = detail
-    (finding,) = [item for item in raw if item.pointer == pointer]
-    assert (finding.expected, finding.actual) == (expected, actual)
-    assert finding.message == message
-
-
-def test_independent_work_item_arguments_remain_visible():
-    old, new = _diagnostic_document(), _diagnostic_document()
-    new["work_items"][0]["arguments"] = ["+extra"]
-    diagnostic = _project_diagnostics(old, new)
-    assert any("/work_items/0/arguments/0" in line for line in diagnostic.mismatch_summary)
-    assert diagnostic.derived_fingerprint_count == 2
-
-
-def test_diagnostic_projection_needs_no_path_read_bytes_or_text(monkeypatch):
-    from booley.flows.sim.record.planning import project_workload_mismatches
-
-    old = _diagnostic_document(sources=[_diagnostic_source("relative/a.sv")])
-    new = _diagnostic_document(sources=[_diagnostic_source("relative/a.sv", size=2)])
-    left, right = _finalize_diagnostic_document(old), _finalize_diagnostic_document(new)
-
-    def forbidden_read(*_args, **_kwargs):
-        pytest.fail("diagnostic projection must not read files")
-
-    monkeypatch.setattr(Path, "read_bytes", forbidden_read)
-    monkeypatch.setattr(Path, "read_text", forbidden_read)
-    diagnostic = project_workload_mismatches(left, right)
-    assert diagnostic.mismatch_summary == ("source changed: relative/a.sv",)
-
-
-@pytest.mark.parametrize(
-    ("old_value", "new_value", "line"),
-    [
-        (False, 0, "parameter N: false → 0"),
-        (True, 1, "parameter N: true → 1"),
-        (1, 1.0, "parameter N: 1 → 1.0"),
-        ([1], [True], "parameter N: [1] → [true]"),
-        ({"x": 0}, {"x": False}, 'parameter N: {"x":0} → {"x":false}'),
-    ],
-)
-def test_typed_json_parameter_causes_preserve_static_digest_raw_comparison(
-    old_value, new_value, line
-):
-    old = _diagnostic_document(parameters=[{"name": "N", "value": old_value}])
-    new = _diagnostic_document(parameters=[{"name": "N", "value": new_value}])
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == (line,)
-    assert diagnostic.derived_fingerprint_count == 5
-    assert not any(
-        item.pointer.startswith("/workload/source_recipe/parameters")
-        for item in diagnostic.mismatches
-    )
-
-
-def _prepared_disclosure(sources):
-    return {
-        "planner": "fusesoc_setup",
-        "scratch_inputs": [],
-        "generated_files": [{**source, "kind": "generated_input"} for source in sources],
-        "tool_provenance": {"kind": "fusesoc", "version": "1", "contract_version": "1"},
-        "cleanup": {"removed": True},
-    }
-
-
-def _prepared_diagnostic_pair():
-    old = _diagnostic_document(sources=[_diagnostic_source("a.sv")])
-    new = _diagnostic_document(sources=[_diagnostic_source("a.sv", size=2, digest="b")])
-    for document in (old, new):
-        document["planning_disclosures"] = [
-            _prepared_disclosure(document["workload"]["source_recipe"]["sources"])
-        ]
-    return old, new
+    current = _finalize_diagnostic_document(_diagnostic_document())
+    with pytest.raises(planning.SimulationRecordWorkloadMismatchError) as exc:
+        planning.verify_workload(stored, current)
+    assert exc.value.diagnostic.areas == _SOURCE_AREAS
 
 
 @pytest.mark.parametrize(
@@ -1150,86 +849,19 @@ def _prepared_diagnostic_pair():
     ids=lambda case: case["id"],
 )
 def test_prepared_manifest_pair_corpus(case):
-    from booley.flows.sim.record.planning import (
-        SimulationRecordWorkloadMismatchError,
-        project_workload_mismatches,
-        verify_workload,
-    )
-
     left, right = [
         decode_simulation_record_manifest(canonical_json_bytes(case[key]))
         for key in ("expected", "current")
     ]
-    raw = compare_manifests(left, right)
-    assert canonical_json_bytes(
-        [[item.pointer, item.expected, item.actual, item.message] for item in raw]
-    ) == canonical_json_bytes(case["raw"])
     assert [manifest_digest(left), manifest_digest(right)] == case["digests"]
-    diagnostic = project_workload_mismatches(left, right, raw)
-    assert project_workload_mismatches(left, right) == diagnostic
-    assert diagnostic.detail == case["detail"]
-    assert diagnostic.report() == case["report"]
-    assert diagnostic.report(verbose=True) == case["verbose_report"]
-    assert diagnostic.report(verbose=True) == diagnostic.report() + case["raw_verbose_suffix"]
+    diagnostic = planning.workload_diagnostic(left, right)
+    assert diagnostic.areas == tuple(case["areas"])
     if case["outcome"] == "accept":
-        verify_workload(left, right)
+        planning.verify_workload(left, right)
     else:
-        with pytest.raises(SimulationRecordWorkloadMismatchError) as exc:
-            verify_workload(left, right)
+        with pytest.raises(planning.SimulationRecordWorkloadMismatchError) as exc:
+            planning.verify_workload(left, right)
         assert exc.value.diagnostic == diagnostic
-
-
-def test_explicit_zero_findings_produces_no_typed_parameter_roots():
-    from booley.flows.sim.record.planning import project_workload_mismatches
-
-    old = _finalize_diagnostic_document(
-        _diagnostic_document(parameters=[{"name": "N", "value": False}])
-    )
-    new = _finalize_diagnostic_document(
-        _diagnostic_document(parameters=[{"name": "N", "value": 0}])
-    )
-    diagnostic = project_workload_mismatches(old, new, ())
-    assert diagnostic.mismatch_summary == ()
-    assert diagnostic.derived_fingerprint_count == 0
-
-
-def test_unrecognized_pointers_keep_every_raw_fallback_in_order():
-    from booley.flows.sim.record.planning import WorkloadMismatch, project_workload_mismatches
-
-    manifest = _finalize_diagnostic_document(_diagnostic_document())
-    derived = ("/build_variants/0/recipe_sha256",) * 2
-    unknown = ("/", "//child", "/required_suites", "/build_variants/01/recipe_sha256", "/x", "/x")
-    findings = tuple(WorkloadMismatch(pointer, "old", "new") for pointer in derived + unknown)
-    diagnostic = project_workload_mismatches(manifest, manifest, findings)
-    assert diagnostic.mismatch_summary == tuple(
-        f"workload changed: {item.message}" for item in findings[2:]
-    )
-    assert diagnostic.derived_fingerprint_count == 2
-
-
-def test_parameter_display_escapes_nested_controls_without_changing_raw_values():
-    old = _diagnostic_document(parameters=[{"name": "N", "value": {"x": ["safe"]}}])
-    controls = "\u0085\u202e\u2066\u2028\u2029"
-    new = _diagnostic_document(parameters=[{"name": "N", "value": {"x": [controls]}}])
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == (
-        'parameter N: {"x":["safe"]} → {"x":["\\u0085\\u202e\\u2066\\u2028\\u2029"]}',
-    )
-    assert not any(character in diagnostic.report() for character in controls)
-    assert any(item.actual == controls for item in diagnostic.mismatches)
-    assert diagnostic.detail["mismatches"] == [item.message for item in diagnostic.mismatches]
-
-
-def test_copyto_prepared_digest_diagnostic_uses_declared_source():
-    old, new = _prepared_diagnostic_pair()
-    for document in (old, new):
-        entry = document["planning_disclosures"][0]["generated_files"][0]
-        entry["source_path"] = entry["path"]
-        entry["path"] = "renamed.sv"
-    diagnostic = _project_diagnostics(old, new)
-    assert diagnostic.mismatch_summary == ("source changed: a.sv",)
-    new["planning_disclosures"][0]["generated_files"][0]["source_path"] = "other.sv"
-    assert any("source_path" in line for line in _project_diagnostics(old, new).mismatch_summary)
 
 
 def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatch):

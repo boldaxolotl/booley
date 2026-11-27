@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from tests.claude_cli_fake import replay_sdk_attempts, sdk_message, sdk_result, write_claude_cli
-from tests.path_tool_fake import PathToolFake
+from tests.codex_cli_fake import answer_codex_on_host
 from tests.subprocess_budget import run_bounded_child
 
 from booley.core.models import AgentArtifactPaths, AgentCallParams
@@ -208,10 +208,17 @@ def test_claude_limit_event_after_the_result_keeps_the_result(tmp_path, monkeypa
 def test_public_codex_call_writes_to_injected_destinations(tmp_path, monkeypatch):
     events = [
         {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "review",
+                "aggregated_output": "checked",
+            },
+        },
         {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}},
     ]
-    codex_cli = PathToolFake.install(tmp_path / "bin", "codex", monkeypatch)
-    codex_cli.answer(stdout="\n".join(json.dumps(event) for event in events), reads_input=True)
+    codex_cli = answer_codex_on_host(tmp_path / "bin", monkeypatch, events)
     paths = AgentArtifactPaths(
         tmp_path / "machine.json", tmp_path / "prompt.md", tmp_path / "transcript.md"
     )
@@ -229,6 +236,8 @@ def test_public_codex_call_writes_to_injected_destinations(tmp_path, monkeypatch
     assert result.output == "done"
     resolve.assert_called_once_with(tmp_path / "raw" / "reviewer.jsonl")
     assert json.loads(paths.prompt_json.read_text())["full_prompt"] == "rules\n\n---\n\nwork"
-    assert "done" in paths.transcript_markdown.read_text()
+    rendered = paths.transcript_markdown.read_text()
+    assert "done" in rendered and "checked" in rendered
+    assert not (tmp_path / "raw" / "reviewer.md").exists()
     assert paths.prompt_markdown.exists()
     assert [call.input for call in codex_cli.calls()] == ["rules\n\n---\n\nwork"]

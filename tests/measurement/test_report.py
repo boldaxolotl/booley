@@ -9,11 +9,20 @@ from typing import Any
 
 import pytest
 
+from booley.flows.metric_declarations import FlowMetricValues
+from booley.measurement import run_store
+from booley.measurement.report import (
+    agent_summary,
+    markdown_report,
+    terminal_report,
+    write_markdown_report,
+)
 from booley.measurement.run_document import RunStatus, Verdict
 from booley.measurement.run_store import FlowReport, MeasurementStore, StoredRun
 from booley.presentation import colors
+from booley.runtime.pinned_history import FileCommitError
 from tests.measurement.test_base_run import Entry, Table, build_run, values
-from tests.measurement.test_rules_diff import AREA, SYNTH
+from tests.measurement.test_rules_diff import AREA, SYNTH, versioned_case
 from tests.measurement.test_run_store import (
     fingerprint,
     in_tree_repository,
@@ -23,31 +32,11 @@ from tests.measurement.test_run_store import (
 )
 from tests.measurement.test_run_view import (
     feature_repo,
-    stored_in_versioned_case,
     synth_entries,
     tree_of,
     view_of,
 )
 from tests.runtime.test_commit_export import add_gitlink, commit_all, git, write
-
-
-# Imported on use: red/green evidence needs the failure in a test body, not a collection error.
-def markdown_report(view: dict[str, Any]) -> str:
-    from booley.measurement.report import markdown_report as render
-
-    return render(view)
-
-
-def terminal_report(view: dict[str, Any], *, width: int | None = None) -> str:
-    from booley.measurement.report import terminal_report as render
-
-    return render(view, width=width)
-
-
-def write_markdown_report(view: dict[str, Any]) -> Path:
-    from booley.measurement.report import write_markdown_report as write_report
-
-    return write_report(view)
 
 
 def section(markdown: str, title: str) -> str:
@@ -108,6 +97,22 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     repo, store, stored, head, _ = failing_world(tmp_path)
     view = view_of(repo, store, stored, head)
 
+    assert view["view"]["counts"] == {
+        "met": 1,
+        "unmet": 1,
+        "error": 1,
+        "tracked": 1,
+        "not_evaluated": 1,
+        "enforced": 4,
+        "enforced_error": 1,
+        "tracked_error": 0,
+        "enforced_not_evaluated": 1,
+        "tracked_not_evaluated": 0,
+    }
+    assert [(e["key"], e["verdict"], e["excerpt"]) for e in view["view"]["excerpts"]] == [
+        ("area_um2_max", "unmet", "too big"),
+        ("area_kge_max", "error", "boom"),
+    ]
     markdown = markdown_report(view)
 
     assert markdown.splitlines()[2:5] == [
@@ -134,49 +139,52 @@ def test_unmet_and_error_rows_lead_with_excerpt_and_rerun_commands(
     assert "Red:" not in terminal
 
 
-def test_verdict_line_counts_tracked_errors_apart_from_enforced_bounds(tmp_path: Path) -> None:
-    repo, _, head = feature_repo(tmp_path)
-    store = MeasurementStore(repo / ".booley")
-    reason = "lite: synthesis execution timeout"
-    entries = (
-        Entry("cell_count_max", "cell_count", 90, bound=100),
-        Entry("area_kge_max", "area_kge", 4, bound=5),
-        Entry("area_um2", "area_um2", None, verdict=Verdict.ERROR, detail=reason),
-        Entry("wns_ns", "wns_ns", None, verdict=Verdict.ERROR, detail=reason),
-    )
-    stored = store.write(build_run(key_of(repo, head), "r1", (Table("synth", entries),)), [])
-    view = view_of(repo, store, stored, head)
-
-    counts = view["view"]["counts"]
-    assert (counts["error"], counts["enforced_error"], counts["tracked_error"]) == (2, 0, 2)
-    assert "**2 of 2 enforced met; 2 tracked errors**" in markdown_report(view)
-    assert "2 of 2 enforced met; 2 tracked errors" in terminal_report(view)
+_TIMEOUT = "lite: synthesis execution timeout"
 
 
-def test_verdict_line_counts_tracked_not_evaluated_apart_from_enforced_bounds(
+@pytest.mark.parametrize(
+    ("entries", "status", "counts", "line"),
+    [
+        pytest.param(
+            (
+                Entry("cell_count_max", "cell_count", 90, bound=100),
+                Entry("area_kge_max", "area_kge", 4, bound=5),
+                Entry("area_um2", "area_um2", None, verdict=Verdict.ERROR, detail=_TIMEOUT),
+                Entry("wns_ns", "wns_ns", None, verdict=Verdict.ERROR, detail=_TIMEOUT),
+            ),
+            RunStatus.COMPLETED,
+            {"error": 2, "enforced_error": 0, "tracked_error": 2},
+            "2 of 2 enforced met; 2 tracked errors",
+            id="errors",
+        ),
+        pytest.param(
+            (
+                Entry("cell_count_max", "cell_count", 90, bound=100),
+                Entry("area_um2", "area_um2", None, verdict=Verdict.NOT_EVALUATED),
+                Entry("wns_ns", "wns_ns", None, verdict=Verdict.NOT_EVALUATED),
+            ),
+            RunStatus.CANCELLED,
+            {"enforced_not_evaluated": 0, "tracked_not_evaluated": 2},
+            "1 of 1 enforced met; 2 tracked not evaluated",
+            id="not-evaluated",
+        ),
+    ],
+)
+def test_verdict_line_counts_tracked_problems_apart_from_enforced_bounds(
     tmp_path: Path,
+    entries: tuple[Entry, ...],
+    status: RunStatus,
+    counts: dict[str, int],
+    line: str,
 ) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
-    entries = (
-        Entry("cell_count_max", "cell_count", 90, bound=100),
-        Entry("area_um2", "area_um2", None, verdict=Verdict.NOT_EVALUATED),
-        Entry("wns_ns", "wns_ns", None, verdict=Verdict.NOT_EVALUATED),
-    )
-    run = build_run(
-        key_of(repo, head), "r1", (Table("synth", entries),), status=RunStatus.CANCELLED
-    )
+    run = build_run(key_of(repo, head), "r1", (Table("synth", entries),), status=status)
     view = view_of(repo, store, store.write(run, []), head)
 
-    line = "1 of 1 enforced met; 2 tracked not evaluated"
+    assert {name: view["view"]["counts"][name] for name in counts} == counts
     assert f"**{line}**" in markdown_report(view)
     assert line in terminal_report(view)
-
-
-def agent_summary(view: dict[str, Any]) -> str:
-    from booley.measurement.report import agent_summary as summarize
-
-    return summarize(view)
 
 
 def test_agent_summary_is_bounded_and_keeps_verdict_and_paths(tmp_path: Path) -> None:
@@ -205,25 +213,6 @@ def test_agent_summary_is_bounded_and_keeps_verdict_and_paths(tmp_path: Path) ->
     assert "booley measure" not in "\n".join(long)
 
 
-def test_agent_summary_shows_an_all_met_but_amber_header(tmp_path: Path) -> None:
-    repo, _ = in_tree_repository(tmp_path / "repo")
-    write(repo / ".booley" / "metrics.toml", SYNTH + "area_kge_max = 60\n")
-    commit_all(repo, "rules")
-    git(repo, "checkout", "-q", "-b", "feature")
-    write(
-        repo / ".booley" / "metrics.toml",
-        SYNTH + 'area_kge_max = 80\nnotes = { area_kge_max = "after DSP sharing" }\n',
-    )
-    head = commit_all(repo, "loosen")
-    store = MeasurementStore(repo / ".booley")
-    table = Table("synth", (Entry("area_kge_max", "area_kge", 70, bound=80),), target="synth_core")
-    stored = store.write(build_run(key_of(repo, head), "r1", (table,)), [])
-
-    lines = agent_summary(view_of(repo, store, stored, head)).splitlines()
-
-    assert lines[:2] == ["1 of 1 enforced met", "Run r1: rules loosened"]
-
-
 def test_identical_tree_commit_reports_measured_as_and_its_own_base(tmp_path: Path) -> None:
     repo, _ = in_tree_repository(tmp_path / "repo")
     write(repo / ".booley" / "metrics.toml", SYNTH + AREA)
@@ -240,8 +229,25 @@ def test_identical_tree_commit_reports_measured_as_and_its_own_base(tmp_path: Pa
     store = MeasurementStore(repo / ".booley")
     stored = store.write(make_run(key_of(repo, first), "r1", flow="synth"), [])
 
-    other = markdown_report(view_of(repo, store, stored, second))
-    own = markdown_report(view_of(repo, store, stored, first))
+    other_view = view_of(repo, store, stored, second)
+    own_view = view_of(repo, store, stored, first)
+    other, own = markdown_report(other_view), markdown_report(own_view)
+
+    seen, mine = other_view["view"], own_view["view"]
+    assert seen["commit"]["measured_as"] == first
+    assert (seen["commit"]["sha"], seen["commit"]["tree"]) == (second, tree_of(repo, first))
+    assert seen["base"]["commit"] == new_base
+    assert [f["path"] for f in seen["changed"]["files"]] == [".booley/metrics.toml"]
+    (change,) = seen["rules_diff"]["changes"]
+    assert (change["old"], change["new"], change["kind"]) == (70, 80, "maximum raised")
+    assert mine["commit"]["measured_as"] is None
+    assert mine["base"]["commit"] == base_a
+    assert sorted(f["path"] for f in mine["changed"]["files"]) == [
+        ".booley/metrics.toml",
+        "rtl.v",
+    ]
+    (own_change,) = mine["rules_diff"]["changes"]
+    assert (own_change["old"], own_change["new"]) == (60, 80)
 
     assert f"measured as `{first}`, identical tree" in other
     assert f"Base `{new_base}`" in other
@@ -259,8 +265,19 @@ def test_two_bases_give_two_base_sections_and_the_same_verdicts(tmp_path: Path) 
     repo, store, stored, head, first = failing_world(tmp_path)
     main = git(repo, "rev-parse", "main")
 
-    default = markdown_report(view_of(repo, store, stored, head))
-    chosen = markdown_report(view_of(repo, store, stored, head, base=first))
+    default_view = view_of(repo, store, stored, head)
+    chosen_view = view_of(repo, store, stored, head, base=first)
+    default, chosen = markdown_report(default_view), markdown_report(chosen_view)
+
+    assert chosen_view["view"]["base"] == {
+        "commit": first,
+        "choice": "--base, used as given",
+        "requested": first,
+        "no_base": None,
+    }
+    for same_key in ("counts", "excerpts"):
+        assert default_view["view"][same_key] == chosen_view["view"][same_key]
+    assert default_view["tables"] == chosen_view["tables"]
 
     assert f"Base `{main}`" in default
     assert f"Base `{first}` (--base, used as given)" in chosen
@@ -299,6 +316,8 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
 
     markdown = markdown_report(view)
 
+    summary = agent_summary(view).splitlines()
+    assert summary[:2] == ["2 of 2 enforced met", "Run r1: rules loosened"]
     assert "Run r1: rules loosened" in markdown
     assert markdown.splitlines()[2] == "**Amber: needs review (rules loosened)**"
     rules = section(markdown, "Rules changes")
@@ -382,10 +401,13 @@ def test_delta_reads_no_base_run_then_no_base_value(tmp_path: Path) -> None:
 
     # The commit on ``main`` is its own base: no Base, no Δ, nothing compared.
     own = store.write(make_run(key_of(repo, base), "own", flow="synth"), [])
-    alone = markdown_report(view_of(repo, store, own, base))
+    own_view = view_of(repo, store, own, base)
+    assert own_view["view"]["changed"] is None
+    alone = markdown_report(own_view)
     assert metric_row(alone, "cell_count")[6] == "no base"
     assert "- no base: the measured commit" in alone
     assert "- rules not compared: the measured commit" in alone
+    assert "create it with" not in alone
 
 
 def test_tests_total_drop_is_warned_once(tmp_path: Path) -> None:
@@ -456,8 +478,6 @@ def test_stopped_and_cancelled_runs_say_so_in_the_header(
 def test_markdown_needs_no_path_to_understand_a_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.measurement import run_store
-
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     monkeypatch.setattr(run_store, "REPORT_CAP_BYTES", 10)
@@ -483,13 +503,13 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
-    targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:a:1.0#y")
+    targets = ("acme:b:1.0#x", "acme:core:1.0#top", "acme:other:1.0#top", "acme:a:1.0#x")
     run = replace(build_run(key_of(repo, head), "r1", (table,)), targets=targets)
     stored = store.write(run, [])
 
     view = view_of(repo, store, stored, head)
 
-    line = "Targets with no metrics: acme:b:1.0#x, acme:a:1.0#y"
+    line = "Targets with no metrics: acme:b:1.0#x, acme:other:1.0#top, acme:a:1.0#x"
     assert markdown_report(view).splitlines()[2] == "**Green: accepted**"
     for text in (markdown_report(view), terminal_report(view)):
         assert text.count("Targets with no metrics") == 1
@@ -500,33 +520,69 @@ def test_targets_without_metrics_are_named_on_one_line(tmp_path: Path) -> None:
     assert "Targets with no metrics" not in terminal_report(every)
 
 
-def test_versioned_booley_directory_header_and_edits(tmp_path: Path) -> None:
+def stored_in_versioned_case(tmp_path: Path) -> tuple[Path, Path, MeasurementStore, StoredRun]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    checkout, booley = versioned_case(tmp_path, "standalone")
+    head = git(checkout, "rev-parse", "HEAD")
+    store = MeasurementStore(booley)
+    run = make_run(key_of(checkout, head), "r1", flow="synth")
+    stored = store.write(replace(run, protected_paths=(".booley/metrics.toml",)), [])
+    return checkout, booley, store, stored
+
+
+def test_versioned_booley_directory_names_the_rules_base(tmp_path: Path) -> None:
     checkout, booley, store, stored = stored_in_versioned_case(tmp_path / "a")
     head = git(checkout, "rev-parse", "HEAD")
-    view = view_of(checkout, store, stored, head)
+    full = view_of(checkout, store, stored, head)
+    view, markdown = full["view"], markdown_report(full)
 
-    markdown = markdown_report(view)
-
-    commit = view["view"]["commit"]
+    main = git(booley, "rev-parse", "main")
+    assert view["rules_base"]["commit"] == main
+    (change,) = view["rules_diff"]["changes"]
+    kept = [change[name] for name in ("kind", "old", "new", "direction", "note")]
+    assert kept == ["maximum raised", 60, 80, "loosened", "(no note)"]
+    assert view["protected_edits"]["booley_directory"] == [".booley/metrics.toml"]
+    assert (view["amber"], view["rules_diff"]["not_compared"]) == (["rules loosened"], None)
+    commit = view["commit"]
+    assert commit["booley_commit"] == git(booley, "rev-parse", "HEAD")
     header = section(markdown, "Run")
     assert (
         f"Booley Directory tree `{commit['booley_tree']}` (commit `{commit['booley_commit']}`)"
         in header
     )
-    assert f"rules Base `{git(booley, 'rev-parse', 'main')}` (" in header
+    assert f"rules Base `{main}` (" in header
     assert "Run r1: rules loosened" in header
     assert "protected edits in the Booley Directory: .booley/metrics.toml" in markdown
     assert (
         "synth_core synth area_kge_max: maximum raised (loosened), 60 → 80 — (no note)" in markdown
     )
+    # A later paired commit moves HEAD; the stored one still decides.
+    write(booley / "metrics.toml", SYNTH + "area_kge_max = 999\n")
+    git(booley, "commit", "-q", "-m", "later", "--", "metrics.toml")
+    later = view_of(checkout, store, stored, head)["view"]
+    assert later["rules_diff"] == view["rules_diff"]
 
-    # The paired Base cannot be chosen: say why instead of an empty rules diff.
+    # No Base for the paired commit: say why instead of an empty rules diff.
     checkout, booley, store, stored = stored_in_versioned_case(tmp_path / "b")
-    git(booley, "branch", "-m", "feature", "trunk")
-    git(booley, "branch", "-D", "main")
-    bare = markdown_report(view_of(checkout, store, stored, git(checkout, "rev-parse", "HEAD")))
-    assert "- rules: no base: neither origin/HEAD nor local main exists" in bare
-    assert "- rules not compared: neither origin/HEAD nor local main exists" in bare
+    for change_branch in (("-m", "feature", "trunk"), ("-D", "main")):
+        git(booley, "branch", *change_branch)
+    reason = "neither origin/HEAD nor local main exists"
+    bare_view = view_of(checkout, store, stored, git(checkout, "rev-parse", "HEAD"))
+    bare, text = bare_view["view"], markdown_report(bare_view)
+    diff = bare["rules_diff"]
+    assert (bare["rules_base"]["no_base"], diff["not_compared"]) == (reason, reason)
+    assert (diff["changes"], bare["amber"]) == ([], [])  # nothing compared, nothing loosened
+    assert f"- rules: no base: {reason}" in text
+    assert f"- rules not compared: {reason}" in text
+
+    # A paired commit that no longer exists is not a "shares no history" case.
+    checkout, _, store, stored = stored_in_versioned_case(tmp_path / "c")
+    document = json.loads(stored.path.read_text(encoding="utf-8"))
+    document["booley_commit"] = "c" * 40
+    stored.path.write_bytes(json.dumps(document).encode())
+    (gone,) = store.history(stored.key)
+    with pytest.raises(FileCommitError):
+        view_of(checkout, store, gone, git(checkout, "rev-parse", "HEAD"))
 
 
 def busy_view(tmp_path: Path) -> dict[str, Any]:
@@ -540,7 +596,8 @@ def busy_view(tmp_path: Path) -> dict[str, Any]:
     git(repo, "checkout", "-q", "-b", "feature")
     write(repo / ".booley" / "tests.toml", "a = 2\n")
     write(repo / ".booley" / "metrics.toml", "[broken\n")
-    git(repo, "add", "-f", ".booley/tests.toml", ".booley/metrics.toml")
+    write(repo / "top.sdc", "create_clock\n")
+    git(repo, "add", "-f", ".booley/tests.toml", ".booley/metrics.toml", "top.sdc")
     add_gitlink(repo, "ip/sub", "b" * 40)
     add_gitlink(repo, "ip/new", "c" * 40)
     git(repo, "update-index", "--force-remove", "ip/gone")
@@ -567,7 +624,7 @@ def busy_view(tmp_path: Path) -> dict[str, Any]:
     toolchain = replace(fingerprint(), image="sha256:img", booley_note="dev install")
     run = build_run(keyed, "r1", (sim, synth), toolchain=toolchain)
     run = replace(run, tables=(run.tables[0], replace(run.tables[1], wall_time_s=None)))
-    run = replace(run, protected_paths=("ip/sub",))
+    run = replace(run, protected_paths=(".booley/tests.toml", "ip/sub"))
     stored = store.write(run, [])
     (stored.path.parent / "rX.json").write_bytes(b"{not json")
     return view_of(repo, store, stored, head)
@@ -583,8 +640,21 @@ def test_submodules_tests_diff_and_failing_tests_render(tmp_path: Path) -> None:
     assert f"- submodule ip/sub {'a' * 7}..{'b' * 7} (protected)" in changed
     assert f"- submodule ip/new added {'c' * 7}" in changed
     assert f"- submodule ip/gone removed {'d' * 7}" in changed
-    assert "- protected edits: ip/sub" in changed
-    assert "- 2 files changed (1 added, 1 modified), 3 submodules" in changed
+    assert "- protected edits: .booley/tests.toml, ip/sub" in changed
+    assert "- constraint edits: top.sdc" in changed
+    assert "- 3 files changed (2 added, 1 modified), 3 submodules" in changed
+    data = view["view"]["changed"]
+    rows = [(f["path"], f["status"], f["protected"], f["constraint"]) for f in data["files"]]
+    assert rows == [
+        (".booley/metrics.toml", "A", False, False),
+        (".booley/tests.toml", "M", True, False),
+        ("top.sdc", "A", False, True),
+    ]
+    (bumped,) = [s for s in data["submodules"] if s["path"] == "ip/sub"]
+    assert (bumped["old"], bumped["new"]) == ("a" * 40, "b" * 40)
+    assert (bumped["files"], bumped["protected"]) == (None, True)
+    assert (data["file_count"], data["submodule_count"]) == (3, 3)
+    assert view["view"]["protected_edits"]["repository"] == [".booley/tests.toml", "ip/sub"]
     rules = section(markdown, "Rules changes")
     assert "- rules file unreadable:" in rules
     assert "- tests changed" in rules
@@ -606,8 +676,6 @@ def test_submodules_tests_diff_and_failing_tests_render(tmp_path: Path) -> None:
 
 
 def test_failing_tests_list_test_runs_first_lines_and_the_report(tmp_path: Path) -> None:
-    from booley.flows.metric_declarations import FlowMetricValues
-
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     reason = "booley: git rev-parse HEAD: the measurement checkout is not a git repository"
@@ -648,8 +716,6 @@ def test_failing_tests_list_test_runs_first_lines_and_the_report(tmp_path: Path)
 
 
 def test_unmet_lint_and_mutation_tables_list_their_items_and_report(tmp_path: Path) -> None:
-    from booley.flows.metric_declarations import FlowMetricValues
-
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     errors = [f"rtl/x.v:{line}: bad {line}" for line in range(1, 21)]
@@ -782,7 +848,18 @@ def test_a_target_run_is_never_reported_as_measured(
     table = Table("synth", (Entry("cell_count_max", "cell_count", 90, bound=100),))
     stored = store.write(build_run(key_of(repo, head), "scoped", (table,)), [])
     project_store = MeasurementStore(repo / ".booley")
+    base = git(repo, "rev-parse", "main")
+    project_store.write(make_run(key_of(repo, base), "base", flow="synth"), [])
     view = view_of(repo, project_store, stored, head, target="acme:ip:core:1#core")
+    in_project = project_store.write(make_run(key_of(repo, head), "full", flow="synth"), [])
+    full = view_of(repo, project_store, in_project, head)["view"]
+
+    seen = view["view"]
+    assert (seen["history"], seen["target"]) == (None, "acme:ip:core:1#core")
+    assert seen["base_run"]["base_run_id"] == "base"
+    assert seen["paths"]["json"] == str(stored.path)
+    assert str(tmp_path / "job") in seen["paths"]["markdown"]
+    assert full["target"] is None and full["history"] is not None
 
     markdown = markdown_report(view)
     monkeypatch.setattr(colors, "COLORS_ENABLED", True)

@@ -427,6 +427,7 @@ class TestDoctorCheck:
         (None, "codex", {"provider": "claude"}, "claude", "claude"),  # toml beats it
         ("claude", "claude", {"provider": "codex"}, "claude", "codex"),
         (None, None, {"provider": "bogus"}, "claude", None),  # invalid [agent] degrades softly
+        (None, None, {"clis": ["codex"], "default": "claude"}, "claude", "claude"),  # outside clis
     ],
 )
 def test_doctor_provider_answers(
@@ -442,13 +443,12 @@ def test_doctor_provider_answers(
             monkeypatch.setenv(name, value)
         else:
             monkeypatch.delenv(name, raising=False)
-    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, {}, "")
+    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, "")
 
     # run_doctor_result reaches these only through its Docker and image phases.
-    assert (doctor._configured_provider(audit), doctor._declared_provider(audit)) == (
-        configured,
-        declared,
-    )
+    resolved = doctor._agent_audit(audit, None)
+    assert (resolved.default_cli, doctor._declared_provider(audit)) == (configured, declared)
+    assert resolved.allowed == (configured,)  # a refused [agent] audits the default alone
 
 
 class TestUnusedProviderIsSilent:
@@ -466,9 +466,9 @@ class TestUnusedProviderIsSilent:
             lambda _provider: doctor.host_environment.AgentInstallation(True, None),
         )  # Both providers have installation state, but only the selected one is audited.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, {}, "")
+        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, "")
         # run_doctor_result reaches these only through its Docker and image phases.
-        provider = doctor._configured_provider(audit)
+        provider = doctor._agent_audit(audit, None).default_cli
 
         warns: list[str] = []
         for check in (doctor._check_agent_auth_token, doctor._check_oauth_token):

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import reset_git_command_config
-from tests.subprocess_budget import run_bounded_child
+from tests.git_support import git
 
 from booley.runtime.project_repositories import inspect_symbolic_branch
 
@@ -22,49 +22,36 @@ def _isolated_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(variable, raising=False)
 
 
-def _git(repository: Path, *args: str) -> str:
-    result = run_bounded_child(["git", *args], cwd=repository, check=True)
-    return result.stdout.strip()
-
-
 def _repository(tmp_path: Path, branch: str = "release/next") -> Path:
     repository = tmp_path / "project"
     repository.mkdir()
-    _git(repository, "init", "-b", branch)
-    _git(repository, "config", "user.name", "Test")
-    _git(repository, "config", "user.email", "test@example.invalid")
+    git(repository, "init", "-b", branch)
     (repository / "README.md").write_text("demo\n", encoding="utf-8")
-    _git(repository, "add", "README.md")
-    _git(repository, "commit", "-m", "initial")
+    git(repository, "add", "README.md")
+    git(repository, "commit", "-m", "initial")
     return repository
 
 
-def test_inspect_symbolic_branch_returns_attached_branch(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
+@pytest.mark.parametrize(
+    ("branch", "then", "expected"),
+    [
+        ("release/next", (), "release/next"),
+        ("release/next", ("checkout", "--detach"), None),
+        ("shared-name", ("tag", "shared-name"), "shared-name"),
+    ],
+    ids=["attached", "detached", "same-named-tag"],
+)
+def test_inspect_symbolic_branch(
+    tmp_path: Path, branch: str, then: tuple[str, ...], expected: str | None
+) -> None:
+    repository = _repository(tmp_path, branch)
+    if then:
+        git(repository, *then)
 
     inspection = inspect_symbolic_branch(repository)
 
-    assert inspection.branch == "release/next"
-    assert inspection.result.returncode == 0
-
-
-def test_inspect_symbolic_branch_reports_detached_head(tmp_path: Path) -> None:
-    repository = _repository(tmp_path)
-    _git(repository, "checkout", "--detach")
-
-    inspection = inspect_symbolic_branch(repository)
-
-    assert inspection.branch is None
-    assert inspection.result.returncode != 0
-
-
-def test_inspect_symbolic_branch_ignores_same_named_tag(tmp_path: Path) -> None:
-    repository = _repository(tmp_path, "shared-name")
-    _git(repository, "tag", "shared-name")
-
-    inspection = inspect_symbolic_branch(repository)
-
-    assert inspection.branch == "shared-name"
+    assert inspection.branch == expected
+    assert (inspection.result.returncode == 0) is (expected is not None)
 
 
 def test_project_topology_keeps_independent_configured_and_fixed_selections(
@@ -84,8 +71,10 @@ def test_project_topology_keeps_independent_configured_and_fixed_selections(
     (outer / "booley.toml").write_text(
         f'[project]\ndir = "{standalone.as_posix()}"\n', encoding="utf-8"
     )
-    _git(standalone, "worktree", "add", "--detach", str(outer / ".booley"))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "absent"))
+    git(standalone, "worktree", "add", "--detach", str(outer / ".booley"))
+    # An ambient selection must not redirect the control repository.
+    git(standalone, "worktree", "add", "--detach", str(tmp_path / "ambient"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "ambient"))
     reset_cache()
     topology = project_topology(outer)
     assert topology.paired is not None
@@ -111,7 +100,7 @@ def test_project_topology_classifies_real_checkout(
     if kind != "absent":
         project.mkdir()
     if kind in {"standalone", "configured"}:
-        _git(project, "init")
+        git(project, "init")
     if kind == "configured":
         (outer / "booley.toml").write_text('[project]\ndir = "custom"\n', encoding="utf-8")
     topology = project_topology(outer)
@@ -131,7 +120,7 @@ def test_paired_projection_never_resolves_ambient_project(
 
     monkeypatch.setattr(project_repositories, "resolve_checkout_booley_dir", forbidden)
     assert project_repositories.paired_project_repository(outer) is None
-    _git(outer, "config", "core.worktree", str(outer))
+    git(outer, "config", "core.worktree", str(outer))
     (outer / ".booley").mkdir()
     (outer / ".booley/.git").write_text(f"gitdir: {outer / '.git'}\n", encoding="utf-8")
     with pytest.raises(project_repositories.RepositoryCheckoutError, match="unexpected root"):
@@ -152,7 +141,7 @@ def test_paired_identity_filesystem_error_has_typed_repository_context(tmp_path,
     source_parent.mkdir()
     source = _repository(source_parent)
     paired = outer / ".booley"
-    _git(source, "worktree", "add", "--detach", str(paired))
+    git(source, "worktree", "add", "--detach", str(paired))
     samefile = Path.samefile
 
     def unavailable(path, other):
@@ -184,13 +173,9 @@ def test_repository_inspection_ignores_foreign_selectors(tmp_path, monkeypatch):
 
 def _pair(tmp_path: Path, location: Path) -> None:
     """Attach a Paired Checkout of a fresh project repository at *location*."""
-    project = tmp_path / "project-repo"
-    project.mkdir()
-    _git(project, "init", "-q")
-    _git(project, "config", "user.name", "Test")
-    _git(project, "config", "user.email", "test@example.invalid")
-    _git(project, "commit", "-q", "--allow-empty", "-m", "base")
-    _git(project, "worktree", "add", "--detach", str(location))
+    parent = tmp_path / "project-repo"
+    parent.mkdir()
+    git(_repository(parent), "worktree", "add", "--detach", str(location))
 
 
 def test_relocated_paired_checkout_prefix_names_the_configured_directory(tmp_path: Path) -> None:

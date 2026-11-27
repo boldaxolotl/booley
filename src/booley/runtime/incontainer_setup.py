@@ -38,6 +38,7 @@ below target the common formats and are intentionally easy to adjust.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import io
 import json
@@ -672,7 +673,25 @@ def skills_target_dir(app: str, home: Path | None = None) -> Path | None:
     return None if rel is None else (home or _agent_home()) / rel
 
 
-def _link_skills(source: Path, target: Path) -> int:
+def _project_features() -> frozenset[str]:
+    """The Features the Sandbox's Project enables; none when its configuration is unreadable."""
+    from booley.config.feature_flags import enabled_features
+    from booley.core.booley_layout import BooleyLayoutError
+
+    try:
+        return enabled_features()
+    except (BooleyLayoutError, OSError, ValueError):
+        return frozenset()
+
+
+def _unlink_withheld(link: Path) -> None:
+    """Remove *link* when it is a symlink; a real directory or file is left alone."""
+    with contextlib.suppress(OSError):
+        if link.is_symlink():
+            link.unlink()
+
+
+def _link_skills(source: Path, target: Path, withheld: frozenset[str] = frozenset()) -> int:
     """Prune dangling links in *target*, then link each skill dir of *source* not already there.
 
     The skills dir persists across rebuilds (named volume), so a skill renamed,
@@ -681,6 +700,7 @@ def _link_skills(source: Path, target: Path) -> int:
     (including a dangling link, guarded by ``is_symlink``) is left alone, so an
     earlier deployment wins a name clash and the routine stays idempotent.
     Individual link failures are skipped so one bad skill can't block the rest.
+    A skill in *withheld* is not linked, and a symlink of its name is removed.
     Returns the number of skills newly linked.
     """
     target.mkdir(parents=True, exist_ok=True)
@@ -697,6 +717,9 @@ def _link_skills(source: Path, target: Path) -> int:
         if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
             continue
         link = target / skill_dir.name
+        if skill_dir.name in withheld:
+            _unlink_withheld(link)
+            continue
         if link.exists() or link.is_symlink():
             continue
         try:
@@ -722,7 +745,9 @@ def deploy_skills(app: str, home: Path | None = None) -> int:
     src = skills_dir()
     if not src.is_dir():
         return 0
-    return _link_skills(src, target)
+    from booley.runtime.skill_links import withheld_skills
+
+    return _link_skills(src, target, withheld_skills(_project_features()))
 
 
 def deploy_host_skills(app: str, home: Path | None = None) -> int:

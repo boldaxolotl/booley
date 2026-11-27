@@ -938,7 +938,7 @@ _INIT_REMEDY = "on the host run `booley init`, then use Dev Containers: Rebuild 
             id="unknown-eda-key",
         ),
         pytest.param(
-            _write_project_toml('[flows.lint]\nbackend = "x"\n'),
+            _write_project_toml("[flows.elab]\n"),
             _CONFIG_REMEDY,
             id="retired-flow-key",
         ),

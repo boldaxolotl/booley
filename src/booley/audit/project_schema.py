@@ -399,14 +399,19 @@ def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
 def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Audit project EDA configuration using the authoritative parser."""
     from booley.config.eda import EdaConfigError, parse_eda_config
-    from booley.config.flow_enablement import retired_config_error
+    from booley.config.flow_enablement import retired_config_errors
     from booley.eda.provisioning.configuration import validate_host_provisioning_platform
 
-    migration = retired_config_error(data)
-    if migration:
-        # Invariant: the migration text is already a complete finding ("booley.toml
+    migrations = retired_config_errors(data)
+    if migrations:
+        # Invariant: each migration text is already a complete finding ("booley.toml
         # ..." plus the fix), so it is reported as-is, never re-wrapped.
-        return failure(migration, "delete the retired key or table the message names")
+        return ConfigTableAudit(
+            tuple(
+                fail_finding(migration, "delete the retired key or table the message names")
+                for migration in migrations
+            )
+        )
     try:
         eda_configs = parse_eda_config(data.get("eda"))
         validate_host_provisioning_platform(eda_configs)

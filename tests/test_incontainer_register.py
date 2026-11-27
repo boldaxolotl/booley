@@ -633,6 +633,26 @@ def _skills(source, *names):
         (source / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
 
 
+def test_a_gated_skill_is_linked_only_while_its_project_enables_its_flag(
+    tmp_path, skill_sources, first_run, feature_flags
+):
+    gated = "booley-reviewed-commit"
+    _skills(skill_sources["packaged"][1], "booley-a", gated)
+    feature_flags.enable(first_run.booley_dir, "reviewed-commits")
+    assert reg.deploy_skills("claude", tmp_path) == 2
+
+    # An earlier package location still resolves, so only the name decides ownership.
+    link = tmp_path / ".claude" / "skills" / gated
+    earlier = tmp_path / "earlier" / gated
+    _skills(earlier.parent, gated)
+    link.unlink()
+    link.symlink_to(earlier)
+    (first_run.booley_dir / "booley.toml").write_bytes(b"")
+
+    assert reg.deploy_skills("claude", tmp_path) == 0
+    assert [path.name for path in link.parent.iterdir()] == ["booley-a"]
+
+
 @pytest.mark.parametrize("kind", ["packaged", "host"])
 @pytest.mark.parametrize(("app", "where"), [("claude", ".claude"), ("codex", ".agents")])
 def test_skills_are_linked_where_the_app_reads_them(tmp_path, skill_sources, kind, app, where):

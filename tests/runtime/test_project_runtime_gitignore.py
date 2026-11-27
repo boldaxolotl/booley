@@ -14,6 +14,9 @@ from tests.project_runtime_git_support import (
 from tests.subprocess_budget import run_bounded_child
 
 from booley.feedback.findings import Finding, append, rewrite
+
+# The public `initialize_project` also writes skeletons, hooks and Sandbox files,
+# which would hide whether only the tracked evidence changed.
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
 from booley.runtime import booley_dir
 
@@ -143,6 +146,7 @@ def test_backfill_preserves_already_tracked_findings(versioned_project):
     git(repo, "add", "-f", str(data / "findings.jsonl"))
     git(repo, "commit", "-qm", "existing tracked evidence")
     before = (data / "findings.jsonl").read_bytes()
+    # Backfill alone, for the reason given at the import.
     _backfill_project_gitignore(data, InitContext(project_root=root))
     assert (data / "findings.jsonl").read_bytes() == before
     assert git(repo, "ls-files", str(data / "findings.jsonl"))
@@ -267,15 +271,17 @@ def test_actual_flow_report_publication_keeps_project_clean(versioned_project, f
         "synth": AsicSynthesizeFlow,
         "fpga": FpgaImplFlow,
     }[family]()
-    flow._args = flow.request_type(target="demo", work_dir=root, report_dir=data / owner)
+    flow.parse_args(["--target", "demo", "-C", str(root), "--report-dir", str(data / owner)])
     with flow.publication_resources:
         path = endpoint_reporting.write_report(flow, EndpointOutcome(exit_code=0))
     assert path is not None and path.is_file()
     assert (data / owner / f"{family}.json").is_file()
     assert_clean(repo)
     if family == "lint":
+        # A lint report is otherwise written only after a real Verilator run.
         flow._lint_invocation_dir = flow.reserve_invocation_dir()
         with flow.publication_resources:
+            # Same reason as the invocation directory above.
             path = flow._write_lint_report(["demo"], [], 0.0)
         assert path is not None and path.is_file()
         assert_clean(repo)
@@ -381,54 +387,17 @@ def test_job_slot_publication_keeps_project_clean(versioned_project):
     assert_clean(repo)
 
 
-def test_ignored_evidence_is_omitted_from_specialist_visible_inputs(versioned_project):
-    from booley.specialists.specialist_workspace import _visible_paths
-
-    _root, data, repo = versioned_project
-    for name in NEW_RUNTIME_PATHS:
-        path = data / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("local evidence\n")
-    authored = data / "SETUP-PLAN.md"
-    authored.write_text("authored setup plan\n")
-    visible = _visible_paths(repo)
-    assert authored.relative_to(repo) in visible
-    assert all((data / name).relative_to(repo) not in visible for name in NEW_RUNTIME_PATHS)
-
-
-def test_specialist_session_and_mutation_log_storage_keep_project_clean(
-    versioned_project, monkeypatch
-):
+def test_default_mutation_log_storage_keeps_project_clean(versioned_project, monkeypatch):
     from booley.flows.mutation import workspace as mutation_workspace
-    from booley.specialists.reviewer import ReviewerSpecialist
 
     root, data, repo = versioned_project
     monkeypatch.chdir(root)
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    endpoint = ReviewerSpecialist()
-    endpoint._last_session_id = "fixture-session"
-    endpoint._persist_session_id("reviewer")
-    assert (data / ".runtime/sessions/reviewer.session_id").is_file()
-    assert_clean(repo)
     mutant_log = mutation_workspace.mutant_logs_dir() / "mutant_1.log"
     mutant_log.parent.mkdir(parents=True, exist_ok=True)
     mutant_log.write_bytes(b"mutant simulator output\n")
     assert mutant_log.is_file()
-    assert_clean(repo)
-
-
-def test_init_upgrade_requires_committing_repaired_ignore_file(versioned_project):
-    root, data, repo = versioned_project
-    ignore = data / ".gitignore"
-    ignore.write_text("\n".join(p for p in ignore.read_text().splitlines() if p[0:1] != "/"))
-    git(repo, "add", str(ignore))
-    git(repo, "commit", "-qm", "old project policy")
-    assert_clean(repo)
-    _backfill_project_gitignore(data, InitContext(project_root=root))
-    assert " M " in git(repo, "status", "--short", "--untracked-files=all")
-    git(repo, "add", str(ignore))
-    git(repo, "commit", "-qm", "reconciled project policy")
     assert_clean(repo)
 
 

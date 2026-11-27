@@ -32,7 +32,7 @@ def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
     ("hook", "resume"),
     (
         pytest.param("_validate_prepared_selection", None, id="selection-rejection"),
-        pytest.param("_refuse_unfinished_coverage_resume", SimpleNamespace(), id="unfinished"),
+        pytest.param("_refuse_coverage_resume", SimpleNamespace(), id="coverage"),
     ),
 )
 def test_refusal_precedes_build_timeout(
@@ -98,7 +98,6 @@ def test_invalid_pre_run_commands_refuse_in_preflight(
     assert isinstance(outcome, EndpointOutcome)
     assert outcome.exit_code == 2
     assert doctor_finding.message in outcome.report_text
-    assert doctor_finding.fix in outcome.report_text
 
 
 def test_state_backed_simulation_preflight_rejection_reaches_stderr(

@@ -3,29 +3,36 @@
 Each simulated process (an ``Actor``) owns a ``SlotStore`` whose ``root`` is a
 ``SteppedPath``. Every filesystem call the store makes through that path is a
 scheduling point: the calling thread parks until the ``StepScheduler`` grants it
-that one step, or fails it with an injected Windows sharing violation. Exactly
+that one step, or fails it with an injected Windows sharing violation. The lease renewal
+wait of an actor that renews is a checkpoint too. Exactly
 one thread runs at a time, so a schedule is a pure function of the choices that
 produced it. The store's own code runs unchanged.
 
 The seam is the store's ``root``: a direct ``os.*`` call on a path in
 ``job_slots.py`` would bypass it without failing anything, so a new filesystem
 call there should go through ``Path`` methods.
+
+It fakes process liveness, process identity and the clock for each store.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import errno
+import json
 import os
 import threading
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, ClassVar
 
 from booley.core import file_lock
+from booley.core.sharing_retry import link_file, unlink_file, write_file_text
 from booley.runtime import job_slots
 from booley.runtime.job_slots import SlotStore
 from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
@@ -82,6 +89,31 @@ _FAULT_KINDS = frozenset(
         "rmdir",
     }
 )
+
+
+PROMOTION_GATE = ".promotion.lock"
+
+
+def lease_gate(token: job_slots.SlotToken) -> Path:
+    """The file a process holds while it renews, releases or promotes *token*."""
+    return token.path.parent / f".{token.lease_id}.lease.lock"
+
+
+@contextlib.contextmanager
+def held_gate(gate: Path, pid: int, identity: ProcessIdentity | None) -> Iterator[None]:
+    """Another process's gate on disk, as that process publishes it, until the block ends."""
+    owner = {"pid": pid, "owner_identity": identity.to_payload() if identity else None}
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
+    write_file_text(tmp, json.dumps(owner) + "\n")
+    try:
+        link_file(gate, tmp)  # exclusive: the gate must be free
+    finally:
+        unlink_file(tmp, missing_ok=True)
+    try:
+        yield
+    finally:
+        unlink_file(gate, missing_ok=True)
 
 
 class FakeProcessWorld:
@@ -198,6 +230,8 @@ class StepScheduler:
         self._stepping: Worker | None = None
         # A thread the store started ends by ActorKilled when its actor is killed: not an error.
         self._previous_hook = threading.excepthook
+        # Threads named with one of these run unstepped: no checkpoint, never awaited.
+        self.unstepped_prefixes: tuple[str, ...] = ()
         threading.excepthook = self._thread_hook
 
     def _thread_hook(self, args: threading.ExceptHookArgs) -> None:
@@ -247,6 +281,8 @@ class StepScheduler:
         worker: Worker | None = getattr(self._local, "worker", None)
         if worker is not None or self._stepping is None:
             return worker
+        if threading.current_thread().name.startswith(self.unstepped_prefixes):
+            return None
         # A thread the store started during a granted step belongs to the stepping actor.
         parent = self._stepping
         worker = Worker(parent.actor, f"{parent.label}/background", origin=parent.root)
@@ -257,6 +293,14 @@ class StepScheduler:
             self.workers.append(worker)
             self._by_thread[threading.current_thread()] = worker
         return worker
+
+    def current_worker(self) -> Worker:
+        """The worker of the calling thread, which has reached a checkpoint."""
+        return self._local.worker
+
+    def owns_caller(self) -> bool:
+        """Whether the calling thread's calls are steps."""
+        return self._worker_for_call() is not None
 
     # ----------------------------------------------------------- checkpoint
 
@@ -281,6 +325,11 @@ class StepScheduler:
         """The stores' injected sleep: a checkpoint that advances the machine clock when granted."""
 
         self.call("sleep", Path(), lambda: self.world.advance(seconds))
+
+    def renewal_wait(self, stop: threading.Event, seconds: float) -> bool:
+        """The stores' injected renewal wait: a ``sleep`` checkpoint named ``renewal``."""
+        self.call("sleep", Path("renewal"), lambda: self.world.advance(seconds))
+        return stop.is_set()
 
     def _step_worker(
         self, worker: Worker, kind: str, path: Path, perform: Callable[[], Any], name: str
@@ -391,7 +440,10 @@ class StepScheduler:
                 return False
             # A thread the step started has not reached its first checkpoint yet.
             return all(
-                t in before or not t.is_alive() or t in self._by_thread
+                t in before
+                or not t.is_alive()
+                or t in self._by_thread
+                or t.name.startswith(self.unstepped_prefixes)
                 for t in threading.enumerate()
             )
 
@@ -473,15 +525,31 @@ class StepScheduler:
                 worker.state = "done"
         return all(w.state != "running" for w in self.workers)
 
-    def drain(self) -> None:
-        """Run every remaining thread to completion without faults, checks still on."""
+    def drain(self, *, until_idle: bool = False) -> None:
+        """Run every remaining thread to completion without faults, checks still on.
+
+        With *until_idle*, stop once every parked thread waits and some thread is idle
+        (only its command ends those waits), and share the grants among lock waiters.
+        """
         steps = 0
         while waiting := self.parked():
             # A lock waiter runs only when every parked thread waits for a lock: the holder
             # (whichever actor it belongs to) must run first or the waiter spins to its timeout.
-            runnable = [w for w in waiting if not _at_lock_wait(w)] or waiting
-            # Operations first: a background retry must not spin while the holder it waits for is parked.
-            self.grant(min(runnable, key=lambda w: (w.root is not w, w.actor.index, w.label)))
+            runnable = [w for w in waiting if not _at_lock_wait(w)]
+            if not runnable and until_idle:
+                if any(w.state == "idle" for w in self.workers):
+                    return
+                # The least-stepped first: a supervisor's timed wait must not starve a lane.
+                self.grant(min(waiting, key=lambda w: (w.steps, thread_name(w))))
+            else:
+                # Operations first: a background retry must not spin while the holder it waits
+                # for is parked.
+                self.grant(
+                    min(
+                        runnable or waiting,
+                        key=lambda w: (w.root is not w, w.actor.index, w.label, thread_name(w)),
+                    )
+                )
             steps += 1
             assert steps <= DRAIN_STEP_CAP, "drain did not finish"
 
@@ -557,6 +625,70 @@ class StepLock:
         self._mutex.release()
 
 
+def thread_name(worker: Worker) -> str:
+    """The tie-break among equal workers, whose order of arrival is the host's choice."""
+    return worker.thread.name if worker.thread else ""
+
+
+class StepEvent(threading.Event):
+    """An event whose waits are checkpoints of *scheduler* on the threads it owns.
+
+    A timed wait is one ``lock_wait`` checkpoint named ``event`` that moves the machine
+    clock by the timeout; a wait without one repeats ``wait`` checkpoints until set.
+    """
+
+    def __init__(self, scheduler: StepScheduler) -> None:
+        super().__init__()
+        self.scheduler = scheduler
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if not self.scheduler.owns_caller():
+            return super().wait(timeout)
+        if timeout is None:
+            for _ in range(DRAIN_STEP_CAP):
+                if self.is_set():
+                    return True
+                self.scheduler.call("wait", Path("event"), lambda: None)
+            raise AssertionError("an event was never set: the schedule deadlocked")
+        advance = self.scheduler.world.advance
+        self.scheduler.call("lock_wait", Path("event"), lambda: advance(timeout))
+        return self.is_set()
+
+
+class StepCondition(threading.Condition):
+    """A condition whose timed waits are ``lock_wait`` checkpoints on the owned threads."""
+
+    def __init__(self, scheduler: StepScheduler) -> None:
+        super().__init__()
+        self.scheduler = scheduler
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if timeout is None or not self.scheduler.owns_caller():
+            return super().wait(timeout)
+        advance = self.scheduler.world.advance
+        self.release()  # the key's holder takes the condition while this waiter is parked
+        try:
+            self.scheduler.call("lock_wait", Path("condition"), lambda: advance(timeout))
+        finally:
+            self.acquire()
+        return False
+
+
+def stepped_turn(scheduler: StepScheduler) -> Callable[[threading.Lock, float], bool]:
+    """The lane scheduler's ``take_turn`` as one checkpoint, named ``turn``, per attempt."""
+
+    def take(lock: threading.Lock, seconds: float) -> bool:
+        def attempt() -> bool:
+            taken = lock.acquire(blocking=False)
+            if not taken:
+                scheduler.world.advance(seconds)
+            return taken
+
+        return scheduler.call("lock_wait" if lock.locked() else "turn", Path("turn"), attempt)
+
+    return take
+
+
 def stepped_file_lock_wait(handle: IO[Any], *, timeout_s: float, **kwargs: Any) -> None:
     """``wait_for_file_lock`` whose waits are checkpoints of the scheduler owning the thread.
 
@@ -585,7 +717,7 @@ def _at_lock_wait(worker: Worker) -> bool:
 
 
 def _is_gate(name: str) -> bool:
-    return name == ".promotion.lock" or (name.startswith(".") and name.endswith(".lease.lock"))
+    return name == PROMOTION_GATE or (name.startswith(".") and name.endswith(".lease.lock"))
 
 
 _PATH_BASE = type(Path())
@@ -668,7 +800,9 @@ class Actor:
         *,
         name: str | None = None,
         recovery: job_slots.SlotRecovery | None = None,
+        renews: bool = False,
     ) -> None:
+        self.renews = renews
         self.index = index
         self.name = name or "ABC"[index]
         self._base_recovery = recovery or job_slots.SlotRecovery()
@@ -691,6 +825,7 @@ class Actor:
             read_cmdline=self.world.read_cmdline,
             now=self.world.now,
             sleep=self.scheduler.sleep,
+            renewal_wait=self.scheduler.renewal_wait if self.renews else None,
             capture_identity=self.world.capture_identity,
             observe_identity=self.world.observe_identity,
             recovery=dataclasses.replace(

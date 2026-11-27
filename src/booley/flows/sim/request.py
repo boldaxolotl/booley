@@ -38,6 +38,7 @@ class SimRequest(FlowRequest):
     # Test Run (ADR 0072). ``None`` means each run's own or the Default Seed.
     seed: SeedRequest = None
     resume_from: Path | None = None
+    # Deprecated no-op, accepted until its removal (#5735).
     verbose: bool = False
     trace: bool = False
     coverage: bool = False

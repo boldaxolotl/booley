@@ -22,6 +22,10 @@ concurrency:
   group: confidential-content-${{ github.event.pull_request.head.sha || github.run_id }}
   cancel-in-progress: false
 
+env:
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
+
 jobs:
   confidential-content:
     name: confidential-content
@@ -49,7 +53,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/confidential-content/head"
+          bash .github/scripts/retry.sh git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/confidential-content/head"
           test "$(git rev-parse refs/confidential-content/head)" = "${HEAD_SHA}"
 
       - name: Scan pull-request commits

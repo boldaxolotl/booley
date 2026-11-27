@@ -1,7 +1,8 @@
-"""A stand-in ``codex`` command for driving ``CodexBackend`` in tests (POSIX only).
+"""Stand-in ``codex`` commands for driving ``CodexBackend`` in tests.
 
-The fake reads the whole prompt from stdin, then reports on stdout what it was
-launched with: the selected provider and that provider's token command output,
+``answer_codex_on_host`` gives a host run canned events. ``install_fake_codex``'s fake (POSIX only)
+is for Sandbox-like runs. That fake reads the whole prompt from stdin, then reports what it was
+launched with on stdout: the selected provider and that provider's token command output,
 credential variables, ``auth.json``, home, argv, model catalog and prompt size.
 Tests observe the process boundary through ``codex_report`` instead of calling
 Booley's spawn internals.
@@ -18,9 +19,11 @@ from typing import Any
 
 import pytest
 
-from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.path_tool_fake import PathToolFake
+from tests.sandbox_venue_fake import place
 
 STALE_TOKEN = "SYNTHETIC_STALE_TOKEN"
 # The login a test writes with ``write_codex_login`` (the real login Booley links).
@@ -116,11 +119,23 @@ def install_fake_codex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     # In a Sandbox booley is installed; here it comes from the source tree.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[1] / "src"))
-    # The container marker is the host/Sandbox boundary: only a Sandbox creates nested homes.
-    monkeypatch.setattr(cb, "_inside_container", lambda: True)
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    # Only a Sandbox creates nested homes.
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # The nested-home cache is process-wide state that no public entry point empties.
     monkeypatch.setattr(cb, "_NESTED_HOMES", {})
+
+
+def answer_codex_on_host(
+    bin_dir: Path, monkeypatch: pytest.MonkeyPatch, events: list[dict[str, Any]]
+) -> PathToolFake:
+    """Put a ``codex`` first on ``PATH`` that prints ``events`` and records its whole stdin.
+
+    Unlike ``install_fake_codex`` it adds no report, does not pin the venue and runs on
+    Windows. It patches no Booley name.
+    """
+    fake = PathToolFake.install(bin_dir, "codex", monkeypatch)
+    fake.answer(stdout="\n".join(json.dumps(event) for event in events), reads_input=True)
+    return fake
 
 
 def write_codex_login(tmp_path: Path, body: str = LOGIN_BODY) -> Path:
@@ -171,6 +186,6 @@ def replay_codex_run(
         return raw, stderr, returncode
 
     monkeypatch.setattr(cb.shutil, "which", lambda _name: "codex")
-    monkeypatch.setattr(cb, "_inside_container", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(cb, "_codex_run_subprocess", run)
     return launches

@@ -329,22 +329,15 @@ def test_sim_bad_case_accepts_the_unselected_test_identity(tmp_path, monkeypatch
     ("selected", "test", "variant", "accepted"),
     [
         ("cocotb_test", "cocotb_test", None, True),
-        ("hello_world+fast", "hello_world", "fast", True),
-        ("hello_world+fast", "hello_world", "slow", False),
+        ("hello_world", "hello_world", "fast", False),
     ],
-    ids=["test", "test-and-variant", "other-variant"],
+    ids=["test", "variant-not-selected"],
 )
 def test_sim_bad_case_grades_the_selected_test_and_variant(
     tmp_path, monkeypatch, selected, test, variant, accepted
 ):
     """The bad case is graded on the run carrying the selected Test and its Variant."""
-    booley_dir = _setup(tmp_path, monkeypatch, tests=None)
-    # A selector with a Variant is not a tests.toml entry; the legacy registry carries it.
-    (booley_dir / "configs.toml").write_text(
-        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\n'
-        f"tests = [{json.dumps(selected)}]\n",
-        encoding="utf-8",
-    )
+    booley_dir = _setup(tmp_path, monkeypatch, tests=json.dumps([selected]))
 
     def on_bad(_argv, path):
         path.parent.mkdir(parents=True, exist_ok=True)

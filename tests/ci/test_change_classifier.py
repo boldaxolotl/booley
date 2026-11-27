@@ -148,19 +148,29 @@ def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> No
     compatibility = [entry for entry in entries if entry["mode"] != "shard"]
 
     assert len(entries) == 3 + shard_count
+    windows_mark = "os_specific and not native_bwave"
+    assert all(entry["mark_expression"] == windows_mark for entry in shards)
     assert compatibility == [
-        {"name": "ubuntu-3.11-full", "os": "ubuntu-latest", "python": "3.11", "mode": "full"},
+        {
+            "name": "ubuntu-3.11-full",
+            "os": "ubuntu-latest",
+            "python": "3.11",
+            "mode": "full",
+            "mark_expression": "not native_bwave",
+        },
         {
             "name": "windows-3.11-compatibility",
             "os": "windows-latest",
             "python": "3.11",
             "mode": "compatibility",
+            "mark_expression": windows_mark,
         },
         {
             "name": "windows-3.13-compatibility",
             "os": "windows-latest",
             "python": "3.13",
             "mode": "compatibility",
+            "mark_expression": windows_mark,
         },
     ]
     assert [entry["shard_index"] for entry in shards] == list(range(shard_count))
@@ -319,6 +329,7 @@ def test_pull_request_uses_matching_merge_parent_instead_of_stale_event_base(
     _git(repo, "switch", "-c", "feature")
     _write(repo, "src/booley/example.py")
     _write(repo, "tests/unit/test_example.py")
+    _write(repo, "tests/os_specific.py", "OS_SPECIFIC_TESTS: tuple[str, ...] = ()\n")
     _commit(repo, "feature changes")
 
     _git(repo, "switch", "main")
@@ -566,7 +577,6 @@ _NOT_SELECTED_BY_SOURCE = {
             for path in (
                 "setup.cfg",
                 "CHANGELOG.md",
-                "src/booley/data/refs/CHANGELOG.md",
                 "release-assets/x",
                 "unmapped/config.xyz",
             )
@@ -656,9 +666,12 @@ def test_aggregate_waits_for_every_conditional_job() -> None:
     assert set(ALL_JOBS) <= set(workflow["jobs"]["ci-required"]["needs"])
 
 
-def _pull_request(tmp_path: Path) -> tuple[Path, str]:
+def _pull_request(
+    tmp_path: Path, registered: tuple[str, ...] = ("tests/unit/test_kept.py",)
+) -> tuple[Path, str]:
     """Return a repository whose merge head adds, modifies and deletes test modules."""
     repo, _ = _repository(tmp_path)
+    _write(repo, "tests/os_specific.py", f"OS_SPECIFIC_TESTS: tuple[str, ...] = {registered!r}\n")
     _write(repo, "tests/unit/test_kept.py")
     _write(repo, "tests/unit/test_gone.py")
     _commit(repo, "seed tests")
@@ -671,14 +684,22 @@ def _pull_request(tmp_path: Path) -> tuple[Path, str]:
     return repo, _merge(repo, "feature")
 
 
-def test_pull_request_test_changes_require_flake_stress(tmp_path: Path) -> None:
-    repo, head = _pull_request(tmp_path)
+@pytest.mark.parametrize(
+    "registered", [("tests/unit/test_kept.py",), ()], ids=["registered", "none-registered"]
+)
+def test_pull_request_test_changes_require_flake_stress(
+    tmp_path: Path, registered: tuple[str, ...]
+) -> None:
+    repo, head = _pull_request(tmp_path, registered)
 
     outputs = _classify(repo, "", head, event_name="pull_request", head_ref="codex/feature")
 
-    assert json.loads(outputs["stress_modules"]) == [
-        "tests/unit/test_kept.py",
-        "tests/unit/test_new.py",
+    legs = {"ubuntu": ["tests/unit/test_kept.py", "tests/unit/test_new.py"]}
+    if registered:
+        legs["windows"] = list(registered)
+    assert json.loads(outputs["stress_matrix"])["include"] == [
+        {"name": f"{os_}-3.14", "os": f"{os_}-latest", "python": "3.14", "modules": modules}
+        for os_, modules in legs.items()
     ]
     assert outputs["stress_count"] == "10"
     assert _jobs(outputs)[STRESS_JOB] is True
@@ -696,7 +717,7 @@ def test_queue_drafts_and_pushes_skip_flake_stress(
 
     outputs = _classify(repo, f"{head}^", head, event_name=event_name, head_ref=head_ref)
 
-    assert outputs["stress_modules"] == "[]"
+    assert json.loads(outputs["stress_matrix"]) == {"include": []}
     assert _jobs(outputs)[STRESS_JOB] is False
     assert STRESS_JOB not in _required(outputs)
     assert "test" in _required(outputs)
@@ -937,11 +958,13 @@ def _merged_source_change(tmp_path: Path) -> tuple[Path, str, str]:
 
 
 _TODAYS_LINUX_FULL_COMMAND = (
-    "pytest tests/ -q --tb=short -n 4 --dist=loadscope"
-    ' --basetemp "${{ runner.temp }}/pytest" -m "${{ env.TEST_MARK_EXPRESSION }}"'
-    " --timeout=60 ${{ runner.os == 'Windows' && '--timeout-headroom=0.8"
-    " --timeout-headroom-warn=0.5' || '' }}"
-    ' --durations=30 --junitxml="${{ runner.temp }}/junit.xml" -p ci_pytest_shard'
+    "python .github/scripts/ci_pytest_rerun.py"
+    ' --junitxml "${{ runner.temp }}/junit.xml" --basetemp "${{ runner.temp }}/pytest"'
+    " pytest tests/ -q --tb=short -n 4 --dist=loadscope"
+    ' -m "${{ env.TEST_MARK_EXPRESSION }}"'
+    " --timeout=60 ${{ runner.os == 'Windows' && '"
+    "--timeout-headroom-warn=0.5' || '' }}"
+    " --durations=30 -p ci_pytest_shard"
     ' --ci-timing-output "${{ runner.temp }}/timing/test-timings.json"'
 )
 
@@ -967,6 +990,7 @@ def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
                     "group": f"linux-{python}",
                     "shard_index": index,
                     "shard_count": 2,
+                    "mark_expression": "not native_bwave",
                 }
                 for python in ("3.11",)
                 for index in range(2)
@@ -976,12 +1000,14 @@ def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
                 "os": "windows-latest",
                 "python": "3.11",
                 "mode": "compatibility",
+                "mark_expression": "os_specific and not native_bwave",
             },
             {
                 "name": "windows-3.13-compatibility",
                 "os": "windows-latest",
                 "python": "3.13",
                 "mode": "compatibility",
+                "mark_expression": "os_specific and not native_bwave",
             },
             *(
                 {
@@ -992,6 +1018,7 @@ def test_default_linux_inputs_shard_ubuntu_in_two_and_keep_linux_command(
                     "group": "windows",
                     "shard_index": index,
                     "shard_count": 10,
+                    "mark_expression": "os_specific and not native_bwave",
                 }
                 for index in range(10)
             ),

@@ -29,7 +29,7 @@ _GIT_TIMEOUT_S = 60
 _EXIT_FAILED = 1
 _EXIT_UNUSABLE = 2
 # Written by a generator, so a human cannot wrap them.
-_GENERATED_PATHS = frozenset({"CHANGELOG.md", "src/booley/data/refs/CHANGELOG.md"})
+_GENERATED_PATHS = frozenset({"CHANGELOG.md"})
 # Snapshots of shipped guidance whose hashes a test pins.
 _TEST_OWNED_PREFIXES = ("tests/fixtures/ticket_guidance/",)
 # Changelog fragments move into the generated CHANGELOG.md and sit outside the

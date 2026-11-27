@@ -155,10 +155,10 @@ def _assert_isolated_dind(name: str, inner_daemon_id: str) -> None:
             require_dict(mount, field=f"{field}[0].Mounts[{index}]")
             for index, mount in enumerate(mounts)
         ]
-        mount_paths = [
-            (require_str(mount, "Source"), require_str(mount, "Destination"))
-            for mount in mount_records
-        ]
+        for mount in mount_records:
+            require_str(mount, "Source")
+            require_str(mount, "Destination")
+        bind_mounts = [mount for mount in mount_records if mount.get("Type") == "bind"]
         port_bindings = host_config.get("PortBindings")
         if port_bindings is not None:
             require_dict(port_bindings, field=f"{field}[0].HostConfig.PortBindings")
@@ -166,11 +166,7 @@ def _assert_isolated_dind(name: str, inner_daemon_id: str) -> None:
         raise AssertionError(f"invalid {field}: {exc}") from exc
     assert network_mode == "none", "DIND must have no outer network"
     assert not port_bindings, "DIND must publish no ports"
-    socket_paths = {"/var/run/docker.sock", "/run/docker.sock"}
-    assert not any(
-        source in socket_paths or destination in socket_paths
-        for source, destination in mount_paths
-    ), "DIND must not mount an outer Docker socket"
+    assert not bind_mounts, "DIND must not bind-mount a host path"
     outer_info = HOST_DOCKER.run("info", "--format", "{{.ID}}")
     assert_ok(outer_info)
     outer_daemon_id = outer_info.stdout.strip()

@@ -23,6 +23,9 @@ def test_host_skills_reach_agents_and_each_distinct_claude_directory(
     source = tmp_path / "packaged"
     (source / "booley-setup").mkdir(parents=True)
     (source / "booley-setup" / "SKILL.md").write_text("# Setup\n", encoding="utf-8")
+    gated = "booley-reviewed-commit"
+    (source / gated).mkdir()
+    (source / gated / "SKILL.md").write_text("# Gated\n", encoding="utf-8")
     home = tmp_path / "home"
     home.mkdir()
     if claude == "directory":
@@ -44,3 +47,4 @@ def test_host_skills_reach_agents_and_each_distinct_claude_directory(
 
     assert [item.report.count("created") for item in changed] == [1] * len(expected)
     assert all((target / "booley-setup").is_dir() for target in expected)
+    assert not any((target / gated).exists() for target in expected)

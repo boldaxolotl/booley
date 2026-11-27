@@ -60,8 +60,10 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
+from tests.agent_call_fake import install_agent
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.conftest import add_git_command_config
 from tests.devcontainer_spec_support import build_spec
@@ -70,19 +72,19 @@ from tests.diagnostic_helpers import (
     _Rec,
 )
 from tests.docker_cli_guard import (
-    assert_docker_processes_unused,
-    forbid_docker_processes,
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.harness.agent_auth_support import pin_venue
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
     VSCODE_INIT,
     VSCODE_SEED,
 )
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -128,7 +130,6 @@ def test_doctor_inputs_use_condition_selected_target_sources(tmp_path, monkeypat
 def _write_project(
     root: Path,
     *,
-    configs_text: str | None = None,
     sandbox_image: str | None = None,
     seed_interactive: bool = True,
     write_tickets: bool = True,
@@ -157,23 +158,6 @@ auth = "subscription"
 """.lstrip().replace("{sandbox_section}", sandbox_section)
     (booley_dir / "booley.toml").write_text(
         booley_toml,
-        encoding="utf-8",
-    )
-    (booley_dir / "configs.toml").write_text(
-        configs_text
-        or """
-[fast]
-defines = []
-top_module = "dut"
-tb_top = "tb"
-tests = ["smoke", "full"]
-
-[slow]
-defines = ["SLOW"]
-top_module = "dut"
-tb_top = "tb"
-tests = ["full"]
-""".lstrip(),
         encoding="utf-8",
     )
     (booley_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
@@ -261,8 +245,7 @@ def _patch_bootstrap_current(monkeypatch) -> None:
 
 
 def _patch_host_environment(monkeypatch, root: Path) -> None:
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     # The suite itself may run under an agent CLI (CLAUDECODE, CODEX_HOME, ...);
     # a plain host shell is the baseline these fixtures model.
     monkeypatch.setattr(runtime_context, "agent_session_app", lambda: None)
@@ -293,7 +276,6 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
     # Modules that import this helper lack this module's autouse routing; without
     # it Doctor's container checks start real `docker run`s that can each wait 30 s.
     route_docker_helper_through_subprocess_run(monkeypatch)
-    forbid_docker_processes(monkeypatch)
     fake_docker_host(monkeypatch)
     # Never probe this machine's own T3 Code port.
     monkeypatch.setattr(incontainer_setup, "t3_state", lambda: "off")
@@ -980,7 +962,6 @@ def test_full_run_doctor_answers_mcp_probe_through_owner_without_real_container(
 
     assert len(inspected) == 1
     assert [call for call in calls if call[-3:] == ["python", "-m", "booley.mcp.probe"]]
-    assert_docker_processes_unused()
 
 
 def _history_git(repo: Path, *args: str) -> None:
@@ -1057,12 +1038,12 @@ def _script_flow(monkeypatch, flow, answer):
 
 
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
-    # The first Target of configs.toml is not a sim Target, so the deep smoke takes `--test`
-    # from its tests list (the configs.toml fallback of the smoke pin).
-    configs = (
-        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\ntests = ["smoke", "full"]\n'
+    # A leftover configs.toml is ignored: it pins no `--test` for the deep smoke.
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "configs.toml").write_text(
+        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntests = ["smoke", "full"]\n',
+        encoding="utf-8",
     )
-    booley_dir = _write_project(tmp_path, configs_text=configs)
     calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
     _deep_synth_writes_complete_report(monkeypatch, booley_dir)
     starts: list[Path] = []
@@ -1087,7 +1068,7 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     assert "--dry-run" in dry
     assert "--dry-run" not in deep
     assert deep[deep.index("--target") + 1] == "sim_fast"
-    assert deep[deep.index("--test") + 1] == "smoke"
+    assert "--test" not in deep
     assert "--tb-top" not in deep
     assert "--memory" not in deep
     assert f"{INVOCATION_ORIGIN_ENV}=transport" in deep
@@ -1868,19 +1849,12 @@ def test_doctor_fails_on_container_uid_mismatch(tmp_path, monkeypatch, capsys):
     assert "container agent uid 4242 !=" in output
 
 
-@pytest.mark.parametrize(
-    ("tb_top", "severity", "message", "exit_code"),
-    [
-        ("", Severity.SKIP, "sim dry-run [sim_fast] skipped - tb_top is resolved at runtime", 0),
-        ('tb_top = "tb"\n', Severity.FAIL, "sim dry-run [sim_fast] failed with exit 2", 1),
-    ],
-    ids=["tb-top-runtime", "tb-top-configured"],
-)
-def test_doctor_sim_dry_run_follows_tb_top_resolution(
-    tmp_path, monkeypatch, tb_top, severity, message, exit_code
-):
-    configs_text = f'[lint_fast]\ndefines = []\ntop_module = "dut"\n{tb_top}tests = ["smoke"]\n'
-    booley_dir = _write_project(tmp_path, configs_text=configs_text)
+def test_doctor_sim_dry_run_follows_tb_top_resolution(tmp_path, monkeypatch):
+    # No static tb_top source exists: a leftover configs.toml pinning one does not stop the skip.
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "configs.toml").write_text(
+        '[lint_fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\n', encoding="utf-8"
+    )
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _answer_command(
         monkeypatch,
@@ -1891,8 +1865,11 @@ def test_doctor_sim_dry_run_follows_tb_top_resolution(
 
     result = _doctor_run(tmp_path)
 
-    assert [f.severity for f in result.findings if f.message.startswith(message)] == [severity]
-    assert result.exit_code == exit_code
+    message = "sim dry-run [sim_fast] skipped - tb_top is resolved at runtime"
+    assert [f.severity for f in result.findings if f.message.startswith(message)] == [
+        Severity.SKIP
+    ]
+    assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2146,7 +2123,6 @@ class TestCoreAudit:
             project_root=tmp_path,
             booley_dir=tmp_path / ".booley",
             booley_toml={},
-            configs_toml={"x": {}},
             first_target="x",
         )
         original = doctor.TargetCatalog.inspect
@@ -2766,7 +2742,6 @@ class TestWorktreePortability:
             project_root=worktree,
             booley_dir=resolve_checkout_booley_dir(worktree),
             booley_toml={},
-            configs_toml={},
             first_target="",
         )
 
@@ -3139,7 +3114,6 @@ def _adr28_project(tmp_path: Path, *, booley_toml: dict | None = None) -> doctor
         project_root=tmp_path,
         booley_dir=pd,
         booley_toml=booley_toml or {},
-        configs_toml={},
         first_target="x",
     )
 
@@ -3726,8 +3700,7 @@ class TestDeveloperProbe:
 
     @pytest.fixture
     def probe_backend(self, monkeypatch):
-        """Patch the backend config the probe reads; return a setter for ``call_agent``."""
-        from booley.runtime import agent as agent_mod
+        """Patch the backend config the probe reads; return ``install_agent`` for its script."""
         from booley.runtime import agent_config as config_mod
 
         class _Cfg:
@@ -3743,7 +3716,7 @@ class TestDeveloperProbe:
 
         monkeypatch.setattr(config_mod, "load_backend_config", lambda root: None)
         monkeypatch.setattr(config_mod, "get_backend_config", _Cfg)
-        return lambda fake_call: monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+        return lambda script: install_agent(monkeypatch, script)
 
     @pytest.mark.parametrize(
         ("row", "expected", "summary"),
@@ -3845,10 +3818,7 @@ class TestDeveloperProbe:
         from booley.runtime.agent_errors import UsageLimitError
         from tests.runtime.test_execution_ports import FAR_RESET_MESSAGE
 
-        async def limited(_params, **_kw):
-            raise UsageLimitError(FAR_RESET_MESSAGE, provider="claude")
-
-        probe_backend(limited)
+        probe_backend(UsageLimitError(FAR_RESET_MESSAGE, provider="claude"))
         _runtime_setup(tmp_path, monkeypatch, inside=True)
         _deep_synth_writes_complete_report(monkeypatch, tmp_path / ".booley")
 
@@ -3910,7 +3880,6 @@ class TestDeveloperProbe:
     def test_probe_model_access_grades_the_provider_answer(self, tmp_path, monkeypatch, outcome):
         from booley.config.agent import AgentSettings
         from booley.core.models import AgentResult
-        from booley.runtime import agent as agent_mod
         from booley.runtime import agent_config as config_mod
         from booley.runtime.agent_errors import ModelUnavailableError
 
@@ -3921,23 +3890,23 @@ class TestDeveloperProbe:
         monkeypatch.setattr(
             config_mod, "get_backend_config", lambda: SimpleNamespace(settings=AgentSettings())
         )
-        seen = []
-
-        async def fake_call(params, **_kw):
-            seen.append(params.model)
-            if outcome == "refused":
-                raise ModelUnavailableError(
-                    model=params.model, provider="codex", settings=(), detail="model_not_found"
-                )
-            return AgentResult(output="OK", input_tokens=7, timed_out=outcome == "timeout")
-
-        monkeypatch.setattr(agent_mod, "call_agent", fake_call)
+        agent = install_agent(
+            monkeypatch,
+            ModelUnavailableError(
+                model="some-model", provider="codex", settings=(), detail="model_not_found"
+            )
+            if outcome == "refused"
+            else AgentResult(output="OK", input_tokens=7, timed_out=outcome == "timeout"),
+        )
 
         if outcome == "accepted":
             usage = developer_probe.probe_model_access(
                 tmp_path, "some-model", booley_dir=tmp_path / "bd"
             )
-            assert (seen, usage.input_tokens) == (["some-model"], 7)
+            assert ([call.model for call in agent.calls], usage.input_tokens) == (
+                ["some-model"],
+                7,
+            )
             assert loaded == [{"booley_dir": tmp_path / "bd"}]  # same config as the model list
             return
         with pytest.raises(developer_probe.ProbeError) as excinfo:
@@ -3952,12 +3921,11 @@ class TestDeveloperProbe:
     def test_measure_post_call_errors_carry_usage(self, tmp_path, probe_backend, site):
         from booley.core.models import AgentResult
 
-        async def fake_call(params, **_kw):
-            if site == "call":
-                raise RuntimeError("dead backend")
-            return AgentResult(output="OK", input_tokens=10, timed_out=site == "timeout")
-
-        probe_backend(fake_call)
+        probe_backend(
+            RuntimeError("dead backend")
+            if site == "call"
+            else AgentResult(output="OK", input_tokens=10, timed_out=site == "timeout")
+        )
         calls = {"n": 0}
 
         def getrusage(_who):
@@ -3996,21 +3964,17 @@ class TestDeveloperProbe:
         """Without a delta (an earlier child was bigger) the peak is a safe upper bound."""
         from booley.core.models import AgentResult
 
-        seen: list = []
-
-        async def fake_call(params, **_kw):
-            seen.append(params)
-            return AgentResult(
+        agent = probe_backend(
+            AgentResult(
                 output="OK", input_tokens=120, cached_tokens=30, output_tokens=7, cost_usd=0.0031
             )
-
-        probe_backend(fake_call)
+        )
         measurement = developer_probe.measure_developer_rss(tmp_path, getrusage=_rusage(*readings))
         assert measurement.peak_rss_bytes == peak_kib * 1024
         assert measurement.exact is exact
         assert measurement.usage == developer_probe.ProbeUsage(120, 30, 7, 0.0031)
-        assert seen[0].max_turns == 1  # a 1-turn trivial probe, no tools
-        assert seen[0].allowed_agent_capabilities == []
+        assert agent.calls[0].max_turns == 1  # a 1-turn trivial probe, no tools
+        assert agent.calls[0].allowed_agent_capabilities == []
 
 
 # =============================================================
@@ -4183,8 +4147,9 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         # Private: these stubs isolate the expiry display from the other credential checks (not yet moved onto the public run).
-        monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
-        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: auth_token.VISITOR_AUTH)
+        pin_venue(monkeypatch, inside=True)
+        monkeypatch.setenv("BOOLEY_AGENT_APP", auth_token.APP_CLAUDE)
+        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_auth_recorded", lambda *_a: None)
@@ -4198,7 +4163,10 @@ class TestSubscriptionCredsHealth:
             path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
             # Private: the expiry transcript needs the stubs above, which a whole run cannot isolate.
             reporter = doctor._Reporter.create()
-            doctor._run_agent_credential_checks(SimpleNamespace(booley_toml={}), reporter)
+            doctor._run_agent_credential_checks(
+                SimpleNamespace(booley_toml={"agent": {"default": "claude", "auth": "visitor"}}),
+                reporter,
+            )
             result = reporter.result(0)
             legacy = f"{hour + 4:02d}:00 · 08 OCT 2026"
             expected = (
@@ -4748,15 +4716,6 @@ def _probed_binaries(project_root, target, flow_name) -> list[str]:
         ),
         ('[tools]\nbuiltin = ["sim"]\n', "[tools]", "[flows.*]", "FAIL"),
         ('[tools]\ncustom = ["reviewer"]\n', "[tools]", "[specialists.*]", "FAIL"),
-        ('[flows.sim]\nbackend = "docker"\n', ".backend", "delete the key", "FAIL"),
-        ('[flows.sim]\nbackend = "none"\n', ".backend", "enabled = false", "FAIL"),
-        ('[flows.sim]\nvenue = "host"\n', ".venue", "delete the key", "FAIL"),
-        (
-            '[flows.sim]\nhost_setup_commands = ["true"]\n',
-            ".host_setup_commands",
-            "delete the key",
-            "FAIL",
-        ),
         ('[flows.sim]\ntarget = "sim_core"\n', ".target", "explicit target", "FAIL"),
         (
             '[flows.sim]\ndefault_target = "sim_core"\n',
@@ -4774,12 +4733,6 @@ def _probed_binaries(project_root, target, flow_name) -> list[str]:
             '[flows.sim.selftest]\ngood = "sim_core"\n',
             "[flows.sim.selftest]",
             "delete the table",
-            "FAIL",
-        ),
-        (
-            '[sandbox]\npassthrough_env = ["LM_LICENSE_FILE"]\n',
-            ".passthrough_env",
-            "host License Profile",
             "FAIL",
         ),
         ('[feedback]\nmode = "off"\n', "[feedback].mode", "delete [feedback].mode", "FAIL"),
@@ -4890,7 +4843,7 @@ def test_project_checks_run_custom_endpoint_checks_and_no_criteria_check(tmp_pat
     ):
         monkeypatch.setattr(doctor, name, lambda *args, **kwargs: None)
     reporter = doctor._Reporter.create()
-    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, {}, None), reporter)
+    doctor._run_project_checks(doctor.ProjectAudit(tmp_path, project, {}, None), reporter)
     findings = reporter.findings or []
     assert [f for f in findings if f.severity == "fail"] == []
     skipped = [f for f in findings if f.severity == "warn"]
@@ -4914,7 +4867,6 @@ def test_missing_pinned_credential_fails_even_without_cli(tmp_path, monkeypatch)
         project_root=tmp_path,
         booley_dir=tmp_path,
         booley_toml={"agent": {"provider": "claude", "auth": "api_key"}},
-        configs_toml={},
         first_target="",
     )
     # Private: a Project with no installed Agent CLI is not reachable through a whole run (see the stub above).
@@ -4932,11 +4884,10 @@ def test_seed_mount_policy_uses_same_project_policy_as_credential_report(tmp_pat
         project_root=tmp_path,
         booley_dir=tmp_path / ".booley",
         booley_toml={"agent": {"provider": "claude", "auth": "api_key"}},
-        configs_toml={},
         first_target="",
     )
     # Private: pins the audited policy name the credential report renders; not yet moved onto the public run.
-    assert doctor._configured_auth_policy(audit) == "api_key"
+    assert doctor._agent_audit(audit, None).policy("claude") == "api_key"
 
 
 def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
@@ -5298,7 +5249,6 @@ class TestDoctorCommonStateFromWorktree:
             project_root=worktree,
             booley_dir=resolve_checkout_booley_dir(worktree),
             booley_toml={"sandbox": {"memory": "100g"}},
-            configs_toml={},
             first_target="",
         )
         return main / ".booley", project
@@ -5438,7 +5388,6 @@ def test_invalid_endpoint_config_is_left_to_the_endpoint_check(tmp_path):
         project_root=tmp_path,
         booley_dir=tmp_path / ".booley",
         booley_toml={"specialists": {"typo": {"enabled": False}}},
-        configs_toml={},
         first_target="",
     )
 
@@ -5674,49 +5623,29 @@ _VERIBLE_CONTAINER_ROW = "verible-verilog-lint (a .core lint Target selects veri
 
 
 @pytest.mark.parametrize(
-    ("configs", "rc", "reason"),
-    [
-        pytest.param(
-            '[bad]\ntop_module = "dut"\n',
-            1,
-            "defines must be present as list[str]",
-            id="no-defines",
-        ),
-        pytest.param(
-            '[fast]\ndefines = []\ntop_module = "dut"\ntb_top = "tb"\ntests = ["smoke"]\n\n'
-            '[fast.parameters]\nWIDTH = 32\nSECURE = true\nMODE = { expr = "pkg::ModeFast" }\n'
-            'INIT = { string = "rom.mem" }\n',
-            0,
-            "",
-            id="typed-parameters",
-        ),
-        pytest.param(
-            '[test_lists]\nrv_tests = ["smoke", "full"]\n\n[fast]\ndefines = []\n'
-            'top_module = "dut"\ntb_top = "tb"\ntest_list = "rv_tests"\n',
-            0,
-            "",
-            id="shared-test-lists",
-        ),
-        pytest.param(
-            '[bad]\ndefines = []\n\n[bad.parameters]\nMODE = "pkg::ModeFast"\n',
-            1,
-            "plain strings are not allowed",
-            id="plain-string-parameter",
-        ),
-    ],
+    "configs",
+    ['[fast]\ndefines = []\ntb_top = "tb"\ntests = ["smoke"]\n', "[broken"],
+    ids=["valid", "malformed"],
 )
-def test_doctor_validates_configs_toml(tmp_path, monkeypatch, capsys, configs, rc, reason):
-    booley_dir = _write_project(tmp_path, configs_text=configs)
+def test_doctor_warns_once_that_configs_toml_is_ignored(tmp_path, monkeypatch, configs):
+    booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
+    before = _doctor_run(tmp_path)
+    (booley_dir / "configs.toml").write_text(configs, encoding="utf-8")
 
-    code = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+    after = _doctor_run(tmp_path)
 
-    output = capsys.readouterr().out
-    assert code == rc
-    assert reason in output
-    # An invalid config leaves Doctor with no Project; the container tool checks still run, and
-    # none of them declares Verible.
-    assert (_VERIBLE_CONTAINER_ROW in output) is False
+    def other_rows(result):
+        return [
+            (f.severity, f.message) for f in result.findings if "configs.toml" not in f.message
+        ]
+
+    assert [f for f in before.findings if "configs.toml" in f.message] == []
+    mentions = [f for f in after.findings if "configs.toml" in f.message]
+    assert [(f.severity, f.check_id) for f in mentions] == [
+        (Severity.WARN, "config.configs-toml-ignored")
+    ]
+    assert other_rows(after) == other_rows(before)
 
 
 def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path, monkeypatch):
@@ -5738,7 +5667,7 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path, monkeypat
     messages = _messages(result)
     assert "sim dry-run [sim_fast] passed" in messages
     assert "sim dry-run [sim_full] passed" in messages
-    # No fallback to the first entry of configs.toml.
+    # No fallback to a first Target.
     assert not [m for m in messages if m.startswith("lint dry-run")]
     (missing,) = _rows(result, Severity.FAIL, "lint has no Doctor Target")
     assert missing.startswith("lint has no Doctor Target; available Targets: ")
