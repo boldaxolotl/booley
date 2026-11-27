@@ -24,6 +24,7 @@ from tests.time_budget import hang_guard_s
 TOKEN = "pairing-token-0123"
 ADDED = (0, "Added project 1 (p) at /p.")
 SANDBOX_T3_BASE = Path("/home/agent/.t3")  # where the T3 state volume is mounted
+_DASHBOARD_PORT = 8090  # the Dashboard's fixed loopback port (ADR 0093)
 
 
 @dataclass
@@ -57,8 +58,9 @@ class T3CodeFake:
     def serving(self, port: int, **_kwargs: object) -> bool:
         if port == mcp_config.http_port():
             return True
-        # Any other port the start step probes is the Dashboard's.
-        return self.running if port == incontainer_setup.T3_PORT else self.dashboard_running
+        if port == incontainer_setup.T3_PORT:
+            return self.running
+        return port == _DASHBOARD_PORT and self.dashboard_running
 
     def describe(self) -> str | None:
         return self.environment_id if self.running else None

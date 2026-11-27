@@ -79,7 +79,8 @@ def test_shipped_t3code_policy_locks_worktrees_prepare_and_the_dashboard_button(
     ] == [("booley worktree prepare", False)]
     buttons = [script for script in scripts if not script["runOnWorktreeCreate"]]
     assert [button["autoOpenPreview"] for button in buttons] == [True]
-    # The button's fixed URL is the port the start step's `booley dashboard` binds.
+    # ADR 0093: the button opens the page in the preview panel, at a fixed URL whose
+    # port is the one the start step's `booley dashboard` binds.
     assert buttons[0]["previewUrl"] == f"http://127.0.0.1:{sandbox_layout.DASHBOARD_PORT}/"
 
 

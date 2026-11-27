@@ -2518,15 +2518,15 @@ _VSCODE = "VS Code owns the Sandbox, which has no T3 Code relay"
 _DASH_OK = ("pass", "Dashboard answers on 127.0.0.1:8090 in the Sandbox", "")
 _DASH_DOWN = ("fail", "Dashboard does not answer on 127.0.0.1:8090 in the Sandbox")
 _DASH_OFF = (*_DASH_DOWN, "run `booley session up`, which starts the Dashboard")
-_DASH_OFF_VSCODE = (
-    *_DASH_DOWN,
-    "run `Dev Containers: Rebuild Container` in VS Code, which starts the Dashboard",
-)
+_REBUILD_IN_VSCODE = "run `Dev Containers: Rebuild Container` in VS Code"
+_DASH_OFF_VSCODE = (*_DASH_DOWN, f"{_REBUILD_IN_VSCODE}, which starts the Dashboard")
+_NO_AGENT_CLI = "the Sandbox allows no Agent CLI"
 _DASH_UNKNOWN = (
     "fail",
     "Doctor cannot tell whether the Dashboard answers in the Sandbox",
     "run `booley session up`, then rerun `booley doctor`",
 )
+_DASH_UNKNOWN_VSCODE = (*_DASH_UNKNOWN[:2], f"{_REBUILD_IN_VSCODE}, then rerun `booley doctor`")
 
 
 @pytest.mark.parametrize(
@@ -2569,9 +2569,9 @@ _DASH_UNKNOWN = (
         ),
         pytest.param(
             "headless",
-            "running",  # a Sandbox Image whose reply names no Dashboard
+            "running running",
             None,
-            [_SERVER_OK, _RELAY_DOWN, _DASH_UNKNOWN],
+            [_SERVER_OK, _RELAY_DOWN, _DASH_OK],
             id="relay-unrecorded",
         ),
         pytest.param(
@@ -2605,11 +2605,32 @@ _DASH_UNKNOWN = (
         ),
         pytest.param("headless", "port-taken off", None, _UI_OFF, id="no-ui-port-taken"),
         pytest.param(
+            "headless",
+            "off running",
+            None,
+            [*_t3_not_applicable(_NO_UI), _DASH_OK],
+            id="no-ui-hand-started",
+        ),
+        pytest.param(
             "editor",
             "off off",
             None,
             [*_t3_not_applicable(_VSCODE), _DASH_OFF_VSCODE],
             id="vscode",
+        ),
+        pytest.param(
+            "editor",
+            "off skipped",
+            None,
+            [*_t3_not_applicable(_VSCODE), _dashboard_not_applicable(_NO_AGENT_CLI)],
+            id="vscode-no-agent-cli",
+        ),
+        pytest.param(
+            "editor",
+            "",
+            None,
+            [*_t3_not_applicable(_VSCODE), _DASH_UNKNOWN_VSCODE],
+            id="vscode-unknown",
         ),
     ],
 )
@@ -2663,6 +2684,16 @@ def test_t3_code_inspection_in_the_sandbox_skips_an_unproven_server(
     assert [str(f.severity) for f in report.findings] == ["skip", "skip", dashboard[0]]
     assert first.message.startswith(server)
     assert last.message.startswith(dashboard[1])
+
+
+def test_status_shows_off_where_no_agent_cli_starts_the_dashboard(
+    workspace: Path, attached: SimpleNamespace
+) -> None:
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, vscode=True, name=name)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off skipped\n")
+
+    assert sr.ui_status(workspace) == "UI: off\nDashboard: off"
 
 
 def test_t3_code_ui_inspection_skips_when_the_sandbox_cannot_be_listed(

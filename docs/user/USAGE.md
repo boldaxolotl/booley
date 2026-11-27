@@ -214,11 +214,9 @@ Specialists. Open it to see what runs there, what waits and how each run ended.
    worktrees. Each has its own page. With no T3 Code worktree, the page opens
    the main checkout.
 
-A Sandbox started with `booley session up --no-ui` has no Dashboard.
-
-It shows the running and queued Jobs, and the finished ones with a link to each
-report. A `booley flow` or `booley specialist` run you type in a container
-terminal is a Standalone Job, owned by `you`.
+The page shows the running and queued Jobs, and the finished ones with a link
+to each report. A `booley flow` or `booley specialist` run you type in a
+container terminal is a Standalone Job, owned by `you`.
 
 ### Several agents at once
 

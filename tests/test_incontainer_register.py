@@ -17,6 +17,7 @@ import pytest
 import tomli
 
 from booley.harness import incontainer_register as entry
+from booley.harness import incontainer_t3
 from booley.mcp import catalog
 from booley.runtime import (
     auth_token,
@@ -483,8 +484,10 @@ def test_no_agent_cli_skips_t3_code(tmp_path, monkeypatch, capsys):
 
     entry.main()
 
-    assert "server:skipped t3:skipped " in capsys.readouterr().err
-    assert t3.served == []
+    assert "server:skipped t3:skipped dashboard:skipped " in capsys.readouterr().err
+    assert t3.served == t3.dashboards == []
+    assert incontainer_t3.main(["state"]) == 0
+    assert capsys.readouterr().out == "off skipped\n"
 
 
 # ===========================================================================

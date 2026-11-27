@@ -77,7 +77,12 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
         and state.relay_error is None
     ):
         # No relay is recorded: `session up` started no UI that is still meant to run.
-        _ui_not_applicable(findings, "the UI is off (booley session up --no-ui)")
+        reason = "the UI is off (booley session up --no-ui)"
+        if state.dashboard == "running":  # someone started it by hand
+            _not_applicable(findings, reason)
+            _judge_dashboard(findings, state)
+        else:
+            _ui_not_applicable(findings, reason)
     else:
         _judge_server(findings, state.t3)
         _judge_relay(findings, state)
@@ -134,21 +139,22 @@ def _ui_not_applicable(findings: Findings, reason: str) -> None:
 def _judge_dashboard(findings: Findings, state: session_runtime.UiState) -> None:
     if state.dashboard == "running":
         findings.pass_(f"Dashboard answers on {_DASHBOARD}")
-    elif state.dashboard != "off":
+        return
+    if state.dashboard == "skipped":
+        findings.skip("Dashboard check not applicable - the Sandbox allows no Agent CLI")
+        return
+    # `session up` runs no hook in a Sandbox VS Code owns; the start hook VS Code runs does.
+    remedy = "run `booley session up`"
+    if state.vscode:
+        remedy = "run `Dev Containers: Rebuild Container` in VS Code"
+    if state.dashboard == "off":
         findings.fail(
-            "Doctor cannot tell whether the Dashboard answers in the Sandbox",
-            "run `booley session up`, then rerun `booley doctor`",
-        )
-    elif state.vscode:
-        # `session up` runs no hook in this Sandbox; the start hook VS Code runs does.
-        findings.fail(
-            f"Dashboard does not answer on {_DASHBOARD}",
-            "run `Dev Containers: Rebuild Container` in VS Code, which starts the Dashboard",
+            f"Dashboard does not answer on {_DASHBOARD}", f"{remedy}, which starts the Dashboard"
         )
     else:
         findings.fail(
-            f"Dashboard does not answer on {_DASHBOARD}",
-            "run `booley session up`, which starts the Dashboard",
+            "Doctor cannot tell whether the Dashboard answers in the Sandbox",
+            f"{remedy}, then rerun `booley doctor`",
         )
 
 

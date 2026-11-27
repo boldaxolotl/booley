@@ -2675,7 +2675,7 @@ class UiState:
 
     vscode: bool
     t3: str  # the Sandbox's "running", "off" or "port-taken"; "unknown" when it gave no answer
-    dashboard: str  # the Sandbox's "running" or "off"; "unknown" when it gave no answer
+    dashboard: str  # the Sandbox's "running", "off" or "skipped"; "unknown" without an answer
     relay: RelayObservation | None
     relay_error: str | None = None
 
@@ -2693,7 +2693,6 @@ def ui_state(workspace: Path) -> UiState | None:
     except subprocess.TimeoutExpired:
         reply = ""
     t3_state, _, dashboard = reply.partition(" ")
-    # A Sandbox Image whose entry names no Dashboard gives only the first word.
     t3_state, dashboard = t3_state or "unknown", dashboard or "unknown"
     try:
         relay = t3_relay.observe(workspace, selected.name)
@@ -2713,13 +2712,14 @@ def ui_status(workspace: Path) -> str | None:
         relay = "off"
     else:
         relay = f"127.0.0.1:{state.relay.port}"
+    # "skipped" (no Agent CLI to start it for) reads as off.
+    dashboard = "off" if state.dashboard == "skipped" else state.dashboard
     if state.t3 == "off" and relay == "off":
-        return f"UI: off\nDashboard: {state.dashboard}"
+        return f"UI: off\nDashboard: {dashboard}"
     t3 = state.t3
     if t3 == incontainer_setup.T3_PORT_TAKEN:
         t3 = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
-    dashboard = state.dashboard
-    if dashboard == "off":
+    if state.dashboard == "off":
         dashboard = f"not answering on 127.0.0.1:{DASHBOARD_PORT}"
     return f"T3 Code: {t3}\nT3 Code relay: {relay}\nDashboard: {dashboard}"
 

@@ -32,11 +32,12 @@ worktree.
   Doctor health: T3 Code lists threads, and Doctor reports health.
 - **A web page in the preview panel.** One server in the Sandbox serves
   every worktree's Dashboard; the worktree is a URL parameter
-  (`?worktree=<path>`). It starts with T3 Code on a fixed loopback port. A
-  locked T3 Code button opens it with no worktree, since script URLs are
-  literal; the page asks which one unless the main checkout is the only
-  choice. Headless Chrome ships in every Sandbox image, because the preview
-  panel needs it and the Dashboard is the only Jobs UI.
+  (`?worktree=<path>`). It starts with T3 Code on a fixed loopback port, and
+  a locked T3 Code button opens it in the preview panel. The button's preview
+  URL is fixed text and names no worktree, so the page asks which one unless
+  the main checkout is the only choice. Headless Chrome ships in every Sandbox
+  image, because the preview panel needs it and the Dashboard is the only Jobs
+  UI.
 - **A feed.** Running and queued Jobs stay on top. Finished Jobs follow as
   result cards in a Results section collapsed by default. A Run button in
   the top bar opens the Run form in place; the form ends on ADR 0086's
@@ -66,8 +67,9 @@ worktree.
   per thread, and the queue position shown on Run covers the slot question.
 - **Chrome as an opt-in image variant.** Saves 304 MB, but would make the
   only Jobs UI optional.
-- **The agent opens it (`preview_open`).** It names the worktree, but only when
-  the agent chooses to. It can be added later.
+- **The agent opens it (`preview_open`).** The agent could pass its worktree,
+  but the page would open only when it chose to. Not chosen; it can be added
+  later.
 
 ## Consequences
 
