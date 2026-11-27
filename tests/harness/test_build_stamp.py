@@ -503,30 +503,18 @@ class TestDevelopmentBuildContext:
                 assert (extracted / "crates" / "bwave" / bwave_input).is_file(), bwave_input
 
     @pytest.mark.parametrize(
-        ("members", "sha", "message"),
-        [
-            (["safe"], "0" * 64, "hash does not match"),
-            (["../escape"], None, "unsafe"),
-            (["/absolute"], None, "unsafe"),
-            (["back\\slash"], None, "unsafe"),
-            (["directory/"], None, "unsafe"),
-            (["same", "same"], None, "unsafe"),
-        ],
-        ids=["hash", "parent", "absolute", "backslash", "directory", "duplicate"],
+        "members",
+        [["../escape"], ["/absolute"], ["back\\slash"], ["directory/"], ["same", "same"]],
+        ids=["parent", "absolute", "backslash", "directory", "duplicate"],
     )
     def test_extraction_rejects_a_tampered_context(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        members: list[str],
-        sha: str | None,
-        message: str,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: list[str]
     ):
         package = tmp_path / "pkg"
         archive_path = package / "data" / "development-build-context.tar.gz"
         archive_path.parent.mkdir(parents=True)
         _write_archive(archive_path, members)
-        digest = sha or hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
         (package / "_build_commit.py").write_bytes(
             f"DEVELOPMENT_CONTEXT_SHA256 = '{digest}'\n"
             f"PAYLOAD_FINGERPRINT = '{'a' * 64}'\n".encode()
@@ -536,24 +524,31 @@ class TestDevelopmentBuildContext:
         temporary.mkdir()
         monkeypatch.setattr(tempfile, "tempdir", str(temporary))
 
-        with pytest.raises(ValueError, match=message), extracted_development_context():
+        with pytest.raises(ValueError, match="unsafe"), extracted_development_context():
             pytest.fail("a tampered context must not be extracted")
 
         assert list(temporary.iterdir()) == []
 
-    def test_rejects_unsafe_member_before_writing_any_file(self, tmp_path: Path):
-        archive_path = tmp_path / "unsafe.tar.gz"
-        _write_archive(archive_path, ["safe", "../escape"])
+    @pytest.mark.parametrize(
+        ("members", "sha", "message"),
+        [(["safe"], "0" * 64, "hash does not match"), (["safe", "../escape"], None, "unsafe")],
+        ids=["hash", "unsafe-member"],
+    )
+    def test_rejects_a_bad_context_before_writing_any_file(
+        self, tmp_path: Path, members: list[str], sha: str | None, message: str
+    ):
+        archive_path = tmp_path / "bad.tar.gz"
+        _write_archive(archive_path, members)
         stamp = tmp_path / "stamp.py"
         stamp.write_text("COMMIT = 'test'\n", encoding="utf-8")
         destination = tmp_path / "destination"
 
-        with pytest.raises(ValueError, match="unsafe"):
+        with pytest.raises(ValueError, match=message):
             # private: public extraction deletes its folder on failure, hiding an early write
             build_stamp_module._extract_development_context(
                 archive_path,
                 destination,
-                expected_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                expected_sha256=sha or hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                 expected_payload_fingerprint="0" * 64,
                 stamp_source=stamp,
             )
