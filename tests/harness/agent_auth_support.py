@@ -1,6 +1,6 @@
 """Shared set-up for the harness tests of the Agent CLI credential policy.
 
-``pin_venue`` chooses host or Sandbox, ``install_agent_clis`` makes Doctor see both
+``pin_venue`` fakes the Sandbox venue check, choosing host or Sandbox, ``install_agent_clis`` makes Doctor see both
 Agent CLIs, and ``credential_findings`` runs Doctor's agent credential section alone.
 """
 

@@ -1,4 +1,4 @@
-"""Shared fake of the Docker port of the host sidecars (proxy, reaper, network, Sessions).
+"""Shared fake of the Docker CLI boundary for the host sidecars (proxy, reaper, network, Sessions).
 
 ``EgressDocker`` answers the ``docker`` verbs that ``booley.harness.host_sidecars`` and
 Session admission issue, from memory. Tests of Host Bootstrap, Doctor and init that need a
@@ -31,6 +31,8 @@ class EgressDocker:
     ``stale_network`` makes the network report ``Internal: false`` until it is created
     again; ``unlabelled_builds`` makes ``build`` drop the ``--label`` stamps; ``reply``
     answers every later call that starts with the given arguments with a canned result.
+    ``endpoint``, ``version`` (client OS, a tab, server platform) and ``daemon_id`` are what
+    the Docker CLI reports about the selected daemon.
     """
 
     def __init__(self) -> None:
@@ -40,6 +42,9 @@ class EgressDocker:
         self.network = False
         self.stale_network = False
         self.unlabelled_builds = False
+        self.endpoint = "unix:///var/run/docker.sock"
+        self.version = "linux\tDocker Engine - Community"
+        self.daemon_id = "daemon-a"
         self._replies: list[tuple[tuple[str, ...], subprocess.CompletedProcess[str]]] = []
 
     def reply(self, *prefix: str, returncode: int = 1, stdout: str = "", stderr: str = "") -> None:
@@ -122,7 +127,8 @@ class EgressDocker:
         entry["session"] = description
 
     def mutations(self) -> list[list[str]]:
-        return [call for call in self.calls if "inspect" not in call and call[0] != "ps"]
+        read_only = {"ps", "version", "info", "exec"}
+        return [call for call in self.calls if "inspect" not in call and call[0] not in read_only]
 
     def run(self, args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
         del timeout
@@ -131,6 +137,7 @@ class EgressDocker:
             if tuple(args[: len(prefix)]) == prefix:
                 return canned
         handler = {
+            ("context", "inspect"): lambda _args: completed(stdout=f"{self.endpoint}\n"),
             ("image", "inspect"): self._inspect_image,
             ("container", "inspect"): self._inspect_container,
             ("network", "inspect"): self._inspect_network,
@@ -147,7 +154,16 @@ class EgressDocker:
             "build": self._build,
             "run": self._run,
             "start": lambda _args: completed(),
+            "version": lambda _args: completed(stdout=f"{self.version}\n"),
+            "info": lambda _args: completed(stdout=f"{self.daemon_id}\n"),
+            "exec": self._exec,
         }[args[0]](args)
+
+    def _exec(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        """Answer the daemon-ID probe a running container makes through its mounted socket."""
+        if self._find(args[1]) is None:
+            return completed(1, stderr="No such container")
+        return completed(stdout=f"{self.daemon_id}\n")
 
     def _inspect_image(self, args: list[str]) -> subprocess.CompletedProcess[str]:
         if args[2] not in self.images:

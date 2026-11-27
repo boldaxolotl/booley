@@ -285,8 +285,20 @@ def test_setup_failure_cleans_named_daemon(monkeypatch, tmp_path: Path, failure:
         (
             "none",
             {},
-            [{"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}],
-            "must not mount an outer Docker socket",
+            [
+                {
+                    "Type": "bind",
+                    "Source": "/var/run/docker.sock",
+                    "Destination": "/var/run/docker.sock",
+                }
+            ],
+            "must not bind-mount a host path",
+        ),
+        (
+            "none",
+            {},
+            [{"Type": "bind", "Source": "/srv/docker/second.sock", "Destination": "/outer.sock"}],
+            "must not bind-mount a host path",
         ),
     ],
 )

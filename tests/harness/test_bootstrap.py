@@ -1670,6 +1670,10 @@ class _InspectionDocker:
 
     def run(self, args, *, timeout=30):
         assert timeout
+        if args[0] == "version":
+            return subprocess.CompletedProcess(args, 0, "linux\tDocker Engine\n", "")
+        if args[:2] == ["context", "inspect"]:
+            return subprocess.CompletedProcess(args, 0, "unix:///var/run/docker.sock\n", "")
         assert "inspect" in args, args
         self.calls.append(args)
         resource = (

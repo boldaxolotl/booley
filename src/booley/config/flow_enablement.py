@@ -18,8 +18,6 @@ from booley.core.config_paths import (
 )
 from booley.targets.flow_names import config_section
 
-_RETIRED_EXECUTION_KEYS = ("venue", "backend", "host_setup_commands")
-
 
 class FlowConfigError(BooleyTomlError):
     """Project Flow configuration contains a retired key or an invalid ``enabled``."""
@@ -59,59 +57,23 @@ def retired_config_errors(raw: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     flows = raw.get("flows", {})
     if isinstance(flows, dict):
-        errors.extend(_retired_flows_errors(flows))
-    sandbox = raw.get("sandbox", {})
-    if isinstance(sandbox, dict) and "passthrough_env" in sandbox:
-        errors.append(
-            "booley.toml [sandbox].passthrough_env is retired; use a host License Profile"
-        )
+        for retired in ("elab", "elaborate"):
+            if retired in flows:
+                errors.append(
+                    f"booley.toml [flows.{retired}] is retired; use "
+                    "`booley flow sim --mode elab-only` and delete "
+                    "standalone_frontend"
+                )
+        for name, section in flows.items():
+            if not isinstance(section, dict):
+                continue
+            if "standalone_frontend" in section:
+                errors.append(
+                    f"booley.toml [flows.{name}].standalone_frontend is retired; "
+                    "delete the key — the standalone module probe now follows "
+                    "each Target's simulator"
+                )
     return errors
-
-
-def _retired_flows_errors(flows: Mapping[str, Any]) -> list[str]:
-    errors: list[str] = []
-    for retired in ("elab", "elaborate"):
-        if retired in flows:
-            errors.append(
-                f"booley.toml [flows.{retired}] is retired; use "
-                "`booley flow sim --mode elab-only` and delete "
-                "standalone_frontend"
-            )
-    errors.extend(
-        _retired_flow_key_error("flows", key, flows[key])
-        for key in _RETIRED_EXECUTION_KEYS
-        if key in flows
-    )
-    for name, section in flows.items():
-        if not isinstance(section, dict):
-            continue
-        if "standalone_frontend" in section:
-            errors.append(
-                f"booley.toml [flows.{name}].standalone_frontend is retired; "
-                "delete the key — the standalone module probe now follows "
-                "each Target's simulator"
-            )
-        errors.extend(
-            _retired_flow_key_error(f"flows.{name}", key, section[key])
-            for key in _RETIRED_EXECUTION_KEYS
-            if key in section
-        )
-    return errors
-
-
-def _retired_flow_key_error(section: str, key: str, value: object) -> str:
-    if key == "backend" and str(value).strip() == "none" and section != "flows":
-        flow_name = section.removeprefix("flows.")
-        return (
-            f'booley.toml [{section}].backend = "none" is retired; write instead:\n'
-            f"  [flows.{flow_name}]\n  enabled = false"
-        )
-    if key == "backend":
-        return (
-            f"booley.toml [{section}].backend is retired; all Flows run inside "
-            "the Sandbox; delete the key"
-        )
-    return f"booley.toml [{section}].{key} is retired; delete the key"
 
 
 def _load_config(work_dir: Path | None) -> tuple[Path | None, dict[str, Any]]:

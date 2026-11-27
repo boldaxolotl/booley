@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Reviewed Commit"
+  short_description: "Commit, review, fix, and verify to a Reviewed Commit"
+  default_prompt: "Use $booley-reviewed-commit to produce a Reviewed Commit of this work."
+
+policy:
+  allow_implicit_invocation: false
