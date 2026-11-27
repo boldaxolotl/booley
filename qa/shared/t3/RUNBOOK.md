@@ -90,7 +90,9 @@ host.
 - **No leftovers.** In the QA Host, `$QA_PROJECT` is absent or empty, and no
   Sandbox of it runs (`qa$ booley session status` there reports it absent).
   Otherwise ask the maintainer before removing anything: it may be another
-  run's live repro.
+  run's live repro. No T3 state volume of an earlier run may be left for that
+  path either: its threads and pairings name worktrees that are gone. Step 3
+  removes any before the clone.
 
 ## 2. Candidate build
 
@@ -132,6 +134,21 @@ upstream picorv32 at the
 [picorv32 mission](../../missions/picorv32/MISSION.md)'s pin, with the demo
 cloned at `main` as its Stealth Booley Directory. Record the demo `main` SHA
 in `log.md`.
+
+First remove what an earlier run left for that path, T3 Code's state volume
+included. `$QA_PROJECT` may not exist yet, so run this one from `/home/qa`
+(`-w /home/qa`):
+
+```sh
+qa$ booley projects forget --purge $QA_PROJECT
+```
+
+Worked when it ends with `No Docker resources left behind for this Project.`
+A `Removed:` line means an earlier run skipped its cleanup: note it in
+`log.md`. A `Left behind` table means something of that path was not
+removed: stop and ask the maintainer.
+
+Then clone:
 
 ```sh
 qa$ git clone https://github.com/YosysHQ/picorv32 $QA_PROJECT
@@ -189,21 +206,38 @@ still exits 0; that is a setup failure, so stop. A `<port>` outside
 Worked when the page shows the T3 Code UI with the demo Project (`picorv32`)
 in its project list, not "No project" and not a pairing prompt. An expired or
 used link shows a pairing error: make a new one with step 4.1, never reuse one.
-Pair again the same way after `booley session down` and `up`, or when the relay
-reports it moved (`warning: 127.0.0.1:<old> is held by another process ...`).
+
+**After a restart.** Pair once per run: `booley session down` keeps T3 Code's
+threads, pairings and worktrees, so your tab stays paired across `down` and
+`up`. Start the Sandbox again as step 3 does, so its new link stays in a file:
+
+```sh
+qa$ umask 077; booley session up > ~/scratch/session-up.txt 2>&1
+qa$ grep -v 'pair a browser' ~/scratch/session-up.txt; rm ~/scratch/session-up.txt
+```
+
+Then `preview_navigate` your tab to `http://127.0.0.1:<outer>/` and take a
+`preview_snapshot`. Worked when the page shows the Project and its threads
+with no pairing prompt; a pairing prompt is a finding. Pair again with step
+4.1 only when the filtered output holds `warning: 127.0.0.1:<old> is held by
+another process; the T3 Code relay moved to 127.0.0.1:<new>, ...`: `<new>` is
+the new `<port>`, and one outside 3780-3784 is `blocked: qa host`.
 
 ## 5. Dashboard and threads
 
-**Dashboard.** Until the Sandbox starts the Dashboard and T3 Code opens it
-on its own (#4749), start it by hand. In the T3 Code UI, open the terminal
-drawer of a thread on the main checkout and run `booley dashboard`
-there; it serves on Sandbox `127.0.0.1:8090` until stopped. Open
-`http://127.0.0.1:8090/?worktree=/work` (or another worktree's absolute path)
-in T3 Code's preview panel. The relay forwards only T3 Code's own port, so
-your tab can't load the Dashboard directly; it appears only inside the panel.
+**Dashboard.** The Sandbox serves the Dashboard on Sandbox `127.0.0.1:8090`
+from the moment it starts, with T3 Code. Click **Booley Dashboard** in T3
+Code's top bar: the page opens in T3 Code's preview panel and lists the main
+checkout (`/work`) and each T3 Code worktree; pick one. With no T3 Code
+worktree it opens the main checkout. For another worktree, click the button
+again. Never start or stop a Dashboard by hand: a second one finds the port
+taken, and `session down` stops this one with the Sandbox. The relay forwards
+only T3 Code's own port, so your tab can't load the Dashboard directly; it
+appears only inside the panel.
 
-Worked when the preview panel shows the Dashboard page for that worktree and
-it refreshes (every 3 s).
+Worked when `qa$ booley session status` reports `Dashboard: running` and the
+preview panel shows the Dashboard page for the chosen worktree, refreshing
+every 3 s. A Dashboard that does not answer is a finding.
 
 **Threads.** A Developer Agent is a new T3 Code thread on the Project: choose
 the provider (Claude or Codex) and the checkout in the T3 Code UI, then send
@@ -287,19 +321,25 @@ gap in `log.md` the first time you meet it.
 
 ## 10. Cleanup
 
-1. Stop `booley dashboard` (Ctrl+C in its terminal drawer) and close
-   your tab (`t3_preview_close` with your `tabId`).
+1. Close your tab (`t3_preview_close` with your `tabId`).
 2. `qa$ booley session down` in `$QA_PROJECT`, which removes the Sandbox and
-   stops the relay. The relay's port record, in the QA config home, stays on
-   purpose: the next run at the same `$QA_PROJECT` reuses the port.
-3. `qa$ rm -rf $QA_PROJECT`, and remove any link files left in
+   stops T3 Code, the Dashboard and the relay. The relay's port record, in the
+   QA config home, stays on purpose: the next run at the same `$QA_PROJECT`
+   reuses the port.
+3. `qa$ booley projects forget --purge $QA_PROJECT`, which removes the
+   Project's T3 state volume (its threads, pairings and worktree records), its
+   Agent CLI state volumes and its images, so the next run at that path starts
+   with none. Done when it ends with
+   `No Docker resources left behind for this Project.` It keeps the relay's
+   port record.
+4. `qa$ rm -rf $QA_PROJECT`, and remove any link files left in
    `/home/qa/scratch/` and `<run-dir>/scratch/`.
-4. Remove the candidate wheel, inside the QA Host
+5. Remove the candidate wheel, inside the QA Host
    (`qa$ rm /home/qa/<wheel-file>`) and on the outer host, and its detached
    worktree. The candidate stays installed in the QA Host; the next run
    replaces it.
-5. `docker rm -f qa-host`. Keep its volumes and image for the next run.
-6. Save `qa/shared/qa-host/primary-ids.sh` output to
+6. `docker rm -f qa-host`. Keep its volumes and image for the next run.
+7. Save `qa/shared/qa-host/primary-ids.sh` output to
    `<run-dir>/evidence/qa-host/after.txt` and `diff` it with `before.txt`
    (QA Host step 3.2). Only `qa-host` rows may differ, such as a new
    `qa-host:<tag>` image. Any other difference is a finding: record each row
@@ -307,13 +347,13 @@ gap in `log.md` the first time you meet it.
    one snapshot can be another process's short-lived container; still record
    it.
 
-Check: `qa$ booley session status`, run in `$QA_PROJECT` before item 3,
+Check: `qa$ booley session status`, run in `$QA_PROJECT` after item 2,
 reports the Sandbox absent, and the outer host's `booley --version` prints
 the same revision as before the run.
 
 Exception: if a finding needs a live repro, leave the QA Host and its
-Sandbox up, skip items 2-5, and tell the maintainer the Project path in the
-QA Host, the candidate revision, and the finding. Item 6 still runs.
+Sandbox up, skip items 2-6, and tell the maintainer the Project path in the
+QA Host, the candidate revision, and the finding. Item 7 still runs.
 
 ## Not yet verified
 

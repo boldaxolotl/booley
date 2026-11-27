@@ -9,7 +9,7 @@ and nested actions.
 
 | Command | Purpose |
 |---------|---------|
-| `booley dashboard` | Serve the web Dashboard of each worktree's Jobs |
+| `booley dashboard` | Serve the web Dashboard of each worktree's Jobs; a Sandbox that runs T3 Code already serves it on port 8090 (T3 Code's Booley Dashboard button opens it), so start another only with `--port` |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley measure` | Measure a commit against `metrics.toml`; `--validate` checks the file |
 | `booley specialist` | List or directly run visible Specialists |
