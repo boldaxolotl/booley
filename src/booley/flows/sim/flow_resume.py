@@ -1,26 +1,18 @@
 """Simulation Record resume (`--resume-from`) for the Simulation Flow.
 
 The validated manifest, never ``progress.json``, decides what resume recovers.
-Missing, malformed, or concurrently changed origin progress only skips marking
-the origin ``superseded``.
+A coverage Simulation Record never resumes.
 """
 
 from __future__ import annotations
 
-import os
 import shlex
 from collections.abc import Callable, Mapping
-from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import default_report_root
-from booley.flows.progress_lifecycle import (
-    supersede_progress,
-)
-from booley.flows.sim.coverage_invocation import CoverageTargetPlan
-from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.live_progress import (
     attempt_scope,
 )
@@ -53,11 +45,6 @@ from .record import (
     SimulationRecordRecoveryStatus,
     ValidatedResumeManifest,
 )
-from .record.coordinator import SimulationRecordPublicationError
-from .record.coverage_execution import (
-    CoverageAggregateExecutor,
-    _CoverageAggregateError,
-)
 from .record.flow_planning import (
     plan_coarse_simulation_record,
     plan_ordinary_hdl_simulation_record,
@@ -67,13 +54,7 @@ from .record.planning import (
     verify_workload,
 )
 from .record.serial_execution import OrdinaryHdlSerialExecutor
-from .record_presentation import (
-    _coverage_failed_target,
-    _coverage_preflight_findings_outcome,
-    _coverage_target_outcome,
-    _CoverageTargetError,
-    _simulation_record_recovery_detail,
-)
+from .record_presentation import _simulation_record_recovery_detail
 from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
 
 if TYPE_CHECKING:
@@ -83,10 +64,9 @@ if TYPE_CHECKING:
     from booley.flows.base import SubprocessResult
     from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.request import SimRequest
-    from booley.flows.sim.verilator_coverage import AuthenticatedSimulationExecutionPort
     from booley.flows.target_test_plan import TargetTestPlan
 
-    from .execution import SimulationExecution, SimulationOptions
+    from .execution import SimulationExecution
     from .record import SimulationRecordPolicy
 
 
@@ -111,27 +91,6 @@ def _fresh_simulation_record_recovery_detail(
     return _simulation_record_recovery_detail(status)
 
 
-def _checkpoint_coverage_record(
-    progress: CoverageProgress,
-    outcome: SimulationRecordOutcome,
-    evaluation: str,
-    publish: Callable[[SimulationRecordOutcome], bool],
-) -> bool:
-    """Retain one completed Target once its projection is published; ``False`` keeps it pending."""
-    try:
-        target = _coverage_target_outcome(outcome)
-    except (OSError, ValueError) as error:
-        detail = _coverage_failed_target(
-            str(outcome.target["selector"]), error, evaluation, outcome
-        )
-        raise _CoverageTargetError(str(error), detail) from error
-    if not publish(outcome):
-        return False
-    progress.outcomes.append(target)
-    progress.checkpoint()
-    return True
-
-
 class SimulationRecordResumeMixin:
     """Simulation Record resume paths for `SimulateFlow`."""
 
@@ -152,7 +111,6 @@ class SimulationRecordResumeMixin:
             error: SimulationRecordCancellationError,
             detail: Mapping[str, object] | None = None,
         ) -> EndpointOutcome: ...
-        def _capture_cycle_report(self, outcomes: Sequence[SimulationRecordOutcome]) -> None: ...
         def _write_simulation_record_progress(
             self,
             targets: Sequence[str],
@@ -172,24 +130,12 @@ class SimulationRecordResumeMixin:
         def _execute_boundary(
             self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
         ) -> SubprocessResult: ...
-        def _coverage_simulation_record_execution(
-            self,
-            plan: CoverageTargetPlan,
-            options: SimulationOptions,
-            pre_sim_commands: tuple[str, ...],
-            pre_sim_build_access: str,
-        ) -> AuthenticatedSimulationExecutionPort: ...
         def _simulation_execution(self) -> SimulationExecution: ...
 
-    def _refuse_unfinished_coverage_resume(
+    def _refuse_coverage_resume(
         self, validated: ValidatedResumeManifest
     ) -> EndpointOutcome | None:
-        """Refuse resuming a coverage Simulation Record whose collection has no result.
-
-        A resumed attempt builds privately and re-runs every test, so it costs
-        the same as a new run.  Publication-only resumes (collection complete)
-        are untouched, as are all non-coverage Simulation Records.
-        """
+        """Refuse every coverage Simulation Record, naming the new run that repeats it."""
         manifest = validated.manifest
         view = SimulationRecordManifestView(manifest)
         if not view.is_coverage:
@@ -202,18 +148,25 @@ class SimulationRecordResumeMixin:
                 report_text=f"Simulation Record integrity failure: {exc}",
             )
         unfinished = view.unfinished_work_item_ids(status)
-        if not unfinished:
-            return None
-        item_id = unfinished[0]
-        state = "interrupted" if item_id in status.interrupted else "pending"
+        if unfinished:
+            item_id = unfinished[0]
+            state = "interrupted" if item_id in status.interrupted else "pending"
+            reason = (
+                f"its coverage collection has no recorded result (work item {item_id} is "
+                f"{state}; the run was interrupted or is still running). Resuming would "
+                "rebuild and re-run every test, so start a new run instead:"
+            )
+        else:
+            reason = (
+                "its coverage collection finished, but a coverage run never resumes, "
+                "so start a new run instead:"
+            )
         command, note = self._new_coverage_run_command(validated, view)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
                 f"sim: cannot resume coverage Simulation Record {status.manifest_path}: "
-                f"its coverage collection has no recorded result (work item {item_id} is "
-                f"{state}; the run was interrupted or is still running). Resuming would "
-                f"rebuild and re-run every test, so start a new run instead:\n  {command}\n{note}"
+                f"{reason}\n  {command}\n{note}"
             ),
             detail=_simulation_record_recovery_detail(status),
         )
@@ -373,17 +326,8 @@ class SimulationRecordResumeMixin:
             lock_error = self._lock_simulation_record_resume_origin(validated, observed)
             if lock_error is not None:
                 return lock_error
-            coverage_plan = (
-                self._resume_coverage_target_plan(validated)
-                if SimulationRecordManifestView(validated.manifest).is_coverage
-                else None
-            )
-            if coverage_plan is None:
-                return self._resume_ordinary_steps(
-                    validated, invocation, admission, manifest_published
-                )
-            return self._resume_coverage_steps(
-                validated, invocation, admission, coverage_plan, manifest_published
+            return self._resume_ordinary_steps(
+                validated, invocation, admission, manifest_published
             )
 
         return _SimulationRecordRun(
@@ -391,8 +335,8 @@ class SimulationRecordResumeMixin:
             refusal_detail=_simulation_record_recovery_detail(observed),
             progress_operation="publish Simulation progress",
             start=start,
-            failure=lambda error, invocation: self._simulation_record_resume_failure(
-                validated, observed, invocation, error
+            failure=lambda error, _invocation: self._simulation_record_resume_failure(
+                validated, observed, error
             ),
         )
 
@@ -426,7 +370,6 @@ class SimulationRecordResumeMixin:
         self,
         validated: ValidatedResumeManifest,
         observed: SimulationRecordRecoveryStatus,
-        invocation: Path,
         error: Exception,
     ) -> EndpointOutcome:
         detail = _fresh_simulation_record_recovery_detail(validated, observed)
@@ -436,51 +379,10 @@ class SimulationRecordResumeMixin:
         if isinstance(error, SimulationRecordWorkloadMismatchError):
             detail.update(error.diagnostic.detail)
             message = error.diagnostic.report(verbose=self.args.verbose)
-        if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
-            selector = str(error.detail["target"])
-            detail["targets"] = {
-                selector: _coverage_failed_target(
-                    selector, error, str(error.detail["evaluation"]), report_invocation=invocation
-                )
-            }
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=f"Simulation Record resume failed: {message}",
             detail=detail,
-        )
-
-    def _resume_coverage_steps(
-        self,
-        validated: ValidatedResumeManifest,
-        invocation: Path,
-        admission: AdmissionContext,
-        coverage_plan: CoverageTargetPlan,
-        manifest_published: Callable[[Path], None],
-    ) -> _SimulationRecordSteps:
-        progress = CoverageProgress(invocation, (coverage_plan.handle.selector,))
-
-        def run() -> EndpointOutcome:
-            progress.checkpoint()
-            outcome = self._run_validated_resume_simulation_record(
-                validated, invocation, admission, coverage_plan, manifest_published
-            )
-            self._capture_cycle_report((outcome,))
-            published = _checkpoint_coverage_record(
-                progress,
-                outcome,
-                "not_requested" if coverage_plan.criterion is None else "blocked",
-                self._publish_projection,
-            )
-            supersede_progress(
-                validated.path.parents[3] / "progress.json",
-                new_invocation=int(invocation.name),
-                new_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
-                booley_dir=validated.booley_dir,
-            )
-            return self._resumed_endpoint_outcome(outcome, published=published)
-
-        return _SimulationRecordSteps(
-            lambda phase: progress.checkpoint(complete=True, phase=phase), run
         )
 
     def _resume_ordinary_steps(
@@ -504,7 +406,7 @@ class SimulationRecordResumeMixin:
                 operation="publication",
             ):
                 outcome = self._run_validated_resume_simulation_record(
-                    validated, invocation, admission, None, manifest_published
+                    validated, invocation, admission, manifest_published
                 )
             published = self._publish_projection(outcome)
             if published:
@@ -534,58 +436,30 @@ class SimulationRecordResumeMixin:
         validated: ValidatedResumeManifest,
         invocation: Path,
         admission: AdmissionContext,
-        coverage_plan: CoverageTargetPlan | None,
         manifest_published: Callable[[Path], None],
     ) -> SimulationRecordOutcome:
-        plan = self._resume_simulation_record_plan(
-            validated, int(invocation.name), coverage_plan=coverage_plan
-        )
+        plan = self._resume_simulation_record_plan(validated, int(invocation.name))
         verify_workload(validated.manifest, plan.manifest)
         manifest_published(validated.path)
-        executor = self._resume_simulation_record_executor(coverage_plan)
-        try:
-            return SimulationRecord(
-                executor,
-                publication_checkpoint=self._simulation_record_publication_checkpoint,
-                work_item_request=self.work_item_job_request,
-            ).run(
-                ResumeSimulationRecordRunRequest(
-                    validated,
-                    plan,
-                    Path(self.args.work_dir),
-                    self.args.report_dir,
-                    self._simulation_record_policy(),
-                    invocation,
-                    admission,
-                    pre_sim_firing_published=self._record_pre_sim_firing,
-                )
-            )
-        except SimulationRecordPublicationError as error:
-            if coverage_plan is None:
-                raise
-            detail = _coverage_failed_target(
-                coverage_plan.handle.selector,
-                error,
-                "not_requested" if coverage_plan.criterion is None else "blocked",
-                report_invocation=invocation,
-            )
-            raise _CoverageTargetError(str(error), detail) from error
-
-    def _resume_simulation_record_executor(self, coverage_plan: CoverageTargetPlan | None):
-        if coverage_plan is None:
-            return OrdinaryHdlSerialExecutor(invoke=self._execute_boundary)
-        return CoverageAggregateExecutor(
-            plans={coverage_plan.handle.identity: coverage_plan},
-            execution_factory=self._coverage_simulation_record_execution,
+        return SimulationRecord(
+            OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
             publication_checkpoint=self._simulation_record_publication_checkpoint,
+            work_item_request=self.work_item_job_request,
+        ).run(
+            ResumeSimulationRecordRunRequest(
+                validated,
+                plan,
+                Path(self.args.work_dir),
+                self.args.report_dir,
+                self._simulation_record_policy(),
+                invocation,
+                admission,
+                pre_sim_firing_published=self._record_pre_sim_firing,
+            )
         )
 
     def _resume_simulation_record_plan(
-        self,
-        validated: ValidatedResumeManifest,
-        invocation_id: int,
-        *,
-        coverage_plan: CoverageTargetPlan | None = None,
+        self, validated: ValidatedResumeManifest, invocation_id: int
     ):
         """Recompute current workload identity for exact resume comparison."""
         manifest = validated.manifest
@@ -601,21 +475,14 @@ class SimulationRecordResumeMixin:
         runs = tuple(run for group in run_groups for run in group)
         execution = self._simulation_execution()
         preview = execution.preview(handle, SelectedTestRuns(runs))
-        is_coverage = view.is_coverage
-        if is_coverage:
-            preview = replace(preview, groups=(names,), run_groups=(runs,))
-        disclosures = (
-            () if is_coverage else _group_disclosures(execution, handle, groups, run_groups)
-        )
+        disclosures = _group_disclosures(execution, handle, groups, run_groups)
         revision = git_full_sha("HEAD", handle.project_root)
         if revision is None:
             raise SimulationRecordIntegrityError(
                 f"cannot verify resume Target revision at {handle.project_root}"
             )
         kind = view.work_item_kind
-        if kind is not None and (view.is_coverage or kind == "cocotb_batch"):
-            if view.is_coverage and coverage_plan is None:
-                self._resume_coverage_target_plan(validated)
+        if kind == "cocotb_batch":
             return plan_coarse_simulation_record(
                 handle=handle,
                 inspection=inspection,
@@ -627,9 +494,8 @@ class SimulationRecordResumeMixin:
                 execution_id="",
                 trace=view.trace,
                 kind=kind,
-                planning_disclosures=disclosures if kind == "cocotb_batch" else (),
+                planning_disclosures=disclosures,
                 required_suite_catalog_backed=not view.required_suite_default_invocation,
-                no_waivers=view.no_waivers,
             )
         return self._ordinary_resume_plan(
             handle, inspection, preview, view, revision, invocation_id, disclosures
@@ -660,70 +526,6 @@ class SimulationRecordResumeMixin:
             role=view.target.role,
             required_suite_catalog_backed=not view.required_suite_default_invocation,
         )
-
-    def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> Any:
-        """Run the shared coverage preflight for the manifest's frozen coverage choice."""
-        from booley.flows.sim.coverage_flow_context import coverage_project_context
-        from booley.flows.sim.coverage_invocation import (
-            CoverageInvocationRequest,
-            prepare_coverage_invocation,
-        )
-
-        view = SimulationRecordManifestView(validated.manifest)
-        selector = view.target.selector
-        names = view.selected_name_groups[0]
-        context = coverage_project_context(self.args.work_dir)
-        runs = view.test_run_groups[0]
-        prepared = prepare_coverage_invocation(
-            CoverageInvocationRequest(
-                (selector,),
-                tests=names,
-                # The manifest froze its Test Runs: resume never resolves again.
-                test_runs={selector: runs},
-                trace=view.trace,
-                no_waivers=view.no_waivers,
-            ),
-            context,
-        )
-        return prepared
-
-    def _resume_coverage_preflight_if_coverage(
-        self, validated: ValidatedResumeManifest
-    ) -> EndpointOutcome | None:
-        if SimulationRecordManifestView(validated.manifest).is_coverage:
-            return self._resume_coverage_preflight(validated)
-        return None
-
-    def _resume_coverage_preflight(
-        self, validated: ValidatedResumeManifest
-    ) -> EndpointOutcome | None:
-        """Refuse an unresumable raw-coverage aggregate before admission or reservation.
-
-        Manifests without ``no_waivers`` (all legacy ones) keep their original
-        lifecycle: the plan is rebuilt during resume, not at preflight.
-        """
-        if not SimulationRecordManifestView(validated.manifest).no_waivers:
-            return None
-        prepared = self._resume_coverage_prepared(validated)
-        if prepared.plan is None:
-            return _coverage_preflight_findings_outcome(prepared.findings)
-        if len(prepared.plan.targets) == 1:
-            self._resume_coverage_plan = prepared.plan.targets[0]
-        return None
-
-    def _resume_coverage_target_plan(
-        self, validated: ValidatedResumeManifest
-    ) -> CoverageTargetPlan:
-        """Reconstruct the exact native coverage plan bound by the manifest."""
-        if self._resume_coverage_plan is not None:
-            return self._resume_coverage_plan
-        prepared = self._resume_coverage_prepared(validated)
-        if prepared.plan is None or len(prepared.plan.targets) != 1:
-            detail = "; ".join(item.message for item in prepared.findings)
-            raise SimulationRecordIntegrityError(
-                f"cannot reconstruct coverage aggregate: {detail}"
-            )
-        return prepared.plan.targets[0]
 
 
 def _resume_run_cwd_refusal(

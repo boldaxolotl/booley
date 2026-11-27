@@ -570,7 +570,7 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
     monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "abc123")
     monkeypatch.setattr(flow, "_resume_simulation_record_plan", lambda *_args, **_kwargs: plan)
 
-    def resume_executor(_coverage):
+    def resume_executor(**_kwargs):
         checkpoints = list(destination.glob("sim/[0-9]*/progress.json"))
         assert len(checkpoints) == 1
         preparing = json.loads(checkpoints[0].read_text())
@@ -587,7 +587,7 @@ def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys,
         )
 
     # Private seam: the cocotb card execution has no public Project fixture.
-    monkeypatch.setattr(flow, "_resume_simulation_record_executor", resume_executor)
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor", resume_executor)
     resumed = flow.execute_cli(
         _simulation_record_cli_args(
             work_dir=str(tmp_path), report_dir=str(destination), resume_from=str(seen[0])
