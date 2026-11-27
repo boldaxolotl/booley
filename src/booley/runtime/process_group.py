@@ -45,6 +45,20 @@ def new_group_kwargs(*, is_windows: bool | None = None) -> NewGroupKwargs:
     return _platform(is_windows).new_group_kwargs()
 
 
+def foreign_group_of(pid: int) -> int | None:
+    """Return *pid*'s process group, or ``None`` when it shares the caller's (POSIX).
+
+    Raises ``ProcessLookupError`` when *pid* is gone.
+    """
+    group = os.getpgid(pid)
+    return None if group == os.getpgrp() else group
+
+
+def signal_group(group_id: int, signum: int) -> None:
+    """Send *signum* to a group (POSIX); a gone or forbidden group raises."""
+    os.killpg(group_id, signum)
+
+
 def _taskkill(pid: int, *, force: bool) -> None:
     command = ["taskkill"]
     if force:

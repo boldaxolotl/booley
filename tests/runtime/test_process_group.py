@@ -30,6 +30,33 @@ def test_group_identity_is_captured_from_spawn_not_rediscovered() -> None:
     assert group == process_group.ProcessGroup(417)
 
 
+@pytest.mark.parametrize(("group", "expected"), [(7, None), (8, 8)])
+def test_foreign_group_is_reported_only_when_not_the_callers(
+    monkeypatch: pytest.MonkeyPatch, group: int, expected: int | None
+) -> None:
+    monkeypatch.setattr(process_group.os, "getpgid", lambda _pid: group, raising=False)
+    monkeypatch.setattr(process_group.os, "getpgrp", lambda: 7, raising=False)
+
+    assert process_group.foreign_group_of(417) == expected
+
+
+def test_signal_group_signals_the_group_and_reports_a_gone_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[int, int]] = []
+
+    def killpg(group_id: int, signum: int) -> None:
+        sent.append((group_id, signum))
+        raise ProcessLookupError
+
+    monkeypatch.setattr(process_group.os, "killpg", killpg, raising=False)
+
+    with pytest.raises(ProcessLookupError):
+        process_group.signal_group(417, 15)
+
+    assert sent == [(417, 15)]
+
+
 def test_windows_spawn_uses_new_process_group() -> None:
     assert process_group.new_group_kwargs(is_windows=True) == {"creationflags": 0x200}
 

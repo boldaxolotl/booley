@@ -15,6 +15,7 @@ import signal
 import threading
 from collections.abc import Callable
 
+from booley.runtime.process_group import foreign_group_of, signal_group
 from booley.runtime.process_tree import descendant_pids
 
 logger = logging.getLogger(__name__)
@@ -77,17 +78,17 @@ class RunRootWatchdog:
         """Remember every tool: its process group, or its PID when it shares this one."""
         for pid in descendant_pids(os.getpid()):
             with contextlib.suppress(ProcessLookupError):
-                group = os.getpgid(pid)
-                if group == os.getpgrp():
+                group = foreign_group_of(pid)
+                if group is None:
                     self._pids.add(pid)
                 else:
                     self._groups.add(group)
 
     def _signal_tools(self, signum: int) -> None:
         self._find_tools()
-        # Lambdas: Windows has no killpg, and remembers no tool to call it for.
+        # Windows remembers no tool, so neither signal is sent there.
         _signal_each(self._pids, lambda pid: os.kill(pid, signum))
-        _signal_each(self._groups, lambda group: os.killpg(group, signum))
+        _signal_each(self._groups, lambda group: signal_group(group, signum))
 
 
 def _signal_each(targets: set[int], send: Callable[[int], None]) -> None:
