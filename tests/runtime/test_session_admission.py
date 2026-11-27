@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 from tests.pipe_holding_tree import (
     heartbeat_tree,
     parent_argv,
@@ -31,10 +32,6 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime.session_runtime import session_container_name
-
-
-def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
-    return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
 def _vscode_inspection(
@@ -61,37 +58,41 @@ def _vscode_inspection(
     }
 
 
-class _Docker:
-    def __init__(self, documents: dict[str, dict]):
-        self.documents = documents
-        self.all_queries = 0
-
-    def __call__(self, argv: list[str], **_kwargs):
-        if argv[1] == "ps":
-            include_stopped = "-a" in argv
-            if include_stopped:
-                self.all_queries += 1
-            rows = []
-            for container_id, document in self.documents.items():
-                if not include_stopped and not document["State"]["Running"]:
-                    continue
-                name = "editor"
-                if include_stopped:
-                    folder = document["Config"]["Labels"].get("devcontainer.local_folder", "")
-                    rows.append(f"{container_id}\t{name}\t{folder}")
-                else:
-                    rows.append(f"{container_id}\t{name}")
-            return _completed(stdout="\n".join(rows) + ("\n" if rows else ""))
-        return _completed(stdout=json.dumps(self.documents[argv[3]]))
-
-
 @pytest.fixture(autouse=True)
-def _isolated_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def docker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeDocker:
+    """An empty host: the default runner's ``docker`` lists nothing until a test serves rows."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    return install_fake_docker(tmp_path / "docker-bin", monkeypatch, {})
+
+
+def _serve(docker: FakeDocker, documents: dict[str, dict]) -> None:
+    """Answer the listings and inspections of *documents*; serve again after editing one."""
+    running, every = "", ""
+    for container_id, document in documents.items():
+        folder = document["Config"]["Labels"].get("devcontainer.local_folder", "")
+        every += f"{container_id}\teditor\t{folder}\n"
+        if document["State"]["Running"]:
+            running += f"{container_id}\teditor\n"
+        docker.answer("inspect", container_id, stdout=json.dumps(document))
+    docker.answer("ps", stdout=running)
+    docker.answer("ps", "-a", stdout=every)
+
+
+def _listing(docker: FakeDocker, rows: list[str], document: dict | None = None) -> None:
+    """Answer ``docker ps`` with *rows* and each inspection with *document*, or fail it."""
+    docker.answer("ps", stdout="".join(f"{row}\n" for row in rows))
+    if document is None:
+        docker.answer("inspect", code=1, stderr="no workspace mount")
+    else:
+        docker.answer("inspect", stdout=json.dumps(document))
+
+
+def _inspected(docker: FakeDocker) -> list[str]:
+    return [call[2] for call in docker.calls if call[:2] == ["container", "inspect"]]
 
 
 def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     current = tmp_path / "current"
     current.mkdir()
@@ -107,11 +108,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
         "Mounts": [{"Type": "bind", "Source": str(other), "Destination": "/work"}],
     }
 
-    def run(argv: list[str], *, timeout: int = 30):
-        del timeout
-        if argv[1] == "ps":
-            return _completed(stdout="abc\texisting\n")
-        return _completed(stdout=json.dumps(inspection))
+    _listing(docker, ["abc\texisting"], inspection)
 
     monkeypatch.setattr(
         session_admission,
@@ -122,7 +119,6 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
         session_admission.admit_start(
             current,
             target_name="new",
-            run=run,
             now=datetime(2026, 9, 27, 10, 0, tzinfo=UTC),
         )
 
@@ -147,17 +143,14 @@ def test_pending_editor_claim_takes_the_last_slot_and_is_idempotent(
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
 
-    def run(_argv: list[str], **_kwargs):
-        return _completed()
-
-    assert session_admission.claim_vscode_start(first, run=run) is True
-    assert session_admission.claim_vscode_start(first, run=run) is False
+    assert session_admission.claim_vscode_start(first) is True
+    assert session_admission.claim_vscode_start(first) is False
     with pytest.raises(session_admission.AdmissionError, match="pending editor start"):
-        session_admission.claim_vscode_start(second, run=run)
+        session_admission.claim_vscode_start(second)
     with pytest.raises(session_admission.AdmissionError, match="pending editor start"):
-        session_admission.admit_start(first, target_name="headless", run=run)
+        session_admission.admit_start(first, target_name="headless")
     assert session_admission.clear_vscode_claim(first) is True
-    assert session_admission.claim_vscode_start(second, run=run) is True
+    assert session_admission.claim_vscode_start(second) is True
 
 
 def test_headless_start_does_not_consume_own_editor_claim_below_cap(
@@ -170,15 +163,14 @@ def test_headless_start_does_not_consume_own_editor_claim_below_cap(
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    docker = _Docker({})
 
-    assert session_admission.claim_vscode_start(project, run=docker)
+    assert session_admission.claim_vscode_start(project)
     with pytest.raises(session_admission.AdmissionError, match="pending editor start"):
-        session_admission.admit_start(project, target_name="headless", run=docker)
+        session_admission.admit_start(project, target_name="headless")
 
 
 def test_live_editor_makes_claim_idempotent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -187,11 +179,10 @@ def test_live_editor_makes_claim_idempotent(
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    docker = _Docker(
-        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
-    )
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    _serve(docker, {"editor-id": document})
 
-    assert not session_admission.claim_vscode_start(project, run=docker)
+    assert not session_admission.claim_vscode_start(project)
 
 
 def test_invalid_host_policy_is_an_admission_error(
@@ -208,35 +199,35 @@ def test_invalid_host_policy_is_an_admission_error(
     monkeypatch.setattr(session_admission, "load_host_policy", invalid_policy)
 
     with pytest.raises(session_admission.AdmissionError, match="invalid host policy"):
-        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+        session_admission.admit_start(project, target_name="headless")
 
 
-def test_malformed_inventory_row_fails_closed(tmp_path: Path) -> None:
+def test_malformed_inventory_row_fails_closed(tmp_path: Path, docker: FakeDocker) -> None:
     project = tmp_path / "project"
     project.mkdir()
 
-    def malformed(_argv: list[str], **_kwargs):
-        return _completed(stdout="missing-tab\n")
+    docker.answer("ps", stdout="missing-tab\n")
 
     with pytest.raises(session_admission.AdmissionError, match="incomplete Sandbox listing"):
-        session_admission.admit_start(project, target_name="headless", run=malformed)
+        session_admission.admit_start(project, target_name="headless")
 
 
 @pytest.mark.parametrize(
     ("result", "message"),
     [
-        (_completed(1, stderr="daemon unavailable"), "daemon unavailable"),
-        (_completed(stdout="too\tfew\n"), "incomplete VS Code Sandbox listing"),
+        ({"code": 1, "stderr": "daemon unavailable"}, "daemon unavailable"),
+        ({"stdout": "too\tfew\n"}, "incomplete VS Code Sandbox listing"),
     ],
 )
 def test_vscode_inventory_failure_fails_closed(
-    tmp_path: Path, result: subprocess.CompletedProcess[str], message: str
+    tmp_path: Path, docker: FakeDocker, result: dict, message: str
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
+    docker.answer("ps", **result)
 
     with pytest.raises(session_admission.AdmissionError, match=message):
-        session_admission.vscode_sandboxes(project, run=lambda _argv, **_kwargs: result)
+        session_admission.vscode_sandboxes(project)
 
 
 @pytest.mark.parametrize(
@@ -247,7 +238,7 @@ def test_vscode_inventory_failure_fails_closed(
     ],
 )
 def test_inspection_revalidates_role_and_name(
-    tmp_path: Path, field: str, value: str, message: str
+    tmp_path: Path, docker: FakeDocker, field: str, value: str, message: str
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -256,20 +247,21 @@ def test_inspection_revalidates_role_and_name(
         document["Config"]["Labels"]["booley.role"] = value
     else:
         document["Name"] = value
+    _serve(docker, {"editor-id": document})
 
     with pytest.raises(session_admission.AdmissionError, match=message):
-        session_admission.vscode_sandboxes(project, run=_Docker({"editor-id": document}))
+        session_admission.vscode_sandboxes(project)
 
 
-def test_inventory_failure_refuses_instead_of_assuming_empty(tmp_path: Path) -> None:
+def test_inventory_failure_refuses_instead_of_assuming_empty(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
-
-    def run(_argv: list[str], **_kwargs):
-        return _completed(1, stderr="daemon unavailable")
+    docker.answer("ps", code=1, stderr="daemon unavailable")
 
     with pytest.raises(session_admission.AdmissionError, match="daemon unavailable"):
-        session_admission.admit_start(project, target_name="headless", run=run)
+        session_admission.admit_start(project, target_name="headless")
 
 
 @pytest.mark.parametrize(
@@ -279,6 +271,7 @@ def test_inventory_failure_refuses_instead_of_assuming_empty(tmp_path: Path) -> 
 def test_malformed_live_inspection_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    docker: FakeDocker,
     field: str,
     value: object,
 ) -> None:
@@ -299,16 +292,14 @@ def test_malformed_live_inspection_fails_closed(
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
 
+    _serve(docker, {"editor-id": document})
+
     with pytest.raises(session_admission.AdmissionError, match="incomplete inspection"):
-        session_admission.admit_start(
-            project,
-            target_name="headless",
-            run=_Docker({"editor-id": document}),
-        )
+        session_admission.admit_start(project, target_name="headless")
 
 
 def test_running_exact_target_is_idempotent_at_cap(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -322,26 +313,22 @@ def test_running_exact_target_is_idempotent_at_cap(
         "Mounts": [{"Type": "bind", "Source": str(project), "Destination": "/work"}],
     }
 
-    def run(argv: list[str], **_kwargs):
-        if argv[1] == "ps":
-            return _completed(stdout="abc\theadless\n")
-        return _completed(stdout=json.dumps(inspection))
-
+    _listing(docker, ["abc\theadless"], inspection)
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
-    session_admission.admit_start(project, target_name="headless", run=run)
+    session_admission.admit_start(project, target_name="headless")
 
 
 def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     document = _vscode_inspection(project)
-    docker = _Docker({"editor-id": document})
+    _serve(docker, {"editor-id": document})
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
@@ -350,43 +337,46 @@ def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
 
     assert session_admission.claim_vscode_start(
         project,
-        run=docker,
         now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC),
     )
-    assert session_admission.has_pending_claim(project, run=docker)
+    assert session_admission.has_pending_claim(project)
 
     document["State"]["StartedAt"] = "2026-09-27T08:00:01.000001Z"
-    assert not session_admission.has_pending_claim(project, run=docker)
+    _serve(docker, {"editor-id": document})
+    assert not session_admission.has_pending_claim(project)
 
 
 def test_claim_for_moved_project_can_be_reconciled_and_cleared(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     project_id = dc.canonical_project_id(project)
-    docker = _Docker({})
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    assert session_admission.claim_vscode_start(project, run=docker)
+    assert session_admission.claim_vscode_start(project)
     project.rmdir()
 
-    docker.documents["editor-id"] = _vscode_inspection(project, project_id=project_id)
-    assert not session_admission.has_pending_claim(project, run=docker)
+    _serve(docker, {"editor-id": _vscode_inspection(project, project_id=project_id)})
+    assert not session_admission.has_pending_claim(project)
 
     project.mkdir()
-    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    _serve(docker, {})
+    assert session_admission.claim_vscode_start(project)
     project.rmdir()
     assert session_admission.clear_vscode_claim(project)
 
 
-def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(tmp_path: Path) -> None:
+def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    docker = _Docker(
+    _serve(
+        docker,
         {
             "editor-id": _vscode_inspection(
                 project,
@@ -394,15 +384,15 @@ def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(tmp_path: Pat
                 started="2026-09-27T08:00:00Z",
                 project_id="wrong",
             )
-        }
+        },
     )
 
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
-        session_admission.vscode_sandboxes(project, run=docker)
+        session_admission.vscode_sandboxes(project)
 
 
 def test_unrelated_stopped_sandbox_is_not_in_admission_boundary(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -410,15 +400,15 @@ def test_unrelated_stopped_sandbox_is_not_in_admission_boundary(
     other.mkdir()
     malformed = _vscode_inspection(other)
     malformed["Name"] = 7
-    docker = _Docker({"old": malformed})
+    _serve(docker, {"old": malformed})
     monkeypatch.setattr(
         session_admission,
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
 
-    session_admission.admit_start(project, target_name="headless", run=docker)
-    assert docker.all_queries == 0
+    session_admission.admit_start(project, target_name="headless")
+    assert not any("-a" in call for call in docker.calls)
 
 
 def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -429,12 +419,12 @@ def test_corrupt_claim_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    assert session_admission.claim_vscode_start(project)
     claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("{}", encoding="utf-8")
 
     with pytest.raises(session_admission.AdmissionError, match="does not name a Project Root"):
-        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+        session_admission.admit_start(project, target_name="headless")
 
 
 def test_unreadable_claim_json_fails_closed(
@@ -447,16 +437,16 @@ def test_unreadable_claim_json_fails_closed(
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    assert session_admission.claim_vscode_start(project, run=_Docker({}))
+    assert session_admission.claim_vscode_start(project)
     claim_path = next(session_admission.claim_store().private.root.glob("*.json"))
     claim_path.write_text("not json", encoding="utf-8")
 
     with pytest.raises(session_admission.AdmissionError, match="cannot read"):
-        session_admission.admit_start(project, target_name="headless", run=_Docker({}))
+        session_admission.admit_start(project, target_name="headless")
 
 
 def test_claim_candidate_disappearing_during_inspect_fails_closed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -465,17 +455,12 @@ def test_claim_candidate_disappearing_during_inspect_fails_closed(
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=2),
     )
-    assert session_admission.claim_vscode_start(project, run=_Docker({}))
-
-    def disappearing(argv: list[str], **_kwargs):
-        if argv[1] == "ps" and "-a" not in argv:
-            return _completed()
-        if argv[1] == "ps":
-            return _completed(stdout=f"gone\teditor\t{project}\n")
-        return _completed(1, stderr="no such container")
+    assert session_admission.claim_vscode_start(project)
+    docker.answer("ps", "-a", stdout=f"gone\teditor\t{project}\n")
+    docker.answer("inspect", code=1, stderr="no such container")
 
     with pytest.raises(session_admission.AdmissionError, match="cannot inspect"):
-        session_admission.admit_start(project, target_name="headless", run=disappearing)
+        session_admission.admit_start(project, target_name="headless")
 
 
 @pytest.mark.parametrize("canonical", [False, True])
@@ -528,7 +513,7 @@ def _issued_labels(project: Path) -> dict[str, str]:
 
 @pytest.mark.parametrize("foreign", [False, True])
 @pytest.mark.parametrize("running", [False, True])
-def test_admission_accepts_real_issuance_labels(monkeypatch, tmp_path, foreign, running):
+def test_admission_accepts_real_issuance_labels(monkeypatch, tmp_path, docker, foreign, running):
     project = tmp_path / "project"
     project.mkdir()
     requester = tmp_path / "requester" if foreign else project
@@ -538,21 +523,20 @@ def test_admission_accepts_real_issuance_labels(monkeypatch, tmp_path, foreign, 
         "load_host_policy",
         lambda **kw: session_admission.SandboxHostPolicy(max_sessions=4),
     )
-    docker = _Docker({})
-    assert session_admission.claim_vscode_start(project, run=docker)
+    assert session_admission.claim_vscode_start(project)
     document = _vscode_inspection(
         project,
         running=running,
         started="2026-09-27T08:00:00Z" if running else "0001-01-01T00:00:00Z",
     )
     document["Config"]["Labels"].update(_issued_labels(project))
-    docker.documents["editor-id"] = document
-    session_admission.admit_start(requester, target_name="headless", run=docker)
-    assert not session_admission.has_pending_claim(project, run=docker)
+    _serve(docker, {"editor-id": document})
+    session_admission.admit_start(requester, target_name="headless")
+    assert not session_admission.has_pending_claim(project)
 
 
 @pytest.mark.parametrize("entry", ["claim", "inventory"])
-def test_editor_boundaries_accept_real_issuance_labels(tmp_path, monkeypatch, entry):
+def test_editor_boundaries_accept_real_issuance_labels(tmp_path, monkeypatch, docker, entry):
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
@@ -566,19 +550,17 @@ def test_editor_boundaries_accept_real_issuance_labels(tmp_path, monkeypatch, en
         labels["booley.project-id"] == hashlib.sha256(str(project.resolve()).encode()).hexdigest()
     )
     document["Config"]["Labels"].update(labels)
-    docker = _Docker({"editor-id": document})
+    _serve(docker, {"editor-id": document})
     if entry == "claim":
-        assert not session_admission.claim_vscode_start(project, run=docker)
+        assert not session_admission.claim_vscode_start(project)
     else:
-        assert (
-            session_admission.vscode_sandboxes(project, run=docker)[0].container_id == "editor-id"
-        )
+        assert session_admission.vscode_sandboxes(project)[0].container_id == "editor-id"
 
 
 @pytest.mark.parametrize("cap", [2, 3])
 @pytest.mark.parametrize("running", [False, True])
 def test_foreign_mismatch_retains_reservation_and_reports_recovery(
-    tmp_path, monkeypatch, caplog, cap, running
+    tmp_path, monkeypatch, caplog, docker, cap, running
 ):
     project = tmp_path / "project space"
     project.mkdir()
@@ -589,20 +571,20 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
         "load_host_policy",
         lambda **kw: session_admission.SandboxHostPolicy(max_sessions=cap),
     )
-    docker = _Docker({})
-    assert session_admission.claim_vscode_start(project, run=docker)
-    docker.documents["editor-id"] = _vscode_inspection(
+    assert session_admission.claim_vscode_start(project)
+    mismatched = _vscode_inspection(
         project,
         project_id="wrong",
         running=running,
         started="2026-09-27T08:00:00Z" if running else "0001-01-01T00:00:00Z",
     )
+    _serve(docker, {"editor-id": mismatched})
     if cap == 2 and running:
         with pytest.raises(session_admission.AdmissionError) as caught:
-            session_admission.admit_start(requester, target_name="headless", run=docker)
+            session_admission.admit_start(requester, target_name="headless")
         assert session_admission.shell_command(["docker", "rm", "editor-id"]) in str(caught.value)
     else:
-        session_admission.admit_start(requester, target_name="headless", run=docker)
+        session_admission.admit_start(requester, target_name="headless")
     assert session_admission.shell_command(["docker", "stop", "editor-id"]) in caplog.text
     assert session_admission.shell_command(["docker", "rm", "editor-id"]) in caplog.text
     assert (
@@ -613,7 +595,9 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
 
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("baseline", [False, True])
-def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reverse, baseline):
+def test_matching_container_cannot_hide_own_mismatch(
+    tmp_path, monkeypatch, docker, reverse, baseline
+):
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(
@@ -622,22 +606,24 @@ def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reve
         lambda **kw: session_admission.SandboxHostPolicy(max_sessions=5),
     )
     bad = _vscode_inspection(project, project_id="wrong")
-    docker = _Docker({"bad": bad} if baseline else {})
     if baseline:
         # A historical valid baseline later drifts to another Project identity.
         bad["Config"]["Labels"].update(_issued_labels(project))
-    assert session_admission.claim_vscode_start(project, run=docker)
+        _serve(docker, {"bad": bad})
+    assert session_admission.claim_vscode_start(project)
     bad["Config"]["Labels"]["booley.project-id"] = "wrong"
     good = _vscode_inspection(project)
     good["Config"]["Labels"].update(_issued_labels(project))
     pairs = [("good", good), ("bad", bad)]
-    docker.documents = dict(reversed(pairs) if reverse else pairs)
+    _serve(docker, dict(reversed(pairs) if reverse else pairs))
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
-        session_admission.admit_start(project, target_name="headless", run=docker)
+        session_admission.admit_start(project, target_name="headless")
     assert (session_admission.claim_store().path(str(project))).exists()
 
 
-def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_path, monkeypatch):
+def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(
+    tmp_path, monkeypatch, docker
+):
     project = tmp_path / "Project"
     project.mkdir()
     observed = str(project).upper()
@@ -651,12 +637,13 @@ def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_
     document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(
         observed.encode()
     ).hexdigest()
-    docker = _Docker({"editor-id": document})
+    _serve(docker, {"editor-id": document})
     project.rmdir()
-    assert session_admission.vscode_sandboxes(project, run=docker)
+    assert session_admission.vscode_sandboxes(project)
     document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(b"/unrelated").hexdigest()
+    _serve(docker, {"editor-id": document})
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
-        session_admission.vscode_sandboxes(project, run=docker)
+        session_admission.vscode_sandboxes(project)
 
 
 def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
@@ -721,32 +708,20 @@ def test_windows_root_identity_normalizes_drive_case(monkeypatch):
     assert platform_paths.same_host_path("C:/Users/Project", "c:/users/project")
 
 
-def _listing_only_docker(rows: list[str]):
-    """Docker stub that serves one `docker ps` listing and records inspections."""
-    inspected: list[str] = []
-
-    def run(argv: list[str], **_kwargs):
-        if argv[1] == "ps":
-            return _completed(stdout="\n".join(rows) + "\n")
-        inspected.append(argv[3])
-        return _completed(1, stderr=f"no workspace mount on {argv[3]}")
-
-    return run, inspected
-
-
-def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
+def test_project_inventory_skips_host_sidecars(tmp_path: Path, docker: FakeDocker) -> None:
     """Regression #1898: reaper and egress proxy rows must not abort the inventory."""
     project = tmp_path / "project"
     project.mkdir()
-    run, inspected = _listing_only_docker(
+    _listing(
+        docker,
         [
             "reaper-id\tbooley-reaper\t\t\treaper",
             "proxy-id\tbooley-proxy\t\t\tegress-proxy",
-        ]
+        ],
     )
 
-    assert session_admission.running_project_sandboxes(project, run=run) == ()
-    assert inspected == []
+    assert session_admission.running_project_sandboxes(project) == ()
+    assert _inspected(docker) == []
 
 
 @pytest.mark.parametrize(
@@ -762,15 +737,17 @@ def test_project_inventory_skips_host_sidecars(tmp_path: Path) -> None:
         "odd-id\todd\t\t\tlicense-relay",
     ],
 )
-def test_project_inventory_still_inspects_possible_sandboxes(tmp_path: Path, row: str) -> None:
+def test_project_inventory_still_inspects_possible_sandboxes(
+    tmp_path: Path, docker: FakeDocker, row: str
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
     row = row.format(folder=project, local=session_container_name(project))
-    run, inspected = _listing_only_docker([row])
+    _listing(docker, [row])
 
     with pytest.raises(session_admission.AdmissionError):
-        session_admission.running_project_sandboxes(project, run=run)
-    assert inspected == ["odd-id"]
+        session_admission.running_project_sandboxes(project)
+    assert _inspected(docker) == ["odd-id"]
 
 
 def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
@@ -781,7 +758,7 @@ def _pending_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Pat
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=1),
     )
-    assert session_admission.claim_vscode_start(project, run=lambda *_a, **_kw: _completed())
+    assert session_admission.claim_vscode_start(project)
     root = session_admission._canonical_root(project)
     return project, session_admission.claim_store().path(root)
 
@@ -832,75 +809,66 @@ def _hinted_document(project: Path, *, workspace_bind: bool) -> dict:
     }
 
 
-def _counting_docker(rows: list[str], document: dict):
-    """Docker stub serving one listing and one inspect document, recording each inspect."""
-    inspected: list[str] = []
-
-    def run(argv: list[str], **_kwargs):
-        if argv[1] == "ps":
-            return _completed(stdout="\n".join(rows) + "\n")
-        inspected.append(argv[3])
-        return _completed(stdout=json.dumps(document))
-
-    return run, inspected
-
-
 def test_project_inventory_inspects_relay_hinted_sandbox_once_before_recheck(
-    tmp_path: Path,
+    tmp_path: Path, docker: FakeDocker
 ) -> None:
     """A relay-hinted row that is an interactive Sandbox costs one inspect plus the re-check."""
     project = tmp_path / "project"
     project.mkdir()
-    run, inspected = _counting_docker(
-        [_relay_hinted_row(project)], _hinted_document(project, workspace_bind=True)
-    )
+    document = _hinted_document(project, workspace_bind=True)
+    _listing(docker, [_relay_hinted_row(project)], document)
 
-    sandboxes = session_admission.running_project_sandboxes(project, run=run)
+    sandboxes = session_admission.running_project_sandboxes(project)
 
     assert [item.container_id for item in sandboxes] == ["hinted-id"]
-    assert inspected == ["hinted-id", "hinted-id"]
+    assert _inspected(docker) == ["hinted-id", "hinted-id"]
 
 
-def test_project_inventory_classifies_unproven_relay_from_one_inspect(tmp_path: Path) -> None:
+def test_project_inventory_classifies_unproven_relay_from_one_inspect(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
     """A relay-hinted row with a `/work` bind is classified from its single inspect."""
     project = tmp_path / "project"
     project.mkdir()
     document = _hinted_document(project, workspace_bind=True)
     document["Config"]["Labels"]["booley.role"] = "license-relay"
-    run, inspected = _counting_docker([_relay_hinted_row(project)], document)
+    _listing(docker, [_relay_hinted_row(project)], document)
 
     with pytest.raises(session_admission.AdmissionError):
-        session_admission.running_project_sandboxes(project, run=run)
-    assert inspected == ["hinted-id"]
+        session_admission.running_project_sandboxes(project)
+    assert _inspected(docker) == ["hinted-id"]
 
 
 def test_project_inventory_refuses_relay_hinted_row_with_malformed_mounts(
-    tmp_path: Path,
+    tmp_path: Path, docker: FakeDocker
 ) -> None:
     """A relay-hinted row whose `Mounts` is malformed is refused, never skipped."""
     project = tmp_path / "project"
     project.mkdir()
     document = _hinted_document(project, workspace_bind=False)
     document["Mounts"] = "not-a-list"
-    run, inspected = _counting_docker([_relay_hinted_row(project)], document)
+    _listing(docker, [_relay_hinted_row(project)], document)
 
     with pytest.raises(session_admission.AdmissionError, match="cannot inspect possible Sandbox"):
-        session_admission.running_project_sandboxes(project, run=run)
-    assert inspected == ["hinted-id"]
+        session_admission.running_project_sandboxes(project)
+    assert _inspected(docker) == ["hinted-id"]
 
 
-def test_project_inventory_skips_proven_relay_after_one_inspect(tmp_path: Path) -> None:
+def test_project_inventory_skips_proven_relay_after_one_inspect(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    run, inspected = _counting_docker(
-        [_relay_hinted_row(project)], _hinted_document(project, workspace_bind=False)
-    )
+    document = _hinted_document(project, workspace_bind=False)
+    _listing(docker, [_relay_hinted_row(project)], document)
 
-    assert session_admission.running_project_sandboxes(project, run=run) == ()
-    assert inspected == ["hinted-id"]
+    assert session_admission.running_project_sandboxes(project) == ()
+    assert _inspected(docker) == ["hinted-id"]
 
 
-def test_claim_inspects_live_editor_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_claim_inspects_live_editor_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker
+) -> None:
     """The admission snapshot reuses the inventory's inspection of a running editor."""
     project = tmp_path / "project"
     project.mkdir()
@@ -909,32 +877,27 @@ def test_claim_inspects_live_editor_once(monkeypatch: pytest.MonkeyPatch, tmp_pa
         "load_host_policy",
         lambda **_kwargs: session_admission.SandboxHostPolicy(max_sessions=4),
     )
-    docker = _Docker(
-        {"editor-id": _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")}
-    )
-    inspected: list[str] = []
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    _serve(docker, {"editor-id": document})
 
-    def run(argv: list[str], **kwargs):
-        if argv[1] == "container":
-            inspected.append(argv[3])
-        return docker(argv, **kwargs)
-
-    assert session_admission.claim_vscode_start(project, run=run) is False
-    assert inspected == ["editor-id"]
+    assert session_admission.claim_vscode_start(project) is False
+    assert _inspected(docker) == ["editor-id"]
 
 
-def test_vscode_inventory_inspects_a_renamed_known_container_again(tmp_path: Path) -> None:
+def test_vscode_inventory_inspects_a_renamed_known_container_again(
+    tmp_path: Path, docker: FakeDocker
+) -> None:
     """Reuse needs ID and name to match: a name mismatch is inspected afresh."""
     project = tmp_path / "project"
     project.mkdir()
     document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
-    docker = _Docker({"editor-id": document})
+    _serve(docker, {"editor-id": document})
     root = session_admission._canonical_root(project)
     stale = session_admission.Sandbox(
         "editor-id", "other-name", root, None, datetime.now(UTC), datetime.now(UTC), True, True
     )
 
-    (fresh,) = session_admission._vscode_inventory({root}, docker, known=(stale,))
+    (fresh,) = session_admission._vscode_inventory({root}, session_admission._run, known=(stale,))
 
     assert fresh is not stale
     assert fresh.name == "editor"
@@ -982,6 +945,9 @@ def test_default_runner_decodes_utf8_output_whatever_the_locale() -> None:
 
 def _hung_docker(timeouts: list[float | None], hung: list[str]):
     """The session runtime's own runner with ``docker ps`` replaced by a hanging child.
+
+    A stand-in of the injected Session runner port, not of Docker: the logic above it is
+    that each inventory listing hands its runner a finite timeout.
 
     Records each call's ``timeout`` and runs the hung child with a 1 s timeout when
     the listing gave one.

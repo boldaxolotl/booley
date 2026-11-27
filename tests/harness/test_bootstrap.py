@@ -25,6 +25,7 @@ from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult
 from booley.runtime.skill_links import Outcome, SkillLinkEvent, SkillLinkReport
 from tests.conftest import require_symlinks
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.fake_docker_executable import install_fake_docker
 from tests.python_modules import set_importable
 
 
@@ -1578,7 +1579,12 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
         issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
     )
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
+    real_which = shutil.which  # the Windows fake's launcher shim looks docker up with path=
+    monkeypatch.setattr(
+        bootstrap.shutil,
+        "which",
+        lambda name, **where: real_which(name, **where) if where else "/fake/" + name,
+    )
     if skills_current:
         bootstrap.reconcile_host_skills(source, dry_run=False, allow_retarget=True)
     calls = []
@@ -1589,9 +1595,16 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
     monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_a, **_kw: base)
     cache = _inspection_cache(monkeypatch, tmp_path)
 
-    docker = _InspectionDocker()
-    # private: the sidecar adapter is the only Docker seam; there is no public factory to fake.
-    monkeypatch.setattr(bootstrap.host_sidecars, "_docker_adapter", lambda: docker)
+    docker = install_fake_docker(
+        tmp_path.with_name(tmp_path.name + "-docker"),  # outside the snapshotted tree
+        monkeypatch,
+        {
+            "": (2, "fake docker: a check-only inspection runs only inspect calls"),
+            "version": (0, "linux\tDocker Engine"),
+            "context inspect": (0, "unix:///var/run/docker.sock"),
+            "inspect": (1, "Error: No such object"),
+        },
+    )
     return SimpleNamespace(
         home=home,
         identity_path=path,
@@ -1661,35 +1674,6 @@ def _inspection_subprocess(calls):
         return subprocess.CompletedProcess(command, 0, output, "")
 
     return run
-
-
-class _InspectionDocker:
-    def __init__(self):
-        self.failure = None
-        self.calls = []
-
-    def run(self, args, *, timeout=30):
-        assert timeout
-        if args[0] == "version":
-            return subprocess.CompletedProcess(args, 0, "linux\tDocker Engine\n", "")
-        if args[:2] == ["context", "inspect"]:
-            return subprocess.CompletedProcess(args, 0, "unix:///var/run/docker.sock\n", "")
-        assert "inspect" in args, args
-        self.calls.append(args)
-        resource = (
-            "proxy-image"
-            if args[2] == bootstrap.host_sidecars.legacy.PROXY_IMAGE
-            else "reaper-image"
-            if args[2] == bootstrap.host_sidecars.legacy.REAPER_IMAGE
-            else "network"
-            if args[0] == "network"
-            else "proxy"
-            if args[2] == bootstrap.host_sidecars.legacy.PROXY_CONTAINER
-            else "reaper"
-        )
-        if resource == self.failure:
-            raise bootstrap.host_sidecars.SidecarError("access denied " + resource)
-        return subprocess.CompletedProcess(args, 1, "", "No such object")
 
 
 def _run_inspection(capsys):
