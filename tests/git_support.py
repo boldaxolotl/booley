@@ -1,4 +1,7 @@
-"""Plain Git and Stealth fixtures shared by tests that build real repositories."""
+"""Plain Git and Stealth fixtures shared by tests that build real repositories.
+
+``no_live_git_processes`` fakes the live Git process scan.
+"""
 
 from __future__ import annotations
 

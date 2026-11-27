@@ -1,4 +1,7 @@
-"""Fixtures for Booley Flow tests."""
+"""Fixtures for Booley Flow tests.
+
+Stand-ins: Project root discovery and the Sandbox venue check.
+"""
 
 from __future__ import annotations
 
