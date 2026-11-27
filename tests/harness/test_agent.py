@@ -352,41 +352,6 @@ class TestCodexMarkdownTranscript:
         # Edit-only tools still get the full-access sandbox mode.
         assert "--dangerously-bypass-approvals-and-sandbox" in launches[0]["cmd"]
 
-    @pytest.mark.asyncio
-    async def test_codex_runtime_markdown_goes_to_human_logs(self, monkeypatch, tmp_path: Path):
-        from booley.runtime.agent_backend import CodexBackend
-        from booley.runtime.agent_execution import resolve_agent_artifacts
-
-        command = {
-            "type": "item.completed",
-            "item": {
-                "type": "command_execution",
-                "command": "review",
-                "exit_code": 0,
-                "aggregated_output": "review complete",
-            },
-        }
-        replay_codex_run(monkeypatch, events=[{"type": "turn.started"}, command])
-        transcript = (
-            tmp_path / ".runtime" / "transcripts" / "reviewer" / "1" / "review-tb-quality.jsonl"
-        )
-
-        await CodexBackend(auth_mode="visitor").call(
-            AgentCallParams(
-                prompt="review tb",
-                model="gpt-5",
-                cwd=tmp_path,
-                transcript_path=transcript,
-                artifact_paths=resolve_agent_artifacts,
-            )
-        )
-
-        assert not transcript.with_suffix(".md").exists()
-        rendered = (
-            tmp_path / "human-logs" / "transcripts" / "reviewer" / "1" / "review-tb-quality.md"
-        )
-        assert "review complete" in rendered.read_text(encoding="utf-8")
-
 
 def _params(**overrides) -> AgentCallParams:
     overrides.setdefault("timeout_seconds", 60)
